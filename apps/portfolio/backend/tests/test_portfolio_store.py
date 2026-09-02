@@ -98,6 +98,67 @@ def test_create_portfolio_requires_and_persists_base_currency(client) -> None:
     assert future_inception.status_code == 422
 
 
+def test_updating_base_currency_invalidates_all_derived_snapshots(client) -> None:
+    response = client.post(
+        "/api/portfolios",
+        json={
+            "name": "Base Currency Change",
+            "base_currency": "USD",
+            "inception_date": "2026-01-01",
+        },
+    )
+    assert response.status_code == 200
+    portfolio_id = response.json()["portfolio_id"]
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add(
+            _seed_daily_snapshot(
+                portfolio_id=portfolio_id,
+                as_of_date=date(2026, 1, 2),
+                nav=100.0,
+                daily_twr=0.01,
+            )
+        )
+        session.add(
+            PortfolioCalculationStateModel(
+                portfolio_id=portfolio_id,
+                daily_snapshot_status="current",
+                refreshed_from=date(2026, 1, 1),
+                refreshed_to=date(2026, 1, 2),
+            )
+        )
+        session.commit()
+
+    update_response = client.patch(
+        f"/api/portfolios/{portfolio_id}",
+        json={"base_currency": "CNY"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["base_currency"] == "CNY"
+    assert update_response.json()["nav"] is None
+
+    with session_factory() as session:
+        portfolio = session.get(PortfolioRecordModel, portfolio_id)
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        assert portfolio is not None and portfolio.base_currency == "CNY"
+        assert state is not None and state.daily_snapshot_status == "stale"
+        assert state.dirty_from is None
+        assert (
+            session.get(
+                PortfolioDailySnapshotModel,
+                (portfolio_id, date(2026, 1, 2)),
+            )
+            is None
+        )
+
+    missing_response = client.patch(
+        "/api/portfolios/missing-portfolio",
+        json={"base_currency": "CNY"},
+    )
+    assert missing_response.status_code == 404
+
+
 def test_reset_store_rejects_missing_or_duplicate_transaction_sequence() -> None:
     transaction = {
         "transaction_id": "txn-sequence-contract",
@@ -293,28 +354,28 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
 
     portfolio = portfolio_store.get_portfolio("portfolio-ops")
     assert portfolio is not None
-    assert portfolio["as_of_date"] == "2026-05-21"
-    assert portfolio["nav"] == 101.0
+    assert portfolio["as_of_date"] == "2026-05-20"
+    assert portfolio["nav"] == 100.0
 
     portfolio_rows = portfolio_store.list_portfolios()
     portfolio_ops_row = next(row for row in portfolio_rows if row["portfolio_id"] == "portfolio-ops")
-    assert portfolio_ops_row["as_of_date"] == "2026-05-21"
+    assert portfolio_ops_row["as_of_date"] == "2026-05-20"
 
     response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
     assert response.status_code == 200
-    assert response.json()["as_of_date"] == "2026-05-21"
+    assert response.json()["as_of_date"] == "2026-05-20"
 
     holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
     assert holdings_response.status_code == 200
     holdings_payload = holdings_response.json()
-    assert holdings_payload["as_of_date"] == "2026-05-21"
+    assert holdings_payload["as_of_date"] == "2026-05-20"
     assert holdings_payload["risk_policy"]["model_role"] == "production"
     assert holdings_payload["forward_risk"]["status"] in {"ok", "unavailable"}
     assert all("forward_risk_status" in row for row in holdings_payload["rows"])
 
-    performance_response = client.get("/api/portfolios/portfolio-ops/performance", params={"end_date": "2026-05-21"})
+    performance_response = client.get("/api/portfolios/portfolio-ops/performance", params={"end_date": "2026-05-20"})
     assert performance_response.status_code == 200
-    assert performance_response.json()["summary"]["end_date"] == "2026-05-21"
+    assert performance_response.json()["summary"]["end_date"] == "2026-05-20"
 
 
 def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> None:

@@ -44,7 +44,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_registry": "20260823_0028",
+        "instrument_registry": "20260902_0029",
         "platform": "20260823_0007",
         "portfolio": "20260902_0057",
         "watchlist": "20260901_0052",
@@ -81,7 +81,7 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 42
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 44
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "instrument_type_listed_security_identity_contract"
@@ -106,6 +106,8 @@ def test_audit_contract_names_cover_registry_0019(
     assert "instrument_quote_policy_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_price_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_fx_identity_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "market_data_fx_source_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "market_data_fx_freshness_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "fund_nav_current_projection_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "watchlist_index_return_semantics_contract"

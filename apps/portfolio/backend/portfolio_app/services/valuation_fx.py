@@ -141,6 +141,7 @@ def direct_fx_point_as_of(
         "as_of_date": point_date,
         "status": market_data_status(point),
         "stale": point_date < as_of_date,
+        "source_instrument_ids": [instrument_id],
     }
 
 
@@ -175,6 +176,7 @@ def direct_fx_point_before(
             "as_of_date": point_date,
             "status": market_data_status(point),
             "stale": False,
+            "source_instrument_ids": [instrument_id],
         }
     return None
 
@@ -198,6 +200,7 @@ def resolve_fx_rate_on(
             "as_of_date": as_of_date,
             "status": "complete",
             "stale": False,
+            "source_instrument_ids": [],
         }
 
     direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
@@ -225,6 +228,9 @@ def resolve_fx_rate_on(
                 "as_of_date": inverse_point["as_of_date"],
                 "status": inverse_point["status"],
                 "stale": bool(inverse_point["stale"]),
+                "source_instrument_ids": list(
+                    inverse_point.get("source_instrument_ids") or []
+                ),
             }
 
     pivot_currency = "USD"
@@ -268,6 +274,14 @@ def resolve_fx_rate_on(
         "as_of_date": min(base_date, quote_date),
         "status": "complete",
         "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
+        "source_instrument_ids": sorted(
+            {
+                str(instrument_id)
+                for leg in (base_leg, quote_leg)
+                for instrument_id in list(leg.get("source_instrument_ids") or [])
+                if str(instrument_id).strip()
+            }
+        ),
     }
 
 
@@ -290,6 +304,7 @@ def resolve_previous_fx_rate_before(
             "as_of_date": before_date,
             "status": "complete",
             "stale": False,
+            "source_instrument_ids": [],
         }
 
     direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
@@ -317,6 +332,9 @@ def resolve_previous_fx_rate_before(
                 "as_of_date": inverse_point["as_of_date"],
                 "status": inverse_point["status"],
                 "stale": bool(inverse_point["stale"]),
+                "source_instrument_ids": list(
+                    inverse_point.get("source_instrument_ids") or []
+                ),
             }
 
     pivot_currency = "USD"
@@ -360,6 +378,14 @@ def resolve_previous_fx_rate_before(
         "as_of_date": min(base_date, quote_date),
         "status": "complete",
         "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
+        "source_instrument_ids": sorted(
+            {
+                str(instrument_id)
+                for leg in (base_leg, quote_leg)
+                for instrument_id in list(leg.get("source_instrument_ids") or [])
+                if str(instrument_id).strip()
+            }
+        ),
     }
 
 

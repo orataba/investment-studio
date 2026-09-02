@@ -183,6 +183,10 @@ currency 与每条 observation currency 都必须等于 pair 的 quote currency�
 猜测身份。共享 store 对单点和批量写入执行同一合同；读取到违反该合同的历史数据时必须返回
 不可用结果，不得重标币种、补零、补日期、补 complete status 或回退到更旧数据。
 
+五组维护中的 FX 主数据统一使用 FMP `historical-price-eod/full` 日线作为唯一 spot
+时间序列来源。组合换算可以对这些 USD 交叉盘求逆或经 USD 枢轴计算，但不得混用手工汇率、
+第二供应商数据或静默兜底。
+
 `refresh_status.last_successful_requested_at` 是显式持久化 cursor；运行时不得从当前
 status、mode 或 requested timestamp 反推、补写 cursor。
 

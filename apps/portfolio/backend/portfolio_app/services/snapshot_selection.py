@@ -15,6 +15,7 @@ def is_fresh_complete_portfolio_snapshot(snapshot: PortfolioDailySnapshotModel) 
         snapshot.valuation_coverage_state == "complete"
         and snapshot.nav is not None
         and not bool(payload.get("stale_price_flag"))
+        and not bool(payload.get("stale_fx_flag"))
     )
 
 

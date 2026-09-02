@@ -8,6 +8,7 @@ import {
   getPortfolios,
   reorderPortfolios,
   SUPPORTED_PORTFOLIO_CURRENCIES,
+  updatePortfolioSettings,
   type PortfolioEntryRecord,
   type SupportedPortfolioCurrency,
 } from '../lib/api'
@@ -60,6 +61,10 @@ export default function PortfoliosPage() {
   const [createInceptionDate, setCreateInceptionDate] = useState(localTodayIso)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [settingsPortfolio, setSettingsPortfolio] = useState<PortfolioEntryRecord | null>(null)
+  const [settingsBaseCurrency, setSettingsBaseCurrency] = useState<SupportedPortfolioCurrency>('CNY')
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -117,14 +122,19 @@ export default function PortfoliosPage() {
     ? resolvedPortfolios[0]?.base_currency
     : undefined
   const aggregateAvailable = Boolean(
-    !loading && !error && resolvedPortfolios.length && commonBaseCurrency,
+    !loading &&
+      !error &&
+      resolvedPortfolios.length &&
+      commonBaseCurrency &&
+      resolvedPortfolios.every((item) => item.nav != null),
   )
   const totalNav = aggregateAvailable
-    ? resolvedPortfolios.reduce((sum, item) => sum + item.nav, 0)
+    ? resolvedPortfolios.reduce((sum, item) => sum + (item.nav ?? 0), 0)
     : null
-  const totalDayChange = aggregateAvailable
-    ? resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
-    : null
+  const totalDayChange =
+    aggregateAvailable && resolvedPortfolios.every((item) => item.day_change_value != null)
+      ? resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
+      : null
   const totalDayChangePct = totalNav != null && totalDayChange != null && totalNav !== 0
     ? totalDayChange / (totalNav - totalDayChange || totalNav)
     : null
@@ -134,9 +144,11 @@ export default function PortfoliosPage() {
       ? 'Unavailable'
       : !resolvedPortfolios.length
         ? 'No portfolios'
-        : !commonBaseCurrency
-          ? 'Multiple base currencies'
-          : formatCurrency(totalNav, commonBaseCurrency)
+        : resolvedPortfolios.some((item) => item.nav == null)
+          ? 'Recalculating'
+          : !commonBaseCurrency
+            ? 'Multiple base currencies'
+            : formatCurrency(totalNav, commonBaseCurrency)
   const totalChangeLabel = aggregateAvailable
     ? `${formatSignedCurrency(totalDayChange, commonBaseCurrency)} (${formatPercent(totalDayChangePct)})`
     : !loading && !error && resolvedPortfolios.length && !commonBaseCurrency
@@ -257,6 +269,42 @@ export default function PortfoliosPage() {
     }
   }
 
+  function openPortfolioSettings(portfolio: PortfolioEntryRecord) {
+    setSettingsPortfolio(portfolio)
+    setSettingsBaseCurrency(portfolio.base_currency as SupportedPortfolioCurrency)
+    setSettingsError(null)
+    setMenuOpenId(null)
+  }
+
+  async function handleSavePortfolioSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!settingsPortfolio || settingsSaving) {
+      return
+    }
+    setSettingsSaving(true)
+    setSettingsError(null)
+    try {
+      const updated = await updatePortfolioSettings(settingsPortfolio.portfolio_id, {
+        base_currency: settingsBaseCurrency,
+      })
+      setPortfolios((current) =>
+        current.map((item) => (item.portfolio_id === updated.portfolio_id ? updated : item)),
+      )
+      setSettingsPortfolio(null)
+      setNotice(
+        `Base currency changed to ${updated.base_currency}; historical values are recalculating.`,
+      )
+    } catch (requestError) {
+      setSettingsError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to update portfolio settings.',
+      )
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
   return (
     <section className="terminal-page">
       <header className="portfolio-entry-shell">
@@ -327,6 +375,12 @@ export default function PortfoliosPage() {
                   <div className="workspace-selector-menu">
                     <button
                       type="button"
+                      onClick={() => openPortfolioSettings(portfolio)}
+                    >
+                      Portfolio Settings
+                    </button>
+                    <button
+                      type="button"
                       onClick={async () => {
                         try {
                           const copied = await copyPortfolio(portfolio.portfolio_id)
@@ -388,6 +442,74 @@ export default function PortfoliosPage() {
           </button>
         </div>
       </section>
+      {settingsPortfolio ? (
+        <div className="portfolio-settings-modal-backdrop">
+          <section
+            className="portfolio-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="portfolio-settings-title"
+          >
+            <header className="portfolio-settings-modal-header">
+              <h2 id="portfolio-settings-title">Portfolio Settings</h2>
+              <button
+                type="button"
+                aria-label="Close portfolio settings"
+                disabled={settingsSaving}
+                onClick={() => setSettingsPortfolio(null)}
+              >
+                Close
+              </button>
+            </header>
+            <form className="portfolio-settings-form" onSubmit={handleSavePortfolioSettings}>
+              {settingsError ? (
+                <div className="portfolio-settings-notice error-state" role="alert">
+                  {settingsError}
+                </div>
+              ) : null}
+              <div className="portfolio-settings-grid">
+                <label htmlFor="portfolio-base-currency">
+                  <span>Base Currency</span>
+                  <select
+                    id="portfolio-base-currency"
+                    aria-label="Base Currency"
+                    value={settingsBaseCurrency}
+                    onChange={(event) =>
+                      setSettingsBaseCurrency(event.target.value as SupportedPortfolioCurrency)
+                    }
+                  >
+                    {SUPPORTED_PORTFOLIO_CURRENCIES.map((currencyCode) => (
+                      <option key={currencyCode} value={currencyCode}>{currencyCode}</option>
+                    ))}
+                  </select>
+                  <small>
+                    Transactions keep their original currencies. Historical NAV, returns, and P&amp;L
+                    are recalculated in the selected base currency.
+                  </small>
+                </label>
+              </div>
+              <footer className="portfolio-settings-modal-actions">
+                <button
+                  type="button"
+                  disabled={settingsSaving}
+                  onClick={() => setSettingsPortfolio(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    settingsSaving ||
+                    settingsBaseCurrency === settingsPortfolio.base_currency
+                  }
+                >
+                  {settingsSaving ? 'Saving…' : 'Save Settings'}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      ) : null}
       {createOpen ? (
         <div className="portfolio-settings-modal-backdrop">
           <section

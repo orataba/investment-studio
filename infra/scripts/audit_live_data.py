@@ -30,7 +30,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260823_0028",
+    "instrument_registry": "20260902_0029",
     "platform": "20260823_0007",
     "portfolio": "20260902_0057",
     "watchlist": "20260901_0052",
@@ -260,6 +260,8 @@ AUDIT_CHECK_NAMES = (
     "instrument_quote_policy_contract",
     "market_data_price_contract",
     "market_data_fx_identity_contract",
+    "market_data_fx_source_contract",
+    "market_data_fx_freshness_contract",
     "market_data_logical_duplicates",
     "valuation_policy_total_return_basis",
     "watchlist_index_return_semantics_contract",
@@ -2300,6 +2302,72 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     detail=(
                         "FX instruments and observations must use a maintained pair identity, "
                         "fx/spot semantics, and the pair quote currency."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="market_data_fx_source_contract",
+                    query=f"""
+                        WITH maintained_fx(instrument_id, base_currency, quote_currency) AS (
+                            VALUES {MAINTAINED_FX_IDENTITIES_SQL}
+                        ), violations AS (
+                            SELECT 'instrument:' || maintained.instrument_id AS violation_id
+                            FROM maintained_fx maintained
+                            LEFT JOIN instrument_registry.instrument i
+                              ON i.instrument_id = maintained.instrument_id
+                            WHERE i.instrument_id IS NULL
+                               OR i.source_settings_json ->> 'source_mode' <> 'api'
+                               OR i.source_settings_json ->> 'source_api_profile' <> 'fmp'
+                               OR i.source_settings_json ->> 'source_location' <> 'FMP API'
+                               OR i.source_settings_json ->> 'expected_frequency' <> 'daily'
+                            UNION ALL
+                            SELECT 'market-data:' || md.instrument_market_data_id::text
+                            FROM instrument_registry.instrument_market_data md
+                            JOIN maintained_fx maintained USING (instrument_id)
+                            WHERE md.provider IS DISTINCT FROM 'fmp:historical-price-eod:full'
+                        )
+                        SELECT count(*) FROM violations
+                    """,
+                    detail=(
+                        "Every maintained FX master and observation must use the single "
+                        "canonical FMP EOD source."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="market_data_fx_freshness_contract",
+                    query=f"""
+                        WITH maintained_fx(instrument_id, base_currency, quote_currency) AS (
+                            VALUES {MAINTAINED_FX_IDENTITIES_SQL}
+                        ), expected AS (
+                            SELECT CASE extract(isodow FROM current_date)::integer
+                                WHEN 1 THEN current_date - 3
+                                WHEN 7 THEN current_date - 2
+                                WHEN 6 THEN current_date - 1
+                                ELSE current_date - 1
+                            END AS latest_closed_fx_date
+                        ), latest AS (
+                            SELECT maintained.instrument_id, max(md.as_of_date) AS latest_date
+                            FROM maintained_fx maintained
+                            LEFT JOIN instrument_registry.instrument_market_data md
+                              ON md.instrument_id = maintained.instrument_id
+                             AND md.metric_family = 'fx'
+                             AND md.quote_basis = 'spot'
+                             AND md.status = 'complete'
+                            GROUP BY maintained.instrument_id
+                        )
+                        SELECT count(*)
+                        FROM latest CROSS JOIN expected
+                        WHERE latest.latest_date IS NULL
+                           OR latest.latest_date < expected.latest_closed_fx_date
+                    """,
+                    detail=(
+                        "Daily FX history must reach the latest closed weekday; stale rates "
+                        "cannot silently stand in for current portfolio translation."
                     ),
                 )
             )

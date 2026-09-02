@@ -1998,7 +1998,7 @@ def build_daily_portfolio_snapshots(
     previous_pending_settlement_date: date | None = None
     cumulative_pending_settlement_currency_gains = 0.0
     pending_settlement_currency_gain_history_complete = True
-    previous_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
+    previous_position_market_values_local_by_currency: dict[str, float] = {}
     previous_position_market_value_date: date | None = None
     cumulative_instrument_currency_gains = 0.0
     instrument_currency_gain_history_complete = True
@@ -2108,6 +2108,7 @@ def build_daily_portfolio_snapshots(
         pending_settlement_base = 0.0
         pending_settlement_complete = True
         stale_fx_flag = False
+        valuation_fx_stale_flag = False
         cash_balances_by_currency: dict[str, float] = defaultdict(float)
         pending_settlement_balances_by_currency: dict[str, float] = defaultdict(float)
         cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
@@ -2140,6 +2141,7 @@ def build_daily_portfolio_snapshots(
                 else:
                     pending_settlement_base += converted_pending_delta
                     stale_fx_flag = stale_fx_flag or is_stale
+                    valuation_fx_stale_flag = valuation_fx_stale_flag or is_stale
                 continue
 
             cash_delta = _safe_float(posting.get("cash_amount_delta"))
@@ -2170,6 +2172,7 @@ def build_daily_portfolio_snapshots(
                     pending_settlement_complete = False
                 continue
             stale_fx_flag = stale_fx_flag or is_stale
+            valuation_fx_stale_flag = valuation_fx_stale_flag or is_stale
             if posting_effective_date <= as_of_iso:
                 cash_balances_by_currency[posting_currency] += cash_delta
                 if posting_account_id:
@@ -2185,7 +2188,7 @@ def build_daily_portfolio_snapshots(
             for currency, previous_balance in previous_cash_balances_by_currency.items():
                 if currency == base_currency or abs(previous_balance) <= 1e-9:
                     continue
-                previous_balance_at_previous_fx, previous_fx_stale = valuation_fx.convert_amount_on(
+                previous_balance_at_previous_fx, _previous_fx_stale = valuation_fx.convert_amount_on(
                     previous_balance,
                     as_of_date=previous_cash_balance_date,
                     from_currency=currency,
@@ -2207,7 +2210,7 @@ def build_daily_portfolio_snapshots(
                     cash_currency_gain_complete = False
                     continue
                 daily_cash_currency_gain += previous_balance_at_current_fx - previous_balance_at_previous_fx
-                stale_fx_flag = stale_fx_flag or previous_fx_stale or current_fx_stale
+                stale_fx_flag = stale_fx_flag or current_fx_stale
 
         cash_currency_gains = None
         if cash_currency_gain_history_complete and cash_currency_gain_complete:
@@ -2222,7 +2225,7 @@ def build_daily_portfolio_snapshots(
             for currency, previous_balance in previous_pending_settlement_balances_by_currency.items():
                 if currency == base_currency or abs(previous_balance) <= 1e-9:
                     continue
-                previous_balance_at_previous_fx, previous_fx_stale = valuation_fx.convert_amount_on(
+                previous_balance_at_previous_fx, _previous_fx_stale = valuation_fx.convert_amount_on(
                     previous_balance,
                     as_of_date=previous_pending_settlement_date,
                     from_currency=currency,
@@ -2249,7 +2252,7 @@ def build_daily_portfolio_snapshots(
                 daily_pending_settlement_currency_gain += (
                     previous_balance_at_current_fx - previous_balance_at_previous_fx
                 )
-                stale_fx_flag = stale_fx_flag or previous_fx_stale or current_fx_stale
+                stale_fx_flag = stale_fx_flag or current_fx_stale
 
         pending_settlement_currency_gains = None
         if (
@@ -2269,7 +2272,7 @@ def build_daily_portfolio_snapshots(
         position_valuation_complete = True
         stale_price_flag = False
         fresh_price_count = 0
-        current_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
+        current_position_market_values_local_by_currency: dict[str, float] = defaultdict(float)
         event_valued_position_present = False
         market_valued_position_present = False
         for bucket in position_buckets:
@@ -2361,12 +2364,7 @@ def build_daily_portfolio_snapshots(
             price_point_date = _parse_iso_date((price_point or {}).get("as_of_date"))
             if price_point_date == as_of_date:
                 fresh_price_count += 1
-            current_position_market_values_local_by_instrument[
-                str(bucket.get("instrument_id") or "")
-            ] = {
-                "currency": currency,
-                "market_value_local": market_value_local,
-            }
+            current_position_market_values_local_by_currency[currency] += market_value_local
             if not event_valued:
                 priced_position_count += 1
                 market_valued_position_present = (
@@ -2376,22 +2374,56 @@ def build_daily_portfolio_snapshots(
             position_market_value_base += converted_market_value
             stale_price_flag = stale_price_flag or bool((price_point or {}).get("stale"))
             stale_fx_flag = stale_fx_flag or valuation_fx_stale
+            valuation_fx_stale_flag = (
+                valuation_fx_stale_flag or valuation_fx_stale
+            )
+
+        derivative_liability_base = 0.0
+        derivative_liability_complete = True
+        derivative_liability_local = 0.0
+        derivative_liability_currency_map: dict[str, float] = defaultdict(float)
+        for obligation in open_option_obligation_rows:
+            obligation_currency = valuation_fx.required_currency(
+                obligation.get("contract_currency")
+                or account_currency_map.get(str(obligation.get("account_id") or ""))
+                or base_currency,
+                field_name="option obligation currency",
+            )
+            liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+            derivative_liability_local += liability
+            derivative_liability_currency_map[obligation_currency] += liability
+            current_position_market_values_local_by_currency[
+                obligation_currency
+            ] -= liability
+            converted_liability, liability_fx_stale = valuation_fx.convert_amount_on(
+                liability,
+                as_of_date=as_of_date,
+                from_currency=obligation_currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if converted_liability is None:
+                derivative_liability_complete = False
+            else:
+                derivative_liability_base += converted_liability
+                stale_fx_flag = stale_fx_flag or liability_fx_stale
+                valuation_fx_stale_flag = (
+                    valuation_fx_stale_flag or liability_fx_stale
+                )
 
         daily_instrument_currency_gain = 0.0
         instrument_currency_gain_complete = True
         if previous_position_market_value_date is not None:
-            for instrument_id, previous_position_value in previous_position_market_values_local_by_instrument.items():
-                del instrument_id
-                currency = valuation_fx.required_currency(
-                    previous_position_value.get("currency"),
-                    field_name="position market-value currency",
-                )
+            for currency, previous_market_value_local in (
+                previous_position_market_values_local_by_currency.items()
+            ):
                 if currency == base_currency:
                     continue
-                previous_market_value_local = _safe_float(previous_position_value.get("market_value_local"))
-                if previous_market_value_local is None or abs(previous_market_value_local) <= 1e-9:
+                if abs(previous_market_value_local) <= 1e-9:
                     continue
-                previous_value_at_previous_fx, previous_fx_stale = valuation_fx.convert_amount_on(
+                previous_value_at_previous_fx, _previous_fx_stale = valuation_fx.convert_amount_on(
                     previous_market_value_local,
                     as_of_date=previous_position_market_value_date,
                     from_currency=currency,
@@ -2413,7 +2445,7 @@ def build_daily_portfolio_snapshots(
                     instrument_currency_gain_complete = False
                     continue
                 daily_instrument_currency_gain += previous_value_at_current_fx - previous_value_at_previous_fx
-                stale_fx_flag = stale_fx_flag or previous_fx_stale or current_fx_stale
+                stale_fx_flag = stale_fx_flag or current_fx_stale
 
         instrument_currency_gains = None
         if instrument_currency_gain_history_complete and instrument_currency_gain_complete:
@@ -2421,35 +2453,6 @@ def build_daily_portfolio_snapshots(
             instrument_currency_gains = cumulative_instrument_currency_gains
         else:
             instrument_currency_gain_history_complete = False
-
-        derivative_liability_base = 0.0
-        derivative_liability_complete = True
-        derivative_liability_local = 0.0
-        derivative_liability_currency_map: dict[str, float] = defaultdict(float)
-        for obligation in open_option_obligation_rows:
-            obligation_currency = valuation_fx.required_currency(
-                obligation.get("contract_currency")
-                or account_currency_map.get(str(obligation.get("account_id") or ""))
-                or base_currency,
-                field_name="option obligation currency",
-            )
-            liability = _safe_float(obligation.get("carrying_liability")) or 0.0
-            derivative_liability_local += liability
-            derivative_liability_currency_map[obligation_currency] += liability
-            converted_liability, liability_fx_stale = valuation_fx.convert_amount_on(
-                liability,
-                as_of_date=as_of_date,
-                from_currency=obligation_currency,
-                to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                instrument_detail_loader=get_registry_instrument_detail,
-            )
-            if converted_liability is None:
-                derivative_liability_complete = False
-            else:
-                derivative_liability_base += converted_liability
-                stale_fx_flag = stale_fx_flag or liability_fx_stale
 
         current_non_base_monetary_exposure_present = any(
             currency != base_currency and abs(amount) > 1e-9
@@ -2464,8 +2467,10 @@ def build_daily_portfolio_snapshots(
             for balances in (
                 previous_cash_balances_by_currency,
                 previous_pending_settlement_balances_by_currency,
+                previous_position_market_values_local_by_currency,
                 cash_balances_by_currency,
                 pending_settlement_balances_by_currency,
+                current_position_market_values_local_by_currency,
             )
             for currency, amount in balances.items()
             if currency != base_currency and abs(amount) > 1e-9
@@ -2501,6 +2506,12 @@ def build_daily_portfolio_snapshots(
             or has_derivative_lifecycle_activity
         )
         has_snapshot_content = bool(postings) or bool(position_buckets) or bool(open_option_obligation_rows)
+        stale_fx_flag = (
+            stale_fx_flag
+            or bool(transaction_buckets["stale_fx_flag"])
+            or bool(realized_pnl_summary["stale_fx_flag"])
+            or bool(market_risk_exclusion_summary["stale_fx_flag"])
+        )
         valuation_complete = (
             cash_complete
             and pending_settlement_complete
@@ -2520,18 +2531,12 @@ def build_daily_portfolio_snapshots(
             and instrument_currency_gain_history_complete
             and bool(transaction_buckets["coverage_complete"])
             and bool(realized_pnl_summary["coverage_complete"])
+            and not stale_fx_flag
         )
         book_pnl_coverage_state = (
             "complete"
             if book_pnl_complete
             else return_chain.incomplete_coverage_state(has_content=has_snapshot_content)
-        )
-
-        stale_fx_flag = (
-            stale_fx_flag
-            or bool(transaction_buckets["stale_fx_flag"])
-            or bool(realized_pnl_summary["stale_fx_flag"])
-            or bool(market_risk_exclusion_summary["stale_fx_flag"])
         )
 
         resolved_cash_balance = cash_balance_base if cash_complete else None
@@ -2563,7 +2568,9 @@ def build_daily_portfolio_snapshots(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        flow_coverage_complete = bool(flow_breakdown["coverage_complete"])
+        flow_coverage_complete = bool(flow_breakdown["coverage_complete"]) and not bool(
+            flow_breakdown["stale_fx_flag"]
+        )
         flow_has_external_cash = (
             abs(_safe_float(flow_breakdown["external_cash_in"]) or 0.0) > 1e-9
             or abs(_safe_float(flow_breakdown["external_cash_out"]) or 0.0) > 1e-9
@@ -2824,7 +2831,7 @@ def build_daily_portfolio_snapshots(
             "attribution_coverage_state": attribution_coverage_state,
             "return_chain_continuous": not return_chain_broken,
             "stale_price_flag": stale_price_flag,
-            "stale_fx_flag": stale_fx_flag,
+            "stale_fx_flag": valuation_fx_stale_flag,
             "total_position_count": total_position_count,
             "priced_position_count": priced_position_count,
             "market_observation_count": fresh_price_count,
@@ -2958,6 +2965,7 @@ def build_daily_portfolio_snapshots(
                     ),
                     option_obligations=open_option_obligation_rows,
                     as_of_date=as_of_date,
+                    previous_as_of_date=as_of_date - timedelta(days=1),
                     base_currency=base_currency,
                     direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
@@ -2981,6 +2989,13 @@ def build_daily_portfolio_snapshots(
                     holding_day_change=(
                         holdings_market_profile.holding_day_change_metrics
                     ),
+                    position_day_change=partial(
+                        holdings_market_profile.position_day_change_metrics_in_base,
+                        resolve_fx_rate_on=partial(
+                            valuation_fx.resolve_fx_rate_on,
+                            instrument_detail_loader=get_registry_instrument_detail,
+                        ),
+                    ),
                     normalize_instrument=(
                         holdings_market_profile.normalize_instrument_core
                     ),
@@ -2992,10 +3007,6 @@ def build_daily_portfolio_snapshots(
                                 valuation_fx.resolve_fx_rate_on,
                                 instrument_detail_loader=get_registry_instrument_detail,
                             ),
-                            resolve_previous_fx_rate_before=partial(
-                                valuation_fx.resolve_previous_fx_rate_before,
-                                instrument_detail_loader=get_registry_instrument_detail,
-                            ),
                         ),
                     ),
                     build_pending_rows=partial(
@@ -3004,10 +3015,6 @@ def build_daily_portfolio_snapshots(
                             holdings_market_profile.cash_day_change_metrics,
                             resolve_fx_rate_on=partial(
                                 valuation_fx.resolve_fx_rate_on,
-                                instrument_detail_loader=get_registry_instrument_detail,
-                            ),
-                            resolve_previous_fx_rate_before=partial(
-                                valuation_fx.resolve_previous_fx_rate_before,
                                 instrument_detail_loader=get_registry_instrument_detail,
                             ),
                         ),
@@ -3077,7 +3084,9 @@ def build_daily_portfolio_snapshots(
             pending_settlement_balances_by_currency
         )
         previous_pending_settlement_date = as_of_date
-        previous_position_market_values_local_by_instrument = deepcopy(current_position_market_values_local_by_instrument)
+        previous_position_market_values_local_by_currency = dict(
+            current_position_market_values_local_by_currency
+        )
         previous_position_market_value_date = as_of_date
         previous_derivative_exposure_present = has_derivative_exposure
         previous_modeled_market_exposure_present = modeled_market_exposure_present
@@ -4445,6 +4454,7 @@ def _build_boundary_holding_records(
     boundary_nav: float | None,
     option_obligations: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], float | None]:
+    previous_as_of_date = as_of_date - timedelta(days=1)
     position_lots = build_position_lots(
         portfolio_id,
         accounts,
@@ -4561,19 +4571,6 @@ def _build_boundary_holding_records(
                     price_scale=_safe_float((price_point or {}).get("price_scale")),
                 )
             )
-        converted_day_change_value, _ = (
-            valuation_fx.convert_amount_on(
-                day_change_value,
-                as_of_date=as_of_date,
-                from_currency=currency,
-                to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                instrument_detail_loader=get_registry_instrument_detail,
-            )
-            if day_change_value is not None
-            else (None, False)
-        )
         converted_market_value, _ = valuation_fx.convert_amount_on(
             market_value_local,
             as_of_date=as_of_date,
@@ -4582,6 +4579,25 @@ def _build_boundary_holding_records(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
+        )
+        translated_day_change = (
+            holdings_market_profile.position_day_change_metrics_in_base(
+                current_market_value=(
+                    None if event_valued else market_value_local
+                ),
+                local_day_change_pct=day_change_pct,
+                local_day_change_value=day_change_value,
+                currency=currency,
+                base_currency=base_currency,
+                as_of_date=as_of_date,
+                previous_as_of_date=previous_as_of_date,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                resolve_fx_rate_on=partial(
+                    valuation_fx.resolve_fx_rate_on,
+                    instrument_detail_loader=get_registry_instrument_detail,
+                ),
+            )
         )
         if market_value_local is None or converted_market_value is None:
             total_market_value_complete = False
@@ -4659,9 +4675,8 @@ def _build_boundary_holding_records(
                 "valuation_basis": "carried_cost" if event_valued else "market_quote",
                 "performance_eligible": not event_valued,
                 "risk_eligible": not event_valued,
-                "day_change_pct": day_change_pct,
                 "day_change_value": day_change_value,
-                "day_change_value_base": converted_day_change_value,
+                **translated_day_change,
                 "currency": currency,
                 "portfolio_weight": None,
                 "account_ids": list(bucket.get("account_ids") or []),
@@ -5106,6 +5121,7 @@ def build_holdings_report(
             *holdings_market_profile.build_cash_holding_rows(
                 cash_balances=list(cash_components.get("cash_balances") or []),
                 as_of_date=as_of_date,
+                previous_as_of_date=as_of_date - timedelta(days=1),
                 base_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=resolved_instrument_detail_cache,
@@ -5113,10 +5129,6 @@ def build_holdings_report(
                     holdings_market_profile.cash_day_change_metrics,
                     resolve_fx_rate_on=partial(
                         valuation_fx.resolve_fx_rate_on,
-                        instrument_detail_loader=get_registry_instrument_detail,
-                    ),
-                    resolve_previous_fx_rate_before=partial(
-                        valuation_fx.resolve_previous_fx_rate_before,
                         instrument_detail_loader=get_registry_instrument_detail,
                     ),
                 ),
@@ -5124,6 +5136,7 @@ def build_holdings_report(
             *holdings_market_profile.build_pending_monetary_holding_rows(
                 pending_balances=list(cash_components.get("pending_balances") or []),
                 as_of_date=as_of_date,
+                previous_as_of_date=as_of_date - timedelta(days=1),
                 base_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=resolved_instrument_detail_cache,
@@ -5131,10 +5144,6 @@ def build_holdings_report(
                     holdings_market_profile.cash_day_change_metrics,
                     resolve_fx_rate_on=partial(
                         valuation_fx.resolve_fx_rate_on,
-                        instrument_detail_loader=get_registry_instrument_detail,
-                    ),
-                    resolve_previous_fx_rate_before=partial(
-                        valuation_fx.resolve_previous_fx_rate_before,
                         instrument_detail_loader=get_registry_instrument_detail,
                     ),
                 ),
@@ -5658,7 +5667,7 @@ def _compute_currency_translation_gain(
         amount = _safe_float(raw_amount)
         if amount is None or abs(amount) <= 1e-9:
             continue
-        previous_value, previous_stale = valuation_fx.convert_amount_on(
+        previous_value, _previous_stale = valuation_fx.convert_amount_on(
             amount,
             as_of_date=previous_date,
             from_currency=currency,
@@ -5680,7 +5689,7 @@ def _compute_currency_translation_gain(
             coverage_complete = False
             continue
         gain += current_value - previous_value
-        stale_fx_flag = stale_fx_flag or previous_stale or current_stale
+        stale_fx_flag = stale_fx_flag or current_stale
 
     return (gain if coverage_complete else None), stale_fx_flag
 
@@ -6067,6 +6076,11 @@ def _build_contribution_group_end_states(
             field_name="option obligation currency",
         )
         liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+        position_market_values_local_by_currency = state.get(
+            "_position_market_value_local_by_currency"
+        )
+        if isinstance(position_market_values_local_by_currency, (dict, defaultdict)):
+            position_market_values_local_by_currency[currency] -= liability
         converted_liability, liability_fx_stale = valuation_fx.convert_amount_on(
             liability,
             as_of_date=as_of_date,

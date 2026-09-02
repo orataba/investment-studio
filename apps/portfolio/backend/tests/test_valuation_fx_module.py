@@ -349,6 +349,7 @@ def test_direct_inverse_and_pivot_fx_resolution_golden():
         "as_of_date": date(2026, 1, 4),
         "status": "complete",
         "stale": True,
+        "source_instrument_ids": ["fx-usd-hkd"],
     }
 
     inverse = valuation_fx.resolve_fx_rate_on(
@@ -362,6 +363,7 @@ def test_direct_inverse_and_pivot_fx_resolution_golden():
     assert inverse["rate"] == pytest.approx(1 / 7.9)
     assert inverse["as_of_date"] == date(2026, 1, 4)
     assert inverse["stale"] is True
+    assert inverse["source_instrument_ids"] == ["fx-usd-hkd"]
 
     pivot = valuation_fx.resolve_fx_rate_on(
         **common,
@@ -375,6 +377,7 @@ def test_direct_inverse_and_pivot_fx_resolution_golden():
     assert pivot["as_of_date"] == date(2026, 1, 3)
     assert pivot["status"] == "complete"
     assert pivot["stale"] is True
+    assert pivot["source_instrument_ids"] == ["fx-usd-cny", "fx-usd-hkd"]
 
     assert valuation_fx.resolve_fx_rate_on(
         **common,

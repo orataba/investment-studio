@@ -38,14 +38,16 @@ def _option_contract(
     derivative_contract_id: str,
     *,
     underlying_instrument_id: str,
+    account_id: str = "broker-us-options",
+    currency: str = "USD",
 ) -> dict[str, object]:
     return {
         "derivative_contract_id": derivative_contract_id,
         "portfolio_id": "portfolio-ops",
-        "account_id": "broker-us-options",
+        "account_id": account_id,
         "contract_name": "ABBV Dec 2026 Covered Call",
         "contract_type": "option",
-        "currency": "USD",
+        "currency": currency,
         "external_reference": "ABBV-20261218-C-220",
         "terms": {
             "underlying_instrument_id": underlying_instrument_id,
@@ -71,6 +73,7 @@ def _transaction(
     price: float | None = None,
     gross_amount: float,
     fees: float = 0.0,
+    currency: str = "USD",
 ) -> dict[str, object]:
     return {
         "transaction_id": transaction_id,
@@ -109,7 +112,7 @@ def _transaction(
         "fees": fees,
         "fee_category": "unknown",
         "taxes": 0.0,
-        "currency": "USD",
+        "currency": currency,
         "transfer_scope": None,
         "transfer_object_type": None,
         "transfer_group_id": None,
@@ -405,3 +408,137 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
         dynamic_option_contribution["total_pnl"]
     )
     assert persisted_option_contribution.total_pnl == pytest.approx(-15.0)
+
+
+def test_foreign_option_liability_fx_is_attributed_as_signed_instrument_exposure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    portfolio_id = "portfolio-ops"
+    option_id = "option-hkd-covered-call"
+    option_account_id = "broker-hk-options"
+    option_contract = _option_contract(
+        option_id,
+        underlying_instrument_id="equity-hk-underlying",
+        account_id=option_account_id,
+        currency="HKD",
+    )
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": as_of_date,
+                "value": value,
+                "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date, value in (
+                ("2026-02-20", "7.80"),
+                ("2026-02-21", "7.50"),
+            )
+        ],
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: (
+            deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None
+        ),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD", "HKD"],
+            "maintained_pairs": ["USD/HKD"],
+            "rates": [
+                {
+                    "base_currency": "USD",
+                    "quote_currency": "HKD",
+                    "rate": 7.5,
+                    "as_of_date": "2026-02-21",
+                    "source_kind": "direct",
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
+                    "status": "complete",
+                }
+            ],
+        },
+    )
+
+    store = deepcopy(TEST_PORTFOLIO_STORE)
+    store["portfolios"][0]["inception_date"] = "2026-02-20"
+    store["portfolios"][0]["as_of_date"] = "2026-02-21"
+    hkd_cash_account = next(
+        account
+        for account in store["accounts"]
+        if account["account_id"] == "cash-hkd-main"
+    )
+    hkd_cash_account["opened_at"] = "2026-02-20"
+    store["accounts"] = [
+        hkd_cash_account,
+        {
+            "account_id": option_account_id,
+            "portfolio_id": portfolio_id,
+            "account_name": "HKD Options",
+            "account_type": "securities_account",
+            "account_category": "option",
+            "currency": "HKD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-hkd-main",
+            "cost_basis_method": "fifo",
+            "opened_at": "2026-02-20",
+            "status": "active",
+        },
+    ]
+    store["transactions"] = [
+        _transaction(
+            "txn-option-fx-0001",
+            "option_write",
+            "2026-02-20",
+            account_id=option_account_id,
+            settlement_cash_account_id="cash-hkd-main",
+            derivative_contract=option_contract,
+            quantity=1.0,
+            gross_amount=780.0,
+            currency="HKD",
+        )
+    ]
+    store["derivative_contracts"] = [deepcopy(option_contract)]
+    portfolio_store.reset_store(store)
+
+    snapshots = performance.build_daily_portfolio_snapshots(
+        portfolio_store.list_portfolios()[0],
+        portfolio_store.list_accounts(portfolio_id),
+        portfolio_store.list_transactions(portfolio_id),
+        start_date=date(2026, 2, 20),
+        end_date=date(2026, 2, 21),
+        include_materialized_rows=True,
+    )
+
+    final_snapshot = snapshots[-1]
+    assert final_snapshot["cash_currency_gains"] == pytest.approx(4.0)
+    assert final_snapshot["instrument_currency_gains"] == pytest.approx(-4.0)
+    assert final_snapshot["ending_nav"] == pytest.approx(0.0)
+    assert final_snapshot["total_pnl"] == pytest.approx(0.0)
+
+    final_slices = [
+        row
+        for row in final_snapshot["_contribution_slices"]
+        if row["as_of_date"] == date(2026, 2, 21)
+        and row["axis"] == "instrument"
+    ]
+    option_slice = next(row for row in final_slices if row["group_key"] == option_id)
+    cash_slice = next(row for row in final_slices if row["group_key"] == "cash")
+    assert option_slice["instrument_currency_gains"] == pytest.approx(-4.0)
+    assert option_slice["total_pnl"] == pytest.approx(-4.0)
+    assert cash_slice["cash_currency_gains"] == pytest.approx(4.0)
+    assert cash_slice["total_pnl"] == pytest.approx(4.0)

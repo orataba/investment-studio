@@ -82,6 +82,8 @@ type HoldingsColumnKey =
   | 'accounts'
   | 'open_lots'
   | 'day_change_value'
+  | 'local_day_change_value'
+  | 'fx_day_change_value'
   | 'day_change_pct'
   | 'unrealized_value'
   | 'unrealized_pct'
@@ -186,6 +188,8 @@ export const HOLDINGS_GROUP_AGGREGATION_KIND: Record<
   accounts: 'none',
   open_lots: 'sum',
   day_change_value: 'sum',
+  local_day_change_value: 'sum',
+  fx_day_change_value: 'sum',
   day_change_pct: 'recomputed_ratio',
   unrealized_value: 'sum',
   unrealized_pct: 'recomputed_ratio',
@@ -322,7 +326,14 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   },
   {
     label: 'P&L',
-    columns: ['day_change_pct', 'day_change_value', 'unrealized_value', 'unrealized_pct'],
+    columns: [
+      'day_change_pct',
+      'day_change_value',
+      'local_day_change_value',
+      'fx_day_change_value',
+      'unrealized_value',
+      'unrealized_pct',
+    ],
   },
   {
     label: 'Risk',
@@ -352,6 +363,8 @@ const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'market_value_base',
   'weight',
   'cost_basis_base',
+  'day_change_value',
+  'fx_day_change_value',
   'unrealized_value',
   'unrealized_pct',
   'instrument_return_1w',
@@ -385,6 +398,8 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   accounts: 104,
   open_lots: 112,
   day_change_value: 140,
+  local_day_change_value: 140,
+  fx_day_change_value: 132,
   day_change_pct: 120,
   unrealized_value: 148,
   unrealized_pct: 148,
@@ -434,6 +449,8 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   accounts: 84,
   open_lots: 88,
   day_change_value: 104,
+  local_day_change_value: 104,
+  fx_day_change_value: 96,
   day_change_pct: 92,
   unrealized_value: 108,
   unrealized_pct: 104,
@@ -495,6 +512,8 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'instrument_return_1y',
         'day_change_pct',
         'day_change_value',
+        'local_day_change_value',
+        'fx_day_change_value',
         'unrealized_value',
         'unrealized_pct',
         'instrument_volatility_1m',
@@ -777,14 +796,40 @@ function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorksp
   return baseAmountForRow(row, workspace.base_currency, row.day_change_value_base, row.day_change_value)
 }
 
-function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  if (isMonetaryHoldingRow(row)) {
-    return {
-      value: dayChangeBaseForRow(row, workspace),
-      currency: workspace.base_currency,
-    }
+function localDayChangeBaseForRow(row: PortfolioHoldingRow) {
+  return finiteNumber(row.local_day_change_value_base)
+}
+
+function fxDayChangeBaseForRow(row: PortfolioHoldingRow) {
+  return finiteNumber(row.fx_day_change_value_base)
+}
+
+function fxRateDetailTitle(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
+  const currentRate = finiteNumber(row.fx_rate_to_base)
+  const previousRate = finiteNumber(row.previous_fx_rate_to_base)
+  if (currentRate == null || previousRate == null) {
+    return undefined
   }
-  return { value: row.day_change_value, currency: holdingCurrency(row) }
+  const currency = holdingCurrency(row)
+  if (normalizedCurrency(currency) === normalizedCurrency(workspace.base_currency)) {
+    return undefined
+  }
+  const currentDate = row.fx_rate_as_of_date ? ` (${row.fx_rate_as_of_date})` : ''
+  const previousDate = row.previous_fx_rate_as_of_date ? ` (${row.previous_fx_rate_as_of_date})` : ''
+  const sources = row.fx_rate_source_instrument_ids?.length
+    ? ` · Rate series: ${row.fx_rate_source_instrument_ids
+        .map((instrumentId) => instrumentId.replace(/^fx-/, '').split('-').join('/').toUpperCase())
+        .join(', ')}`
+    : ''
+  const freshness = row.fx_rate_stale ? ' · Current rate is carried forward' : ''
+  return `1 ${currency} = ${formatNumber(currentRate, 6)} ${workspace.base_currency}${currentDate} · Previous ${formatNumber(previousRate, 6)}${previousDate}${sources}${freshness}`
+}
+
+function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
+  return {
+    value: dayChangeBaseForRow(row, workspace),
+    currency: workspace.base_currency,
+  }
 }
 
 function bookAvgCost(row: PortfolioHoldingRow) {
@@ -1808,10 +1853,12 @@ function holdingColumnExportValue(
     case 'day_change_value':
       return holdingDayChangeExportValue(
         row,
-        isMonetaryHoldingRow(row)
-          ? dayChangeBaseForRow(row, context.workspace)
-          : row.day_change_value,
+        dayChangeBaseForRow(row, context.workspace),
       )
+    case 'local_day_change_value':
+      return holdingDayChangeExportValue(row, localDayChangeBaseForRow(row))
+    case 'fx_day_change_value':
+      return holdingDayChangeExportValue(row, fxDayChangeBaseForRow(row))
     case 'day_change_pct':
       return holdingDayChangeExportValue(row, row.day_change_pct)
     case 'unrealized_value':
@@ -1888,6 +1935,14 @@ function holdingColumnSubtotalExportValue(
       return totalsContainMaterialEventValuation(rows)
         ? 'N/A'
         : totalDayChangeBase(rows, context.workspace)
+    case 'local_day_change_value':
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : sumCompleteNumbers(rows, localDayChangeBaseForRow)
+    case 'fx_day_change_value':
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : sumCompleteNumbers(rows, fxDayChangeBaseForRow)
     case 'day_change_pct':
       return totalsContainMaterialEventValuation(rows)
         ? 'N/A'
@@ -2123,7 +2178,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   day_change_value: {
     key: 'day_change_value',
-    label: 'Day Change',
+    label: 'Day P&L',
     align: 'right',
     render: (row, context) => {
       if (holdingDayChangeUnavailable(row)) {
@@ -2146,6 +2201,65 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
       totalsContainMaterialEventValuation(rows)
         ? ''
         : signedValueClass(totalDayChangeBase(rows, context.workspace)),
+  },
+  local_day_change_value: {
+    key: 'local_day_change_value',
+    label: 'Local P&L',
+    align: 'right',
+    render: (row, context) =>
+      holdingDayChangeUnavailable(row)
+        ? 'N/A'
+        : signedCurrency(localDayChangeBaseForRow(row), context.workspace.base_currency),
+    sortValue: (row) =>
+      holdingDayChangeUnavailable(row) ? null : localDayChangeBaseForRow(row),
+    className: (row) =>
+      holdingDayChangeUnavailable(row)
+        ? ''
+        : signedValueClass(localDayChangeBaseForRow(row)),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedCurrency(
+            sumCompleteNumbers(rows, localDayChangeBaseForRow),
+            context.workspace.base_currency,
+          ),
+    totalClassName: (rows) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(sumCompleteNumbers(rows, localDayChangeBaseForRow)),
+  },
+  fx_day_change_value: {
+    key: 'fx_day_change_value',
+    label: 'FX P&L',
+    align: 'right',
+    render: (row, context) => {
+      if (holdingDayChangeUnavailable(row)) {
+        return 'N/A'
+      }
+      const value = signedCurrency(
+        fxDayChangeBaseForRow(row),
+        context.workspace.base_currency,
+      )
+      const title = fxRateDetailTitle(row, context.workspace)
+      return title ? <span title={title}>{value}</span> : value
+    },
+    sortValue: (row) =>
+      holdingDayChangeUnavailable(row) ? null : fxDayChangeBaseForRow(row),
+    className: (row) =>
+      holdingDayChangeUnavailable(row)
+        ? ''
+        : signedValueClass(fxDayChangeBaseForRow(row)),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedCurrency(
+            sumCompleteNumbers(rows, fxDayChangeBaseForRow),
+            context.workspace.base_currency,
+          ),
+    totalClassName: (rows) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(sumCompleteNumbers(rows, fxDayChangeBaseForRow)),
   },
   day_change_pct: {
     key: 'day_change_pct',

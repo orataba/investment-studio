@@ -25,7 +25,7 @@ NormalizeCurrency = Callable[[object], str]
 ParseIsoDate = Callable[[object], date | None]
 PositionMarketValue = Callable[..., float | None]
 ResolveFxRate = Callable[..., dict[str, object] | None]
-CashDayChange = Callable[..., tuple[float | None, float | None]]
+DayChangeMetrics = Callable[..., dict[str, object]]
 
 
 def _required_currency(
@@ -307,14 +307,13 @@ def cash_day_change_metrics(
     currency: str,
     base_currency: str,
     as_of_date: date,
+    previous_as_of_date: date | None,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: ResolveFxRate,
-    resolve_previous_fx_rate_before: ResolveFxRate,
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
     safe_float: SafeFloat = _safe_float,
-    parse_iso_date: ParseIsoDate = _parse_iso_date,
-) -> tuple[float | None, float | None]:
+) -> dict[str, object]:
     normalized_currency = _required_currency(
         currency,
         normalize_currency=normalize_currency,
@@ -325,44 +324,227 @@ def cash_day_change_metrics(
         normalize_currency=normalize_currency,
         field_name="portfolio base currency",
     )
-    if normalized_currency == normalized_base:
-        return 0.0, 0.0
-
-    current_fx = resolve_fx_rate_on(
+    return translated_day_change_metrics(
+        current_local_value=amount,
+        previous_local_value=amount,
+        local_day_change_pct=0.0,
+        local_day_change_value=0.0,
+        currency=normalized_currency,
+        base_currency=normalized_base,
         as_of_date=as_of_date,
-        base_currency=normalized_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_fx_instruments,
+        previous_as_of_date=previous_as_of_date,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
+        resolve_fx_rate_on=resolve_fx_rate_on,
+        normalize_currency=normalize_currency,
+        safe_float=safe_float,
     )
+
+
+def translated_day_change_metrics(
+    *,
+    current_local_value: float,
+    previous_local_value: float,
+    local_day_change_pct: float,
+    local_day_change_value: float,
+    currency: str,
+    base_currency: str,
+    as_of_date: date,
+    previous_as_of_date: date | None,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    resolve_fx_rate_on: ResolveFxRate,
+    normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
+    safe_float: SafeFloat = _safe_float,
+) -> dict[str, object]:
+    normalized_currency = _required_currency(
+        currency,
+        normalize_currency=normalize_currency,
+        field_name="holding currency",
+    )
+    normalized_base = _required_currency(
+        base_currency,
+        normalize_currency=normalize_currency,
+        field_name="portfolio base currency",
+    )
+
+    if normalized_currency == normalized_base:
+        current_fx: dict[str, object] | None = {
+            "rate": 1.0,
+            "as_of_date": as_of_date.isoformat(),
+            "source_instrument_ids": [],
+            "stale": False,
+        }
+        previous_fx: dict[str, object] | None = (
+            {
+                "rate": 1.0,
+                "as_of_date": previous_as_of_date.isoformat(),
+                "source_instrument_ids": [],
+                "stale": False,
+            }
+            if previous_as_of_date is not None
+            else None
+        )
+    else:
+        current_fx = resolve_fx_rate_on(
+            as_of_date=as_of_date,
+            base_currency=normalized_currency,
+            quote_currency=normalized_base,
+            direct_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        previous_fx = (
+            resolve_fx_rate_on(
+                as_of_date=previous_as_of_date,
+                base_currency=normalized_currency,
+                quote_currency=normalized_base,
+                direct_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if previous_as_of_date is not None
+            else None
+        )
+
     current_rate = safe_float((current_fx or {}).get("rate"))
-    current_rate_date = parse_iso_date((current_fx or {}).get("as_of_date"))
-    if current_rate is None or current_rate <= 0 or current_rate_date is None:
-        return None, None
-
-    previous_fx = resolve_previous_fx_rate_before(
-        before_date=current_rate_date,
-        base_currency=normalized_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
-    )
     previous_rate = safe_float((previous_fx or {}).get("rate"))
-    if previous_rate is None or previous_rate <= 0:
-        return None, None
+    current_rate_date = (current_fx or {}).get("as_of_date")
+    previous_rate_date = (previous_fx or {}).get("as_of_date")
+    source_instrument_ids = sorted(
+        {
+            str(instrument_id)
+            for resolved in (current_fx, previous_fx)
+            for instrument_id in list((resolved or {}).get("source_instrument_ids") or [])
+            if str(instrument_id or "")
+        }
+    )
+    rate_stale = bool((current_fx or {}).get("stale"))
+    metadata = {
+        "fx_rate_to_base": current_rate,
+        "fx_rate_as_of_date": str(current_rate_date) if current_rate_date else None,
+        "previous_fx_rate_to_base": previous_rate,
+        "previous_fx_rate_as_of_date": (
+            str(previous_rate_date) if previous_rate_date else None
+        ),
+        "fx_rate_source_instrument_ids": source_instrument_ids,
+        "fx_rate_stale": rate_stale,
+    }
+    if (
+        previous_as_of_date is None
+        or current_rate is None
+        or current_rate <= 0
+        or previous_rate is None
+        or previous_rate <= 0
+    ):
+        return {
+            **metadata,
+            "local_day_change_pct": local_day_change_pct,
+            "local_day_change_value_base": None,
+            "fx_day_change_value_base": None,
+            "day_change_value_base": None,
+            "day_change_pct": None,
+        }
 
-    day_change_pct = current_rate / previous_rate - 1.0
-    return day_change_pct, amount * (current_rate - previous_rate)
+    local_day_change_value_base = local_day_change_value * current_rate
+    fx_day_change_value_base = previous_local_value * (current_rate - previous_rate)
+    day_change_value_base = (
+        current_local_value * current_rate - previous_local_value * previous_rate
+    )
+    previous_value_base = previous_local_value * previous_rate
+    day_change_pct = (
+        day_change_value_base / previous_value_base
+        if abs(previous_value_base) > 1e-12
+        else None
+    )
+    return {
+        **metadata,
+        "local_day_change_pct": local_day_change_pct,
+        "local_day_change_value_base": local_day_change_value_base,
+        "fx_day_change_value_base": fx_day_change_value_base,
+        "day_change_value_base": day_change_value_base,
+        "day_change_pct": day_change_pct,
+    }
+
+
+def position_day_change_metrics_in_base(
+    *,
+    current_market_value: float | None,
+    local_day_change_pct: float | None,
+    local_day_change_value: float | None,
+    currency: str,
+    base_currency: str,
+    as_of_date: date,
+    previous_as_of_date: date | None,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    resolve_fx_rate_on: ResolveFxRate,
+    normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
+    safe_float: SafeFloat = _safe_float,
+) -> dict[str, object]:
+    if (
+        current_market_value is None
+        or local_day_change_pct is None
+        or local_day_change_value is None
+    ):
+        return {
+            "local_day_change_pct": local_day_change_pct,
+            "local_day_change_value_base": None,
+            "fx_day_change_value_base": None,
+            "day_change_value_base": None,
+            "day_change_pct": None,
+            "fx_rate_to_base": None,
+            "fx_rate_as_of_date": None,
+            "previous_fx_rate_to_base": None,
+            "previous_fx_rate_as_of_date": None,
+            "fx_rate_source_instrument_ids": [],
+            "fx_rate_stale": False,
+        }
+
+    previous_market_value = current_market_value - local_day_change_value
+    return translated_day_change_metrics(
+        current_local_value=current_market_value,
+        previous_local_value=previous_market_value,
+        local_day_change_pct=local_day_change_pct,
+        local_day_change_value=local_day_change_value,
+        currency=currency,
+        base_currency=base_currency,
+        as_of_date=as_of_date,
+        previous_as_of_date=previous_as_of_date,
+        direct_fx_instruments=direct_fx_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+        resolve_fx_rate_on=resolve_fx_rate_on,
+        normalize_currency=normalize_currency,
+        safe_float=safe_float,
+    )
+
+
+_TRANSLATED_DAY_CHANGE_FIELDS = (
+    "day_change_pct",
+    "local_day_change_pct",
+    "local_day_change_value_base",
+    "fx_day_change_value_base",
+    "day_change_value_base",
+    "fx_rate_to_base",
+    "fx_rate_as_of_date",
+    "previous_fx_rate_to_base",
+    "previous_fx_rate_as_of_date",
+    "fx_rate_source_instrument_ids",
+    "fx_rate_stale",
+)
+
+
+def _translated_day_change_fields(metrics: dict[str, object]) -> dict[str, object]:
+    return {field: metrics.get(field) for field in _TRANSLATED_DAY_CHANGE_FIELDS}
 
 
 def build_cash_holding_rows(
     *,
     cash_balances: list[dict[str, object]],
     as_of_date: date,
+    previous_as_of_date: date | None,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
-    cash_day_change: CashDayChange,
+    cash_day_change: DayChangeMetrics,
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
     safe_float: SafeFloat = _safe_float,
     cash_instrument_id: Callable[[str], str] = cash_holding_instrument_id,
@@ -380,11 +562,12 @@ def build_cash_holding_rows(
             continue
         amount_base = safe_float(balance.get("amount_base"))
         instrument_id = cash_instrument_id(currency)
-        day_change_pct, day_change_value_base = cash_day_change(
+        day_change = cash_day_change(
             amount=amount,
             currency=currency,
             base_currency=base_currency,
             as_of_date=as_of_date,
+            previous_as_of_date=previous_as_of_date,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
@@ -419,9 +602,8 @@ def build_cash_holding_rows(
                 "quote_status": "complete" if amount_base is not None else "unpriced",
                 "market_value": amount,
                 "market_value_base": amount_base,
-                "day_change_pct": day_change_pct,
+                **_translated_day_change_fields(day_change),
                 "day_change_value": 0.0 if is_base_cash else None,
-                "day_change_value_base": day_change_value_base,
                 "currency": currency,
                 "portfolio_weight": None,
                 "account_ids": account_ids,
@@ -461,10 +643,11 @@ def build_pending_monetary_holding_rows(
     *,
     pending_balances: list[dict[str, object]],
     as_of_date: date,
+    previous_as_of_date: date | None,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
-    cash_day_change: CashDayChange,
+    cash_day_change: DayChangeMetrics,
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
     safe_float: SafeFloat = _safe_float,
 ) -> list[dict[str, object]]:
@@ -508,11 +691,12 @@ def build_pending_monetary_holding_rows(
         )
         instrument_name = f"{label} · {economic_name}" if economic_name else label
         instrument_id = _pending_monetary_instrument_id(balance, currency)
-        day_change_pct, day_change_value_base = cash_day_change(
+        day_change = cash_day_change(
             amount=amount,
             currency=currency,
             base_currency=base_currency,
             as_of_date=as_of_date,
+            previous_as_of_date=previous_as_of_date,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
@@ -571,11 +755,10 @@ def build_pending_monetary_holding_rows(
                 ),
                 "market_value": amount,
                 "market_value_base": amount_base,
-                "day_change_pct": day_change_pct,
+                **_translated_day_change_fields(day_change),
                 "day_change_value": (
                     0.0 if currency == normalized_base_currency else None
                 ),
-                "day_change_value_base": day_change_value_base,
                 "currency": currency,
                 "portfolio_weight": None,
                 "account_ids": account_ids,
@@ -1231,6 +1414,7 @@ def build_materialized_holding_rows(
     cash_balances: list[dict[str, object]] | None = None,
     pending_balances: list[dict[str, object]] | None = None,
     as_of_date: date,
+    previous_as_of_date: date | None,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
@@ -1243,7 +1427,8 @@ def build_materialized_holding_rows(
     select_market_point_as_of: Callable[..., dict[str, object] | None],
     previous_market_point_for_selected_point: Callable[..., dict[str, object] | None],
     position_market_value: PositionMarketValue,
-    holding_day_change: CashDayChange,
+    holding_day_change: Callable[..., tuple[float | None, float | None]],
+    position_day_change: DayChangeMetrics,
     normalize_instrument: Callable[..., dict[str, object]],
     build_cash_rows: Callable[..., list[dict[str, object]]],
     build_pending_rows: Callable[..., list[dict[str, object]]],
@@ -1358,18 +1543,6 @@ def build_materialized_holding_rows(
                 ),
                 price_scale=safe_float((price_point or {}).get("price_scale")),
             )
-        converted_day_change_value, _ = (
-            convert_amount_on(
-                day_change_value,
-                as_of_date=as_of_date,
-                from_currency=currency,
-                to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-            )
-            if day_change_value is not None
-            else (None, False)
-        )
         converted_market_value, _ = convert_amount_on(
             market_value,
             as_of_date=as_of_date,
@@ -1377,6 +1550,33 @@ def build_materialized_holding_rows(
             to_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
+        )
+        day_change = (
+            position_day_change(
+                current_market_value=market_value,
+                local_day_change_pct=day_change_pct,
+                local_day_change_value=day_change_value,
+                currency=currency,
+                base_currency=base_currency,
+                as_of_date=as_of_date,
+                previous_as_of_date=previous_as_of_date,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if not event_valued
+            else {
+                "local_day_change_pct": None,
+                "local_day_change_value_base": None,
+                "fx_day_change_value_base": None,
+                "day_change_value_base": None,
+                "day_change_pct": None,
+                "fx_rate_to_base": None,
+                "fx_rate_as_of_date": None,
+                "previous_fx_rate_to_base": None,
+                "previous_fx_rate_as_of_date": None,
+                "fx_rate_source_instrument_ids": [],
+                "fx_rate_stale": False,
+            }
         )
         instrument_core = (
             normalize_instrument(instrument_id, instrument_ref)
@@ -1439,9 +1639,8 @@ def build_materialized_holding_rows(
                 "valuation_basis": "carried_cost" if event_valued else "market_quote",
                 "performance_eligible": not event_valued,
                 "risk_eligible": not event_valued,
-                "day_change_pct": day_change_pct,
+                **_translated_day_change_fields(day_change),
                 "day_change_value": day_change_value,
-                "day_change_value_base": converted_day_change_value,
                 "currency": currency,
                 "portfolio_weight": (
                     converted_market_value / nav
@@ -1488,6 +1687,7 @@ def build_materialized_holding_rows(
         build_cash_rows(
             cash_balances=list(cash_balances or []),
             as_of_date=as_of_date,
+            previous_as_of_date=previous_as_of_date,
             base_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
@@ -1497,6 +1697,7 @@ def build_materialized_holding_rows(
         build_pending_rows(
             pending_balances=list(pending_balances or []),
             as_of_date=as_of_date,
+            previous_as_of_date=previous_as_of_date,
             base_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,

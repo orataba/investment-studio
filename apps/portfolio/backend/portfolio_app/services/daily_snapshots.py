@@ -59,6 +59,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-option-cash-settlement-v1"
     "-market-risk-zero-return-cash-derivatives-v2"
     "-daily-mark-to-last-risk-observations-v1"
+    "-base-currency-fx-attribution-v1"
 )
 
 
@@ -1680,6 +1681,12 @@ def _aggregate_holding_rows(
         }
         market_value = _sum_complete([row.get("market_value") for row in instrument_rows])
         day_change_value = _sum_complete([row.get("day_change_value") for row in instrument_rows])
+        local_day_change_value_base = _sum_complete(
+            [row.get("local_day_change_value_base") for row in instrument_rows]
+        )
+        fx_day_change_value_base = _sum_complete(
+            [row.get("fx_day_change_value_base") for row in instrument_rows]
+        )
         day_change_value_base = _sum_complete([row.get("day_change_value_base") for row in instrument_rows])
         is_cash_row = _is_cash_holding_payload(first_row)
         is_pending_row = _is_pending_monetary_holding_payload(first_row)
@@ -1745,8 +1752,38 @@ def _aggregate_holding_rows(
                 "market_value": market_value,
                 "market_value_base": market_value_base,
                 "day_change_pct": _first_present(instrument_rows, "day_change_pct"),
+                "local_day_change_pct": _first_present(
+                    instrument_rows, "local_day_change_pct"
+                ),
                 "day_change_value": day_change_value,
+                "local_day_change_value_base": local_day_change_value_base,
+                "fx_day_change_value_base": fx_day_change_value_base,
                 "day_change_value_base": day_change_value_base,
+                "fx_rate_to_base": _first_present(
+                    instrument_rows, "fx_rate_to_base"
+                ),
+                "fx_rate_as_of_date": _first_present(
+                    instrument_rows, "fx_rate_as_of_date"
+                ),
+                "previous_fx_rate_to_base": _first_present(
+                    instrument_rows, "previous_fx_rate_to_base"
+                ),
+                "previous_fx_rate_as_of_date": _first_present(
+                    instrument_rows, "previous_fx_rate_as_of_date"
+                ),
+                "fx_rate_source_instrument_ids": sorted(
+                    {
+                        str(instrument_id)
+                        for row in instrument_rows
+                        for instrument_id in list(
+                            row.get("fx_rate_source_instrument_ids") or []
+                        )
+                        if str(instrument_id or "")
+                    }
+                ),
+                "fx_rate_stale": any(
+                    bool(row.get("fx_rate_stale")) for row in instrument_rows
+                ),
                 "cost_basis_method": (
                     None
                     if is_cash_row or is_pending_row
@@ -2003,8 +2040,17 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "market_value",
     "market_value_base",
     "day_change_pct",
+    "local_day_change_pct",
     "day_change_value",
+    "local_day_change_value_base",
+    "fx_day_change_value_base",
     "day_change_value_base",
+    "fx_rate_to_base",
+    "fx_rate_as_of_date",
+    "previous_fx_rate_to_base",
+    "previous_fx_rate_as_of_date",
+    "fx_rate_source_instrument_ids",
+    "fx_rate_stale",
     "cost_basis_method",
     "cost_basis",
     "cost_basis_base",

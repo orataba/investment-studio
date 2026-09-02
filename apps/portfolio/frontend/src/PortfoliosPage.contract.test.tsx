@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   deletePortfolio: vi.fn(),
   getPortfolios: vi.fn(),
   reorderPortfolios: vi.fn(),
+  updatePortfolioSettings: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
@@ -64,5 +65,55 @@ describe('Portfolios rendered page contract', () => {
       })
     })
     expect(await screen.findByText('Portfolio overview')).toBeInTheDocument()
+  })
+
+  it('changes base currency from portfolio settings and explains the full recalculation', async () => {
+    const portfolio = {
+      portfolio_id: 'portfolio-a',
+      portfolio_name: 'Portfolio A',
+      base_currency: 'USD',
+      inception_date: '2026-01-01',
+      as_of_date: '2026-09-01',
+      nav: 100,
+      day_change_value: 1,
+      day_change_pct: 0.01,
+      securities_count: 2,
+      sort_order: 0,
+    }
+    apiMocks.getPortfolios.mockResolvedValue([portfolio])
+    apiMocks.updatePortfolioSettings.mockResolvedValue({
+      ...portfolio,
+      base_currency: 'CNY',
+      nav: null,
+      day_change_value: null,
+      day_change_pct: null,
+    })
+
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/portfolios']}>
+        <Routes>
+          <Route path="/portfolios" element={<PortfoliosPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Portfolio A')
+    await user.click(screen.getByRole('button', { name: 'Portfolio A actions' }))
+    await user.click(screen.getByRole('button', { name: 'Portfolio Settings' }))
+
+    expect(screen.getByRole('dialog', { name: 'Portfolio Settings' })).toHaveTextContent(
+      'Transactions keep their original currencies.',
+    )
+    await user.selectOptions(screen.getByLabelText('Base Currency'), 'CNY')
+    await user.click(screen.getByRole('button', { name: 'Save Settings' }))
+
+    await waitFor(() => {
+      expect(apiMocks.updatePortfolioSettings).toHaveBeenCalledWith('portfolio-a', {
+        base_currency: 'CNY',
+      })
+    })
+    expect(await screen.findByText(/historical values are recalculating/i)).toBeInTheDocument()
+    expect(screen.getByText('Recalculating')).toBeInTheDocument()
   })
 })

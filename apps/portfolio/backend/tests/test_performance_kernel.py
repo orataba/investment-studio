@@ -10260,6 +10260,14 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(hkd_cash_row["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
     assert hkd_cash_row["day_change_value"] is None
     assert isclose(hkd_cash_row["day_change_value_base"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["local_day_change_value_base"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["fx_day_change_value_base"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["fx_rate_to_base"], 1.0 / 7.5, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["previous_fx_rate_to_base"], 1.0 / 7.8, rel_tol=0.0, abs_tol=1e-12)
+    assert hkd_cash_row["fx_rate_as_of_date"] == "2026-01-02"
+    assert hkd_cash_row["previous_fx_rate_as_of_date"] == "2026-01-01"
+    assert hkd_cash_row["fx_rate_source_instrument_ids"] == ["fx-usd-hkd"]
+    assert hkd_cash_row["fx_rate_stale"] is False
     assert isclose(hkd_cash_row["allocation"], 1.0, rel_tol=0.0, abs_tol=1e-12)
     assert hkd_cash_row["price_chart_1m"] == []
     assert "instrument_return_series_all" not in hkd_cash_row
@@ -10308,6 +10316,128 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_child["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_stale_fx_cannot_qualify_as_a_fresh_portfolio_valuation(monkeypatch):
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": "2026-01-01",
+                "value": "7.80",
+                "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
+                "status": "complete",
+            },
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": "2026-01-05",
+                "value": "7.50",
+                "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
+                "status": "complete",
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD", "HKD"],
+            "maintained_pairs": ["USD/HKD"],
+            "rates": [
+                {
+                    "base_currency": "USD",
+                    "quote_currency": "HKD",
+                    "rate": 7.50,
+                    "as_of_date": "2026-01-05",
+                    "source_kind": "direct",
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
+                    "status": "complete",
+                }
+            ],
+        },
+    )
+
+    portfolio_id = "stale-fx-valuation-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-hkd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 780.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "HKD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening HKD cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            }
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-05"
+    store["portfolios"][0]["securities_count"] = 0
+    store["accounts"][0].update(
+        {
+            "account_id": "cash-hkd-main",
+            "account_name": "Main HKD Cash",
+            "currency": "HKD",
+        }
+    )
+    store["accounts"] = [store["accounts"][0]]
+    store["transactions"][0]["transaction_sequence"] = 1
+
+    snapshots = performance.build_daily_portfolio_snapshots(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+    )
+    by_date = {str(item["as_of_date"]): item for item in snapshots}
+
+    assert by_date["2026-01-01"]["valuation_coverage_state"] == "complete"
+    assert by_date["2026-01-01"]["stale_fx_flag"] is False
+    assert by_date["2026-01-02"]["valuation_coverage_state"] == "complete"
+    assert by_date["2026-01-02"]["book_pnl_coverage_state"] == "partial"
+    assert by_date["2026-01-02"]["stale_fx_flag"] is True
+    assert by_date["2026-01-02"]["nav"] == pytest.approx(100.0)
+    assert by_date["2026-01-02"]["daily_twr"] == pytest.approx(0.0)
+    assert by_date["2026-01-05"]["valuation_coverage_state"] == "complete"
+    assert by_date["2026-01-05"]["book_pnl_coverage_state"] == "complete"
+    assert by_date["2026-01-05"]["stale_fx_flag"] is False
+    assert by_date["2026-01-05"]["nav"] == pytest.approx(104.0)
+    assert by_date["2026-01-05"]["daily_twr"] == pytest.approx(0.04)
+    assert by_date["2026-01-05"]["cash_currency_gains"] == pytest.approx(4.0)
 
 
 def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
@@ -10497,6 +10627,19 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
+            {
+                "account_id": "broker-hk-second",
+                "portfolio_id": "instrument-fx-test",
+                "account_name": "Second HK Brokerage",
+                "account_type": "securities_account",
+                "currency": "HKD",
+                "institution": "Second Test Broker",
+                "default_settlement_cash_account_id": "cash-hkd-main",
+                "cost_basis_method": "fifo",
+                "account_category": "security",
+                "opened_at": "2026-01-01",
+                "status": "active",
+            },
         ],
         "transactions": [
             {
@@ -10527,7 +10670,36 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
                 "counterparty_account_id": None,
                 "note": "Opening HK fund position.",
                 "created_at": "2026-01-01T09:00:00Z",
-            }
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "instrument-fx-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-hk-second",
+                "settlement_cash_account_id": None,
+                "instrument_id": "fund-hk-test",
+                "instrument_ref": {
+                    "instrument_id": "fund-hk-test",
+                    "instrument_name": "HK Fund",
+                    "instrument_type": "public_fund",
+                    "currency": "HKD",
+                    "identifiers": [],
+                },
+                "quantity": 10.0,
+                "price": 78.0,
+                "gross_amount": 780.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "HKD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening the same HK fund in a second account.",
+                "created_at": "2026-01-01T09:05:00Z",
+            },
         ],
     }
     _write_store(store)
@@ -10536,24 +10708,74 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
     assert performance_response.status_code == 200
     performance_payload = performance_response.json()
     performance_summary = performance_payload["summary"]
-    assert isclose(performance_summary["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["instrument_currency_gains"], 8.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["unrealized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["total_pnl"], 8.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+
+    holdings_response = client.get(
+        "/api/workspace/holdings", params={"portfolio_id": "instrument-fx-test"}
+    )
+    assert holdings_response.status_code == 200
+    holding = next(
+        row
+        for row in holdings_response.json()["rows"]
+        if row["instrument_core"]["instrument_id"] == "fund-hk-test"
+    )
+    assert holding["account_count"] == 2
+    assert isclose(holding["quantity"], 20.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holding["market_value_base"], 208.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holding["local_day_change_value_base"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holding["fx_day_change_value_base"], 8.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holding["day_change_value_base"], 8.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holding["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert holding["fx_rate_source_instrument_ids"] == ["fx-usd-hkd"]
+    assert holding["fx_rate_stale"] is False
+
+    dynamic_holdings = performance.build_holdings_report(
+        portfolio_store.list_portfolios()[0],
+        portfolio_store.list_accounts("instrument-fx-test"),
+        portfolio_store.list_transactions("instrument-fx-test"),
+        as_of_date=date(2026, 1, 2),
+        include_cash_rows=True,
+    )
+    dynamic_holding = next(
+        row
+        for row in dynamic_holdings["positions"]
+        if row["instrument_ref"]["instrument_id"] == "fund-hk-test"
+    )
+    assert isclose(
+        dynamic_holding["local_day_change_value_base"],
+        holding["local_day_change_value_base"],
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        dynamic_holding["fx_day_change_value_base"],
+        holding["fx_day_change_value_base"],
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        dynamic_holding["day_change_value_base"],
+        holding["day_change_value_base"],
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
     calculation_response = client.get("/api/portfolios/instrument-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
     calculation_payload = calculation_response.json()
     calculation_summary = calculation_payload["summary"]
-    assert isclose(calculation_summary["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["delta"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["initial_value"], 200.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["final_value"], 208.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["delta"], 8.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(calculation_summary["capital_gains"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["instrument_currency_gains"], 8.0, rel_tol=0.0, abs_tol=1e-12)
     assert "residual_gains" not in calculation_summary
 
     line_by_key = {item["key"]: item for item in calculation_payload["lines"]}
-    assert isclose(line_by_key["instrument_currency_gains"]["amount"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line_by_key["instrument_currency_gains"]["amount"], 8.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_multiday_foreign_price_and_fx_moves_do_not_create_phantom_realized_gain(

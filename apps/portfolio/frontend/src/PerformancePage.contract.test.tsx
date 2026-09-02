@@ -159,6 +159,16 @@ describe('Performance rendered page contract', () => {
   // Characterization gap: the restored PerformancePage currently has no chart DOM.
   // Keep the shared-window assertion on summary and Calculation until that surface exists.
   it('uses one selected date window for summary and Calculation and keeps ordinary returns at two decimals', async () => {
+    const fixture = performanceFixture()
+    apiMocks.getPortfolioPerformance.mockResolvedValue({
+      ...fixture,
+      summary: {
+        ...fixture.summary,
+        cash_currency_gains: 2,
+        instrument_currency_gains: 3,
+        pending_settlement_currency_gains: -1,
+      },
+    })
     renderPortfolioPage(
       <PerformancePage />,
       '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
@@ -167,6 +177,8 @@ describe('Performance rendered page contract', () => {
 
     const periodReturnRow = await screen.findByRole('row', { name: /Total Portfolio Return/ })
     expect(within(periodReturnRow).getByText('+3.02%')).toBeInTheDocument()
+    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX P&L/ })
+    expect(within(totalFxPnlRow).getByText('+$4.00')).toBeInTheDocument()
     expect(screen.getByText('Calculation')).toBeInTheDocument()
     const performanceDetails = screen.getByRole('note', { name: /Performance details:/ })
     const calculationDetails = screen.getByRole('note', { name: /Calculation details:/ })
@@ -563,6 +575,7 @@ describe('Performance rendered page contract', () => {
         annualized_downside_volatility: null,
         sharpe_ratio: null,
         sortino_ratio: null,
+        pending_settlement_currency_gains: null,
       },
     })
 
@@ -574,6 +587,8 @@ describe('Performance rendered page contract', () => {
 
     const irrRow = await screen.findByRole('row', { name: /IRR \/ MWRR/ })
     expect(within(irrRow).getByText('N/A')).toBeInTheDocument()
+    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX P&L/ })
+    expect(within(totalFxPnlRow).getByText('—')).toBeInTheDocument()
     expect(
       within(irrRow).getByRole('note', {
         name: 'IRR / MWRR availability: Multiple or non-unique XIRR roots',

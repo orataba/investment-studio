@@ -453,6 +453,9 @@ describe('Holdings rendered page contract', () => {
       '3M Return',
       'MTD',
       'YTD',
+      'Day P&L',
+      'Local P&L',
+      'FX P&L',
       'Forward RC',
       'Unrealized Return',
     ]) {
@@ -744,6 +747,16 @@ describe('Holdings rendered page contract', () => {
       cost_basis: 7800,
       cost_basis_base: 1000,
       allocation: 1,
+      day_change_pct: 0.05,
+      day_change_value_base: 50,
+      local_day_change_value_base: 30,
+      fx_day_change_value_base: 20,
+      fx_rate_to_base: 1 / 7.5,
+      fx_rate_as_of_date: '2026-07-15',
+      previous_fx_rate_to_base: 1 / 7.8,
+      previous_fx_rate_as_of_date: '2026-07-14',
+      fx_rate_source_instrument_ids: ['fx-usd-hkd'],
+      fx_rate_stale: false,
       instrument_return_1m: 0.1,
     })
     renderHoldings(
@@ -752,8 +765,8 @@ describe('Holdings rendered page contract', () => {
         totals: {
           nav: 1000,
           market_value: 1000,
-          day_change_pct: 0,
-          day_change_value: 0,
+          day_change_pct: 0.05,
+          day_change_value: 50,
           cost_basis: 1000,
           allocation: 1,
         },
@@ -767,6 +780,10 @@ describe('Holdings rendered page contract', () => {
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     const securityRow = within(screen.getByRole('table', { name: 'Security holdings' })).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
     expect(securityRow).toHaveTextContent('+10.00%')
+    expect(securityRow.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('+$50.00')
+    expect(securityRow.querySelector('[data-column-key="local_day_change_value"]')).toHaveTextContent('+$30.00')
+    expect(securityRow.querySelector('[data-column-key="fx_day_change_value"]')).toHaveTextContent('+$20.00')
+    expect(within(securityRow).getByTitle(/1 HKD = .* USD.*Rate series: USD\/HKD/)).toBeInTheDocument()
     const subtotalRow = screen.getByText('Securities Subtotal (USD)').closest('tr')!
     expect(subtotalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })

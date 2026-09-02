@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import json
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
 import pytest
+import sqlalchemy as sa
 
 from platform_app.services.fmp.fx import refresh_fmp_fx_eod
 from platform_app.services.instrument_store import get_instrument
@@ -63,10 +65,97 @@ class FakeFmpClient:
         return [{"date": "2026-08-21", "close": "1.2345"}]
 
 
-def test_european_fx_masters_refresh_from_fmp(isolated_fx_store: None) -> None:
+def test_fmp_fx_cutover_replaces_legacy_series_without_mixing_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'fx-cutover.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    monkeypatch.setenv(
+        "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL",
+        database_url,
+    )
+    config = Config(str(REGISTRY_MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option(
+        "script_location",
+        str(REGISTRY_MIGRATIONS_ROOT / "alembic"),
+    )
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260823_0028")
+
+    engine = sa.create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    exchange_code, quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json, market_data_updated_at,
+                    calculation_inputs_updated_at
+                ) VALUES
+                    ('fx-usd-hkd', 'USD/HKD Spot', 'fx', 'HKD', NULL,
+                     '{"valuation":["spot"]}',
+                     '{"source_mode":"manual","source_location":"Legacy"}',
+                     '{}', '{}', '2026-08-20T00:00:00Z', '2026-08-20T00:00:00Z'),
+                    ('fx-usd-cny', 'USD/CNY Spot', 'fx', 'CNY', NULL,
+                     '{"valuation":["spot"]}',
+                     '{"source_mode":"api","source_api_profile":"cfets"}',
+                     '{}', '{}', '2026-08-20T00:00:00Z', '2026-08-20T00:00:00Z')
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO instrument_market_data (
+                    instrument_id, metric_family, quote_basis, as_of_date,
+                    value, currency, price_unit, price_scale, provider, status
+                ) VALUES
+                    ('fx-usd-hkd', 'fx', 'spot', '2026-08-20',
+                     '7.8', 'HKD', 'rate', 1, 'legacy:manual', 'complete'),
+                    ('fx-usd-cny', 'fx', 'spot', '2026-08-20',
+                     '7.2', 'CNY', 'rate', 1, 'cfets:reference', 'complete'),
+                    ('fx-usd-eur', 'fx', 'spot', '2026-08-20',
+                     '0.86', 'EUR', 'rate', 1, 'fmp:historical-price-eod:full', 'complete')
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        source_rows = connection.execute(
+            sa.text(
+                "SELECT instrument_id, source_settings_json "
+                "FROM instrument WHERE instrument_type = 'fx' ORDER BY instrument_id"
+            )
+        ).mappings().all()
+        point_rows = connection.execute(
+            sa.text(
+                "SELECT instrument_id, provider FROM instrument_market_data "
+                "ORDER BY instrument_id"
+            )
+        ).all()
+
+    assert len(source_rows) == 5
+    for row in source_rows:
+        settings = row["source_settings_json"]
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+        assert settings["source_mode"] == "api"
+        assert settings["source_api_profile"] == "fmp"
+        assert settings["source_location"] == "FMP API"
+        assert settings["expected_frequency"] == "daily"
+    assert point_rows == [("fx-usd-eur", "fmp:historical-price-eod:full")]
+
+
+def test_all_maintained_fx_masters_refresh_from_fmp(isolated_fx_store: None) -> None:
     client = FakeFmpClient()
 
     for instrument_id, symbol, quote_currency in (
+        ("fx-usd-hkd", "USDHKD", "HKD"),
+        ("fx-usd-cny", "USDCNY", "CNY"),
         ("fx-usd-eur", "USDEUR", "EUR"),
         ("fx-usd-gbp", "USDGBP", "GBP"),
         ("fx-usd-chf", "USDCHF", "CHF"),
@@ -84,4 +173,4 @@ def test_european_fx_masters_refresh_from_fmp(isolated_fx_store: None) -> None:
         assert point["value"] == "1.2345"
         assert instrument["source_settings"]["source_api_profile"] == "fmp"
 
-    assert client.calls == ["USDEUR", "USDGBP", "USDCHF"]
+    assert client.calls == ["USDHKD", "USDCNY", "USDEUR", "USDGBP", "USDCHF"]

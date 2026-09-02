@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Integer, and_, cast, delete, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from portfolio_ops_instrument_core import SUPPORTED_FX_CURRENCIES
 from portfolio_ops_instrument_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
@@ -3911,6 +3912,58 @@ def create_portfolio(
             risk_policy_json=None,
         )
         session.add(record)
+        session.commit()
+        return _serialize_portfolio_row(record)
+
+
+def update_portfolio_base_currency(
+    portfolio_id: str,
+    *,
+    base_currency: str,
+) -> dict[str, object] | None:
+    normalized_currency = str(base_currency or "").strip().upper()
+    if normalized_currency not in SUPPORTED_FX_CURRENCIES:
+        raise ValueError("Unsupported portfolio base currency.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        record = session.scalar(
+            select(PortfolioRecordModel)
+            .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+            .with_for_update()
+        )
+        if record is None:
+            return None
+        if record.base_currency == normalized_currency:
+            return _serialize_portfolio_row_with_materialized_summary(
+                session,
+                record,
+            )
+
+        record.base_currency = normalized_currency
+        record.nav = None
+        record.day_change_value = None
+        record.day_change_pct = None
+        session.execute(
+            delete(PortfolioDailyContributionSliceModel).where(
+                PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id
+            )
+        )
+        session.execute(
+            delete(PortfolioDailyHoldingSnapshotModel).where(
+                PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id
+            )
+        )
+        session.execute(
+            delete(PortfolioDailySnapshotModel).where(
+                PortfolioDailySnapshotModel.portfolio_id == portfolio_id
+            )
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=None,
+            session=session,
+        )
         session.commit()
         return _serialize_portfolio_row(record)
 

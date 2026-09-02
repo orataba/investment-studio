@@ -126,7 +126,7 @@
 - 行情源必须携带可审计的 daily/event-driven 更新口径、market calendar / schedule 与 `release_lag`；缺点判断以该 source schedule 为准，不能把尚未到发布时间的数据误报为缺失，也不能把超过 release lag 的缺口当成正常休市；
 - 组合绝对口径快照只有在该 `as_of_date` 所需市场和 FX 数据满足覆盖率阈值后，才能标记为 `complete`；
 - benchmark 相关区块的 `complete / partial / unavailable` 由 benchmark coverage 单独决定，不反向阻塞绝对口径 snapshot；
-- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `valuation_coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
+- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `valuation_coverage_state = complete`、`nav` 存在，且 `stale_price_flag = false`、`stale_fx_flag = false`。为保持日度 NAV 链连续，休市日可以保存沿用上一有效点计算的 tagged snapshot，但它不能成为默认展示或正式区间终点；book P&L / attribution 的 coverage 也不能把当前边界的 stale FX 当成 fresh observation。
 
 示例：
 
@@ -180,6 +180,8 @@
 ### 2.2 组合基准货币
 
 每个 `Portfolio` 必须有 `base_currency`。
+
+`base_currency` 是组合报告币种，不会改写账户、交易、lot、现金余额或行情的原始币种事实。用户可以在 Portfolio Settings 中选择系统支持的报告币种；变更后必须清除该组合已有派生快照并从 inception 全量重算，不能只换 UI 符号或对旧 base-currency 结果二次换算。
 
 所有组合级指标默认以 `base_currency` 表达，包括：
 
@@ -512,14 +514,15 @@ Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。�
 
 Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written liability 使用负权重。在估值与 FX 完整时，正式资产、event-valued assets、written liabilities、settled cash 与 pending monetary rows 的 signed weights 合计必须为 100%。pending monetary balance、event-valued asset 和 option obligation 都没有可用 instrument return series：Return、Chart、Unrealized P&L 和 Drawdown 必须为 `N/A`。衍生品的 Vol 与 Forward RC 也必须为 `N/A` 并标记为 excluded；base-currency cash / pending monetary row 才可以按明确 monetary 口径显示风险 0。
 
-`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
+`Day P&L` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
 
 - 非现金资产优先使用 `quote_selection_policy.total_return` 选出的当前点与上一可用同 basis 点；只有 total-return basis 不可用时才回退到 selected valuation basis。这样已确认的拆分、分配或分红不会被误判为单日价格暴跌；
-- `day_return = current_return_point / previous_return_point - 1`；`day_change_value` 把该收益应用到 as-of date 当前 market value，等价于 `current_market_value - current_market_value / (1 + day_return)`，再按 as-of date FX 转为 `day_change_value_base`；
+- `local_day_return = current_return_point / previous_return_point - 1`；本币市场价值变化先形成 `local_day_change_value`。组合币种总变动必须使用当前与上一估值日各自的 FX：`day_change_value_base = current_local_value × current_fx - previous_local_value × previous_fx`，不能把两端都按当前汇率换算；
+- Holdings 同时输出 `local_day_change_value_base = (current_local_value - previous_local_value) × current_fx` 与 `fx_day_change_value_base = previous_local_value × (current_fx - previous_fx)`，两者必须精确加总为 `day_change_value_base`。当前/上一 FX rate、rate date 与 source instrument ids 随行保留，UI 中 `Day P&L`、`Local P&L`、`FX P&L` 均以组合报告币种展示；
 - total-return basis 中包含的分配只用于描述当前持仓篮子的单日经济市场收益，不改变 dividend 的已实现 `Income` 分类，也不进入 book `Unrealized P&L`；
 - `carried_cost` 和 `premium_liability` 行的 day change / day return 必须为 `null`，即使旧 payload 或下游聚合传入数值零，UI 与 export 也必须显示 `N/A`；
 - base-currency cash 的 day change 为 `0`；
-- non-base cash 的 day return 使用当前 FX 与上一可用 FX，`day_change_value_base = cash_amount * (current_fx - previous_fx)`；
+- non-base cash 的 day return 使用当前 FX 与上一估值日 FX，local P&L 为 0，`fx_day_change_value_base = day_change_value_base = cash_amount × (current_fx - previous_fx)`；
 - 若缺少当前 valuation point、可比 return point、上一点或 FX，相关字段必须为空，不得用 0 或 chart sample 补齐。可见 `Quote` / `Quote Date` 仍只描述 valuation point，不能拿 chart 日期补成 quote 日期。
 
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
@@ -553,7 +556,7 @@ Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
 - 无非零 event exposure 时，unrealized P&L 按组内 market-valued positions 加总。Securities group/subtotal 的 unrealized return 使用组内 `unrealized P&L / remaining open-position cost`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不是 Cost Basis；
-- Securities group 只要包含非零 event-valued asset，Day Change、Day Return、Unrealized P&L、Unrealized Return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
+- Securities group 只要包含非零 event-valued asset，Day P&L、Day Return、Unrealized P&L、Unrealized Return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
 - `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date signed base value 权重合成，Securities group/subtotal 使用该组当前 base value 作分母。普通证券必须有 base-currency total-return overlay；只有本币 return 时跨币种聚合不可用。覆盖不足时为空。它们是 theoretical current-basket diagnostics，不是历史实际组合 TWR，后者只属于 Overview / Performance；
 - group/subtotal volatility / risk drawdown 用普通证券共同 period return series 与该组当前 base value 权重计算，不等于成员风险数值的简单加权平均；
 - `Held Max DD` 不计算 group 或 subtotal：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
@@ -564,8 +567,8 @@ Holdings group rows 不是后端 period-performance group：
 
 | 类别 | 字段 | 分组规则 |
 | --- | --- | --- |
-| 点位绝对量 | `Position Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day Change`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day Change 与 Unrealized P&L 为 N/A |
-| 重新计算的比例 | `Day Return`、`Unrealized Return` | Day Return 用组级 `Day Change / prior market value`；Securities unrealized 用 `Unrealized P&L / open cost`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
+| 点位绝对量 | `Position Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day P&L`、`Local P&L`、`FX P&L`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day P&L 与 Unrealized P&L 为 N/A |
+| 重新计算的比例 | `Day Return`、`Unrealized Return` | Day Return 用组级 `Day P&L / prior market value`；Securities unrealized 用 `Unrealized P&L / open cost`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
 | 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of signed base value 权重合成；普通证券必须有 base-currency return，覆盖不完整时为空 |
 | 当前篮子路径风险 | `1M / 3M / 6M / 1Y Vol`、`Current DD`、`Max DD` | 用共同 period 的成员 total-return series 与当前权重先生成组 return path，再计算风险；return currency 不一致时为空 |
 | 组合风险贡献 | `Forward RC` | workspace forward-risk status 完整时，对 eligible 成员相对于同一全组合 variance 的 risk share 加总；衍生品排除且为 N/A，modeled-zero monetary rows 贡献 0，纯 modeled-zero monetary group 为 0；其他成员缺失则为空 |
@@ -652,7 +655,7 @@ $$
 - 拆分不改变账户总成本基础；旧 lot 关闭并以 lineage 连接到 carry-cost successor lot，单位成本按 ratio 反向变化。
 - provider factor/价格连续性只能生成 `detected` 候选，不能入账；只有 issuer / exchange / CSD 确认事件才可形成数量 posting。
 - 若登记日与生效日之间存在交易而系统没有 due-bill 事实，计算必须 fail closed；`cash_in_lieu` 没有金额/应收事实时也必须 fail closed。
-- 原始 `close / official_nav` 用于交易校验与市值；`adjusted_close / total_return_nav` 用于 confirmed total-return Return / Risk。Chart 可以展示策略允许的 valuation、price-return 或 total-return path，但必须标明真实 semantics；Holdings Day Change 优先使用完整 total-return pair，仅在其不可用时才使用完整 valuation pair，不能把两个 basis 混配。
+- 原始 `close / official_nav` 用于交易校验与市值；`adjusted_close / total_return_nav` 用于 confirmed total-return Return / Risk。Chart 可以展示策略允许的 valuation、price-return 或 total-return path，但必须标明真实 semantics；Holdings Day P&L 优先使用完整 total-return pair，仅在其不可用时才使用完整 valuation pair，不能把两个 basis 混配。
 - `dividend / coupon` 进入 `Events` 时，若已经入账，则必须引用对应 `Transaction`；不得在事件层再次形成独立 ledger posting。
 
 ## 4. FX 口径
@@ -662,6 +665,8 @@ $$
 所有组合级价值对象先换算到 `base_currency` 再聚合。
 
 Portfolio、account、transaction、ledger posting、position lot 与 market-data point 的币种都是必填事实。缺失或空币种必须使对应估值/计算失败关闭；不得默认成 `USD`、组合基准币或交易另一侧币种。
+
+Portfolio 只消费 Registry 维护的 canonical daily FX time series。当前维护的 `USD/HKD`、`USD/CNY`、`USD/EUR`、`USD/GBP`、`USD/CHF` 均使用 FMP 历史日线源；不保留手工 `legacy`、CFETS 特例或静默 provider fallback。直接币对不存在时只允许通过已维护的 USD legs 形成可追溯 cross rate，结果必须携带全部 source instrument ids。
 
 ### 4.2 基准货币收益
 
@@ -686,7 +691,10 @@ $$
 规则：
 
 - 正式结果以 `base` 结果为准；
-- 本地收益与 FX 收益分解仅作为解释层附加输出。
+- 本地收益与 FX 收益分解是解释层附加输出，但必须与 base-currency 总 P&L 精确对平；
+- `cash_currency_gains`、`instrument_currency_gains` 与 `pending_settlement_currency_gains` 分别解释现金、非现金资产与负债净敞口（含期权负债）和未结算货币余额的汇兑损益；Performance 的 `Total FX P&L` 是三者之和；
+- 同一币种、同一 instrument 分散在多个账户时，必须先按币种聚合全部 local exposure 再计算汇兑损益，不能用 instrument-keyed map 覆盖其中一个账户；
+- 当前边界缺少 fresh FX 时，该 snapshot 必须标记 `stale_fx_flag` 并排除出 fresh-complete 选择，book P&L / FX attribution 对应 coverage 为 partial/unavailable；上一边界可以使用当时实际采用且保留 source date 的有效 FX 点，休市日 carry-forward 不得让下一个已有 fresh FX 的市场日永久失去完整性。
 
 ## 5. 绩效口径
 

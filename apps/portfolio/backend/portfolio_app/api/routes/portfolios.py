@@ -16,6 +16,7 @@ from portfolio_app.services.portfolio_store import (
     delete_portfolio,
     list_portfolios,
     reorder_portfolios,
+    update_portfolio_base_currency,
 )
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, update_portfolio_risk_policy
 
@@ -38,6 +39,10 @@ class PortfolioCreateRequest(BaseModel):
 
 class PortfolioReorderRequest(BaseModel):
     portfolio_ids: list[str] = Field(default_factory=list)
+
+
+class PortfolioSettingsUpdateRequest(BaseModel):
+    base_currency: SupportedCurrency
 
 
 @router.get("")
@@ -65,6 +70,23 @@ def copy_portfolio_record(portfolio_id: str) -> dict[str, object]:
         record = copy_portfolio(portfolio_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return record
+
+
+@router.patch("/{portfolio_id}")
+def update_portfolio_settings(
+    portfolio_id: str,
+    payload: PortfolioSettingsUpdateRequest,
+) -> dict[str, object]:
+    try:
+        record = update_portfolio_base_currency(
+            portfolio_id,
+            base_currency=payload.base_currency,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return record

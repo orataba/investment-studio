@@ -100,7 +100,7 @@ export type PortfolioEntryRecord = {
   base_currency: string
   inception_date: string
   as_of_date: string
-  nav: number
+  nav: number | null
   day_change_value: number | null
   day_change_pct: number | null
   securities_count: number
@@ -112,6 +112,10 @@ export type PortfolioCreatePayload = {
   name?: string | null
   base_currency: SupportedPortfolioCurrency
   inception_date: string
+}
+
+export type PortfolioSettingsUpdatePayload = {
+  base_currency: SupportedPortfolioCurrency
 }
 
 export type HoldingsSummaryCard = {
@@ -759,8 +763,17 @@ export type PortfolioHoldingRow = {
   market_value: number | null
   market_value_base?: number | null
   day_change_pct: number | null
+  local_day_change_pct?: number | null
   day_change_value: number | null
+  local_day_change_value_base?: number | null
+  fx_day_change_value_base?: number | null
   day_change_value_base?: number | null
+  fx_rate_to_base?: number | null
+  fx_rate_as_of_date?: string | null
+  previous_fx_rate_to_base?: number | null
+  previous_fx_rate_as_of_date?: string | null
+  fx_rate_source_instrument_ids?: string[]
+  fx_rate_stale?: boolean
   cost_basis_method?: 'fifo' | 'moving_average' | 'mixed' | string | null
   cost_basis: number | null
   cost_basis_base?: number | null
@@ -2940,6 +2953,16 @@ export function createPortfolio(payload: PortfolioCreatePayload) {
 export function copyPortfolio(portfolioId: string) {
   return fetchJson<PortfolioEntryRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/copy`, {
     method: 'POST',
+  })
+}
+
+export function updatePortfolioSettings(
+  portfolioId: string,
+  payload: PortfolioSettingsUpdatePayload,
+) {
+  return fetchJson<PortfolioEntryRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   })
 }
 

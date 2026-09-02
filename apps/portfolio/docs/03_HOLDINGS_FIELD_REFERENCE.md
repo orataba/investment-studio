@@ -22,10 +22,10 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 ### 2.1 日期、行情与币种
 
 - 未显式指定日期时，Holdings 使用 latest fresh complete snapshot；不能把部分资产已经更新的更晚日期当作组合 `as_of_date`。
-- 行级 `Position Value`、`Cost Basis`、`Day Change` 和 `Unrealized P&L` 使用标的本币展示；对应 `* Base` 字段及所有 group / subtotal 金额使用组合 base currency。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
+- 行级 `Position Value`、`Cost Basis` 和 `Unrealized P&L` 使用标的本币展示；对应 `* Base` 字段及所有 group / subtotal 金额使用组合 base currency。`Day P&L`、`Local P&L` 和 `FX P&L` 为了能够直接加总与对账，统一使用组合 base currency。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
 - 普通非现金市值为 `quantity × selected valuation quote × price_scale`；再用 `as_of_date` FX 转为 base currency。FCN/长期权在没有可靠 fair value 时使用 `valuation_basis=carried_cost`，written option 使用 `valuation_basis=premium_liability` 和负的 NAV amount；两者的 `fair_value` 及 quote identity 均为空。现金市值为 settled cash amount。
 - 行级 `Weight = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
-- 缺少唯一且合法的 valuation quote、价格单位/scale 或 FX 时，依赖它的字段为不可用，不用旧价格、图表点或 0 补齐。
+- 缺少唯一且合法的 valuation quote、价格单位/scale 或 FX 时，依赖它的字段为不可用，不用图表点或 0 补齐。状态型快照可以携带最近有效行情或 FX 维持 NAV 连续性，但必须标记 stale，且不能进入 latest fresh complete 选择或伪装成当日市场观察。
 
 ### 2.2 成本、盈亏与收益分类
 
@@ -127,8 +127,10 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 | `weight` | Weight | `market_value_base / portfolio NAV`；written liability 为负权重 | 加总当前 row 权重 | `sum` |
 | `accounts` | Accounts | 当前持有该 instrument 的 distinct account 数 | 留空，账户集合可能重叠 | `none` |
 | `open_lots` | Open Lots | 当前开放 lot 数；moving average synthetic lot 按一个开放 lot 展示 | 加总开放 lot 数 | `sum` |
-| `day_change_value` | Day Change | market-valued position 使用完整 return/valuation pair；non-base cash 使用 FX；`carried_cost` / `premium_liability` 为 N/A | 完整覆盖时加总 base-currency day change；含 event row 时 N/A | `sum` |
-| `day_change_pct` | Day Return | 与 Day Change 使用同一完整点对；base cash 为 0，non-base cash 为 FX return，event row 为 N/A | `sum(day change base) / sum(prior market value base)` 重算；含 event row 时 N/A | `recomputed_ratio` |
+| `day_change_value` | Day P&L | `current local value × current FX - prior local value × prior FX`；market-valued position 使用完整 return/valuation pair，base cash 为 0，event row 为 N/A | 完整覆盖时加总 base-currency Day P&L；含 event row 时 N/A | `sum` |
+| `local_day_change_value` | Local P&L | 本币价格成分按当前 FX 转为 base currency：`(current local value - prior local value) × current FX`；现金为 0，event row 为 N/A | 完整覆盖时加总；含 event row 时 N/A | `sum` |
+| `fx_day_change_value` | FX P&L | 汇率成分：`prior local value × (current FX - prior FX)`；base-currency row 为 0，event row 为 N/A | 完整覆盖时加总；含 event row 时 N/A | `sum` |
+| `day_change_pct` | Day Return | 与 Day P&L 使用同一完整点对；base cash 为 0，non-base cash 为 FX return，event row 为 N/A | `sum(Day P&L) / sum(prior market value base)` 重算；含 event row 时 N/A | `recomputed_ratio` |
 | `unrealized_value` | Unrealized P&L | market-valued position 为 `current market value - remaining open cost`；event asset/obligation 不把 carrying basis 冒充 fair-value unrealized P&L | 无非零 event exposure 时加总 base-currency unrealized P&L；否则 N/A | `sum` |
 | `unrealized_pct` | Unrealized Return | market-valued position 为 `unrealized P&L / remaining open cost`；event asset/obligation 不适用 | Securities group/subtotal 按 `sum(unrealized P&L base) / sum(open cost base)` 重算；event exposure 时 N/A | `recomputed_ratio` |
 | `instrument_return_1w` | 1W Return | instrument 自身 confirmed total return，锚点为请求 `as_of_date - 7` 日或此前最近点 | 当前 base-market-value 权重合成，要求完整覆盖 | `current_weight_return` |

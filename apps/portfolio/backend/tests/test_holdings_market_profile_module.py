@@ -112,29 +112,43 @@ def test_holding_day_change_never_mixes_total_return_and_valuation_pairs() -> No
 
 
 def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
-    def current_fx(**_kwargs):
-        return {"rate": "1.20", "as_of_date": "2026-01-03"}
-
-    def previous_fx(**_kwargs):
-        return {"rate": "1.00", "as_of_date": "2026-01-02"}
+    def resolve_fx(**kwargs):
+        as_of_date = kwargs["as_of_date"]
+        return {
+            "rate": "1.20" if as_of_date == date(2026, 1, 3) else "1.00",
+            "as_of_date": as_of_date.isoformat(),
+            "source_instrument_ids": ["fx-usd-eur"],
+            "stale": False,
+        }
 
     metric_kwargs = {
         "amount": 100.0,
         "currency": "EUR",
         "base_currency": "USD",
         "as_of_date": date(2026, 1, 3),
+        "previous_as_of_date": date(2026, 1, 2),
         "direct_fx_instruments": {},
         "instrument_detail_cache": {},
     }
     metric = holdings_market_profile.cash_day_change_metrics(
         **metric_kwargs,
-        resolve_fx_rate_on=current_fx,
-        resolve_previous_fx_rate_before=previous_fx,
+        resolve_fx_rate_on=resolve_fx,
     )
-    assert metric == pytest.approx((0.20, 20.0))
+    assert metric["day_change_pct"] == pytest.approx(0.20)
+    assert metric["day_change_value_base"] == pytest.approx(20.0)
+    assert metric["local_day_change_value_base"] == pytest.approx(0.0)
+    assert metric["fx_day_change_value_base"] == pytest.approx(20.0)
+    assert metric["fx_rate_to_base"] == pytest.approx(1.20)
+    assert metric["previous_fx_rate_to_base"] == pytest.approx(1.00)
 
     def fake_day_change(**_kwargs):
-        return 0.25, 25.0
+        return {
+            "day_change_pct": 0.25,
+            "local_day_change_pct": 0.0,
+            "local_day_change_value_base": 0.0,
+            "fx_day_change_value_base": 25.0,
+            "day_change_value_base": 25.0,
+        }
 
     def fake_cash_id(currency: str) -> str:
         return f"patched:{currency}"
@@ -159,6 +173,7 @@ def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
             {"currency": "JPY", "amount": 0.0, "amount_base": 0.0},
         ],
         "as_of_date": date(2026, 1, 3),
+        "previous_as_of_date": date(2026, 1, 2),
         "base_currency": "USD",
         "direct_fx_instruments": {},
         "instrument_detail_cache": {},
@@ -171,6 +186,36 @@ def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
     )
     assert [row["currency"] for row in rows] == ["EUR", "USD"]
     assert rows[1]["account_ids"] == ["cash-a", "cash-b"]
+
+
+def test_position_day_change_in_base_separates_local_and_fx_effects() -> None:
+    def resolve_fx(**kwargs):
+        as_of_date = kwargs["as_of_date"]
+        return {
+            "rate": 6.65 if as_of_date == date(2026, 1, 3) else 7.0,
+            "as_of_date": as_of_date.isoformat(),
+            "source_instrument_ids": ["fx-usd-cny"],
+            "stale": False,
+        }
+
+    metrics = holdings_market_profile.position_day_change_metrics_in_base(
+        current_market_value=110.0,
+        local_day_change_pct=0.10,
+        local_day_change_value=10.0,
+        currency="USD",
+        base_currency="CNY",
+        as_of_date=date(2026, 1, 3),
+        previous_as_of_date=date(2026, 1, 2),
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=resolve_fx,
+    )
+
+    assert metrics["local_day_change_value_base"] == pytest.approx(66.5)
+    assert metrics["fx_day_change_value_base"] == pytest.approx(-35.0)
+    assert metrics["day_change_value_base"] == pytest.approx(31.5)
+    assert metrics["day_change_pct"] == pytest.approx(0.045)
+    assert metrics["fx_rate_source_instrument_ids"] == ["fx-usd-cny"]
 
 
 def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position() -> None:
@@ -194,10 +239,17 @@ def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position(
             }
         ],
         as_of_date=date(2026, 7, 24),
+        previous_as_of_date=date(2026, 7, 23),
         base_currency="USD",
         direct_fx_instruments={},
         instrument_detail_cache={},
-        cash_day_change=lambda **_kwargs: (0.0, 0.0),
+        cash_day_change=lambda **_kwargs: {
+            "day_change_pct": 0.0,
+            "local_day_change_pct": 0.0,
+            "local_day_change_value_base": 0.0,
+            "fx_day_change_value_base": 0.0,
+            "day_change_value_base": 0.0,
+        },
     )
 
     assert len(rows) == 1
@@ -238,10 +290,17 @@ def test_pending_settlement_identity_includes_both_operational_dates() -> None:
             },
         ],
         as_of_date=date(2026, 7, 24),
+        previous_as_of_date=date(2026, 7, 23),
         base_currency="USD",
         direct_fx_instruments={},
         instrument_detail_cache={},
-        cash_day_change=lambda **_kwargs: (0.0, 0.0),
+        cash_day_change=lambda **_kwargs: {
+            "day_change_pct": 0.0,
+            "local_day_change_pct": 0.0,
+            "local_day_change_value_base": 0.0,
+            "fx_day_change_value_base": 0.0,
+            "day_change_value_base": 0.0,
+        },
     )
 
     assert len(rows) == 2
@@ -564,6 +623,21 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
     def fake_holding_day_change(**_kwargs):
         return 0.10, 3.0
 
+    def fake_position_day_change(**_kwargs):
+        return {
+            "day_change_pct": 0.10,
+            "local_day_change_pct": 0.10,
+            "local_day_change_value_base": 6.0,
+            "fx_day_change_value_base": 0.0,
+            "day_change_value_base": 6.0,
+            "fx_rate_to_base": 2.0,
+            "fx_rate_as_of_date": "2026-01-03",
+            "previous_fx_rate_to_base": 2.0,
+            "previous_fx_rate_as_of_date": "2026-01-02",
+            "fx_rate_source_instrument_ids": [],
+            "fx_rate_stale": False,
+        }
+
     def fake_normalize_instrument(instrument_id, _instrument_ref, **_kwargs):
         return {"instrument_id": instrument_id, "normalized": True}
 
@@ -598,6 +672,7 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
         ],
         "cash_balances": [{"currency": "USD", "amount": 10.0}],
         "as_of_date": date(2026, 1, 3),
+        "previous_as_of_date": date(2026, 1, 2),
         "base_currency": "USD",
         "direct_fx_instruments": {},
         "instrument_detail_cache": {},
@@ -621,6 +696,7 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
         previous_market_point_for_selected_point=fake_previous_market_point,
         position_market_value=fake_position_market_value,
         holding_day_change=fake_holding_day_change,
+        position_day_change=fake_position_day_change,
         normalize_instrument=fake_normalize_instrument,
         build_cash_rows=fake_build_cash_rows,
         build_pending_rows=lambda **_kwargs: [],

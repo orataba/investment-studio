@@ -1142,6 +1142,14 @@ function buildPerformanceMetricRows(
   const operationalReturn = summary.performance_basis === 'operational_carrying_basis'
   const showReturnComparison = showRiskComparison && !operationalReturn
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
+  const fxPnlComponents = [
+    summary.cash_currency_gains,
+    summary.instrument_currency_gains,
+    summary.pending_settlement_currency_gains,
+  ]
+  const totalFxPnl = fxPnlComponents.every((value) => finiteNumber(value) != null)
+    ? sumNullable(...fxPnlComponents)
+    : null
   const irrReliabilityNote = !annualizedReturnEligible
     ? 'Requires ≥ 1 year'
     : irr == null
@@ -1242,6 +1250,11 @@ function buildPerformanceMetricRows(
       metric: 'Total P&L',
       value: formatSignedCurrency(summary.total_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.total_pnl),
+    },
+    {
+      metric: 'Total FX P&L',
+      value: formatSignedCurrency(totalFxPnl, baseCurrency),
+      valueClassName: signedValueClass(totalFxPnl),
     },
     {
       metric: 'Market Risk P&L',
@@ -2815,8 +2828,8 @@ function PerformancePage() {
                 </div>
               ) : calculationSummary?.stale_fx_flag ? (
                 <div className="inline-notice inline-notice-warning" role="status">
-                  Calculation includes stale FX observations; pending settlement monetary FX remains separately
-                  identified.
+                  FX attribution is incomplete for this period. Results that require fresh exchange-rate observations
+                  remain unavailable until those observations are refreshed.
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}
