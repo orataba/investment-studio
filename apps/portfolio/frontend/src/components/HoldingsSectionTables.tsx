@@ -14,11 +14,13 @@ import {
 import type { HoldingsWorkspaceResponse, PortfolioHoldingRow } from '../lib/api'
 import { baseAmountForRow } from '../lib/holdingAmounts'
 import { isOptionObligationHolding } from '../lib/holdingPresentation'
+import { useHorizontalTablePan } from '../lib/useHorizontalTablePan'
 
 type FixedColumn = {
   key: string
   label: string
   align?: 'right' | 'center'
+  opensDetail?: boolean
   render: (row: PortfolioHoldingRow) => ReactNode
 }
 
@@ -88,6 +90,7 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'availability',
     'local_amount',
     'base_value',
+    'cash_fx_pnl_base',
     'weight',
     'settlement_date',
     'pending_until_date',
@@ -138,6 +141,7 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
     'availability',
     'local_amount',
     'base_value',
+    'cash_fx_pnl_base',
     'weight',
     'settlement_date',
     'pending_until_date',
@@ -272,6 +276,7 @@ const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
   availability: 100,
   local_amount: 150,
   base_value: 170,
+  cash_fx_pnl_base: 190,
   settlement_date: 130,
   pending_until_date: 130,
   related_instrument: 180,
@@ -431,12 +436,17 @@ function FixedHoldingsTable({
   minimumWidth: number
   onSelectHolding?: (row: PortfolioHoldingRow) => void
 }) {
+  const tablePan = useHorizontalTablePan()
   const contentWidth = columns.reduce(
     (total, column) => total + (HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140),
     0,
   )
   return (
-    <div className="table-shell holdings-section-table-shell">
+    <div
+      className={`table-shell holdings-section-table-shell ${tablePan.isPanning ? 'is-panning' : ''}`}
+      ref={tablePan.ref}
+      {...tablePan.handlers}
+    >
       <table
         className="holdings-table holdings-section-table"
         aria-label={ariaLabel}
@@ -473,21 +483,7 @@ function FixedHoldingsTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr
-              key={row.line_id}
-              tabIndex={onSelectHolding ? 0 : undefined}
-              className={onSelectHolding ? 'holdings-section-data-row' : undefined}
-              onClick={onSelectHolding ? () => onSelectHolding(row) : undefined}
-              onKeyDown={
-                onSelectHolding
-                  ? (event) => {
-                      if (event.key === 'Enter') {
-                        onSelectHolding(row)
-                      }
-                    }
-                  : undefined
-              }
-            >
+            <tr key={row.line_id}>
               {columns.map((column) => (
                 <td
                   key={column.key}
@@ -502,7 +498,17 @@ function FixedHoldingsTable({
                           : undefined
                   }
                 >
-                  {column.render(row)}
+                  {column.opensDetail && onSelectHolding ? (
+                    <button
+                      type="button"
+                      className="holding-instrument-link"
+                      onClick={() => onSelectHolding(row)}
+                    >
+                      {column.render(row)}
+                    </button>
+                  ) : (
+                    column.render(row)
+                  )}
                 </td>
               ))}
             </tr>
@@ -555,6 +561,7 @@ export default function HoldingsSectionTables({
     {
       key: 'contract',
       label: 'Contract',
+      opensDetail: true,
       render: (row) => row.derivative_contract?.contract_name ?? row.line_id,
     },
     {
@@ -706,6 +713,7 @@ export default function HoldingsSectionTables({
     {
       key: 'contract',
       label: 'Contract',
+      opensDetail: true,
       render: (row) => row.derivative_contract?.contract_name ?? row.line_id,
     },
     {
@@ -872,6 +880,15 @@ export default function HoldingsSectionTables({
       render: (row) => formatCurrency(signedNavAmountBase(row, workspace), workspace.base_currency),
     },
     {
+      key: 'cash_fx_pnl_base',
+      label: `Unrealized FX P&L (${workspace.base_currency})`,
+      align: 'right',
+      render: (row) =>
+        row.holding_kind === 'settled_cash'
+          ? formatCurrency(row.unrealized_fx_pnl_base, workspace.base_currency)
+          : '—',
+    },
+    {
       key: 'weight',
       label: 'Portfolio Weight',
       align: 'right',
@@ -1011,6 +1028,13 @@ export default function HoldingsSectionTables({
             subtotalValues={{
               base_value: formatCurrency(
                 sumComplete(cashRows, (row) => signedNavAmountBase(row, workspace)),
+                workspace.base_currency,
+              ),
+              cash_fx_pnl_base: formatCurrency(
+                sumComplete(
+                  cashRows.filter((row) => row.holding_kind === 'settled_cash'),
+                  (row) => row.unrealized_fx_pnl_base,
+                ),
                 workspace.base_currency,
               ),
               weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),

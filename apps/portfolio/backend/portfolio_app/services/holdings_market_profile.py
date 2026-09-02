@@ -562,6 +562,10 @@ def build_cash_holding_rows(
             continue
         amount_base = safe_float(balance.get("amount_base"))
         instrument_id = cash_instrument_id(currency)
+        account_id = str(balance.get("account_id") or "").strip()
+        if not account_id:
+            raise ValueError("Cash balance is missing account_id.")
+        position_reference_id = f"{instrument_id}:{account_id}"
         day_change = cash_day_change(
             amount=amount,
             currency=currency,
@@ -576,17 +580,13 @@ def build_cash_holding_rows(
             normalize_currency=normalize_currency,
             field_name="portfolio base currency",
         )
-        account_ids = sorted(
-            str(account_id)
-            for account_id in list(balance.get("account_ids") or [])
-            if str(account_id or "")
-        )
         rows.append(
             {
-                "position_id": instrument_id,
+                "position_id": position_reference_id,
+                "position_reference_id": position_reference_id,
                 "instrument_id": instrument_id,
-                "account_id": instrument_id,
-                "line_id": instrument_id,
+                "account_id": account_id,
+                "line_id": position_reference_id,
                 "holding_kind": "settled_cash",
                 "available_for_trading": True,
                 "instrument_ref": cash_instrument_ref(currency),
@@ -594,6 +594,18 @@ def build_cash_holding_rows(
                 "cost_basis_method": None,
                 "cost_basis": None,
                 "cost_basis_base": None,
+                "cash_cost_basis_base": safe_float(
+                    balance.get("cash_cost_basis_base")
+                ),
+                "unrealized_fx_pnl_base": safe_float(
+                    balance.get("unrealized_fx_pnl_base")
+                ),
+                "cash_cost_basis_fx_rate_to_base": safe_float(
+                    balance.get("cash_cost_basis_fx_rate_to_base")
+                ),
+                "cash_fx_coverage_status": str(
+                    balance.get("cash_fx_coverage_status") or "unavailable"
+                ),
                 "last_price": 1.0,
                 "quote_as_of_date": as_of_date.isoformat(),
                 "quote_metric_family": "cash",
@@ -606,14 +618,20 @@ def build_cash_holding_rows(
                 "day_change_value": 0.0 if is_base_cash else None,
                 "currency": currency,
                 "portfolio_weight": None,
-                "account_ids": account_ids,
-                "account_count": len(account_ids) if account_ids else 1,
+                "account_ids": [account_id],
+                "account_count": 1,
                 "open_position_lot_count": 0,
                 "instrument_holding_start_date": None,
+                "transaction_ids": list(balance.get("transaction_ids") or []),
                 "coverage_status": "cash" if amount_base is not None else "unpriced",
             }
         )
-    rows.sort(key=lambda item: str(item.get("currency") or ""))
+    rows.sort(
+        key=lambda item: (
+            str(item.get("account_id") or ""),
+            str(item.get("currency") or ""),
+        )
+    )
     return rows
 
 
@@ -818,6 +836,7 @@ def position_buckets_from_lots(
                 "open_position_lot_count": 0,
                 "account_ids": set(),
                 "cost_basis_methods": set(),
+                "cost_basis_origins": [],
             },
         )
         bucket["quantity"] += safe_float(position_lot.get("remaining_quantity")) or 0.0
@@ -827,6 +846,9 @@ def position_buckets_from_lots(
         bucket["cost_basis_methods"].add(
             str(position_lot.get("cost_basis_method") or "fifo")
         )
+        origins = position_lot.get("cost_basis_origins")
+        if isinstance(origins, list):
+            bucket["cost_basis_origins"].extend(deepcopy(origins))
     rendered_buckets: list[dict[str, object]] = []
     for bucket in positions_by_reference.values():
         if abs(safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
@@ -899,6 +921,7 @@ def position_buckets_by_account_reference_from_lots(
                 "open_position_lot_count": 0,
                 "holding_start_date": None,
                 "cost_basis_methods": set(),
+                "cost_basis_origins": [],
             },
         )
         bucket["quantity"] += safe_float(position_lot.get("remaining_quantity")) or 0.0
@@ -916,6 +939,9 @@ def position_buckets_by_account_reference_from_lots(
         bucket["cost_basis_methods"].add(
             str(position_lot.get("cost_basis_method") or "fifo")
         )
+        origins = position_lot.get("cost_basis_origins")
+        if isinstance(origins, list):
+            bucket["cost_basis_origins"].extend(deepcopy(origins))
 
     rendered_buckets: list[dict[str, object]] = []
     for bucket in positions_by_account_reference.values():
@@ -1407,6 +1433,159 @@ def summarize_holdings_operational_status(
     }
 
 
+def position_unrealized_metrics(
+    *,
+    cost_basis: float | None,
+    cost_basis_base_current_fx: float | None,
+    cost_basis_origins: object,
+    market_value: float | None,
+    market_value_base: float | None,
+    currency: str,
+    base_currency: str,
+    as_of_date: date,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    resolve_fx_rate_on: ResolveFxRate,
+    normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
+    safe_float: SafeFloat = _safe_float,
+    parse_iso_date: ParseIsoDate = _parse_iso_date,
+) -> dict[str, object]:
+    empty = {
+        "cost_basis_historical_base": None,
+        "cost_basis_current_fx_rate_to_base": None,
+        "cost_basis_fx_rate_to_base": None,
+        "cost_basis_fx_coverage_status": "unavailable",
+        "unrealized_price_pnl": None,
+        "unrealized_price_pnl_base": None,
+        "unrealized_fx_pnl_base": None,
+        "unrealized_pnl_base": None,
+        "unrealized_return": None,
+        "unrealized_return_base": None,
+    }
+    local_cost = safe_float(cost_basis)
+    current_cost_base = safe_float(cost_basis_base_current_fx)
+    if local_cost is None or current_cost_base is None:
+        return empty
+
+    normalized_currency = _required_currency(
+        currency,
+        normalize_currency=normalize_currency,
+        field_name="position currency",
+    )
+    normalized_base = _required_currency(
+        base_currency,
+        normalize_currency=normalize_currency,
+        field_name="portfolio base currency",
+    )
+    historical_cost_base: float | None = None
+    historical_fx_stale = False
+    origins = [
+        origin
+        for origin in list(cost_basis_origins or [])
+        if isinstance(origin, dict)
+        and (safe_float(origin.get("remaining_cost_basis")) or 0.0) > 1e-9
+    ]
+    origin_local_cost = sum(
+        safe_float(origin.get("remaining_cost_basis")) or 0.0
+        for origin in origins
+    )
+    origin_tolerance = max(abs(local_cost) * 1e-9, 1e-7)
+    origins_complete = abs(origin_local_cost - local_cost) <= origin_tolerance
+    if abs(local_cost) <= 1e-12:
+        historical_cost_base = 0.0
+        origins_complete = True
+    elif normalized_currency == normalized_base:
+        historical_cost_base = local_cost
+        origins_complete = True
+    elif origins and origins_complete:
+        historical_cost_base = 0.0
+        for origin in origins:
+            origin_date = parse_iso_date(origin.get("acquisition_date"))
+            origin_cost = safe_float(origin.get("remaining_cost_basis"))
+            if origin_date is None or origin_cost is None:
+                historical_cost_base = None
+                break
+            resolved_fx = resolve_fx_rate_on(
+                as_of_date=origin_date,
+                base_currency=normalized_currency,
+                quote_currency=normalized_base,
+                direct_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            origin_rate = safe_float((resolved_fx or {}).get("rate"))
+            if origin_rate is None or origin_rate <= 0:
+                historical_cost_base = None
+                break
+            historical_cost_base += origin_cost * origin_rate
+            historical_fx_stale = historical_fx_stale or bool(
+                (resolved_fx or {}).get("stale")
+            )
+
+    local_market_value = safe_float(market_value)
+    base_market_value = safe_float(market_value_base)
+    current_fx_rate = (
+        1.0
+        if normalized_currency == normalized_base
+        else base_market_value / local_market_value
+        if base_market_value is not None
+        and local_market_value is not None
+        and abs(local_market_value) > 1e-12
+        else current_cost_base / local_cost
+        if abs(local_cost) > 1e-12
+        else None
+    )
+    local_price_pnl = (
+        local_market_value - local_cost
+        if local_market_value is not None
+        else None
+    )
+    price_pnl_base = (
+        base_market_value - current_cost_base
+        if base_market_value is not None
+        else None
+    )
+    fx_pnl_base = (
+        current_cost_base - historical_cost_base
+        if historical_cost_base is not None
+        else None
+    )
+    total_pnl_base = (
+        base_market_value - historical_cost_base
+        if base_market_value is not None and historical_cost_base is not None
+        else None
+    )
+    return {
+        "cost_basis_historical_base": historical_cost_base,
+        "cost_basis_current_fx_rate_to_base": current_fx_rate,
+        "cost_basis_fx_rate_to_base": (
+            historical_cost_base / local_cost
+            if historical_cost_base is not None and abs(local_cost) > 1e-12
+            else None
+        ),
+        "cost_basis_fx_coverage_status": (
+            "stale" if historical_cost_base is not None and historical_fx_stale
+            else "complete" if historical_cost_base is not None
+            else "unavailable"
+        ),
+        "unrealized_price_pnl": local_price_pnl,
+        "unrealized_price_pnl_base": price_pnl_base,
+        "unrealized_fx_pnl_base": fx_pnl_base,
+        "unrealized_pnl_base": total_pnl_base,
+        "unrealized_return": (
+            local_price_pnl / abs(local_cost)
+            if local_price_pnl is not None and abs(local_cost) > 1e-12
+            else None
+        ),
+        "unrealized_return_base": (
+            total_pnl_base / abs(historical_cost_base)
+            if total_pnl_base is not None
+            and historical_cost_base is not None
+            and abs(historical_cost_base) > 1e-12
+            else None
+        ),
+    }
+
+
 def build_materialized_holding_rows(
     *,
     account_instrument_buckets: list[dict[str, object]],
@@ -1429,6 +1608,7 @@ def build_materialized_holding_rows(
     position_market_value: PositionMarketValue,
     holding_day_change: Callable[..., tuple[float | None, float | None]],
     position_day_change: DayChangeMetrics,
+    resolve_fx_rate_on: ResolveFxRate,
     normalize_instrument: Callable[..., dict[str, object]],
     build_cash_rows: Callable[..., list[dict[str, object]]],
     build_pending_rows: Callable[..., list[dict[str, object]]],
@@ -1578,6 +1758,26 @@ def build_materialized_holding_rows(
                 "fx_rate_stale": False,
             }
         )
+        unrealized_metrics = (
+            position_unrealized_metrics(
+                cost_basis=cost_basis,
+                cost_basis_base_current_fx=converted_cost_basis,
+                cost_basis_origins=bucket.get("cost_basis_origins"),
+                market_value=market_value,
+                market_value_base=converted_market_value,
+                currency=currency,
+                base_currency=base_currency,
+                as_of_date=as_of_date,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                resolve_fx_rate_on=resolve_fx_rate_on,
+                normalize_currency=normalize_currency,
+                safe_float=safe_float,
+                parse_iso_date=parse_iso_date,
+            )
+            if not event_valued
+            else {}
+        )
         instrument_core = (
             normalize_instrument(instrument_id, instrument_ref)
             if instrument_id is not None
@@ -1600,6 +1800,7 @@ def build_materialized_holding_rows(
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
+                **unrealized_metrics,
                 "last_price": last_price,
                 "quote_as_of_date": (
                     None if event_valued else (price_point or {}).get("as_of_date")

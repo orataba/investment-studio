@@ -777,6 +777,21 @@ export type PortfolioHoldingRow = {
   cost_basis_method?: 'fifo' | 'moving_average' | 'mixed' | string | null
   cost_basis: number | null
   cost_basis_base?: number | null
+  cost_basis_historical_base?: number | null
+  cost_basis_current_fx_rate_to_base?: number | null
+  cost_basis_fx_rate_to_base?: number | null
+  cost_basis_fx_coverage_status?: string | null
+  cash_cost_basis_base?: number | null
+  cash_cost_basis_fx_rate_to_base?: number | null
+  cash_fx_coverage_status?: string | null
+  net_invested?: number | null
+  break_even_price?: number | null
+  unrealized_price_pnl?: number | null
+  unrealized_price_pnl_base?: number | null
+  unrealized_fx_pnl_base?: number | null
+  unrealized_pnl_base?: number | null
+  unrealized_return?: number | null
+  unrealized_return_base?: number | null
   allocation: number | null
   price_chart_1m: SparklinePoint[]
   price_chart_3m: SparklinePoint[]

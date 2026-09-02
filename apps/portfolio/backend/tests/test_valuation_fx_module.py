@@ -55,6 +55,33 @@ def test_required_currency_rejects_missing_values() -> None:
         valuation_fx.required_currency(None, field_name="transaction currency")
 
 
+def test_fx_rate_resolution_cache_reuses_one_boundary_lookup(monkeypatch) -> None:
+    calls = 0
+
+    def resolve(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"rate": 7.1, "stale": False}
+
+    monkeypatch.setattr(valuation_fx, "resolve_fx_rate_on", resolve)
+    resolution_cache: valuation_fx.FxRateResolutionCache = {}
+    arguments = {
+        "as_of_date": date(2026, 1, 2),
+        "base_currency": " usd ",
+        "quote_currency": "cny",
+        "direct_instruments": {},
+        "instrument_detail_cache": {},
+        "instrument_detail_loader": lambda _instrument_id: None,
+        "resolution_cache": resolution_cache,
+    }
+
+    first = valuation_fx.resolve_fx_rate_on_cached(**arguments)
+    second = valuation_fx.resolve_fx_rate_on_cached(**arguments)
+
+    assert first == second == {"rate": 7.1, "stale": False}
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     ("quantity", "last_price", "price_scale", "expected"),
     [

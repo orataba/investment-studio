@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -62,6 +62,10 @@ function renderHoldings(
     <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
       <Routes>
         <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+        <Route
+          path="/portfolios/:portfolioId/holdings/:instrumentId"
+          element={<div data-testid="holding-detail-route">Holding detail</div>}
+        />
       </Routes>
     </MemoryRouter>,
   )
@@ -116,6 +120,10 @@ function cashHolding(overrides: Partial<PortfolioHoldingRow> = {}) {
     market_value_base: 200,
     cost_basis: null,
     cost_basis_base: null,
+    cash_cost_basis_base: 200,
+    cash_cost_basis_fx_rate_to_base: 1,
+    cash_fx_coverage_status: 'complete',
+    unrealized_fx_pnl_base: 0,
     allocation: 0.2,
     day_change_pct: 0,
     day_change_value: 0,
@@ -322,6 +330,24 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText('Overdue settlement')).not.toBeInTheDocument()
   })
 
+  it('opens details only from the instrument name, not an ordinary table cell', async () => {
+    const user = userEvent.setup()
+    renderHoldings()
+    await waitForHoldings()
+
+    const securityTable = screen.getByRole('table', { name: 'Security holdings' })
+    const quantityCell = securityTable.querySelector<HTMLTableCellElement>(
+      'tbody td[data-column-key="quantity"]',
+    )
+    expect(quantityCell).not.toBeNull()
+    fireEvent.click(quantityCell!)
+    expect(screen.getByRole('table', { name: 'Security holdings' })).toBeInTheDocument()
+    expect(screen.queryByTestId('holding-detail-route')).not.toBeInTheDocument()
+
+    await user.click(within(securityTable).getByRole('button', { name: 'Alpha Fund' }))
+    expect(await screen.findByTestId('holding-detail-route')).toBeInTheDocument()
+  })
+
   it('shows one holdings empty state without empty tables', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
@@ -450,24 +476,29 @@ describe('Holdings rendered page contract', () => {
       }),
     )
     renderHoldings()
-    await waitForHoldings()
-
-    expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
+        as_of_date: undefined,
+        include_details: true,
+      })
+    })
+    await waitFor(() => {
+      expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
+      expect(screen.getByRole('table', { name: 'Security holdings' })).toBeInTheDocument()
+    })
     const securityTable = screen.getByRole('table', { name: 'Security holdings' })
     for (const label of [
       'Chart 6M',
-      '1W Return',
-      '1M Return',
-      '3M Return',
-      'MTD',
-      'YTD',
-      'Day P&L',
-      'Local P&L',
-      'FX P&L',
+      '1W Total Return',
+      '1M Total Return',
+      '3M Total Return',
+      'MTD Total Return',
+      'YTD Total Return',
       'Forward RC',
-      'Unrealized Return',
+      'Total Unrealized Return (Base)',
     ]) {
-      expect(within(securityTable).getByRole('columnheader', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
+      const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      expect(within(securityTable).getByRole('columnheader', { name: new RegExp(`^${escapedLabel}`) })).toBeInTheDocument()
     }
   })
 
@@ -663,7 +694,7 @@ describe('Holdings rendered page contract', () => {
     expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
   })
 
-  it('gives monetary balances settlement fields and no cost or unrealized columns', async () => {
+  it('gives monetary balances settlement fields and cash FX attribution without security cost fields', async () => {
     const pending = cashHolding({
       line_id: 'pending:settlement_receivable',
       holding_kind: 'settlement_receivable',
@@ -712,7 +743,7 @@ describe('Holdings rendered page contract', () => {
       expect(within(table).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
     expect(within(table).queryByRole('columnheader', { name: /Cost Basis/ })).not.toBeInTheDocument()
-    expect(within(table).queryByRole('columnheader', { name: /Unrealized/ })).not.toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Unrealized FX P&L (USD)' })).toBeInTheDocument()
     expect(within(table).getByText('2026-07-16')).toBeInTheDocument()
     expect(within(table).getByText('Alpha Fund')).toBeInTheDocument()
     expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
@@ -785,8 +816,7 @@ describe('Holdings rendered page contract', () => {
     )
 
     const securityTable = screen.getByRole('table', { name: 'Security holdings' })
-    expect(within(securityTable).getAllByText('Current Risk Assets')).toHaveLength(2)
-    expect(within(securityTable).getByText('Current Listed Funds')).toBeInTheDocument()
+    expect(within(securityTable).getAllByText('Current Risk Assets')).toHaveLength(1)
     expect(within(screen.getByRole('table', { name: 'FCN holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
     expect(within(screen.getByRole('table', { name: 'Cash and settlement holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
   })
@@ -815,10 +845,6 @@ describe('Holdings rendered page contract', () => {
     const user = userEvent.setup()
     await waitForHoldings()
 
-    const securityRow = screen.getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
-    expect(securityRow.querySelector('[data-column-key="taxonomy_top"]')).toHaveTextContent('Unassigned')
-    expect(securityRow.querySelector('[data-column-key="taxonomy_leaf"]')).toHaveTextContent('Unassigned')
-
     await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
       within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', {
@@ -833,6 +859,8 @@ describe('Holdings rendered page contract', () => {
       instrument_core: instrumentFixture({ currency: 'HKD' }),
       market_value: 7800,
       market_value_base: 1000,
+      cost_basis_historical_base: 930,
+      unrealized_return_base: 0.07,
       cost_basis: 7800,
       cost_basis_base: 1000,
       allocation: 1,
@@ -869,10 +897,8 @@ describe('Holdings rendered page contract', () => {
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     const securityRow = within(screen.getByRole('table', { name: 'Security holdings' })).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
     expect(securityRow).toHaveTextContent('+10.00%')
-    expect(securityRow.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('+$50.00')
-    expect(securityRow.querySelector('[data-column-key="local_day_change_value"]')).toHaveTextContent('+$30.00')
-    expect(securityRow.querySelector('[data-column-key="fx_day_change_value"]')).toHaveTextContent('+$20.00')
-    expect(within(securityRow).getByTitle(/1 HKD = .* USD.*Rate series: USD\/HKD/)).toBeInTheDocument()
+    expect(securityRow).toHaveTextContent('+7.00%')
+    expect(within(screen.getByRole('table', { name: 'Security holdings' })).queryByRole('columnheader', { name: /Day P&L/ })).not.toBeInTheDocument()
     const subtotalRow = screen.getByText('Securities Subtotal (USD)').closest('tr')!
     expect(subtotalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
@@ -883,6 +909,13 @@ describe('Holdings rendered page contract', () => {
       market_value_base: 500,
       cost_basis: 500,
       cost_basis_base: 500,
+      cost_basis_historical_base: 500,
+      unrealized_price_pnl: 0,
+      unrealized_price_pnl_base: 0,
+      unrealized_fx_pnl_base: 0,
+      unrealized_pnl_base: 0,
+      unrealized_return: 0,
+      unrealized_return_base: 0,
       allocation: 0.5,
       instrument_return_1m: 0,
     })
@@ -902,7 +935,7 @@ describe('Holdings rendered page contract', () => {
     await waitForHoldings()
 
     const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
-    expect(securitySubtotal.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
+    expect(securitySubtotal.querySelector('[data-column-key="unrealized_pnl_base"]')).toHaveTextContent('$0.00')
     expect(screen.getByRole('table', { name: 'FCN holdings' })).toBeInTheDocument()
     expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
@@ -1086,9 +1119,12 @@ describe('Holdings rendered page contract', () => {
     expect(holdingRow.children[index]).not.toHaveTextContent('2026-07-15')
   })
 
-  it('requests full detail when the default Security view includes current-basket risk fields', async () => {
+  it('requests full detail when the Return & Risk view needs current-basket fields', async () => {
     renderHoldings()
     await waitForHoldings()
+    const user = userEvent.setup()
+    await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     await waitFor(() => {
       expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
         as_of_date: undefined,

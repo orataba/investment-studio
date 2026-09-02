@@ -95,6 +95,190 @@ def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_spl
     assert change_pct > -0.10
 
 
+def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
+    monkeypatch,
+) -> None:
+    rates = {
+        date(2026, 1, 1): 7.0,
+        date(2026, 1, 2): 7.5,
+        date(2026, 1, 3): 8.0,
+    }
+
+    monkeypatch.setattr(
+        valuation_fx,
+        "resolve_fx_rate_on",
+        lambda *, as_of_date, **_kwargs: {
+            "rate": rates[as_of_date],
+            "stale": False,
+        },
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, as_of_date, **_kwargs: (
+            float(amount) * rates[as_of_date],
+            False,
+        ),
+    )
+
+    def posting(
+        *,
+        transaction_id: str,
+        account_id: str,
+        amount: float,
+        effective_date: str,
+        transaction_type: str,
+        created_at: str,
+        transfer_group_id: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "account_id": account_id,
+            "cash_amount_delta": amount,
+            "currency": "USD",
+            "trade_date": effective_date,
+            "settlement_date": effective_date,
+            "effective_date": effective_date,
+            "source_transaction_type": transaction_type,
+            "transfer_group_id": transfer_group_id,
+            "created_at": created_at,
+        }
+
+    balances = performance._settled_cash_balances_from_postings(
+        postings=[
+            posting(
+                transaction_id="opening-a",
+                account_id="cash-a",
+                amount=100.0,
+                effective_date="2026-01-01",
+                transaction_type="opening_balance",
+                created_at="2026-01-01T09:00:00Z",
+            ),
+            posting(
+                transaction_id="transfer-out",
+                account_id="cash-a",
+                amount=-40.0,
+                effective_date="2026-01-02",
+                transaction_type="transfer_out",
+                transfer_group_id="cash-transfer-1",
+                created_at="2026-01-02T09:00:00Z",
+            ),
+            posting(
+                transaction_id="transfer-in",
+                account_id="cash-b",
+                amount=40.0,
+                effective_date="2026-01-02",
+                transaction_type="transfer_in",
+                transfer_group_id="cash-transfer-1",
+                created_at="2026-01-02T09:00:01Z",
+            ),
+        ],
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+
+    by_account = {item["account_id"]: item for item in balances}
+    assert set(by_account) == {"cash-a", "cash-b"}
+    assert by_account["cash-a"]["amount"] == pytest.approx(60.0)
+    assert by_account["cash-a"]["cash_cost_basis_base"] == pytest.approx(420.0)
+    assert by_account["cash-b"]["amount"] == pytest.approx(40.0)
+    assert by_account["cash-b"]["cash_cost_basis_base"] == pytest.approx(280.0)
+    assert sum(
+        item["unrealized_fx_pnl_base"] for item in balances
+    ) == pytest.approx(100.0)
+
+    crossing_state: dict[str, object] = {
+        "amount": 100.0,
+        "historical_cost_basis_base": 700.0,
+        "cost_basis_complete": True,
+    }
+    released_basis = performance._apply_cash_cost_basis_delta(
+        crossing_state,
+        amount_delta=-140.0,
+        acquisition_fx_rate=7.5,
+    )
+    assert crossing_state["historical_cost_basis_base"] == pytest.approx(-300.0)
+    assert released_basis == pytest.approx(1000.0)
+
+
+def test_fx_conversion_uses_executed_countervalue_for_new_cash_basis(
+    monkeypatch,
+) -> None:
+    rates = {
+        (date(2026, 1, 1), "CNY", "CNY"): 1.0,
+        (date(2026, 1, 2), "CNY", "CNY"): 1.0,
+        (date(2026, 1, 2), "USD", "CNY"): 7.2,
+    }
+
+    monkeypatch.setattr(
+        valuation_fx,
+        "resolve_fx_rate_on",
+        lambda *, as_of_date, base_currency, quote_currency, **_kwargs: {
+            "rate": rates[(as_of_date, base_currency, quote_currency)],
+            "stale": False,
+        },
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, from_currency, **_kwargs: (
+            float(amount) * (7.5 if from_currency == "USD" else 1.0),
+            False,
+        ),
+    )
+
+    common = {
+        "trade_date": "2026-01-02",
+        "settlement_date": "2026-01-03",
+        "effective_date": "2026-01-03",
+        "source_transaction_type": "fx_conversion",
+        "transaction_id": "fx-1",
+        "created_at": "2026-01-02T09:00:00Z",
+    }
+    balances = performance._settled_cash_balances_from_postings(
+        postings=[
+            {
+                "transaction_id": "opening-cny",
+                "account_id": "cash-cny",
+                "cash_amount_delta": 1000.0,
+                "currency": "CNY",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "effective_date": "2026-01-01",
+                "source_transaction_type": "opening_balance",
+                "posting_role": "opening_cash",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                **common,
+                "account_id": "cash-cny",
+                "cash_amount_delta": -700.0,
+                "currency": "CNY",
+                "posting_role": "fx_conversion_source_cash",
+            },
+            {
+                **common,
+                "account_id": "cash-usd",
+                "cash_amount_delta": 100.0,
+                "currency": "USD",
+                "posting_role": "fx_conversion_target_cash",
+            },
+        ],
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+
+    by_account = {item["account_id"]: item for item in balances}
+    assert by_account["cash-cny"]["cash_cost_basis_base"] == pytest.approx(300.0)
+    assert by_account["cash-usd"]["cash_cost_basis_base"] == pytest.approx(700.0)
+    assert by_account["cash-usd"]["cash_cost_basis_fx_rate_to_base"] == pytest.approx(7.0)
+    assert by_account["cash-usd"]["unrealized_fx_pnl_base"] == pytest.approx(50.0)
+
+
 def _test_instrument_detail(
     *,
     instrument_id: str,

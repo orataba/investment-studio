@@ -289,16 +289,18 @@ Holdings 若显示 `Negative settled cash` critical alert，表示账本已有�
 
 Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权重、成本和未实现盈亏。持仓来自交易、行情和账户计算，不手工录入。若持仓数量不对，优先检查 Transactions；若市值不对，优先检查 Platform 行情和 FX；若成本不对，检查账户成本法和历史交易顺序。
 
-Holdings 的指标分成两种主要口径：
+Securities 字段按 `Identity / Quote / Instrument Trend / Position / Cost / P&L / Risk` 七组管理，不把不同口径堆在一起：
 
-- 当前账面状态：Quantity、Market Value、Weight、Cost Basis、Avg Cost、Unrealized P&L。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
-- 当前持仓回看：标的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用自身已确认 total-return series；Vol / Drawdown 使用同一收益序列。它们不读取历史买卖份额或成本。
-
-普通 dividend / coupon 是 entitlement-date 已实现 `Income`，不进入 Unrealized P&L；分红再投资同时确认 Income 并以再投资金额建立新 lot；只有 `return_of_capital` 冲减剩余成本。
+- Position 的市值和权重以组合基准币种为主；本币 Position Value 仍可按需查看。
+- Cost 同时区分本币 book cost、按当前汇率换算的 base cost、按各批次交易日汇率形成的 base cost，以及扣除已卖回款和已实现收入后的 `Net Invested / Break-even Price`。普通 dividend / coupon 不改 book cost，但会降低经济回本价；只有 `return_of_capital` 冲减 book cost。
+- P&L 把本币价格未实现、base-currency 价格未实现、base-currency 汇兑未实现和 base-currency 总未实现分开，并保证总额等于价格项加汇兑项。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
+- Instrument Trend 的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 与 Vol / Drawdown 使用标的自身已确认的本币 total-return series，包含分红等复权、不含汇率变化，也不读取历史买卖份额或成本。
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
-页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。instrument 数量紧邻标题。Securities、FCN 与 Options 可以独立使用 `View` 和 `Columns`；FCN、Options 均以 `Default` 为日常视图，并提供面向条款和估值的系统视图，系统视图切换不改变表格框架宽度。`Cash & Settlement` 使用固定字段，不提供没有实际价值的视图或列配置。`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
+页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。instrument 数量紧邻标题。Securities、FCN 与 Options 可以独立使用 `View` 和 `Columns`；FCN、Options 均以 `Default` 为日常视图，并提供面向条款和估值的系统视图，系统视图切换不改变表格框架宽度。`Cash & Settlement` 使用固定字段，不提供没有实际价值的视图或列配置。每个 settled cash 行对应一个具体账户和币种，并展示该账户从历史流入汇率形成的未实现汇兑损益；组合内部现金划转沿用原成本，不在划转日重置，真正换汇则按录入的成交金额和汇率建立新币种成本。`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
+
+只有 instrument 或 contract 名称可以打开详情；点击普通字段不会跳页。在表格数据区按住鼠标左右拖动可以横向浏览宽表，减少误触。
 
 CSV/Excel 同样只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立表头；Securities、FCN、Options 跟随当前视图的可见字段，Cash & Settlement 使用与页面一致的固定字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
 

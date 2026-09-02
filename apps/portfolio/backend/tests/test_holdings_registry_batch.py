@@ -244,6 +244,8 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
         account_id: str,
         holding_start_date: str,
         holding_max_drawdown: float,
+        historical_cost_basis: float,
+        fx_coverage_status: str,
     ) -> SimpleNamespace:
         holding_series = {
             "first_return_start_date": holding_start_date,
@@ -282,6 +284,14 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
                 "cost_basis_method": "fifo",
                 "cost_basis": 90,
                 "cost_basis_base": 90,
+                "cost_basis_historical_base": historical_cost_basis,
+                "cost_basis_current_fx_rate_to_base": 1,
+                "cost_basis_fx_rate_to_base": historical_cost_basis / 90,
+                "cost_basis_fx_coverage_status": fx_coverage_status,
+                "unrealized_price_pnl": 10,
+                "unrealized_price_pnl_base": 10,
+                "unrealized_fx_pnl_base": 90 - historical_cost_basis,
+                "unrealized_pnl_base": 100 - historical_cost_basis,
                 "open_position_lot_count": 1,
                 "instrument_holding_start_date": holding_start_date,
                 "instrument_holding_return_series": holding_series,
@@ -295,11 +305,15 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
             account_id="account-a",
             holding_start_date="2026-07-20",
             holding_max_drawdown=-0.01,
+            historical_cost_basis=80,
+            fx_coverage_status="complete",
         ),
         snapshot_row(
             account_id="account-b",
             holding_start_date="2026-06-01",
             holding_max_drawdown=-0.20,
+            historical_cost_basis=85,
+            fx_coverage_status="stale",
         ),
     ]
 
@@ -313,6 +327,13 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
     assert aggregated[0]["account_count"] == 2
     assert aggregated[0]["instrument_holding_start_date"] == "2026-06-01"
     assert aggregated[0]["instrument_holding_max_drawdown"] == -0.20
+    assert aggregated[0]["cost_basis_historical_base"] == 165
+    assert aggregated[0]["cost_basis_current_fx_rate_to_base"] == 1
+    assert aggregated[0]["cost_basis_fx_rate_to_base"] == 165 / 180
+    assert aggregated[0]["cost_basis_fx_coverage_status"] == "stale"
+    assert aggregated[0]["unrealized_price_pnl_base"] == 20
+    assert aggregated[0]["unrealized_fx_pnl_base"] == 15
+    assert aggregated[0]["unrealized_pnl_base"] == 35
     assert aggregated[0]["instrument_holding_return_series"] == {
         "first_return_start_date": "2026-06-01",
         "points": [
@@ -323,6 +344,15 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
             }
         ],
     }
+
+    rows[1].holding_json["cost_basis_historical_base"] = None
+    rows[1].holding_json["cost_basis_fx_coverage_status"] = "unavailable"
+    incomplete = daily_snapshots._aggregate_holding_rows(
+        rows,  # type: ignore[arg-type]
+        total_nav_base=200,
+    )
+    assert incomplete[0]["cost_basis_historical_base"] is None
+    assert incomplete[0]["cost_basis_fx_coverage_status"] == "unavailable"
 
 
 def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> None:

@@ -52,8 +52,9 @@
 - Holdings 分为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四个按内容显示的直接表面；Securities、FCN、Options 独立保存视图与可见字段，Cash & Settlement 使用固定字段，只有 Securities 提供排序与 `Group By`。FCN、Options 的系统视图均以 `Default` 开始，切换系统视图时保持表格框架宽度稳定。无 rows 的表面不渲染，全部为空时只显示一个统一空态；
 - Portfolio 与 Watchlist 的表格工具统一使用 `View`、`Columns`、`Group By` 文案，以及 30px、高对比细边框、直角、透明背景的控制样式。View selector 为文字和箭头预留独立空间；Holdings instrument 数量紧邻表标题，不能混入按钮区；
 - Overview 承载全组合 `Asset Mix`：固定汇总 `Securities / FCN / Options / Cash & Settlement`，并以单行 `Portfolio Total` 收尾。金额和权重按资产负债表符号展示，所有分类继续使用 canonical NAV 与同一全组合 Forward RC 分母；该高层汇总不在 Holdings 重复；
-- Holdings 不再展示或导出第二套 `Portfolio Total`；页面顶部 portfolio headline 和 Overview `Asset Mix` 已分别承担总览与分类对账职责。Securities group/subtotal 继续使用组内 open cost 分母；
-- Holdings group / subtotal 只计算有稳定业务含义的字段：绝对量加总、比例重算、当前权重 return、共同路径 risk 和同一全组合分母下的 Forward RC。Quantity、Avg Cost、Quote、Holding Since、Chart、Coverage、Held Max DD 等单标的字段留空；完整映射见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)；
+- Holdings 不再展示或导出第二套 `Portfolio Total`；页面顶部 portfolio headline 和 Overview `Asset Mix` 已分别承担总览与分类对账职责。Securities group/subtotal 的 base-currency 总未实现收益使用组内 historical-FX open cost 分母；
+- Holdings group / subtotal 只计算有稳定业务含义的字段：绝对量加总、比例重算、当前权重 return、共同路径 risk 和同一全组合分母下的 Forward RC。Quantity、Book Avg Cost、Quote、Holding Since、Chart、Coverage、Held Max DD 等单标的字段留空；完整映射见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)；
+- Holdings Securities 的列目录固定按 `Identity / Quote / Instrument Trend / Position / Cost / P&L / Risk` 编排。整行不绑定详情跳转，只有 instrument / contract 名称可导航；普通数据单元格支持鼠标左右拖动横向浏览；
 - Performance 的 Latest / Reset 与 MTD / QTD / YTD / 1Y / SI 是同一期间选择器的便捷入口；summary、chart、Calculation 和 Groups 必须共享同一个 resolved window，不能各自解释日期；
 - Overview 的质量提示只在检测到真实问题时出现，并包含受影响对象/日期及可执行修复方向；不显示没有事实依据的通用 corporate-action 警告；
 - Research 列表区分 `Held / Observed / Former` 与 eligibility。Former instrument 的正目标在未经 PM approval 时必须显示人工复核状态，不能作为普通已批准建议。

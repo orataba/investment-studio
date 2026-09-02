@@ -11,7 +11,12 @@ from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDai
 from portfolio_app.api.contracts import InstrumentOption, LedgerPostingRecord, PositionLotRecord
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshot_worker, daily_snapshots, portfolio_store
-from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+from portfolio_app.services.ledger import (
+    _build_position_state,
+    build_current_position_cycle_costs,
+    build_position_lots,
+    derive_ledger_postings,
+)
 
 
 def _share_split_event(
@@ -3519,6 +3524,150 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     assert sum(lot["remaining_cost_basis"] for lot in lots) == pytest.approx(16500.0)
     assert sum(lot["realized_cost_basis"] for lot in lots) == pytest.approx(5500.0)
     assert sum(lot["realized_pnl"] for lot in lots) == pytest.approx(1000.0)
+
+
+def test_moving_average_lot_keeps_trade_date_cost_origins_after_partial_sale() -> None:
+    accounts = [
+        {
+            "account_id": "acct",
+            "account_type": "securities_account",
+            "cost_basis_method": "moving_average",
+        }
+    ]
+    transactions = [
+        _split_test_transaction(
+            "buy-a",
+            "buy",
+            "2026-04-10",
+            100.0,
+            10000.0,
+            transaction_sequence=1,
+        ),
+        _split_test_transaction(
+            "buy-b",
+            "buy",
+            "2026-04-11",
+            100.0,
+            12000.0,
+            transaction_sequence=2,
+        ),
+        _split_test_transaction(
+            "sell",
+            "sell",
+            "2026-04-12",
+            50.0,
+            6500.0,
+            transaction_sequence=3,
+        ),
+    ]
+
+    lots = build_position_lots(
+        "p",
+        accounts,
+        transactions,
+        status="open",
+        as_of_date=date(2026, 4, 12),
+        resolve_pricing=False,
+    )
+
+    assert len(lots) == 1
+    origins = lots[0]["cost_basis_origins"]
+    assert [origin["acquisition_date"] for origin in origins] == [
+        "2026-04-10",
+        "2026-04-11",
+    ]
+    assert [origin["remaining_cost_basis"] for origin in origins] == pytest.approx(
+        [7500.0, 9000.0]
+    )
+    assert sum(origin["remaining_cost_basis"] for origin in origins) == pytest.approx(
+        lots[0]["remaining_cost_basis"]
+    )
+
+
+def test_current_position_cycle_cost_includes_income_and_realized_proceeds() -> None:
+    common = {
+        "portfolio_id": "p",
+        "account_id": "acct",
+        "instrument_id": "equity-us-abbv",
+        "currency": "USD",
+        "settlement_date": "2026-04-10",
+    }
+    transactions = [
+        {
+            **common,
+            "transaction_id": "buy",
+            "transaction_sequence": 1,
+            "transaction_type": "buy",
+            "trade_date": "2026-04-10",
+            "quantity": 100.0,
+            "gross_amount": 1000.0,
+            "fees": 10.0,
+            "taxes": 0.0,
+        },
+        {
+            **common,
+            "transaction_id": "dividend",
+            "transaction_sequence": 2,
+            "transaction_type": "dividend",
+            "trade_date": "2026-04-11",
+            "settlement_date": "2026-04-11",
+            "quantity": None,
+            "gross_amount": 50.0,
+            "fees": 0.0,
+            "taxes": 5.0,
+        },
+        {
+            **common,
+            "transaction_id": "sell",
+            "transaction_sequence": 3,
+            "transaction_type": "sell",
+            "trade_date": "2026-04-12",
+            "settlement_date": "2026-04-12",
+            "quantity": 40.0,
+            "gross_amount": 480.0,
+            "fees": 2.0,
+            "taxes": 0.0,
+        },
+    ]
+
+    cycle = build_current_position_cycle_costs(
+        transactions,
+        as_of_date=date(2026, 4, 12),
+    )["equity-us-abbv"]
+
+    assert cycle["quantity"] == pytest.approx(60.0)
+    assert cycle["net_invested"] == pytest.approx(487.0)
+    assert cycle["coverage_complete"] is True
+
+
+def test_current_position_cycle_cost_uses_post_split_quantities() -> None:
+    transactions = [
+        _split_test_transaction(
+            "buy",
+            "buy",
+            "2026-07-08",
+            100.0,
+            1000.0,
+            transaction_sequence=1,
+        ),
+        _split_test_transaction(
+            "sell",
+            "sell",
+            "2026-07-11",
+            150.0,
+            900.0,
+            transaction_sequence=2,
+        ),
+    ]
+
+    cycle = build_current_position_cycle_costs(
+        transactions,
+        as_of_date=date(2026, 7, 11),
+        corporate_actions=[_share_split_event()],
+    )["equity-us-abbv"]
+
+    assert cycle["quantity"] == pytest.approx(50.0)
+    assert cycle["net_invested"] == pytest.approx(100.0)
 
 
 def test_rejects_position_transfer_with_inconsistent_gross_amount(client):

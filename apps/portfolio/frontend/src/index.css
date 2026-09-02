@@ -885,22 +885,15 @@ button:disabled {
   background: var(--portfolio-accent);
 }
 
-.holdings-main-table .holding-select-cell {
-  width: 38px;
-  text-align: center;
-}
-
 .holdings-table th,
 .holdings-table td {
   vertical-align: middle;
 }
 
-.holdings-main-table tbody tr:not(.total-row),
 .position-lots-row {
   cursor: pointer;
 }
 
-.holdings-main-table tbody tr:not(.total-row):hover,
 .position-lots-row:hover {
   background: #ffffff;
 }
@@ -927,19 +920,33 @@ button:disabled {
   white-space: nowrap;
 }
 
+.holding-instrument-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.holding-instrument-link:hover {
+  color: var(--portfolio-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.holding-instrument-link:focus-visible {
+  outline: 2px solid var(--portfolio-accent);
+  outline-offset: 2px;
+}
+
 .holding-secondary {
   color: var(--portfolio-muted);
   font-size: 12px;
   font-weight: 400;
-}
-
-.row-select {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: #ffffff;
 }
 
 input[type='checkbox'] {
@@ -3308,7 +3315,7 @@ input[type='checkbox'] {
   background: var(--portfolio-table-header-background);
 }
 
-.holdings-section-data-row td:first-child,
+.holdings-section-table tbody tr:not(.holdings-section-subtotal-row) td:first-child,
 .holdings-section-subtotal-row td:first-child {
   position: sticky;
   left: 0;
@@ -3324,15 +3331,6 @@ input[type='checkbox'] {
   text-align: center;
 }
 
-.holdings-section-data-row {
-  cursor: pointer;
-}
-
-.holdings-section-data-row:focus-visible {
-  outline: 2px solid var(--portfolio-accent);
-  outline-offset: -2px;
-}
-
 .holdings-section-subtotal-row td {
   border-top: 1px solid var(--portfolio-line-strong);
   background: var(--portfolio-table-group-background);
@@ -3340,6 +3338,24 @@ input[type='checkbox'] {
 
 .holdings-section-subtotal-row td:first-child {
   background: var(--portfolio-table-group-background);
+}
+
+.holdings-table-shell tbody td,
+.holdings-section-table-shell tbody td {
+  cursor: grab;
+}
+
+.holdings-table-shell .holding-instrument-link,
+.holdings-section-table-shell .holding-instrument-link {
+  cursor: pointer;
+}
+
+.holdings-table-shell.is-panning,
+.holdings-section-table-shell.is-panning,
+.holdings-table-shell.is-panning tbody td,
+.holdings-section-table-shell.is-panning tbody td {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .derivative-underlying-list {
@@ -3358,13 +3374,6 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
   font-size: 11px;
   line-height: 1.4;
-}
-
-.holdings-main-table .holdings-row-active td:first-child {
-  background: var(--portfolio-accent-soft);
-  box-shadow:
-    inset 3px 0 0 var(--portfolio-accent),
-    1px 0 0 var(--portfolio-line);
 }
 
 .portfolio-table-config-backdrop {
@@ -9982,11 +9991,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   .instrument-price-chart-instrument .price-chart-readout {
     margin-left: 0;
   }
-}
-
-.holdings-row-active .row-select {
-  border-color: var(--portfolio-accent);
-  background: var(--portfolio-accent);
 }
 
 .portfolio-workspace-page {

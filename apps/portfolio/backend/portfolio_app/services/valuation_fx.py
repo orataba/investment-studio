@@ -24,6 +24,10 @@ InstrumentDetail = dict[str, object]
 InstrumentDetailCache = dict[str, InstrumentDetail | None]
 InstrumentDetailLoader = Callable[[str], InstrumentDetail | None]
 FxInstrumentMap = dict[tuple[str, str], str]
+FxRateResolutionCache = dict[
+    tuple[date, str, str],
+    dict[str, object] | None,
+]
 
 
 def _safe_float(value: object) -> float | None:
@@ -283,6 +287,35 @@ def resolve_fx_rate_on(
             }
         ),
     }
+
+
+def resolve_fx_rate_on_cached(
+    *,
+    as_of_date: date,
+    base_currency: str,
+    quote_currency: str,
+    direct_instruments: FxInstrumentMap,
+    instrument_detail_cache: InstrumentDetailCache,
+    instrument_detail_loader: InstrumentDetailLoader,
+    resolution_cache: FxRateResolutionCache,
+) -> dict[str, object] | None:
+    """Reuse identical FX boundary resolutions within one calculation run."""
+
+    cache_key = (
+        as_of_date,
+        normalized_currency(base_currency),
+        normalized_currency(quote_currency),
+    )
+    if cache_key not in resolution_cache:
+        resolution_cache[cache_key] = resolve_fx_rate_on(
+            as_of_date=as_of_date,
+            base_currency=cache_key[1],
+            quote_currency=cache_key[2],
+            direct_instruments=direct_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=instrument_detail_loader,
+        )
+    return resolution_cache[cache_key]
 
 
 def resolve_previous_fx_rate_before(

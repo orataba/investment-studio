@@ -1937,9 +1937,20 @@ def _new_position_lot(
     entry_cost_basis: float,
     source_position_lot_id: str | None = None,
     linked_transaction_ids: set[str] | None = None,
+    cost_basis_origins: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     resolved_linked_transaction_ids = set(linked_transaction_ids or [])
     resolved_linked_transaction_ids.add(opened_by_transaction_id)
+    resolved_cost_basis_origins = deepcopy(cost_basis_origins or [])
+    if cost_basis_origins is None and entry_cost_basis > 1e-9:
+        resolved_cost_basis_origins = [
+            {
+                "origin_transaction_id": opened_by_transaction_id,
+                "acquisition_date": acquisition_date,
+                "entry_cost_basis": entry_cost_basis,
+                "remaining_cost_basis": entry_cost_basis,
+            }
+        ]
     return {
         "position_lot_id": position_lot_id,
         "portfolio_id": portfolio_id,
@@ -1977,6 +1988,7 @@ def _new_position_lot(
         "expense_cash_amount": 0.0,
         "return_of_capital_amount": 0.0,
         "realizations": [],
+        "_cost_basis_origins": resolved_cost_basis_origins,
         "_linked_transaction_ids": resolved_linked_transaction_ids,
     }
 
@@ -1997,6 +2009,42 @@ def _entry_amount_slice(position_lot: dict[str, object], field_name: str, quanti
     if entry_quantity <= 1e-9 or entry_amount <= 1e-9:
         return 0.0
     return entry_amount * (quantity / entry_quantity)
+
+
+def _take_position_lot_cost_basis_origins(
+    position_lot: dict[str, object],
+    amount: float,
+) -> list[dict[str, object]]:
+    """Release historical-cost origins in proportion to the lot basis."""
+
+    if amount <= 1e-9:
+        return []
+    origins = position_lot.get("_cost_basis_origins")
+    if not isinstance(origins, list):
+        return []
+    weights = [
+        max(_safe_float(origin.get("remaining_cost_basis")) or 0.0, 0.0)
+        if isinstance(origin, dict)
+        else 0.0
+        for origin in origins
+    ]
+    allocations = _proportional_allocations(amount, weights)
+    released: list[dict[str, object]] = []
+    for origin, allocation in zip(origins, allocations, strict=True):
+        if not isinstance(origin, dict) or allocation <= 1e-9:
+            continue
+        remaining = _safe_float(origin.get("remaining_cost_basis")) or 0.0
+        released_amount = min(allocation, remaining)
+        origin["remaining_cost_basis"] = remaining - released_amount
+        released.append(
+            {
+                "origin_transaction_id": origin.get("origin_transaction_id"),
+                "acquisition_date": origin.get("acquisition_date"),
+                "entry_cost_basis": origin.get("entry_cost_basis"),
+                "remaining_cost_basis": released_amount,
+            }
+        )
+    return released
 
 
 def _close_position_lot_if_needed(
@@ -2100,6 +2148,10 @@ def _consume_position_lots(
                 continue
             take_quantity = min(remaining, lot_quantity)
             take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity) if lot_quantity > 0 else 0.0
+            released_origins = _take_position_lot_cost_basis_origins(
+                position_lot,
+                take_cost_basis,
+            )
             position_lot["remaining_quantity"] = lot_quantity - take_quantity
             position_lot["remaining_cost_basis"] = lot_cost_basis - take_cost_basis
             slices.append(
@@ -2107,6 +2159,7 @@ def _consume_position_lots(
                     "position_lot": position_lot,
                     "quantity": take_quantity,
                     "cost_basis": take_cost_basis,
+                    "cost_basis_origins": released_origins,
                     "entry_gross_amount": _entry_amount_slice(
                         position_lot,
                         "entry_gross_amount",
@@ -2155,6 +2208,10 @@ def _consume_position_lots(
                 "entry_tax_amount",
                 take_quantity,
             )
+        released_origins = _take_position_lot_cost_basis_origins(
+            position_lot,
+            take_cost_basis,
+        )
         position_lot["remaining_quantity"] = lot_quantity - take_quantity
         position_lot["remaining_cost_basis"] = lot_cost_basis - take_cost_basis
         slices.append(
@@ -2162,6 +2219,7 @@ def _consume_position_lots(
                 "position_lot": position_lot,
                 "quantity": take_quantity,
                 "cost_basis": take_cost_basis,
+                "cost_basis_origins": released_origins,
                 "entry_gross_amount": entry_gross_amount,
                 "entry_fee_amount": entry_fee_amount,
                 "entry_tax_amount": entry_tax_amount,
@@ -2225,6 +2283,7 @@ def _apply_position_lot_return_of_capital(
             continue
         current_remaining_cost = _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
         reduced_amount = min(allocation, current_remaining_cost)
+        _take_position_lot_cost_basis_origins(position_lot, reduced_amount)
         position_lot["remaining_cost_basis"] = current_remaining_cost - reduced_amount
         position_lot["return_of_capital_amount"] = (
             (_safe_float(position_lot.get("return_of_capital_amount")) or 0.0) + reduced_amount
@@ -2296,6 +2355,7 @@ def build_position_lots(
         entry_cost_basis: float,
         source_position_lot_id: str | None = None,
         linked_transaction_ids: set[str] | None = None,
+        cost_basis_origins: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         resolved_cost_basis_method = _resolve_cost_basis_method(account_cost_methods, target_account_id)
         if resolved_cost_basis_method == "moving_average":
@@ -2325,6 +2385,19 @@ def build_position_lots(
                 position_lot["remaining_cost_basis"] = (
                     (_safe_float(position_lot.get("remaining_cost_basis")) or 0.0) + entry_cost_basis
                 )
+                origins = position_lot.setdefault("_cost_basis_origins", [])
+                if isinstance(origins, list):
+                    if cost_basis_origins is not None:
+                        origins.extend(deepcopy(cost_basis_origins))
+                    elif entry_cost_basis > 1e-9:
+                        origins.append(
+                            {
+                                "origin_transaction_id": opened_by_transaction_id,
+                                "acquisition_date": acquisition_date,
+                                "entry_cost_basis": entry_cost_basis,
+                                "remaining_cost_basis": entry_cost_basis,
+                            }
+                        )
                 if not isinstance(position_lot.get("instrument_ref"), dict) or not position_lot.get("instrument_ref"):
                     position_lot["instrument_ref"] = deepcopy(instrument_ref)
                 if (
@@ -2367,6 +2440,7 @@ def build_position_lots(
             entry_cost_basis=entry_cost_basis,
             source_position_lot_id=source_position_lot_id,
             linked_transaction_ids=linked_transaction_ids,
+            cost_basis_origins=cost_basis_origins,
         )
         position_lots_by_key[
             (target_account_id, target_position_reference_id)
@@ -2480,6 +2554,10 @@ def build_position_lots(
                         "Corporate action would eliminate a cost-bearing lot; record cash-in-lieu before applying it."
                     )
                 linked_ids = position_lot.get("_linked_transaction_ids")
+                cost_basis_origins = _take_position_lot_cost_basis_origins(
+                    position_lot,
+                    remaining_cost_basis,
+                )
                 successor_specs.append(
                     {
                         "old_lot_id": str(position_lot.get("position_lot_id") or ""),
@@ -2490,6 +2568,7 @@ def build_position_lots(
                         "currency": str(position_lot.get("currency") or ""),
                         "acquisition_date": str(position_lot.get("acquisition_date") or effective_date),
                         "linked_transaction_ids": set(linked_ids) if isinstance(linked_ids, set) else set(),
+                        "cost_basis_origins": cost_basis_origins,
                     }
                 )
                 position_lot["remaining_quantity"] = 0.0
@@ -2530,6 +2609,7 @@ def build_position_lots(
                     entry_cost_basis=remaining_cost_basis,
                     source_position_lot_id=str(spec["old_lot_id"]),
                     linked_transaction_ids=linked_transaction_ids,
+                    cost_basis_origins=list(spec["cost_basis_origins"]),
                 )
                 successor["corporate_action_event"] = deepcopy(event)
                 successor["predecessor_quantity"] = float(spec["old_quantity"])
@@ -2886,6 +2966,9 @@ def build_position_lots(
                         "entry_fee_amount": matched_entry_fee_amount,
                         "entry_tax_amount": matched_entry_tax_amount,
                         "entry_cost_basis": matched_cost_basis,
+                        "cost_basis_origins": deepcopy(
+                            slice_item.get("cost_basis_origins") or []
+                        ),
                         "source_position_lot_id": str(position_lot.get("position_lot_id") or "") or None,
                     }
                 )
@@ -2952,6 +3035,9 @@ def build_position_lots(
                         str(incoming_slice.get("source_position_lot_id") or "") or None
                     ),
                     linked_transaction_ids=linked_transaction_ids,
+                    cost_basis_origins=list(
+                        incoming_slice.get("cost_basis_origins") or []
+                    ),
                 )
             continue
 
@@ -3081,6 +3167,9 @@ def build_position_lots(
                 "income_cash_amount": _safe_float(raw_position_lot.get("income_cash_amount")) or 0.0,
                 "expense_cash_amount": _safe_float(raw_position_lot.get("expense_cash_amount")) or 0.0,
                 "return_of_capital_amount": _safe_float(raw_position_lot.get("return_of_capital_amount")) or 0.0,
+                "cost_basis_origins": deepcopy(
+                    raw_position_lot.get("_cost_basis_origins") or []
+                ),
                 "entry_price": _display_price_from_gross(
                     gross_amount=entry_gross_amount,
                     quantity=entry_quantity,
@@ -3122,6 +3211,184 @@ def summarize_position_lots(position_lots: list[dict[str, object]]) -> dict[str,
             1 for position_lot in position_lots if position_lot.get("status") == "closed"
         ),
         "realized_pnl": sum((_safe_float(position_lot.get("realized_pnl")) or 0.0) for position_lot in position_lots),
+    }
+
+
+def build_current_position_cycle_costs(
+    transactions: list[dict[str, object]],
+    *,
+    as_of_date: date,
+    corporate_actions: list[dict[str, object]] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Return economic net investment for each currently open security cycle."""
+
+    states: dict[str, dict[str, object]] = {}
+    recognized_transactions = [
+        item
+        for item in transactions
+        if _transaction_is_recognized_as_of(item, as_of_date)
+    ]
+    timeline: list[tuple[str, dict[str, object]]] = [
+        ("corporate_action", event)
+        for event in _resolved_corporate_actions(
+            recognized_transactions,
+            corporate_actions=corporate_actions,
+            as_of_date=as_of_date,
+        )
+    ] + [("transaction", transaction) for transaction in recognized_transactions]
+    timeline.sort(
+        key=lambda item: (
+            _corporate_action_sort_key(item[1])
+            if item[0] == "corporate_action"
+            else _transaction_timeline_sort_key(item[1])
+        )
+    )
+
+    for item_kind, transaction in timeline:
+        if item_kind == "corporate_action":
+            position_reference_id = str(transaction.get("instrument_id") or "")
+            state = states.get(position_reference_id)
+            if state is None:
+                continue
+            quantities = state.get("quantities_by_account")
+            if not isinstance(quantities, dict):
+                continue
+            for account_id, raw_quantity in list(quantities.items()):
+                quantities[account_id] = _rounded_split_quantity(
+                    _safe_float(raw_quantity) or 0.0,
+                    transaction,
+                )
+            state["quantity"] = sum(
+                _safe_float(raw_quantity) or 0.0
+                for raw_quantity in quantities.values()
+            )
+            continue
+
+        if _derivative_contract(transaction) is not None:
+            continue
+        position_reference_id = _position_reference_id(transaction)
+        if not position_reference_id:
+            continue
+        transaction_type = str(transaction.get("transaction_type") or "")
+        account_id = str(transaction.get("account_id") or "")
+        quantity = _safe_float(transaction.get("quantity")) or 0.0
+        gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
+        fees = _safe_float(transaction.get("fees")) or 0.0
+        taxes = _safe_float(transaction.get("taxes")) or 0.0
+        currency = valuation_fx.normalized_currency(transaction.get("currency"))
+        state = states.setdefault(
+            position_reference_id,
+            {
+                "quantity": 0.0,
+                "net_invested": 0.0,
+                "currency": currency,
+                "coverage_complete": True,
+                "quantities_by_account": {},
+            },
+        )
+        current_quantity = _safe_float(state.get("quantity")) or 0.0
+        quantities = state.get("quantities_by_account")
+        if not isinstance(quantities, dict):
+            state["coverage_complete"] = False
+            continue
+
+        if (
+            transaction_type in {"transfer_in", "transfer_out"}
+            and transaction.get("transfer_object_type") == "position"
+            and quantity > 0
+        ):
+            account_quantity = _safe_float(quantities.get(account_id)) or 0.0
+            quantities[account_id] = max(
+                account_quantity
+                + (quantity if transaction_type == "transfer_in" else -quantity),
+                0.0,
+            )
+            state["quantity"] = sum(
+                _safe_float(raw_quantity) or 0.0
+                for raw_quantity in quantities.values()
+            )
+            continue
+
+        if transaction_type in {"opening_balance", "buy"} and quantity > 0:
+            if current_quantity <= 1e-9:
+                state.update(
+                    {
+                        "quantity": 0.0,
+                        "net_invested": 0.0,
+                        "currency": currency,
+                        "coverage_complete": True,
+                        "quantities_by_account": {},
+                    }
+                )
+                current_quantity = 0.0
+                quantities = state["quantities_by_account"]
+            if currency != state.get("currency"):
+                state["coverage_complete"] = False
+            invested_amount = (
+                gross_amount
+                if transaction_type == "opening_balance"
+                else gross_amount + fees + taxes
+            )
+            quantities[account_id] = (
+                (_safe_float(quantities.get(account_id)) or 0.0) + quantity
+            )
+            state["quantity"] = current_quantity + quantity
+            state["net_invested"] = (
+                (_safe_float(state.get("net_invested")) or 0.0)
+                + invested_amount
+            )
+            continue
+
+        if transaction_type == "dividend_reinvestment" and quantity > 0:
+            if current_quantity <= 1e-9:
+                state["coverage_complete"] = False
+            if currency != state.get("currency"):
+                state["coverage_complete"] = False
+            quantities[account_id] = (
+                (_safe_float(quantities.get(account_id)) or 0.0) + quantity
+            )
+            state["quantity"] = current_quantity + quantity
+            state["net_invested"] = (
+                (_safe_float(state.get("net_invested")) or 0.0) + fees + taxes
+            )
+            continue
+
+        if transaction_type in {"sell", "maturity_redemption"} and quantity > 0:
+            quantities[account_id] = max(
+                (_safe_float(quantities.get(account_id)) or 0.0) - quantity,
+                0.0,
+            )
+            state["quantity"] = sum(
+                _safe_float(raw_quantity) or 0.0
+                for raw_quantity in quantities.values()
+            )
+            state["net_invested"] = (
+                (_safe_float(state.get("net_invested")) or 0.0)
+                - (gross_amount - fees - taxes)
+            )
+            continue
+
+        if transaction_type in {"dividend", "coupon", "return_of_capital"}:
+            if current_quantity > 1e-9:
+                state["net_invested"] = (
+                    (_safe_float(state.get("net_invested")) or 0.0)
+                    - (gross_amount - fees - taxes)
+                )
+            continue
+
+        if transaction_type in {"fee", "tax"} and current_quantity > 1e-9:
+            state["net_invested"] = (
+                (_safe_float(state.get("net_invested")) or 0.0) + gross_amount
+            )
+
+    return {
+        position_reference_id: {
+            key: value
+            for key, value in state.items()
+            if key != "quantities_by_account"
+        }
+        for position_reference_id, state in states.items()
+        if (_safe_float(state.get("quantity")) or 0.0) > 1e-9
     }
 
 

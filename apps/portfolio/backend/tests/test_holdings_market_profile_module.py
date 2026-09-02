@@ -160,17 +160,28 @@ def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
         "cash_balances": [
             {
                 "currency": "USD",
-                "amount": "50",
-                "amount_base": "50",
-                "account_ids": ["cash-b", "cash-a"],
+                "amount": "30",
+                "amount_base": "30",
+                "account_id": "cash-a",
+            },
+            {
+                "currency": "USD",
+                "amount": "20",
+                "amount_base": "20",
+                "account_id": "cash-b",
             },
             {
                 "currency": "EUR",
                 "amount": 100.0,
                 "amount_base": 120.0,
-                "account_ids": ["cash-eur"],
+                "account_id": "cash-eur",
             },
-            {"currency": "JPY", "amount": 0.0, "amount_base": 0.0},
+            {
+                "currency": "JPY",
+                "amount": 0.0,
+                "amount_base": 0.0,
+                "account_id": "cash-jpy",
+            },
         ],
         "as_of_date": date(2026, 1, 3),
         "previous_as_of_date": date(2026, 1, 2),
@@ -184,8 +195,12 @@ def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
         cash_instrument_id=fake_cash_id,
         cash_instrument_ref=fake_cash_ref,
     )
-    assert [row["currency"] for row in rows] == ["EUR", "USD"]
-    assert rows[1]["account_ids"] == ["cash-a", "cash-b"]
+    assert [row["account_id"] for row in rows] == ["cash-a", "cash-b", "cash-eur"]
+    assert [row["line_id"] for row in rows] == [
+        "patched:USD:cash-a",
+        "patched:USD:cash-b",
+        "patched:EUR:cash-eur",
+    ]
 
 
 def test_position_day_change_in_base_separates_local_and_fx_effects() -> None:
@@ -216,6 +231,91 @@ def test_position_day_change_in_base_separates_local_and_fx_effects() -> None:
     assert metrics["day_change_value_base"] == pytest.approx(31.5)
     assert metrics["day_change_pct"] == pytest.approx(0.045)
     assert metrics["fx_rate_source_instrument_ids"] == ["fx-usd-cny"]
+
+
+def test_position_unrealized_pnl_reconciles_price_fx_and_total_components() -> None:
+    def resolve_fx(**kwargs):
+        assert kwargs["as_of_date"] == date(2026, 1, 1)
+        return {"rate": 7.8, "stale": False}
+
+    metrics = holdings_market_profile.position_unrealized_metrics(
+        cost_basis=100.0,
+        cost_basis_base_current_fx=790.0,
+        cost_basis_origins=[
+            {
+                "acquisition_date": "2026-01-01",
+                "remaining_cost_basis": 100.0,
+            }
+        ],
+        market_value=110.0,
+        market_value_base=869.0,
+        currency="USD",
+        base_currency="CNY",
+        as_of_date=date(2026, 1, 3),
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=resolve_fx,
+    )
+
+    assert metrics["cost_basis_historical_base"] == pytest.approx(780.0)
+    assert metrics["cost_basis_current_fx_rate_to_base"] == pytest.approx(7.9)
+    assert metrics["cost_basis_fx_rate_to_base"] == pytest.approx(7.8)
+    assert metrics["unrealized_price_pnl"] == pytest.approx(10.0)
+    assert metrics["unrealized_price_pnl_base"] == pytest.approx(79.0)
+    assert metrics["unrealized_fx_pnl_base"] == pytest.approx(10.0)
+    assert metrics["unrealized_pnl_base"] == pytest.approx(89.0)
+    assert metrics["unrealized_pnl_base"] == pytest.approx(
+        metrics["unrealized_price_pnl_base"] + metrics["unrealized_fx_pnl_base"]
+    )
+
+
+def test_position_unrealized_pnl_does_not_invent_missing_historical_fx() -> None:
+    metrics = holdings_market_profile.position_unrealized_metrics(
+        cost_basis=100.0,
+        cost_basis_base_current_fx=790.0,
+        cost_basis_origins=[
+            {
+                "acquisition_date": "2026-01-01",
+                "remaining_cost_basis": 100.0,
+            }
+        ],
+        market_value=110.0,
+        market_value_base=869.0,
+        currency="USD",
+        base_currency="CNY",
+        as_of_date=date(2026, 1, 3),
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=lambda **_kwargs: None,
+    )
+
+    assert metrics["unrealized_price_pnl"] == pytest.approx(10.0)
+    assert metrics["unrealized_price_pnl_base"] == pytest.approx(79.0)
+    assert metrics["cost_basis_historical_base"] is None
+    assert metrics["unrealized_fx_pnl_base"] is None
+    assert metrics["unrealized_pnl_base"] is None
+    assert metrics["cost_basis_fx_coverage_status"] == "unavailable"
+
+
+def test_zero_book_cost_position_keeps_complete_base_unrealized_pnl() -> None:
+    metrics = holdings_market_profile.position_unrealized_metrics(
+        cost_basis=0.0,
+        cost_basis_base_current_fx=0.0,
+        cost_basis_origins=[],
+        market_value=10.0,
+        market_value_base=79.0,
+        currency="USD",
+        base_currency="CNY",
+        as_of_date=date(2026, 1, 3),
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=lambda **_kwargs: None,
+    )
+
+    assert metrics["cost_basis_historical_base"] == pytest.approx(0.0)
+    assert metrics["unrealized_fx_pnl_base"] == pytest.approx(0.0)
+    assert metrics["unrealized_pnl_base"] == pytest.approx(79.0)
+    assert metrics["cost_basis_fx_coverage_status"] == "complete"
 
 
 def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position() -> None:
@@ -697,6 +797,11 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
         position_market_value=fake_position_market_value,
         holding_day_change=fake_holding_day_change,
         position_day_change=fake_position_day_change,
+        resolve_fx_rate_on=lambda **_kwargs: {
+            "rate": 1.0,
+            "as_of_date": "2026-01-03",
+            "stale": False,
+        },
         normalize_instrument=fake_normalize_instrument,
         build_cash_rows=fake_build_cash_rows,
         build_pending_rows=lambda **_kwargs: [],

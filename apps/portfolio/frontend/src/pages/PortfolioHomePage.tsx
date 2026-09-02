@@ -51,9 +51,8 @@ import {
   type PortfolioTaxonomyNodeRecord,
 } from '../lib/api'
 import { baseAmountForRow, normalizedCurrency } from '../lib/holdingAmounts'
+import { useHorizontalTablePan } from '../lib/useHorizontalTablePan'
 import {
-  holdingDayChangeExportValue,
-  holdingDayChangeUnavailable,
   holdingUsesEventValuation,
   isOptionObligationHolding,
 } from '../lib/holdingPresentation'
@@ -79,15 +78,20 @@ type HoldingsColumnKey =
   | 'market_value_base'
   | 'cost_basis'
   | 'cost_basis_base'
+  | 'cost_basis_historical_base'
+  | 'cost_basis_fx_rate'
+  | 'current_fx_rate'
+  | 'net_invested'
+  | 'break_even_price'
   | 'weight'
   | 'accounts'
   | 'open_lots'
-  | 'day_change_value'
-  | 'local_day_change_value'
-  | 'fx_day_change_value'
-  | 'day_change_pct'
-  | 'unrealized_value'
-  | 'unrealized_pct'
+  | 'unrealized_price_pnl'
+  | 'unrealized_price_pnl_base'
+  | 'unrealized_fx_pnl_base'
+  | 'unrealized_pnl_base'
+  | 'unrealized_return'
+  | 'unrealized_return_base'
   | 'instrument_return_1w'
   | 'instrument_return_1m'
   | 'instrument_return_3m'
@@ -181,19 +185,24 @@ export const HOLDINGS_GROUP_AGGREGATION_KIND: Record<
   quote_basis: 'none',
   quote_provider: 'none',
   quote_status: 'none',
-  market_value: 'sum',
+  current_fx_rate: 'none',
+  market_value: 'none',
   market_value_base: 'sum',
-  cost_basis: 'sum',
+  cost_basis: 'none',
   cost_basis_base: 'sum',
+  cost_basis_historical_base: 'sum',
+  cost_basis_fx_rate: 'none',
+  net_invested: 'none',
+  break_even_price: 'none',
   weight: 'sum',
   accounts: 'none',
   open_lots: 'sum',
-  day_change_value: 'sum',
-  local_day_change_value: 'sum',
-  fx_day_change_value: 'sum',
-  day_change_pct: 'recomputed_ratio',
-  unrealized_value: 'sum',
-  unrealized_pct: 'recomputed_ratio',
+  unrealized_price_pnl: 'none',
+  unrealized_price_pnl_base: 'sum',
+  unrealized_fx_pnl_base: 'sum',
+  unrealized_pnl_base: 'sum',
+  unrealized_return: 'none',
+  unrealized_return_base: 'recomputed_ratio',
   instrument_return_1w: 'current_weight_return',
   instrument_return_1m: 'current_weight_return',
   instrument_return_3m: 'current_weight_return',
@@ -287,7 +296,14 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   },
   {
     label: 'Quote',
-    columns: ['last_price', 'quote_date', 'quote_basis', 'quote_provider', 'quote_status'],
+    columns: [
+      'last_price',
+      'current_fx_rate',
+      'quote_date',
+      'quote_basis',
+      'quote_provider',
+      'quote_status',
+    ],
   },
   {
     label: 'Instrument Trend',
@@ -324,17 +340,21 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
       'avg_cost_book',
       'cost_basis',
       'cost_basis_base',
+      'cost_basis_historical_base',
+      'cost_basis_fx_rate',
+      'net_invested',
+      'break_even_price',
     ],
   },
   {
     label: 'P&L',
     columns: [
-      'day_change_pct',
-      'day_change_value',
-      'local_day_change_value',
-      'fx_day_change_value',
-      'unrealized_value',
-      'unrealized_pct',
+      'unrealized_price_pnl',
+      'unrealized_price_pnl_base',
+      'unrealized_fx_pnl_base',
+      'unrealized_pnl_base',
+      'unrealized_return',
+      'unrealized_return_base',
     ],
   },
   {
@@ -356,24 +376,20 @@ const ALL_HOLDINGS_COLUMN_KEYS = HOLDINGS_COLUMN_GROUPS.flatMap((group) => group
 
 const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'instrument',
-  'taxonomy_top',
-  'taxonomy_leaf',
+  'ticker',
   'currency',
-  'holding_date',
-  'quantity',
   'last_price',
+  'instrument_return_1m',
+  'instrument_return_mtd',
+  'quantity',
   'market_value_base',
   'weight',
-  'cost_basis_base',
-  'day_change_value',
-  'fx_day_change_value',
-  'unrealized_value',
-  'unrealized_pct',
-  'instrument_return_1w',
-  'instrument_return_1m',
-  'instrument_volatility_3m',
-  'forward_risk_share',
-  'coverage',
+  'avg_cost_book',
+  'break_even_price',
+  'unrealized_price_pnl',
+  'unrealized_fx_pnl_base',
+  'unrealized_pnl_base',
+  'unrealized_return_base',
 ]
 
 const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
@@ -392,19 +408,24 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   quote_basis: 126,
   quote_provider: 132,
   quote_status: 120,
+  current_fx_rate: 132,
   market_value: 148,
   market_value_base: 164,
   cost_basis: 148,
   cost_basis_base: 164,
+  cost_basis_historical_base: 176,
+  cost_basis_fx_rate: 148,
+  net_invested: 156,
+  break_even_price: 148,
   weight: 104,
   accounts: 104,
   open_lots: 112,
-  day_change_value: 140,
-  local_day_change_value: 140,
-  fx_day_change_value: 132,
-  day_change_pct: 120,
-  unrealized_value: 148,
-  unrealized_pct: 148,
+  unrealized_price_pnl: 172,
+  unrealized_price_pnl_base: 184,
+  unrealized_fx_pnl_base: 176,
+  unrealized_pnl_base: 184,
+  unrealized_return: 156,
+  unrealized_return_base: 168,
   instrument_return_1w: 128,
   instrument_return_1m: 128,
   instrument_return_3m: 128,
@@ -443,19 +464,24 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   quote_basis: 104,
   quote_provider: 104,
   quote_status: 104,
+  current_fx_rate: 104,
   market_value: 108,
   market_value_base: 116,
   cost_basis: 108,
   cost_basis_base: 116,
+  cost_basis_historical_base: 128,
+  cost_basis_fx_rate: 112,
+  net_invested: 116,
+  break_even_price: 112,
   weight: 84,
   accounts: 84,
   open_lots: 88,
-  day_change_value: 104,
-  local_day_change_value: 104,
-  fx_day_change_value: 96,
-  day_change_pct: 92,
-  unrealized_value: 108,
-  unrealized_pct: 104,
+  unrealized_price_pnl: 124,
+  unrealized_price_pnl_base: 132,
+  unrealized_fx_pnl_base: 124,
+  unrealized_pnl_base: 132,
+  unrealized_return: 112,
+  unrealized_return_base: 120,
   instrument_return_1w: 92,
   instrument_return_1m: 92,
   instrument_return_3m: 92,
@@ -500,8 +526,9 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     state: {
       columns: [
         'instrument',
-        'instrument_type',
-        'holding_date',
+        'ticker',
+        'currency',
+        'last_price',
         'market_value_base',
         'weight',
         'price_chart_6m',
@@ -512,15 +539,9 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'instrument_return_mtd',
         'instrument_return_ytd',
         'instrument_return_1y',
-        'day_change_pct',
-        'day_change_value',
-        'local_day_change_value',
-        'fx_day_change_value',
-        'unrealized_value',
-        'unrealized_pct',
+        'unrealized_return_base',
         'instrument_volatility_1m',
         'instrument_volatility_3m',
-        'instrument_volatility_6m',
         'instrument_volatility_1y',
         'forward_risk_share',
         'instrument_current_drawdown',
@@ -529,7 +550,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
       ],
       columnWidths: {},
       groupBy: 'none',
-      sortField: 'unrealized_pct',
+      sortField: 'unrealized_return_base',
       sortDirection: 'desc',
     },
   },
@@ -794,46 +815,6 @@ function holdingCostMethodLabel(row: PortfolioHoldingRow) {
     : costMethodLabel(row.cost_basis_method)
 }
 
-function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  return baseAmountForRow(row, workspace.base_currency, row.day_change_value_base, row.day_change_value)
-}
-
-function localDayChangeBaseForRow(row: PortfolioHoldingRow) {
-  return finiteNumber(row.local_day_change_value_base)
-}
-
-function fxDayChangeBaseForRow(row: PortfolioHoldingRow) {
-  return finiteNumber(row.fx_day_change_value_base)
-}
-
-function fxRateDetailTitle(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  const currentRate = finiteNumber(row.fx_rate_to_base)
-  const previousRate = finiteNumber(row.previous_fx_rate_to_base)
-  if (currentRate == null || previousRate == null) {
-    return undefined
-  }
-  const currency = holdingCurrency(row)
-  if (normalizedCurrency(currency) === normalizedCurrency(workspace.base_currency)) {
-    return undefined
-  }
-  const currentDate = row.fx_rate_as_of_date ? ` (${row.fx_rate_as_of_date})` : ''
-  const previousDate = row.previous_fx_rate_as_of_date ? ` (${row.previous_fx_rate_as_of_date})` : ''
-  const sources = row.fx_rate_source_instrument_ids?.length
-    ? ` · Rate series: ${row.fx_rate_source_instrument_ids
-        .map((instrumentId) => instrumentId.replace(/^fx-/, '').split('-').join('/').toUpperCase())
-        .join(', ')}`
-    : ''
-  const freshness = row.fx_rate_stale ? ' · Current rate is carried forward' : ''
-  return `1 ${currency} = ${formatNumber(currentRate, 6)} ${workspace.base_currency}${currentDate} · Previous ${formatNumber(previousRate, 6)}${previousDate}${sources}${freshness}`
-}
-
-function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  return {
-    value: dayChangeBaseForRow(row, workspace),
-    currency: workspace.base_currency,
-  }
-}
-
 function bookAvgCost(row: PortfolioHoldingRow) {
   const quantity = finiteNumber(row.quantity)
   const costBasis = finiteNumber(row.cost_basis)
@@ -892,31 +873,8 @@ function chartReturnForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKe
   return (lastPoint.value - firstPoint.value) / Math.abs(firstPoint.value)
 }
 
-function unrealizedValue(row: PortfolioHoldingRow) {
-  if (holdingUsesEventValuation(row)) {
-    return null
-  }
-  const marketValue = finiteNumber(row.market_value)
-  const costBasis = finiteNumber(row.cost_basis)
-  return marketValue == null || costBasis == null ? null : marketValue - costBasis
-}
-
-function unrealizedPct(row: PortfolioHoldingRow) {
-  const costBasis = finiteNumber(row.cost_basis)
-  const unrealized = unrealizedValue(row)
-  if (costBasis == null || Math.abs(costBasis) <= 1e-12 || unrealized == null) {
-    return null
-  }
-  return unrealized / Math.abs(costBasis)
-}
-
-function unrealizedBaseValueForWorkspace(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  if (holdingUsesEventValuation(row)) {
-    return null
-  }
-  const marketValue = baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value)
-  const costBasis = baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis)
-  return marketValue == null || costBasis == null ? null : marketValue - costBasis
+function positionMetric(row: PortfolioHoldingRow, value: number | null | undefined) {
+  return holdingUsesEventValuation(row) ? null : finiteNumber(value)
 }
 
 function holdingHasMaterialEventValuation(row: PortfolioHoldingRow) {
@@ -943,33 +901,41 @@ function totalsContainMaterialEventValuation(rows: PortfolioHoldingRow[]) {
   return nonCashHoldingRows(rows).some(holdingHasMaterialEventValuation)
 }
 
-function totalUnrealizedBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+function totalUnrealizedBase(rows: PortfolioHoldingRow[]) {
   if (totalsContainMaterialEventValuation(rows)) {
     return null
   }
   const nonCashRows = nonCashHoldingRows(rows)
-  if (!nonCashRows.length) {
-    return 0
-  }
-  const marketValue = sumCompleteNumbers(nonCashRows, (row) =>
-    baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value),
-  )
-  const costBasis = sumCompleteNumbers(nonCashRows, (row) =>
-    baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
-  )
-  return marketValue == null || costBasis == null ? null : marketValue - costBasis
+  return nonCashRows.length
+    ? sumCompleteNumbers(nonCashRows, (row) => row.unrealized_pnl_base)
+    : 0
 }
 
-function totalUnrealizedPct(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+function totalUnrealizedPct(rows: PortfolioHoldingRow[]) {
   const nonCashRows = nonCashHoldingRows(rows)
   const costBasis = sumCompleteNumbers(nonCashRows, (row) =>
-    baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
+    row.cost_basis_historical_base,
   )
-  const unrealized = totalUnrealizedBase(rows, workspace)
+  const unrealized = totalUnrealizedBase(rows)
   if (costBasis == null || unrealized == null || Math.abs(costBasis) <= 1e-12) {
     return null
   }
   return unrealized / Math.abs(costBasis)
+}
+
+function totalHistoricalCostBasisBase(rows: PortfolioHoldingRow[]) {
+  return sumCompleteNumbers(costBasisHoldingRows(rows), (row) =>
+    row.cost_basis_historical_base,
+  )
+}
+
+function totalPositionMetric(
+  rows: PortfolioHoldingRow[],
+  accessor: (row: PortfolioHoldingRow) => number | null | undefined,
+) {
+  return totalsContainMaterialEventValuation(rows)
+    ? null
+    : sumCompleteNumbers(nonCashHoldingRows(rows), accessor)
 }
 
 function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1004,27 +970,6 @@ function totalForwardRiskShare(rows: PortfolioHoldingRow[], workspace: HoldingsW
         holdingModeledRiskMetric(row, row.forward_risk_share),
       )
     : null
-}
-
-function totalDayChangeBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  if (totalsContainMaterialEventValuation(rows)) {
-    return null
-  }
-  const rowTotal = sumCompleteNumbers(rows, (row) => dayChangeBaseForRow(row, workspace))
-  return rowsCoverWorkspace(rows, workspace) ? workspace.totals.day_change_value ?? rowTotal : rowTotal
-}
-
-function totalDayChangePct(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  const explicit = rowsCoverWorkspace(rows, workspace) ? finiteNumber(workspace.totals.day_change_pct) : null
-  if (explicit != null) {
-    return explicit
-  }
-  const dayChange = totalDayChangeBase(rows, workspace)
-  const marketValue = totalMarketValueBase(rows, workspace)
-  const priorMarketValue = marketValue != null && dayChange != null ? marketValue - dayChange : null
-  return dayChange == null || priorMarketValue == null || Math.abs(priorMarketValue) <= 1e-12
-    ? null
-    : dayChange / priorMarketValue
 }
 
 function rowMarketValueBase(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
@@ -1848,6 +1793,8 @@ function holdingColumnExportValue(
       return row.quote_provider ?? null
     case 'quote_status':
       return row.quote_status ?? null
+    case 'current_fx_rate':
+      return row.cost_basis_current_fx_rate_to_base ?? null
     case 'market_value':
       return row.market_value
     case 'market_value_base':
@@ -1856,27 +1803,32 @@ function holdingColumnExportValue(
       return row.cost_basis
     case 'cost_basis_base':
       return baseAmountForRow(row, context.workspace.base_currency, row.cost_basis_base, row.cost_basis)
+    case 'cost_basis_historical_base':
+      return row.cost_basis_historical_base ?? null
+    case 'cost_basis_fx_rate':
+      return row.cost_basis_fx_rate_to_base ?? null
+    case 'net_invested':
+      return row.net_invested ?? null
+    case 'break_even_price':
+      return row.break_even_price ?? null
     case 'weight':
       return row.allocation
     case 'accounts':
       return row.account_count ?? 0
     case 'open_lots':
       return row.open_position_lot_count ?? 0
-    case 'day_change_value':
-      return holdingDayChangeExportValue(
-        row,
-        dayChangeBaseForRow(row, context.workspace),
-      )
-    case 'local_day_change_value':
-      return holdingDayChangeExportValue(row, localDayChangeBaseForRow(row))
-    case 'fx_day_change_value':
-      return holdingDayChangeExportValue(row, fxDayChangeBaseForRow(row))
-    case 'day_change_pct':
-      return holdingDayChangeExportValue(row, row.day_change_pct)
-    case 'unrealized_value':
-      return holdingUsesEventValuation(row) ? 'N/A' : unrealizedValue(row)
-    case 'unrealized_pct':
-      return holdingUsesEventValuation(row) ? 'N/A' : unrealizedPct(row)
+    case 'unrealized_price_pnl':
+      return positionMetric(row, row.unrealized_price_pnl) ?? 'N/A'
+    case 'unrealized_price_pnl_base':
+      return positionMetric(row, row.unrealized_price_pnl_base) ?? 'N/A'
+    case 'unrealized_fx_pnl_base':
+      return positionMetric(row, row.unrealized_fx_pnl_base) ?? 'N/A'
+    case 'unrealized_pnl_base':
+      return positionMetric(row, row.unrealized_pnl_base) ?? 'N/A'
+    case 'unrealized_return':
+      return positionMetric(row, row.unrealized_return) ?? 'N/A'
+    case 'unrealized_return_base':
+      return positionMetric(row, row.unrealized_return_base) ?? 'N/A'
     case 'instrument_return_1w':
       return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_1w ?? null
     case 'instrument_return_1m':
@@ -1933,40 +1885,26 @@ function holdingColumnSubtotalExportValue(
     return null
   }
   switch (column) {
-    case 'market_value':
     case 'market_value_base':
       return totalMarketValueBase(rows, context.workspace)
-    case 'cost_basis':
     case 'cost_basis_base':
       return totalCostBasisBase(rows, context.workspace)
+    case 'cost_basis_historical_base':
+      return totalHistoricalCostBasisBase(rows)
     case 'weight':
       return totalAllocation(rows, context.workspace)
     case 'open_lots':
       return sumNumbers(rows, (row) => row.open_position_lot_count)
-    case 'day_change_value':
+    case 'unrealized_price_pnl_base':
+      return totalPositionMetric(rows, (row) => row.unrealized_price_pnl_base) ?? 'N/A'
+    case 'unrealized_fx_pnl_base':
+      return totalPositionMetric(rows, (row) => row.unrealized_fx_pnl_base) ?? 'N/A'
+    case 'unrealized_pnl_base':
+      return totalUnrealizedBase(rows) ?? 'N/A'
+    case 'unrealized_return_base':
       return totalsContainMaterialEventValuation(rows)
         ? 'N/A'
-        : totalDayChangeBase(rows, context.workspace)
-    case 'local_day_change_value':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : sumCompleteNumbers(rows, localDayChangeBaseForRow)
-    case 'fx_day_change_value':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : sumCompleteNumbers(rows, fxDayChangeBaseForRow)
-    case 'day_change_pct':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : totalDayChangePct(rows, context.workspace)
-    case 'unrealized_value':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : totalUnrealizedBase(rows, context.workspace)
-    case 'unrealized_pct':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : totalUnrealizedPct(rows, context.workspace)
+        : totalUnrealizedPct(rows)
     case 'instrument_return_1w':
       return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
     case 'instrument_return_1m':
@@ -2091,7 +2029,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   avg_cost_book: {
     key: 'avg_cost_book',
-    label: 'Avg Cost',
+    label: 'Book Avg Cost',
     align: 'right',
     render: (row) => formatUnitPrice(bookAvgCost(row), holdingCurrency(row)),
     sortValue: (row) => bookAvgCost(row),
@@ -2131,17 +2069,23 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => (row.quote_status ? formatLabel(row.quote_status) : '—'),
     sortValue: (row) => row.quote_status,
   },
+  current_fx_rate: {
+    key: 'current_fx_rate',
+    label: 'Current FX to Base',
+    align: 'right',
+    render: (row) => formatNumber(row.cost_basis_current_fx_rate_to_base, 6),
+    sortValue: (row) => row.cost_basis_current_fx_rate_to_base,
+  },
   market_value: {
     key: 'market_value',
-    label: 'Position Value',
+    label: 'Position Value (Local)',
     align: 'right',
     render: (row) => formatCurrency(row.market_value, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value),
-    total: (rows, context) => formatCurrency(totalMarketValueBase(rows, context.workspace), context.workspace.base_currency),
   },
   market_value_base: {
     key: 'market_value_base',
-    label: 'Position Value Base',
+    label: 'Position Value (Base)',
     align: 'right',
     render: (row, context) =>
       formatCurrency(baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value), context.workspace.base_currency),
@@ -2150,20 +2094,50 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   cost_basis: {
     key: 'cost_basis',
-    label: 'Cost Basis',
+    label: 'Book Cost (Local)',
     align: 'right',
     render: (row) => formatCurrency(row.cost_basis, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.cost_basis_base, row.cost_basis),
-    total: (rows, context) => formatCurrency(totalCostBasisBase(rows, context.workspace), context.workspace.base_currency),
   },
   cost_basis_base: {
     key: 'cost_basis_base',
-    label: 'Cost Basis Base',
+    label: 'Book Cost (Base, Current FX)',
     align: 'right',
     render: (row, context) =>
       formatCurrency(baseAmountForRow(row, context.workspace.base_currency, row.cost_basis_base, row.cost_basis), context.workspace.base_currency),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.cost_basis_base, row.cost_basis),
     total: (rows, context) => formatCurrency(totalCostBasisBase(rows, context.workspace), context.workspace.base_currency),
+  },
+  cost_basis_historical_base: {
+    key: 'cost_basis_historical_base',
+    label: 'Book Cost (Base, Trade FX)',
+    align: 'right',
+    render: (row, context) =>
+      formatCurrency(row.cost_basis_historical_base, context.workspace.base_currency),
+    sortValue: (row) => row.cost_basis_historical_base,
+    total: (rows, context) =>
+      formatCurrency(totalHistoricalCostBasisBase(rows), context.workspace.base_currency),
+  },
+  cost_basis_fx_rate: {
+    key: 'cost_basis_fx_rate',
+    label: 'Weighted Cost FX',
+    align: 'right',
+    render: (row) => formatNumber(row.cost_basis_fx_rate_to_base, 6),
+    sortValue: (row) => row.cost_basis_fx_rate_to_base,
+  },
+  net_invested: {
+    key: 'net_invested',
+    label: 'Net Invested (Local)',
+    align: 'right',
+    render: (row) => formatCurrency(row.net_invested, holdingCurrency(row)),
+    sortValue: (row) => row.net_invested,
+  },
+  break_even_price: {
+    key: 'break_even_price',
+    label: 'Break-even Price',
+    align: 'right',
+    render: (row) => formatUnitPrice(row.break_even_price, holdingCurrency(row)),
+    sortValue: (row) => row.break_even_price,
   },
   weight: {
     key: 'weight',
@@ -2188,151 +2162,89 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => row.open_position_lot_count,
     total: (rows) => formatNumber(sumNumbers(rows, (row) => row.open_position_lot_count), 0),
   },
-  day_change_value: {
-    key: 'day_change_value',
-    label: 'Day P&L',
+  unrealized_price_pnl: {
+    key: 'unrealized_price_pnl',
+    label: 'Price P&L (Local)',
     align: 'right',
-    render: (row, context) => {
-      if (holdingDayChangeUnavailable(row)) {
-        return 'N/A'
-      }
-      const displayValue = dayChangeDisplayValue(row, context.workspace)
-      return signedCurrency(displayValue.value, displayValue.currency)
-    },
-    sortValue: (row, context) =>
-      holdingDayChangeUnavailable(row) ? null : dayChangeBaseForRow(row, context.workspace),
-    className: (row, context) =>
-      holdingDayChangeUnavailable(row)
-        ? ''
-        : signedValueClass(dayChangeDisplayValue(row, context.workspace).value),
-    total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedCurrency(totalDayChangeBase(rows, context.workspace), context.workspace.base_currency),
-    totalClassName: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(totalDayChangeBase(rows, context.workspace)),
+    render: (row) =>
+      signedCurrency(positionMetric(row, row.unrealized_price_pnl), holdingCurrency(row)),
+    sortValue: (row) => positionMetric(row, row.unrealized_price_pnl),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_price_pnl)),
   },
-  local_day_change_value: {
-    key: 'local_day_change_value',
-    label: 'Local P&L',
+  unrealized_price_pnl_base: {
+    key: 'unrealized_price_pnl_base',
+    label: 'Price P&L (Base)',
     align: 'right',
     render: (row, context) =>
-      holdingDayChangeUnavailable(row)
-        ? 'N/A'
-        : signedCurrency(localDayChangeBaseForRow(row), context.workspace.base_currency),
-    sortValue: (row) =>
-      holdingDayChangeUnavailable(row) ? null : localDayChangeBaseForRow(row),
-    className: (row) =>
-      holdingDayChangeUnavailable(row)
-        ? ''
-        : signedValueClass(localDayChangeBaseForRow(row)),
-    total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedCurrency(
-            sumCompleteNumbers(rows, localDayChangeBaseForRow),
-            context.workspace.base_currency,
-          ),
-    totalClassName: (rows) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(sumCompleteNumbers(rows, localDayChangeBaseForRow)),
-  },
-  fx_day_change_value: {
-    key: 'fx_day_change_value',
-    label: 'FX P&L',
-    align: 'right',
-    render: (row, context) => {
-      if (holdingDayChangeUnavailable(row)) {
-        return 'N/A'
-      }
-      const value = signedCurrency(
-        fxDayChangeBaseForRow(row),
+      signedCurrency(
+        positionMetric(row, row.unrealized_price_pnl_base),
         context.workspace.base_currency,
-      )
-      const title = fxRateDetailTitle(row, context.workspace)
-      return title ? <span title={title}>{value}</span> : value
-    },
-    sortValue: (row) =>
-      holdingDayChangeUnavailable(row) ? null : fxDayChangeBaseForRow(row),
-    className: (row) =>
-      holdingDayChangeUnavailable(row)
-        ? ''
-        : signedValueClass(fxDayChangeBaseForRow(row)),
+      ),
+    sortValue: (row) => positionMetric(row, row.unrealized_price_pnl_base),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_price_pnl_base)),
     total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedCurrency(
-            sumCompleteNumbers(rows, fxDayChangeBaseForRow),
-            context.workspace.base_currency,
-          ),
+      signedCurrency(
+        totalPositionMetric(rows, (row) => row.unrealized_price_pnl_base),
+        context.workspace.base_currency,
+      ),
     totalClassName: (rows) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(sumCompleteNumbers(rows, fxDayChangeBaseForRow)),
+      signedValueClass(totalPositionMetric(rows, (row) => row.unrealized_price_pnl_base)),
   },
-  day_change_pct: {
-    key: 'day_change_pct',
-    label: 'Day Return',
+  unrealized_fx_pnl_base: {
+    key: 'unrealized_fx_pnl_base',
+    label: 'FX P&L (Base)',
     align: 'right',
-    render: (row) =>
-      holdingDayChangeUnavailable(row) ? 'N/A' : signedPercent(row.day_change_pct),
-    sortValue: (row) =>
-      holdingDayChangeUnavailable(row) ? null : row.day_change_pct,
-    className: (row) =>
-      holdingDayChangeUnavailable(row) ? '' : signedValueClass(row.day_change_pct),
+    render: (row, context) =>
+      signedCurrency(
+        positionMetric(row, row.unrealized_fx_pnl_base),
+        context.workspace.base_currency,
+      ),
+    sortValue: (row) => positionMetric(row, row.unrealized_fx_pnl_base),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_fx_pnl_base)),
     total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedPercent(totalDayChangePct(rows, context.workspace)),
-    totalClassName: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(totalDayChangePct(rows, context.workspace)),
+      signedCurrency(
+        totalPositionMetric(rows, (row) => row.unrealized_fx_pnl_base),
+        context.workspace.base_currency,
+      ),
+    totalClassName: (rows) =>
+      signedValueClass(totalPositionMetric(rows, (row) => row.unrealized_fx_pnl_base)),
   },
-  unrealized_value: {
-    key: 'unrealized_value',
-    label: 'Unrealized P&L',
+  unrealized_pnl_base: {
+    key: 'unrealized_pnl_base',
+    label: 'Total Unrealized P&L (Base)',
     align: 'right',
-    render: (row) =>
-      holdingUsesEventValuation(row)
-        ? 'N/A'
-        : signedCurrency(unrealizedValue(row), holdingCurrency(row)),
-    sortValue: (row, context) => unrealizedBaseValueForWorkspace(row, context.workspace),
-    className: (row) =>
-      holdingUsesEventValuation(row) ? '' : signedValueClass(unrealizedValue(row)),
+    render: (row, context) =>
+      signedCurrency(
+        positionMetric(row, row.unrealized_pnl_base),
+        context.workspace.base_currency,
+      ),
+    sortValue: (row) => positionMetric(row, row.unrealized_pnl_base),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_pnl_base)),
     total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedCurrency(totalUnrealizedBase(rows, context.workspace), context.workspace.base_currency),
-    totalClassName: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(totalUnrealizedBase(rows, context.workspace)),
+      signedCurrency(totalUnrealizedBase(rows), context.workspace.base_currency),
+    totalClassName: (rows) => signedValueClass(totalUnrealizedBase(rows)),
   },
-  unrealized_pct: {
-    key: 'unrealized_pct',
-    label: 'Unrealized Return',
+  unrealized_return: {
+    key: 'unrealized_return',
+    label: 'Price Return (Local)',
     align: 'right',
-    render: (row) =>
-      holdingUsesEventValuation(row) ? 'N/A' : signedPercent(unrealizedPct(row)),
-    sortValue: (row) => unrealizedPct(row),
-    className: (row) =>
-      holdingUsesEventValuation(row) ? '' : signedValueClass(unrealizedPct(row)),
-    total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : signedPercent(totalUnrealizedPct(rows, context.workspace)),
-    totalClassName: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? ''
-        : signedValueClass(totalUnrealizedPct(rows, context.workspace)),
+    render: (row) => signedPercent(positionMetric(row, row.unrealized_return)),
+    sortValue: (row) => positionMetric(row, row.unrealized_return),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_return)),
+  },
+  unrealized_return_base: {
+    key: 'unrealized_return_base',
+    label: 'Total Unrealized Return (Base)',
+    align: 'right',
+    render: (row) => signedPercent(positionMetric(row, row.unrealized_return_base)),
+    sortValue: (row) => positionMetric(row, row.unrealized_return_base),
+    className: (row) => signedValueClass(positionMetric(row, row.unrealized_return_base)),
+    total: (rows) => signedPercent(totalUnrealizedPct(rows)),
+    totalClassName: (rows) => signedValueClass(totalUnrealizedPct(rows)),
   },
   instrument_return_1w: {
     key: 'instrument_return_1w',
-    label: '1W Return',
+    label: '1W Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1w),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1w),
@@ -2342,7 +2254,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_1m: {
     key: 'instrument_return_1m',
-    label: '1M Return',
+    label: '1M Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1m),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1m),
@@ -2352,7 +2264,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_3m: {
     key: 'instrument_return_3m',
-    label: '3M Return',
+    label: '3M Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_3m),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_3m),
@@ -2362,7 +2274,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_6m: {
     key: 'instrument_return_6m',
-    label: '6M Return',
+    label: '6M Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_6m),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_6m),
@@ -2372,7 +2284,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_mtd: {
     key: 'instrument_return_mtd',
-    label: 'MTD',
+    label: 'MTD Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_mtd),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_mtd),
@@ -2382,7 +2294,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_ytd: {
     key: 'instrument_return_ytd',
-    label: 'YTD',
+    label: 'YTD Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_ytd),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_ytd),
@@ -2392,7 +2304,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   instrument_return_1y: {
     key: 'instrument_return_1y',
-    label: '1Y',
+    label: '1Y Total Return',
     align: 'right',
     render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1y),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1y),
@@ -2697,10 +2609,10 @@ export default function PortfolioHomePage() {
   } | null>(null)
   const holdingsColumnResizeFrame = useRef<number | null>(null)
   const pendingHoldingsColumnResize = useRef<{ column: HoldingsColumnKey; width: number } | null>(null)
-  const holdingsTableShellRef = useRef<HTMLDivElement | null>(null)
+  const holdingsTablePan = useHorizontalTablePan()
+  const holdingsTableShellRef = holdingsTablePan.ref
   const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
-  const selectedInstrumentId = searchParams.get('instrument_id')
 
   useEffect(() => {
     setHoldingsSectionVisibleColumns({
@@ -2974,11 +2886,9 @@ export default function PortfolioHomePage() {
   function handleSelectInstrument(instrumentId: string | null) {
     const normalizedInstrumentId = instrumentId?.trim() || null
     if (!normalizedInstrumentId || !portfolioId) {
-      updateSearchParam('instrument_id', null)
       return
     }
     if (normalizedInstrumentId.toLowerCase().startsWith('cash:')) {
-      updateSearchParam('instrument_id', null)
       return
     }
     const next = new URLSearchParams(searchParams)
@@ -3311,6 +3221,7 @@ export default function PortfolioHomePage() {
         'Available',
         'Local Amount',
         `Base Value (${workspace.base_currency})`,
+        `Unrealized FX P&L (${workspace.base_currency})`,
         'Portfolio Weight',
         'Settlement Date',
         'Pending Until',
@@ -3326,6 +3237,7 @@ export default function PortfolioHomePage() {
         Boolean(row.available_for_trading),
         row.market_value,
         rowMarketValueBase(row, workspace),
+        row.holding_kind === 'settled_cash' ? row.unrealized_fx_pnl_base : null,
         row.allocation,
         row.settlement_date,
         row.pending_until_date,
@@ -3365,19 +3277,8 @@ export default function PortfolioHomePage() {
     }
     const selectionInstrumentId =
       holdingReferenceId(row)
-    const isActive = selectedInstrumentId === selectionInstrumentId
     return (
-      <tr
-        key={row.line_id}
-        className={isActive ? 'holdings-row-active' : undefined}
-        tabIndex={0}
-        onClick={() => handleSelectInstrument(selectionInstrumentId)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            handleSelectInstrument(selectionInstrumentId)
-          }
-        }}
-      >
+      <tr key={row.line_id}>
         {visibleColumns.map((column) => {
           const className = [
             holdingsAlignmentClass(column),
@@ -3393,7 +3294,17 @@ export default function PortfolioHomePage() {
               data-column-key={column.key}
               className={className || undefined}
             >
-              {column.render(row, columnContext)}
+              {column.key === 'instrument' ? (
+                <button
+                  type="button"
+                  className="holding-instrument-link"
+                  onClick={() => handleSelectInstrument(selectionInstrumentId)}
+                >
+                  {column.render(row, columnContext)}
+                </button>
+              ) : (
+                column.render(row, columnContext)
+              )}
             </td>
           )
         })}
@@ -3685,31 +3596,6 @@ export default function PortfolioHomePage() {
     }
   }, [holdingsNeedsDetails, portfolioId, requestedAsOfDate, riskPolicyRevision])
 
-  useEffect(() => {
-    if (!workspace || !selectedInstrumentId) {
-      return
-    }
-
-    if (
-      workspace.rows.some(
-        (row) =>
-          holdingReferenceId(row) === selectedInstrumentId ||
-          row.economic_instrument_id === selectedInstrumentId,
-      )
-    ) {
-      return
-    }
-
-    setSearchParams((current) => {
-      if (current.get('instrument_id') !== selectedInstrumentId) {
-        return current
-      }
-      const next = new URLSearchParams(current)
-      next.delete('instrument_id')
-      return next
-    })
-  }, [workspace, selectedInstrumentId, setSearchParams])
-
   return (
     <>
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
@@ -3804,7 +3690,11 @@ export default function PortfolioHomePage() {
                     </button>
                   </div>
                 </div>
-                <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
+                <div
+                  className={`table-shell holdings-table-shell ${holdingsTablePan.isPanning ? 'is-panning' : ''}`}
+                  ref={holdingsTableShellRef}
+                  {...holdingsTablePan.handlers}
+                >
                   <table
                     className="holdings-table holdings-main-table"
                     aria-label="Security holdings"

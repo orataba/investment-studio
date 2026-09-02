@@ -60,6 +60,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-market-risk-zero-return-cash-derivatives-v2"
     "-daily-mark-to-last-risk-observations-v1"
     "-base-currency-fx-attribution-v1"
+    "-holding-cost-fx-cash-account-v1"
 )
 
 
@@ -1551,6 +1552,26 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
     return None
 
 
+def _aggregate_fx_coverage_status(
+    rows: list[dict[str, object]],
+    key: str,
+    *,
+    aggregate_value: float | None,
+) -> str | None:
+    statuses = {
+        str(row.get(key) or "").strip()
+        for row in rows
+        if str(row.get(key) or "").strip()
+    }
+    if not statuses:
+        return None
+    if aggregate_value is None or "unavailable" in statuses:
+        return "unavailable"
+    if "stale" in statuses:
+        return "stale"
+    return "complete" if statuses == {"complete"} else "unavailable"
+
+
 def _earliest_holding_profile_row(
     rows: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -1619,7 +1640,14 @@ def _aggregate_holding_rows(
             }
         )
         market_value_base = _sum_complete([row.get("market_value_base") for row in instrument_rows])
+        cost_basis = _sum_complete([row.get("cost_basis") for row in instrument_rows])
         cost_basis_base = _sum_complete([row.get("cost_basis_base") for row in instrument_rows])
+        cost_basis_historical_base = _sum_complete(
+            [row.get("cost_basis_historical_base") for row in instrument_rows]
+        )
+        cash_cost_basis_base = _sum_complete(
+            [row.get("cash_cost_basis_base") for row in instrument_rows]
+        )
         first_row = instrument_rows[0] if instrument_rows else {}
         holding_profile_row = _earliest_holding_profile_row(instrument_rows)
         cost_basis_methods = sorted(
@@ -1793,8 +1821,72 @@ def _aggregate_holding_rows(
                     if cost_basis_methods
                     else "fifo"
                 ),
-                "cost_basis": _sum_complete([row.get("cost_basis") for row in instrument_rows]),
+                "cost_basis": cost_basis,
                 "cost_basis_base": cost_basis_base,
+                "cost_basis_historical_base": cost_basis_historical_base,
+                "cost_basis_current_fx_rate_to_base": (
+                    cost_basis_base / cost_basis
+                    if cost_basis_base is not None
+                    and cost_basis is not None
+                    and abs(cost_basis) > 1e-12
+                    else _first_present(
+                        instrument_rows, "cost_basis_current_fx_rate_to_base"
+                    )
+                ),
+                "cost_basis_fx_rate_to_base": (
+                    cost_basis_historical_base / cost_basis
+                    if cost_basis_historical_base is not None
+                    and cost_basis is not None
+                    and abs(cost_basis) > 1e-12
+                    else _first_present(
+                        instrument_rows, "cost_basis_fx_rate_to_base"
+                    )
+                ),
+                "cost_basis_fx_coverage_status": _aggregate_fx_coverage_status(
+                    instrument_rows,
+                    "cost_basis_fx_coverage_status",
+                    aggregate_value=cost_basis_historical_base,
+                ),
+                "cash_cost_basis_base": cash_cost_basis_base,
+                "cash_cost_basis_fx_rate_to_base": (
+                    cash_cost_basis_base / market_value
+                    if cash_cost_basis_base is not None
+                    and market_value is not None
+                    and abs(market_value) > 1e-12
+                    else None
+                ),
+                "cash_fx_coverage_status": _aggregate_fx_coverage_status(
+                    instrument_rows,
+                    "cash_fx_coverage_status",
+                    aggregate_value=cash_cost_basis_base,
+                ),
+                "unrealized_price_pnl": _sum_complete(
+                    [row.get("unrealized_price_pnl") for row in instrument_rows]
+                ),
+                "unrealized_price_pnl_base": _sum_complete(
+                    [row.get("unrealized_price_pnl_base") for row in instrument_rows]
+                ),
+                "unrealized_fx_pnl_base": _sum_complete(
+                    [row.get("unrealized_fx_pnl_base") for row in instrument_rows]
+                ),
+                "unrealized_pnl_base": _sum_complete(
+                    [row.get("unrealized_pnl_base") for row in instrument_rows]
+                ),
+                "unrealized_return": (
+                    (market_value - cost_basis) / abs(cost_basis)
+                    if market_value is not None
+                    and cost_basis is not None
+                    and abs(cost_basis) > 1e-12
+                    else None
+                ),
+                "unrealized_return_base": (
+                    (market_value_base - cost_basis_historical_base)
+                    / abs(cost_basis_historical_base)
+                    if market_value_base is not None
+                    and cost_basis_historical_base is not None
+                    and abs(cost_basis_historical_base) > 1e-12
+                    else None
+                ),
                 "allocation": (
                     market_value_base / total_nav_base
                     if market_value_base is not None and total_nav_base is not None and total_nav_base > 1e-9
@@ -2054,6 +2146,19 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "cost_basis_method",
     "cost_basis",
     "cost_basis_base",
+    "cost_basis_historical_base",
+    "cost_basis_current_fx_rate_to_base",
+    "cost_basis_fx_rate_to_base",
+    "cost_basis_fx_coverage_status",
+    "cash_cost_basis_base",
+    "cash_cost_basis_fx_rate_to_base",
+    "cash_fx_coverage_status",
+    "unrealized_price_pnl",
+    "unrealized_price_pnl_base",
+    "unrealized_fx_pnl_base",
+    "unrealized_pnl_base",
+    "unrealized_return",
+    "unrealized_return_base",
     "allocation",
     "coverage_status",
     "account_count",

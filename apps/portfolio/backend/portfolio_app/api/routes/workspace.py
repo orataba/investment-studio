@@ -28,6 +28,7 @@ from portfolio_app.services.workspace_cache import (
     preload_portfolio_workspace_cache,
 )
 from portfolio_app.services.ledger import (
+    build_current_position_cycle_costs,
     build_position_lots,
     summarize_position_lots,
 )
@@ -111,6 +112,13 @@ _CASH_SCOPE_SYSTEM_EXCLUSION_REASON = (
 _DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON = (
     "Derivative contracts are recorded operationally and excluded from market analytics."
 )
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _holding_is_derivative(row: dict[str, object]) -> bool:
@@ -483,6 +491,46 @@ def _public_holdings_workspace_response(
 ) -> dict[str, object]:
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
+    position_cycle_costs = build_current_position_cycle_costs(
+        transactions,
+        as_of_date=as_of_date,
+    )
+    for row in row_items:
+        if not isinstance(row, dict):
+            continue
+        position_reference_id = str(
+            row.get("position_reference_id") or row.get("line_id") or ""
+        )
+        cycle_cost = position_cycle_costs.get(position_reference_id)
+        row_currency = str(
+            (
+                row.get("instrument_core")
+                if isinstance(row.get("instrument_core"), dict)
+                else {}
+            ).get("currency")
+            or ""
+        ).strip().upper()
+        cycle_currency = str((cycle_cost or {}).get("currency") or "").strip().upper()
+        quantity = _safe_float(row.get("quantity"))
+        net_invested = _safe_float((cycle_cost or {}).get("net_invested"))
+        if (
+            str(row.get("holding_kind") or "position") != "position"
+            or not cycle_cost
+            or not bool(cycle_cost.get("coverage_complete"))
+            or not row_currency
+            or row_currency != cycle_currency
+        ):
+            row["net_invested"] = None
+            row["break_even_price"] = None
+            continue
+        row["net_invested"] = net_invested
+        row["break_even_price"] = (
+            net_invested / quantity
+            if net_invested is not None
+            and quantity is not None
+            and abs(quantity) > 1e-12
+            else None
+        )
     instrument_types = {
         str(instrument_core.get("instrument_type") or "").strip().lower()
         for row in row_items
@@ -1079,6 +1127,7 @@ def holdings_workspace(
     rows = [
         {
             "line_id": str(position.get("position_id") or position.get("instrument_id") or ""),
+            "position_reference_id": position.get("position_reference_id"),
             "holding_kind": position.get("holding_kind") or "position",
             "available_for_trading": position.get("available_for_trading", True),
             "economic_instrument_id": position.get("economic_instrument_id"),
@@ -1095,11 +1144,59 @@ def holdings_workspace(
             "market_value": position.get("market_value"),
             "market_value_base": position.get("market_value_base"),
             "day_change_pct": position.get("day_change_pct"),
+            "local_day_change_pct": position.get("local_day_change_pct"),
             "day_change_value": position.get("day_change_value"),
+            "local_day_change_value_base": position.get(
+                "local_day_change_value_base"
+            ),
+            "fx_day_change_value_base": position.get(
+                "fx_day_change_value_base"
+            ),
             "day_change_value_base": position.get("day_change_value_base"),
+            "fx_rate_to_base": position.get("fx_rate_to_base"),
+            "fx_rate_as_of_date": position.get("fx_rate_as_of_date"),
+            "previous_fx_rate_to_base": position.get(
+                "previous_fx_rate_to_base"
+            ),
+            "previous_fx_rate_as_of_date": position.get(
+                "previous_fx_rate_as_of_date"
+            ),
+            "fx_rate_source_instrument_ids": list(
+                position.get("fx_rate_source_instrument_ids") or []
+            ),
+            "fx_rate_stale": bool(position.get("fx_rate_stale", False)),
             "cost_basis_method": position.get("cost_basis_method"),
             "cost_basis": position.get("cost_basis"),
             "cost_basis_base": position.get("cost_basis_base"),
+            "cost_basis_historical_base": position.get(
+                "cost_basis_historical_base"
+            ),
+            "cost_basis_current_fx_rate_to_base": position.get(
+                "cost_basis_current_fx_rate_to_base"
+            ),
+            "cost_basis_fx_rate_to_base": position.get(
+                "cost_basis_fx_rate_to_base"
+            ),
+            "cost_basis_fx_coverage_status": position.get(
+                "cost_basis_fx_coverage_status"
+            ),
+            "cash_cost_basis_base": position.get("cash_cost_basis_base"),
+            "cash_cost_basis_fx_rate_to_base": position.get(
+                "cash_cost_basis_fx_rate_to_base"
+            ),
+            "cash_fx_coverage_status": position.get("cash_fx_coverage_status"),
+            "unrealized_price_pnl": position.get("unrealized_price_pnl"),
+            "unrealized_price_pnl_base": position.get(
+                "unrealized_price_pnl_base"
+            ),
+            "unrealized_fx_pnl_base": position.get(
+                "unrealized_fx_pnl_base"
+            ),
+            "unrealized_pnl_base": position.get("unrealized_pnl_base"),
+            "unrealized_return": position.get("unrealized_return"),
+            "unrealized_return_base": position.get(
+                "unrealized_return_base"
+            ),
             "allocation": position.get("portfolio_weight"),
             **market_profile_for_position(position),
             "coverage_status": position.get("coverage_status")

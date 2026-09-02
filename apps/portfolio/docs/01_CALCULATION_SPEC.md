@@ -437,13 +437,13 @@ Portfolio 级 TWR、IRR、drawdown 和 contribution 必须基于 fair value、ca
 - 在 `FIFO` 下等于 open FIFO lots 的 remaining cost basis 之和；
 - 在 `moving_average` 下等于 rolling average bucket 的 remaining cost basis。
 
-`Avg Cost` 定义为：
+`Book Avg Cost` 定义为：
 
 $$
 AvgCost^{book}_i = \frac{RemainingCostBasis_i}{RemainingQuantity_i}
 $$
 
-它不是某一笔交易的 purchase price。真实交易价格在 lot 层用 `entry_price = entry_gross_amount / entry_quantity` 表示，且不包含资本化费用和税费；`entry_cost_per_unit` 才包含资本化费用和税费。`moving_average` 的 synthetic lot 没有真实 tax-lot purchase price，展示时应优先使用当前 `Avg Cost`。
+它不是某一笔交易的 purchase price。真实交易价格在 lot 层用 `entry_price = entry_gross_amount / entry_quantity` 表示，且不包含资本化费用和税费；`entry_cost_per_unit` 才包含资本化费用和税费。`moving_average` 的 synthetic lot 没有真实 tax-lot purchase price，展示时应优先使用当前 `Book Avg Cost`。
 
 Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 position、written option obligation、settled cash 及用于把 NAV 对平的 pending monetary balance。只有正式 position 才有证券 quantity、open-position cost basis 与 unrealized P&L；option obligation 是负债 read model，pending monetary row 也不是基金/证券持仓。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
@@ -479,46 +479,58 @@ $$
 
 Holdings 的 monetary 部分按结算现金账户子账拆分：
 
-- `settled_cash`：真正已经入账且可支配的现金，按币种生成 `instrument_id = cash:{currency}`；只有这一层进入可用现金金额/比例；
+- `settled_cash`：真正已经入账且可支配的现金。instrument identity 为 `cash:{currency}`，持仓行 identity 为 `cash:{currency}:{account_id}`；只有这一层进入可用现金金额/比例；
 - `restricted_cash`：法律上仍属现金但已冻结、质押或受限，必须有显式 restriction fact 才能确认；当前系统不得仅因存在一笔未完成交易就自行猜测为冻结现金；
 - `pending_subscription`：现金已经划出而份额尚未在 EOD 持仓生效的申购结算应收；
 - `settlement_receivable`：资产已按 position-effective boundary 减少但出售款尚未到账；
 - `settlement_payable`：资产已按 position-effective boundary 增加但购买款尚未支付；
 - pending monetary row 使用 `instrument_id = pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}:{pending_until_date}`，归属于结算现金账户，并保留 `economic_instrument_id` 与 `transaction_ids` 以便穿透追踪；结算日或头寸待确认日缺失时对应日期段为 `undated`。日期属于 canonical identity，同账户、同资产、同币种但不同结算边界的余额不得合并或主键冲突；它不是对应资产账户的一笔虚构 position；
 - monetary row 的 `market_value` 等于该币种余额，`market_value_base` 等于按 as-of date FX 转成组合 base currency 后的值；
-- `cost_basis`、`cost_basis_base`、`Avg Cost` 与 unrealized P&L 对所有 monetary rows 都不适用；
+- pending monetary row 不具有 `cost_basis`、`Book Avg Cost` 或持仓未实现 P&L；settled cash 另行维护账户级 historical base-currency FX basis，用于展示 cash unrealized FX P&L，不把它冒充证券 book cost；
+- settled cash 的正向流入按生效日 FX 增加 historical base basis，减少敞口时按账户内移动平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：若一边就是 portfolio base currency，直接使用成交隐含汇率；若两边都不是 base currency，则以成交日 source/base FX 换算实际 source consideration。`cash unrealized FX P&L = current base value - historical cash basis`；历史或当前 FX 缺失时失败关闭；
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。
 
-Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义四个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示；全部为空时只使用一个统一 Holdings 空状态。组合 headline 已提供 NAV 等总览，分类构成和 `Portfolio Total` 统一由 Overview `Asset Mix` 展示，Holdings 不重复第二套总计。每张表使用一致的 `View`、`Columns` 控件，Securities 另有 `Group By`；instrument 数量紧邻表标题。
+Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义四个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示；全部为空时只使用一个统一 Holdings 空状态。组合 headline 已提供 NAV 等总览，分类构成和 `Portfolio Total` 统一由 Overview `Asset Mix` 展示，Holdings 不重复第二套总计。Securities、FCN 与 Options 使用一致的 `View`、`Columns` 控件，Securities 另有 `Group By`；字段固定的 Cash & Settlement 不提供 View / Columns。instrument 数量紧邻表标题。
 
 | 表面 | 行类型 | 主要字段 |
 | --- | --- | --- |
-| `Securities` | 股票、基金、ETF 等 Registry 普通资产 | quantity、quote、position value、remaining cost、unrealized、instrument return/risk、Forward RC；可独立切换视图与字段，也是唯一允许 sort / Group By 的表 |
+| `Securities` | 股票、基金、ETF 等 Registry 普通资产 | quantity、quote、base position value、book/economic cost、price/FX/total unrealized、instrument total return/risk、Forward RC；可独立切换视图与字段，也是唯一允许 Group By 的表 |
 | `FCN` | FCN contract rows | 独立视图与字段；显式展示 contract/account/underlying terms、notional、coupon、maturity/events、remaining basis、signed NAV amount、portfolio weight、lifecycle/valuation status |
 | `Options` | long/short Call、long/short Put | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、contracts/multiplier、remaining basis、signed NAV amount、strike notional、portfolio weight、lifecycle/valuation status |
-| `Cash & Settlement` | settled cash 与 pending monetary rows | 独立视图与字段；可展示 currency/account/availability、local/base amount、portfolio weight、FX day change、settlement/pending dates 与 status；不提供 cost/unrealized 字段 |
+| `Cash & Settlement` | settled cash 与 pending monetary rows | 固定字段；展示 currency/account/availability、local/base amount、portfolio weight、settled-cash unrealized FX，以及 settlement/pending dates 与 status |
 
 Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模；`strike_notional = strike × required_underlying_quantity`，不代表预设交割义务，也不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、option-obligation strike notional，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。这些 API 字段保留给生命周期和结算逻辑，Holdings 不单独渲染 `Operational Status` 面板。
 
 `holding_category` 不是用户可选的 Group By 字段。`Group By` 由底层限定为只在 Securities 内部生成二级分组；FCN、Options 与 Cash & Settlement 不参与 taxonomy 或属性分组。Securities 的 Taxonomy / Taxonomy Leaf 使用当前默认 planning taxonomy 与当前 active assignment；它是管理分类，不随 Holdings `as_of_date` 回放历史版本。风险 eligibility、Research 和 materialized calculation identity 仍按各自的 effective-dated analytics scope 合同处理，不能与这里的展示标签混为一体。
 
-Holdings CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立 block；不使用统一 `Category` schema，也不重复导出组合总计。每个已输出 block 跟随自己当前视图的可见字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
+Holdings 表格只有 instrument 或 contract 名称承担详情导航；普通字段单元格不绑定整行跳转，并支持按住鼠标左右拖动横向浏览宽表。
+
+Holdings CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立 block；不使用统一 `Category` schema，也不重复导出组合总计。Securities、FCN 与 Options 跟随各自当前视图，Cash & Settlement 使用固定字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 
 当前实现只发布 scope disclosure 和 `cash_scope_breakdown`，不发布 ordinary-sleeve TWR。`cash_scope_breakdown` 按 `performance_scope + transaction currency` 分桶，金额是对应交易币种的 local cash activity；不同币种不得直接相加，也不得冒充 base-currency cash flow。`ordinary_sleeve_twr_status` 固定为 `unavailable`，原因是尚未维护可逐日对账的 sleeve cash subledger；不得从 total operational return 中删除 derivative rows 后伪造 ordinary TWR。Total operational/carrying-basis return、完整 fair-value performance 和 scoped risk 是三个不同对象。
 
-`market_value_base`（UI：`Position Value Base`）对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。全部 workspace rows 的 signed amount 必须与同日 canonical NAV 对平；这个领域不变量不依赖 Holdings 是否展示总计行。
+`market_value_base`（UI：`Position Value (Base)`）对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。全部 workspace rows 的 signed amount 必须与同日 canonical NAV 对平；这个领域不变量不依赖 Holdings 是否展示总计行。
 
 Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written liability 使用负权重。在估值与 FX 完整时，正式资产、event-valued assets、written liabilities、settled cash 与 pending monetary rows 的 signed weights 合计必须为 100%。pending monetary balance、event-valued asset 和 option obligation 都没有可用 instrument return series：Return、Chart、Unrealized P&L 和 Drawdown 必须为 `N/A`。衍生品的 Vol 与 Forward RC 也必须为 `N/A` 并标记为 excluded；base-currency cash / pending monetary row 才可以按明确 monetary 口径显示风险 0。
 
-`Day P&L` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
+普通证券同时保留会计成本和经济回本口径：
+
+- `Book Cost (Local)` 是当前开放 lots / moving-average bucket 的 remaining accounting cost。普通分红不冲减 book cost，只有明确的 `return_of_capital` 冲减；
+- 每个 remaining cost slice 必须保留 acquisition date 与 remaining local cost。FIFO 释放实际 lot 来源；moving average 的部分卖出按各来源剩余成本比例释放，不能因合并 bucket 丢掉历史 FX 来源；
+- `Book Cost (Base, Current FX)` 按 as-of FX 换算 local book cost；`Book Cost (Base, Trade FX)` 对每个 remaining cost slice 使用 acquisition-date FX 后求和。缺少任一历史 FX 时，historical base cost、FX P&L 与 total base unrealized 全部为空，不得用 current FX 代替；
+- `Net Invested (Local)` 在当前连续持仓周期内以买入总成本和费用为正，以部分卖出的净回款、已实现 dividend/coupon 和资本返还为负；完全平仓后再次买入会开始新周期。`Break-even Price = Net Invested / current quantity`；
+- `Price P&L (Local) = MV_local - BookCost_local`；`Price P&L (Base) = PricePnl_local × FX_current`；`FX P&L (Base) = BookCost_local × FX_current - BookCost_historical_base`；`Total Unrealized P&L (Base) = Price P&L (Base) + FX P&L (Base) = MV_base - BookCost_historical_base`；
+- `Price Return (Local)` 以 local book cost 为分母；`Total Unrealized Return (Base)` 以 historical base book cost 为分母。零 book-cost 头寸仍保留金额盈亏，但百分比不因零分母而伪造。
+
+Holdings read model 仍计算 as-of date 当前持仓规模的一天经济市场变动，供组合 headline、快照和其他内部消费者使用；Security 表不再把 Day P&L / Day Return 作为可选字段：
 
 - 非现金资产优先使用 `quote_selection_policy.total_return` 选出的当前点与上一可用同 basis 点；只有 total-return basis 不可用时才回退到 selected valuation basis。这样已确认的拆分、分配或分红不会被误判为单日价格暴跌；
 - `local_day_return = current_return_point / previous_return_point - 1`；本币市场价值变化先形成 `local_day_change_value`。组合币种总变动必须使用当前与上一估值日各自的 FX：`day_change_value_base = current_local_value × current_fx - previous_local_value × previous_fx`，不能把两端都按当前汇率换算；
-- Holdings 同时输出 `local_day_change_value_base = (current_local_value - previous_local_value) × current_fx` 与 `fx_day_change_value_base = previous_local_value × (current_fx - previous_fx)`，两者必须精确加总为 `day_change_value_base`。当前/上一 FX rate、rate date 与 source instrument ids 随行保留，UI 中 `Day P&L`、`Local P&L`、`FX P&L` 均以组合报告币种展示；
+- Holdings read model 同时输出 `local_day_change_value_base = (current_local_value - previous_local_value) × current_fx` 与 `fx_day_change_value_base = previous_local_value × (current_fx - previous_fx)`，两者必须精确加总为 `day_change_value_base`。当前/上一 FX rate、rate date 与 source instrument ids 随行保留；
 - total-return basis 中包含的分配只用于描述当前持仓篮子的单日经济市场收益，不改变 dividend 的已实现 `Income` 分类，也不进入 book `Unrealized P&L`；
 - `carried_cost` 和 `premium_liability` 行的 day change / day return 必须为 `null`，即使旧 payload 或下游聚合传入数值零，UI 与 export 也必须显示 `N/A`；
 - base-currency cash 的 day change 为 `0`；
@@ -528,10 +540,10 @@ Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written li
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
 - `Chart 1M / 3M / 6M / 1Y` 是前端展示用的 sampled path；
-- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 只使用标的自身经 Registry 明确确认的 total-return series，计算为 `latest_total_return_level / anchor_total_return_level - 1`；不得用 `official_nav`、普通 `close / last` 或 valuation price 冒充 total return；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 只使用标的自身经 Registry 明确确认的本币 total-return series，计算为 `latest_total_return_level / anchor_total_return_level - 1`；它包含分红等复权，不包含组合基准币种 FX；不得用 `official_nav`、普通 `close / last` 或 valuation price 冒充 total return；
 - total-return series 严格保持 `quote_selection_policy` 的顺序和单一 basis。优先 basis 有数据但历史不足时返回空值，不得因为次选价格序列更长就切换口径；Portfolio 与 Watchlist 各自实现读路径，但在相同 instrument、as-of date、total-return basis 和窗口边界下数值必须一致；
 - `Chart *` 可以展示策略允许的 price-return 或 total-return path，但必须保留真实 return semantics；图表序列不得反向充当上述 Return、Volatility 或 Drawdown 字段的替代输入；
-- `1W Return` / `1M Return` / `3M Return` / `6M Return` / `1Y` 的窗口目标日期从请求的 as-of date 回看，anchor quote 是该目标日期或之前最近 quote；终点值则是 as-of date 或之前的最新可用 total-return point。即使终点点位略早于 as-of，也不得把窗口锚点随之向前挪；月度目标日期按自然月回看，不按固定天数截断；
+- `1W / 1M / 3M / 6M / 1Y Total Return` 的窗口目标日期从请求的 as-of date 回看，anchor quote 是该目标日期或之前最近 quote；终点值则是 as-of date 或之前的最新可用 total-return point。即使终点点位略早于 as-of，也不得把窗口锚点随之向前挪；月度目标日期按自然月回看，不按固定天数截断；
 - `MTD` / `YTD` 的 anchor quote 是严格早于月初 / 年初的最近 quote；若该锚点不存在则返回空值，禁止拿期间内第一条 quote 冒充完整自然期间收益；
 - `Current DD` 使用 confirmed total-return series，计算为 `latest_total_return_level / max_available_total_return_level_to_date - 1`；
 - `Max DD` 使用同一序列，计算历史各点相对此前峰值的最小值 `min(level_t / running_peak_t - 1)`；
@@ -554,10 +566,10 @@ Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contr
 
 Holdings group rows 不是后端 period-performance group：
 
-- market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- 无非零 event exposure 时，unrealized P&L 按组内 market-valued positions 加总。Securities group/subtotal 的 unrealized return 使用组内 `unrealized P&L / remaining open-position cost`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不是 Cost Basis；
-- Securities group 只要包含非零 event-valued asset，Day P&L、Day Return、Unrealized P&L、Unrealized Return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
-- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date signed base value 权重合成，Securities group/subtotal 使用该组当前 base value 作分母。普通证券必须有 base-currency total-return overlay；只有本币 return 时跨币种聚合不可用。覆盖不足时为空。它们是 theoretical current-basket diagnostics，不是历史实际组合 TWR，后者只属于 Overview / Performance；
+- `Position Value (Base)`、两种 base book cost、base price/FX/total unrealized P&L、weight 与 open lots 等可加总绝对量按组内 rows 汇总；本币 position value、cost 和 P&L 不跨币种求和；
+- Securities group/subtotal 的 `Total Unrealized Return (Base)` 使用组内 `sum(total unrealized P&L base) / sum(book cost at trade FX base)` 重算，不是成员百分比的平均；cash unrealized FX 只属于 Cash & Settlement，不混入证券未实现收益；
+- Securities group 只要包含非零 event-valued asset，price/FX/total unrealized P&L、unrealized return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 使用 as-of date signed base value 权重合成，Securities group/subtotal 使用该组当前 base value 作分母。行级序列仍是标的本币 total return；未提供 FX overlay 时跨币种聚合不可用。覆盖不足时为空。它们是 theoretical current-basket diagnostics，不是历史实际组合 TWR，后者只属于 Overview / Performance；
 - group/subtotal volatility / risk drawdown 用普通证券共同 period return series 与该组当前 base value 权重计算，不等于成员风险数值的简单加权平均；
 - `Held Max DD` 不计算 group 或 subtotal：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
 - group return / volatility / drawdown 只在每个有当前价值的非零收益成员都能解释为 portfolio base-currency return 时计算。本币 instrument return 不能因为成员恰好使用同一种外币就直接拼接；后端未提供逐期 base-currency overlay 时必须留空；
@@ -567,19 +579,32 @@ Holdings group rows 不是后端 period-performance group：
 
 | 类别 | 字段 | 分组规则 |
 | --- | --- | --- |
-| 点位绝对量 | `Position Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day P&L`、`Local P&L`、`FX P&L`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day P&L 与 Unrealized P&L 为 N/A |
-| 重新计算的比例 | `Day Return`、`Unrealized Return` | Day Return 用组级 `Day P&L / prior market value`；Securities unrealized 用 `Unrealized P&L / open cost`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
-| 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of signed base value 权重合成；普通证券必须有 base-currency return，覆盖不完整时为空 |
+| 点位绝对量 | `Position Value (Base)`、`Book Cost (Base, Current FX)`、`Book Cost (Base, Trade FX)`、`Weight`、`Open Lots`、`Price P&L (Base)`、`FX P&L (Base)`、`Total Unrealized P&L (Base)` | 对当前 rows 加总；含非零 event exposure 时未实现 P&L 为 N/A |
+| 重新计算的比例 | `Total Unrealized Return (Base)` | 使用组级 `Total Unrealized P&L (Base) / Book Cost (Base, Trade FX)`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
+| 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` | 用 as-of signed base value 权重合成；行级不含 FX，跨币种或覆盖不完整时为空 |
 | 当前篮子路径风险 | `1M / 3M / 6M / 1Y Vol`、`Current DD`、`Max DD` | 用共同 period 的成员 total-return series 与当前权重先生成组 return path，再计算风险；return currency 不一致时为空 |
 | 组合风险贡献 | `Forward RC` | workspace forward-risk status 完整时，对 eligible 成员相对于同一全组合 variance 的 risk share 加总；衍生品排除且为 N/A，modeled-zero monetary rows 贡献 0，纯 modeled-zero monetary group 为 0；其他成员缺失则为空 |
-| 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Avg Cost`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group 或 subtotal 值 |
+| 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Book Avg Cost`、`Book Cost (Local)`、`Weighted Cost FX`、`Net Invested (Local)`、`Break-even Price`、`Price P&L (Local)`、`Price Return (Local)`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group 或 subtotal 值 |
 
 `Holding Since` 是当前开放头寸最早的 holding start date，不是 workspace as-of date；不同 instrument 的份额单位、报价单位、平均成本和起始日期不可直接相加或平均。
 
 #### Unrealized P&L
 
 $$
-UnrealizedPnL_i = MV_i^{base} - PurchaseValue_i^{open}
+PricePnL_i^{local} = MV_i^{local} - BookCost_i^{local}
+$$
+
+$$
+PricePnL_i^{base} = PricePnL_i^{local} \times FX_t
+$$
+
+$$
+FXPnL_i^{base} = BookCost_i^{local} \times FX_t - BookCost_i^{historical\ base}
+$$
+
+$$
+TotalUnrealizedPnL_i^{base} = PricePnL_i^{base} + FXPnL_i^{base}
+= MV_i^{base} - BookCost_i^{historical\ base}
 $$
 
 #### Realized P&L
