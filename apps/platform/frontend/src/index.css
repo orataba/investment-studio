@@ -164,7 +164,6 @@ textarea {
 }
 
 .home-primary-links > a:hover,
-.home-primary-links > a:focus-visible,
 .home-primary-links > a:focus-visible {
   background: #f7f8fa;
   outline: none;
