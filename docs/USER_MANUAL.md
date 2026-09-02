@@ -298,9 +298,9 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
-页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。每张表都可以独立使用 `View` 和 `Columns`，instrument 数量紧邻标题；`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
+页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。instrument 数量紧邻标题。Securities、FCN 与 Options 可以独立使用 `View` 和 `Columns`；FCN、Options 均以 `Default` 为日常视图，并提供面向条款和估值的系统视图，系统视图切换不改变表格框架宽度。`Cash & Settlement` 使用固定字段，不提供没有实际价值的视图或列配置。`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
 
-CSV/Excel 同样只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立表头；各表跟随自己当前视图的可见字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
+CSV/Excel 同样只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立表头；Securities、FCN、Options 跟随当前视图的可见字段，Cash & Settlement 使用与页面一致的固定字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
 
 Security Group/subtotal 是**当前持仓篮子**：金额加总，比例用组级分子分母重算，Return 用当前 signed base value 合成，Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。每个 group/subtotal 使用自身 base value 分母；非本币资产必须有可共同解释的 base-currency return/FX overlay，否则显示 `—`。Forward RC 仍使用全组合风险模型的共同分母。当前成员覆盖不足、共同路径缺段或尾部陈旧时显示 `—`，不剔除缺失成员后重新归一。
 

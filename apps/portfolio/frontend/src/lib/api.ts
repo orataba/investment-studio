@@ -2775,7 +2775,6 @@ export type PortfolioTableViewScope =
   | 'holdings'
   | 'holdings_fcn'
   | 'holdings_options'
-  | 'holdings_cash'
   | 'performance_calculation'
 
 export type PortfolioTableViewStoreResponse<TStore = unknown> = {

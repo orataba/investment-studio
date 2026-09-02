@@ -6,6 +6,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import InfoHint from '../components/InfoHint'
 import OverviewAssetMix from '../components/OverviewAssetMix'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -962,6 +963,8 @@ export default function OverviewPage() {
     summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
   const performanceIsOperational =
     performanceWorkspace?.summary.performance_basis === 'operational_carrying_basis'
+  const operationalPerformanceDetail =
+    'Operational return is used for NAV reconciliation because event-valued assets and obligations remain on carrying basis. Market Risk Watch uses a separate return chain that models derivatives and base-currency cash at zero return; benchmark overlays are therefore hidden from this TWR chart.'
   const sortedHoldings = useMemo(
     () =>
       [...nonCashHoldingsRows].sort(
@@ -1226,6 +1229,19 @@ export default function OverviewPage() {
       selectedBenchmarkInstrument,
     ],
   )
+  const benchmarkComparisonDetail = benchmarkGuard
+    ? `${
+        benchmarkGuard.mode === 'canonical'
+          ? 'Canonical comparator'
+          : benchmarkGuard.reason === 'benchmark_price_return_comparable'
+            ? 'Price-return comparator'
+            : benchmarkGuard.mode === 'exploratory'
+              ? 'Exploratory comparator'
+              : 'Comparator unavailable'
+      }. ${benchmarkGuard.basisAssessment.label} (${benchmarkGuard.basisAssessment.basis ?? 'basis unavailable'}).${
+        benchmarkGuard.warning ? ` ${benchmarkGuard.warning}` : ''
+      }`
+    : null
   const benchmarkMetrics = useMemo(
     () =>
       benchmarkGuard == null || benchmarkGuard.mode === 'unavailable'
@@ -1567,17 +1583,6 @@ export default function OverviewPage() {
             {performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'}.
           </div>
         ) : null}
-        {performanceIsOperational ? (
-          <div
-            className="inline-notice inline-notice-warning"
-            role="status"
-            title="Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the operational TWR chart."
-            aria-label="Operational carrying-basis return. Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the operational TWR chart."
-            tabIndex={0}
-          >
-            Operational carrying-basis return.
-          </div>
-        ) : null}
         <QualityWarningsNotice
           warnings={[
             ...(holdingsWorkspace?.quality_warnings ?? []),
@@ -1616,41 +1621,15 @@ export default function OverviewPage() {
                           setBenchmarkError(null)
                         }}
                       />
+                      {benchmarkComparisonDetail ? (
+                        <InfoHint
+                          label="Benchmark comparison"
+                          detail={benchmarkComparisonDetail}
+                          tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
+                        />
+                      ) : null}
                     </div>
                     {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
-                    {!benchmarkError && benchmarkGuard ? (
-                      <div
-                        className={`performance-benchmark-basis-status ${
-                          benchmarkGuard.mode === 'canonical'
-                            ? 'performance-benchmark-basis-status-comparable'
-                            : 'performance-benchmark-basis-status-fallback'
-                        }`}
-                      >
-                        <span>
-                          {benchmarkGuard.mode === 'canonical'
-                            ? 'Manual comparator · canonical'
-                            : benchmarkGuard.reason === 'benchmark_price_return_comparable'
-                              ? 'Manual comparator · price return'
-                            : benchmarkGuard.mode === 'exploratory'
-                              ? 'Manual comparator · exploratory'
-                              : 'Manual comparator unavailable'}
-                        </span>
-                        <code>{benchmarkGuard.basisAssessment.basis ?? 'unavailable'}</code>
-                        <span>{benchmarkGuard.basisAssessment.label}</span>
-                      </div>
-                    ) : null}
-                    {!benchmarkError && benchmarkGuard?.warning ? (
-                      <div
-                        className={`inline-notice ${
-                          benchmarkGuard.reason === 'benchmark_currency_mismatch'
-                            ? 'inline-notice-error'
-                            : 'inline-notice-warning'
-                        } performance-benchmark-basis-warning`}
-                        role="status"
-                      >
-                        {benchmarkGuard.warning}
-                      </div>
-                    ) : null}
                     {performanceLoading && !performanceWorkspace ? (
                       <CalculationStatus />
                     ) : null}
@@ -1687,7 +1666,18 @@ export default function OverviewPage() {
                         <table className="overview-key-metrics-table" key={group.label}>
                           <thead>
                             <tr>
-                              <th colSpan={2}>{group.label}</th>
+                              <th colSpan={2}>
+                                <span className="portfolio-title-with-hint">
+                                  <span>{group.label}</span>
+                                  {performanceIsOperational && group.label === 'Operational Performance' ? (
+                                    <InfoHint
+                                      label="Operational performance basis"
+                                      detail={operationalPerformanceDetail}
+                                      tone="warning"
+                                    />
+                                  ) : null}
+                                </span>
+                              </th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1865,10 +1855,7 @@ export default function OverviewPage() {
               onClick={(event) => event.stopPropagation()}
             >
               <div className="overview-columns-modal-header">
-                <div>
-                  <div className="panel-title">Data Columns</div>
-                  <div className="portfolio-detail-meta">Top Holdings Detail</div>
-                </div>
+                <div className="panel-title">Data Columns</div>
                 <button type="button" onClick={() => setTopHoldingColumnsOpen(false)}>
                   Close
                 </button>

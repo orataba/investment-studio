@@ -10,7 +10,6 @@ SUPPORTED_TABLE_VIEW_SCOPES = {
     "holdings",
     "holdings_fcn",
     "holdings_options",
-    "holdings_cash",
     "performance_calculation",
 }
 

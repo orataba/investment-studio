@@ -61,8 +61,9 @@ describe('performance benchmark basis reliability', () => {
       'comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null',
     )
     expect(performancePageSource).toContain('benchmarkGuard?.relativeComparisonEligible ?? false')
-    expect(performancePageSource).toContain('Manual comparator · canonical')
-    expect(performancePageSource).toContain('performance-benchmark-basis-warning')
+    expect(performancePageSource).toContain('Canonical comparator')
+    expect(performancePageSource).toContain('label="Benchmark comparison"')
+    expect(performancePageSource).toContain('benchmarkGuard.warning ?')
     expect(performancePageSource).toContain('setBenchmarkChart(null)')
   })
 })

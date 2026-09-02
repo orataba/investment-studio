@@ -244,16 +244,22 @@ describe('Holdings rendered page contract', () => {
     expect(screen.getByRole('table', { name: 'Option holdings' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Cash and settlement holdings' })).toBeInTheDocument()
 
-    const sections = [
+    const configurableSections = [
       ['Securities', 'Default', 'Securities Columns'],
-      ['FCN', 'Position', 'FCN Columns'],
-      ['Options', 'Position', 'Options Columns'],
-      ['Cash & Settlement', 'Balances', 'Cash & Settlement Columns'],
+      ['FCN', 'Default', 'FCN Columns'],
+      ['Options', 'Default', 'Options Columns'],
     ] as const
-    for (const [name, view, columnsLabel] of sections) {
+    for (const [name, view, columnsLabel] of configurableSections) {
       const region = screen.getByRole('region', { name })
       expect(await within(region).findByRole('button', { name: new RegExp(`View\\s*: ${view}`) })).toBeInTheDocument()
       expect(within(region).getByRole('button', { name: columnsLabel })).toHaveTextContent('Columns')
+    }
+    const cashRegion = screen.getByRole('region', { name: 'Cash & Settlement' })
+    expect(within(cashRegion).queryByRole('button', { name: /View\s*:/ })).not.toBeInTheDocument()
+    expect(within(cashRegion).queryByRole('button', { name: /Columns/ })).not.toBeInTheDocument()
+
+    for (const name of ['Securities', 'FCN', 'Options', 'Cash & Settlement']) {
+      const region = screen.getByRole('region', { name })
       const title = within(region).getByRole('heading', { name })
       expect(title.parentElement).toHaveClass('holdings-section-title')
       expect(title.parentElement?.querySelector('.holdings-section-count')).toHaveTextContent('1')
@@ -369,7 +375,7 @@ describe('Holdings rendered page contract', () => {
     await waitForHoldings()
 
     const fcnRegion = screen.getByRole('region', { name: 'FCN' })
-    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ }))
+    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
 
     expect(await screen.findByRole('status')).toHaveTextContent('View save failed')
@@ -386,7 +392,7 @@ describe('Holdings rendered page contract', () => {
     await waitForHoldings()
     const fcnRegion = screen.getByRole('region', { name: 'FCN' })
     const optionsRegion = screen.getByRole('region', { name: 'Options' })
-    await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ })
+    await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ })
 
     await user.click(within(fcnRegion).getByRole('button', { name: 'FCN Columns' }))
     const dialog = screen.getByRole('dialog', { name: 'Choose FCN columns' })
@@ -406,8 +412,8 @@ describe('Holdings rendered page contract', () => {
         { name: 'Type' },
       ),
     ).toBeInTheDocument()
-    expect(within(fcnRegion).getByRole('button', { name: /View\s*: Position \(Edited\)/ })).toBeInTheDocument()
-    expect(within(optionsRegion).getByRole('button', { name: /View\s*: Position$/ })).toBeInTheDocument()
+    expect(within(fcnRegion).getByRole('button', { name: /View\s*: Default \(Edited\)/ })).toBeInTheDocument()
+    expect(within(optionsRegion).getByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
@@ -421,7 +427,6 @@ describe('Holdings rendered page contract', () => {
       'holdings',
       'holdings_fcn',
       'holdings_options',
-      'holdings_cash',
     ]) {
       expect(apiMocks.getPortfolioTableViewStore).toHaveBeenCalledWith('3', scope)
     }
@@ -521,8 +526,10 @@ describe('Holdings rendered page contract', () => {
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
     expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
 
-    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ }))
+    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
+    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
+    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
     for (const label of ['Final Observation', 'Issuer', 'Counterparty']) {
       expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
@@ -530,6 +537,7 @@ describe('Holdings rendered page contract', () => {
 
     await user.click(within(fcnRegion).getByRole('button', { name: /View\s*: Terms & Events/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
+    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
     expect(within(fcnTable).getByRole('columnheader', { name: 'Fair Value Status' })).toBeInTheDocument()
 
     const optionsRegion = screen.getByRole('region', { name: 'Options' })
@@ -540,7 +548,6 @@ describe('Holdings rendered page contract', () => {
       'Underlying',
       'Strike',
       'Open Contracts',
-      'Multiplier',
       'Remaining Basis',
       'Strike Notional (USD)',
       'Status',
@@ -550,12 +557,16 @@ describe('Holdings rendered page contract', () => {
     expect(within(optionTable).getByText('Written')).toBeInTheDocument()
     expect(within(optionTable).getAllByText('$22,000.00')).toHaveLength(2)
 
-    await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Position/ }))
+    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
+    await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Contract Terms' }))
+    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
     expect(within(optionTable).getByRole('columnheader', { name: 'Underlying Equivalent' })).toBeInTheDocument()
+    expect(within(optionTable).getByRole('columnheader', { name: 'Multiplier' })).toBeInTheDocument()
 
     await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Contract Terms/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
+    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
     expect(within(optionTable).getByRole('columnheader', { name: 'Basis Type' })).toBeInTheDocument()
     expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
   })

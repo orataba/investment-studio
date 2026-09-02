@@ -89,9 +89,6 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'local_amount',
     'base_value',
     'weight',
-    'quote_date',
-    'day_change_base',
-    'day_fx_return',
     'settlement_date',
     'pending_until_date',
     'related_instrument',
@@ -104,7 +101,6 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
   fcn: [
     'contract',
     'account',
-    'currency',
     'notional',
     'underlying_terms',
     'coupon',
@@ -122,12 +118,10 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
     'side',
     'option_type',
     'underlying',
-    'currency',
     'expiry_date',
     'days_to_expiry',
     'strike',
     'open_contracts',
-    'multiplier',
     'remaining_basis',
     'signed_nav_amount_base',
     'strike_notional_base',
@@ -154,7 +148,7 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
 }
 
 const FCN_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
-  { id: 'position', name: 'Position', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn },
+  { id: 'position', name: 'Default', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn },
   {
     id: 'terms',
     name: 'Terms & Events',
@@ -180,6 +174,9 @@ const FCN_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'contract',
       'account',
       'currency',
+      'notional',
+      'maturity_date',
+      'days_to_maturity',
       'remaining_basis',
       'signed_nav_amount_base',
       'weight',
@@ -191,13 +188,14 @@ const FCN_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
 ]
 
 const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
-  { id: 'position', name: 'Position', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options },
+  { id: 'position', name: 'Default', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options },
   {
     id: 'contract',
     name: 'Contract Terms',
     columns: [
       'contract',
       'external_reference',
+      'account',
       'side',
       'option_type',
       'underlying',
@@ -210,6 +208,7 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'underlying_equivalent',
       'strike_notional_base',
       'status',
+      'coverage',
     ],
   },
   {
@@ -219,10 +218,16 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'contract',
       'account',
       'side',
+      'underlying',
+      'currency',
+      'expiry_date',
+      'open_contracts',
       'basis_type',
       'remaining_basis',
       'signed_nav_amount_base',
+      'strike_notional_base',
       'weight',
+      'status',
       'valuation_basis',
       'fair_value_status',
       'coverage',
@@ -230,42 +235,64 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
   },
 ]
 
-const CASH_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
-  { id: 'balances', name: 'Balances', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash },
-  {
-    id: 'settlement',
-    name: 'Settlement',
-    columns: [
-      'description',
-      'type',
-      'currency',
-      'account',
-      'availability',
-      'base_value',
-      'weight',
-      'settlement_date',
-      'pending_until_date',
-      'related_instrument',
-      'status',
-      'coverage',
-    ],
-  },
-  {
-    id: 'daily-fx',
-    name: 'Daily FX',
-    columns: [
-      'description',
-      'currency',
-      'local_amount',
-      'base_value',
-      'weight',
-      'quote_date',
-      'day_change_base',
-      'day_fx_return',
-      'coverage',
-    ],
-  },
-]
+const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
+  contract: 240,
+  external_reference: 170,
+  description: 220,
+  type: 130,
+  account: 190,
+  side: 90,
+  option_type: 90,
+  underlying: 170,
+  currency: 90,
+  notional: 150,
+  underlying_terms: 330,
+  coupon: 120,
+  issue_date: 120,
+  final_observation_date: 150,
+  maturity_date: 130,
+  expiry_date: 130,
+  days_to_maturity: 70,
+  days_to_expiry: 70,
+  issuer: 150,
+  counterparty: 160,
+  strike: 140,
+  open_contracts: 120,
+  multiplier: 100,
+  underlying_equivalent: 160,
+  basis_type: 150,
+  remaining_basis: 160,
+  signed_nav_amount_base: 190,
+  strike_notional_base: 180,
+  weight: 110,
+  status: 140,
+  valuation_basis: 140,
+  fair_value_status: 140,
+  coverage: 140,
+  availability: 100,
+  local_amount: 150,
+  base_value: 170,
+  settlement_date: 130,
+  pending_until_date: 130,
+  related_instrument: 180,
+}
+
+function holdingsSectionWidth(columnKeys: string[]) {
+  return columnKeys.reduce(
+    (total, columnKey) => total + (HOLDINGS_SECTION_COLUMN_WIDTHS[columnKey] ?? 140),
+    0,
+  )
+}
+
+const FCN_TABLE_MIN_WIDTH = Math.max(
+  ...FCN_SYSTEM_VIEWS.map((view) => holdingsSectionWidth(view.columns)),
+)
+const OPTION_TABLE_MIN_WIDTH = Math.max(
+  ...OPTION_SYSTEM_VIEWS.map((view) => holdingsSectionWidth(view.columns)),
+)
+const CASH_TABLE_MIN_WIDTH = holdingsSectionWidth(
+  DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash,
+)
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -393,6 +420,7 @@ function FixedHoldingsTable({
   rows,
   subtotalLabel,
   subtotalValues,
+  minimumWidth,
   onSelectHolding,
 }: {
   ariaLabel: string
@@ -400,11 +428,29 @@ function FixedHoldingsTable({
   rows: PortfolioHoldingRow[]
   subtotalLabel: string
   subtotalValues?: Record<string, ReactNode>
+  minimumWidth: number
   onSelectHolding?: (row: PortfolioHoldingRow) => void
 }) {
+  const contentWidth = columns.reduce(
+    (total, column) => total + (HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140),
+    0,
+  )
   return (
     <div className="table-shell holdings-section-table-shell">
-      <table className="holdings-table holdings-section-table" aria-label={ariaLabel}>
+      <table
+        className="holdings-table holdings-section-table"
+        aria-label={ariaLabel}
+        style={{ minWidth: Math.max(minimumWidth, contentWidth) }}
+      >
+        <colgroup>
+          {columns.map((column) => (
+            <col
+              key={column.key}
+              data-column-key={column.key}
+              style={{ width: HOLDINGS_SECTION_COLUMN_WIDTHS[column.key] ?? 140 }}
+            />
+          ))}
+        </colgroup>
         <thead>
           <tr>
             {columns.map((column) => (
@@ -832,33 +878,6 @@ export default function HoldingsSectionTables({
       render: (row) => formatPercent(row.allocation),
     },
     {
-      key: 'quote_date',
-      label: 'FX / Quote Date',
-      align: 'center',
-      render: (row) => row.quote_as_of_date ?? '—',
-    },
-    {
-      key: 'day_change_base',
-      label: `Day Change (${workspace.base_currency})`,
-      align: 'right',
-      render: (row) =>
-        formatCurrency(
-          baseAmountForRow(
-            row,
-            workspace.base_currency,
-            row.day_change_value_base,
-            row.day_change_value,
-          ),
-          workspace.base_currency,
-        ),
-    },
-    {
-      key: 'day_fx_return',
-      label: 'Day FX Return',
-      align: 'right',
-      render: (row) => formatPercent(row.day_change_pct),
-    },
-    {
       key: 'settlement_date',
       label: 'Settlement Date',
       align: 'center',
@@ -918,6 +937,7 @@ export default function HoldingsSectionTables({
                 columns={visibleColumns}
                 rows={fcnRows}
                 subtotalLabel={`FCN Subtotal (${workspace.base_currency})`}
+                minimumWidth={FCN_TABLE_MIN_WIDTH}
                 subtotalValues={{
                   signed_nav_amount_base: formatCurrency(
                     sumComplete(fcnRows, derivativeBaseValue),
@@ -955,6 +975,7 @@ export default function HoldingsSectionTables({
                 columns={visibleColumns}
                 rows={optionRows}
                 subtotalLabel={`Options Subtotal (${workspace.base_currency})`}
+                minimumWidth={OPTION_TABLE_MIN_WIDTH}
                 subtotalValues={{
                   signed_nav_amount_base: formatCurrency(
                     sumComplete(optionRows, derivativeBaseValue),
@@ -974,50 +995,28 @@ export default function HoldingsSectionTables({
       ) : null}
 
       {cashRows.length ? (
-        <ConfigurableHoldingsSection
-          portfolioId={workspace.portfolio_id}
-          viewScope="holdings_cash"
-          sectionKey="cash"
-          id="holdings-cash-heading"
-          title="Cash & Settlement"
-          count={cashRows.length}
-          columns={cashColumns}
-          requiredColumnKey="description"
-          systemViews={CASH_SYSTEM_VIEWS}
-          onVisibleColumnsChange={onVisibleColumnsChange}
-        >
-          {(visibleColumnKeys) => {
-            const visibleColumns = cashColumns.filter((column) =>
-              visibleColumnKeys.includes(column.key),
-            )
-            return (
-              <FixedHoldingsTable
-                ariaLabel="Cash and settlement holdings"
-                columns={visibleColumns}
-                rows={cashRows}
-                subtotalLabel={`Cash & Settlement Subtotal (${workspace.base_currency})`}
-                subtotalValues={{
-                  base_value: formatCurrency(
-                    sumComplete(cashRows, (row) => signedNavAmountBase(row, workspace)),
-                    workspace.base_currency,
-                  ),
-                  weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
-                  day_change_base: formatCurrency(
-                    sumComplete(cashRows, (row) =>
-                      baseAmountForRow(
-                        row,
-                        workspace.base_currency,
-                        row.day_change_value_base,
-                        row.day_change_value,
-                      ),
-                    ),
-                    workspace.base_currency,
-                  ),
-                }}
-              />
-            )
-          }}
-        </ConfigurableHoldingsSection>
+        <section className="holdings-section" aria-labelledby="holdings-cash-heading">
+          <div className="holdings-section-heading">
+            <div className="holdings-section-title">
+              <h2 id="holdings-cash-heading">Cash & Settlement</h2>
+              <span className="holdings-section-count">{cashRows.length.toLocaleString()}</span>
+            </div>
+          </div>
+          <FixedHoldingsTable
+            ariaLabel="Cash and settlement holdings"
+            columns={cashColumns}
+            rows={cashRows}
+            subtotalLabel={`Cash & Settlement Subtotal (${workspace.base_currency})`}
+            minimumWidth={CASH_TABLE_MIN_WIDTH}
+            subtotalValues={{
+              base_value: formatCurrency(
+                sumComplete(cashRows, (row) => signedNavAmountBase(row, workspace)),
+                workspace.base_currency,
+              ),
+              weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
+            }}
+          />
+        </section>
       ) : null}
 
     </>

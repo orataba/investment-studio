@@ -2648,6 +2648,41 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
 }
 
+.portfolio-title-with-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.portfolio-info-hint {
+  display: inline-flex;
+  box-sizing: border-box;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 50%;
+  color: var(--portfolio-muted);
+  cursor: help;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: none;
+}
+
+.portfolio-info-hint-warning {
+  border-color: #d8ad52;
+  color: #8a5f12;
+}
+
+.portfolio-info-hint:focus-visible {
+  outline: 2px solid var(--portfolio-accent);
+  outline-offset: 2px;
+}
+
 .transaction-filter-bar {
   display: block;
   padding: 14px 0 4px;
@@ -3369,9 +3404,10 @@ input[type='checkbox'] {
 }
 
 .holdings-section-table {
-  width: max-content;
+  width: 100%;
   min-width: 100%;
   background: #ffffff;
+  table-layout: fixed;
 }
 
 .holdings-section-table th,
@@ -9469,45 +9505,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   margin-top: 10px;
 }
 
-.performance-benchmark-basis-status {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0 0;
-  color: var(--portfolio-muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.performance-benchmark-basis-status code {
-  padding: 1px 5px;
-  border: 1px solid var(--portfolio-line);
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font-family: inherit;
-  font-size: 11px;
-}
-
-.performance-benchmark-basis-status-comparable code {
-  border-color: #a7d7bd;
-  color: #18653b;
-}
-
-.performance-benchmark-basis-status-fallback code {
-  border-color: #f2d18a;
-  color: #875b12;
-}
-
-.performance-benchmark-basis-warning {
-  position: static;
-  width: auto;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-left: 2px solid #b7791f;
-  background: #fff8e8;
-}
-
 .performance-calculation-toolbar {
   justify-content: flex-start;
 }
@@ -9643,15 +9640,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.performance-metric-reliability-note {
-  display: block;
-  margin-top: 2px;
-  color: var(--portfolio-muted);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.2;
 }
 
 .performance-return-matrix-table {

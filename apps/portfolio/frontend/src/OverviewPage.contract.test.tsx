@@ -154,6 +154,28 @@ describe('Overview rendered page contract', () => {
     })
   })
 
+  it('moves the operational return explanation beside its metric heading', async () => {
+    const fixture = performanceFixture()
+    apiMocks.getPortfolioPerformance.mockResolvedValue({
+      ...fixture,
+      summary: {
+        ...fixture.summary,
+        performance_basis: 'operational_carrying_basis',
+        performance_label: 'Total Portfolio Operational Return',
+      },
+    })
+
+    renderPortfolioPage(
+      <OverviewPage />,
+      '/portfolios/3/overview',
+      '/portfolios/:portfolioId/overview',
+    )
+
+    const hint = await screen.findByRole('note', { name: /Operational performance basis:/ })
+    expect(hint).toHaveAttribute('title', expect.stringContaining('NAV reconciliation'))
+    expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
+  })
+
   it('keeps carried holdings unavailable in top-holding market analytics', async () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
@@ -515,9 +537,12 @@ describe('Overview rendered page contract', () => {
     await user.type(benchmarkSearch, 'Market')
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
-    expect(await screen.findByText('Manual comparator · exploratory')).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent(
-      /Portfolio-relative differences and relative statistics are withheld/,
+    const benchmarkHint = await screen.findByRole('note', {
+      name: /Benchmark comparison: Exploratory comparator/,
+    })
+    expect(benchmarkHint).toHaveAttribute(
+      'title',
+      expect.stringContaining('Portfolio-relative differences and relative statistics are withheld'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
     expect(within(metricPanel).getAllByText(/Exploratory BM/).length).toBeGreaterThan(0)
@@ -578,9 +603,12 @@ describe('Overview rendered page contract', () => {
     await user.type(benchmarkSearch, 'Market')
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
-    expect(await screen.findByText('Manual comparator · price return')).toBeInTheDocument()
-    expect(await screen.findByText(/Benchmark uses close with confirmed price-return semantics/)).toHaveTextContent(
-      /benchmark and relative metrics are shown/,
+    const benchmarkHint = await screen.findByRole('note', {
+      name: /Benchmark comparison: Price-return comparator/,
+    })
+    expect(benchmarkHint).toHaveAttribute(
+      'title',
+      expect.stringMatching(/Benchmark uses close with confirmed price-return semantics.*benchmark and relative metrics are shown/),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
     expect(within(metricPanel).getAllByText(/Price BM/).length).toBeGreaterThan(0)

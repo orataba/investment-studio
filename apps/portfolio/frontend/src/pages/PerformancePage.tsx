@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import InfoHint from '../components/InfoHint'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
@@ -1416,12 +1417,14 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
                 <tr key={row.metric}>
                   <th scope="row">
                     <span className="performance-metric-table-name">
-                      <span>
-                        {row.metric}
-                        {row.reliabilityNote ? (
-                          <small className="performance-metric-reliability-note">{row.reliabilityNote}</small>
-                        ) : null}
-                      </span>
+                      <span>{row.metric}</span>
+                      {row.reliabilityNote ? (
+                        <InfoHint
+                          label={`${row.metric} availability`}
+                          detail={row.reliabilityNote}
+                          tone="warning"
+                        />
+                      ) : null}
                     </span>
                   </th>
                   <td className={row.valueClassName ?? ''}>{row.value}</td>
@@ -2136,7 +2139,19 @@ function PerformancePage() {
     ],
   )
   const benchmarkCurrencyMismatch = benchmarkGuard?.reason === 'benchmark_currency_mismatch'
-  const benchmarkBasisAssessment = benchmarkGuard?.basisAssessment ?? null
+  const benchmarkComparisonDetail = benchmarkGuard
+    ? `${
+        benchmarkGuard.mode === 'canonical'
+          ? 'Canonical comparator'
+          : benchmarkGuard.reason === 'benchmark_price_return_comparable'
+            ? 'Price-return comparator'
+            : benchmarkGuard.mode === 'exploratory'
+              ? 'Exploratory comparator'
+              : 'Comparator unavailable'
+      }. ${benchmarkGuard.basisAssessment.label} (${benchmarkGuard.basisAssessment.basis ?? 'basis unavailable'}).${
+        benchmarkGuard.warning ? ` ${benchmarkGuard.warning}` : ''
+      }`
+    : null
   const benchmarkMetrics = useMemo(
     () =>
       benchmarkGuard == null || benchmarkGuard.mode === 'unavailable'
@@ -2248,6 +2263,22 @@ function PerformancePage() {
     calculationGroupsSummary?.risk_return_observation_count ?? 0,
     0,
   )} aligned ${calculationGroupsSummary?.risk_calculation_frequency} observations. Treat the ranking and sign as preliminary; a negative Realized RC means diversification, not a loss.`
+  const performancePanelDetail = [
+    performanceMetricsMeta,
+    summary ? `Basis: ${formatLabel(summary.performance_basis)}` : null,
+    performanceIsOperational ? operationalPerformanceDetail : null,
+  ]
+    .filter(Boolean)
+    .join('. ')
+  const calculationPanelDetail = [
+    calculationMeta,
+    calculationRiskStatusLabel,
+    realizedRiskEstimateLowSample && showsRealizedRiskEstimate
+      ? realizedRiskEstimateDetail
+      : null,
+  ]
+    .filter(Boolean)
+    .join('. ')
   const riskContributionResidual = realizedRiskContributionResidual(
     calculationRows.map((row) => finiteNumber(row.realized_risk_contribution)),
     riskMetricsAvailable,
@@ -2658,6 +2689,13 @@ function PerformancePage() {
             }}
             placeholder="Compare benchmark..."
           />
+          {benchmarkComparisonDetail ? (
+            <InfoHint
+              label="Benchmark comparison"
+              detail={benchmarkComparisonDetail}
+              tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
+            />
+          ) : null}
         </div>
         {windowError ? (
           <div className="inline-notice inline-notice-error" role="alert">
@@ -2684,43 +2722,6 @@ function PerformancePage() {
             {normalizeBenchmarkCurrency(baseCurrency)}.
           </div>
         ) : null}
-        {benchmarkGuard && benchmarkBasisAssessment ? (
-          <div
-            className={`performance-benchmark-basis-status ${
-              benchmarkGuard.mode === 'canonical'
-                ? 'performance-benchmark-basis-status-comparable'
-                : 'performance-benchmark-basis-status-fallback'
-            }`}
-          >
-            <span>
-              {benchmarkGuard.mode === 'canonical'
-                ? 'Manual comparator · canonical'
-                : benchmarkGuard.reason === 'benchmark_price_return_comparable'
-                  ? 'Manual comparator · price return'
-                : benchmarkGuard.mode === 'exploratory'
-                  ? 'Manual comparator · exploratory'
-                  : 'Manual comparator unavailable'}
-            </span>
-            <code>{benchmarkBasisAssessment.basis ?? 'unavailable'}</code>
-            <span>{benchmarkBasisAssessment.label}</span>
-          </div>
-        ) : null}
-        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning ? (
-          <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
-            {benchmarkGuard.warning}
-          </div>
-        ) : null}
-        {performanceIsOperational ? (
-          <div
-            className="inline-notice inline-notice-warning"
-            role="status"
-            title={operationalPerformanceDetail}
-            aria-label={`Operational carrying-basis return. ${operationalPerformanceDetail}`}
-            tabIndex={0}
-          >
-            <strong>Operational carrying-basis return.</strong> Not a complete fair-value TWR.
-          </div>
-        ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
         {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
@@ -2732,11 +2733,13 @@ function PerformancePage() {
           <div className="performance-section-stack">
             <section className="portfolio-section-block">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar performance-section-toolbar">
-                <div>
-                  <div className="panel-title">{summary.performance_label}</div>
-                  <div className="portfolio-detail-meta">
-                    {performanceMetricsMeta}; {formatLabel(summary.performance_basis)}
-                  </div>
+                <div className="panel-title portfolio-title-with-hint">
+                  <span>{summary.performance_label}</span>
+                  <InfoHint
+                    label="Performance details"
+                    detail={performancePanelDetail}
+                    tone={performanceIsOperational ? 'warning' : 'info'}
+                  />
                 </div>
               </div>
               <MetricGrid rows={metricRows} />
@@ -2745,14 +2748,13 @@ function PerformancePage() {
             <section className="portfolio-section-block">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar performance-section-toolbar performance-calculation-toolbar">
                 <div className="performance-calculation-toolbar-main">
-                  <div>
-                    <div className="panel-title">Calculation</div>
-                    <div
-                      className="portfolio-detail-meta"
-                      title={calculationRiskStatusLabel ?? undefined}
-                    >
-                      {calculationMeta}
-                    </div>
+                  <div className="panel-title portfolio-title-with-hint">
+                    <span>Calculation</span>
+                    <InfoHint
+                      label="Calculation details"
+                      detail={calculationPanelDetail}
+                      tone={realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? 'warning' : 'info'}
+                    />
                   </div>
                   <div className="performance-calculation-actions">
                     {calculationTableViewStoreReadyPortfolioId === portfolioId ? (
@@ -2815,17 +2817,6 @@ function PerformancePage() {
                 <div className="inline-notice inline-notice-warning" role="status">
                   Calculation includes stale FX observations; pending settlement monetary FX remains separately
                   identified.
-                </div>
-              ) : null}
-              {realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? (
-                <div
-                  className="inline-notice inline-notice-warning"
-                  role="status"
-                  title={realizedRiskEstimateDetail}
-                  aria-label={`Low-sample realized risk estimate. ${realizedRiskEstimateDetail}`}
-                  tabIndex={0}
-                >
-                  Low-sample realized risk estimate.
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}
@@ -2956,11 +2947,7 @@ function PerformancePage() {
                         />
                         <div>
                           <div className="portfolio-table-config-field-label">{CALCULATION_COLUMN_LABELS[column]}</div>
-                          <div className="portfolio-table-config-field-meta">
-                            {column}
-                            {calculationColumnSearch.trim() ? ` · ${groupLabel}` : ''}
-                            {locked ? ' · required' : ''}
-                          </div>
+                          {locked ? <div className="portfolio-table-config-field-meta">required</div> : null}
                         </div>
                       </label>
                     )

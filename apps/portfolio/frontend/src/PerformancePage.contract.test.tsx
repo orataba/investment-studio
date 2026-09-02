@@ -168,18 +168,23 @@ describe('Performance rendered page contract', () => {
     const periodReturnRow = await screen.findByRole('row', { name: /Total Portfolio Return/ })
     expect(within(periodReturnRow).getByText('+3.02%')).toBeInTheDocument()
     expect(screen.getByText('Calculation')).toBeInTheDocument()
-    expect(screen.getAllByText(/2026-07-06 to 2026-07-15/)).toHaveLength(2)
+    const performanceDetails = screen.getByRole('note', { name: /Performance details:/ })
+    const calculationDetails = screen.getByRole('note', { name: /Calculation details:/ })
+    expect(performanceDetails).toHaveAttribute('title', expect.stringContaining('2026-07-06 to 2026-07-15'))
+    expect(calculationDetails).toHaveAttribute('title', expect.stringContaining('2026-07-06 to 2026-07-15'))
     expect(
       await screen.findByRole('row', { name: /Portfolio Total/ }),
     ).toBeInTheDocument()
     const annualizedReturnRow = screen.getByRole('row', { name: /Annualized TWR/ })
-    expect(within(annualizedReturnRow).getByText('Requires ≥ 1 year')).toBeInTheDocument()
+    expect(
+      within(annualizedReturnRow).getByRole('note', {
+        name: 'Annualized TWR availability: Requires ≥ 1 year',
+      }),
+    ).toBeInTheDocument()
+    expect(within(annualizedReturnRow).queryByText('Requires ≥ 1 year')).not.toBeInTheDocument()
     expect(screen.queryByText('Short observed history.')).not.toBeInTheDocument()
     expect(screen.queryByText(/Ordinary Assets Sleeve TWR unavailable/)).not.toBeInTheDocument()
-    expect(document.querySelector('.performance-calculation-toolbar .portfolio-detail-meta')).toHaveAttribute(
-      'title',
-      'Daily risk basis',
-    )
+    expect(calculationDetails).toHaveAttribute('title', expect.stringContaining('Daily risk basis'))
 
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters)
     expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters)
@@ -192,7 +197,7 @@ describe('Performance rendered page contract', () => {
     expect(screen.queryByText(/publication lineage|rounding audit|internal audit|manifest/i)).not.toBeInTheDocument()
   })
 
-  it('keeps the carrying-basis warning concise and exposes methodology on hover', async () => {
+  it('moves carrying-basis methodology into a compact title hint', async () => {
     const fixture = performanceFixture()
     apiMocks.getPortfolioPerformance.mockResolvedValue({
       ...fixture,
@@ -209,10 +214,10 @@ describe('Performance rendered page contract', () => {
       '/portfolios/:portfolioId/performance',
     )
 
-    const warning = await screen.findByRole('status', { name: /Operational carrying-basis return/ })
-    expect(warning).toHaveTextContent('Operational carrying-basis return. Not a complete fair-value TWR.')
-    expect(warning).toHaveAttribute('title', expect.stringContaining('operational ledger return'))
-    expect(warning).not.toHaveTextContent('GIPS-informed')
+    const hint = await screen.findByRole('note', { name: /Performance details:/ })
+    expect(hint).toHaveAttribute('title', expect.stringContaining('operational ledger return'))
+    expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Not a complete fair-value TWR.')).not.toBeInTheDocument()
   })
 
   it('waits for the default planning taxonomy before loading calculation groups', async () => {
@@ -328,9 +333,12 @@ describe('Performance rendered page contract', () => {
     await user.type(benchmarkSearch, 'Market')
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
-    expect(await screen.findByText('Manual comparator · price return')).toBeInTheDocument()
-    expect(await screen.findByText(/Benchmark uses close with confirmed price-return semantics/)).toHaveTextContent(
-      /benchmark and relative metrics are shown/,
+    const benchmarkHint = await screen.findByRole('note', {
+      name: /Benchmark comparison: Price-return comparator/,
+    })
+    expect(benchmarkHint).toHaveAttribute(
+      'title',
+      expect.stringMatching(/Benchmark uses close with confirmed price-return semantics.*benchmark and relative metrics are shown/),
     )
     const periodReturnCells = within(screen.getByRole('row', { name: /Total Portfolio Return/ })).getAllByRole('cell')
     expect(periodReturnCells).toHaveLength(3)
@@ -566,10 +574,18 @@ describe('Performance rendered page contract', () => {
 
     const irrRow = await screen.findByRole('row', { name: /IRR \/ MWRR/ })
     expect(within(irrRow).getByText('N/A')).toBeInTheDocument()
-    expect(within(irrRow).getByText('Multiple or non-unique XIRR roots')).toBeInTheDocument()
+    expect(
+      within(irrRow).getByRole('note', {
+        name: 'IRR / MWRR availability: Multiple or non-unique XIRR roots',
+      }),
+    ).toBeInTheDocument()
 
     const volatilityRow = screen.getByRole('row', { name: /^Market Risk Volatility/ })
-    expect(within(volatilityRow).getByText('Requires ≥ 2 daily return samples (1 available)')).toBeInTheDocument()
+    expect(
+      within(volatilityRow).getByRole('note', {
+        name: 'Market Risk Volatility availability: Requires ≥ 2 daily return samples (1 available)',
+      }),
+    ).toBeInTheDocument()
   })
 
   it('shows pending-settlement monetary FX as its own attribution column', async () => {
@@ -657,6 +673,13 @@ describe('Performance rendered page contract', () => {
     expect(await screen.findByText(/Performance requested through/i)).toHaveTextContent(
       /requested through 2026-07-15; reliable results end on 2026-07-14/i,
     )
-    expect(screen.getAllByText(/2026-07-06 to 2026-07-14/)).toHaveLength(2)
+    expect(screen.getByRole('note', { name: /Performance details:/ })).toHaveAttribute(
+      'title',
+      expect.stringContaining('2026-07-06 to 2026-07-14'),
+    )
+    expect(screen.getByRole('note', { name: /Calculation details:/ })).toHaveAttribute(
+      'title',
+      expect.stringContaining('2026-07-06 to 2026-07-14'),
+    )
   })
 })
