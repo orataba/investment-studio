@@ -291,6 +291,25 @@ def test_fcn_risk_reports_current_levels_without_inferring_historical_barrier_ev
     assert rows[0]["fcn_risk"]["lifecycle_status"] == "knocked_in"
     assert rows[0]["fcn_risk"]["risk_state"] == "knocked_in"
 
+    enrich_derivative_holding_risk(
+        rows,
+        transactions=[
+            {
+                "trade_date": "2026-08-30",
+                "derivative_contract_id": "fcn-1",
+                "lifecycle_event_type": "fcn_maturity",
+            },
+            {
+                "trade_date": "2026-08-15",
+                "derivative_contract_id": "fcn-1",
+                "lifecycle_event_type": "fcn_knock_in",
+            },
+        ],
+        as_of_date=date(2026, 9, 1),
+    )
+    assert rows[0]["fcn_risk"]["lifecycle_status"] == "matured"
+    assert rows[0]["fcn_risk"]["risk_state"] == "matured"
+
 
 def test_fcn_incomplete_terms_do_not_claim_a_complete_price_region(monkeypatch) -> None:
     rows = [

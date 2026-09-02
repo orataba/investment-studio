@@ -9966,7 +9966,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-security-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(520px, 1fr);
+  grid-template-columns: minmax(0, 1.3fr) minmax(580px, 1fr);
   gap: 36px;
   align-items: center;
   padding: 18px 0 20px;

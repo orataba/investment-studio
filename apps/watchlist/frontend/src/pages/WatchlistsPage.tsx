@@ -2177,7 +2177,9 @@ export default function WatchlistsPage() {
         nextViewId || detail.default_view_id || detail.views[0]?.view_id || activeViewId || ''
       setActiveViewId(nextId)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to refresh watchlist.')
+      if (activeWatchlistIdRef.current === targetWatchlistId) {
+        setError(loadError instanceof Error ? loadError.message : 'Failed to refresh watchlist.')
+      }
     }
   }
 

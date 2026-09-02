@@ -1,5 +1,6 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TransactionsPage from './pages/TransactionsPage'
@@ -46,6 +47,18 @@ vi.mock('./lib/api', () => apiMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
+
+function SwitchableTransactionsPage() {
+  const navigate = useNavigate()
+  return (
+    <>
+      <button type="button" onClick={() => navigate('/portfolios/4/transactions')}>
+        Switch portfolio
+      </button>
+      <TransactionsPage />
+    </>
+  )
+}
 
 const securitiesAccount = {
   account_id: 'brokerage-1',
@@ -1315,6 +1328,66 @@ describe('Transactions rendered page contract', () => {
       ),
     )
     expect(await screen.findByText('Imported 1 transaction facts from clean.xlsx.')).toBeInTheDocument()
+  })
+
+  it('discards a file preview when the active portfolio changes', async () => {
+    let resolvePreview!: (value: {
+      portfolio_id: string
+      preview_digest: string
+      headers: string[]
+      row_count: number
+      valid_count: number
+      error_count: number
+      warnings: string[]
+      batch_errors: string[]
+      rows: Array<{ row_number: number; transaction: object; errors: string[] }>
+    }) => void
+    apiMocks.previewPortfolioTransactionFile.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePreview = resolve
+      }),
+    )
+    const file = new File(['candidate'], 'portfolio-3.csv', { type: 'text/csv' })
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/portfolios/3/transactions']}>
+        <Routes>
+          <Route
+            path="/portfolios/:portfolioId/transactions"
+            element={<SwitchableTransactionsPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')
+    fireEvent.change(fileInput!, { target: { files: [file] } })
+    await waitFor(() => {
+      expect(apiMocks.previewPortfolioTransactionFile).toHaveBeenCalledWith('3', file)
+    })
+    await user.click(screen.getByRole('button', { name: 'Switch portfolio' }))
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioAccounts).toHaveBeenCalledWith('4')
+    })
+
+    await act(async () => {
+      resolvePreview({
+        portfolio_id: '3',
+        preview_digest: 'c'.repeat(64),
+        headers: ['transaction_type'],
+        row_count: 1,
+        valid_count: 1,
+        error_count: 0,
+        warnings: [],
+        batch_errors: [],
+        rows: [{ row_number: 2, transaction: {}, errors: [] }],
+      })
+    })
+
+    expect(
+      screen.queryByRole('alertdialog', { name: 'Review Transaction File' }),
+    ).not.toBeInTheDocument()
+    expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
   })
 
   it('enforces buy instrument eligibility and keeps transaction/accounting inspectors rendered', async () => {

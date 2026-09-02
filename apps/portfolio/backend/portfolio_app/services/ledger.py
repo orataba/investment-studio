@@ -743,6 +743,11 @@ def _monetary_acquisition_fx_rate(
         transaction_id = str(posting.get("transaction_id") or "").strip()
         posting_role = str(posting.get("posting_role") or "")
         if posting_role == "fx_conversion_target_cash":
+            if basis_currency == valuation_fx.required_currency(
+                base_currency,
+                field_name="portfolio base currency",
+            ):
+                return 1.0, False
             paired_posting = fx_conversion_legs.get(transaction_id, {}).get(
                 "fx_conversion_source_cash"
             )

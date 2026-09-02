@@ -120,7 +120,7 @@ export default function SecurityLinkedOptionsPanel({
                     <dl>
                       <div><dt>Realized</dt><dd className={signedValueClass(realized)}>{formatSignedCurrency(realized, contract.currency)}</dd></div>
                       <div><dt>Long unrealized</dt><dd className={signedValueClass(unrealized)}>{formatSignedCurrency(unrealized, contract.currency)}</dd></div>
-                      <div><dt>Open written liability</dt><dd>{formatCurrency(openLiability || null, contract.currency)}</dd></div>
+                      <div><dt>Open written liability</dt><dd>{formatCurrency(obligations.length ? openLiability : null, contract.currency)}</dd></div>
                     </dl>
                   </div>
                 )

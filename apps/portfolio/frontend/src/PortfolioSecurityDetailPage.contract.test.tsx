@@ -169,6 +169,44 @@ describe('Security Detail lazy-load contract', () => {
     })
   })
 
+  it('shows canonical base unrealized P/L including the FX component', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue({
+      portfolio_id: '3',
+      portfolio_name: 'Contract Portfolio',
+      base_currency: 'CNY',
+      as_of_date: '2026-07-15',
+      view_label: 'View: Holdings',
+      quality_warnings: [],
+      rows: [holdingFixture({
+        market_value: 800,
+        market_value_base: 6000,
+        cost_basis: 700,
+        cost_basis_base: 5250,
+        cost_basis_historical_base: 4900,
+        unrealized_price_pnl: 100,
+        unrealized_price_pnl_base: 750,
+        unrealized_fx_pnl_base: 350,
+        unrealized_pnl_base: 1100,
+      })],
+    })
+
+    renderPortfolioPage(
+      <PortfolioSecurityDetailPage />,
+      '/portfolios/3/holdings/asset-1',
+      '/portfolios/:portfolioId/holdings/:instrumentId',
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
+    const heroMetrics = document.querySelector<HTMLElement>('.portfolio-security-hero-metrics')
+    expect(heroMetrics).not.toBeNull()
+    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).toHaveTextContent(
+      '+CN¥1,100.00',
+    )
+    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).not.toHaveTextContent(
+      '+CN¥750.00',
+    )
+  })
+
   it('uses the holding line identity to distinguish a written option from the same-contract long position', async () => {
     const optionContract = optionContractFixture({
       derivative_contract_id: 'option-1',
@@ -279,6 +317,29 @@ describe('Security Detail lazy-load contract', () => {
       portfolio_id: '3',
       derivative_contracts: [linkedOption],
     })
+    apiMocks.getPortfolioOptionObligations.mockResolvedValue({
+      portfolio_id: '3',
+      as_of_date: '2026-07-15',
+      obligation_count: 1,
+      obligations: [
+        {
+          obligation_id: 'obligation-1',
+          portfolio_id: '3',
+          account_id: 'account-1',
+          derivative_contract_id: linkedOption.derivative_contract_id,
+          derivative_contract: linkedOption,
+          related_underlying_id: 'asset-1',
+          open_contract_quantity: 0,
+          required_underlying_quantity: 0,
+          remaining_quantity: 0,
+          premium_received_gross: 100,
+          premium_basis_remaining: 0,
+          carrying_liability: 0,
+          status: 'closed',
+          realized_pnl: 100,
+        },
+      ],
+    })
 
     renderPortfolioPage(
       <PortfolioSecurityDetailPage />,
@@ -290,6 +351,7 @@ describe('Security Detail lazy-load contract', () => {
     expect(screen.getByText('Not held as of selected date.')).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'Security and linked options' })).toBeInTheDocument()
     expect(screen.getByText('Alpha 110 Call')).toBeInTheDocument()
+    expect(screen.getByText('Open written liability').parentElement).toHaveTextContent('$0.00')
     await waitFor(() => {
       expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledWith(
         '3',

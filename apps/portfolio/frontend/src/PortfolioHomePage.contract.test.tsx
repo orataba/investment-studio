@@ -415,6 +415,55 @@ describe('Holdings rendered page contract', () => {
     })
   })
 
+  it('keeps a committed option outcome successful when the follow-up refresh fails', async () => {
+    const expiredContract = optionContractFixture({
+      terms: {
+        underlying_instrument_id: 'equity-1',
+        option_type: 'call',
+        expiry_date: '2026-07-10',
+        strike: 110,
+        contract_multiplier: 100,
+      },
+    })
+    apiMocks.getPortfolioUnresolvedOptionActions
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        operational_date: '2026-07-15',
+        action_count: 1,
+        actions: [
+          {
+            action_key: 'option-1:long:broker-1',
+            derivative_contract_id: 'option-1',
+            derivative_contract: expiredContract,
+            side: 'long',
+            account_id: 'broker-1',
+            open_contract_quantity: 2,
+            underlying_instrument_id: 'equity-1',
+            expiry_date: '2026-07-10',
+            days_past_expiry: 5,
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error('Action refresh unavailable'))
+    apiMocks.createPortfolioOptionOutcome.mockResolvedValue({
+      portfolio_id: '3',
+      transactions: [],
+      option_delivery_link: null,
+    })
+    const onRecorded = vi.fn()
+
+    render(<OptionOutcomePrompt portfolioId="3" onRecorded={onRecorded} />)
+    const dialog = await screen.findByRole('dialog', { name: 'Resolve expired option' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm & record' }))
+
+    await waitFor(() => {
+      expect(onRecorded).toHaveBeenCalledWith('Option outcome recorded.')
+      expect(screen.queryByRole('dialog', { name: 'Resolve expired option' })).not.toBeInTheDocument()
+    })
+    expect(screen.queryByText('Action refresh unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /option needs action/ })).not.toBeInTheDocument()
+  })
+
   it('does not silently hide an expired-option check failure', async () => {
     apiMocks.getPortfolioUnresolvedOptionActions.mockRejectedValueOnce(
       new Error('Option action service unavailable'),

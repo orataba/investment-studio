@@ -9,6 +9,7 @@ import {
 } from '../lib/api'
 import { formatNumber, formatQuantity } from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import InfoHint from './InfoHint'
 
 type OptionOutcomeKind = 'expired' | 'cash_settled' | 'physical'
 
@@ -206,29 +207,53 @@ export default function OptionOutcomePrompt({
     setError(null)
     try {
       await createPortfolioOptionOutcome(portfolioId, payload, requestRef.current.key)
-      requestRef.current = null
-      const nextActions = await getPortfolioUnresolvedOptionActions(portfolioId)
-      setActionsResponse(nextActions)
-      setSelectedActionKey(nextActions.actions[0]?.action_key ?? null)
-      setOpen(nextActions.actions.length > 0)
-      const message = outcome === 'physical'
-        ? selectedAction.side === 'written'
-          ? 'Option assignment recorded.'
-          : 'Option exercise recorded.'
-        : 'Option outcome recorded.'
-      window.dispatchEvent(
-        new CustomEvent(OPTION_OUTCOME_RECORDED_EVENT, {
-          detail: { portfolioId, message },
-        }),
-      )
-      onRecorded?.(message)
     } catch (requestError) {
       setError(
         requestError instanceof Error ? requestError.message : 'Failed to record option outcome.',
       )
-    } finally {
       setSaving(false)
+      return
     }
+
+    requestRef.current = null
+    const remainingActions = actions.flatMap((action) => {
+      if (action.action_key !== selectedAction.action_key) return [action]
+      const remainingQuantity = action.open_contract_quantity - parsedQuantity
+      return remainingQuantity > 1e-9
+        ? [{ ...action, open_contract_quantity: remainingQuantity }]
+        : []
+    })
+    if (actionsResponse) {
+      setActionsResponse({
+        ...actionsResponse,
+        action_count: remainingActions.length,
+        actions: remainingActions,
+      })
+    }
+    setSelectedActionKey(remainingActions[0]?.action_key ?? null)
+    setOpen(remainingActions.length > 0)
+
+    const message = outcome === 'physical'
+      ? selectedAction.side === 'written'
+        ? 'Option assignment recorded.'
+        : 'Option exercise recorded.'
+      : 'Option outcome recorded.'
+    window.dispatchEvent(
+      new CustomEvent(OPTION_OUTCOME_RECORDED_EVENT, {
+        detail: { portfolioId, message },
+      }),
+    )
+    onRecorded?.(message)
+
+    try {
+      const nextActions = await getPortfolioUnresolvedOptionActions(portfolioId)
+      setActionsResponse(nextActions)
+      setSelectedActionKey(nextActions.actions[0]?.action_key ?? null)
+      setOpen(nextActions.actions.length > 0)
+    } catch {
+      // The outcome is already committed; keep the locally reconciled action list.
+    }
+    setSaving(false)
   }
 
   if (!actions.length && !open) {
@@ -322,7 +347,19 @@ export default function OptionOutcomePrompt({
                       checked={outcome === value}
                       onChange={() => setOutcome(value)}
                     />
-                    <span><strong>{label}</strong><small>{description}</small></span>
+                    <span>
+                      <strong className={value === 'physical' ? 'portfolio-title-with-hint' : undefined}>
+                        {label}
+                        {value === 'physical' ? (
+                          <InfoHint
+                            label="Physical settlement"
+                            detail="Stock quantity and strike cash are derived from the contract; physical delivery must use accounts in the contract currency."
+                            tone="warning"
+                          />
+                        ) : null}
+                      </strong>
+                      <small>{description}</small>
+                    </span>
                   </label>
                 ))}
               </fieldset>
@@ -397,11 +434,6 @@ export default function OptionOutcomePrompt({
                 ) : null}
               </div>
 
-              {outcome === 'physical' ? (
-                <div className="inline-notice inline-notice-warning">
-                  The stock quantity and strike-price cash amount are derived from the contract. Cross-currency physical delivery is not inferred.
-                </div>
-              ) : null}
               {error ? <div className="inline-notice inline-notice-error" role="alert">{error}</div> : null}
               <div className="portfolio-table-config-actions option-outcome-actions">
                 <button type="button" onClick={() => setOpen(false)}>Later</button>

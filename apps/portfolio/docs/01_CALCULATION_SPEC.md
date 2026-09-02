@@ -488,7 +488,7 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - monetary row 的 `market_value` 等于该币种余额，`market_value_base` 等于按 as-of date FX 转成组合 base currency 后的值；
 - settled 与 pending monetary row 都不具有证券 `cost_basis`、`Book Avg Cost` 或证券未实现 P&L；但两者都维护独立的 `FX Cost Basis`，用于解释货币余额的未实现汇兑损益，不能把这项 monetary basis 冒充证券 book cost；
 - monetary basis 从该价值第一次进入账本的 `monetary_recognition_date` 建立：普通买卖取现金/头寸价值首次生效日，dividend / coupon 取 entitlement date，现金先结算而头寸后确认时取 bridge 起始日。应收、应付或 subscription bridge 转成 settled cash 时必须原样继承该 basis，不能在 settlement date 重新按现汇定价；
-- settled cash 增加敞口时以上述 historical base basis 并入账户内移动平均，减少敞口时按该平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：若一边就是 portfolio base currency，直接使用成交隐含汇率；若两边都不是 base currency，则以成交日 source/base FX 换算实际 source consideration。`monetary unrealized FX P&L = current base value - historical monetary basis`；历史或当前 FX 缺失时失败关闭；
+- settled cash 增加敞口时以上述 historical base basis 并入账户内移动平均，减少敞口时按该平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：目标币种就是 portfolio base currency 时，其单位 basis 恒为 `1`；来源币种是 base currency 时，非基准目标现金的 basis 等于实际 base consideration 除以目标金额；两边都不是 base currency 时，以成交日 source/base FX 换算实际 source consideration。`monetary unrealized FX P&L = current base value - historical monetary basis`；历史或当前 FX 缺失时失败关闭；
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账，settlement 只改变余额状态，不产生第二次汇兑损益。

@@ -1186,6 +1186,7 @@ export default function TransactionsPage() {
   const [savingCaptureReview, setSavingCaptureReview] = useState(false)
   const [committingCapture, setCommittingCapture] = useState(false)
   const [pendingFileImport, setPendingFileImport] = useState<{
+    portfolioId: string
     fileName: string
     file: File
     preview: PortfolioTransactionFilePreviewResponse
@@ -1292,6 +1293,9 @@ export default function TransactionsPage() {
     setDeleteError(null)
     setDeletingTransaction(false)
     setInspectorTab('fact')
+    setPendingFileImport(null)
+    setFileImportError(null)
+    setImportingFile(false)
 
     if (!portfolioId) {
       setAccounts([])
@@ -2761,6 +2765,7 @@ export default function TransactionsPage() {
     activeFilters: PortfolioTransactionFilters,
     selectedTransactionOverride?: string | null,
   ) {
+    const targetPortfolioId = portfolioId
     setLoadingTransactions(true)
     setLedgerError(null)
     try {
@@ -2769,20 +2774,25 @@ export default function TransactionsPage() {
           ? selectedTransactionId || undefined
           : selectedTransactionOverride || undefined
       const [response, deliveryLinksResponse] = await Promise.all([
-        getPortfolioTransactionsWorkspace(portfolioId, {
+        getPortfolioTransactionsWorkspace(targetPortfolioId, {
           ...activeFilters,
           transaction_id: resolvedTransactionId,
         }),
-        getPortfolioOptionDeliveryLinks(portfolioId),
+        getPortfolioOptionDeliveryLinks(targetPortfolioId),
       ])
+      if (currentPortfolioIdRef.current !== targetPortfolioId) return
       setTransactionsWorkspace(response)
       setOptionDeliveryLinks(deliveryLinksResponse.links)
       setWorkspaceRequestedTransactionId(resolvedTransactionId ?? '')
       setLedgerError(null)
     } catch (error) {
-      setLedgerError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setLedgerError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
+      }
     } finally {
-      setLoadingTransactions(false)
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setLoadingTransactions(false)
+      }
     }
   }
 
@@ -3189,7 +3199,8 @@ export default function TransactionsPage() {
   }
 
   async function handleTransactionFile(file: File | null) {
-    if (!file || importingFile) {
+    const targetPortfolioId = portfolioId
+    if (!file || importingFile || !targetPortfolioId) {
       return
     }
     setImportingFile(true)
@@ -3197,16 +3208,28 @@ export default function TransactionsPage() {
     setFileImportError(null)
     setNotice(null)
     try {
-      const preview = await previewPortfolioTransactionFile(portfolioId, file)
-      setPendingFileImport({ fileName: file.name, file, preview })
+      const preview = await previewPortfolioTransactionFile(targetPortfolioId, file)
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setPendingFileImport({
+        portfolioId: targetPortfolioId,
+        fileName: file.name,
+        file,
+        preview,
+      })
     } catch (error) {
-      setLedgerError(
-        error instanceof Error ? error.message : 'Failed to read the transaction file.',
-      )
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setLedgerError(
+          error instanceof Error ? error.message : 'Failed to read the transaction file.',
+        )
+      }
     } finally {
-      setImportingFile(false)
-      if (transactionFileInputRef.current) {
-        transactionFileInputRef.current.value = ''
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setImportingFile(false)
+        if (transactionFileInputRef.current) {
+          transactionFileInputRef.current.value = ''
+        }
       }
     }
   }
@@ -3216,6 +3239,7 @@ export default function TransactionsPage() {
     const targetPortfolioId = portfolioId
     if (
       !pendingImport ||
+      pendingImport.portfolioId !== targetPortfolioId ||
       pendingImport.preview.error_count > 0 ||
       !targetPortfolioId ||
       importingFile
@@ -3248,7 +3272,9 @@ export default function TransactionsPage() {
         )
       }
     } finally {
-      setImportingFile(false)
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setImportingFile(false)
+      }
     }
   }
 
@@ -3256,6 +3282,8 @@ export default function TransactionsPage() {
     (message, index, messages): message is string => Boolean(message) && messages.indexOf(message) === index,
   )
   const pageError = pageErrors.length ? pageErrors.join(' ') : null
+  const activePendingFileImport =
+    pendingFileImport?.portfolioId === portfolioId ? pendingFileImport : null
   const latestCaptureBatch = transactionCaptureBatches[0] ?? null
   const selectedCaptureBatch =
     transactionCaptureBatches.find((batch) => batch.batch_id === selectedCaptureBatchId)
@@ -7746,38 +7774,38 @@ export default function TransactionsPage() {
         </div>
       ) : null}
       <ConfirmDialog
-        open={Boolean(pendingFileImport)}
+        open={Boolean(activePendingFileImport)}
         title="Review Transaction File"
         description={
-          pendingFileImport ? (
+          activePendingFileImport ? (
             <div className="transaction-file-preview">
               <div>
-                <strong>{pendingFileImport.fileName}</strong>
+                <strong>{activePendingFileImport.fileName}</strong>
                 <span>
-                  {pendingFileImport.preview.row_count} rows · {pendingFileImport.preview.valid_count} valid ·{' '}
-                  {pendingFileImport.preview.error_count} issues
+                  {activePendingFileImport.preview.row_count} rows · {activePendingFileImport.preview.valid_count} valid ·{' '}
+                  {activePendingFileImport.preview.error_count} issues
                 </span>
               </div>
               <p>
-                {pendingFileImport.preview.error_count
+                {activePendingFileImport.preview.error_count
                   ? 'Nothing has been imported. Fix the issues below, then choose the file again.'
-                  : `Import ${pendingFileImport.preview.valid_count} validated transaction fact(s)?`}
+                  : `Import ${activePendingFileImport.preview.valid_count} validated transaction fact(s)?`}
               </p>
-              {pendingFileImport.preview.batch_errors.length ? (
+              {activePendingFileImport.preview.batch_errors.length ? (
                 <div className="transaction-file-preview-issues">
                   <strong>File issues</strong>
                   <ul>
-                    {pendingFileImport.preview.batch_errors.map((error) => (
+                    {activePendingFileImport.preview.batch_errors.map((error) => (
                       <li key={error}>{error}</li>
                     ))}
                   </ul>
                 </div>
               ) : null}
-              {pendingFileImport.preview.rows.some((row) => row.errors.length) ? (
+              {activePendingFileImport.preview.rows.some((row) => row.errors.length) ? (
                 <div className="transaction-file-preview-issues">
                   <strong>Row issues</strong>
                   <ul>
-                    {pendingFileImport.preview.rows
+                    {activePendingFileImport.preview.rows
                       .filter((row) => row.errors.length)
                       .slice(0, 20)
                       .map((row) => (
@@ -7788,11 +7816,11 @@ export default function TransactionsPage() {
                   </ul>
                 </div>
               ) : null}
-              {pendingFileImport.preview.warnings.length ? (
+              {activePendingFileImport.preview.warnings.length ? (
                 <div className="transaction-file-preview-warnings">
                   <strong>Warnings</strong>
                   <ul>
-                    {pendingFileImport.preview.warnings.map((warning) => (
+                    {activePendingFileImport.preview.warnings.map((warning) => (
                       <li key={warning}>{warning}</li>
                     ))}
                   </ul>
@@ -7801,11 +7829,11 @@ export default function TransactionsPage() {
             </div>
           ) : null
         }
-        confirmLabel={`Import ${pendingFileImport?.preview.valid_count ?? 0} Rows`}
+        confirmLabel={`Import ${activePendingFileImport?.preview.valid_count ?? 0} Rows`}
         busyLabel="Importing…"
         error={fileImportError}
         busy={importingFile}
-        confirmDisabled={Boolean(pendingFileImport?.preview.error_count)}
+        confirmDisabled={Boolean(activePendingFileImport?.preview.error_count)}
         confirmTone="primary"
         onCancel={() => {
           setPendingFileImport(null)

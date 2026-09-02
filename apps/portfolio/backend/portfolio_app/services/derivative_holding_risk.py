@@ -76,22 +76,30 @@ def _fcn_lifecycle_by_contract(
     *,
     as_of_date: date,
 ) -> dict[str, str]:
-    lifecycle: dict[str, str] = {}
+    lifecycle_events = {
+        "fcn_knock_in": (0, "knocked_in"),
+        "fcn_knock_out": (1, "knocked_out"),
+        "fcn_maturity": (2, "matured"),
+    }
+    latest_by_contract: dict[str, tuple[str, int, str]] = {}
     for transaction in transactions:
         trade_date = str(transaction.get("trade_date") or "")[:10]
-        if trade_date and trade_date > as_of_date.isoformat():
+        if not trade_date or trade_date > as_of_date.isoformat():
             continue
         contract_id = str(transaction.get("derivative_contract_id") or "").strip()
         event_type = str(transaction.get("lifecycle_event_type") or "").strip()
-        if not contract_id:
+        event = lifecycle_events.get(event_type)
+        if not contract_id or event is None:
             continue
-        if event_type == "fcn_knock_in":
-            lifecycle[contract_id] = "knocked_in"
-        elif event_type == "fcn_knock_out":
-            lifecycle[contract_id] = "knocked_out"
-        elif event_type == "fcn_maturity":
-            lifecycle[contract_id] = "matured"
-    return lifecycle
+        priority, state = event
+        candidate = (trade_date, priority, state)
+        current = latest_by_contract.get(contract_id)
+        if current is None or candidate[:2] > current[:2]:
+            latest_by_contract[contract_id] = candidate
+    return {
+        contract_id: event[2]
+        for contract_id, event in latest_by_contract.items()
+    }
 
 
 def _fcn_underlying_risk(

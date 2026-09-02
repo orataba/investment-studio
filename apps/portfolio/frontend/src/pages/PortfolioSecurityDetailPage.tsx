@@ -305,13 +305,13 @@ export default function PortfolioSecurityDetailPage() {
     : false
   const selectedRowUnrealizedBase =
     !selectedRowUsesEventValuation &&
-    selectedRow?.market_value_base != null && selectedRow.cost_basis_base != null
-      ? selectedRow.market_value_base - selectedRow.cost_basis_base
+    selectedRow?.unrealized_pnl_base != null
+      ? selectedRow.unrealized_pnl_base
       : null
   const selectedRowUnrealizedLocal =
     !selectedRowUsesEventValuation &&
-    selectedRow?.market_value != null && selectedRow.cost_basis != null
-      ? selectedRow.market_value - selectedRow.cost_basis
+    selectedRow?.unrealized_price_pnl != null
+      ? selectedRow.unrealized_price_pnl
       : null
   const heroMarketValue = selectedRowUsesEventValuation
     ? selectedRow?.carrying_value_base ?? selectedRow?.carrying_value

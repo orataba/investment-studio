@@ -279,6 +279,65 @@ def test_fx_conversion_uses_executed_countervalue_for_new_cash_basis(
     assert by_account["cash-usd"]["unrealized_fx_pnl_base"] == pytest.approx(50.0)
 
 
+def test_fx_conversion_into_base_cash_does_not_create_fx_pnl(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        valuation_fx,
+        "resolve_fx_rate_on",
+        lambda *, base_currency, quote_currency, **_kwargs: {
+            "rate": 1.0 if base_currency == quote_currency else 7.2,
+            "stale": False,
+        },
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, from_currency, **_kwargs: (
+            float(amount) * (7.5 if from_currency == "USD" else 1.0),
+            False,
+        ),
+    )
+
+    common = {
+        "trade_date": "2026-01-02",
+        "settlement_date": "2026-01-03",
+        "effective_date": "2026-01-03",
+        "source_transaction_type": "fx_conversion",
+        "transaction_id": "fx-to-base",
+        "created_at": "2026-01-02T09:00:00Z",
+    }
+    balances = ledger.settled_monetary_balances_from_postings(
+        postings=[
+            {
+                **common,
+                "account_id": "cash-usd",
+                "cash_amount_delta": -100.0,
+                "currency": "USD",
+                "posting_role": "fx_conversion_source_cash",
+            },
+            {
+                **common,
+                "account_id": "cash-cny",
+                "cash_amount_delta": 700.0,
+                "currency": "CNY",
+                "posting_role": "fx_conversion_target_cash",
+            },
+        ],
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+
+    by_account = {item["account_id"]: item for item in balances}
+    assert set(by_account) == {"cash-usd", "cash-cny"}
+    assert by_account["cash-cny"]["amount"] == pytest.approx(700.0)
+    assert by_account["cash-cny"]["cost_basis_historical_base"] == pytest.approx(700.0)
+    assert by_account["cash-cny"]["cost_basis_fx_rate_to_base"] == pytest.approx(1.0)
+    assert by_account["cash-cny"]["unrealized_fx_pnl_base"] == pytest.approx(0.0)
+
+
 def test_foreign_security_receivable_and_cash_preserve_one_fx_basis(
     monkeypatch,
 ) -> None:
@@ -3263,8 +3322,8 @@ def test_zero_nav_gap_breaks_history_and_refunding_starts_new_segment(
 def test_performance_summary_reports_full_calendar_year_twr_annualized_and_irr(client, monkeypatch):
     monkeypatch.setattr(
         portfolio_store,
-        "_portfolio_valuation_today",
-        lambda _portfolio: date(2027, 1, 2),
+        "portfolio_valuation_today",
+        lambda _timezone: date(2027, 1, 2),
     )
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
