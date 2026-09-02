@@ -2,7 +2,7 @@ name: portfolio-operations-workbench
 
 services:
   postgres:
-    image: postgres:17.11-bookworm
+    image: postgres:17.10-bookworm@sha256:c5a38822eb132d1f7e2cb1082d202400b07afa67a58cfe99ba3f04af2f3474e8
     container_name: portfolio-ops-postgres
     restart: unless-stopped
     shm_size: 256mb
