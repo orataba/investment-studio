@@ -47,6 +47,10 @@ Portfolio 负责：
 | 预览 JSON 批次 | `POST /api/portfolios/{portfolio_id}/transaction-imports/preview` |
 | 确认并原子入账 | `POST /api/portfolios/{portfolio_id}/transaction-imports/commit` |
 | 查询已入账交易 | `GET /api/portfolios/{portfolio_id}/transactions` |
+| 查询到期未确认期权 | `GET /api/portfolios/{portfolio_id}/options/unresolved-actions` |
+| 确认期权到期/结算/实物结果 | `POST /api/portfolios/{portfolio_id}/options/outcomes` |
+| 查询期权实物交割关系 | `GET /api/portfolios/{portfolio_id}/options/delivery-links` |
+| 查询 written-option obligations | `GET /api/portfolios/{portfolio_id}/options/obligations` |
 
 请求使用：
 
@@ -244,7 +248,34 @@ gross_amount = contract quantity × price × contract_multiplier
 
 `expire_long` 和 `expire_written` 的 `gross_amount` 必须为 `"0"`，不得发送结算现金账户、费用或税费。现金结算需要正数 `gross_amount` 和结算现金账户。
 
-实物行权或指派仍按“Option 现金结算事实 + 独立 Security 买卖”发送。接口没有多腿关系字段，也不会把两条记录自动绑定。
+标准 Preview/Commit 批次只接受单行 Option 事实，不接受 `option_long_exercise` 或 `option_writer_assignment`，也不能用“现金结算 + 独立股票买卖”模拟实物交割。经人工确认的实物行权/指派必须使用下面的专用 outcome command。
+
+#### 期权结果命令
+
+```http
+POST /api/portfolios/{portfolio_id}/options/outcomes
+Idempotency-Key: option-outcome-<stable-operation-id>
+Content-Type: application/json
+```
+
+```json
+{
+  "derivative_contract_id": "option-abbv-20261218-c220",
+  "side": "long",
+  "outcome": "physical",
+  "quantity": "1",
+  "event_date": "2026-12-18",
+  "settlement_date": "2026-12-18",
+  "stock_account_id": "security-usd",
+  "settlement_cash_account_id": "cash-usd",
+  "fees": "1.25",
+  "taxes": "0"
+}
+```
+
+`outcome` 允许 `expired`、`cash_settled`、`physical`。到期作废的 `event_date` 必须等于合约 expiry，且不发送账户、金额、费用或税费；现金结算发送正数 `cash_settlement_amount` 和结算现金账户；实物结果发送股票账户与结算现金账户，金额、股票方向、交付数量和执行价由合约条款确定。long Call 买入股票、long Put 卖出股票、written Call 卖出股票、written Put 买入股票。期权腿以零现金关闭，费用和税费只进入股票腿，两条事实与 `option_delivery_link` 原子写入。合约币种与 underlying 报价币种不一致时拒绝实物结果，调用方应录入经核对的现金结算。
+
+同一个 Idempotency-Key 只能重放完全相同的 outcome payload。`GET .../options/unresolved-actions` 返回已过期但仍有 open long/written quantity 的事项；`delivery-links` 可按 `underlying_instrument_id` 过滤，`obligations` 可按 `as_of_date`、`derivative_contract_id` 或 `underlying_instrument_id` 过滤。
 
 ### Cash
 
@@ -457,6 +488,7 @@ FastAPI 的请求结构错误会返回标准 `detail[]`，其中 `loc` 指向类
 - 证券已解析为唯一 `instrument_id`，不能只发送 ticker 或名称；
 - 账户已解析为唯一 `account_id`，不能只发送券商名称；
 - 新 FCN/Option 的条款完整；已有合约只引用原 `derivative_contract_id`；
+- 期权实物结果没有拆成普通导入记录，而是使用同一组合的专用 outcome command；
 - 每条 `external_reference` 稳定且在批次内不重复；
 - 人工审核未通过的记录没有进入 Commit 请求。
 
@@ -469,7 +501,7 @@ FastAPI 的请求结构错误会返回标准 `detail[]`，其中 `loc` 指向类
 - Cash deposit Preview、Commit 和同键重试；
 - 股票、ETF、公募基金、私募基金各一笔买入/卖出；
 - 一笔带费用和税费的交易，核对 gross 与 net cash effect；
-- Option 多头开平仓、空头开平仓、零现金到期和现金结算；
+- Option 多头开平仓、空头开平仓、零现金到期、现金结算，以及四种 Call/Put × long/written 实物方向的成对落账与幂等重试；
 - FCN entry、coupon、正常/敲入/敲出关闭；
 - Cash 内部转账和 Security 持仓转账各一笔，只提交一个方向；
 - 相同来源事实重复提交，确认被拒绝；

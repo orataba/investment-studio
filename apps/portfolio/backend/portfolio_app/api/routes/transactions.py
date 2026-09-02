@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import (
@@ -26,6 +27,14 @@ from portfolio_app.api.contracts import (
     DerivativeContractListResponse,
     DerivativeContractRecord,
     OptionContractTerms,
+    OptionOutcomeCreateRequest,
+    OptionOutcomeResponse,
+    OptionDeliveryLinkRecord,
+    OptionDeliveryLinkListResponse,
+    OptionObligationListResponse,
+    OptionObligationRecord,
+    UnresolvedOptionActionRecord,
+    UnresolvedOptionActionsResponse,
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
@@ -85,6 +94,7 @@ from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.option_obligations import (
     build_option_obligations,
     estimate_option_obligation_quantity_at_entitlement,
+    open_option_obligations,
 )
 from portfolio_app.services.transaction_csv import (
     MAX_CSV_BYTES,
@@ -117,13 +127,16 @@ from portfolio_app.services.portfolio_store import (
     get_transaction,
     get_transaction_idempotency_result,
     list_derivative_contracts,
+    list_option_delivery_links,
     list_accounts,
     list_transaction_change_logs,
     list_transactions,
+    option_delivery_transaction_ids,
     resolve_trade_timing,
     update_transaction,
 )
 from portfolio_app.services.transaction_dates import transaction_execution_sort_key
+from portfolio_app.services.valuation_clock import portfolio_valuation_today
 
 
 router = APIRouter()
@@ -145,13 +158,16 @@ LIFECYCLE_EVENT_INSTRUMENT_TYPES: dict[str, set[str]] = {
     "fcn_maturity": {"fcn"},
     "option_long_expiry": {"option"},
     "option_long_cash_settlement": {"option"},
+    "option_long_exercise": {"option"},
     "option_writer_expiry": {"option"},
     "option_writer_cash_settlement": {"option"},
+    "option_writer_assignment": {"option"},
 }
 TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
 INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
 TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_csv"
 TRANSACTION_JSON_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_json"
+OPTION_OUTCOME_IDEMPOTENCY_OPERATION = "create_option_outcome"
 
 
 def _request_payload_for_idempotency(
@@ -327,7 +343,8 @@ def _requires_settlement_cash(
         return lifecycle_event_type == "option_writer_cash_settlement"
     no_cash_long_option_closure = (
         transaction_type == "maturity_redemption"
-        and lifecycle_event_type == "option_long_expiry"
+        and lifecycle_event_type
+        in {"option_long_expiry", "option_long_exercise"}
     )
     return (
         transaction_type
@@ -854,6 +871,7 @@ def _prepare_import_transaction_values(
     payload: TransactionCreateRequest,
     created_at: str,
     batch_derivative_contracts: dict[str, DerivativeContractCreate] | None = None,
+    allow_physical_option_outcome: bool = False,
 ) -> dict[str, object]:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -865,6 +883,18 @@ def _prepare_import_transaction_values(
 
     transaction_type = payload.transaction_type
     lifecycle_event_type = payload.lifecycle_event_type
+    if (
+        lifecycle_event_type
+        in {"option_long_exercise", "option_writer_assignment"}
+        and not allow_physical_option_outcome
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Physical option outcomes must be recorded with the option outcome "
+                "command so the stock delivery is created atomically."
+            ),
+        )
     account_type = str(account.get("account_type") or "")
     settlement_date = payload.settlement_date or payload.trade_date
     resolved_position_effective_date = (
@@ -2148,14 +2178,59 @@ def get_transaction_workspace(
         start_date=start_date,
         end_date=end_date,
     )
+    delivery_links = list_option_delivery_links(portfolio_id)
+    delivery_link_by_transaction_id = {
+        transaction_id: link
+        for link in delivery_links
+        for transaction_id in (
+            str(link.get("option_transaction_id") or ""),
+            str(link.get("stock_transaction_id") or ""),
+        )
+        if transaction_id
+    }
+    filtered_transaction_ids = {
+        str(record.get("transaction_id") or "") for record in filtered_records
+    }
+    for link in delivery_links:
+        pair_ids = {
+            str(link.get("option_transaction_id") or ""),
+            str(link.get("stock_transaction_id") or ""),
+        }
+        if filtered_transaction_ids.intersection(pair_ids):
+            filtered_transaction_ids.update(pair_ids)
+    filtered_records = [
+        record
+        for record in all_transactions
+        if str(record.get("transaction_id") or "") in filtered_transaction_ids
+    ]
     serialized_transactions = serialize_transactions(
         portfolio_id,
         filtered_records,
         account_lookup,
     )
+    def option_activity_transaction_id(candidate_transaction_id: str) -> str:
+        link = delivery_link_by_transaction_id.get(candidate_transaction_id)
+        return str(
+            (link or {}).get("option_transaction_id")
+            or candidate_transaction_id
+        )
+
+    requested_activity_id = option_activity_transaction_id(str(transaction_id or ""))
     selected_transaction = next(
-        (item for item in serialized_transactions if item.transaction_id == transaction_id),
-        serialized_transactions[0] if serialized_transactions else None,
+        (
+            item
+            for item in serialized_transactions
+            if item.transaction_id == requested_activity_id
+        ),
+        next(
+            (
+                item
+                for item in serialized_transactions
+                if option_activity_transaction_id(item.transaction_id)
+                == item.transaction_id
+            ),
+            serialized_transactions[0] if serialized_transactions else None,
+        ),
     )
     selected_transaction_id = selected_transaction.transaction_id if selected_transaction else None
 
@@ -2170,16 +2245,24 @@ def get_transaction_workspace(
     selected_transfer_group_id = str(
         (selected_transaction_record or {}).get("transfer_group_id") or ""
     ).strip()
-    delete_scope_records = (
-        [
-            record
-            for record in all_transactions
-            if str(record.get("transfer_group_id") or "").strip()
-            == selected_transfer_group_id
-        ]
-        if selected_transfer_group_id
-        else ([selected_transaction_record] if selected_transaction_record else [])
-    )
+    if selected_transfer_group_id:
+        delete_scope_ids = set(
+            _transfer_group_transaction_ids(
+                portfolio_id,
+                selected_transfer_group_id,
+            )
+        )
+    elif selected_transaction_id:
+        delete_scope_ids = set(
+            option_delivery_transaction_ids(portfolio_id, selected_transaction_id)
+        )
+    else:
+        delete_scope_ids = set()
+    delete_scope_records = [
+        record
+        for record in all_transactions
+        if str(record.get("transaction_id") or "") in delete_scope_ids
+    ]
     delete_scope_row_versions = {
         str(record["transaction_id"]): int(record["row_version"])
         for record in delete_scope_records
@@ -2193,14 +2276,29 @@ def get_transaction_workspace(
         str(account.get("account_id") or ""): str(account.get("currency") or "")
         for account in accounts
     }
+    selected_delivery_link = delivery_link_by_transaction_id.get(
+        selected_transaction_id or ""
+    )
+    selected_ledger_transaction_ids = (
+        {
+            str(selected_delivery_link.get("option_transaction_id") or ""),
+            str(selected_delivery_link.get("stock_transaction_id") or ""),
+        }
+        if selected_delivery_link is not None
+        else {selected_transaction_id or ""}
+    )
     ledger_postings_raw = (
-        list_ledger_postings(
-            portfolio_id,
-            all_transactions,
-            account_cost_methods=account_cost_methods,
-            account_currency_map=account_currency_map,
-            transaction_id=selected_transaction_id,
-        )
+        [
+            posting
+            for posting in list_ledger_postings(
+                portfolio_id,
+                all_transactions,
+                account_cost_methods=account_cost_methods,
+                account_currency_map=account_currency_map,
+            )
+            if str(posting.get("transaction_id") or "")
+            in selected_ledger_transaction_ids
+        ]
         if selected_transaction_id
         else []
     )
@@ -2423,6 +2521,436 @@ def get_transaction_execution_quote(
     )
 
 
+@router.get(
+    "/{portfolio_id}/options/unresolved-actions",
+    response_model=UnresolvedOptionActionsResponse,
+)
+def list_unresolved_option_actions(
+    portfolio_id: str,
+) -> UnresolvedOptionActionsResponse:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    operational_date = portfolio_valuation_today(
+        str(portfolio.get("valuation_timezone") or "") or None
+    )
+    accounts = list_accounts(portfolio_id)
+    transactions = list_transactions(portfolio_id)
+    contracts = {
+        str(contract.get("derivative_contract_id") or ""): contract
+        for contract in list_derivative_contracts(portfolio_id)
+        if str(contract.get("contract_type") or "") == "option"
+    }
+    try:
+        long_lots = build_position_lots(
+            portfolio_id,
+            accounts,
+            transactions,
+            status="open",
+            as_of_date=operational_date,
+            resolve_pricing=False,
+        )
+        writer_obligations = open_option_obligations(
+            transactions,
+            as_of_date=operational_date,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    grouped_long: dict[tuple[str, str], float] = {}
+    for lot in long_lots:
+        contract_id = str(lot.get("derivative_contract_id") or "").strip()
+        account_id = str(lot.get("account_id") or "").strip()
+        if contract_id not in contracts or not account_id:
+            continue
+        remaining_quantity = float(lot.get("remaining_quantity") or 0.0)
+        if remaining_quantity <= 1e-9:
+            continue
+        grouped_long[(account_id, contract_id)] = (
+            grouped_long.get((account_id, contract_id), 0.0)
+            + remaining_quantity
+        )
+
+    actions: list[UnresolvedOptionActionRecord] = []
+
+    def append_action(
+        *,
+        side: str,
+        account_id: str,
+        contract_id: str,
+        quantity: float,
+    ) -> None:
+        contract = contracts.get(contract_id)
+        terms = contract.get("terms") if isinstance(contract, dict) else None
+        if not isinstance(contract, dict) or not isinstance(terms, dict):
+            return
+        try:
+            expiry_date = date.fromisoformat(str(terms.get("expiry_date") or ""))
+        except ValueError:
+            return
+        if expiry_date >= operational_date:
+            return
+        actions.append(
+            UnresolvedOptionActionRecord.model_validate(
+                {
+                    "action_key": f"{side}:{account_id}:{contract_id}",
+                    "derivative_contract_id": contract_id,
+                    "derivative_contract": contract,
+                    "side": side,
+                    "account_id": account_id,
+                    "open_contract_quantity": quantity,
+                    "underlying_instrument_id": str(
+                        terms.get("underlying_instrument_id") or ""
+                    ),
+                    "expiry_date": expiry_date,
+                    "days_past_expiry": (operational_date - expiry_date).days,
+                }
+            )
+        )
+
+    for (account_id, contract_id), quantity in grouped_long.items():
+        append_action(
+            side="long",
+            account_id=account_id,
+            contract_id=contract_id,
+            quantity=quantity,
+        )
+
+    grouped_writer: dict[tuple[str, str], float] = {}
+    for obligation in writer_obligations:
+        account_id = str(obligation.get("account_id") or "").strip()
+        contract_id = str(
+            obligation.get("derivative_contract_id") or ""
+        ).strip()
+        quantity = float(obligation.get("remaining_quantity") or 0.0)
+        if account_id and contract_id in contracts and quantity > 1e-9:
+            grouped_writer[(account_id, contract_id)] = (
+                grouped_writer.get((account_id, contract_id), 0.0) + quantity
+            )
+    for (account_id, contract_id), quantity in grouped_writer.items():
+        append_action(
+            side="written",
+            account_id=account_id,
+            contract_id=contract_id,
+            quantity=quantity,
+        )
+
+    actions.sort(
+        key=lambda item: (
+            item.expiry_date,
+            item.derivative_contract.contract_name,
+            item.side,
+            item.account_id,
+        )
+    )
+    return UnresolvedOptionActionsResponse(
+        portfolio_id=portfolio_id,
+        operational_date=operational_date,
+        action_count=len(actions),
+        actions=actions,
+    )
+
+
+@router.get(
+    "/{portfolio_id}/options/delivery-links",
+    response_model=OptionDeliveryLinkListResponse,
+)
+def list_option_delivery_link_records(
+    portfolio_id: str,
+    underlying_instrument_id: str | None = None,
+) -> OptionDeliveryLinkListResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return OptionDeliveryLinkListResponse(
+        portfolio_id=portfolio_id,
+        links=[
+            OptionDeliveryLinkRecord.model_validate(link)
+            for link in list_option_delivery_links(
+                portfolio_id,
+                underlying_instrument_id=underlying_instrument_id,
+            )
+        ],
+    )
+
+
+@router.get(
+    "/{portfolio_id}/options/obligations",
+    response_model=OptionObligationListResponse,
+)
+def list_option_obligation_records(
+    portfolio_id: str,
+    as_of_date: date | None = Query(default=None),
+    derivative_contract_id: str | None = None,
+    underlying_instrument_id: str | None = None,
+) -> OptionObligationListResponse:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    resolved_as_of_date = as_of_date or date.fromisoformat(
+        str(portfolio.get("as_of_date") or date.today().isoformat())
+    )
+    obligations = build_option_obligations(
+        list_transactions(portfolio_id, end_date=resolved_as_of_date),
+        as_of_date=resolved_as_of_date,
+    )
+    normalized_contract_id = str(derivative_contract_id or "").strip()
+    normalized_underlying_id = str(underlying_instrument_id or "").strip()
+    filtered = [
+        obligation
+        for obligation in obligations
+        if (
+            not normalized_contract_id
+            or str(obligation.get("derivative_contract_id") or "")
+            == normalized_contract_id
+        )
+        and (
+            not normalized_underlying_id
+            or str(obligation.get("related_underlying_id") or "")
+            == normalized_underlying_id
+        )
+    ]
+    public_rows = [
+        {key: value for key, value in obligation.items() if not str(key).startswith("_")}
+        for obligation in filtered
+    ]
+    return OptionObligationListResponse(
+        portfolio_id=portfolio_id,
+        as_of_date=resolved_as_of_date,
+        obligation_count=len(public_rows),
+        obligations=[OptionObligationRecord.model_validate(row) for row in public_rows],
+    )
+
+
+@router.post(
+    "/{portfolio_id}/options/outcomes",
+    response_model=OptionOutcomeResponse,
+)
+def create_option_outcome(
+    portfolio_id: str,
+    payload: OptionOutcomeCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OptionOutcomeResponse:
+    request_payload = payload.model_dump(mode="json", exclude_none=False)
+    replayed = _idempotency_replay_or_error(
+        portfolio_id,
+        idempotency_key=idempotency_key,
+        operation=OPTION_OUTCOME_IDEMPOTENCY_OPERATION,
+        request_payload=request_payload,
+    )
+    if replayed is not None:
+        account_lookup = {
+            item["account_id"]: item for item in list_accounts(portfolio_id)
+        }
+        replayed_ids = {
+            str(transaction.get("transaction_id") or "")
+            for transaction in replayed
+        }
+        replayed_link = next(
+            (
+                link
+                for link in list_option_delivery_links(portfolio_id)
+                if str(link.get("option_transaction_id") or "") in replayed_ids
+            ),
+            None,
+        )
+        return OptionOutcomeResponse(
+            portfolio_id=portfolio_id,
+            transactions=serialize_transactions(
+                portfolio_id,
+                replayed,
+                account_lookup,
+            ),
+            option_delivery_link=(
+                OptionDeliveryLinkRecord.model_validate(replayed_link)
+                if replayed_link is not None
+                else None
+            ),
+        )
+
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    contract = get_derivative_contract(
+        portfolio_id,
+        payload.derivative_contract_id,
+    )
+    if contract is None or str(contract.get("contract_type") or "") != "option":
+        raise HTTPException(status_code=400, detail="Option contract not found.")
+    terms = _validated_option_contract_ref(contract)
+    expiry_date = date.fromisoformat(str(terms["expiry_date"]))
+    if payload.outcome == "expired" and payload.event_date != expiry_date:
+        raise HTTPException(
+            status_code=400,
+            detail="An expiry outcome must use the contract expiry date.",
+        )
+    if payload.outcome in {"cash_settled", "physical"} and payload.event_date > expiry_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Exercise, assignment, and cash settlement must use an event date on or before expiry.",
+        )
+
+    contract_account_id = str(contract.get("account_id") or "")
+    contract_currency = str(contract.get("currency") or "").upper()
+    if payload.side == "long":
+        lifecycle_event_type = {
+            "expired": "option_long_expiry",
+            "cash_settled": "option_long_cash_settlement",
+            "physical": "option_long_exercise",
+        }[payload.outcome]
+        transaction_type = "maturity_redemption"
+    else:
+        lifecycle_event_type = {
+            "expired": "option_writer_expiry",
+            "cash_settled": "option_writer_cash_settlement",
+            "physical": "option_writer_assignment",
+        }[payload.outcome]
+        transaction_type = "lifecycle_event"
+
+    lifecycle_payload = TransactionCreateRequest(
+        transaction_type=transaction_type,
+        lifecycle_event_type=lifecycle_event_type,
+        trade_date=payload.event_date,
+        settlement_date=(
+            payload.settlement_date
+            if payload.outcome == "cash_settled"
+            else payload.event_date
+        ),
+        account_id=contract_account_id,
+        settlement_cash_account_id=(
+            payload.settlement_cash_account_id
+            if payload.outcome == "cash_settled"
+            else None
+        ),
+        derivative_contract_id=payload.derivative_contract_id,
+        quantity=payload.quantity,
+        gross_amount=(
+            payload.cash_settlement_amount
+            if payload.outcome == "cash_settled"
+            else Decimal("0")
+        ),
+        fees=payload.fees if payload.outcome == "cash_settled" else Decimal("0"),
+        taxes=payload.taxes if payload.outcome == "cash_settled" else Decimal("0"),
+        currency=contract_currency,
+        note=payload.note,
+    )
+    created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    records = [
+        _prepare_import_transaction_values(
+            portfolio_id=portfolio_id,
+            payload=lifecycle_payload,
+            created_at=created_at,
+            allow_physical_option_outcome=payload.outcome == "physical",
+        )
+    ]
+    option_delivery_pair: tuple[int, int, str] | None = None
+    if payload.outcome == "physical":
+        underlying_instrument_id = str(
+            terms.get("underlying_instrument_id") or ""
+        )
+        underlying_ref = _load_instrument_ref(underlying_instrument_id)
+        underlying_currency = str(underlying_ref.get("currency") or "").upper()
+        if underlying_currency != contract_currency:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Physical delivery is unavailable because the option settlement "
+                    "currency differs from the underlying quote currency. Record the "
+                    "reviewed cash settlement instead."
+                ),
+            )
+        option_type = str(terms.get("option_type") or "")
+        stock_transaction_type = {
+            ("long", "call"): "buy",
+            ("long", "put"): "sell",
+            ("written", "call"): "sell",
+            ("written", "put"): "buy",
+        }.get((payload.side, option_type))
+        if stock_transaction_type is None:
+            raise HTTPException(status_code=400, detail="Option contract type is invalid.")
+        stock_quantity = payload.quantity * Decimal(str(terms["contract_multiplier"]))
+        strike = Decimal(str(terms["strike"]))
+        price_scale = Decimal(
+            str(
+                transaction_price_scale(
+                    instrument_ref=underlying_ref,
+                    derivative_contract=None,
+                )
+            )
+        )
+        stock_payload = TransactionCreateRequest(
+            transaction_type=stock_transaction_type,
+            trade_date=payload.event_date,
+            settlement_date=payload.settlement_date,
+            position_effective_date=payload.event_date,
+            account_id=str(payload.stock_account_id),
+            settlement_cash_account_id=payload.settlement_cash_account_id,
+            instrument_id=underlying_instrument_id,
+            quantity=stock_quantity,
+            price=strike,
+            gross_amount=stock_quantity * strike * price_scale,
+            fees=payload.fees,
+            taxes=payload.taxes,
+            currency=underlying_currency,
+            note=payload.note,
+        )
+        records.append(
+            _prepare_import_transaction_values(
+                portfolio_id=portfolio_id,
+                payload=stock_payload,
+                created_at=created_at,
+            )
+        )
+        option_delivery_pair = (0, 1, underlying_instrument_id)
+
+    try:
+        persisted_records = create_transactions(
+            portfolio_id=portfolio_id,
+            records=records,
+            option_delivery_pair=option_delivery_pair,
+            idempotency_key=idempotency_key,
+            idempotency_payload=request_payload,
+            idempotency_operation=OPTION_OUTCOME_IDEMPOTENCY_OPERATION,
+        )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TransactionIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (IntegrityError, ValueError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Option outcome would invalidate portfolio history. {error}",
+        ) from error
+
+    account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
+    persisted_ids = {
+        str(transaction.get("transaction_id") or "")
+        for transaction in persisted_records
+    }
+    persisted_link = next(
+        (
+            link
+            for link in list_option_delivery_links(portfolio_id)
+            if str(link.get("option_transaction_id") or "") in persisted_ids
+        ),
+        None,
+    )
+    return OptionOutcomeResponse(
+        portfolio_id=portfolio_id,
+        transactions=serialize_transactions(
+            portfolio_id,
+            persisted_records,
+            account_lookup,
+        ),
+        option_delivery_link=(
+            OptionDeliveryLinkRecord.model_validate(persisted_link)
+            if persisted_link is not None
+            else None
+        ),
+    )
+
+
 def _persist_transaction_record(
     *,
     portfolio_id: str,
@@ -2432,6 +2960,17 @@ def _persist_transaction_record(
     idempotency_key: str | None = None,
     idempotency_payload: dict[str, object] | None = None,
 ) -> TransactionRecord:
+    if payload.lifecycle_event_type in {
+        "option_long_exercise",
+        "option_writer_assignment",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Physical option outcomes must be recorded with the option outcome "
+                "command so the stock delivery is created atomically."
+            ),
+        )
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -2879,6 +3418,14 @@ def update_transaction_record(
             status_code=400,
             detail="Paired internal transfer facts must be deleted and recreated as a batch.",
         )
+    if len(option_delivery_transaction_ids(portfolio_id, transaction_id)) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A physical option settlement and its stock delivery must be "
+                "deleted and recreated together."
+            ),
+        )
     if str(existing_transaction.get("transaction_type") or "") in {"transfer_in", "transfer_out"}:
         raise HTTPException(
             status_code=400,
@@ -2915,7 +3462,7 @@ def delete_transaction_record(
     transaction_ids = (
         _transfer_group_transaction_ids(portfolio_id, transfer_group_id)
         if transfer_group_id
-        else [transaction_id]
+        else option_delivery_transaction_ids(portfolio_id, transaction_id)
     )
     try:
         deleted_records = delete_transactions(

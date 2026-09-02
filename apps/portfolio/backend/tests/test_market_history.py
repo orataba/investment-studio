@@ -110,6 +110,28 @@ def test_holdings_total_return_does_not_switch_to_a_longer_price_series() -> Non
     assert [point["value"] for point in chart["points"]] == [80.0, 90.0, 95.0, 96.0, 100.0]
 
 
+def test_derivative_reference_chart_uses_price_level_not_adjusted_close() -> None:
+    chart = build_instrument_price_chart_from_detail(
+        _detail(
+            [
+                _point("adjusted_close", "2026-07-14", "90"),
+                _point("adjusted_close", "2026-07-15", "95"),
+                _point("close", "2026-07-14", "100"),
+                _point("close", "2026-07-15", "110"),
+            ]
+        ),
+        instrument_id="equity-history",
+        as_of_date=date(2026, 7, 15),
+        range_key="all",
+        price_level=True,
+    )
+
+    assert chart is not None
+    assert chart["series_role"] == "price_level"
+    assert chart["chart_basis"] == "close"
+    assert [point["value"] for point in chart["points"]] == [100.0, 110.0]
+
+
 @pytest.mark.parametrize(
     ("configured_semantics", "expected_semantics"),
     [

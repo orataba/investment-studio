@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from math import sqrt
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
+from portfolio_app.services.execution_quotes import execution_quote_bases
 from portfolio_ops_instrument_core import resolve_quote_return_semantics
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
@@ -521,6 +522,69 @@ def _select_total_return_series(
     )
 
 
+def _select_price_level_series(
+    detail: dict[str, object],
+    *,
+    as_of_date: date,
+) -> ChartSeriesSelection:
+    candidate_bases = execution_quote_bases(detail)
+    if not candidate_bases:
+        return ChartSeriesSelection(
+            reason="execution_quote_policy_unavailable",
+            coverage=_empty_trend_coverage(),
+        )
+    unavailable_reasons: list[str] = []
+    for policy_index, quote_basis in enumerate(candidate_bases):
+        resolution = resolve_quote_series(
+            detail,
+            candidate_bases=[quote_basis],
+            end_date=as_of_date,
+        )
+        if not resolution.available:
+            if resolution.unavailable_reason:
+                unavailable_reasons.append(resolution.unavailable_reason)
+            continue
+        points = [
+            {
+                "date": point["as_of_date"],
+                "date_iso": point["as_of_date"].isoformat(),
+                "value": point["value"],
+                "currency": point["currency"],
+                "metric_family": point["metric_family"],
+                "quote_basis": point["quote_basis"],
+                "price_unit": point.get("price_unit"),
+                "price_scale": point.get("price_scale"),
+            }
+            for point in resolution.points
+            if isinstance(point.get("as_of_date"), date)
+        ]
+        comparable_points, split_adjusted, split_error = _split_adjusted_raw_points(
+            detail,
+            points,
+            quote_basis=str(resolution.quote_basis or quote_basis),
+        )
+        if split_error is not None:
+            unavailable_reasons.append(split_error)
+            continue
+        return ChartSeriesSelection(
+            points=tuple(comparable_points),
+            selected_basis=str(resolution.quote_basis or quote_basis),
+            coverage=_trend_coverage(comparable_points),
+            reason=(
+                "selected_split_adjusted_execution_price_series"
+                if split_adjusted
+                else "selected_execution_price_series"
+                if policy_index == 0
+                else "selected_alternate_execution_price_series"
+            ),
+            split_adjusted=split_adjusted,
+        )
+    return ChartSeriesSelection(
+        reason=(unavailable_reasons or ["execution_price_series_unavailable"])[0],
+        coverage=_empty_trend_coverage(),
+    )
+
+
 def _latest_point_on_or_before(
     points: list[dict[str, object]],
     target_date: date,
@@ -1017,9 +1081,14 @@ def build_instrument_price_chart_from_detail(
     as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
+    price_level: bool = False,
 ) -> dict[str, object] | None:
     normalized_range_key = normalize_chart_range_key(range_key)
-    selection = _select_chart_series(detail, as_of_date=as_of_date)
+    selection = (
+        _select_price_level_series(detail, as_of_date=as_of_date)
+        if price_level
+        else _select_chart_series(detail, as_of_date=as_of_date)
+    )
     selected_points = list(selection.points)
     selected_basis = selection.selected_basis
 
@@ -1058,6 +1127,7 @@ def build_instrument_price_chart_from_detail(
         },
         "as_of_date": as_of_date.isoformat(),
         "range_key": normalized_range_key,
+        "series_role": "price_level" if price_level else "performance",
         "chart_basis": selected_basis,
         "return_semantics": chart_return_semantics(
             detail,
@@ -1099,6 +1169,7 @@ def build_instrument_price_chart(
     as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
+    price_level: bool = False,
 ) -> dict[str, object] | None:
     detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
@@ -1109,6 +1180,7 @@ def build_instrument_price_chart(
         as_of_date=as_of_date,
         range_key=range_key,
         max_points=max_points,
+        price_level=price_level,
     )
 
 

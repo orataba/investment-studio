@@ -11,8 +11,11 @@ import {
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
-  getPortfolioPositionHoldingProjection: vi.fn(),
+  getHoldingsWorkspace: vi.fn(),
+  getPortfolioDerivativeContracts: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
+  getPortfolioOptionDeliveryLinks: vi.fn(),
+  getPortfolioOptionObligations: vi.fn(),
   getPortfolioPositionLots: vi.fn(),
   getPortfolioTransactions: vi.fn(),
 }))
@@ -62,7 +65,7 @@ function compactHoldingProjection() {
 describe('Security Detail lazy-load contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValue({
+    apiMocks.getHoldingsWorkspace.mockResolvedValue({
       portfolio_id: '3',
       portfolio_name: 'Contract Portfolio',
       base_currency: 'USD',
@@ -70,6 +73,20 @@ describe('Security Detail lazy-load contract', () => {
       view_label: 'View: Holdings',
       quality_warnings: [],
       rows: [compactHoldingProjection()],
+    })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [],
+    })
+    apiMocks.getPortfolioOptionDeliveryLinks.mockResolvedValue({
+      portfolio_id: '3',
+      links: [],
+    })
+    apiMocks.getPortfolioOptionObligations.mockResolvedValue({
+      portfolio_id: '3',
+      as_of_date: '2026-07-15',
+      obligation_count: 0,
+      obligations: [],
     })
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
       portfolio_id: '3',
@@ -123,7 +140,7 @@ describe('Security Detail lazy-load contract', () => {
     })
   })
 
-  it('fetches one instrument projection and its detail arrays only after the detail route opens', async () => {
+  it('fetches the holdings context and related ledgers only after the detail route opens', async () => {
     renderPortfolioPage(
       <PortfolioSecurityDetailPage />,
       '/portfolios/3/holdings/asset-1',
@@ -133,9 +150,8 @@ describe('Security Detail lazy-load contract', () => {
     expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
     expect(await screen.findByText('2 detail chart points')).toBeInTheDocument()
 
-    expect(apiMocks.getPortfolioPositionHoldingProjection).toHaveBeenCalledWith(
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith(
       '3',
-      'asset-1',
       { as_of_date: undefined },
     )
     await waitFor(() => {
@@ -145,17 +161,15 @@ describe('Security Detail lazy-load contract', () => {
         { as_of_date: '2026-07-15', range: '1y' },
       )
       expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalledWith('3', {
-        position_reference_id: 'asset-1',
         as_of_date: '2026-07-15',
       })
       expect(apiMocks.getPortfolioTransactions).toHaveBeenCalledWith('3', {
-        position_reference_id: 'asset-1',
         end_date: '2026-07-15',
       })
     })
   })
 
-  it('keeps a written obligation beside the long option position in instrument detail', async () => {
+  it('uses the holding line identity to distinguish a written option from the same-contract long position', async () => {
     const optionContract = optionContractFixture({
       derivative_contract_id: 'option-1',
       contract_name: 'Alpha 110 Call',
@@ -203,7 +217,7 @@ describe('Security Detail lazy-load contract', () => {
       coverage_status: 'event-liability',
       is_liability: true,
     }
-    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValue({
+    apiMocks.getHoldingsWorkspace.mockResolvedValue({
       portfolio_id: '3',
       portfolio_name: 'Contract Portfolio',
       base_currency: 'USD',
@@ -214,7 +228,7 @@ describe('Security Detail lazy-load contract', () => {
     })
     renderPortfolioPage(
       <PortfolioSecurityDetailPage />,
-      '/portfolios/3/holdings/option-1',
+      '/portfolios/3/holdings/option-1?holding_line_id=option-1%3Aobligation',
       '/portfolios/:portfolioId/holdings/:instrumentId',
     )
 
@@ -227,13 +241,62 @@ describe('Security Detail lazy-load contract', () => {
     expect(within(obligationStrip).getByText('$300.00 / $300.00')).toBeInTheDocument()
     const heroMetrics = document.querySelector<HTMLElement>('.portfolio-security-hero-metrics')
     expect(heroMetrics).not.toBeNull()
-    expect(within(heroMetrics!).getByText('Carrying value').parentElement).toHaveTextContent('$500.00')
-    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).toHaveTextContent('N/A')
-    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).not.toHaveTextContent('$0.00')
+    expect(within(heroMetrics!).getByText('Side / type').parentElement).toHaveTextContent('Written Call')
+    expect(within(heroMetrics!).queryByText('Unrealized P/L')).not.toBeInTheDocument()
     await waitFor(() => {
       expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalled()
     })
-    expect(apiMocks.getPortfolioInstrumentPriceChart).not.toHaveBeenCalled()
+    expect(await screen.findByRole('tab', { name: 'Position Lots 0' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledWith(
+        '3',
+        'equity-1',
+        { as_of_date: '2026-07-15', range: '1y', price_level: true },
+      )
+    })
+  })
+
+  it('loads an underlying security detail even when the stock itself is not currently held', async () => {
+    const linkedOption = optionContractFixture({
+      terms: {
+        underlying_instrument_id: 'asset-1',
+        option_type: 'call',
+        expiry_date: '2026-12-18',
+        strike: 110,
+        contract_multiplier: 100,
+      },
+    })
+    apiMocks.getHoldingsWorkspace.mockResolvedValue({
+      portfolio_id: '3',
+      portfolio_name: 'Contract Portfolio',
+      base_currency: 'USD',
+      as_of_date: '2026-07-15',
+      view_label: 'View: Holdings',
+      quality_warnings: [],
+      rows: [],
+    })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [linkedOption],
+    })
+
+    renderPortfolioPage(
+      <PortfolioSecurityDetailPage />,
+      '/portfolios/3/holdings/asset-1',
+      '/portfolios/:portfolioId/holdings/:instrumentId',
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
+    expect(screen.getByText('Not held as of selected date.')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Security and linked options' })).toBeInTheDocument()
+    expect(screen.getByText('Alpha 110 Call')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledWith(
+        '3',
+        'asset-1',
+        { as_of_date: '2026-07-15', range: '1y' },
+      )
+    })
   })
 
   it('clears the old chart while a newly selected range is loading', async () => {

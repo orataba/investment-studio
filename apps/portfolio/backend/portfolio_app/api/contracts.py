@@ -97,8 +97,10 @@ LifecycleEventType = Literal[
     "fcn_maturity",
     "option_long_expiry",
     "option_long_cash_settlement",
+    "option_long_exercise",
     "option_writer_expiry",
     "option_writer_cash_settlement",
+    "option_writer_assignment",
 ]
 POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
     {
@@ -763,6 +765,7 @@ class InstrumentPriceChartResponse(BaseModel):
     instrument_core: InstrumentCoreContract
     as_of_date: date
     range_key: str
+    series_role: Literal["performance", "price_level"] = "performance"
     chart_basis: str | None = None
     return_semantics: ReturnSemantics = "unknown"
     metric_family: str | None = None
@@ -3609,8 +3612,10 @@ class TransactionCreateRequest(BaseModel):
             "fcn_maturity": {"maturity_redemption"},
             "option_long_expiry": {"maturity_redemption"},
             "option_long_cash_settlement": {"maturity_redemption"},
+            "option_long_exercise": {"maturity_redemption"},
             "option_writer_expiry": {"lifecycle_event"},
             "option_writer_cash_settlement": {"lifecycle_event"},
+            "option_writer_assignment": {"lifecycle_event"},
         }
         if self.lifecycle_event_type is not None:
             allowed_transaction_types = lifecycle_transaction_types[
@@ -3633,11 +3638,12 @@ class TransactionCreateRequest(BaseModel):
             writer_close_event = self.lifecycle_event_type in {
                 "option_writer_expiry",
                 "option_writer_cash_settlement",
+                "option_writer_assignment",
             }
             if writer_close_event:
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError(
-                        "Short option expiry and cash settlement require positive contract quantity."
+                        "Writer option outcomes require positive contract quantity."
                     )
             elif self.quantity is not None:
                 raise ValueError("This lifecycle event must not carry quantity.")
@@ -3658,6 +3664,13 @@ class TransactionCreateRequest(BaseModel):
                 if self.settlement_cash_account_id is None:
                     raise ValueError(
                         "Option writer cash settlement requires settlement_cash_account_id."
+                    )
+            elif self.lifecycle_event_type == "option_writer_assignment":
+                if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
+                    raise ValueError("Option writer assignment must not carry cash amounts.")
+                if self.settlement_cash_account_id is not None:
+                    raise ValueError(
+                        "Option writer assignment must not carry settlement_cash_account_id."
                     )
 
         if self.transaction_type in {"buy", "sell"}:
@@ -3761,6 +3774,13 @@ class TransactionCreateRequest(BaseModel):
                     raise ValueError(
                         "Long option cash settlement requires settlement_cash_account_id."
                     )
+            elif self.lifecycle_event_type == "option_long_exercise":
+                if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
+                    raise ValueError("Long option exercise must not carry cash amounts.")
+                if self.settlement_cash_account_id is not None:
+                    raise ValueError(
+                        "Long option exercise must not carry settlement_cash_account_id."
+                    )
 
         if self.transaction_type in {"deposit", "withdrawal"}:
             if has_asset_reference:
@@ -3851,10 +3871,12 @@ class TransactionCreateRequest(BaseModel):
 
         zero_gross_allowed = (
             self.transaction_type == "lifecycle_event"
-            and self.lifecycle_event_type == "option_writer_expiry"
+            and self.lifecycle_event_type
+            in {"option_writer_expiry", "option_writer_assignment"}
         ) or (
             self.transaction_type == "maturity_redemption"
-            and self.lifecycle_event_type == "option_long_expiry"
+            and self.lifecycle_event_type
+            in {"option_long_expiry", "option_long_exercise"}
         ) or (
             self.transaction_type == "opening_balance" and has_asset_reference
         )
@@ -3868,6 +3890,74 @@ class TransactionCreateRequest(BaseModel):
 
 class TransactionUpdateRequest(TransactionCreateRequest):
     expected_row_version: int = Field(ge=1)
+
+
+class OptionOutcomeCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    derivative_contract_id: str = Field(min_length=1)
+    side: Literal["long", "written"]
+    outcome: Literal["expired", "cash_settled", "physical"]
+    quantity: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    event_date: date
+    settlement_date: date
+    stock_account_id: str | None = None
+    settlement_cash_account_id: str | None = None
+    cash_settlement_amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        lt=Decimal("1e20"),
+    )
+    fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    note: str | None = None
+
+    @field_validator("derivative_contract_id", mode="before")
+    @classmethod
+    def normalize_contract_id(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator("stock_account_id", "settlement_cash_account_id", "note", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def normalize_quantity(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=QUANTITY_SOURCE_QUANTUM)
+
+    @field_validator("cash_settlement_amount", "fees", "taxes", mode="before")
+    @classmethod
+    def normalize_amounts(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "OptionOutcomeCreateRequest":
+        if self.settlement_date < self.event_date:
+            raise ValueError("settlement_date must not be earlier than event_date.")
+        if self.outcome == "expired":
+            if self.cash_settlement_amount is not None:
+                raise ValueError("Expired options must not carry a cash settlement amount.")
+            if self.stock_account_id or self.settlement_cash_account_id:
+                raise ValueError("Expired options must not carry settlement accounts.")
+            if self.fees != 0 or self.taxes != 0:
+                raise ValueError("Expired options must not carry fees or taxes.")
+        elif self.outcome == "cash_settled":
+            if self.cash_settlement_amount is None:
+                raise ValueError("Cash settlement requires cash_settlement_amount.")
+            if not self.settlement_cash_account_id:
+                raise ValueError("Cash settlement requires settlement_cash_account_id.")
+            if self.stock_account_id:
+                raise ValueError("Cash settlement must not carry stock_account_id.")
+        else:
+            if not self.stock_account_id or not self.settlement_cash_account_id:
+                raise ValueError(
+                    "Physical settlement requires stock_account_id and settlement_cash_account_id."
+                )
+            if self.cash_settlement_amount is not None:
+                raise ValueError("Physical settlement amount is derived from the contract.")
+        return self
 
 
 class InternalTransferCreateRequest(BaseModel):
@@ -4599,6 +4689,76 @@ class TransactionBatchResponse(BaseModel):
     created_count: int
     transfer_group_id: str | None = None
     transactions: list[TransactionRecord]
+
+
+class OptionDeliveryLinkRecord(BaseModel):
+    portfolio_id: str
+    option_transaction_id: str
+    stock_transaction_id: str
+    underlying_instrument_id: str
+    created_at: str
+
+
+class OptionDeliveryLinkListResponse(BaseModel):
+    portfolio_id: str
+    links: list[OptionDeliveryLinkRecord] = Field(default_factory=list)
+
+
+class OptionObligationRecord(BaseModel):
+    obligation_id: str
+    portfolio_id: str | None = None
+    account_id: str
+    derivative_contract_id: str
+    derivative_contract: DerivativeContractRecord
+    related_underlying_id: str
+    open_contract_quantity: float
+    required_underlying_quantity: float
+    remaining_quantity: float
+    premium_received_gross: float
+    premium_basis_remaining: float
+    carrying_liability: float
+    opened_at: date | None = None
+    expiry_date: date | None = None
+    status: str
+    option_type: Literal["call", "put"]
+    strike: float
+    contract_multiplier: float
+    contract_currency: SupportedCurrency
+    realized_pnl: float = 0.0
+    opening_fee_expense: float = 0.0
+    realizations: list[dict[str, object]] = Field(default_factory=list)
+
+
+class OptionObligationListResponse(BaseModel):
+    portfolio_id: str
+    as_of_date: date
+    obligation_count: int = Field(ge=0)
+    obligations: list[OptionObligationRecord] = Field(default_factory=list)
+
+
+class OptionOutcomeResponse(BaseModel):
+    portfolio_id: str
+    transactions: list[TransactionRecord]
+    option_delivery_link: OptionDeliveryLinkRecord | None = None
+
+
+class UnresolvedOptionActionRecord(BaseModel):
+    action_key: str
+    derivative_contract_id: str
+    derivative_contract: DerivativeContractRecord
+    side: Literal["long", "written"]
+    account_id: str
+    open_contract_quantity: float
+    underlying_instrument_id: str
+    expiry_date: date
+    days_past_expiry: int = Field(ge=1)
+
+
+class UnresolvedOptionActionsResponse(BaseModel):
+    portfolio_id: str
+    operational_date: date
+    action_count: int
+    actions: list[UnresolvedOptionActionRecord] = Field(default_factory=list)
 
 
 class TransactionCsvPreviewRequest(BaseModel):

@@ -3376,6 +3376,20 @@ input[type='checkbox'] {
   line-height: 1.4;
 }
 
+.holding-risk-cell {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.holding-risk-cell small {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .portfolio-table-config-backdrop {
   position: fixed;
   inset: 0;
@@ -3408,6 +3422,158 @@ input[type='checkbox'] {
 
 .portfolio-table-config-compact-modal {
   width: min(560px, 100%);
+}
+
+.option-action-entry {
+  border-color: #d8ad52;
+  color: #7a5514;
+}
+
+.option-outcome-modal {
+  width: min(820px, calc(100vw - 48px));
+}
+
+.option-outcome-header p {
+  margin: 4px 0 0;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.option-outcome-action-strip {
+  display: flex;
+  gap: 1px;
+  overflow-x: auto;
+  padding: 0 16px 12px;
+}
+
+.option-outcome-action-strip button {
+  display: grid;
+  min-width: 180px;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  text-align: left;
+}
+
+.option-outcome-action-strip button.is-active {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+}
+
+.option-outcome-action-strip span {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.option-outcome-form {
+  display: grid;
+  gap: 16px;
+  padding: 0 16px 16px;
+}
+
+.option-outcome-contract-card {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-block: 1px solid var(--portfolio-line);
+}
+
+.option-outcome-contract-card > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-right: 1px solid var(--portfolio-line);
+}
+
+.option-outcome-contract-card > div:last-child {
+  border-right: none;
+}
+
+.option-outcome-contract-card span,
+.option-outcome-contract-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option-outcome-contract-card span {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.option-outcome-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.option-outcome-choice-grid legend {
+  grid-column: 1 / -1;
+  margin-bottom: 4px;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.option-outcome-choice-grid label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--portfolio-line);
+  cursor: pointer;
+}
+
+.option-outcome-choice-grid label.is-active {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+}
+
+.option-outcome-choice-grid label span {
+  display: grid;
+  gap: 3px;
+}
+
+.option-outcome-choice-grid small {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.option-outcome-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.option-outcome-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.option-outcome-fields input,
+.option-outcome-fields select {
+  width: 100%;
+  height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+}
+
+.option-outcome-actions {
+  justify-content: flex-end;
+  padding: 0;
+  border-top: none;
 }
 
 .portfolio-table-config-header {
@@ -3833,6 +3999,31 @@ input[type='checkbox'] {
   stroke: rgba(17, 24, 39, 0.35);
   stroke-width: 1.1;
   stroke-dasharray: 4 4;
+}
+
+.price-chart-reference-line {
+  stroke: #6b7280;
+  stroke-width: 1.2;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.price-chart-reference-line-strike {
+  stroke: #b45309;
+}
+
+.price-chart-reference-line-knock-in {
+  stroke: #b91c1c;
+}
+
+.price-chart-reference-line-knock-out {
+  stroke: #047857;
+}
+
+.price-chart-reference-label {
+  fill: var(--portfolio-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .price-chart-point {
@@ -9696,6 +9887,25 @@ input[type='date']::-webkit-calendar-picker-indicator {
     width: 100%;
   }
 
+  .option-outcome-modal {
+    width: 100%;
+  }
+
+  .option-outcome-contract-card,
+  .option-outcome-choice-grid,
+  .option-outcome-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .option-outcome-contract-card > div {
+    border-right: none;
+    border-bottom: 1px solid var(--portfolio-line);
+  }
+
+  .option-outcome-contract-card > div:last-child {
+    border-bottom: none;
+  }
+
   .performance-window-group {
     grid-template-columns: 1fr;
     width: 100%;
@@ -11527,6 +11737,161 @@ input[type='date']::-webkit-calendar-picker-indicator {
   min-width: 0;
 }
 
+.derivative-detail-overview {
+  display: grid;
+  gap: 24px;
+}
+
+.derivative-chart-heading {
+  margin-bottom: 10px;
+  padding-top: 12px;
+  border-top: 2px solid var(--portfolio-ink);
+}
+
+.derivative-risk-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0;
+  margin: 12px 0 0;
+  border-top: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.derivative-risk-facts > div {
+  min-width: 0;
+  padding: 10px 12px 10px 0;
+}
+
+.derivative-risk-facts dt {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.derivative-risk-facts dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+}
+
+.option-payoff-panel,
+.fcn-risk-summary,
+.security-linked-options-panel {
+  padding-top: 14px;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.option-payoff-chart {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  margin-top: 10px;
+  background: #ffffff;
+}
+
+.option-payoff-zero {
+  stroke: var(--portfolio-line-strong);
+  stroke-width: 1;
+}
+
+.option-payoff-strike,
+.option-payoff-spot {
+  stroke: #b45309;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+.option-payoff-spot {
+  stroke: #1f6fbc;
+}
+
+.option-payoff-line {
+  fill: none;
+  stroke: var(--portfolio-accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.option-payoff-label {
+  fill: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.fcn-underlying-chart-list {
+  display: grid;
+  gap: 28px;
+}
+
+.fcn-underlying-chart-panel {
+  min-width: 0;
+}
+
+.security-linked-options-panel {
+  margin-top: 24px;
+}
+
+.security-result-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.7fr) minmax(0, 1.3fr);
+  gap: 24px;
+  margin-top: 12px;
+}
+
+.security-result-grid > article {
+  min-width: 0;
+}
+
+.security-result-grid > article > strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.linked-option-contract-list {
+  display: grid;
+  border-top: 1px solid var(--portfolio-line);
+}
+
+.linked-option-contract-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.linked-option-contract-row > div {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+}
+
+.linked-option-contract-row > div > strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.linked-option-contract-row > div > span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.linked-option-contract-row dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.linked-option-contract-row dt {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.linked-option-contract-row dd {
+  margin: 3px 0 0;
+  font-size: 11px;
+}
+
 .portfolio-security-position-brief {
   padding-top: 12px;
   border-top: 2px solid var(--portfolio-ink);
@@ -11595,15 +11960,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   overflow-wrap: anywhere;
   color: var(--portfolio-ink);
   font-size: 12px;
-}
-
-.portfolio-security-basis-note {
-  margin: 12px 0 0;
-  padding: 10px 0 0;
-  border-top: 1px solid var(--portfolio-line-strong);
-  color: var(--portfolio-muted);
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 .portfolio-security-accounts {
@@ -11901,6 +12257,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 @media (max-width: 1280px) {
   .transaction-workbench-grid,
   .portfolio-security-overview-workbench,
+  .security-result-grid,
   .position-lot-workbench {
     grid-template-columns: 1fr;
   }
@@ -12005,6 +12362,12 @@ input[type='date']::-webkit-calendar-picker-indicator {
   .portfolio-security-position-facts,
   .portfolio-security-account-list dl,
   .position-lot-inspector-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .linked-option-contract-row,
+  .linked-option-contract-row dl,
+  .derivative-risk-facts {
     grid-template-columns: 1fr;
   }
 

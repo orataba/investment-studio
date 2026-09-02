@@ -10,7 +10,7 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 
 | Layer | Tables | Write owner |
 |---|---|---|
-| Canonical portfolio facts | `portfolio_record`, `account_record`, `derivative_contract_record`, `transaction_record` | Portfolio command API |
+| Canonical portfolio facts | `portfolio_record`, `account_record`, `derivative_contract_record`, `transaction_record`, `option_delivery_link` | Portfolio command API |
 | Audit/idempotency controls | `transaction_change_log`, `transaction_idempotency_record`, `transaction_id_allocator` | Portfolio transaction store |
 | Screenshot evidence and agent drafts | `transaction_capture_record`, `transaction_capture_batch`, `transaction_capture_batch_item`, `transaction_capture_analysis_revision` | Portfolio transaction-capture API and analysis worker |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
@@ -58,8 +58,8 @@ Important constraints:
 - No transaction may predate its Portfolio `inception_date`; opening balances must use that date for both trade and settlement.
 - A paired internal transfer stores command-level source identity on `transfer_out` only, so the unique source fact survives collapsed export without duplicating the key on `transfer_in`.
 - A transaction may reference a Registry instrument or a Portfolio-local derivative contract, never both. Cash-only facts may reference neither.
-- Derivative facts do not carry relation or event-group fields. Each contract event is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
-- Option lifecycle facts are limited to long/writer expiry or cash settlement. Expiry has zero cash; cash settlement has a positive gross amount whose direction is derived from long versus writer. Physical delivery is normalized into an option cash-settlement fact plus an independent ordinary-security trade.
+- Derivative facts do not carry generic relation or event-group fields; `transfer_group_id` is reserved for paired internal transfers. Confirmed option physical delivery uses the dedicated `option_delivery_link` relation described below. FCN events and any delivered stock remain independent.
+- Option lifecycle facts include long/writer expiry, cash settlement, and physical exercise/assignment. Expiry and the option leg of physical delivery have zero cash; cash settlement has a positive gross amount whose direction is derived from long versus writer. Physical delivery is created only by the dedicated atomic command, which also creates the ordinary-security trade at strike.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
 - `transaction_sequence` is a database-coordinated, immutable replay tie-breaker. It is not a business-facing source identifier and integrations must not allocate it.
@@ -72,7 +72,17 @@ Immutable Portfolio-local FCN and option terms. A contract is created atomically
 |---|
 | **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `created_at VARCHAR` |
 
-Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry or cash settlement when the outcome is known. FCN master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. Each FCN underlying is a separate term object with Registry `instrument_id`, optional initial reference price, strike/knock-in/knock-out levels expressed in percentage points, and a deliverable flag. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
+Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry, cash settlement, or physical exercise/assignment when the outcome is known. FCN master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. Each FCN underlying is a separate term object with Registry `instrument_id`, optional initial reference price, strike/knock-in/knock-out levels expressed in percentage points, and a deliverable flag. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
+
+### `portfolio.option_delivery_link`
+
+Canonical one-to-one relationship for a confirmed option physical-delivery outcome. It is created in the same database transaction as both linked transaction facts; integrations must use the option-outcome command rather than write or infer this relationship.
+
+| Columns |
+|---|
+| **PK/FK** `option_transaction_id → transaction_record.transaction_id`; unique **FK** `stock_transaction_id → transaction_record.transaction_id`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `underlying_instrument_id VARCHAR`; `created_at VARCHAR` |
+
+The option transaction must be a zero-cash `option_long_exercise` or `option_writer_assignment`; the stock transaction must reference the contract underlying, use `quantity = contract quantity × multiplier`, and trade at strike in the direction implied by Call/Put and long/written side. A link cannot point to the same row twice. Linked transactions cannot be updated separately and are deleted as one scope. Cross-currency contracts are not normalized into a physical pair because the system has no contractual FX leg to infer.
 
 ### `portfolio.transaction_change_log`
 

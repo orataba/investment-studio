@@ -79,8 +79,8 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 | 表面 | 行范围 | 字段合同 |
 | --- | --- | --- |
 | `Securities` | `holding_category=securities` 的股票、基金、ETF 等 Registry instrument | 独立视图与字段；字段覆盖当前开放头寸、行情、成本、未实现盈亏、标的 return/risk 与 Forward RC。唯一可排序并可使用 `Group By` 的表。 |
-| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、组合权重与估值状态。不得把这些正式字段压缩成名称下方的说明文字。 |
-| `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、组合权重、lifecycle 与估值状态。 |
+| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、组合权重与估值状态。风险视图还展示真实 underlying spot、相对 initial/strike/KI/KO 的距离与当前价格区域；缺少行情或必要条款时显示不可用，不推断历史 barrier event。 |
+| `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、组合权重、lifecycle 与估值状态。风险视图还展示 underlying spot、moneyness、intrinsic value、portfolio-level backing 与简洁 risk state。 |
 | `Cash & Settlement` | `holding_category=cash_and_settlement` | 固定字段；settled cash 与 pending monetary row 都按账户与币种分别展示本币余额、base value、FX cost basis、未实现汇兑损益和权重；pending row 另外展示结算边界与关联资产。 |
 
 每个资产表的 subtotal 只用于阅读该资产表；资产 row/subtotal 的 `Portfolio Weight` 始终是 signed base value / canonical total NAV，资产 Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
@@ -89,7 +89,7 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 
 `holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 表内部按 taxonomy、instrument type、currency 等字段建立二级分组；FCN、Options 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 读取当前默认 planning taxonomy 与当前 active instrument assignment，不跟随 Holdings `as_of_date` 回放；无 assignment 为 `Unassigned`。covered call 等策略继续由独立股票行和 short Call 行表达，不额外制造策略持仓类型。
 
-Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`strike_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
+`required_underlying_quantity = open_contract_quantity × contract_multiplier`，`strike_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。written Call 的 backing 将组合内同一 underlying 的现有股票数量与该标的全部 open written Call 所需数量汇总比较；written Put 将同币种 settled cash 与该币种全部 open written Put 的 strike notional 汇总比较。结果只是一项组合层即时风险提示，不把股票或现金分配给具体合约，也不代表券商保证金或质押状态。covered call 等策略仍由独立股票和期权事实表达，不新增策略持仓类型。
 
 Pending row 的 identity 固定为：
 
@@ -103,7 +103,13 @@ Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `c
 
 `FX Cost Basis` 是货币资产或负债的历史基准币成本，不是证券 `Book Cost`。一个 pending row 若合并了同一结算边界下多笔不同 recognition date 的交易，只展示加权 FX basis；单一 recognition date 仅在组成交易一致时返回。
 
-Workspace API 的 `operational_summary` 保留 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。这些字段继续服务生命周期和结算逻辑，但 Holdings 不再单独渲染 `Operational Status` 面板。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
+Workspace API 的 `operational_summary` 保留 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。这些字段继续服务生命周期和结算逻辑，但 Holdings 不再单独渲染 `Operational Status` 面板。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。组合任一页面打开时，系统检查已过期但仍有 open long/writer quantity 的期权；同一批未决事项在浏览器会话内自动提示一次，也可从页头入口重新打开。用户确认作废、现金结算或实物行权/指派后直接入账，不引入额外审查流程。
+
+详情页按资产语义拆分，不能强行共用普通证券模板：
+
+- Security detail 展示标的自身交易、开放 lots、已实现/未实现损益和 distributions，并单列与该 underlying 关联的期权活动及期权损益；实物交割的期权腿和股票腿通过 `option_delivery_link` 可相互核对。
+- Option detail 展示合约条款、underlying 的真实 price-level chart 与 strike 线、到期 payoff、intrinsic value、moneyness、剩余 long premium 或 writer liability、到期与 backing 风险。没有可靠期权 fair value、波动率或 Greeks 时不估造 time value、daily P&L 或 Greeks。
+- FCN detail 按 underlying 展示真实 price-level chart 及 initial/strike/KI/KO 参考线与距离，并集中提示期限和价格区域风险。它只呈现当前可验证状态，不把当前价格穿越某条线解释成历史上已经发生的 knock-in/knock-out。
 
 CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema，也不重复导出组合总计。Securities、FCN 和 Options 跟随各自当前视图的可见字段；Cash & Settlement 导出固定字段并包含 FX cost basis 与未实现 FX P&L。Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
 

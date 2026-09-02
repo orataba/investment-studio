@@ -853,6 +853,38 @@ def test_dynamic_event_holding_rejects_registry_market_profile(
         "performance_eligible": False,
         "risk_eligible": False,
     }
+    option_contract_id = "option-writer-live-fallback"
+    option_contract = {
+        "portfolio_id": "portfolio-dynamic-event",
+        "account_id": "account-us-brokerage",
+        "derivative_contract_id": option_contract_id,
+        "contract_name": "ABBV 200 Call",
+        "contract_type": "option",
+        "currency": "USD",
+        "external_reference": None,
+        "created_at": "2026-04-01T00:00:00Z",
+        "terms": {
+            "underlying_instrument_id": "equity-us-abbv",
+            "option_type": "call",
+            "expiry_date": "2026-04-12",
+            "strike": "200",
+            "contract_multiplier": "100",
+        },
+    }
+    option_obligation = {
+        **deepcopy(position),
+        "position_id": None,
+        "line_id": f"{option_contract_id}:obligation",
+        "position_reference_id": option_contract_id,
+        "instrument_id": None,
+        "instrument_ref": None,
+        "derivative_contract_id": option_contract_id,
+        "derivative_contract": option_contract,
+        "holding_kind": "option_obligation",
+        "quantity": -1.0,
+        "open_contract_quantity": 1.0,
+        "required_underlying_quantity": 100.0,
+    }
     profile_calls: list[str] = []
 
     monkeypatch.setattr(
@@ -910,7 +942,7 @@ def test_dynamic_event_holding_rejects_registry_market_profile(
         "build_holdings_report",
         lambda *_args, **_kwargs: {
             "base_currency": "USD",
-            "positions": [deepcopy(position)],
+            "positions": [deepcopy(position), deepcopy(option_obligation)],
             "total_market_value_base": 500.0,
             "total_nav_base": 500.0,
             "cash_balance_base": 0.0,
@@ -955,12 +987,17 @@ def test_dynamic_event_holding_rejects_registry_market_profile(
     )
 
     assert profile_calls == []
-    assert len(payload["rows"]) == 1
+    assert len(payload["rows"]) == 2
     row = payload["rows"][0]
     _assert_empty_market_profile(row)
     assert row["market_value"] == 500.0
     assert row["carrying_value"] == 500.0
     assert row["valuation_basis"] == "carried_cost"
+    obligation_row = payload["rows"][1]
+    assert obligation_row["line_id"] == f"{option_contract_id}:obligation"
+    assert obligation_row["position_reference_id"] == option_contract_id
+    assert obligation_row["derivative_contract_id"] == option_contract_id
+    assert obligation_row["derivative_contract"] == option_contract
 
 
 def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_charts(

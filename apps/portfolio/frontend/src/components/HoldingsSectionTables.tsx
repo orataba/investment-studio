@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router'
 
 import ConfigurableHoldingsSection, {
   type HoldingsSectionSystemView,
@@ -14,6 +15,7 @@ import {
 import type { HoldingsWorkspaceResponse, PortfolioHoldingRow } from '../lib/api'
 import { baseAmountForRow } from '../lib/holdingAmounts'
 import { isOptionObligationHolding } from '../lib/holdingPresentation'
+import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 import { useHorizontalTablePan } from '../lib/useHorizontalTablePan'
 
 type FixedColumn = {
@@ -44,6 +46,7 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'currency',
     'notional',
     'underlying_terms',
+    'risk',
     'coupon',
     'issue_date',
     'final_observation_date',
@@ -67,10 +70,12 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'side',
     'option_type',
     'underlying',
+    'underlying_spot',
     'currency',
     'expiry_date',
     'days_to_expiry',
     'strike',
+    'moneyness',
     'open_contracts',
     'multiplier',
     'underlying_equivalent',
@@ -80,6 +85,8 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'carrying_historical_base',
     'carrying_fx_translation_base',
     'strike_notional_base',
+    'backing',
+    'risk',
     'weight',
     'status',
     'valuation_basis',
@@ -111,15 +118,12 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
     'account',
     'notional',
     'underlying_terms',
+    'risk',
     'coupon',
     'maturity_date',
     'days_to_maturity',
-    'remaining_basis',
     'signed_nav_amount_base',
-    'carrying_fx_translation_base',
-    'weight',
     'valuation_basis',
-    'coverage',
   ],
   options: [
     'contract',
@@ -127,18 +131,16 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
     'side',
     'option_type',
     'underlying',
+    'underlying_spot',
+    'strike',
+    'moneyness',
     'expiry_date',
     'days_to_expiry',
-    'strike',
     'open_contracts',
-    'remaining_basis',
+    'backing',
+    'risk',
     'signed_nav_amount_base',
-    'carrying_fx_translation_base',
-    'strike_notional_base',
-    'weight',
-    'status',
     'valuation_basis',
-    'coverage',
   ],
   cash: [
     'description',
@@ -170,6 +172,7 @@ const FCN_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'currency',
       'notional',
       'underlying_terms',
+      'risk',
       'coupon',
       'issue_date',
       'final_observation_date',
@@ -213,14 +216,18 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'side',
       'option_type',
       'underlying',
+      'underlying_spot',
       'currency',
       'expiry_date',
       'days_to_expiry',
       'strike',
+      'moneyness',
       'open_contracts',
       'multiplier',
       'underlying_equivalent',
       'strike_notional_base',
+      'backing',
+      'risk',
       'status',
       'coverage',
     ],
@@ -233,6 +240,7 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'account',
       'side',
       'underlying',
+      'underlying_spot',
       'currency',
       'expiry_date',
       'open_contracts',
@@ -242,6 +250,8 @@ const OPTION_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'carrying_historical_base',
       'carrying_fx_translation_base',
       'strike_notional_base',
+      'backing',
+      'risk',
       'weight',
       'status',
       'valuation_basis',
@@ -260,9 +270,11 @@ const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
   side: 90,
   option_type: 90,
   underlying: 170,
+  underlying_spot: 150,
   currency: 90,
   notional: 150,
   underlying_terms: 330,
+  risk: 220,
   coupon: 120,
   issue_date: 120,
   final_observation_date: 150,
@@ -273,6 +285,7 @@ const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
   issuer: 150,
   counterparty: 160,
   strike: 140,
+  moneyness: 120,
   open_contracts: 120,
   multiplier: 100,
   underlying_equivalent: 160,
@@ -282,6 +295,7 @@ const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
   carrying_historical_base: 190,
   carrying_fx_translation_base: 190,
   strike_notional_base: 180,
+  backing: 220,
   weight: 110,
   status: 140,
   valuation_basis: 140,
@@ -434,6 +448,80 @@ function optionRemainingBasis(row: PortfolioHoldingRow) {
   return isOptionObligationHolding(row) ? row.premium_basis_remaining : row.cost_basis
 }
 
+function holdingDetailPath(workspace: HoldingsWorkspaceResponse, instrumentId: string) {
+  return `${buildPortfolioHoldingDetailPath(workspace.portfolio_id, instrumentId)}?as_of_date=${workspace.as_of_date}`
+}
+
+function linkedInstrumentName(
+  workspace: HoldingsWorkspaceResponse,
+  instrumentId: string,
+  label: string,
+) {
+  return (
+    <Link
+      className="holding-instrument-link"
+      draggable={false}
+      to={holdingDetailPath(workspace, instrumentId)}
+    >
+      {label}
+    </Link>
+  )
+}
+
+function riskPill(label: string, warning: boolean) {
+  return (
+    <span className={`coverage-pill ${warning ? 'coverage-pill-warning' : 'coverage-pill-live'}`}>
+      {label}
+    </span>
+  )
+}
+
+function optionRiskLabel(state: string) {
+  switch (state) {
+    case 'expired_unresolved':
+      return 'Action required'
+    case 'uncovered':
+      return 'Backing shortfall'
+    case 'in_the_money':
+      return 'In the money'
+    case 'quote_unavailable':
+      return 'Quote unavailable'
+    case 'open':
+      return 'Open'
+    default:
+      return formatLabel(state)
+  }
+}
+
+function fcnRiskLabel(state: string) {
+  switch (state) {
+    case 'current_price_at_or_below_knock_in':
+      return 'Current price at/below KI'
+    case 'terms_incomplete':
+      return 'Terms incomplete'
+    case 'quote_unavailable':
+      return 'Quote unavailable'
+    case 'knocked_in':
+      return 'Knock-in recorded'
+    case 'knocked_out':
+      return 'Knock-out recorded'
+    case 'matured':
+      return 'Maturity recorded'
+    case 'open':
+      return 'Open'
+    default:
+      return formatLabel(state)
+  }
+}
+
+function signedDistance(value: number | null | undefined, level: string) {
+  if (value == null || !Number.isFinite(value)) {
+    return null
+  }
+  const relation = value >= 0 ? 'above' : 'below'
+  return `${formatPercent(Math.abs(value))} ${relation} ${level}`
+}
+
 function FixedHoldingsTable({
   ariaLabel,
   columns,
@@ -565,6 +653,12 @@ export default function HoldingsSectionTables({
   const optionRows = derivativeRows.filter(
     (row) => row.derivative_contract?.contract_type === 'option',
   )
+  const fcnContractCount = new Set(
+    fcnRows.map((row) => row.derivative_contract_id ?? row.line_id),
+  ).size
+  const optionContractCount = new Set(
+    optionRows.map((row) => row.derivative_contract_id ?? row.line_id),
+  ).size
   const unclassifiedDerivativeRows = derivativeRows.filter(
     (row) =>
       row.derivative_contract?.contract_type !== 'fcn' &&
@@ -603,7 +697,15 @@ export default function HoldingsSectionTables({
           <div className="derivative-underlying-list">
             {row.derivative_contract.terms.underlyings.map((underlying) => (
               <div key={underlying.instrument_id} className="derivative-underlying-item">
-                <span>{namesById.get(underlying.instrument_id) ?? underlying.instrument_id}</span>
+                {linkedInstrumentName(
+                  workspace,
+                  underlying.instrument_id,
+                  row.fcn_risk?.underlyings.find(
+                    (item) => item.instrument_id === underlying.instrument_id,
+                  )?.instrument_name ??
+                    namesById.get(underlying.instrument_id) ??
+                    underlying.instrument_id,
+                )}
                 <small>
                   Initial {formatNumber(underlying.initial_reference_price, 4)} · Strike{' '}
                   {underlying.strike_level_pct == null
@@ -625,6 +727,33 @@ export default function HoldingsSectionTables({
         ) : (
           '—'
         ),
+    },
+    {
+      key: 'risk',
+      label: 'Current Risk',
+      render: (row) => {
+        const risk = row.fcn_risk
+        if (!risk) {
+          return '—'
+        }
+        const worst = risk.underlyings.find(
+          (item) => item.instrument_id === risk.worst_underlying_instrument_id,
+        )
+        const warning = !['open', 'knocked_out', 'matured'].includes(risk.risk_state)
+        return (
+          <div className="holding-risk-cell">
+            {riskPill(fcnRiskLabel(risk.risk_state), warning)}
+            {worst ? (
+              <small>
+                {worst.instrument_name}: {formatPercent(worst.performance_to_reference_pct)} vs initial
+                {signedDistance(worst.distance_to_knock_in_pct, 'KI')
+                  ? ` · ${signedDistance(worst.distance_to_knock_in_pct, 'KI')}`
+                  : ''}
+              </small>
+            ) : null}
+          </div>
+        )
+      },
     },
     {
       key: 'coupon',
@@ -765,8 +894,24 @@ export default function HoldingsSectionTables({
           (row.derivative_contract?.contract_type === 'option'
             ? row.derivative_contract.terms.underlying_instrument_id
             : null)
-        return underlyingId ? namesById.get(underlyingId) ?? underlyingId : '—'
+        return underlyingId
+          ? linkedInstrumentName(
+              workspace,
+              underlyingId,
+              row.option_risk?.underlying_name ?? namesById.get(underlyingId) ?? underlyingId,
+            )
+          : '—'
       },
+    },
+    {
+      key: 'underlying_spot',
+      label: 'Underlying Spot',
+      align: 'right',
+      render: (row) =>
+        formatUnitPrice(
+          row.option_risk?.underlying_spot,
+          row.option_risk?.underlying_quote_currency,
+        ),
     },
     { key: 'currency', label: 'Currency', align: 'center', render: holdingCurrency },
     {
@@ -802,8 +947,14 @@ export default function HoldingsSectionTables({
             (row.derivative_contract?.contract_type === 'option'
               ? row.derivative_contract.terms.strike
               : null),
-          holdingCurrency(row),
+          row.option_risk?.underlying_quote_currency,
         ),
+    },
+    {
+      key: 'moneyness',
+      label: 'Moneyness',
+      align: 'right',
+      render: (row) => formatPercent(row.option_risk?.moneyness_pct),
     },
     {
       key: 'open_contracts',
@@ -864,6 +1015,63 @@ export default function HoldingsSectionTables({
       label: `Strike Notional (${workspace.base_currency})`,
       align: 'right',
       render: (row) => formatCurrency(row.strike_notional_base, workspace.base_currency),
+    },
+    {
+      key: 'backing',
+      label: 'Portfolio Backing',
+      render: (row) => {
+        const backing = row.option_risk?.backing
+        if (!backing) {
+          return '—'
+        }
+        const isCash = backing.kind === 'portfolio_settled_cash'
+        const amount = (value: number) =>
+          isCash
+            ? formatCurrency(value, backing.currency ?? holdingCurrency(row))
+            : `${formatQuantity(value)} shares`
+        return (
+          <div className="holding-risk-cell">
+            {riskPill(
+              backing.shortfall > 0 ? `${formatPercent(backing.ratio)} backed` : 'Fully backed',
+              backing.shortfall > 0,
+            )}
+            <small>
+              Portfolio {isCash ? 'cash' : 'shares'} {amount(backing.available)} / {amount(backing.required)}
+              {backing.shortfall > 0 ? ` · short ${amount(backing.shortfall)}` : ''}
+            </small>
+          </div>
+        )
+      },
+    },
+    {
+      key: 'risk',
+      label: 'Current Risk',
+      render: (row) => {
+        const risk = row.option_risk
+        if (!risk) {
+          return '—'
+        }
+        const isWritten = isOptionObligationHolding(row) || row.quantity < 0
+        const warning =
+          risk.risk_state === 'expired_unresolved' ||
+          risk.risk_state === 'uncovered' ||
+          risk.risk_state === 'quote_unavailable' ||
+          (isWritten && risk.risk_state === 'in_the_money')
+        return (
+          <div className="holding-risk-cell">
+            {riskPill(optionRiskLabel(risk.risk_state), warning)}
+            {risk.intrinsic_value_per_share != null ? (
+              <small>
+                Intrinsic/share{' '}
+                {formatUnitPrice(
+                  risk.intrinsic_value_per_share,
+                  risk.underlying_quote_currency,
+                )}
+              </small>
+            ) : null}
+          </div>
+        )
+      },
     },
     {
       key: 'weight',
@@ -981,7 +1189,7 @@ export default function HoldingsSectionTables({
           sectionKey="fcn"
           id="holdings-fcn-heading"
           title="FCN"
-          count={fcnRows.length}
+          count={fcnContractCount}
           columns={fcnColumns}
           requiredColumnKey="contract"
           systemViews={FCN_SYSTEM_VIEWS}
@@ -1027,7 +1235,7 @@ export default function HoldingsSectionTables({
           sectionKey="options"
           id="holdings-options-heading"
           title="Options"
-          count={optionRows.length}
+          count={optionContractCount}
           columns={optionColumns}
           requiredColumnKey="contract"
           systemViews={OPTION_SYSTEM_VIEWS}

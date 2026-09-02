@@ -176,6 +176,12 @@ export function transactionActionGroups(
       label: 'Long outcomes',
       actions: [
         action(
+          'exercise_long',
+          `Exercise Long ${name}`,
+          'maturity_redemption',
+          'option_long_exercise',
+        ),
+        action(
           'expire_long',
           `Expire Long ${name}`,
           'maturity_redemption',
@@ -192,6 +198,12 @@ export function transactionActionGroups(
     {
       label: 'Written outcomes',
       actions: [
+        action(
+          'assign_written',
+          `Assign Written ${name}`,
+          'lifecycle_event',
+          'option_writer_assignment',
+        ),
         action(
           'expire_written',
           `Expire Written ${name}`,

@@ -23,6 +23,7 @@ import { workspacePrimaryNavigation } from '../lib/portfolioIa'
 import { preloadPortfolioSection } from '../lib/preload'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import OptionOutcomePrompt from './OptionOutcomePrompt'
 
 type WorkspaceTab = {
   label: string
@@ -79,6 +80,7 @@ export default function PortfolioWorkspaceLayout({
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
+  const [summaryRevision, setSummaryRevision] = useState(0)
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
@@ -143,7 +145,7 @@ export default function PortfolioWorkspaceLayout({
     return () => {
       cancelled = true
     }
-  }, [portfolioId])
+  }, [portfolioId, summaryRevision])
 
   useEffect(() => {
     return () => {
@@ -364,6 +366,14 @@ export default function PortfolioWorkspaceLayout({
     }
   }
 
+  function handleOptionOutcomeRecorded(message: string) {
+    setSummaryRevision((current) => current + 1)
+    setSelectorNotice(message)
+    if (activeSection !== 'Holdings') {
+      navigate(buildPortfolioSectionPath(resolvedPortfolioId, '/holdings'))
+    }
+  }
+
   return (
     <section
       className="terminal-page portfolio-workspace-page"
@@ -510,6 +520,12 @@ export default function PortfolioWorkspaceLayout({
               </div>
             </div>
             <div className="portfolio-header-actions">
+              {resolvedPortfolioId ? (
+                <OptionOutcomePrompt
+                  portfolioId={resolvedPortfolioId}
+                  onRecorded={handleOptionOutcomeRecorded}
+                />
+              ) : null}
               <button
                 type="button"
                 className="portfolio-settings-button"

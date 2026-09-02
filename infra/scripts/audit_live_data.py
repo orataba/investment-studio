@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260902_0029",
     "platform": "20260823_0007",
-    "portfolio": "20260902_0057",
+    "portfolio": "20260902_0058",
     "watchlist": "20260901_0052",
 }
 VERSION_TABLES = {
@@ -255,6 +255,7 @@ AUDIT_CHECK_NAMES = (
     "portfolio_instrument_reference_contract",
     "derivative_registry_boundary",
     "portfolio_derivative_contract_integrity",
+    "portfolio_option_delivery_link_integrity",
     "market_data_invalid_values",
     "market_data_currency_mismatch",
     "instrument_quote_policy_contract",
@@ -412,6 +413,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "snapshot": ("portfolio", "portfolio_daily_snapshot"),
         "holding": ("portfolio", "portfolio_daily_holding_snapshot"),
         "derivative_contract": ("portfolio", "derivative_contract_record"),
+        "option_delivery_link": ("portfolio", "option_delivery_link"),
         "unsupported_quote_series": ("instrument_registry", "quote_series"),
         "unsupported_quote_observation": ("instrument_registry", "quote_observation"),
         "unsupported_quote_revision": (
@@ -464,6 +466,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "snapshot",
         "holding",
         "derivative_contract",
+        "option_delivery_link",
         "instrument",
         "corporate_action",
         "watchlist_chart",
@@ -1963,7 +1966,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       AND coalesce(txn.lifecycle_event_type, '')
                                           NOT IN (
                                               'option_long_expiry',
-                                              'option_long_cash_settlement'
+                                              'option_long_cash_settlement',
+                                              'option_long_exercise'
                                           )
                                   )
                                   OR (
@@ -1971,13 +1975,15 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       AND coalesce(txn.lifecycle_event_type, '')
                                           NOT IN (
                                               'option_writer_expiry',
-                                              'option_writer_cash_settlement'
+                                              'option_writer_cash_settlement',
+                                              'option_writer_assignment'
                                           )
                                   )
                                   OR (
                                       txn.lifecycle_event_type IN (
                                           'option_long_expiry',
-                                          'option_long_cash_settlement'
+                                          'option_long_cash_settlement',
+                                          'option_long_exercise'
                                       )
                                       AND txn.transaction_type <>
                                           'maturity_redemption'
@@ -1985,7 +1991,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                   OR (
                                       txn.lifecycle_event_type IN (
                                           'option_writer_expiry',
-                                          'option_writer_cash_settlement'
+                                          'option_writer_cash_settlement',
+                                          'option_writer_assignment'
                                       )
                                       AND txn.transaction_type <> 'lifecycle_event'
                                   )
@@ -2013,6 +2020,19 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                           OR txn.settlement_cash_account_id IS NULL
                                       )
                                   )
+                                  OR (
+                                      txn.lifecycle_event_type IN (
+                                          'option_long_exercise',
+                                          'option_writer_assignment'
+                                      )
+                                      AND (
+                                          coalesce(txn.quantity, 0) <= 0
+                                          OR coalesce(txn.gross_amount, 0) <> 0
+                                          OR coalesce(txn.fees, 0) <> 0
+                                          OR coalesce(txn.taxes, 0) <> 0
+                                          OR txn.settlement_cash_account_id IS NOT NULL
+                                      )
+                                  )
                                   OR CASE
                                       WHEN pg_input_is_valid(
                                           coalesce(
@@ -2035,7 +2055,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       ) OR (
                                           txn.lifecycle_event_type IN (
                                               'option_long_cash_settlement',
-                                              'option_writer_cash_settlement'
+                                              'option_writer_cash_settlement',
+                                              'option_long_exercise',
+                                              'option_writer_assignment'
                                           )
                                           AND coalesce(
                                               txn.position_effective_date,
@@ -2081,6 +2103,139 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "existing Registry underlyings, keep explicit and cash-consistent "
                         "option outcomes, and remain account/currency consistent across "
                         "contracts, transactions, and holdings."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_option_delivery_link_integrity",
+                    query="""
+                        WITH physical_outcome AS (
+                            SELECT transaction.*
+                            FROM portfolio.transaction_record transaction
+                            WHERE transaction.lifecycle_event_type IN (
+                                'option_long_exercise',
+                                'option_writer_assignment'
+                            )
+                        ), paired_outcome AS (
+                            SELECT
+                                link.option_transaction_id AS linked_option_id,
+                                link.stock_transaction_id AS linked_stock_id,
+                                link.portfolio_id AS linked_portfolio_id,
+                                link.underlying_instrument_id AS linked_underlying_id,
+                                option_txn.*,
+                                stock_txn.transaction_id AS stock_transaction_id,
+                                stock_txn.portfolio_id AS stock_portfolio_id,
+                                stock_txn.transaction_type AS stock_transaction_type,
+                                stock_txn.trade_date AS stock_trade_date,
+                                stock_txn.position_effective_date
+                                    AS stock_position_effective_date,
+                                stock_txn.settlement_cash_account_id
+                                    AS stock_settlement_cash_account_id,
+                                stock_txn.instrument_id AS stock_instrument_id,
+                                stock_txn.source_quantity AS stock_source_quantity,
+                                stock_txn.source_price AS stock_source_price,
+                                stock_txn.source_gross_amount AS stock_source_gross_amount,
+                                stock_txn.currency AS stock_currency,
+                                contract.contract_type,
+                                contract.terms_json
+                            FROM portfolio.option_delivery_link link
+                            FULL OUTER JOIN physical_outcome option_txn
+                              ON option_txn.transaction_id = link.option_transaction_id
+                            LEFT JOIN portfolio.transaction_record stock_txn
+                              ON stock_txn.transaction_id = link.stock_transaction_id
+                            LEFT JOIN portfolio.derivative_contract_record contract
+                              ON contract.portfolio_id = option_txn.portfolio_id
+                             AND contract.derivative_contract_id =
+                                 option_txn.derivative_contract_id
+                        )
+                        SELECT count(*)
+                        FROM paired_outcome outcome
+                        WHERE outcome.linked_option_id IS NULL
+                           OR outcome.transaction_id IS NULL
+                           OR outcome.stock_transaction_id IS NULL
+                           OR outcome.linked_option_id IS DISTINCT FROM
+                              outcome.transaction_id
+                           OR outcome.linked_portfolio_id IS DISTINCT FROM
+                              outcome.portfolio_id
+                           OR outcome.stock_portfolio_id IS DISTINCT FROM
+                              outcome.portfolio_id
+                           OR outcome.contract_type IS DISTINCT FROM 'option'
+                           OR outcome.linked_underlying_id IS DISTINCT FROM
+                              outcome.terms_json ->> 'underlying_instrument_id'
+                           OR outcome.stock_instrument_id IS DISTINCT FROM
+                              outcome.linked_underlying_id
+                           OR outcome.stock_transaction_type IS DISTINCT FROM CASE
+                                WHEN outcome.lifecycle_event_type = 'option_long_exercise'
+                                 AND outcome.terms_json ->> 'option_type' = 'call'
+                                THEN 'buy'
+                                WHEN outcome.lifecycle_event_type = 'option_long_exercise'
+                                 AND outcome.terms_json ->> 'option_type' = 'put'
+                                THEN 'sell'
+                                WHEN outcome.lifecycle_event_type = 'option_writer_assignment'
+                                 AND outcome.terms_json ->> 'option_type' = 'call'
+                                THEN 'sell'
+                                WHEN outcome.lifecycle_event_type = 'option_writer_assignment'
+                                 AND outcome.terms_json ->> 'option_type' = 'put'
+                                THEN 'buy'
+                                ELSE NULL
+                              END
+                           OR outcome.stock_trade_date IS DISTINCT FROM outcome.trade_date
+                           OR outcome.stock_position_effective_date IS DISTINCT FROM
+                              outcome.trade_date
+                           OR outcome.stock_settlement_cash_account_id IS NULL
+                           OR outcome.settlement_cash_account_id IS NOT NULL
+                           OR outcome.currency IS DISTINCT FROM outcome.stock_currency
+                           OR outcome.source_quantity IS NULL
+                           OR outcome.source_quantity <= 0
+                           OR outcome.stock_source_quantity IS NULL
+                           OR outcome.stock_source_quantity <= 0
+                           OR outcome.source_gross_amount IS DISTINCT FROM 0
+                           OR outcome.source_fees IS DISTINCT FROM 0
+                           OR outcome.source_taxes IS DISTINCT FROM 0
+                           OR outcome.stock_source_gross_amount IS NULL
+                           OR outcome.stock_source_gross_amount <= 0
+                           OR NOT pg_input_is_valid(
+                                coalesce(
+                                    outcome.terms_json ->> 'contract_multiplier',
+                                    ''
+                                ),
+                                'numeric'
+                              )
+                           OR CASE
+                                WHEN pg_input_is_valid(
+                                    coalesce(
+                                        outcome.terms_json ->> 'contract_multiplier',
+                                        ''
+                                    ),
+                                    'numeric'
+                                )
+                                THEN outcome.stock_source_quantity IS DISTINCT FROM
+                                     outcome.source_quantity * (
+                                         outcome.terms_json
+                                             ->> 'contract_multiplier'
+                                     )::numeric
+                                ELSE false
+                              END
+                           OR NOT pg_input_is_valid(
+                                coalesce(outcome.terms_json ->> 'strike', ''),
+                                'numeric'
+                              )
+                           OR CASE
+                                WHEN pg_input_is_valid(
+                                    coalesce(outcome.terms_json ->> 'strike', ''),
+                                    'numeric'
+                                )
+                                THEN outcome.stock_source_price IS DISTINCT FROM
+                                     (outcome.terms_json ->> 'strike')::numeric
+                                ELSE false
+                              END
+                    """,
+                    detail=(
+                        "Every physical option outcome must have exactly one linked "
+                        "stock delivery with the contract-defined underlying, direction, "
+                        "quantity, strike, event date, currency, and cash account."
                     ),
                 )
             )

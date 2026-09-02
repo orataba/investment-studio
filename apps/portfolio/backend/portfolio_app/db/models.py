@@ -503,7 +503,8 @@ class TransactionRecordModel(Base):
             "lifecycle_event_type IS NULL OR lifecycle_event_type IN ("
             "'fcn_knock_in', 'fcn_knock_out', 'fcn_maturity', "
             "'option_long_expiry', 'option_long_cash_settlement', "
-            "'option_writer_expiry', 'option_writer_cash_settlement')",
+            "'option_long_exercise', 'option_writer_expiry', "
+            "'option_writer_cash_settlement', 'option_writer_assignment')",
             name="lifecycle_event_type",
         ),
         Index(
@@ -590,6 +591,42 @@ class TransactionRecordModel(Base):
         ],
         viewonly=True,
     )
+
+
+class OptionDeliveryLinkModel(Base):
+    """Strict one-to-one link between an option outcome and its stock delivery."""
+
+    __tablename__ = "option_delivery_link"
+    __table_args__ = (
+        CheckConstraint(
+            "option_transaction_id <> stock_transaction_id",
+            name="distinct_transactions",
+        ),
+        UniqueConstraint(
+            "stock_transaction_id",
+            name="uq_option_delivery_link_stock_transaction",
+        ),
+        Index(
+            "ix_option_delivery_link_portfolio_underlying",
+            "portfolio_id",
+            "underlying_instrument_id",
+        ),
+    )
+
+    option_transaction_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_record.transaction_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    stock_transaction_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_record.transaction_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    underlying_instrument_id: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class TransactionChangeLogModel(Base):

@@ -14,6 +14,9 @@ from portfolio_app.services.daily_snapshots import (
     build_materialized_position_holding_projection,
     ensure_portfolio_daily_snapshots,
 )
+from portfolio_app.services.derivative_holding_risk import (
+    enrich_derivative_holding_risk,
+)
 from portfolio_app.services.analytics_scope import (
     resolve_instrument_analytics_scopes,
 )
@@ -491,6 +494,11 @@ def _public_holdings_workspace_response(
 ) -> dict[str, object]:
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
+    enrich_derivative_holding_risk(
+        [row for row in row_items if isinstance(row, dict)],
+        transactions=transactions,
+        as_of_date=as_of_date,
+    )
     position_cycle_costs = build_current_position_cycle_costs(
         transactions,
         as_of_date=as_of_date,
@@ -1126,8 +1134,17 @@ def holdings_workspace(
 
     rows = [
         {
-            "line_id": str(position.get("position_id") or position.get("instrument_id") or ""),
+            "line_id": str(
+                position.get("line_id")
+                or position.get("position_id")
+                or position.get("position_reference_id")
+                or position.get("derivative_contract_id")
+                or position.get("instrument_id")
+                or ""
+            ),
             "position_reference_id": position.get("position_reference_id"),
+            "derivative_contract_id": position.get("derivative_contract_id"),
+            "derivative_contract": position.get("derivative_contract"),
             "holding_kind": position.get("holding_kind") or "position",
             "available_for_trading": position.get("available_for_trading", True),
             "economic_instrument_id": position.get("economic_instrument_id"),

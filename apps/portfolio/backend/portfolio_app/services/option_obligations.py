@@ -300,6 +300,8 @@ def derive_option_obligation_events(
             close_reason = "expired"
         elif lifecycle == "option_writer_cash_settlement":
             close_reason = "cash_settled"
+        elif lifecycle == "option_writer_assignment":
+            close_reason = "assigned"
         if close_reason is None:
             continue
 

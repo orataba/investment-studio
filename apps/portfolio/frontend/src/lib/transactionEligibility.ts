@@ -13,8 +13,10 @@ const LIFECYCLE_EVENT_ASSET_TYPES: Record<string, 'fcn' | 'option'> = {
   fcn_maturity: 'fcn',
   option_long_expiry: 'option',
   option_long_cash_settlement: 'option',
+  option_long_exercise: 'option',
   option_writer_expiry: 'option',
   option_writer_cash_settlement: 'option',
+  option_writer_assignment: 'option',
 }
 const INCOME_ASSET_TYPES: Record<string, Set<string>> = {
   dividend: new Set(['public_fund', 'private_fund', 'etf', 'equity']),

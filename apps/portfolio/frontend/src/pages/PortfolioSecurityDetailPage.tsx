@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import InstrumentPriceChart from '../components/InstrumentPriceChart'
+import DerivativeHoldingOverview from '../components/DerivativeHoldingOverview'
+import InfoHint from '../components/InfoHint'
+import SecurityLinkedOptionsPanel from '../components/SecurityLinkedOptionsPanel'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
@@ -15,14 +18,21 @@ import {
   signedValueClass,
 } from '../lib/format'
 import {
-  getPortfolioPositionHoldingProjection,
+  getHoldingsWorkspace,
+  getPortfolioDerivativeContracts,
   getPortfolioInstrumentPriceChart,
+  getPortfolioOptionDeliveryLinks,
+  getPortfolioOptionObligations,
   getPortfolioPositionLots,
   getPortfolioTransactions,
+  type HoldingsWorkspaceResponse,
+  type PortfolioDerivativeContractRecord,
+  type PortfolioDerivativeContractsResponse,
   type PortfolioInstrumentChartRangeKey,
-  type PortfolioPositionHoldingRow,
-  type PortfolioPositionHoldingProjectionResponse,
+  type PortfolioHoldingRow,
   type PortfolioInstrumentPriceChartResponse,
+  type PortfolioOptionDeliveryLinksResponse,
+  type PortfolioOptionObligationsResponse,
   type PortfolioPositionLotListResponse,
   type PortfolioPositionLotRecord,
   type PortfolioTransactionListResponse,
@@ -45,7 +55,7 @@ import {
 
 type SecurityDetailTab = 'overview' | 'transactions' | 'lots'
 
-function primaryIdentifier(row: PortfolioPositionHoldingRow) {
+function primaryIdentifier(row: PortfolioHoldingRow) {
   if (!row.instrument_core) {
     return row.derivative_contract_id ?? row.position_reference_id ?? row.line_id
   }
@@ -56,19 +66,19 @@ function primaryIdentifier(row: PortfolioPositionHoldingRow) {
   )
 }
 
-function holdingReferenceId(row: PortfolioPositionHoldingRow) {
+function holdingReferenceId(row: PortfolioHoldingRow) {
   return row.position_reference_id ?? row.derivative_contract_id ?? row.instrument_core?.instrument_id ?? row.line_id
 }
 
-function holdingName(row: PortfolioPositionHoldingRow) {
+function holdingName(row: PortfolioHoldingRow) {
   return row.derivative_contract?.contract_name ?? row.instrument_core?.instrument_name ?? row.line_id
 }
 
-function holdingCurrency(row: PortfolioPositionHoldingRow) {
+function holdingCurrency(row: PortfolioHoldingRow) {
   return row.derivative_contract?.currency ?? row.instrument_core?.currency ?? ''
 }
 
-function holdingAssetType(row: PortfolioPositionHoldingRow) {
+function holdingAssetType(row: PortfolioHoldingRow) {
   return row.derivative_contract?.contract_type ?? row.instrument_core?.instrument_type ?? 'other'
 }
 
@@ -91,6 +101,15 @@ function parseDetailTab(value: string | null): SecurityDetailTab {
 
 function transactionAccountLabel(transaction: PortfolioTransactionRecord) {
   return transaction.account.account_name
+}
+
+function transactionPrimaryIdentifier(transaction: PortfolioTransactionRecord) {
+  return (
+    transaction.instrument_ref?.identifiers.find((item) => item.is_primary)?.identifier_value ??
+    transaction.instrument_ref?.identifiers[0]?.identifier_value ??
+    transaction.instrument_id ??
+    ''
+  )
 }
 
 function lotStatusClass(positionLot: PortfolioPositionLotRecord) {
@@ -146,7 +165,7 @@ function TableStatusRow({
 export default function PortfolioSecurityDetailPage() {
   const { portfolioId = '', instrumentId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [workspaceResponse, setWorkspace] = useState<PortfolioPositionHoldingProjectionResponse | null>(null)
+  const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [positionLotsResponse, setPositionLotsWorkspace] = useState<PortfolioPositionLotListResponse | null>(null)
@@ -158,41 +177,115 @@ export default function PortfolioSecurityDetailPage() {
   const [instrumentChartResponse, setInstrumentChartWorkspace] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [instrumentChartLoading, setInstrumentChartLoading] = useState(false)
   const [instrumentChartError, setInstrumentChartError] = useState<string | null>(null)
+  const [derivativeContractsResponse, setDerivativeContracts] = useState<PortfolioDerivativeContractsResponse | null>(null)
+  const [deliveryLinksResponse, setDeliveryLinks] = useState<PortfolioOptionDeliveryLinksResponse | null>(null)
+  const [optionObligationsResponse, setOptionObligations] = useState<PortfolioOptionObligationsResponse | null>(null)
+  const [relatedDataLoading, setRelatedDataLoading] = useState(false)
+  const [relatedDataError, setRelatedDataError] = useState<string | null>(null)
 
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
+  const requestedHoldingLineId = searchParams.get('holding_line_id')
   const selectedPositionLotId = searchParams.get('position_lot_id')
   const detailTab = parseDetailTab(searchParams.get('detail_tab'))
   const chartRangeKey = parseChartRange(searchParams.get('chart_range'))
   const workspace =
     workspaceResponse?.portfolio_id === portfolioId &&
-    workspaceResponse.rows.every(
-      (row) => holdingReferenceId(row) === instrumentId,
-    ) &&
     (!requestedAsOfDate || workspaceResponse.as_of_date === requestedAsOfDate)
       ? workspaceResponse
       : null
   const positionLotsWorkspace =
-    positionLotsResponse?.portfolio_id === portfolioId &&
-    positionLotsResponse.position_lots.every((positionLot) => positionLot.position_reference_id === instrumentId)
+    positionLotsResponse?.portfolio_id === portfolioId
       ? positionLotsResponse
       : null
   const transactionsWorkspace =
-    transactionsResponse?.portfolio_id === portfolioId &&
-    transactionsResponse.transactions.every(
-      (transaction) =>
-        (transaction.derivative_contract_id ?? transaction.instrument_id) === instrumentId,
-    )
+    transactionsResponse?.portfolio_id === portfolioId
       ? transactionsResponse
       : null
-  const selectedRows = workspace?.rows ?? []
+  const selectedRows = (workspace?.rows ?? []).filter(
+    (row) => holdingReferenceId(row) === instrumentId,
+  )
   const selectedRow =
+    selectedRows.find((row) => row.line_id === requestedHoldingLineId) ??
     selectedRows.find((row) => row.holding_kind === 'position') ??
     selectedRows[0] ??
     null
   const writtenOptionObligation =
     selectedRows.find((row) => isOptionObligationHolding(row)) ?? null
-  const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
-  const selectedTransactions = transactionsWorkspace?.transactions ?? []
+  const derivativeContracts = derivativeContractsResponse?.derivative_contracts ?? []
+  const selectedContract =
+    selectedRow?.derivative_contract ??
+    derivativeContracts.find((contract) => contract.derivative_contract_id === instrumentId) ??
+    null
+  const linkedOptionContracts = selectedContract
+    ? []
+    : derivativeContracts.filter(
+        (contract): contract is Extract<PortfolioDerivativeContractRecord, { contract_type: 'option' }> =>
+          contract.contract_type === 'option' &&
+          contract.terms.underlying_instrument_id === instrumentId,
+      )
+  const linkedOptionContractIds = new Set(
+    linkedOptionContracts.map((contract) => contract.derivative_contract_id),
+  )
+  const relevantPositionReferences = new Set([
+    instrumentId,
+    ...linkedOptionContractIds,
+  ])
+  const relevantPositionLots = (positionLotsWorkspace?.position_lots ?? []).filter(
+    (positionLot) => relevantPositionReferences.has(positionLot.position_reference_id),
+  )
+  const ownPositionLots = relevantPositionLots.filter(
+    (positionLot) => positionLot.position_reference_id === instrumentId,
+  )
+  const linkedOptionPositionLots = relevantPositionLots.filter(
+    (positionLot) => linkedOptionContractIds.has(positionLot.position_reference_id),
+  )
+  const selectedPositionLots = selectedRow && isOptionObligationHolding(selectedRow)
+    ? []
+    : ownPositionLots
+  const deliveryLinks = deliveryLinksResponse?.links ?? []
+  const optionTransactionIdsForContract = new Set(
+    (transactionsWorkspace?.transactions ?? [])
+      .filter((transaction) => transaction.derivative_contract_id === instrumentId)
+      .map((transaction) => transaction.transaction_id),
+  )
+  const pairedTransactionIds = new Set(
+    deliveryLinks
+      .filter(
+        (link) =>
+          link.underlying_instrument_id === instrumentId ||
+          optionTransactionIdsForContract.has(link.option_transaction_id),
+      )
+      .flatMap((link) => [link.option_transaction_id, link.stock_transaction_id]),
+  )
+  const selectedTransactions = (transactionsWorkspace?.transactions ?? []).filter(
+    (transaction) =>
+      transaction.instrument_id === instrumentId ||
+      transaction.derivative_contract_id === instrumentId ||
+      linkedOptionContractIds.has(transaction.derivative_contract_id ?? '') ||
+      pairedTransactionIds.has(transaction.transaction_id),
+  )
+  const selectedOptionObligations = (optionObligationsResponse?.obligations ?? []).filter(
+    (obligation) =>
+      obligation.derivative_contract_id === instrumentId ||
+      linkedOptionContractIds.has(obligation.derivative_contract_id),
+  )
+  const deliveryLinkByTransactionId = new Map(
+    deliveryLinks.flatMap((link) => [
+      [link.option_transaction_id, link] as const,
+      [link.stock_transaction_id, link] as const,
+    ]),
+  )
+  const selectedTransactionById = new Map(
+    selectedTransactions.map((transaction) => [transaction.transaction_id, transaction]),
+  )
+  const displayedSelectedTransactions = selectedTransactions.filter((transaction) => {
+    const deliveryLink = deliveryLinkByTransactionId.get(transaction.transaction_id)
+    return !(
+      deliveryLink &&
+      deliveryLink.stock_transaction_id === transaction.transaction_id &&
+      selectedTransactionById.has(deliveryLink.option_transaction_id)
+    )
+  })
   const selectedPositionLot =
     selectedPositionLots.find((positionLot) => positionLot.position_lot_id === selectedPositionLotId) ??
     selectedPositionLots[0] ??
@@ -241,10 +334,12 @@ export default function PortfolioSecurityDetailPage() {
   const positionLotsPending =
     workspaceLoading ||
     positionLotsLoading ||
+    relatedDataLoading ||
     Boolean(resolvedAsOfDate && !positionLotsWorkspace && !positionLotsError)
   const transactionsPending =
     workspaceLoading ||
     transactionsLoading ||
+    relatedDataLoading ||
     Boolean(resolvedAsOfDate && !transactionsWorkspace && !transactionsError)
   const instrumentChartPending =
     detailTab === 'overview' &&
@@ -322,7 +417,7 @@ export default function PortfolioSecurityDetailPage() {
       meta: transactionsPending
         ? 'Loading'
         : transactionsWorkspace
-          ? String(transactionsWorkspace.summary.total_transactions)
+          ? String(displayedSelectedTransactions.length)
           : '—',
     },
     {
@@ -331,7 +426,7 @@ export default function PortfolioSecurityDetailPage() {
       meta: positionLotsPending
         ? 'Loading'
         : positionLotsWorkspace
-          ? String(positionLotsWorkspace.summary.position_lot_count)
+          ? String(selectedPositionLots.length)
           : '—',
     },
   ] as const
@@ -341,6 +436,7 @@ export default function PortfolioSecurityDetailPage() {
     next.delete('detail_tab')
     next.delete('chart_range')
     next.delete('position_lot_id')
+    next.delete('holding_line_id')
     if (instrumentId) {
       next.set('position_reference_id', instrumentId)
     }
@@ -409,7 +505,7 @@ export default function PortfolioSecurityDetailPage() {
     setWorkspaceError(null)
     setWorkspaceLoading(true)
 
-    getPortfolioPositionHoldingProjection(portfolioId, instrumentId, {
+    getHoldingsWorkspace(portfolioId, {
       as_of_date: requestedAsOfDate || undefined,
     })
       .then((response) => {
@@ -449,7 +545,6 @@ export default function PortfolioSecurityDetailPage() {
     setPositionLotsLoading(true)
 
     getPortfolioPositionLots(portfolioId, {
-      position_reference_id: instrumentId,
       as_of_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -476,6 +571,55 @@ export default function PortfolioSecurityDetailPage() {
   }, [instrumentId, portfolioId, resolvedAsOfDate])
 
   useEffect(() => {
+    if (!portfolioId || !resolvedAsOfDate) {
+      setDerivativeContracts(null)
+      setDeliveryLinks(null)
+      setOptionObligations(null)
+      setRelatedDataError(null)
+      setRelatedDataLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setDerivativeContracts(null)
+    setDeliveryLinks(null)
+    setOptionObligations(null)
+    setRelatedDataError(null)
+    setRelatedDataLoading(true)
+
+    Promise.all([
+      getPortfolioDerivativeContracts(portfolioId),
+      getPortfolioOptionDeliveryLinks(portfolioId),
+      getPortfolioOptionObligations(portfolioId, { as_of_date: resolvedAsOfDate }),
+    ])
+      .then(([contracts, links, obligations]) => {
+        if (!cancelled) {
+          setDerivativeContracts(contracts)
+          setDeliveryLinks(links)
+          setOptionObligations(obligations)
+        }
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setRelatedDataError(
+            requestError instanceof Error
+              ? requestError.message
+              : 'Failed to load linked option activity.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRelatedDataLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId, resolvedAsOfDate])
+
+  useEffect(() => {
     if (!portfolioId || !instrumentId || !resolvedAsOfDate) {
       setTransactionsWorkspace(null)
       setTransactionsError(null)
@@ -489,7 +633,6 @@ export default function PortfolioSecurityDetailPage() {
     setTransactionsLoading(true)
 
     getPortfolioTransactions(portfolioId, {
-      position_reference_id: instrumentId,
       end_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -521,8 +664,9 @@ export default function PortfolioSecurityDetailPage() {
       !portfolioId ||
       !instrumentId ||
       !resolvedAsOfDate ||
-      !selectedRow ||
-      !selectedRow.instrument_core ||
+      !derivativeContractsResponse ||
+      selectedContract ||
+      Boolean(selectedRow && !selectedRow.instrument_core) ||
       selectedRowUsesEventValuation
     ) {
       setInstrumentChartWorkspace(null)
@@ -563,10 +707,12 @@ export default function PortfolioSecurityDetailPage() {
     }
   }, [
     chartRangeKey,
+    derivativeContractsResponse,
     detailTab,
     instrumentId,
     portfolioId,
     resolvedAsOfDate,
+    selectedContract,
     selectedRow,
     selectedRowUsesEventValuation,
   ])
@@ -574,11 +720,11 @@ export default function PortfolioSecurityDetailPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Holdings"
-      busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending}
+      busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending || relatedDataLoading}
     >
       <section
         className="portfolio-detail-surface portfolio-security-detail"
-        aria-busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending}
+        aria-busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending || relatedDataLoading}
       >
         <header className="portfolio-security-header">
           <div className="portfolio-security-detail-nav">
@@ -596,39 +742,79 @@ export default function PortfolioSecurityDetailPage() {
           <div className="portfolio-security-hero">
             <div className="portfolio-security-title-stack">
               <span className="portfolio-security-eyebrow">Holding detail</span>
-              <h1>{selectedRow ? holdingName(selectedRow) : instrumentChartWorkspace?.instrument_core.instrument_name ?? instrumentId}</h1>
+              <h1>{selectedRow ? holdingName(selectedRow) : selectedContract?.contract_name ?? instrumentChartWorkspace?.instrument_core.instrument_name ?? instrumentId}</h1>
               <div className="portfolio-security-meta-row">
                 <span className="ticker-pill">{selectedRowIdentifier}</span>
-                <span>{selectedRow ? formatLabel(holdingAssetType(selectedRow)) : 'Instrument'}</span>
-                <span>{selectedRow ? holdingCurrency(selectedRow) : instrumentChartWorkspace?.currency ?? '—'}</span>
+                <span>{selectedRow ? formatLabel(holdingAssetType(selectedRow)) : selectedContract ? formatLabel(selectedContract.contract_type) : 'Instrument'}</span>
+                <span>{selectedRow ? holdingCurrency(selectedRow) : selectedContract?.currency ?? instrumentChartWorkspace?.currency ?? '—'}</span>
                 <span>As of {resolvedAsOfDate || '—'}</span>
               </div>
             </div>
             <div className="portfolio-security-hero-metrics">
-              <div>
-                <span>Portfolio weight</span>
-                <strong>{formatPercent(selectedRow?.allocation)}</strong>
-              </div>
-              <div>
-                <span>Quantity</span>
-                <strong>{formatQuantity(selectedRow?.quantity)}</strong>
-              </div>
-              <div>
-                <span>{selectedRowUsesEventValuation ? 'Carrying value' : 'Market value'}</span>
-                <strong>{formatCurrency(heroMarketValue, heroMarketCurrency)}</strong>
-              </div>
-              <div>
-                <span>Unrealized P/L</span>
-                <strong className={selectedRowUsesEventValuation ? undefined : signedValueClass(heroUnrealizedValue)}>
-                  {selectedRowUsesEventValuation
-                    ? 'N/A'
-                    : formatSignedCurrency(heroUnrealizedValue, heroUnrealizedCurrency)}
-                </strong>
-              </div>
+              {selectedContract?.contract_type === 'option' ? (
+                <>
+                  <div>
+                    <span>Side / type</span>
+                    <strong>{selectedRow && (isOptionObligationHolding(selectedRow) || selectedRow.quantity < 0) ? 'Written' : 'Long'} {formatLabel(selectedContract.terms.option_type)}</strong>
+                  </div>
+                  <div>
+                    <span>Open contracts</span>
+                    <strong>{formatQuantity(selectedRow?.open_contract_quantity ?? Math.abs(selectedRow?.quantity ?? 0))}</strong>
+                  </div>
+                  <div>
+                    <span>Strike</span>
+                    <strong>{formatUnitPrice(selectedContract.terms.strike, selectedRow?.option_risk?.underlying_quote_currency)}</strong>
+                  </div>
+                  <div>
+                    <span>Expiry</span>
+                    <strong>{selectedContract.terms.expiry_date}</strong>
+                  </div>
+                </>
+              ) : selectedContract?.contract_type === 'fcn' ? (
+                <>
+                  <div>
+                    <span>Notional</span>
+                    <strong>{formatCurrency(selectedContract.terms.notional, selectedContract.currency)}</strong>
+                  </div>
+                  <div>
+                    <span>Annual coupon</span>
+                    <strong>{selectedContract.terms.annual_coupon_rate_pct == null ? '—' : `${formatNumber(selectedContract.terms.annual_coupon_rate_pct, 2)}%`}</strong>
+                  </div>
+                  <div>
+                    <span>Maturity</span>
+                    <strong>{selectedContract.terms.maturity_date}</strong>
+                  </div>
+                  <div>
+                    <span>Carrying value</span>
+                    <strong>{formatCurrency(heroMarketValue, heroMarketCurrency)}</strong>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <span>Portfolio weight</span>
+                    <strong>{formatPercent(selectedRow?.allocation)}</strong>
+                  </div>
+                  <div>
+                    <span>Quantity</span>
+                    <strong>{formatQuantity(selectedRow?.quantity)}</strong>
+                  </div>
+                  <div>
+                    <span>Market value</span>
+                    <strong>{formatCurrency(heroMarketValue, heroMarketCurrency)}</strong>
+                  </div>
+                  <div>
+                    <span>Unrealized P/L</span>
+                    <strong className={signedValueClass(heroUnrealizedValue)}>
+                      {formatSignedCurrency(heroUnrealizedValue, heroUnrealizedCurrency)}
+                    </strong>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
-          <div className="portfolio-security-context-strip">
+          {!selectedContract ? <div className="portfolio-security-context-strip">
             <div>
               <span>Valuation</span>
               <strong>
@@ -661,7 +847,7 @@ export default function PortfolioSecurityDetailPage() {
               </strong>
               <em>{formatLabel(selectedRow?.coverage_status ?? 'unavailable')} coverage</em>
             </div>
-          </div>
+          </div> : null}
           {writtenOptionObligation ? (
             <div
               className="portfolio-security-context-strip"
@@ -705,6 +891,7 @@ export default function PortfolioSecurityDetailPage() {
 
         {workspaceLoading ? <CalculationStatus /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
+        {relatedDataError ? <div className="error-state">{relatedDataError}</div> : null}
         {!workspaceLoading && !workspaceError && workspace && !selectedRows.length ? (
           <div className="empty-state" role="status">Not held as of selected date.</div>
         ) : null}
@@ -739,6 +926,17 @@ export default function PortfolioSecurityDetailPage() {
             role="tabpanel"
             aria-labelledby="portfolio-security-tab-overview"
           >
+            {selectedContract && selectedRow ? (
+              <DerivativeHoldingOverview
+                portfolioId={portfolioId}
+                asOfDate={resolvedAsOfDate}
+                holding={selectedRow}
+                contract={selectedContract}
+                rangeKey={chartRangeKey}
+                onRangeChange={(rangeKey) => updateSearchParam('chart_range', rangeKey)}
+              />
+            ) : (
+              <>
             <div className="portfolio-security-overview-workbench">
               <section className="portfolio-security-chart-panel">
                 <InstrumentPriceChart
@@ -773,7 +971,17 @@ export default function PortfolioSecurityDetailPage() {
                     <dd>{valuationMetricName}</dd>
                   </div>
                   <div>
-                    <dt>Performance basis</dt>
+                    <dt>
+                      <span className="portfolio-title-with-hint">
+                        Performance basis
+                        <InfoHint
+                          label="Valuation and performance basis"
+                          detail={selectedRowUsesEventValuation
+                            ? 'This position uses event carrying basis; fair value and market-return analytics are unavailable.'
+                            : `Market value uses ${valuationMetricName}. Return analysis uses ${performanceMetricName}; the performance series does not replace the valuation quote.`}
+                        />
+                      </span>
+                    </dt>
                     <dd>{performanceMetricName}</dd>
                   </div>
                   <div>
@@ -791,13 +999,17 @@ export default function PortfolioSecurityDetailPage() {
                     </dd>
                   </div>
                 </dl>
-                <p className="portfolio-security-basis-note">
-                  {selectedRowUsesEventValuation
-                    ? 'This position uses event carrying basis; fair value and market-return analytics are unavailable.'
-                    : `Market value uses ${valuationMetricName}. Return analysis uses ${performanceMetricName}; the performance series never replaces the valuation quote.`}
-                </p>
               </aside>
             </div>
+
+            <SecurityLinkedOptionsPanel
+              asOfDate={resolvedAsOfDate}
+              securityLots={ownPositionLots}
+              optionLots={linkedOptionPositionLots}
+              optionObligations={selectedOptionObligations}
+              optionContracts={linkedOptionContracts}
+              transactions={selectedTransactions}
+            />
 
             <section className="portfolio-security-accounts">
               <div className="portfolio-security-section-head">
@@ -850,6 +1062,8 @@ export default function PortfolioSecurityDetailPage() {
                 )}
               </div>
             </section>
+              </>
+            )}
           </div>
         ) : null}
 
@@ -871,7 +1085,7 @@ export default function PortfolioSecurityDetailPage() {
                   {transactionsPending
                     ? 'Loading'
                     : transactionsWorkspace
-                      ? countLabel(transactionsWorkspace.summary.total_transactions, 'fact')
+                      ? countLabel(displayedSelectedTransactions.length, 'activity', 'activities')
                       : '—'}
                 </span>
                 <Link className="portfolio-security-secondary-link" to={filteredTransactionsPath}>
@@ -896,13 +1110,32 @@ export default function PortfolioSecurityDetailPage() {
                     <TableStatusRow colSpan={6} label="Loading" />
                   ) : transactionsError ? (
                     <TableStatusRow colSpan={6} label={transactionsError} tone="error" />
-                  ) : selectedTransactions.length ? (
-                    selectedTransactions.map((transaction) => {
+                  ) : displayedSelectedTransactions.length ? (
+                    displayedSelectedTransactions.map((transaction) => {
                       const activityLabel = transactionActivityLabel(
                         transaction.transaction_type,
                         transaction.instrument_ref?.instrument_type,
                         transaction.option_action,
+                        transaction.lifecycle_event_type,
                       )
+                      const deliveryLink = deliveryLinkByTransactionId.get(
+                        transaction.transaction_id,
+                      )
+                      const stockDeliveryTransaction =
+                        deliveryLink?.option_transaction_id === transaction.transaction_id
+                          ? selectedTransactionById.get(deliveryLink.stock_transaction_id) ?? null
+                          : null
+                      const cashTransaction = stockDeliveryTransaction ?? transaction
+                      const settlementAccountLabel = stockDeliveryTransaction
+                        ? [
+                            `Delivery via ${stockDeliveryTransaction.account.account_name}`,
+                            stockDeliveryTransaction.settlement_cash_account?.account_name,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : transaction.settlement_cash_account
+                          ? `Settle via ${transaction.settlement_cash_account.account_name}`
+                          : 'No settlement account'
                       return (
                         <tr key={transaction.transaction_id}>
                           <td>
@@ -919,41 +1152,57 @@ export default function PortfolioSecurityDetailPage() {
                           <td>
                             <div className="holding-name-stack">
                               <span className="transaction-type-pill">{activityLabel}</span>
-                              <span className="holding-secondary">{transaction.transaction_id}</span>
+                              <span className="holding-secondary">
+                                {linkedOptionContractIds.has(transaction.derivative_contract_id ?? '')
+                                  ? `Linked option · ${transaction.derivative_contract?.contract_name ?? transaction.derivative_contract_id}`
+                                  : transaction.transaction_id}
+                              </span>
+                              {stockDeliveryTransaction ? (
+                                <span className="holding-secondary">
+                                  Stock delivery · {formatLabel(stockDeliveryTransaction.transaction_type)}{' '}
+                                  {formatQuantity(stockDeliveryTransaction.quantity)}{' '}
+                                  {transactionPrimaryIdentifier(stockDeliveryTransaction)}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td>
                             <div className="holding-name-stack">
                               <span>{transactionAccountLabel(transaction)}</span>
-                              <span className="holding-secondary">
-                                {transaction.settlement_cash_account
-                                  ? `Settle via ${transaction.settlement_cash_account.account_name}`
-                                  : 'No settlement account'}
-                              </span>
+                              <span className="holding-secondary">{settlementAccountLabel}</span>
                             </div>
                           </td>
                           <td>
                             <div className="holding-name-stack">
                               <span>{formatQuantity(transaction.quantity)}</span>
                               <span className="holding-secondary">{formatUnitPrice(transaction.price, transaction.currency)}</span>
+                              {stockDeliveryTransaction ? (
+                                <span className="holding-secondary">
+                                  Delivery {formatQuantity(stockDeliveryTransaction.quantity)} @{' '}
+                                  {formatUnitPrice(
+                                    stockDeliveryTransaction.price,
+                                    stockDeliveryTransaction.currency,
+                                  )}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td>
                             <div className="holding-name-stack">
-                              <span>{formatCurrency(transaction.gross_amount, transaction.currency)}</span>
-                              <span className={signedValueClass(transaction.net_cash_effect)}>
-                                Net {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
+                              <span>{formatCurrency(cashTransaction.gross_amount, cashTransaction.currency)}</span>
+                              <span className={signedValueClass(cashTransaction.net_cash_effect)}>
+                                Net {formatSignedCurrency(cashTransaction.net_cash_effect, cashTransaction.currency)}
                               </span>
                             </div>
                           </td>
                           <td>
                             <div className="holding-name-stack">
                               <span>
-                                {transaction.position_effective_date
-                                  ? `Position EOD ${transaction.position_effective_date}`
-                                  : `Economic ${transaction.economic_date}`}
+                                {cashTransaction.position_effective_date
+                                  ? `Position EOD ${cashTransaction.position_effective_date}`
+                                  : `Economic ${cashTransaction.economic_date}`}
                               </span>
-                              <span className="holding-secondary">Settle {transaction.settlement_date}</span>
+                              <span className="holding-secondary">Settle {cashTransaction.settlement_date}</span>
                             </div>
                           </td>
                         </tr>
@@ -985,7 +1234,7 @@ export default function PortfolioSecurityDetailPage() {
                 {positionLotsPending
                   ? 'Loading'
                   : positionLotsWorkspace
-                    ? `${positionLotsWorkspace.summary.open_position_lot_count} open · ${positionLotsWorkspace.summary.closed_position_lot_count} closed`
+                    ? `${selectedPositionLots.filter((positionLot) => positionLot.status === 'open').length} open · ${selectedPositionLots.filter((positionLot) => positionLot.status === 'closed').length} closed`
                     : '—'}
               </span>
             </div>

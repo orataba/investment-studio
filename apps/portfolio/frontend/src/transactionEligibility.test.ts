@@ -34,7 +34,9 @@ describe('transaction instrument eligibility', () => {
     expect(requiredDerivativeContractType('lifecycle_event', 'fcn_knock_out')).toBe('fcn')
     expect(requiredDerivativeContractType('lifecycle_event', 'fcn_maturity')).toBe('fcn')
     expect(requiredDerivativeContractType('lifecycle_event', 'option_long_expiry')).toBe('option')
+    expect(requiredDerivativeContractType('lifecycle_event', 'option_long_exercise')).toBe('option')
     expect(requiredDerivativeContractType('lifecycle_event', 'option_writer_cash_settlement')).toBe('option')
+    expect(requiredDerivativeContractType('lifecycle_event', 'option_writer_assignment')).toBe('option')
     expect(requiredDerivativeContractType('lifecycle_event')).toBeNull()
   })
 
@@ -42,6 +44,7 @@ describe('transaction instrument eligibility', () => {
     expect(supportsTransactionAssetType('lifecycle_event', 'fcn', 'fcn_knock_in')).toBe(true)
     expect(supportsTransactionAssetType('lifecycle_event', 'option', 'fcn_knock_in')).toBe(false)
     expect(supportsTransactionAssetType('lifecycle_event', 'option', 'option_writer_cash_settlement')).toBe(true)
+    expect(supportsTransactionAssetType('lifecycle_event', 'option', 'option_writer_assignment')).toBe(true)
     expect(supportsTransactionAssetType('lifecycle_event', 'fcn', 'option_writer_cash_settlement')).toBe(false)
     expect(supportsTransactionAssetType('lifecycle_event', 'option')).toBe(false)
   })
@@ -49,6 +52,9 @@ describe('transaction instrument eligibility', () => {
   it('matches long option and FCN maturity results to the correct contract type', () => {
     expect(
       supportsTransactionAssetType('maturity_redemption', 'option', 'option_long_expiry'),
+    ).toBe(true)
+    expect(
+      supportsTransactionAssetType('maturity_redemption', 'option', 'option_long_exercise'),
     ).toBe(true)
     expect(
       supportsTransactionAssetType('maturity_redemption', 'fcn', 'option_long_expiry'),

@@ -1328,6 +1328,7 @@ function AccountTransactionRow({
             transaction.transaction_type,
             instrumentType,
             transaction.option_action,
+            transaction.lifecycle_event_type,
           )}
         </span>
       </td>

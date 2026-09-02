@@ -7,7 +7,7 @@ import {
 } from './lib/transactionActions'
 
 describe('asset-first transaction actions', () => {
-  it('uses the same asset-first action IDs as the import template', () => {
+  it('keeps asset-first actions grouped by entry type', () => {
     const actionsFor = (
       assetDomain: 'security' | 'derivative' | 'cash',
       assetSubtype?: string,
@@ -44,8 +44,10 @@ describe('asset-first transaction actions', () => {
       'sell_to_close',
       'sell_to_open',
       'buy_to_close',
+      'exercise_long',
       'expire_long',
       'cash_settle_long',
+      'assign_written',
       'expire_written',
       'cash_settle_written',
       'fee',

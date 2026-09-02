@@ -12,6 +12,7 @@ ledger posting 或 position lot。后四者均由交易事实、账户事实和�
 - `account_id` 是交易所属账户；
 - 证券交易的现金腿由 `settlement_cash_account_id` 指向结算现金账户；
 - 内部转仓必须通过 internal-transfer command 一次生成成对事实，不能单独修改其中一腿；
+- 期权实物行权或指派必须通过 option-outcome command 一次生成期权关闭腿和股票交割腿，并保存严格一对一的 `option_delivery_link`；
 - note 只保存操作来源或必要说明，不承担日期、金额、份额等结构化事实。
 
 Transactions 页面主表用于定位交易；完整 note、派生 postings、position lots 与 change
@@ -51,7 +52,7 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 - ETF / 股票：数量与实际 execution price 为常用锚点，gross amount 由 price-scale contract
   计算；若成交回单直接给出金额，可用金额反算价格。
 - FCN：合约进入、利息收入和关闭分别记录；关闭结果可选正常到期、敲入或敲出。
-- 期权：数量单位为合约张数，gross amount 使用本地合约 multiplier；Call / Put 买卖和关闭均为独立事实。
+- 期权：数量单位为合约张数，gross amount 使用本地合约 multiplier；普通开平仓与现金结果各自记录。经人工确认的实物行权/指派由专用命令把期权零现金关闭和按 strike 的股票买卖原子落账，费用与税费只进入股票腿。
 - fees、taxes 与 fee category 必须分开保存，不能揉进 gross amount。
 
 ## 4. 现金和待确认资产
@@ -76,7 +77,7 @@ monetary basis，不能把结算后的 FX 再算进 position realized P&L。完�
   同一 operation 与同一 payload；
 - 页面在请求完成前锁定提交按钮，防止双击生成重复事实；
 - update 必须携带当前 `expected_row_version`，缺失返回 validation error，版本过期返回 conflict；
-- delete 必须携带完整 delete scope 的 row-version map；成对转仓必须整组删除；
+- delete 必须携带完整 delete scope 的 row-version map；成对转仓与 option physical-delivery pair 都必须整组删除；已关联的交割腿不能单独修改；
 - create / update / delete 都追加 change log。Transactions inspector 的 History 标签显示版本、
   时间和变更字段，不能用直接改库替代正常修订流程。
 
@@ -130,8 +131,8 @@ Import 预览的后端校验为准。
 | --- | --- |
 | 现金与运营 | 入金、出金、利息、换汇、独立费用/税费、现金期初余额、现金内部转移 |
 | 股票、ETF、基金 | 买入、卖出/赎回、分红、红利再投资、返还资本、期初持仓、独立费用/税费、证券转仓；另有股票、ETF、公募基金和私募基金的明确示例 |
-| FCN | 新合约进入、多标的条款、期初持仓、提前退出、票息、费用、税费、正常到期、敲入、敲出和交付证券的独立记录 |
-| Option | Call/Put、多头/空头开仓和平仓、期初多头持仓、费用、税费、长短仓到期作废/现金结算，以及实物行权或指派后的独立证券记录 |
+| FCN | 新合约进入、多标的条款、期初持仓、提前退出、票息、费用、税费、正常到期、敲入和敲出；交付证券仍是独立记录 |
+| Option | Call/Put、多头/空头开仓和平仓、期初多头持仓、费用、税费，以及长短仓到期作废/现金结算；实物行权/指派不属于单行文件导入范围 |
 | 多币种 | USD、HKD、CNY、EUR、GBP、CHF；证券、持仓账户、合约、结算现金账户和交易币种必须满足同币种规则 |
 
 系统目前支持的交易币种为 `USD`、`HKD`、`CNY`、`EUR`、`GBP` 和 `CHF`。普通资产交易的 `currency` 必须与持仓账户、
@@ -139,14 +140,11 @@ Import 预览的后端校验为准。
 只能在同币种现金账户间进行。换汇行的 `currency` 是转出现金账户币种，
 `counter_amount = gross_amount × fx_rate`，目标币种由 `counterparty_account_id` 对应账户确定。
 
-FCN 在到期前退出选择 `early_exit`。Option 实物行权/指派先选择 Option 的多头或空头现金结算
-动作，再按交付日市场或参考价独立记录标的证券买入/卖出。FCN
-敲入交付同理，FCN 结束行与证券 `buy` 行是两个独立事实。模板不含 Portfolio 资料，也不提供
-关联或配对 ID。`opening_balance` 的 trade date 和 settlement date 必须等于 Portfolio inception date，可用于该边界已有的 Option 多头；已有空头应按实际开仓日期、数量和
+FCN 在到期前退出选择 `early_exit`；敲入交付时，FCN 结束行与证券 `buy` 行仍是两个独立事实。Option 实物行权/指派不能拆成模板中的现金结算和独立股票交易：正常录入从 `Transactions → Option → Action` 选择 `Exercise Long` 或 `Assign Written`，已过期未处理的合约也可从组合页的到期事项入口确认；两者都调用同一个 option-outcome command，系统据合约类型、side、strike 和 multiplier 原子生成并绑定期权腿与股票腿。Activity 列表把两腿呈现为一项活动，底层仍保留可审计的两条资产事实。标准 CSV/Excel 只表达单行交易或内部转移命令，不提供手工 relationship ID。`opening_balance` 的 trade date 和 settlement date 必须等于 Portfolio inception date，可用于该边界已有的 Option 多头；已有空头应按实际开仓日期、数量和
 权利金补录 `sell_to_open`，不能用正数量期初余额代替。
 
 `transfer_group_id` 只表示同一笔内部转账或转仓生成的 `transfer_out / transfer_in` 双腿，
-不用于绑定 Option、FCN、股票交割或其他经济上相关的交易，也不出现在 CSV。导出时一组双腿
+不用于绑定 Option、FCN、股票交割或其他经济上相关的交易，也不出现在 CSV。期权交割关系只由专用命令写入 `option_delivery_link`。导出时一组双腿
 折叠成一行 Security 或 Cash 的 `transfer_out` 动作，`account_id` 为转出账户、
 `counterparty_account_id` 为转入账户。手工文件也只填写一个方向；回导时系统重新原子生成双腿。Transfer 可填写 `source_system + external_reference`；系统把这组 command-level 来源身份保存在 `transfer_out` 腿，导出折叠后仍可原样回导并跨批次识别重复。
 

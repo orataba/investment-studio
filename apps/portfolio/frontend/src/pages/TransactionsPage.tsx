@@ -10,11 +10,13 @@ import {
   createPortfolioTransactionCaptureAnalysisRevision,
   createPortfolioTransactionCaptureBatch,
   createPortfolioTransaction,
+  createPortfolioOptionOutcome,
   deletePortfolioTransaction,
   getPortfolioAccounts,
   getPortfolioDerivativeContracts,
   getPortfolioFxRates,
   getPortfolioInstruments,
+  getPortfolioOptionDeliveryLinks,
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionCaptureBatches,
@@ -33,6 +35,7 @@ import {
   type PortfolioFeeCategory,
   type PortfolioDerivativeContractCreate,
   type PortfolioDerivativeContractRecord,
+  type PortfolioOptionDeliveryLink,
   type PortfolioPositionLotRecord,
   type PortfolioSharedFxRateRecord,
   type PortfolioTransactionPositionPreviewResponse,
@@ -305,7 +308,9 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
 
 let fallbackIdempotencySequence = 0
 
-function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import') {
+function transactionIdempotencyKey(
+  operation: 'create' | 'transfer' | 'file-import' | 'option-outcome',
+) {
   const randomId = globalThis.crypto?.randomUUID?.()
   if (randomId) {
     return `transaction-${operation}-${randomId}`
@@ -557,6 +562,13 @@ function accountAllowsAssetType(
   return account.account_category === assetTypeAccountCategory(assetType)
 }
 
+function isPhysicalOptionLifecycle(lifecycleEventType?: string | null) {
+  return (
+    lifecycleEventType === 'option_long_exercise' ||
+    lifecycleEventType === 'option_writer_assignment'
+  )
+}
+
 function requiresSettlement(
   transactionType: string,
   accountType?: string | null,
@@ -566,7 +578,10 @@ function requiresSettlement(
     return false
   }
   if (transactionType === 'lifecycle_event') {
-    return lifecycleEventType === 'option_writer_cash_settlement'
+    return (
+      lifecycleEventType === 'option_writer_cash_settlement' ||
+      lifecycleEventType === 'option_writer_assignment'
+    )
   }
   if (
     transactionType === 'maturity_redemption' &&
@@ -828,7 +843,8 @@ function showsFeeField(transactionType: string, lifecycleEventType?: string | nu
     (transactionType === 'maturity_redemption' &&
       lifecycleEventType !== 'option_long_expiry') ||
     (transactionType === 'lifecycle_event' &&
-      lifecycleEventType === 'option_writer_cash_settlement')
+      (lifecycleEventType === 'option_writer_cash_settlement' ||
+        lifecycleEventType === 'option_writer_assignment'))
   )
 }
 
@@ -844,7 +860,8 @@ function showsTaxField(transactionType: string, lifecycleEventType?: string | nu
     (transactionType === 'maturity_redemption' &&
       lifecycleEventType !== 'option_long_expiry') ||
     (transactionType === 'lifecycle_event' &&
-      lifecycleEventType === 'option_writer_cash_settlement')
+      (lifecycleEventType === 'option_writer_cash_settlement' ||
+        lifecycleEventType === 'option_writer_assignment'))
   )
 }
 
@@ -949,6 +966,7 @@ type TransactionFormState = {
   account_id: string
   counterparty_account_id: string
   settlement_cash_account_id: string
+  delivery_stock_account_id: string
   transfer_object_type: string
   instrument_id: string
   derivative_contract_id: string
@@ -990,6 +1008,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     account_id: defaultSecurityAccount?.account_id ?? '',
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
+    delivery_stock_account_id: '',
     transfer_object_type: 'cash',
     instrument_id: '',
     derivative_contract_id: '',
@@ -1023,6 +1042,7 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     account_id: transaction.account.account_id,
     counterparty_account_id: transaction.counterparty_account_id || '',
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
+    delivery_stock_account_id: '',
     transfer_object_type: transaction.transfer_object_type || 'cash',
     instrument_id: transaction.instrument_id || '',
     derivative_contract_id: transaction.derivative_contract_id || '',
@@ -1069,7 +1089,8 @@ function canEditTransaction(transaction: PortfolioTransactionRecord | null) {
   }
   return (
     !transaction.transfer_group_id &&
-    !isTransferTransaction(transaction.transaction_type)
+    !isTransferTransaction(transaction.transaction_type) &&
+    !isPhysicalOptionLifecycle(transaction.lifecycle_event_type)
   )
 }
 
@@ -1131,6 +1152,7 @@ export default function TransactionsPage() {
   const [derivativeContracts, setDerivativeContracts] = useState<PortfolioDerivativeContractRecord[]>([])
   const [fxRates, setFxRates] = useState<PortfolioSharedFxRateRecord[]>([])
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionWorkspaceResponse | null>(null)
+  const [optionDeliveryLinks, setOptionDeliveryLinks] = useState<PortfolioOptionDeliveryLink[]>([])
   const [workspaceRequestedTransactionId, setWorkspaceRequestedTransactionId] = useState<string | null>(null)
   const [metaLoading, setMetaLoading] = useState(true)
   const [loadingTransactions, setLoadingTransactions] = useState(true)
@@ -1479,6 +1501,7 @@ export default function TransactionsPage() {
 
     if (!portfolioId) {
       setTransactionsWorkspace(null)
+      setOptionDeliveryLinks([])
       setWorkspaceRequestedTransactionId(null)
       setLedgerError('Portfolio id is required.')
       setLoadingTransactions(false)
@@ -1490,13 +1513,17 @@ export default function TransactionsPage() {
     setLoadingTransactions(true)
     setLedgerError(null)
 
-    getPortfolioTransactionsWorkspace(portfolioId, {
-      ...filters,
-      transaction_id: selectedTransactionId || undefined,
-    })
-      .then((response) => {
+    Promise.all([
+      getPortfolioTransactionsWorkspace(portfolioId, {
+        ...filters,
+        transaction_id: selectedTransactionId || undefined,
+      }),
+      getPortfolioOptionDeliveryLinks(portfolioId),
+    ])
+      .then(([response, deliveryLinksResponse]) => {
         if (!cancelled) {
           setTransactionsWorkspace(response)
+          setOptionDeliveryLinks(deliveryLinksResponse.links)
           setWorkspaceRequestedTransactionId(selectedTransactionId)
           setLedgerError(null)
         }
@@ -1574,7 +1601,11 @@ export default function TransactionsPage() {
     ) ||
     (form.transaction_type === 'lifecycle_event' &&
       (form.lifecycle_event_type === 'option_writer_expiry' ||
-        form.lifecycle_event_type === 'option_writer_cash_settlement'))
+        form.lifecycle_event_type === 'option_writer_cash_settlement' ||
+        form.lifecycle_event_type === 'option_writer_assignment'))
+  const isPhysicalOptionOutcome =
+    form.asset_domain === 'derivative' &&
+    isPhysicalOptionLifecycle(form.lifecycle_event_type)
   const shouldPreviewPosition =
     shouldUseQuantity &&
     form.transaction_type !== 'option_write' &&
@@ -1671,6 +1702,22 @@ export default function TransactionsPage() {
   const resolvedTransactionCurrency = selectedAccount?.currency?.toUpperCase() ?? ''
   const activeDerivativeCurrency =
     selectedDerivativeContract?.currency?.toUpperCase() ?? resolvedTransactionCurrency
+  const deliveryStockAccountOptions = useMemo(
+    () =>
+      accounts
+        .filter(
+          (account) =>
+            account.account_category === 'security' &&
+            account.status === 'active' &&
+            account.currency.toUpperCase() === activeDerivativeCurrency,
+        )
+        .sort((left, right) => left.account_name.localeCompare(right.account_name)),
+    [accounts, activeDerivativeCurrency],
+  )
+  const selectedDeliveryStockAccount =
+    deliveryStockAccountOptions.find(
+      (account) => account.account_id === form.delivery_stock_account_id,
+    ) ?? deliveryStockAccountOptions[0] ?? null
   const resolvedCounterpartyCurrency = selectedCounterparty?.currency?.toUpperCase() ?? ''
   const sharedFxRate = useMemo(() => {
     if (!isFxConversion || !resolvedTransactionCurrency || !resolvedCounterpartyCurrency) {
@@ -2267,19 +2314,32 @@ export default function TransactionsPage() {
         autoQuantityKeyRef.current = null
         autoGrossDerivedRef.current = false
       }
-      const factDate =
+      let factDate =
         nextTransactionType === 'opening_balance'
           ? portfolioInceptionDate!
           : current.transaction_type === 'opening_balance' &&
               nextTransactionType !== 'opening_balance'
             ? localTodayIso()
             : current.trade_date
+      if (
+        isPhysicalOptionLifecycle(selectedAction.lifecycleEventType) &&
+        activeDerivativeContract?.contract_type === 'option' &&
+        factDate > activeDerivativeContract.terms.expiry_date
+      ) {
+        factDate = activeDerivativeContract.terms.expiry_date
+      }
       return {
         ...current,
         transaction_type: nextTransactionType,
         lifecycle_event_type: selectedAction.lifecycleEventType ?? '',
         transfer_object_type:
           selectedAction.transferObjectType ?? current.transfer_object_type,
+        source_system: isPhysicalOptionLifecycle(selectedAction.lifecycleEventType)
+          ? ''
+          : current.source_system,
+        external_reference: isPhysicalOptionLifecycle(selectedAction.lifecycleEventType)
+          ? ''
+          : current.external_reference,
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
         trade_date: factDate,
         settlement_date:
@@ -2289,7 +2349,8 @@ export default function TransactionsPage() {
             : current.settlement_date,
         gross_amount:
           selectedAction.lifecycleEventType === 'option_long_expiry' ||
-          selectedAction.lifecycleEventType === 'option_writer_expiry'
+          selectedAction.lifecycleEventType === 'option_writer_expiry' ||
+          isPhysicalOptionLifecycle(selectedAction.lifecycleEventType)
             ? '0'
             : shouldClearAutoSellQuantity
               ? ''
@@ -2478,6 +2539,35 @@ export default function TransactionsPage() {
     selectedAccount?.default_settlement_cash_account_id,
     settlementAccountOptions,
     shouldRequireSettlement,
+  ])
+
+  useEffect(() => {
+    if (isPhysicalOptionOutcome) {
+      const defaultStockAccountId = deliveryStockAccountOptions[0]?.account_id ?? ''
+      if (
+        defaultStockAccountId &&
+        !deliveryStockAccountOptions.some(
+          (account) => account.account_id === form.delivery_stock_account_id,
+        )
+      ) {
+        setForm((current) => ({
+          ...current,
+          delivery_stock_account_id: defaultStockAccountId,
+        }))
+      }
+      return
+    }
+
+    if (form.delivery_stock_account_id) {
+      setForm((current) => ({
+        ...current,
+        delivery_stock_account_id: '',
+      }))
+    }
+  }, [
+    deliveryStockAccountOptions,
+    form.delivery_stock_account_id,
+    isPhysicalOptionOutcome,
   ])
 
   useEffect(() => {
@@ -2678,11 +2768,15 @@ export default function TransactionsPage() {
         selectedTransactionOverride === undefined
           ? selectedTransactionId || undefined
           : selectedTransactionOverride || undefined
-      const response = await getPortfolioTransactionsWorkspace(portfolioId, {
-        ...activeFilters,
-        transaction_id: resolvedTransactionId,
-      })
+      const [response, deliveryLinksResponse] = await Promise.all([
+        getPortfolioTransactionsWorkspace(portfolioId, {
+          ...activeFilters,
+          transaction_id: resolvedTransactionId,
+        }),
+        getPortfolioOptionDeliveryLinks(portfolioId),
+      ])
       setTransactionsWorkspace(response)
+      setOptionDeliveryLinks(deliveryLinksResponse.links)
       setWorkspaceRequestedTransactionId(resolvedTransactionId ?? '')
       setLedgerError(null)
     } catch (error) {
@@ -3560,6 +3654,81 @@ export default function TransactionsPage() {
       return
     }
 
+    if (isPhysicalOptionOutcome) {
+      if (isEditingTransaction) {
+        setFormError('Option exercise or assignment must be deleted and recorded again.')
+        return
+      }
+      if (!selectedDerivativeContract || selectedDerivativeContract.contract_type !== 'option') {
+        setFormError('Select an existing option contract before recording delivery.')
+        return
+      }
+      if (!selectedDeliveryStockAccount) {
+        setFormError('Select a security account for the delivered underlying shares.')
+        return
+      }
+      if (form.trade_date > selectedDerivativeContract.terms.expiry_date) {
+        setFormError('Exercise or assignment cannot occur after the contract expiry date.')
+        return
+      }
+      const settlementAccount = settlementAccountOptions.find(
+        (account) => account.account_id === form.settlement_cash_account_id,
+      )
+      if (!settlementAccount) {
+        setFormError('Select a matching cash account for strike settlement.')
+        return
+      }
+
+      submittingTransactionRef.current = true
+      setSubmittingTransaction(true)
+      try {
+        const created = await createPortfolioOptionOutcome(
+          portfolioId,
+          {
+            derivative_contract_id: selectedDerivativeContract.derivative_contract_id,
+            side:
+              form.lifecycle_event_type === 'option_writer_assignment'
+                ? 'written'
+                : 'long',
+            outcome: 'physical',
+            quantity: Number(form.quantity),
+            event_date: form.trade_date,
+            settlement_date: form.settlement_date || form.trade_date,
+            stock_account_id: selectedDeliveryStockAccount.account_id,
+            settlement_cash_account_id: settlementAccount.account_id,
+            fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
+            taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
+            note: form.note.trim() || null,
+          },
+          transactionIdempotencyKey('option-outcome'),
+        )
+        const optionTransaction = created.transactions.find(
+          (transaction) => transaction.lifecycle_event_type === form.lifecycle_event_type,
+        ) ?? created.transactions[0]
+        setDrawerOpen(false)
+        setEditingTransactionId(null)
+        setNotice(
+          form.lifecycle_event_type === 'option_writer_assignment'
+            ? 'Recorded option assignment.'
+            : 'Recorded option exercise.',
+        )
+        setForm(buildInitialFormState(accounts))
+        patchSearchParams({
+          account_id: filters.account_id || optionTransaction.account.account_id,
+          transaction_id: optionTransaction.transaction_id,
+        })
+        await refreshTransactions(filters, optionTransaction.transaction_id)
+      } catch (error) {
+        setFormError(
+          error instanceof Error ? error.message : 'Failed to record the option outcome.',
+        )
+      } finally {
+        submittingTransactionRef.current = false
+        setSubmittingTransaction(false)
+      }
+      return
+    }
+
     const zeroCashLifecycle =
       (form.transaction_type === 'lifecycle_event' &&
         form.lifecycle_event_type === 'option_writer_expiry') ||
@@ -3716,12 +3885,15 @@ export default function TransactionsPage() {
     if (!transaction || !targetPortfolioId || deletingTransaction) {
       return
     }
-    const deletingTransferPair = Boolean(transaction.transfer_group_id)
     const expectedRowVersions = transactionsWorkspace?.delete_scope_row_versions
     if (!expectedRowVersions || expectedRowVersions[transaction.transaction_id] !== transaction.row_version) {
       setDeleteError('Transaction delete scope is stale. Reload the ledger and retry.')
       return
     }
+    const deletingTransactionPair = Object.keys(expectedRowVersions).length > 1
+    const deletingOptionActivity = optionDeliveryLinkByTransactionId.has(
+      transaction.transaction_id,
+    )
     setFormError(null)
     setDeleteError(null)
     setNotice(null)
@@ -3744,8 +3916,12 @@ export default function TransactionsPage() {
       patchSearchParams({ transaction_id: null })
       await refreshTransactions(filters, null)
       setNotice(
-        deletingTransferPair
-          ? `Deleted transfer pair ${deleted.transfer_group_id}.`
+        deletingTransactionPair
+          ? transaction.transfer_group_id
+            ? `Deleted transfer pair ${deleted.transfer_group_id}.`
+            : deletingOptionActivity
+              ? 'Deleted option outcome and its stock delivery.'
+              : 'Deleted grouped transaction.'
           : `Deleted transaction ${transaction.transaction_id}.`,
       )
     } catch (error) {
@@ -3761,6 +3937,8 @@ export default function TransactionsPage() {
 
   const summary = transactionsWorkspace?.summary
   const selectedTransaction = transactionsWorkspace?.selected_transaction ?? null
+  const selectedTransactionIsPaired =
+    Object.keys(transactionsWorkspace?.delete_scope_row_versions ?? {}).length > 1
   const isEditingTransaction = editingTransactionId !== null
 
   useEffect(() => {
@@ -3786,6 +3964,60 @@ export default function TransactionsPage() {
   const relatedOptionObligations = transactionsWorkspace?.related_option_obligations ?? []
   const selectedTransactionChangeLog = transactionsWorkspace?.change_log ?? []
   const visibleTransactions = transactionsWorkspace?.transactions ?? []
+  const visibleTransactionById = new Map(
+    visibleTransactions.map((transaction) => [transaction.transaction_id, transaction]),
+  )
+  const optionDeliveryLinkByTransactionId = new Map(
+    optionDeliveryLinks.flatMap((link) => [
+      [link.option_transaction_id, link] as const,
+      [link.stock_transaction_id, link] as const,
+    ]),
+  )
+  const displayedTransactions = visibleTransactions.filter((transaction) => {
+    const deliveryLink = optionDeliveryLinkByTransactionId.get(transaction.transaction_id)
+    return !(
+      deliveryLink &&
+      deliveryLink.stock_transaction_id === transaction.transaction_id &&
+      visibleTransactionById.has(deliveryLink.option_transaction_id)
+    )
+  })
+  const selectedOptionDeliveryLink = selectedTransaction
+    ? optionDeliveryLinkByTransactionId.get(selectedTransaction.transaction_id) ?? null
+    : null
+  const selectedOptionActivityLabel =
+    selectedTransaction?.lifecycle_event_type === 'option_writer_assignment'
+      ? 'Option Assignment'
+      : 'Option Exercise'
+  const selectedStockDeliveryTransaction = selectedOptionDeliveryLink
+    ? visibleTransactionById.get(selectedOptionDeliveryLink.stock_transaction_id) ?? null
+    : null
+  const selectedCashImpactTransaction =
+    selectedStockDeliveryTransaction ?? selectedTransaction
+  const selectedStockDeliveryLabel = selectedStockDeliveryTransaction
+    ? [
+        formatLabel(selectedStockDeliveryTransaction.transaction_type),
+        formatQuantity(selectedStockDeliveryTransaction.quantity ?? 0),
+        selectedStockDeliveryTransaction.instrument_ref
+          ? primaryIdentifier(selectedStockDeliveryTransaction.instrument_ref)
+          : selectedOptionDeliveryLink?.underlying_instrument_id,
+        selectedStockDeliveryTransaction.price == null
+          ? null
+          : `@ ${formatUnitPrice(
+              selectedStockDeliveryTransaction.price,
+              selectedStockDeliveryTransaction.currency,
+            )}`,
+      ]
+        .filter(Boolean)
+        .join(' ')
+    : selectedOptionDeliveryLink?.underlying_instrument_id ?? ''
+  const selectedStockDeliveryAccountLabel = selectedStockDeliveryTransaction
+    ? [
+        selectedStockDeliveryTransaction.account.account_name,
+        selectedStockDeliveryTransaction.settlement_cash_account?.account_name,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : 'Included in this option activity.'
   const selectedFilterEntryKind = filters.asset_domain
     ? transactionEntryKind(filters.asset_domain, filters.asset_subtype)
     : null
@@ -3809,18 +4041,6 @@ export default function TransactionsPage() {
       (!selectedFilterEntryKind ||
         selectedFilterEntryKind === contract.contract_type),
   )
-  const fcnTransactionCount =
-    summary?.fcn_transactions ??
-    visibleTransactions.filter(
-      (transaction) =>
-        transaction.asset_domain === 'derivative' && transaction.asset_subtype === 'fcn',
-    ).length
-  const optionTransactionCount =
-    summary?.option_transactions ??
-    visibleTransactions.filter(
-      (transaction) =>
-        transaction.asset_domain === 'derivative' && transaction.asset_subtype === 'option',
-    ).length
   const transactionFilterTypeGroups = useMemo(() => {
     if (!selectedFilterEntryKind) {
       return TRANSACTION_FILTER_TYPE_GROUPS
@@ -3862,6 +4082,22 @@ export default function TransactionsPage() {
     form.lifecycle_event_type,
   )
   const ticketQuantity = parsePositiveFormNumber(form.quantity)
+  const physicalOptionTerms =
+    isPhysicalOptionOutcome && activeDerivativeContract?.contract_type === 'option'
+      ? activeDerivativeContract.terms
+      : null
+  const physicalStockQuantity =
+    ticketQuantity != null && physicalOptionTerms
+      ? ticketQuantity * physicalOptionTerms.contract_multiplier
+      : null
+  const physicalStockDirection = physicalOptionTerms
+    ? ((form.lifecycle_event_type === 'option_long_exercise' &&
+          physicalOptionTerms.option_type === 'call') ||
+        (form.lifecycle_event_type === 'option_writer_assignment' &&
+          physicalOptionTerms.option_type === 'put')
+        ? 'Buy'
+        : 'Sell')
+    : null
   const ticketQuantityDelta = quantityDeltaForPreview(
     form.transaction_type,
     form.transfer_object_type,
@@ -3928,12 +4164,7 @@ export default function TransactionsPage() {
           <div>
             <div className="panel-title">Activity</div>
             <div className="portfolio-detail-meta">
-              {summary
-                ? `${summary.total_transactions} ${activeFilterCount ? 'matching ' : ''}facts`
-                : `${visibleTransactions.length} facts`}
-              {summary
-                ? ` · ${summary.security_transactions} security · ${fcnTransactionCount} FCN · ${optionTransactionCount} option · ${summary.cash_transactions} cash`
-                : ''}
+              {`${displayedTransactions.length} ${activeFilterCount ? 'matching ' : ''}${displayedTransactions.length === 1 ? 'activity' : 'activities'}`}
               {latestTradeDate ? ` · latest trade ${latestTradeDate}` : ''}
               {summary?.external_cash_flows ? ` · ${summary.external_cash_flows} external flows` : ''}
             </div>
@@ -4229,13 +4460,23 @@ export default function TransactionsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleTransactions.map((transaction) => {
+                    {displayedTransactions.map((transaction) => {
                       const timeMeta = tradeTimeLabel(
                         transaction.trade_time,
                         transaction.trade_timezone,
                         transaction.trade_time_is_estimated,
                       )
-                      const isSelected = transaction.transaction_id === selectedTransactionId
+                      const deliveryLink = optionDeliveryLinkByTransactionId.get(
+                        transaction.transaction_id,
+                      )
+                      const linkedStockTransaction =
+                        deliveryLink?.option_transaction_id === transaction.transaction_id
+                          ? visibleTransactionById.get(deliveryLink.stock_transaction_id) ?? null
+                          : null
+                      const cashTransaction = linkedStockTransaction ?? transaction
+                      const isSelected =
+                        transaction.transaction_id === selectedTransactionId ||
+                        linkedStockTransaction?.transaction_id === selectedTransactionId
                       return (
                         <tr
                           key={transaction.transaction_id}
@@ -4266,6 +4507,7 @@ export default function TransactionsPage() {
                                     transaction.transaction_type,
                                     transaction.asset_subtype,
                                     transaction.option_action,
+                                    transaction.lifecycle_event_type,
                                   )}
                                 </span>
                               </span>
@@ -4295,6 +4537,14 @@ export default function TransactionsPage() {
                               ) : (
                                 <span className="holding-secondary">{formatLabel(transaction.flow_scope)} cash</span>
                               )}
+                              {deliveryLink?.option_transaction_id === transaction.transaction_id ? (
+                                <span className="holding-secondary">
+                                  Stock delivery · {formatLabel(linkedStockTransaction?.transaction_type ?? 'stock')} ·{' '}
+                                  {linkedStockTransaction?.instrument_ref
+                                    ? primaryIdentifier(linkedStockTransaction.instrument_ref)
+                                    : deliveryLink.underlying_instrument_id}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td className="transaction-account-cell">
@@ -4313,6 +4563,14 @@ export default function TransactionsPage() {
                                     ? `Settle via ${transaction.settlement_cash_account.account_name}`
                                     : formatLabel(transaction.account.account_category)}
                               </span>
+                              {linkedStockTransaction ? (
+                                <span className="holding-secondary">
+                                  Delivery via {linkedStockTransaction.account.account_name}
+                                  {linkedStockTransaction.settlement_cash_account
+                                    ? ` / ${linkedStockTransaction.settlement_cash_account.account_name}`
+                                    : ''}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td className="transaction-number-cell">
@@ -4321,28 +4579,52 @@ export default function TransactionsPage() {
                               <span className="holding-secondary">
                                 {transaction.price != null ? formatUnitPrice(transaction.price, transaction.currency) : 'No unit price'}
                               </span>
+                              {linkedStockTransaction ? (
+                                <span className="holding-secondary">
+                                  Delivery {formatQuantity(linkedStockTransaction.quantity ?? 0)} @{' '}
+                                  {linkedStockTransaction.price == null
+                                    ? '—'
+                                    : formatUnitPrice(
+                                        linkedStockTransaction.price,
+                                        linkedStockTransaction.currency,
+                                      )}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
                           <td className="transaction-number-cell">
                             <div className="holding-name-stack">
-                              <span>{formatCurrency(transaction.gross_amount, transaction.currency)}</span>
-                              <span className={transaction.net_cash_effect != null && transaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
-                                Net {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
+                              <span>
+                                {formatCurrency(
+                                  cashTransaction.gross_amount,
+                                  cashTransaction.currency,
+                                )}
                               </span>
-                              {transaction.fees || transaction.taxes ? (
+                              <span className={cashTransaction.net_cash_effect != null && cashTransaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
+                                Net{' '}
+                                {formatSignedCurrency(
+                                  cashTransaction.net_cash_effect,
+                                  cashTransaction.currency,
+                                )}
+                              </span>
+                              {cashTransaction.fees || cashTransaction.taxes ? (
                                 <span className="holding-secondary">
-                                  Fee / tax {formatCurrency(transaction.fees + transaction.taxes, transaction.currency)}
+                                  Fee / tax{' '}
+                                  {formatCurrency(
+                                    cashTransaction.fees + cashTransaction.taxes,
+                                    cashTransaction.currency,
+                                  )}
                                 </span>
                               ) : null}
                             </div>
                           </td>
                           <td>
                             <div className="holding-name-stack">
-                              <span>Settle {transaction.settlement_date}</span>
+                              <span>Settle {cashTransaction.settlement_date}</span>
                               <span className="holding-secondary">
-                                {transaction.position_effective_date
-                                  ? `Position EOD ${transaction.position_effective_date}`
-                                  : `Economic ${transaction.economic_date}`}
+                                {cashTransaction.position_effective_date
+                                  ? `Position EOD ${cashTransaction.position_effective_date}`
+                                  : `Economic ${cashTransaction.economic_date}`}
                               </span>
                               <span className="holding-secondary transaction-id-caption">
                                 {transaction.transaction_id}
@@ -4352,9 +4634,9 @@ export default function TransactionsPage() {
                         </tr>
                       )
                     })}
-                    {!visibleTransactions.length ? (
+                    {!displayedTransactions.length ? (
                       <tr>
-                        <td colSpan={7} className="empty-state-cell">No transactions match these filters.</td>
+                        <td colSpan={6} className="empty-state-cell">No transactions match these filters.</td>
                       </tr>
                     ) : null}
                   </tbody>
@@ -4367,12 +4649,15 @@ export default function TransactionsPage() {
                 <>
                   <div className="transaction-inspector-head">
                     <div>
-                      <span className="portfolio-detail-meta">Selected fact</span>
+                      <span className="portfolio-detail-meta">
+                        {selectedOptionDeliveryLink ? 'Selected activity' : 'Selected transaction'}
+                      </span>
                       <div className="panel-title">
                         {transactionActivityLabel(
                           selectedTransaction.transaction_type,
                           selectedTransaction.asset_subtype,
                           selectedTransaction.option_action,
+                          selectedTransaction.lifecycle_event_type,
                         )}
                       </div>
                       <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
@@ -4381,7 +4666,10 @@ export default function TransactionsPage() {
                       <button
                         type="button"
                         className="toolbar-link"
-                        disabled={!canEditTransaction(selectedTransaction)}
+                        disabled={
+                          selectedTransactionIsPaired ||
+                          !canEditTransaction(selectedTransaction)
+                        }
                         onClick={() => openEditDrawer(selectedTransaction)}
                       >
                         Edit
@@ -4394,9 +4682,7 @@ export default function TransactionsPage() {
                           setPendingDeleteTransaction(selectedTransaction)
                         }}
                       >
-                        {selectedTransaction.transfer_group_id
-                          ? 'Delete Pair'
-                          : 'Delete'}
+                        Delete
                       </button>
                     </div>
                   </div>
@@ -4428,13 +4714,28 @@ export default function TransactionsPage() {
 
                   {inspectorTab === 'fact' ? (
                     <div className="transaction-fact-sheet" role="tabpanel">
-                      <div className="transaction-fact-highlight">
-                        <span>Gross amount</span>
-                        <strong>{formatCurrency(selectedTransaction.gross_amount, selectedTransaction.currency)}</strong>
-                        <em className={selectedTransaction.net_cash_effect != null && selectedTransaction.net_cash_effect < 0 ? 'negative-cell' : ''}>
-                          Net cash {formatSignedCurrency(selectedTransaction.net_cash_effect, selectedTransaction.currency)}
-                        </em>
-                      </div>
+                      {selectedOptionDeliveryLink ? (
+                        <div className="transaction-fact-highlight">
+                          <span>Stock delivery</span>
+                          <strong>{selectedStockDeliveryLabel}</strong>
+                          <em>{selectedStockDeliveryAccountLabel}</em>
+                        </div>
+                      ) : null}
+                      {selectedCashImpactTransaction ? (
+                        <div className="transaction-fact-highlight">
+                          <span>Gross amount</span>
+                          <strong>{formatCurrency(
+                            selectedCashImpactTransaction.gross_amount,
+                            selectedCashImpactTransaction.currency,
+                          )}</strong>
+                          <em className={selectedCashImpactTransaction.net_cash_effect != null && selectedCashImpactTransaction.net_cash_effect < 0 ? 'negative-cell' : ''}>
+                            Net cash {formatSignedCurrency(
+                              selectedCashImpactTransaction.net_cash_effect,
+                              selectedCashImpactTransaction.currency,
+                            )}
+                          </em>
+                        </div>
+                      ) : null}
                       {transactionsWorkspace.accounting_impact ? (
                         <div
                           className="transaction-fact-highlight transaction-accounting-highlight"
@@ -6467,8 +6768,9 @@ export default function TransactionsPage() {
                 form.transaction_type === 'maturity_redemption') &&
               resolvedAssetType === 'option' ? (
                 <div className="portfolio-detail-meta">
-                  This closes only the selected option contract. Physical delivery is recorded
-                  as a separate Security transaction at the delivery-date reference price.
+                  {isPhysicalOptionOutcome
+                    ? 'The option position and resulting stock delivery are recorded together as one activity.'
+                    : 'This closes only the selected option contract.'}
                 </div>
               ) : null}
 
@@ -6784,6 +7086,31 @@ export default function TransactionsPage() {
               </div>
 
               <div className="transaction-form-grid transaction-ticket-grid">
+                {isPhysicalOptionOutcome ? (
+                  <label className="transaction-ticket-field">
+                    <span>Security Account</span>
+                    <select
+                      value={selectedDeliveryStockAccount?.account_id ?? ''}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          delivery_stock_account_id: event.target.value,
+                        }))
+                      }
+                      disabled={deliveryStockAccountOptions.length === 0}
+                    >
+                      {!deliveryStockAccountOptions.length ? (
+                        <option value="">No matching security account</option>
+                      ) : null}
+                      {deliveryStockAccountOptions.map((account) => (
+                        <option key={account.account_id} value={account.account_id}>
+                          {account.account_name} · {account.currency}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
                     <span>Target Cash Account</span>
@@ -6846,10 +7173,15 @@ export default function TransactionsPage() {
                 ) : null}
 
                 <label className="transaction-ticket-field">
-                  <span>Trade Date</span>
+                  <span>{isPhysicalOptionOutcome ? 'Exercise / Assignment Date' : 'Trade Date'}</span>
                   <input
                     type="date"
                     value={form.trade_date}
+                    max={
+                      isPhysicalOptionOutcome && activeDerivativeContract?.contract_type === 'option'
+                        ? activeDerivativeContract.terms.expiry_date
+                        : undefined
+                    }
                     disabled={form.transaction_type === 'opening_balance'}
                     onChange={(event) => {
                       const nextTradeDate = event.target.value
@@ -6898,7 +7230,7 @@ export default function TransactionsPage() {
                   </span>
                 ) : null}
 
-                {supportsPositionEffectiveDate(form.transaction_type) ? (
+                {supportsPositionEffectiveDate(form.transaction_type) && !isPhysicalOptionOutcome ? (
                   <label className="transaction-ticket-field">
                     <span>Position Effective Date</span>
                     <input
@@ -6921,21 +7253,23 @@ export default function TransactionsPage() {
                   </label>
                 ) : null}
 
-                <label className="transaction-ticket-field">
-                  <span>Trade Time (optional)</span>
-                  <input
-                    type="time"
-                    step={60}
-                    value={form.trade_time}
-                    title={`Blank stores an estimated ${DEFAULT_FORM_TIME}`}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        trade_time: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
+                {!isPhysicalOptionOutcome ? (
+                  <label className="transaction-ticket-field">
+                    <span>Trade Time (optional)</span>
+                    <input
+                      type="time"
+                      step={60}
+                      value={form.trade_time}
+                      title={`Blank stores an estimated ${DEFAULT_FORM_TIME}`}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          trade_time: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
 
                 {supportsEntitlementDate(form.transaction_type, hasAssetReference) ? (
                   <label className="transaction-ticket-field">
@@ -6989,7 +7323,10 @@ export default function TransactionsPage() {
                   <div className="transaction-form-spacer" />
                 )}
 
-                {isFxConversion || isTransferTransaction(form.transaction_type) || !shouldUsePrice ? amountField : null}
+                {!isPhysicalOptionOutcome &&
+                (isFxConversion || isTransferTransaction(form.transaction_type) || !shouldUsePrice)
+                  ? amountField
+                  : null}
 
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
@@ -7186,34 +7523,36 @@ export default function TransactionsPage() {
                   <strong>Additional details</strong>
                 </summary>
                 <div className="transaction-entry-additional-body">
-                  <div className="transaction-form-grid transaction-ticket-grid">
-                    <label className="transaction-ticket-field">
-                      <span>Source System</span>
-                      <input
-                        value={form.source_system}
-                        placeholder="Optional; required with external reference"
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            source_system: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label className="transaction-ticket-field">
-                      <span>External Reference</span>
-                      <input
-                        value={form.external_reference}
-                        placeholder="Unique within this portfolio and source"
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            external_reference: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                  </div>
+                  {!isPhysicalOptionOutcome ? (
+                    <div className="transaction-form-grid transaction-ticket-grid">
+                      <label className="transaction-ticket-field">
+                        <span>Source System</span>
+                        <input
+                          value={form.source_system}
+                          placeholder="Optional; required with external reference"
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              source_system: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="transaction-ticket-field">
+                        <span>External Reference</span>
+                        <input
+                          value={form.external_reference}
+                          placeholder="Unique within this portfolio and source"
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              external_reference: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  ) : null}
 
                   <label className="transaction-notes-field">
                     <span>Note</span>
@@ -7237,9 +7576,47 @@ export default function TransactionsPage() {
                   <div>
                     <strong>Accounting impact</strong>
                   </div>
-                </div>
+              </div>
               <div className="transaction-ticket-summary" aria-live="polite">
-                {isFxConversion ? (
+                {isPhysicalOptionOutcome ? (
+                  <>
+                    <div className="transaction-ticket-summary-row">
+                      <span>Option Position</span>
+                      <strong>
+                        {form.lifecycle_event_type === 'option_writer_assignment'
+                          ? 'Close written'
+                          : 'Close long'}{' '}
+                        {ticketQuantity == null ? '—' : formatQuantity(ticketQuantity)}
+                      </strong>
+                    </div>
+                    <div className="transaction-ticket-summary-row">
+                      <span>Stock Delivery</span>
+                      <strong>
+                        {physicalStockDirection ?? '—'}{' '}
+                        {physicalStockQuantity == null
+                          ? '—'
+                          : formatQuantity(physicalStockQuantity)}{' '}
+                        {physicalOptionTerms?.underlying_instrument_id ?? ''}
+                      </strong>
+                    </div>
+                    <div className="transaction-ticket-summary-row">
+                      <span>Delivery Price</span>
+                      <strong>
+                        {physicalOptionTerms
+                          ? formatUnitPrice(physicalOptionTerms.strike, activeDerivativeCurrency)
+                          : '—'}
+                      </strong>
+                    </div>
+                    <div className="transaction-ticket-summary-row transaction-ticket-summary-total">
+                      <span>Ledger Result</span>
+                      <strong>
+                        {form.lifecycle_event_type === 'option_writer_assignment'
+                          ? 'Option assignment'
+                          : 'Option exercise'}
+                      </strong>
+                    </div>
+                  </>
+                ) : isFxConversion ? (
                   <>
                     <div className="transaction-ticket-summary-row">
                       <span>Source Amount</span>
@@ -7312,6 +7689,12 @@ export default function TransactionsPage() {
                 </div>
               ) : null}
 
+              {isPhysicalOptionOutcome && deliveryStockAccountOptions.length === 0 ? (
+                <div className="portfolio-detail-meta">
+                  A {activeDerivativeCurrency} security account is required for stock delivery.
+                </div>
+              ) : null}
+
               {isFxConversion && counterpartyAccounts.length === 0 ? (
                 <div className="portfolio-detail-meta">
                   Counterparty deposit account required.
@@ -7351,7 +7734,11 @@ export default function TransactionsPage() {
                     ? 'Saving…'
                     : isEditingTransaction
                       ? 'Save Correction'
-                      : 'Record Transaction'}
+                      : isPhysicalOptionOutcome
+                        ? form.lifecycle_event_type === 'option_writer_assignment'
+                          ? 'Record Assignment'
+                          : 'Record Exercise'
+                        : 'Record Transaction'}
                 </button>
               </div>
             </form>
@@ -7429,18 +7816,24 @@ export default function TransactionsPage() {
       <ConfirmDialog
         open={Boolean(pendingDeleteTransaction)}
         title={
-          pendingDeleteTransaction?.transfer_group_id
-            ? 'Delete Transfer Pair'
+          selectedTransactionIsPaired
+            ? pendingDeleteTransaction?.transfer_group_id
+              ? 'Delete Transfer Pair'
+              : `Delete ${selectedOptionActivityLabel}`
             : 'Delete Transaction'
         }
         description={
-          pendingDeleteTransaction?.transfer_group_id
-            ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
+          selectedTransactionIsPaired
+            ? pendingDeleteTransaction?.transfer_group_id
+              ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
+              : `This permanently deletes the ${selectedOptionActivityLabel.toLowerCase()} and its stock delivery. This action cannot be undone.`
             : `This permanently deletes transaction ${pendingDeleteTransaction?.transaction_id ?? ''}. This action cannot be undone.`
         }
         confirmLabel={
-          pendingDeleteTransaction?.transfer_group_id
-            ? 'Delete Pair'
+          selectedTransactionIsPaired
+            ? pendingDeleteTransaction?.transfer_group_id
+              ? 'Delete Pair'
+              : 'Delete Activity'
             : 'Delete Transaction'
         }
         confirmationText={

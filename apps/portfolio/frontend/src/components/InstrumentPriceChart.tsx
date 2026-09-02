@@ -37,6 +37,17 @@ type InstrumentPriceChartProps = {
   rangeKey: PortfolioInstrumentChartRangeKey
   onRangeChange: (rangeKey: PortfolioInstrumentChartRangeKey) => void
   variant?: 'default' | 'instrument'
+  referenceLines?: Array<{
+    label: string
+    value: number
+    tone?: 'strike' | 'knock-in' | 'knock-out' | 'reference'
+  }>
+}
+
+function chartSeriesLabel(chart: PortfolioInstrumentPriceChartResponse | null) {
+  return chart?.series_role === 'price_level'
+    ? 'Price level'
+    : performanceSeriesLabel(chart?.chart_basis ?? chart?.metric_family)
 }
 
 export default function InstrumentPriceChart({
@@ -46,6 +57,7 @@ export default function InstrumentPriceChart({
   rangeKey,
   onRangeChange,
   variant = 'default',
+  referenceLines = [],
 }: InstrumentPriceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const points = chart?.points ?? []
@@ -64,7 +76,10 @@ export default function InstrumentPriceChart({
       return null
     }
 
-    const values = points.map((point) => point.value)
+    const values = [
+      ...points.map((point) => point.value),
+      ...referenceLines.map((line) => line.value).filter(Number.isFinite),
+    ]
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const span = maxValue - minValue || Math.max(Math.abs(maxValue) * 0.02, 1)
@@ -94,14 +109,21 @@ export default function InstrumentPriceChart({
       width: innerWidth / 4,
       height: innerHeight,
     }))
+    const projectedReferenceLines = referenceLines
+      .filter((line) => Number.isFinite(line.value))
+      .map((line) => ({
+        ...line,
+        y: height - paddingBottom - ((line.value - minValue) / span) * innerHeight,
+      }))
     return {
       projectedPoints,
       linePath,
       areaPath,
       gridValues,
       bands,
+      projectedReferenceLines,
     }
-  }, [currency, height, paddingBottom, paddingLeft, paddingRight, paddingTop, points, width])
+  }, [currency, height, paddingBottom, paddingLeft, paddingRight, paddingTop, points, referenceLines, width])
 
   const activeProjectedPoint =
     chartGeometry && activePoint
@@ -126,8 +148,10 @@ export default function InstrumentPriceChart({
           <div className="instrument-series-label portfolio-instrument-series-label">
             <strong>{chart.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.instrument_core.instrument_id}</strong>
             <span>
-              {performanceSeriesLabel(chart.chart_basis ?? chart.metric_family)}
-              {chart.metric_family ? ` · ${performanceSeriesLabel(chart.metric_family)} family` : ''}
+              {chartSeriesLabel(chart)}
+              {chart.series_role !== 'price_level' && chart.metric_family
+                ? ` · ${performanceSeriesLabel(chart.metric_family)} family`
+                : ''}
             </span>
             <em>
               {activeChangeValue != null
@@ -184,7 +208,7 @@ export default function InstrumentPriceChart({
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}
             role="img"
-            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} ${performanceSeriesLabel(chart?.chart_basis ?? chart?.metric_family)} performance series`}
+            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} ${chartSeriesLabel(chart)} series`}
             onMouseLeave={() => setHoverIndex(null)}
             onMouseMove={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect()
@@ -218,6 +242,24 @@ export default function InstrumentPriceChart({
               </g>
             ))}
             <path d={chartGeometry.areaPath} className="price-chart-area" />
+            {chartGeometry.projectedReferenceLines.map((line) => (
+              <g key={`${line.label}-${line.value}`}>
+                <line
+                  x1={paddingLeft}
+                  x2={width - paddingRight}
+                  y1={line.y}
+                  y2={line.y}
+                  className={`price-chart-reference-line price-chart-reference-line-${line.tone ?? 'reference'}`}
+                />
+                <text
+                  x={paddingLeft + 6}
+                  y={line.y - 6}
+                  className="price-chart-reference-label"
+                >
+                  {line.label} {formatUnitPrice(line.value, currency)}
+                </text>
+              </g>
+            ))}
             <path d={chartGeometry.linePath} className="price-chart-line" />
             {activeProjectedPoint ? (
               <>
@@ -240,7 +282,7 @@ export default function InstrumentPriceChart({
           <div className="price-chart-footer">
             <span>{points[0] ? formatChartDate(points[0].date) : '—'}</span>
             <span>
-              {chart ? `Series: ${performanceSeriesLabel(chart.chart_basis ?? chart.metric_family)}` : 'Series: —'}
+              {chart ? `Series: ${chartSeriesLabel(chart)}` : 'Series: —'}
             </span>
             <span>{points[points.length - 1] ? formatChartDate(points[points.length - 1].date) : '—'}</span>
           </div>

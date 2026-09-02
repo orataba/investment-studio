@@ -27,11 +27,23 @@ export function transactionActivityLabel(
   transactionType: string,
   instrumentType?: string | null,
   optionAction?: PortfolioOptionAction | null,
+  lifecycleEventType?: string | null,
 ) {
   const resolvedOptionAction =
     optionAction ?? resolveOptionAction(transactionType, instrumentType)
   if (resolvedOptionAction) {
     return optionActionLabel(resolvedOptionAction)
+  }
+  const lifecycleLabels: Record<string, string> = {
+    option_long_expiry: 'Long Option Expired',
+    option_long_cash_settlement: 'Long Option Cash Settlement',
+    option_long_exercise: 'Option Exercised',
+    option_writer_expiry: 'Written Option Expired',
+    option_writer_cash_settlement: 'Written Option Cash Settlement',
+    option_writer_assignment: 'Option Assigned',
+  }
+  if (lifecycleEventType && lifecycleLabels[lifecycleEventType]) {
+    return lifecycleLabels[lifecycleEventType]
   }
   if (instrumentType === 'public_fund' || instrumentType === 'private_fund') {
     if (transactionType === 'buy') {

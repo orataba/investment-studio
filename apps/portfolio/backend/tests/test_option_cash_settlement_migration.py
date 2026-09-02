@@ -134,7 +134,7 @@ def test_option_cash_settlement_migration_requires_manual_legacy_normalization()
         connection.execute(
             sa.text(
                 "UPDATE transaction_record "
-                "SET lifecycle_event_type = 'option_long_exercise' "
+                "SET lifecycle_event_type = 'option_auto_exercise' "
                 "WHERE transaction_id = :transaction_id"
             ),
             {"transaction_id": transaction_id},

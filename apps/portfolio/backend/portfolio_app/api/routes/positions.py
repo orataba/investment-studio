@@ -94,6 +94,7 @@ def get_portfolio_instrument_price_chart(
     instrument_id: str,
     as_of_date: date | None = None,
     range: str | None = None,
+    price_level: bool = False,
 ) -> InstrumentPriceChartResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -113,6 +114,7 @@ def get_portfolio_instrument_price_chart(
             instrument_id,
             as_of_date=resolved_as_of_date,
             range_key=normalize_chart_range_key(range),
+            price_level=price_level,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

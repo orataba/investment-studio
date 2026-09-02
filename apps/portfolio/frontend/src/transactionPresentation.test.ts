@@ -96,6 +96,22 @@ describe('transaction presentation', () => {
     expect(transactionActivityLabel('buy', null, 'buy_to_close')).toBe(
       'Option Buy to Close',
     )
+    expect(
+      transactionActivityLabel(
+        'maturity_redemption',
+        'option',
+        null,
+        'option_long_exercise',
+      ),
+    ).toBe('Option Exercised')
+    expect(
+      transactionActivityLabel(
+        'lifecycle_event',
+        'option',
+        null,
+        'option_writer_assignment',
+      ),
+    ).toBe('Option Assigned')
   })
 
   it('summarizes only the fields changed by an audited correction', () => {

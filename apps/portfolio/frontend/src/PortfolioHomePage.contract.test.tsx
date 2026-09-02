@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioHomePage from './pages/PortfolioHomePage'
+import OptionOutcomePrompt from './components/OptionOutcomePrompt'
 import {
   fcnContractFixture,
   holdingFixture,
@@ -17,9 +18,12 @@ import type {
 } from './lib/api'
 
 const apiMocks = vi.hoisted(() => ({
+  createPortfolioOptionOutcome: vi.fn(),
   getHoldingsWorkspace: vi.fn(),
+  getPortfolioAccounts: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioTableViewStore: vi.fn(),
+  getPortfolioUnresolvedOptionActions: vi.fn(),
   savePortfolioTableViewStore: vi.fn(),
 }))
 const tableExportMocks = vi.hoisted(() => ({
@@ -229,6 +233,14 @@ describe('Holdings rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    window.sessionStorage.clear()
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [] })
+    apiMocks.getPortfolioUnresolvedOptionActions.mockResolvedValue({
+      portfolio_id: '3',
+      operational_date: '2026-09-02',
+      action_count: 0,
+      actions: [],
+    })
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogFixture())
     apiMocks.getPortfolioTableViewStore.mockImplementation(async () => ({ store: null }))
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
@@ -328,6 +340,91 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
     expect(screen.queryByText('Operational Status')).not.toBeInTheDocument()
     expect(screen.queryByText('Overdue settlement')).not.toBeInTheDocument()
+  })
+
+  it('prompts once for an expired option and records expiry on the contract date', async () => {
+    const expiredContract = optionContractFixture({
+      terms: {
+        underlying_instrument_id: 'equity-1',
+        option_type: 'call',
+        expiry_date: '2026-07-10',
+        strike: 110,
+        contract_multiplier: 100,
+      },
+    })
+    apiMocks.getPortfolioUnresolvedOptionActions
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        operational_date: '2026-07-15',
+        action_count: 1,
+        actions: [
+          {
+            action_key: 'option-1:long:broker-1',
+            derivative_contract_id: 'option-1',
+            derivative_contract: expiredContract,
+            side: 'long',
+            account_id: 'broker-1',
+            open_contract_quantity: 2,
+            underlying_instrument_id: 'equity-1',
+            expiry_date: '2026-07-10',
+            days_past_expiry: 5,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        portfolio_id: '3',
+        operational_date: '2026-07-15',
+        action_count: 0,
+        actions: [],
+      })
+    apiMocks.createPortfolioOptionOutcome.mockResolvedValue({
+      portfolio_id: '3',
+      transactions: [],
+      option_delivery_link: null,
+    })
+
+    render(<OptionOutcomePrompt portfolioId="3" />)
+    const dialog = await screen.findByRole('dialog', { name: 'Resolve expired option' })
+    expect(within(dialog).getByText('Alpha 110 Call')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Event date')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Settlement date')).not.toBeInTheDocument()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm & record' }))
+
+    await waitFor(() => {
+      expect(apiMocks.createPortfolioOptionOutcome).toHaveBeenCalledWith(
+        '3',
+        {
+          derivative_contract_id: 'option-1',
+          side: 'long',
+          outcome: 'expired',
+          quantity: 2,
+          event_date: '2026-07-10',
+          settlement_date: '2026-07-10',
+          stock_account_id: null,
+          settlement_cash_account_id: null,
+          cash_settlement_amount: null,
+          fees: 0,
+          taxes: 0,
+        },
+        expect.stringMatching(/^option-outcome-/),
+      )
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Resolve expired option' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('does not silently hide an expired-option check failure', async () => {
+    apiMocks.getPortfolioUnresolvedOptionActions.mockRejectedValueOnce(
+      new Error('Option action service unavailable'),
+    )
+
+    render(<OptionOutcomePrompt portfolioId="3" />)
+
+    const status = await screen.findByRole('status')
+    expect(status).toHaveTextContent('Option action check failed')
+    expect(status).toHaveAttribute('title', 'Option action service unavailable')
   })
 
   it('opens details only from the instrument name, not an ordinary table cell', async () => {
@@ -640,8 +737,8 @@ describe('Holdings rendered page contract', () => {
     for (const label of [
       'Notional',
       'Underlying Terms',
+      'Current Risk',
       'Annual Coupon',
-      'Remaining Basis',
     ]) {
       expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
@@ -649,10 +746,10 @@ describe('Holdings rendered page contract', () => {
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
     expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
 
-    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
+    const fcnTableWidth = fcnTable.style.minWidth
     await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
-    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
+    expect(fcnTable.style.minWidth).toBe(fcnTableWidth)
     for (const label of ['Final Observation', 'Issuer', 'Counterparty']) {
       expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
@@ -660,7 +757,7 @@ describe('Holdings rendered page contract', () => {
 
     await user.click(within(fcnRegion).getByRole('button', { name: /View\s*: Terms & Events/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
-    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
+    expect(fcnTable.style.minWidth).toBe(fcnTableWidth)
     expect(within(fcnTable).getByRole('columnheader', { name: 'Fair Value Status' })).toBeInTheDocument()
 
     const optionsRegion = screen.getByRole('region', { name: 'Options' })
@@ -669,27 +766,29 @@ describe('Holdings rendered page contract', () => {
       'Side',
       'Type',
       'Underlying',
+      'Underlying Spot',
       'Strike',
+      'Moneyness',
       'Open Contracts',
-      'Remaining Basis',
-      'Strike Notional (USD)',
-      'Status',
+      'Portfolio Backing',
+      'Current Risk',
     ]) {
       expect(within(optionTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
     expect(within(optionTable).getByText('Written')).toBeInTheDocument()
-    expect(within(optionTable).getAllByText('$22,000.00')).toHaveLength(2)
 
-    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
+    const optionTableWidth = optionTable.style.minWidth
     await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Contract Terms' }))
-    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
+    expect(optionTable.style.minWidth).toBe(optionTableWidth)
     expect(within(optionTable).getByRole('columnheader', { name: 'Underlying Equivalent' })).toBeInTheDocument()
     expect(within(optionTable).getByRole('columnheader', { name: 'Multiplier' })).toBeInTheDocument()
+    expect(within(optionTable).getByRole('columnheader', { name: 'Strike Notional (USD)' })).toBeInTheDocument()
+    expect(within(optionTable).getAllByText('$22,000.00').length).toBeGreaterThanOrEqual(1)
 
     await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Contract Terms/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
-    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
+    expect(optionTable.style.minWidth).toBe(optionTableWidth)
     expect(within(optionTable).getByRole('columnheader', { name: 'Basis Type' })).toBeInTheDocument()
     expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
   })

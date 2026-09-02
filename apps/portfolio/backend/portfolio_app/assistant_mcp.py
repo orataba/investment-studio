@@ -9,6 +9,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver import Image
 from mcp.types import ToolAnnotations
 
@@ -173,7 +174,7 @@ def get_screenshot_image(
         isinstance(capture, dict) and capture.get("capture_id") == capture_id
         for capture in captures
     ):
-        raise RuntimeError("The requested screenshot is not part of this analysis batch.")
+        raise ToolError("The requested screenshot is not part of this analysis batch.")
 
     encoded_capture_id = quote(capture_id, safe="")
     content, media_type = _api_image(

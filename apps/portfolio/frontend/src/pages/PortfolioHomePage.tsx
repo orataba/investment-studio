@@ -21,6 +21,7 @@ import HoldingsSectionTables, {
 import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import { OPTION_OUTCOME_RECORDED_EVENT } from '../components/OptionOutcomePrompt'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -2622,6 +2623,19 @@ export default function PortfolioHomePage() {
     })
   }, [portfolioId])
 
+  useEffect(() => {
+    function refreshAfterOptionOutcome(event: Event) {
+      const detail = (event as CustomEvent<{ portfolioId?: string }>).detail
+      if (detail?.portfolioId === portfolioId) {
+        setRiskPolicyRevision((current) => current + 1)
+      }
+    }
+    window.addEventListener(OPTION_OUTCOME_RECORDED_EVENT, refreshAfterOptionOutcome)
+    return () => {
+      window.removeEventListener(OPTION_OUTCOME_RECORDED_EVENT, refreshAfterOptionOutcome)
+    }
+  }, [portfolioId])
+
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
   const activeHoldingsView = useMemo(
     () => getHoldingsViewById(holdingsViewStore, activeHoldingsViewId),
@@ -2883,7 +2897,7 @@ export default function PortfolioHomePage() {
     }
   }
 
-  function handleSelectInstrument(instrumentId: string | null) {
+  function handleSelectInstrument(instrumentId: string | null, holdingLineId?: string) {
     const normalizedInstrumentId = instrumentId?.trim() || null
     if (!normalizedInstrumentId || !portfolioId) {
       return
@@ -2894,6 +2908,11 @@ export default function PortfolioHomePage() {
     const next = new URLSearchParams(searchParams)
     next.delete('instrument_id')
     next.delete('position_lot_id')
+    if (holdingLineId) {
+      next.set('holding_line_id', holdingLineId)
+    } else {
+      next.delete('holding_line_id')
+    }
     const query = next.toString()
     navigate(`${buildPortfolioHoldingDetailPath(portfolioId, normalizedInstrumentId)}${query ? `?${query}` : ''}`)
   }
@@ -3092,6 +3111,7 @@ export default function PortfolioHomePage() {
         'Currency',
         'Notional',
         'Underlying Terms',
+        'Current Risk',
         'Annual Coupon',
         'Issue Date',
         'Final Observation',
@@ -3124,6 +3144,20 @@ export default function PortfolioHomePage() {
               return `${name}: initial ${underlying.initial_reference_price ?? 'N/A'}, strike ${underlying.strike_level_pct ?? 'N/A'}%, KI ${underlying.knock_in_level_pct ?? 'N/A'}%, KO ${underlying.knock_out_level_pct ?? 'N/A'}%, ${underlying.deliverable ? 'deliverable' : 'cash settled'}`
             })
             .join('; '),
+          row.fcn_risk
+            ? [
+                row.fcn_risk.risk_state,
+                ...row.fcn_risk.underlyings
+                  .filter(
+                    (underlying) =>
+                      underlying.instrument_id === row.fcn_risk?.worst_underlying_instrument_id,
+                  )
+                  .map(
+                    (underlying) =>
+                      `${underlying.instrument_name}: ${underlying.performance_to_reference_pct ?? 'N/A'} vs initial, ${underlying.distance_to_knock_in_pct ?? 'N/A'} vs KI`,
+                  ),
+              ].join('; ')
+            : null,
           contract?.terms.annual_coupon_rate_pct == null
             ? null
             : `${contract.terms.annual_coupon_rate_pct}%`,
@@ -3164,10 +3198,12 @@ export default function PortfolioHomePage() {
         'Side',
         'Type',
         'Underlying',
+        'Underlying Spot',
         'Currency',
         'Expiry',
         'Days',
         'Strike',
+        'Moneyness',
         'Open Contracts',
         'Multiplier',
         'Underlying Equivalent',
@@ -3177,6 +3213,8 @@ export default function PortfolioHomePage() {
         `Historical Carrying Basis (${workspace.base_currency})`,
         `Carrying FX Translation (${workspace.base_currency})`,
         `Strike Notional (${workspace.base_currency})`,
+        'Portfolio Backing',
+        'Current Risk',
         'Portfolio Weight',
         'Status',
         'Valuation Basis',
@@ -3195,11 +3233,15 @@ export default function PortfolioHomePage() {
           contract?.account_id,
           written ? 'Written' : 'Long',
           row.option_type ?? contract?.terms.option_type,
-          underlyingId ? namesById.get(underlyingId) ?? underlyingId : null,
+          underlyingId
+            ? row.option_risk?.underlying_name ?? namesById.get(underlyingId) ?? underlyingId
+            : null,
+          row.option_risk?.underlying_spot,
           holdingCurrency(row),
           row.expiry_date ?? contract?.terms.expiry_date,
           row.days_to_expiry,
           row.strike ?? contract?.terms.strike,
+          row.option_risk?.moneyness_pct,
           row.open_contract_quantity ?? Math.abs(row.quantity),
           row.contract_multiplier ?? contract?.terms.contract_multiplier,
           row.required_underlying_quantity,
@@ -3209,6 +3251,10 @@ export default function PortfolioHomePage() {
           row.carrying_value_historical_base,
           row.carrying_fx_translation_base,
           row.strike_notional_base,
+          row.option_risk?.backing
+            ? `${row.option_risk.backing.ratio ?? 'N/A'} backed; ${row.option_risk.backing.available} available; ${row.option_risk.backing.required} required; ${row.option_risk.backing.shortfall} short`
+            : null,
+          row.option_risk?.risk_state,
           row.allocation,
           row.obligation_status ?? 'open',
           row.valuation_basis,
@@ -3800,7 +3846,7 @@ export default function PortfolioHomePage() {
               workspace={workspace}
               derivativeRows={derivativeRows}
               cashRows={cashRows}
-              onSelectHolding={(row) => handleSelectInstrument(holdingReferenceId(row))}
+              onSelectHolding={(row) => handleSelectInstrument(holdingReferenceId(row), row.line_id)}
               onVisibleColumnsChange={handleHoldingsSectionVisibleColumnsChange}
             />
           </>

@@ -11,11 +11,12 @@ Portfolio 承载组合、账户、交易、账本、持仓、绩效、风险、t
 - Cash、费用、税、利息、换汇和账户内转移；
 - Preview/Commit、CSV/Excel 和截图助手共用的交易 command contract。
 
-Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。普通证券卖空、直接债券、融资、PE/VC capital call、基金份额转换、衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks 和自动 barrier/行权不在当前支持范围。
+Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。普通证券卖空、直接债券、融资、PE/VC capital call、基金份额转换、衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks、FCN 自动 barrier 判定和期权自动行权不在当前支持范围。
 
 关键运行约束：
 
 - FCN 和 Option 是 Portfolio-local immutable contracts；只有 underlying/deliverable 证券引用 Registry；
+- 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 交付仍保持独立事实；
 - 交易的 trade、position-effective、entitlement、settlement 和 snapshot 时钟不能互相替代；
 - 所有写路径先保存 canonical facts，再标记最早受影响日期并重建派生读模型；
 - daily snapshot 重算的外部入口只写 durable calculation state 并返回 `202`；单线程 worker 合并 generation、保留最早 `dirty_from`，发布前复核 source generation；

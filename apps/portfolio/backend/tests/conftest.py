@@ -427,6 +427,18 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                     "PRIMARY KEY (portfolio_id, derivative_contract_id))"
                 )
                 temporary_seed_tables.append("derivative_contract_record")
+            if "option_delivery_link" not in sa.inspect(
+                connection
+            ).get_table_names():
+                connection.exec_driver_sql(
+                    "CREATE TABLE option_delivery_link ("
+                    "option_transaction_id VARCHAR NOT NULL PRIMARY KEY, "
+                    "stock_transaction_id VARCHAR NOT NULL UNIQUE, "
+                    "portfolio_id VARCHAR NOT NULL, "
+                    "underlying_instrument_id VARCHAR NOT NULL, "
+                    "created_at VARCHAR NOT NULL)"
+                )
+                temporary_seed_tables.append("option_delivery_link")
 
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(

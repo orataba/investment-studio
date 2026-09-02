@@ -3194,8 +3194,8 @@ def test_cash_economic_facts_require_positive_gross_amount(
 @pytest.mark.parametrize(
     ("transaction_type", "lifecycle_event_type", "error_pattern"),
     [
-        ("maturity_redemption", None, "requires option_long_expiry"),
-        ("lifecycle_event", None, "requires option_writer_expiry"),
+        ("maturity_redemption", None, "explicit long-option outcome"),
+        ("lifecycle_event", None, "explicit writer-option outcome"),
         ("sell", "option_long_expiry", "requires maturity_redemption"),
         ("sell", "option_writer_expiry", "requires lifecycle_event"),
     ],

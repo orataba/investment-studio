@@ -6,10 +6,13 @@ import { workspaceSummaryFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
+  createPortfolioOptionOutcome: vi.fn(),
   copyPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
   getPortfolios: vi.fn(),
+  getPortfolioAccounts: vi.fn(),
   getPortfolioRiskPolicy: vi.fn(),
+  getPortfolioUnresolvedOptionActions: vi.fn(),
   getWorkspaceSummaryForPortfolio: vi.fn(),
   updatePortfolioRiskPolicy: vi.fn(),
 }))
@@ -43,6 +46,13 @@ describe('Portfolio workspace loading contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.getPortfolios.mockResolvedValue([])
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [] })
+    apiMocks.getPortfolioUnresolvedOptionActions.mockResolvedValue({
+      portfolio_id: '3',
+      operational_date: '2026-09-02',
+      action_count: 0,
+      actions: [],
+    })
   })
 
   it('keeps the workspace structure but never invents zero-valued summary facts while loading', async () => {

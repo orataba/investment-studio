@@ -58,6 +58,10 @@ def _execution_quote_candidates(detail: dict[str, object]) -> list[tuple[str, st
     return candidates
 
 
+def execution_quote_bases(detail: dict[str, object]) -> list[str]:
+    return [quote_basis for _, quote_basis in _execution_quote_candidates(detail)]
+
+
 def build_execution_quote_from_detail(
     detail: dict[str, object],
     *,

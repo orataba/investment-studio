@@ -556,8 +556,8 @@ def test_live_portfolio_as_of_caps_future_settlement_at_valuation_today(monkeypa
     )
     monkeypatch.setattr(
         portfolio_store,
-        "_portfolio_valuation_today",
-        lambda _portfolio: date(2026, 5, 22),
+        "portfolio_valuation_today",
+        lambda _valuation_timezone: date(2026, 5, 22),
     )
 
     assert portfolio_store._resolve_live_portfolio_as_of_date(

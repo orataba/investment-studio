@@ -18,12 +18,14 @@ const apiMocks = vi.hoisted(() => ({
   createPortfolioTransactionCaptureAnalysisRevision: vi.fn(),
   createPortfolioTransactionCaptureBatch: vi.fn(),
   createPortfolioTransaction: vi.fn(),
+  createPortfolioOptionOutcome: vi.fn(),
   deletePortfolioTransaction: vi.fn(),
   getPortfolioAccounts: vi.fn(),
   getPortfolioDerivativeContracts: vi.fn(),
   getPortfolioFxRates: vi.fn(),
   getPortfolioInstrumentEventTasks: vi.fn(),
   getPortfolioInstruments: vi.fn(),
+  getPortfolioOptionDeliveryLinks: vi.fn(),
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionCaptureBatches: vi.fn(),
@@ -404,6 +406,7 @@ describe('Transactions rendered page contract', () => {
       derivative_contracts: [],
     })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
+    apiMocks.getPortfolioOptionDeliveryLinks.mockResolvedValue({ portfolio_id: '3', links: [] })
     apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [] })
     apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({ results: [], catalogErrors: {} })
     apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEquityInstrument)
@@ -1526,6 +1529,217 @@ describe('Transactions rendered page contract', () => {
     expect(
       within(existingContractAction).queryByRole('option', { name: 'Deposit' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('records option exercise and stock delivery through the atomic outcome command', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [optionAccount, securitiesAccount, cashAccount],
+    })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [optionContract],
+    })
+    apiMocks.createPortfolioOptionOutcome.mockResolvedValue({
+      portfolio_id: '3',
+      transactions: [
+        {
+          ...selectedTransaction,
+          transaction_id: 'txn-option-exercise',
+          transaction_type: 'maturity_redemption',
+          lifecycle_event_type: 'option_long_exercise',
+          asset_domain: 'derivative',
+          asset_subtype: 'option',
+          account: optionAccount,
+          settlement_cash_account: null,
+          instrument_id: null,
+          instrument_ref: null,
+          derivative_contract_id: optionContract.derivative_contract_id,
+          derivative_contract: optionContract,
+          quantity: 1,
+          price: null,
+          gross_amount: 0,
+          net_cash_effect: 0,
+        },
+        {
+          ...selectedTransaction,
+          transaction_id: 'txn-stock-delivery',
+          account: securitiesAccount,
+          settlement_cash_account: cashAccount,
+          instrument_id: 'etf-1',
+          quantity: 100,
+          price: 30,
+          gross_amount: 3000,
+        },
+      ],
+      option_delivery_link: {
+        portfolio_id: '3',
+        option_transaction_id: 'txn-option-exercise',
+        stock_transaction_id: 'txn-stock-delivery',
+        underlying_instrument_id: 'etf-1',
+        created_at: '2026-09-02T00:00:00Z',
+      },
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    await user.selectOptions(
+      within(dialog).getByRole('combobox', { name: 'Option Contract' }),
+      optionContract.derivative_contract_id,
+    )
+    const action = within(dialog).getByRole('combobox', { name: 'Action' })
+    expect(within(action).getByRole('option', { name: 'Exercise Long Call' })).toBeInTheDocument()
+    expect(within(action).getByRole('option', { name: 'Assign Written Call' })).toBeInTheDocument()
+    await user.selectOptions(action, 'exercise_long')
+
+    expect(within(dialog).getByRole('combobox', { name: 'Security Account' })).toHaveValue(
+      securitiesAccount.account_id,
+    )
+    expect(
+      within(dialog).getByRole('combobox', { name: 'Settlement Cash Account' }),
+    ).toHaveValue(cashAccount.account_id)
+    expect(within(dialog).queryByRole('spinbutton', { name: /Amount/ })).not.toBeInTheDocument()
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Contracts' }), '1')
+    fireEvent.change(within(dialog).getByLabelText('Exercise / Assignment Date'), {
+      target: { value: '2026-09-15' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Settlement Date'), {
+      target: { value: '2026-09-17' },
+    })
+    await user.click(within(dialog).getByRole('button', { name: 'Record Exercise' }))
+
+    await waitFor(() =>
+      expect(apiMocks.createPortfolioOptionOutcome).toHaveBeenCalledWith(
+        '3',
+        expect.objectContaining({
+          derivative_contract_id: optionContract.derivative_contract_id,
+          side: 'long',
+          outcome: 'physical',
+          quantity: 1,
+          event_date: '2026-09-15',
+          settlement_date: '2026-09-17',
+          stock_account_id: securitiesAccount.account_id,
+          settlement_cash_account_id: cashAccount.account_id,
+        }),
+        expect.stringMatching(/^transaction-option-outcome-/),
+      ),
+    )
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('shows a linked option outcome and stock delivery as one ledger activity', async () => {
+    const optionExerciseTransaction = {
+      ...selectedTransaction,
+      transaction_id: 'txn-option-exercise',
+      transaction_type: 'maturity_redemption',
+      lifecycle_event_type: 'option_long_exercise',
+      asset_domain: 'derivative',
+      asset_subtype: 'option',
+      account: optionAccount,
+      settlement_cash_account: null,
+      instrument_id: null,
+      instrument_ref: null,
+      derivative_contract_id: optionContract.derivative_contract_id,
+      derivative_contract: optionContract,
+      quantity: 1,
+      price: null,
+      gross_amount: 0,
+      net_cash_effect: 0,
+    } satisfies PortfolioTransactionRecord
+    const stockDeliveryTransaction = {
+      ...selectedTransaction,
+      transaction_id: 'txn-stock-delivery',
+      transaction_type: 'buy',
+      lifecycle_event_type: null,
+      asset_domain: 'security',
+      asset_subtype: 'etf',
+      account: securitiesAccount,
+      settlement_cash_account: cashAccount,
+      instrument_id: 'etf-1',
+      instrument_ref: etfInstrument,
+      derivative_contract_id: null,
+      derivative_contract: null,
+      quantity: 100,
+      price: 30,
+      gross_amount: 3000,
+      net_cash_effect: -3001,
+    } satisfies PortfolioTransactionRecord
+    apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({
+      portfolio_id: '3',
+      portfolio_inception_date: '2026-01-02',
+      summary: {
+        total_transactions: 2,
+        security_transactions: 1,
+        derivative_transactions: 1,
+        fcn_transactions: 0,
+        option_transactions: 1,
+        cash_transactions: 0,
+        external_cash_flows: 0,
+        opening_balance_records: 0,
+      },
+      derivation_boundary: {
+        ledger_postings: 'fixture',
+        positions: 'fixture',
+        position_lots: 'fixture',
+        holdings: 'fixture',
+        snapshot: 'fixture',
+      },
+      selected_transaction_id: optionExerciseTransaction.transaction_id,
+      position_reference_ids: [optionContract.derivative_contract_id, 'etf-1'],
+      delete_scope_row_versions: {
+        [optionExerciseTransaction.transaction_id]: optionExerciseTransaction.row_version,
+        [stockDeliveryTransaction.transaction_id]: stockDeliveryTransaction.row_version,
+      },
+      transactions: [optionExerciseTransaction, stockDeliveryTransaction],
+      selected_transaction: optionExerciseTransaction,
+      accounting_impact: null,
+      ledger_summary: { posting_count: 0, cash_posting_count: 0, position_posting_count: 0 },
+      ledger_postings: [],
+      related_position_lot_summary: {
+        position_lot_count: 0,
+        open_position_lot_count: 0,
+        closed_position_lot_count: 0,
+        realized_pnl: 0,
+      },
+      related_position_lots: [],
+      related_option_obligations: [],
+      change_log_summary: { change_count: 0 },
+      change_log: [],
+    })
+    apiMocks.getPortfolioOptionDeliveryLinks.mockResolvedValue({
+      portfolio_id: '3',
+      links: [
+        {
+          portfolio_id: '3',
+          option_transaction_id: optionExerciseTransaction.transaction_id,
+          stock_transaction_id: stockDeliveryTransaction.transaction_id,
+          underlying_instrument_id: 'etf-1',
+          created_at: '2026-09-02T00:00:00Z',
+        },
+      ],
+    })
+
+    renderPortfolioPage(
+      <TransactionsPage />,
+      `/portfolios/3/transactions?transaction_id=${optionExerciseTransaction.transaction_id}`,
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const table = await screen.findByRole('table')
+    await waitFor(() => expect(table.querySelectorAll('tbody tr')).toHaveLength(1))
+    expect(within(table).getByText('Stock delivery · Buy · GETF')).toBeInTheDocument()
+    expect(within(table).getByText(optionExerciseTransaction.transaction_id)).toBeInTheDocument()
+    expect(within(table).queryByText(stockDeliveryTransaction.transaction_id)).not.toBeInTheDocument()
+    const inspector = screen.getByRole('complementary', { name: 'Selected transaction details' })
+    expect(within(inspector).getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(within(inspector).getByRole('button', { name: 'Edit' })).toBeDisabled()
   })
 
   it('records cash fees without an asset entitlement date', async () => {

@@ -97,22 +97,23 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
         if transaction_type == "maturity_redemption" and lifecycle_event_type not in {
             "option_long_expiry",
             "option_long_cash_settlement",
+            "option_long_exercise",
         }:
             raise ValueError(
-                "Option maturity redemption requires option_long_expiry or "
-                "option_long_cash_settlement."
+                "Option maturity redemption requires an explicit long-option outcome."
             )
         if transaction_type == "lifecycle_event" and lifecycle_event_type not in {
             "option_writer_expiry",
             "option_writer_cash_settlement",
+            "option_writer_assignment",
         }:
             raise ValueError(
-                "Option lifecycle event requires option_writer_expiry or "
-                "option_writer_cash_settlement."
+                "Option lifecycle event requires an explicit writer-option outcome."
             )
         if lifecycle_event_type in {
             "option_long_expiry",
             "option_long_cash_settlement",
+            "option_long_exercise",
         } and transaction_type != "maturity_redemption":
             raise ValueError(
                 "Long option outcome requires maturity_redemption transaction type."
@@ -120,6 +121,7 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
         if lifecycle_event_type in {
             "option_writer_expiry",
             "option_writer_cash_settlement",
+            "option_writer_assignment",
         } and transaction_type != "lifecycle_event":
             raise ValueError(
                 "Writer option outcome requires lifecycle_event transaction type."
@@ -127,8 +129,10 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
         option_lifecycle_event = lifecycle_event_type in {
             "option_long_expiry",
             "option_long_cash_settlement",
+            "option_long_exercise",
             "option_writer_expiry",
             "option_writer_cash_settlement",
+            "option_writer_assignment",
         }
         if option_action is None and not option_lifecycle_event:
             return
@@ -150,6 +154,11 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
             "option_writer_cash_settlement",
         } and event_date > expiry_date:
             raise ValueError("Option cash settlement must not follow contract expiry.")
+        if lifecycle_event_type in {
+            "option_long_exercise",
+            "option_writer_assignment",
+        } and event_date > expiry_date:
+            raise ValueError("Option physical settlement must not follow contract expiry.")
 
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
         fees = _safe_float(transaction.get("fees")) or 0.0
@@ -181,6 +190,14 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
                 or settlement_cash_account_id
             ):
                 raise ValueError("Long option expiry must not carry cash amounts.")
+        elif lifecycle_event_type in {
+            "option_long_exercise",
+            "option_writer_assignment",
+        }:
+            if gross_amount > 1e-9 or charges > 1e-9 or settlement_cash_account_id:
+                raise ValueError(
+                    "Option physical outcome must not carry cash amounts; the linked stock trade carries settlement."
+                )
         return
 
     if contract_type != "fcn":
@@ -2164,7 +2181,11 @@ def derive_ledger_postings(
 
         if transaction_type == "lifecycle_event" and str(
             transaction.get("lifecycle_event_type") or ""
-        ) in {"option_writer_expiry", "option_writer_cash_settlement"}:
+        ) in {
+            "option_writer_expiry",
+            "option_writer_cash_settlement",
+            "option_writer_assignment",
+        }:
             if (
                 str(transaction.get("lifecycle_event_type") or "")
                 == "option_writer_cash_settlement"

@@ -161,6 +161,7 @@ export type PortfolioInstrumentPriceChartResponse = {
   instrument_core: InstrumentCore
   as_of_date: string
   range_key: PortfolioInstrumentChartRangeKey
+  series_role?: 'performance' | 'price_level'
   chart_basis: string | null
   return_semantics?: PortfolioReturnSemantics
   metric_family: string | null
@@ -880,6 +881,50 @@ export type PortfolioHoldingRow = {
   fair_value?: number | null
   fair_value_coverage_status?: string | null
   valuation_basis?: string | null
+  option_risk?: {
+    underlying_instrument_id: string
+    underlying_name: string
+    underlying_quote_currency: string
+    underlying_spot: number | null
+    underlying_quote_as_of_date: string | null
+    underlying_quote_status: string
+    moneyness_pct: number | null
+    intrinsic_value_per_share: number | null
+    max_loss_local: number | null
+    days_to_expiry: number | null
+    risk_state: string
+    backing: {
+      kind: 'portfolio_underlying_shares' | 'portfolio_settled_cash'
+      available: number
+      required: number
+      ratio: number | null
+      shortfall: number
+      currency: string | null
+    } | null
+  } | null
+  fcn_risk?: {
+    lifecycle_status: string
+    risk_state: string
+    worst_underlying_instrument_id: string | null
+    underlyings: Array<{
+      instrument_id: string
+      instrument_name: string
+      currency: string
+      spot: number | null
+      quote_as_of_date: string | null
+      quote_status: string
+      initial_reference_price: number | null
+      strike_price: number | null
+      knock_in_price: number | null
+      knock_out_price: number | null
+      performance_to_reference_pct: number | null
+      distance_to_strike_pct: number | null
+      distance_to_knock_in_pct: number | null
+      distance_to_knock_out_pct: number | null
+      current_region: string
+      missing_terms: string[]
+    }>
+  } | null
   settlement_date?: string | null
   pending_until_date?: string | null
   pending_status?: string | null
@@ -2184,6 +2229,66 @@ export type PortfolioTransactionRecord = {
   row_version: number
 }
 
+export type PortfolioOptionDeliveryLink = {
+  portfolio_id: string
+  option_transaction_id: string
+  stock_transaction_id: string
+  underlying_instrument_id: string
+  created_at: string
+}
+
+export type PortfolioOptionDeliveryLinksResponse = {
+  portfolio_id: string
+  links: PortfolioOptionDeliveryLink[]
+}
+
+export type PortfolioOptionObligationsResponse = {
+  portfolio_id: string
+  as_of_date: string
+  obligation_count: number
+  obligations: PortfolioOptionObligationRecord[]
+}
+
+export type PortfolioOptionOutcomePayload = {
+  derivative_contract_id: string
+  side: 'long' | 'written'
+  outcome: 'expired' | 'cash_settled' | 'physical'
+  quantity: number
+  event_date: string
+  settlement_date: string
+  stock_account_id?: string | null
+  settlement_cash_account_id?: string | null
+  cash_settlement_amount?: number | null
+  fees?: number
+  taxes?: number
+  note?: string | null
+}
+
+export type PortfolioOptionOutcomeResponse = {
+  portfolio_id: string
+  transactions: PortfolioTransactionRecord[]
+  option_delivery_link: PortfolioOptionDeliveryLink | null
+}
+
+export type PortfolioUnresolvedOptionAction = {
+  action_key: string
+  derivative_contract_id: string
+  derivative_contract: PortfolioDerivativeContractRecord
+  side: 'long' | 'written'
+  account_id: string
+  open_contract_quantity: number
+  underlying_instrument_id: string
+  expiry_date: string
+  days_past_expiry: number
+}
+
+export type PortfolioUnresolvedOptionActionsResponse = {
+  portfolio_id: string
+  operational_date: string
+  action_count: number
+  actions: PortfolioUnresolvedOptionAction[]
+}
+
 export type PortfolioOptionAction =
   | 'buy_to_open'
   | 'sell_to_close'
@@ -3198,12 +3303,40 @@ export function getPortfolioInstrumentPriceChart(
   filters: {
     as_of_date?: string
     range?: PortfolioInstrumentChartRangeKey
+    price_level?: boolean
   } = {},
 ) {
-  const query = buildQuery(filters)
+  const query = buildQuery({
+    as_of_date: filters.as_of_date,
+    range: filters.range,
+    price_level: filters.price_level ? 'true' : undefined,
+  })
   return fetchJson<PortfolioInstrumentPriceChartResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/instruments/${instrumentId}/price-chart${query}`,
+  )
+}
+
+export function getPortfolioUnresolvedOptionActions(portfolioId: string) {
+  return fetchJson<PortfolioUnresolvedOptionActionsResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/options/unresolved-actions`,
+  )
+}
+
+export function createPortfolioOptionOutcome(
+  portfolioId: string,
+  payload: PortfolioOptionOutcomePayload,
+  idempotencyKey: string,
+) {
+  return fetchJson<PortfolioOptionOutcomeResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/options/outcomes`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    },
   )
 }
 
@@ -3915,5 +4048,31 @@ export function getPortfolioDerivativeContracts(portfolioId: string) {
   return fetchJson<PortfolioDerivativeContractsResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/derivative-contracts`,
+  )
+}
+
+export function getPortfolioOptionDeliveryLinks(
+  portfolioId: string,
+  underlyingInstrumentId?: string,
+) {
+  const query = buildQuery({ underlying_instrument_id: underlyingInstrumentId })
+  return fetchJson<PortfolioOptionDeliveryLinksResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/options/delivery-links${query}`,
+  )
+}
+
+export function getPortfolioOptionObligations(
+  portfolioId: string,
+  filters: {
+    as_of_date?: string
+    derivative_contract_id?: string
+    underlying_instrument_id?: string
+  } = {},
+) {
+  const query = buildQuery(filters)
+  return fetchJson<PortfolioOptionObligationsResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/options/obligations${query}`,
   )
 }

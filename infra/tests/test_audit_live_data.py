@@ -21,6 +21,7 @@ FLAT_TABLE_RELATIONS = {
     ("portfolio", "portfolio_daily_snapshot"),
     ("portfolio", "portfolio_daily_holding_snapshot"),
     ("portfolio", "derivative_contract_record"),
+    ("portfolio", "option_delivery_link"),
     ("portfolio", "target_set_record"),
     ("portfolio", "target_set_line_record"),
     ("portfolio", "taxonomy_record"),
@@ -46,7 +47,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260902_0029",
         "platform": "20260823_0007",
-        "portfolio": "20260902_0057",
+        "portfolio": "20260902_0058",
         "watchlist": "20260901_0052",
     }
     monkeypatch.setattr(
@@ -81,7 +82,7 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 44
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 45
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "instrument_type_listed_security_identity_contract"
@@ -101,6 +102,10 @@ def test_audit_contract_names_cover_registry_0019(
     assert "derivative_registry_boundary" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "portfolio_derivative_contract_integrity"
+        in audit_module.AUDIT_CHECK_NAMES
+    )
+    assert (
+        "portfolio_option_delivery_link_integrity"
         in audit_module.AUDIT_CHECK_NAMES
     )
     assert "instrument_quote_policy_contract" in audit_module.AUDIT_CHECK_NAMES
@@ -310,6 +315,19 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "underlying_instrument_ids" not in derivative_contract_query
     assert "deliverable_instrument_ids" not in derivative_contract_query
     assert "barrier_type" not in derivative_contract_query
+
+    option_delivery_query = next(
+        query
+        for query in queries
+        if "portfolio.option_delivery_link link" in query
+    )
+    assert "FULL OUTER JOIN physical_outcome option_txn" in option_delivery_query
+    assert "option_long_exercise" in option_delivery_query
+    assert "option_writer_assignment" in option_delivery_query
+    assert "stock_source_quantity IS DISTINCT FROM" in option_delivery_query
+    assert "contract_multiplier" in option_delivery_query
+    assert "stock_source_price IS DISTINCT FROM" in option_delivery_query
+    assert "stock_settlement_cash_account_id IS NULL" in option_delivery_query
 
     analytics_selection_query = next(
         query

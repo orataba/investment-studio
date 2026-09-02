@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from sqlalchemy import select
 
-from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import PortfolioDailySnapshotModel, PortfolioRecordModel
+from portfolio_app.services.valuation_clock import portfolio_valuation_today
 
 
 def is_fresh_complete_portfolio_snapshot(snapshot: PortfolioDailySnapshotModel) -> bool:
@@ -21,16 +18,9 @@ def is_fresh_complete_portfolio_snapshot(snapshot: PortfolioDailySnapshotModel) 
 
 def latest_fresh_complete_portfolio_snapshot(session, portfolio_id: str) -> PortfolioDailySnapshotModel | None:
     portfolio = session.get(PortfolioRecordModel, portfolio_id)
-    timezone_name = str(
-        (portfolio.valuation_timezone if portfolio is not None else None)
-        or get_settings().default_trade_timezone
-    ).strip()
-    try:
-        valuation_today = datetime.now(ZoneInfo(timezone_name)).date()
-    except (KeyError, ValueError):
-        valuation_today = datetime.now(
-            ZoneInfo(get_settings().default_trade_timezone)
-        ).date()
+    valuation_today = portfolio_valuation_today(
+        portfolio.valuation_timezone if portfolio is not None else None
+    )
     snapshots = session.scalars(
         select(PortfolioDailySnapshotModel)
         .where(

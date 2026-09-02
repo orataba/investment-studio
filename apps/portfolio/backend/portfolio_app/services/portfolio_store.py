@@ -22,6 +22,7 @@ from portfolio_app.db.models import (
     AnalyticsScopePolicyRecordModel,
     AnalyticsTaxonomySelectionRecordModel,
     DerivativeContractRecordModel,
+    OptionDeliveryLinkModel,
     PortfolioCalculationStateModel,
     PortfolioAnalyticsPolicyStateModel,
     PortfolioDailyContributionSliceModel,
@@ -59,6 +60,7 @@ from portfolio_app.services.transaction_dates import (
     transaction_affected_dates,
     transaction_performance_effective_date,
 )
+from portfolio_app.services.valuation_clock import portfolio_valuation_today
 from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.research_eligibility import (
     derive_research_lifecycle,
@@ -69,6 +71,7 @@ EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
     "accounts": [],
     "derivative_contracts": [],
+    "option_delivery_links": [],
     "transactions": [],
     "taxonomies": [],
     "taxonomy_nodes": [],
@@ -275,6 +278,7 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
         "portfolios",
         "accounts",
         "derivative_contracts",
+        "option_delivery_links",
         "transactions",
         "taxonomies",
         "taxonomy_nodes",
@@ -390,6 +394,39 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
                 f"Transaction '{transaction.get('transaction_id')}' row_version must be a positive integer."
             )
         transaction["row_version"] = row_version
+    transaction_by_id = {
+        str(transaction.get("transaction_id") or "").strip(): transaction
+        for transaction in normalized["transactions"]
+        if isinstance(transaction, dict)
+    }
+    seen_option_transaction_ids: set[str] = set()
+    seen_stock_transaction_ids: set[str] = set()
+    for link in normalized["option_delivery_links"]:
+        if not isinstance(link, dict):
+            continue
+        option_transaction_id = str(
+            link.get("option_transaction_id") or ""
+        ).strip()
+        stock_transaction_id = str(
+            link.get("stock_transaction_id") or ""
+        ).strip()
+        option_transaction = transaction_by_id.get(option_transaction_id)
+        stock_transaction = transaction_by_id.get(stock_transaction_id)
+        if option_transaction is None or stock_transaction is None:
+            raise ValueError("Option delivery links require both transaction facts.")
+        if option_transaction_id in seen_option_transaction_ids:
+            raise ValueError("An option outcome may have only one stock delivery link.")
+        if stock_transaction_id in seen_stock_transaction_ids:
+            raise ValueError("A stock delivery transaction may belong to only one option outcome.")
+        if (
+            str(option_transaction.get("portfolio_id") or "")
+            != str(stock_transaction.get("portfolio_id") or "")
+            or str(link.get("portfolio_id") or "")
+            != str(option_transaction.get("portfolio_id") or "")
+        ):
+            raise ValueError("Option delivery transactions must belong to the same portfolio.")
+        seen_option_transaction_ids.add(option_transaction_id)
+        seen_stock_transaction_ids.add(stock_transaction_id)
     transaction_sequences: set[int] = set()
     for transaction in normalized["transactions"]:
         if not isinstance(transaction, dict):
@@ -473,6 +510,13 @@ def _load_store_from_db(session) -> dict[str, object]:
             DerivativeContractRecordModel.portfolio_id,
             DerivativeContractRecordModel.contract_type,
             DerivativeContractRecordModel.derivative_contract_id,
+        )
+    ).all()
+    option_delivery_links = session.scalars(
+        select(OptionDeliveryLinkModel).order_by(
+            OptionDeliveryLinkModel.portfolio_id,
+            OptionDeliveryLinkModel.created_at,
+            OptionDeliveryLinkModel.option_transaction_id,
         )
     ).all()
     taxonomies = session.scalars(
@@ -559,6 +603,10 @@ def _load_store_from_db(session) -> dict[str, object]:
         "derivative_contracts": [
             _serialize_derivative_contract_row(item)
             for item in derivative_contracts
+        ],
+        "option_delivery_links": [
+            _serialize_option_delivery_link(item)
+            for item in option_delivery_links
         ],
         "transactions": [
             {
@@ -743,6 +791,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     session.execute(delete(TaxonomyRecordModel))
     session.execute(delete(TransactionChangeLogModel))
     session.execute(delete(TransactionIdempotencyRecordModel))
+    session.execute(delete(OptionDeliveryLinkModel))
     session.execute(delete(TransactionRecordModel))
     session.execute(delete(DerivativeContractRecordModel))
     session.execute(delete(AccountRecordModel))
@@ -1167,6 +1216,27 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             )
         )
 
+    for raw_link in list(normalized.get("option_delivery_links", [])):
+        if not isinstance(raw_link, dict):
+            continue
+        session.add(
+            OptionDeliveryLinkModel(
+                portfolio_id=str(raw_link.get("portfolio_id") or "").strip(),
+                option_transaction_id=str(
+                    raw_link.get("option_transaction_id") or ""
+                ).strip(),
+                stock_transaction_id=str(
+                    raw_link.get("stock_transaction_id") or ""
+                ).strip(),
+                underlying_instrument_id=str(
+                    raw_link.get("underlying_instrument_id") or ""
+                ).strip(),
+                created_at=str(
+                    raw_link.get("created_at") or _current_utc_timestamp()
+                ).strip(),
+            )
+        )
+
     session.flush()
     _refresh_portfolio_instrument_universe_records(session, None)
 
@@ -1229,17 +1299,6 @@ def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -
     return max(activity_dates, default=None)
 
 
-def _portfolio_valuation_today(item: PortfolioRecordModel) -> date:
-    timezone_name = str(
-        item.valuation_timezone or get_settings().default_trade_timezone
-    ).strip()
-    try:
-        timezone = ZoneInfo(timezone_name)
-    except (KeyError, ValueError):
-        timezone = ZoneInfo(get_settings().default_trade_timezone)
-    return datetime.now(timezone).date()
-
-
 def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) -> date | None:
     normalized_instrument_ids = {instrument_id for instrument_id in instrument_ids if instrument_id}
     if not normalized_instrument_ids:
@@ -1266,7 +1325,7 @@ def _resolve_live_portfolio_as_of_date(
     accounts: list[AccountRecordModel],
     transactions: list[TransactionRecordModel],
 ) -> date:
-    valuation_today = _portfolio_valuation_today(item)
+    valuation_today = portfolio_valuation_today(item.valuation_timezone)
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
     latest_activity_date = _max_transaction_activity_date(transactions)
@@ -1485,6 +1544,18 @@ def _serialize_derivative_contract_row(
         "currency": item.currency,
         "external_reference": item.external_reference,
         "terms": deepcopy(item.terms_json),
+        "created_at": item.created_at,
+    }
+
+
+def _serialize_option_delivery_link(
+    item: OptionDeliveryLinkModel,
+) -> dict[str, object]:
+    return {
+        "portfolio_id": item.portfolio_id,
+        "option_transaction_id": item.option_transaction_id,
+        "stock_transaction_id": item.stock_transaction_id,
+        "underlying_instrument_id": item.underlying_instrument_id,
         "created_at": item.created_at,
     }
 
@@ -4229,15 +4300,22 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             ).all()
         ]
+        source_option_delivery_links = session.scalars(
+            select(OptionDeliveryLinkModel).where(
+                OptionDeliveryLinkModel.portfolio_id == portfolio_id
+            )
+        ).all()
         copied_transaction_identities = _allocate_transaction_identities(
             session,
             len(source_transactions),
         )
+        transaction_id_map: dict[str, str] = {}
         for transaction, (copied_transaction_id, copied_transaction_sequence) in zip(
             source_transactions,
             copied_transaction_identities,
             strict=True,
         ):
+            transaction_id_map[str(transaction["transaction_id"])] = copied_transaction_id
             copied_transaction = deepcopy(transaction)
             copied_transaction["transaction_id"] = copied_transaction_id
             copied_transaction["transaction_sequence"] = copied_transaction_sequence
@@ -4408,6 +4486,21 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             )
 
+        for link in source_option_delivery_links:
+            session.add(
+                OptionDeliveryLinkModel(
+                    portfolio_id=candidate,
+                    option_transaction_id=transaction_id_map[
+                        link.option_transaction_id
+                    ],
+                    stock_transaction_id=transaction_id_map[
+                        link.stock_transaction_id
+                    ],
+                    underlying_instrument_id=link.underlying_instrument_id,
+                    created_at=link.created_at,
+                )
+            )
+
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, candidate)
         session.commit()
@@ -4450,6 +4543,11 @@ def delete_portfolio(portfolio_id: str) -> bool:
         session.execute(delete(PortfolioCalculationStateModel).where(PortfolioCalculationStateModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
+        session.execute(
+            delete(OptionDeliveryLinkModel).where(
+                OptionDeliveryLinkModel.portfolio_id == portfolio_id
+            )
+        )
         session.execute(delete(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id))
         session.execute(
             delete(DerivativeContractRecordModel).where(
@@ -4571,6 +4669,56 @@ def get_transaction(portfolio_id: str, transaction_id: str) -> dict[str, object]
         if record is None:
             return None
         return _serialize_transaction_row(record)
+
+
+def list_option_delivery_links(
+    portfolio_id: str,
+    *,
+    underlying_instrument_id: str | None = None,
+) -> list[dict[str, object]]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        statement = select(OptionDeliveryLinkModel).where(
+            OptionDeliveryLinkModel.portfolio_id == portfolio_id
+        )
+        normalized_underlying_id = str(underlying_instrument_id or "").strip()
+        if normalized_underlying_id:
+            statement = statement.where(
+                OptionDeliveryLinkModel.underlying_instrument_id
+                == normalized_underlying_id
+            )
+        records = session.scalars(
+            statement.order_by(
+                OptionDeliveryLinkModel.created_at,
+                OptionDeliveryLinkModel.option_transaction_id,
+            )
+        ).all()
+        return [_serialize_option_delivery_link(record) for record in records]
+
+
+def option_delivery_transaction_ids(
+    portfolio_id: str,
+    transaction_id: str,
+) -> list[str]:
+    normalized_transaction_id = str(transaction_id or "").strip()
+    if not normalized_transaction_id:
+        return []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        link = session.scalar(
+            select(OptionDeliveryLinkModel).where(
+                OptionDeliveryLinkModel.portfolio_id == portfolio_id,
+                or_(
+                    OptionDeliveryLinkModel.option_transaction_id
+                    == normalized_transaction_id,
+                    OptionDeliveryLinkModel.stock_transaction_id
+                    == normalized_transaction_id,
+                ),
+            )
+        )
+        if link is None:
+            return [normalized_transaction_id]
+        return [link.option_transaction_id, link.stock_transaction_id]
 
 
 def get_transaction_idempotency_result(
@@ -5088,6 +5236,7 @@ def create_transactions(
     portfolio_id: str,
     *,
     records: list[dict[str, Any]],
+    option_delivery_pair: tuple[int, int, str] | None = None,
     idempotency_key: str | None = None,
     idempotency_payload: dict[str, Any] | None = None,
     idempotency_operation: str = "create_batch",
@@ -5255,6 +5404,84 @@ def create_transactions(
             session.add(record)
             session.flush()
             created.append(record)
+        if option_delivery_pair is not None:
+            option_index, stock_index, underlying_instrument_id = option_delivery_pair
+            if (
+                option_index == stock_index
+                or option_index < 0
+                or stock_index < 0
+                or option_index >= len(created)
+                or stock_index >= len(created)
+            ):
+                raise ValueError("Option delivery pair indexes are invalid.")
+            option_record = created[option_index]
+            stock_record = created[stock_index]
+            normalized_underlying_id = str(underlying_instrument_id or "").strip()
+            if not normalized_underlying_id:
+                raise ValueError("Option delivery requires an underlying instrument.")
+            lifecycle_event_type = str(option_record.lifecycle_event_type or "")
+            if lifecycle_event_type not in {
+                "option_long_exercise",
+                "option_writer_assignment",
+            }:
+                raise ValueError("Option delivery requires a physical option outcome fact.")
+            contract_record = session.get(
+                DerivativeContractRecordModel,
+                (portfolio_id, str(option_record.derivative_contract_id or "")),
+            )
+            terms = contract_record.terms_json if contract_record is not None else None
+            if (
+                contract_record is None
+                or contract_record.contract_type != "option"
+                or not isinstance(terms, dict)
+                or str(terms.get("underlying_instrument_id") or "").strip()
+                != normalized_underlying_id
+            ):
+                raise ValueError("Option delivery underlying does not match the contract.")
+            option_type = str(terms.get("option_type") or "").strip().lower()
+            expected_stock_type = {
+                ("option_long_exercise", "call"): "buy",
+                ("option_long_exercise", "put"): "sell",
+                ("option_writer_assignment", "call"): "sell",
+                ("option_writer_assignment", "put"): "buy",
+            }.get((lifecycle_event_type, option_type))
+            if (
+                expected_stock_type is None
+                or stock_record.transaction_type != expected_stock_type
+                or str(stock_record.instrument_id or "") != normalized_underlying_id
+            ):
+                raise ValueError("Linked stock delivery direction does not match the option outcome.")
+            option_quantity = option_record.source_quantity
+            stock_quantity = stock_record.source_quantity
+            multiplier = _transaction_source_decimal(
+                terms.get("contract_multiplier"),
+                quantum=QUANTITY_SOURCE_QUANTUM,
+                field_name="contract_multiplier",
+            )
+            strike = _transaction_source_decimal(
+                terms.get("strike"),
+                quantum=PRICE_SOURCE_QUANTUM,
+                field_name="strike",
+            )
+            if (
+                option_quantity is None
+                or stock_quantity is None
+                or multiplier is None
+                or strike is None
+                or stock_quantity != option_quantity * multiplier
+                or stock_record.source_price != strike
+            ):
+                raise ValueError("Linked stock delivery quantity or strike does not match the option contract.")
+            session.add(
+                OptionDeliveryLinkModel(
+                    portfolio_id=portfolio_id,
+                    option_transaction_id=option_record.transaction_id,
+                    stock_transaction_id=stock_record.transaction_id,
+                    underlying_instrument_id=normalized_underlying_id,
+                    created_at=_current_utc_timestamp(),
+                )
+            )
+            session.flush()
         _validate_portfolio_transaction_history(session, portfolio_id)
         serialized_created = [_serialize_transaction_row(record) for record in created]
         for serialized_record in serialized_created:
@@ -5463,6 +5690,28 @@ def delete_transactions(
     with session_factory() as session:
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             return []
+        delivery_links = session.scalars(
+            select(OptionDeliveryLinkModel).where(
+                OptionDeliveryLinkModel.portfolio_id == portfolio_id,
+                or_(
+                    OptionDeliveryLinkModel.option_transaction_id.in_(
+                        normalized_transaction_ids
+                    ),
+                    OptionDeliveryLinkModel.stock_transaction_id.in_(
+                        normalized_transaction_ids
+                    ),
+                ),
+            )
+        ).all()
+        for link in delivery_links:
+            pair_ids = {
+                link.option_transaction_id,
+                link.stock_transaction_id,
+            }
+            if not pair_ids.issubset(requested_transaction_ids):
+                raise ValueError(
+                    "Physical option settlement transactions must be deleted as a pair."
+                )
         records = session.scalars(
             select(TransactionRecordModel).where(
                 TransactionRecordModel.portfolio_id == portfolio_id,
@@ -5488,6 +5737,8 @@ def delete_transactions(
             for record in records
             if str(record.instrument_id or "").strip()
         }
+        for link in delivery_links:
+            session.delete(link)
         for record in records:
             session.delete(record)
         session.flush()

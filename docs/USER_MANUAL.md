@@ -261,15 +261,15 @@ Transactions 是组合事实入口。新增时先选 `Security`、`FCN`、`Optio
 FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
 
 - 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易动作只选择同一 `derivative_contract_id`。
-- 期权动作明确区分 `Buy to Open`、`Sell to Close`、`Sell to Open`、`Buy to Close`，并在选定合约后标明 Call 或 Put；另外分别提供 long/writer expiry 与 long/writer cash settlement。数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式。
+- 期权动作明确区分 `Buy to Open`、`Sell to Close`、`Sell to Open`、`Buy to Close`，并在选定合约后标明 Call 或 Put；另外分别提供 long/writer expiry 与 long/writer cash settlement。数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式；真实结果发生后再确认。
 - FCN 支持买入、coupon，以及 normal maturity、knock-in、knock-out 关闭结果。系统记录事件，不自动验证障碍是否触发，也不把交付资产与关闭事件绑定成一笔复合交易。
 - FCN 合约主条款记录名义本金、年化票息率、发行日、最终观察日、到期日、发行人和对手方；每个 underlying 单独记录 Registry security、初始参考价、strike/knock-in/knock-out 百分比水平和是否可交付。
-- 一行只记录一个经济事实。若实际发生期权实物交割，按“期权现金结算 + 交割日市场/参考价的独立股票买卖”录入；两者共同还原交割经济结果，但系统不建立关联。FCN 敲入后的资产接收也另录普通证券交易。
+- 提前实物行权或被指派时，在 `Transactions → Option` 选择已有合约，再从 Action 选择 `Exercise Long` 或 `Assign Written`；一次确认会原子生成零现金期权关闭腿和按 strike 的股票买卖腿，并建立一对一关联，Activity 中作为一项活动显示。组合任一页面打开时，若期权已经过期但 long/writer quantity 仍未关闭，也会弹出一次简洁的待确认提示，并可从页头入口重新打开。确认作废或现金结算会直接生成对应结果；Call/Put 与 long/written 决定实物交割方向，multiplier 决定股票数量，费用和税费只记在股票腿。合约与 underlying 币种不一致时不能推断实物交割，应录入经核对的现金结算。FCN 敲入后的资产接收仍另录普通证券交易。
 - 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
 
 买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。FCN 的建仓、退出、期初、票息及敲入/敲出必须发生在 issue date 至 maturity date（含）之间，到期事件不得早于 maturity date。
 
-Portfolio 创建时必须确定 inception date。任何交易都不得早于该日期；所有 `opening_balance` 的 trade date 与 settlement date 固定为该日期。已有资产可保留更早的 acquisition date，零成本 opening position 允许 gross amount 为 0；除此之外只有 Option long/writer expiry 允许零 gross amount。运行期新增现金应录为 Deposit，新增持仓应录为实际 Buy 或 Transfer，不能用 opening balance 绕过外部现金流。Cash Fee / Tax 不填写 entitlement date；资产关联费用要求 entitlement date 当日存在 long position 或 written-option obligation。Option 独立 Fee / Tax 是合约级现金费用，不改变 long lot 或 writer obligation。Return of Capital 用 trade date 表示 entitlement/record date、settlement date 表示到账日。
+Portfolio 创建时必须确定 inception date。任何交易都不得早于该日期；所有 `opening_balance` 的 trade date 与 settlement date 固定为该日期。已有资产可保留更早的 acquisition date，零成本 opening position 允许 gross amount 为 0；除此之外，Option long/writer expiry 与实物行权/指派的期权关闭腿允许零 gross amount。运行期新增现金应录为 Deposit，新增持仓应录为实际 Buy 或 Transfer，不能用 opening balance 绕过外部现金流。Cash Fee / Tax 不填写 entitlement date；资产关联费用要求 entitlement date 当日存在 long position 或 written-option obligation。Option 独立 Fee / Tax 是合约级现金费用，不改变 long lot 或 writer obligation。Return of Capital 用 trade date 表示 entitlement/record date、settlement date 表示到账日。
 
 费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
@@ -283,7 +283,7 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 Holdings 若显示 `Negative settled cash` critical alert，表示账本已有负现金但没有明确融资事实。应核对并补录缺失的 Deposit、Transfer 或真实融资记录；当前系统不会自动把负数解释为保证金融资。
 
-删除交易会影响由该交易派生的现金、持仓、成本和绩效。删除内部转账配对时，系统会按 transfer group 处理对应记录。删除前应确认该交易不是后续复盘口径的一部分。
+删除交易会影响由该交易派生的现金、持仓、成本和绩效。内部转账按 transfer group 成对删除；期权实物交割的期权腿和股票腿也必须成对删除，任一腿不能单独修改。删除前应确认该交易不是后续复盘口径的一部分。
 
 ### 6.4 Holdings
 
@@ -296,7 +296,7 @@ Securities 字段按 `Identity / Quote / Instrument Trend / Position / Cost / P&
 - P&L 把本币价格未实现、base-currency 价格未实现、base-currency 汇兑未实现和 base-currency 总未实现分开，并保证总额等于价格项加汇兑项。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
 - Instrument Trend 的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 与 Vol / Drawdown 使用标的自身已确认的本币 total-return series，包含分红等复权、不含汇率变化，也不读取历史买卖份额或成本。
 
-FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
+FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收期权/FCN 的虚构实时 fair value，不计算日常衍生品未实现盈亏、Greeks、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。Holdings 风险列可使用 Registry 的真实 underlying spot 计算期权 moneyness/intrinsic、written backing，以及 FCN 相对 initial/strike/KI/KO 的距离；这些只是当前风险读模型，不代表衍生品估值或已发生 barrier event。
 
 页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。instrument 数量紧邻标题。Securities、FCN 与 Options 可以独立使用 `View` 和 `Columns`；FCN、Options 均以 `Default` 为日常视图，并提供面向条款和估值的系统视图，系统视图切换不改变表格框架宽度。`Cash & Settlement` 使用固定字段，不提供没有实际价值的视图或列配置。每个 settled cash 行对应一个具体账户和币种，并展示该账户从历史流入汇率形成的未实现汇兑损益；组合内部现金划转沿用原成本，不在划转日重置，真正换汇则按录入的成交金额和汇率建立新币种成本。`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
 
@@ -310,7 +310,7 @@ Security Group/subtotal 是**当前持仓篮子**：金额加总，比例用组�
 
 默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
 
-Security Detail 分成三个互不混杂的视图：`Overview` 展示标的行情序列、当前仓位口径和分账户持仓；`Transactions` 展示该标的截至 as-of 的已确认经济事实及持仓生效、结算日期；`Position Lots` 展示开放成本批次、剩余数量和账面盈亏。卖出匹配记录附属于具体 lot，选择 lot 后在右侧 `Matched exits` 查看，不作为独立顶层页面。
+详情页根据对象采用不同结构。普通 Security detail 展示标的行情、当前仓位、分账户开放 lots、股票自身交易与已实现/未实现损益，同时单列挂钩期权的交易和损益；实物交割的股票腿与期权腿可相互核对。Option detail 展示合约属性、underlying 真实价格走势图与 strike、到期 payoff、intrinsic value、moneyness、剩余 premium/liability、到期和 backing 风险；没有可靠数据时不估造 time value、fair value 或 Greeks。FCN detail 按每个 underlying 展示真实价格路径及 initial/strike/KI/KO 参考线和距离，并集中呈现期限与价格区域风险；当前价格越线不等于系统确认历史 barrier event。
 
 ### 6.5 Overview
 
