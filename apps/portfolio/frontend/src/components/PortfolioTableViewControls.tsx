@@ -12,11 +12,8 @@ export type PortfolioTableViewOption = {
 type PortfolioTableViewControlsProps = {
   views: PortfolioTableViewOption[]
   activeViewId: string
-  edited: boolean
-  canSave: boolean
   canDelete?: boolean
   onSelect: (viewId: string) => void
-  onSave: () => void | Promise<void>
   onSaveAs: (name: string, description: string | null) => void | Promise<void>
   onDelete?: (viewId: string) => void | Promise<void>
 }
@@ -24,11 +21,8 @@ type PortfolioTableViewControlsProps = {
 export default function PortfolioTableViewControls({
   views,
   activeViewId,
-  edited,
-  canSave,
   canDelete = true,
   onSelect,
-  onSave,
   onSaveAs,
   onDelete,
 }: PortfolioTableViewControlsProps) {
@@ -52,8 +46,7 @@ export default function PortfolioTableViewControls({
   const saveDialogRef = useModalDialog(saveAsOpen, closeSaveAsDialog, draftNameRef)
   const deleteEnabled = canDelete && Boolean(onDelete)
   const busy = saving || deleting
-  const activeViewLabel = `View\u00A0: ${activeView?.name ?? 'Default'}${edited ? ' (Edited)' : ''}`
-  const quickActionLabel = edited ? (canSave ? 'Save view' : 'Save as view') : 'Create view'
+  const activeViewLabel = `View\u00A0: ${activeView?.name ?? 'Default'}`
 
   useEffect(() => {
     if (!viewMenuOpen) {
@@ -81,18 +74,6 @@ export default function PortfolioTableViewControls({
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [viewMenuOpen])
-
-  async function handleSave() {
-    if (!edited || !canSave || busy) {
-      return
-    }
-    setSaving(true)
-    try {
-      await onSave()
-    } finally {
-      setSaving(false)
-    }
-  }
 
   function openSaveAs() {
     setDraftName(activeView?.name ? `${activeView.name} Copy` : 'Custom View')
@@ -181,49 +162,27 @@ export default function PortfolioTableViewControls({
         </button>
         <button
           type="button"
-          className={`portfolio-table-view-button portfolio-table-view-quick-action ${edited ? 'portfolio-table-view-quick-action-active' : ''}`}
+          className="portfolio-table-view-button portfolio-table-view-quick-action"
           disabled={busy}
-          onClick={() => {
-            if (edited && canSave) {
-              void handleSave()
-              return
-            }
-            openSaveAs()
-          }}
-          aria-label={quickActionLabel}
-          title={quickActionLabel}
+          onClick={openSaveAs}
+          aria-label="Create view"
+          title="Create view"
         >
-          {edited ? (
-            saving ? (
-              '...'
-            ) : (
-              <span className="portfolio-table-view-save-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path
-                    d="M4 3h12l4 4v14H4V3zm2 2v4h10V5H6zm0 8v6h12v-6H6zm2 2h4v2H8v-2z"
-                    fill="currentColor"
-                  />
-                </svg>
-              </span>
-            )
-          ) : (
-            <span className="portfolio-table-view-plus-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M12 5v14M5 12h14"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="square"
-                  strokeWidth="2"
-                />
-              </svg>
-            </span>
-          )}
+          <span className="portfolio-table-view-plus-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M12 5v14M5 12h14"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="square"
+                strokeWidth="2"
+              />
+            </svg>
+          </span>
         </button>
         {viewMenuOpen ? (
           <div className="portfolio-table-view-menu" role="listbox" aria-label="Table views">
             {views.map((view) => {
-              const viewEdited = view.id === activeViewId && edited
               const deletable = canDeleteView(view)
               return (
                 <div
@@ -237,10 +196,7 @@ export default function PortfolioTableViewControls({
                   onKeyDown={(event) => handleViewKeyDown(event, view)}
                 >
                   <span className="portfolio-table-view-option-copy">
-                    <span className="portfolio-table-view-option-name">
-                      {view.name}
-                      {viewEdited ? <span className="portfolio-table-view-option-edited">Edited</span> : null}
-                    </span>
+                    <span className="portfolio-table-view-option-name">{view.name}</span>
                   </span>
                   {deletable ? (
                     <button
@@ -282,26 +238,23 @@ export default function PortfolioTableViewControls({
       />
 
       {saveAsOpen ? (
-        <div className="portfolio-table-view-modal-backdrop" onClick={closeSaveAsDialog}>
+        <div className="portfolio-table-config-backdrop" onClick={closeSaveAsDialog}>
           <div
             ref={saveDialogRef}
-            className="portfolio-table-view-modal"
+            className="portfolio-table-config-modal portfolio-table-config-compact-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="portfolio-create-view-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="portfolio-table-view-modal-header">
-              <div>
-                <div className="panel-title" id="portfolio-create-view-title">Create View</div>
-                <div className="section-heading">Save Current Table Layout</div>
-              </div>
+            <div className="portfolio-table-config-header">
+              <div className="panel-title" id="portfolio-create-view-title">Create View</div>
               <button type="button" disabled={saving} onClick={closeSaveAsDialog}>
                 Close
               </button>
             </div>
-            <div className="portfolio-table-view-modal-body">
+            <div className="portfolio-table-config-body">
               <label className="portfolio-table-view-field">
                 <span>View Name</span>
                 <input
@@ -321,12 +274,12 @@ export default function PortfolioTableViewControls({
                 />
               </label>
             </div>
-            <div className="portfolio-table-view-modal-actions">
+            <div className="portfolio-table-config-actions portfolio-table-config-actions-sticky">
               <button type="button" disabled={saving} onClick={closeSaveAsDialog}>
                 Cancel
               </button>
               <button type="button" className="button-primary" disabled={!draftName.trim() || saving} onClick={handleSaveAs}>
-                {saving ? 'Saving...' : 'Save View'}
+                {saving ? 'Creating...' : 'Create View'}
               </button>
             </div>
           </div>

@@ -7,6 +7,7 @@ import {
 } from 'react'
 
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   getPortfolioTableViewStore,
   savePortfolioTableViewStore,
@@ -75,10 +76,6 @@ function normalizeColumns(
     : allColumnKeys.filter((column) => column === requiredColumnKey)
 }
 
-function viewStateEquals(left: HoldingsSectionViewState, right: HoldingsSectionViewState) {
-  return JSON.stringify(left.columns) === JSON.stringify(right.columns)
-}
-
 function createViewId() {
   return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
 }
@@ -127,23 +124,30 @@ export default function ConfigurableHoldingsSection({
     const record = value && typeof value === 'object'
       ? (value as Partial<HoldingsSectionViewStore>)
       : {}
-    const customViews = Array.isArray(record.views)
+    const storedViews = Array.isArray(record.views)
       ? record.views.flatMap((candidate) => {
           if (!candidate || typeof candidate !== 'object') {
             return []
           }
           const view = candidate as Partial<HoldingsSectionTableView>
-          if (typeof view.id !== 'string' || !view.id.startsWith('custom:')) {
+          if (typeof view.id !== 'string') {
+            return []
+          }
+          const systemView = normalizedSystemViews.find((item) => item.id === view.id)
+          if (!systemView && !view.id.startsWith('custom:')) {
             return []
           }
           return [{
             id: view.id,
-            name:
+            name: systemView?.name ?? (
               typeof view.name === 'string' && view.name.trim()
                 ? view.name.trim()
-                : 'Custom View',
-            description: typeof view.description === 'string' ? view.description : null,
-            readonly: false,
+                : 'Custom View'
+            ),
+            description: systemView?.description ?? (
+              typeof view.description === 'string' ? view.description : null
+            ),
+            readonly: Boolean(systemView),
             createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
             updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
             state: {
@@ -151,13 +155,25 @@ export default function ConfigurableHoldingsSection({
                 view.state?.columns,
                 allColumnKeys,
                 requiredColumnKey,
-                defaultView.state.columns,
+                systemView?.state.columns ?? defaultView.state.columns,
               ),
             },
           }]
         })
       : []
-    const views = [...normalizedSystemViews, ...customViews]
+    const storedViewById = new Map(storedViews.map((view) => [view.id, view]))
+    const systemViews = normalizedSystemViews.map((systemView) => {
+      const storedView = storedViewById.get(systemView.id)
+      return storedView
+        ? {
+            ...systemView,
+            state: storedView.state,
+            updatedAt: storedView.updatedAt,
+          }
+        : systemView
+    })
+    const customViews = storedViews.filter((view) => view.id.startsWith('custom:'))
+    const views = [...systemViews, ...customViews]
     const activeViewId =
       typeof record.activeViewId === 'string' &&
       views.some((view) => view.id === record.activeViewId)
@@ -181,21 +197,15 @@ export default function ConfigurableHoldingsSection({
   const [ready, setReady] = useState(false)
   const [viewError, setViewError] = useState<string | null>(null)
   const persistedStoreRef = useRef<{ portfolioId: string; serialized: string } | null>(null)
+  const saveQueueRef = useRef(new SerialTaskQueue())
   const columnsDialogRef = useModalDialog(columnsOpen, () => setColumnsOpen(false))
 
-  const activeView =
-    viewStore.views.find((view) => view.id === activeViewId) ?? defaultView
   const normalizedVisibleColumnKeys = normalizeColumns(
     visibleColumnKeys,
     allColumnKeys,
     requiredColumnKey,
     defaultView.state.columns,
   )
-  const viewEdited = !viewStateEquals(
-    { columns: normalizedVisibleColumnKeys },
-    activeView.state,
-  )
-  const fieldsEdited = viewEdited
   const filteredColumns = columns.filter((column) => {
     const query = columnSearch.trim().toLowerCase()
     return !query || column.label.toLowerCase().includes(query) || column.key.toLowerCase().includes(query)
@@ -256,14 +266,22 @@ export default function ConfigurableHoldingsSection({
       return
     }
     persistedStoreRef.current = { portfolioId, serialized }
-    setViewError(null)
-    savePortfolioTableViewStore(portfolioId, viewScope, viewStore).catch(
-      (requestError: unknown) => {
-        setViewError(
-          requestError instanceof Error ? requestError.message : 'Failed to save table views.',
-        )
-      },
-    )
+    saveQueueRef.current
+      .enqueue(() => savePortfolioTableViewStore(portfolioId, viewScope, viewStore))
+      .then(
+        () => {
+          if (persistedStoreRef.current?.portfolioId === portfolioId) {
+            setViewError(null)
+          }
+        },
+        (requestError: unknown) => {
+          if (persistedStoreRef.current?.portfolioId === portfolioId) {
+            setViewError(
+              requestError instanceof Error ? requestError.message : 'Failed to save table views.',
+            )
+          }
+        },
+      )
   }, [portfolioId, ready, viewScope, viewStore])
 
   useEffect(() => {
@@ -277,8 +295,16 @@ export default function ConfigurableHoldingsSection({
     setViewStore((current) => ({ ...current, activeViewId: nextView.id }))
   }
 
-  function handleSaveView() {
+  function updateActiveViewColumns(columns: string[]) {
     const timestamp = new Date().toISOString()
+    const normalizedColumns = normalizeColumns(
+      columns,
+      allColumnKeys,
+      requiredColumnKey,
+      defaultView.state.columns,
+    )
+    setVisibleColumnKeys(normalizedColumns)
+    setColumnDraft(normalizedColumns)
     setViewStore((current) => ({
       ...current,
       activeViewId,
@@ -286,7 +312,7 @@ export default function ConfigurableHoldingsSection({
         view.id === activeViewId
           ? {
               ...view,
-              state: { columns: normalizedVisibleColumnKeys },
+              state: { columns: normalizedColumns },
               updatedAt: timestamp,
             }
           : view,
@@ -361,11 +387,8 @@ export default function ConfigurableHoldingsSection({
             <PortfolioTableViewControls
               views={viewStore.views}
               activeViewId={activeViewId}
-              edited={viewEdited}
-              canSave={!activeView.readonly}
               canDelete
               onSelect={handleSelectView}
-              onSave={handleSaveView}
               onSaveAs={handleSaveViewAs}
               onDelete={handleDeleteView}
             />
@@ -376,9 +399,7 @@ export default function ConfigurableHoldingsSection({
           )}
           <button
             type="button"
-            className={`portfolio-table-toolbar-button ${
-              fieldsEdited ? 'portfolio-table-toolbar-button-active' : ''
-            }`}
+            className="portfolio-table-toolbar-button"
             onClick={() => {
               setColumnDraft(normalizedVisibleColumnKeys)
               setColumnSearch('')
@@ -462,7 +483,7 @@ export default function ConfigurableHoldingsSection({
                 type="button"
                 className="button-primary"
                 onClick={() => {
-                  setVisibleColumnKeys(
+                  updateActiveViewColumns(
                     normalizeColumns(
                       columnDraft,
                       allColumnKeys,

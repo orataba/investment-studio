@@ -11,6 +11,7 @@ import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMen
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
@@ -312,6 +313,7 @@ const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
   sortField: null,
   sortDirection: 'asc',
 }
+const CALCULATION_VIEW_AUTOSAVE_DELAY_MS = 250
 
 const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   {
@@ -1580,6 +1582,7 @@ function PerformancePage() {
     portfolioId: string
     serializedStore: string
   } | null>(null)
+  const calculationViewSaveQueueRef = useRef(new SerialTaskQueue())
   const [calculationTableViewStoreReadyPortfolioId, setCalculationTableViewStoreReadyPortfolioId] =
     useState<string | null>(null)
   const [calculationTableViewStoreSettledPortfolioId, setCalculationTableViewStoreSettledPortfolioId] =
@@ -1746,6 +1749,26 @@ function PerformancePage() {
     currentCalculationTableViewState,
     activeCalculationTableView.state,
   )
+
+  useEffect(() => {
+    if (
+      calculationTableViewStoreReadyPortfolioId !== portfolioId ||
+      !calculationTableViewEdited
+    ) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(
+      () => updateCalculationTableViewState(currentCalculationTableViewState),
+      CALCULATION_VIEW_AUTOSAVE_DELAY_MS,
+    )
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    activeCalculationTableViewId,
+    calculationTableViewEdited,
+    calculationTableViewStoreReadyPortfolioId,
+    currentCalculationTableViewState,
+    portfolioId,
+  ])
   const visibleCalculationColumns = useMemo(
     () => normalizeCalculationColumns(calculationColumns),
     [calculationColumns],
@@ -1835,8 +1858,9 @@ function PerformancePage() {
     applyCalculationTableViewState(resolveCalculationTableViewState(calculationTableViewStore, nextView.id))
   }
 
-  function handleSaveCalculationTableView() {
+  function updateCalculationTableViewState(state: CalculationTableViewState) {
     const timestamp = new Date().toISOString()
+    const normalizedState = normalizeCalculationTableViewState(state)
     setCalculationTableViewStore((current) => ({
       ...current,
       activeViewId: activeCalculationTableViewId,
@@ -1844,13 +1868,12 @@ function PerformancePage() {
         view.id === activeCalculationTableViewId
           ? {
               ...view,
-              state: currentCalculationTableViewState,
+              state: normalizedState,
               updatedAt: timestamp,
             }
           : view,
       ),
     }))
-    setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
   }
 
   function handleSaveCalculationTableViewAs(name: string, description: string | null) {
@@ -1963,15 +1986,30 @@ function PerformancePage() {
       return
     }
     persistedCalculationTableViewStoreRef.current = { portfolioId, serializedStore }
-    savePortfolioTableViewStore(portfolioId, 'performance_calculation', calculationTableViewStore).catch(
-      (requestError: unknown) => {
-        setCalculationTableViewStoreError(
-          `Failed to save calculation table views: ${
-            requestError instanceof Error ? requestError.message : 'backend write failed.'
-          }`,
-        )
-      },
-    )
+    calculationViewSaveQueueRef.current
+      .enqueue(() =>
+        savePortfolioTableViewStore(
+          portfolioId,
+          'performance_calculation',
+          calculationTableViewStore,
+        ),
+      )
+      .then(
+        () => {
+          if (persistedCalculationTableViewStoreRef.current?.portfolioId === portfolioId) {
+            setCalculationTableViewStoreError(null)
+          }
+        },
+        (requestError: unknown) => {
+          if (persistedCalculationTableViewStoreRef.current?.portfolioId === portfolioId) {
+            setCalculationTableViewStoreError(
+              `Failed to save calculation table views: ${
+                requestError instanceof Error ? requestError.message : 'backend write failed.'
+              }`,
+            )
+          }
+        },
+      )
   }, [calculationTableViewStore, calculationTableViewStoreReadyPortfolioId, portfolioId])
 
   useEffect(() => {
@@ -2774,11 +2812,8 @@ function PerformancePage() {
                       <PortfolioTableViewControls
                         views={calculationTableViews}
                         activeViewId={activeCalculationTableViewId}
-                        edited={calculationTableViewEdited}
-                        canSave
                         canDelete
                         onSelect={handleSelectCalculationTableView}
-                        onSave={handleSaveCalculationTableView}
                         onSaveAs={handleSaveCalculationTableViewAs}
                         onDelete={handleDeleteCalculationTableView}
                       />
@@ -2789,7 +2824,7 @@ function PerformancePage() {
                     )}
                     <button
                       type="button"
-                      className={`portfolio-table-toolbar-button ${calculationTableViewEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
+                      className="portfolio-table-toolbar-button"
                       onClick={() => {
                         setCalculationColumnDraft(calculationColumns)
                         setCalculationModeDraft(calculationTableMode)
@@ -2889,10 +2924,7 @@ function PerformancePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div>
-                <div className="panel-title">Columns</div>
-                <div className="section-heading">Manage Calculation Columns</div>
-              </div>
+              <div className="panel-title">Columns</div>
               <button type="button" onClick={() => setCalculationColumnsOpen(false)}>
                 Close
               </button>
@@ -2986,8 +3018,14 @@ function PerformancePage() {
                 type="button"
                 className="button-primary"
                 onClick={() => {
-                  setCalculationColumns(normalizeCalculationColumns(calculationColumnDraft))
+                  const nextColumns = normalizeCalculationColumns(calculationColumnDraft)
+                  setCalculationColumns(nextColumns)
                   setCalculationTableMode(calculationModeDraft)
+                  updateCalculationTableViewState({
+                    ...currentCalculationTableViewState,
+                    columns: nextColumns,
+                    mode: calculationModeDraft,
+                  })
                   setCalculationColumnsOpen(false)
                 }}
               >

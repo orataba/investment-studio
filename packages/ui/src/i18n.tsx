@@ -226,6 +226,7 @@ const baseMessages: LanguageMessages = {
     'Add Quote': '添加报价',
     'Import NAV': '导入净值',
     Refresh: '刷新',
+    'Close Action': '关闭',
     'Close Detail': '关闭详情',
     Operations: '操作',
     'Add Asset': '添加资产',
@@ -695,6 +696,32 @@ function isKnownRenderedTranslation(
   return supportedLanguages.some((language) => value === translateText(original, language.value, messages, patterns))
 }
 
+function contextualDomText(node: Text, original: string) {
+  if (original.trim() !== 'Close' || !node.parentElement?.closest('button')) {
+    return original
+  }
+  const leading = original.match(/^\s*/)?.[0] || ''
+  const trailing = original.match(/\s*$/)?.[0] || ''
+  return `${leading}Close Action${trailing}`
+}
+
+function isKnownRenderedTextTranslation(
+  node: Text,
+  value: string,
+  original: string,
+  messages: LanguageMessages,
+  patterns: LanguagePatternMessages,
+) {
+  const contextualOriginal = contextualDomText(node, original)
+  return supportedLanguages.some((language) =>
+    value === (
+      language.value === 'en'
+        ? original
+        : translateText(contextualOriginal, language.value, messages, patterns)
+    ),
+  )
+}
+
 function shouldIgnoreElement(element: Element | null) {
   if (!element) {
     return false
@@ -720,12 +747,14 @@ function translateTextNode(
   let original = storedOriginal || node.data
   if (!storedOriginal) {
     textNodeOriginals.set(node, original)
-  } else if (!isKnownRenderedTranslation(node.data, storedOriginal, messages, patterns)) {
+  } else if (!isKnownRenderedTextTranslation(node, node.data, storedOriginal, messages, patterns)) {
     original = node.data
     textNodeOriginals.set(node, original)
   }
 
-  const next = language === 'en' ? original : translateText(original, language, messages, patterns)
+  const next = language === 'en'
+    ? original
+    : translateText(contextualDomText(node, original), language, messages, patterns)
   if (node.data !== next) {
     node.data = next
   }

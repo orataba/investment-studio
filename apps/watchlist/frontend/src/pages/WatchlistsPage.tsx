@@ -48,6 +48,7 @@ import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
+import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   formatBoolean,
   formatCompactCurrency,
@@ -68,6 +69,13 @@ type ModalKind =
   | 'move-items'
   | null
 type FilterState = Record<string, unknown[]>
+type WatchlistViewSettings = {
+  columns: string[]
+  groupBy: string
+  sortRules: Array<{ field: string; direction: string }>
+  filters: FilterState
+  columnWidths: Record<string, number>
+}
 type FilterOption = { key: string; label: string; value: unknown }
 type WatchlistRowGroup = {
   key: string
@@ -134,6 +142,7 @@ const TAXONOMY_GROUP_DEPTH_INDENT_PX = 18
 const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
 const WATCHLIST_SELECT_COLUMN_WIDTH = 44
 const WATCHLIST_DEFAULT_COLUMN_WIDTH = 140
+const WATCHLIST_VIEW_AUTOSAVE_DELAY_MS = 250
 const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   field_key: TAXONOMY_FILTER_FIELD_KEY,
   label: 'Taxonomy',
@@ -724,6 +733,7 @@ export default function WatchlistsPage() {
   const [columnDraft, setColumnDraft] = useState<string[]>([])
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
   const [columnDropTarget, setColumnDropTarget] = useState('')
+  const [columnResizing, setColumnResizing] = useState(false)
   const [workingGroupBy, setWorkingGroupBy] = useState(
     () => watchlistSearchParams.get('group') || 'none',
   )
@@ -802,6 +812,9 @@ export default function WatchlistsPage() {
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
   const activeWatchlistIdRef = useRef(watchlistId)
+  const viewSaveQueueRef = useRef(new SerialTaskQueue())
+  const viewSaveSequenceRef = useRef(0)
+  const latestViewSaveSequenceRef = useRef(new Map<string, number>())
   activeWatchlistIdRef.current = watchlistId
   const watchlistSearchKey = watchlistSearchParams.toString()
 
@@ -1487,6 +1500,16 @@ export default function WatchlistsPage() {
     serializeFilterState(workingFilters) !== serializeFilterState(baseFilters) ||
     JSON.stringify(sortRules) !== JSON.stringify(baseSort) ||
     viewColumnWidthsEdited
+  const workingViewSignature = JSON.stringify({
+    columns: visibleColumns,
+    groupBy: workingGroupBy,
+    filters: workingFilters,
+    sortRules,
+    columnWidths: visibleColumns.map((fieldKey) => [
+      fieldKey,
+      columnWidths[fieldKey] ?? defaultWidthByKey.get(fieldKey) ?? null,
+    ]),
+  })
 
   useEffect(() => {
     if (!detailIsCurrent || !activeView) {
@@ -2104,24 +2127,29 @@ export default function WatchlistsPage() {
     return map
   }, [mergedFieldRegistry])
 
-  const buildViewPayload = (name: string, description: string | null) => {
+  const buildViewPayload = (
+    name: string,
+    description: string | null,
+    settings: Partial<WatchlistViewSettings> = {},
+  ) => {
     const advancedFilters =
       activeView?.default_advanced_filters &&
       typeof activeView.default_advanced_filters === 'object'
         ? activeView.default_advanced_filters
         : null
-    const enforcedColumns = ensureRequiredColumns(visibleColumns)
+    const enforcedColumns = ensureRequiredColumns(settings.columns ?? visibleColumns)
+    const selectedColumnWidths = settings.columnWidths ?? columnWidths
     return {
       name,
       description,
-      default_group_by: workingGroupBy,
-      default_sort: sortRules,
-      default_filters: workingFilters,
+      default_group_by: settings.groupBy ?? workingGroupBy,
+      default_sort: settings.sortRules ?? sortRules,
+      default_filters: settings.filters ?? workingFilters,
       default_advanced_filters: advancedFilters,
       columns: enforcedColumns.map((field_key, index) => ({
         field_key,
         display_order: index,
-        width: columnWidths[field_key] ?? defaultWidthByKey.get(field_key),
+        width: selectedColumnWidths[field_key] ?? defaultWidthByKey.get(field_key),
         is_visible: true,
       })),
     }
@@ -2164,27 +2192,66 @@ export default function WatchlistsPage() {
     setNotice(null)
   }
 
-  async function handleSaveActiveWatchlistView() {
+  async function persistActiveWatchlistView(settings: WatchlistViewSettings) {
     const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
     if (!sourceWatchlistId || !activeView) {
       return
     }
-    setIsSavingView(true)
-    setError(null)
+    const viewId = activeView.view_id
+    const viewKey = `${sourceWatchlistId}\u0000${viewId}`
+    const saveSequence = viewSaveSequenceRef.current + 1
+    viewSaveSequenceRef.current = saveSequence
+    latestViewSaveSequenceRef.current.set(viewKey, saveSequence)
+    const payload = buildViewPayload(activeView.name, activeView.description, settings)
     try {
-      const updated = await updateWatchlistView(
-        sourceWatchlistId,
-        activeView.view_id,
-        buildViewPayload(activeView.name, activeView.description),
+      const updated = await viewSaveQueueRef.current.enqueue(() =>
+        updateWatchlistView(sourceWatchlistId, viewId, payload),
       )
-      await refreshWatchlistDetail(updated.view_id, sourceWatchlistId)
-      setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
+      if (
+        activeWatchlistIdRef.current !== sourceWatchlistId ||
+        latestViewSaveSequenceRef.current.get(viewKey) !== saveSequence
+      ) {
+        return
+      }
+      setWatchlistDetail((current) => {
+        if (!current || current.watchlist_id !== sourceWatchlistId) {
+          return current
+        }
+        return {
+          ...current,
+          views: current.views.map((view) =>
+            view.view_id === updated.view_id ? updated : view,
+          ),
+        }
+      })
+      setError(null)
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
-    } finally {
-      setIsSavingView(false)
+      if (
+        activeWatchlistIdRef.current === sourceWatchlistId &&
+        latestViewSaveSequenceRef.current.get(viewKey) === saveSequence
+      ) {
+        setError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
+      }
     }
   }
+
+  useEffect(() => {
+    if (!detailIsCurrent || !activeView || columnResizing || !viewEdited) {
+      return undefined
+    }
+    const settings: WatchlistViewSettings = {
+      columns: visibleColumns,
+      groupBy: workingGroupBy,
+      sortRules,
+      filters: workingFilters,
+      columnWidths,
+    }
+    const timeoutId = window.setTimeout(
+      () => void persistActiveWatchlistView(settings),
+      WATCHLIST_VIEW_AUTOSAVE_DELAY_MS,
+    )
+    return () => window.clearTimeout(timeoutId)
+  }, [activeView?.view_id, columnResizing, detailIsCurrent, viewEdited, workingViewSignature])
 
   async function handleDownloadCurrentView(format: TableExportFormat) {
     if (!baseScreenerPayload || !screenerResult?.total_rows) {
@@ -2347,12 +2414,20 @@ export default function WatchlistsPage() {
     }
 
     function handleResizeEnd() {
+      const wasResizing = Boolean(resizeState.current)
       resizeState.current = null
       if (resizeFrame.current != null) {
         window.cancelAnimationFrame(resizeFrame.current)
         resizeFrame.current = null
       }
+      if (pendingResize.current) {
+        const { column, width } = pendingResize.current
+        setColumnWidths((current) => ({ ...current, [column]: width }))
+      }
       pendingResize.current = null
+      if (wasResizing) {
+        setColumnResizing(false)
+      }
       document.body.style.cursor = ''
     }
 
@@ -2547,7 +2622,7 @@ export default function WatchlistsPage() {
               >
                 {watchlistDetail?.views.map((view: WatchlistView) => (
                   <option key={view.view_key} value={view.view_id}>
-                    {`View\u00A0: ${view.name}${view.view_id === activeViewId && viewEdited ? ' (Edited)' : ''}`}
+                    {`View\u00A0: ${view.name}`}
                   </option>
                 ))}
               </select>
@@ -2556,42 +2631,21 @@ export default function WatchlistsPage() {
                 type="button"
                 className="watchlists-plus-button"
                 disabled={isSavingView}
-                aria-label={viewEdited ? 'Save view' : 'Create view'}
-                title={viewEdited ? 'Save view' : 'Create view'}
-                onClick={() => {
-                  if (viewEdited && watchlistId && activeView) {
-                    void handleSaveActiveWatchlistView()
-                  } else {
-                    openSaveViewModal()
-                  }
-                }}
+                aria-label="Create view"
+                title="Create view"
+                onClick={openSaveViewModal}
               >
-                {viewEdited ? (
-                  isSavingView ? (
-                    '...'
-                  ) : (
-                    <span className="watchlists-save-icon" aria-label="Save">
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M4 3h12l4 4v14H4V3zm2 2v4h10V5H6zm0 8v6h12v-6H6zm2 2h4v2H8v-2z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    </span>
-                  )
-                ) : (
-                  <span className="watchlists-plus-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24">
-                      <path
-                        d="M12 5v14M5 12h14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeLinecap="square"
-                        strokeWidth="2"
-                      />
-                    </svg>
-                  </span>
-                )}
+                <span className="watchlists-plus-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path
+                      d="M12 5v14M5 12h14"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeLinecap="square"
+                      strokeWidth="2"
+                    />
+                  </svg>
+                </span>
               </button>
             </div>
 
@@ -3024,6 +3078,7 @@ export default function WatchlistsPage() {
                             startX: event.clientX,
                             startWidth: currentWidth,
                           }
+                          setColumnResizing(true)
                           document.body.style.cursor = 'col-resize'
                         }}
                       />
@@ -3331,9 +3386,11 @@ export default function WatchlistsPage() {
                 type="button"
                 className="button-primary"
                 onClick={() => {
-                  setWorkingColumns(ensureRequiredColumns(columnDraft.length ? columnDraft : [primaryDisplayColumn]))
+                  const nextColumns = ensureRequiredColumns(
+                    columnDraft.length ? columnDraft : [primaryDisplayColumn],
+                  )
+                  setWorkingColumns(nextColumns)
                   setModalKind(null)
-                  setViewToast({ id: Date.now(), message: 'Columns updated. Save the view to keep changes.', tone: 'info' })
                 }}
               >
                 Update
@@ -3561,7 +3618,7 @@ export default function WatchlistsPage() {
         <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
           <div
             ref={modalDialogRef}
-            className="watchlists-modal watchlists-save-modal"
+            className="watchlists-modal watchlists-compact-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Create watchlist"
@@ -3569,10 +3626,7 @@ export default function WatchlistsPage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
-              <div>
-                <div className="panel-title">Create Watchlist</div>
-                <div className="section-heading">Create A New List For Instruments And Views</div>
-              </div>
+              <div className="panel-title">Create Watchlist</div>
               <button
                 type="button"
                 disabled={isCreatingWatchlist}
@@ -3607,7 +3661,7 @@ export default function WatchlistsPage() {
               </label>
             </div>
 
-            <div className="watchlists-modal-actions">
+            <div className="watchlists-modal-actions watchlists-modal-actions-sticky">
               <button
                 type="button"
                 disabled={isCreatingWatchlist}
@@ -3663,18 +3717,15 @@ export default function WatchlistsPage() {
         <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
           <div
             ref={modalDialogRef}
-            className="watchlists-modal watchlists-save-modal"
+            className="watchlists-modal watchlists-compact-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Save watchlist view"
+            aria-label="Create watchlist view"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
-              <div>
-                <div className="panel-title">Create View</div>
-                <div className="section-heading">Save Current Columns And Grouping</div>
-              </div>
+              <div className="panel-title">Create View</div>
               <button type="button" disabled={isSavingView} onClick={closeActiveModal}>
                 Close
               </button>
@@ -3702,7 +3753,7 @@ export default function WatchlistsPage() {
               </label>
             </div>
 
-            <div className="watchlists-modal-actions">
+            <div className="watchlists-modal-actions watchlists-modal-actions-sticky">
               <button type="button" disabled={isSavingView} onClick={closeActiveModal}>
                 Cancel
               </button>
@@ -3733,7 +3784,7 @@ export default function WatchlistsPage() {
                   }
                 }}
               >
-                {isSavingView ? 'Saving...' : 'Save View'}
+                {isSavingView ? 'Creating...' : 'Create View'}
               </button>
             </div>
           </div>

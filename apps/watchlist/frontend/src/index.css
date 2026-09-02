@@ -1212,20 +1212,6 @@ th {
   display: block;
 }
 
-.watchlists-save-icon {
-  display: inline-flex;
-  width: 16px;
-  height: 16px;
-  align-items: center;
-  justify-content: center;
-}
-
-.watchlists-save-icon svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
-
 .watchlists-view-group .watchlists-inline-select-group:focus,
 .watchlists-view-group .watchlists-inline-select-group:focus-visible,
 .watchlists-view-group .watchlists-plus-button:focus,

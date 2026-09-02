@@ -27,6 +27,7 @@ import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   formatCurrency,
   formatLabel,
@@ -275,6 +276,7 @@ type HoldingsViewStore = {
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
 const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.columnWidths.v4'
+const HOLDINGS_VIEW_AUTOSAVE_DELAY_MS = 250
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
 
@@ -1733,7 +1735,17 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
         .map((view) => normalizeHoldingsTableView(view, false))
         .filter((view): view is HoldingsTableView => view !== null)
     : []
-  const systemViews = SYSTEM_HOLDINGS_VIEWS
+  const storedViewById = new Map(storedViews.map((view) => [view.id, view]))
+  const systemViews = SYSTEM_HOLDINGS_VIEWS.map((systemView) => {
+    const storedView = storedViewById.get(systemView.id)
+    return storedView
+      ? {
+          ...systemView,
+          state: storedView.state,
+          updatedAt: storedView.updatedAt,
+        }
+      : systemView
+  })
   const customViews = storedViews
     .filter((view) => view.id.startsWith('custom:'))
     .map((view) => ({ ...view, readonly: false }))
@@ -2616,6 +2628,7 @@ export default function PortfolioHomePage() {
     portfolioId: string
     serializedStore: string
   } | null>(null)
+  const holdingsViewSaveQueueRef = useRef(new SerialTaskQueue())
   const [holdingsViewStoreReadyPortfolioId, setHoldingsViewStoreReadyPortfolioId] =
     useState<string | null>(null)
   const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
@@ -2661,6 +2674,7 @@ export default function PortfolioHomePage() {
   const [holdingsColumnCategory, setHoldingsColumnCategory] = useState(HOLDINGS_COLUMN_GROUPS[0]?.label ?? 'Core')
   const [holdingsColumnSearch, setHoldingsColumnSearch] = useState('')
   const [holdingsColumnDropTarget, setHoldingsColumnDropTarget] = useState<HoldingsColumnKey | null>(null)
+  const [holdingsColumnResizing, setHoldingsColumnResizing] = useState(false)
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [holdingsSortField, setHoldingsSortField] = useState<HoldingsColumnKey | null>(
     () => initialHoldingsUrlSortField ?? initialHoldingsViewState.sortField,
@@ -2714,7 +2728,28 @@ export default function PortfolioHomePage() {
   const holdingsViewEdited = !holdingsViewStatesEqual(currentHoldingsViewState, activeHoldingsView.state)
   const selectedGroupByOption =
     HOLDINGS_GROUP_BY_OPTIONS.find((option) => option.value === holdingsGroupBy) ?? HOLDINGS_GROUP_BY_OPTIONS[0]
-  const columnsEdited = JSON.stringify(normalizeHoldingsColumns(holdingsColumns)) !== JSON.stringify(activeHoldingsView.state.columns)
+
+  useEffect(() => {
+    if (
+      holdingsViewStoreReadyPortfolioId !== portfolioId ||
+      holdingsColumnResizing ||
+      !holdingsViewEdited
+    ) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(
+      () => updateHoldingsViewState(currentHoldingsViewState),
+      HOLDINGS_VIEW_AUTOSAVE_DELAY_MS,
+    )
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    activeHoldingsViewId,
+    currentHoldingsViewState,
+    holdingsColumnResizing,
+    holdingsViewEdited,
+    holdingsViewStoreReadyPortfolioId,
+    portfolioId,
+  ])
 
   const taxonomyByInstrumentId = useMemo(
     () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog),
@@ -2875,8 +2910,9 @@ export default function PortfolioHomePage() {
     applyHoldingsViewState(resolveHoldingsViewState(holdingsViewStore, nextView.id))
   }
 
-  function handleSaveHoldingsView() {
+  function updateHoldingsViewState(state: HoldingsViewState) {
     const timestamp = new Date().toISOString()
+    const normalizedState = normalizeHoldingsViewState(state)
     setHoldingsViewStore((current) => {
       return {
         ...current,
@@ -2885,14 +2921,13 @@ export default function PortfolioHomePage() {
           view.id === activeHoldingsViewId
             ? {
                 ...view,
-                state: currentHoldingsViewState,
+                state: normalizedState,
                 updatedAt: timestamp,
               }
             : view,
         ),
       }
     })
-    setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
   }
 
   function handleSaveHoldingsViewAs(name: string, description: string | null) {
@@ -3056,6 +3091,7 @@ export default function PortfolioHomePage() {
       startX: event.clientX,
       startWidth: currentWidth,
     }
+    setHoldingsColumnResizing(true)
     document.body.style.cursor = 'col-resize'
   }
 
@@ -3500,13 +3536,24 @@ export default function PortfolioHomePage() {
       return
     }
     persistedHoldingsViewStoreRef.current = { portfolioId, serializedStore }
-    savePortfolioTableViewStore(portfolioId, 'holdings', holdingsViewStore).catch((requestError: unknown) => {
-      setHoldingsViewStoreError(
-        `Failed to save holdings table views: ${
-          requestError instanceof Error ? requestError.message : 'backend write failed.'
-        }`,
+    holdingsViewSaveQueueRef.current
+      .enqueue(() => savePortfolioTableViewStore(portfolioId, 'holdings', holdingsViewStore))
+      .then(
+        () => {
+          if (persistedHoldingsViewStoreRef.current?.portfolioId === portfolioId) {
+            setHoldingsViewStoreError(null)
+          }
+        },
+        (requestError: unknown) => {
+          if (persistedHoldingsViewStoreRef.current?.portfolioId === portfolioId) {
+            setHoldingsViewStoreError(
+              `Failed to save holdings table views: ${
+                requestError instanceof Error ? requestError.message : 'backend write failed.'
+              }`,
+            )
+          }
+        },
       )
-    })
   }, [holdingsViewStore, holdingsViewStoreReadyPortfolioId, portfolioId])
 
   useEffect(() => {
@@ -3541,12 +3588,20 @@ export default function PortfolioHomePage() {
     }
 
     function handleResizeEnd() {
+      const wasResizing = Boolean(holdingsColumnResizeState.current)
       holdingsColumnResizeState.current = null
       if (holdingsColumnResizeFrame.current != null) {
         window.cancelAnimationFrame(holdingsColumnResizeFrame.current)
         holdingsColumnResizeFrame.current = null
       }
+      if (pendingHoldingsColumnResize.current) {
+        const { column, width } = pendingHoldingsColumnResize.current
+        setHoldingsColumnWidths((current) => ({ ...current, [column]: width }))
+      }
       pendingHoldingsColumnResize.current = null
+      if (wasResizing) {
+        setHoldingsColumnResizing(false)
+      }
       document.body.style.cursor = ''
     }
 
@@ -3718,11 +3773,8 @@ export default function PortfolioHomePage() {
                       <PortfolioTableViewControls
                         views={holdingsViews}
                         activeViewId={activeHoldingsViewId}
-                        edited={holdingsViewEdited}
-                        canSave={!activeHoldingsView.readonly}
                         canDelete
                         onSelect={handleSelectHoldingsView}
-                        onSave={handleSaveHoldingsView}
                         onSaveAs={handleSaveHoldingsViewAs}
                         onDelete={handleDeleteHoldingsView}
                       />
@@ -3733,7 +3785,7 @@ export default function PortfolioHomePage() {
                     )}
                     <button
                       type="button"
-                      className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
+                      className="portfolio-table-toolbar-button"
                       onClick={() => {
                         setHoldingsColumnDraft(holdingsColumns)
                         setHoldingsColumnsOpen(true)
@@ -3944,7 +3996,13 @@ export default function PortfolioHomePage() {
                 type="button"
                 className="button-primary"
                 onClick={() => {
-                  setHoldingsColumns(normalizeHoldingsColumns(holdingsColumnDraft))
+                  const nextColumns = normalizeHoldingsColumns(holdingsColumnDraft)
+                  setHoldingsColumns(nextColumns)
+                  setHoldingsColumnDraft(nextColumns)
+                  updateHoldingsViewState({
+                    ...currentHoldingsViewState,
+                    columns: nextColumns,
+                  })
                   setHoldingsColumnsOpen(false)
                 }}
               >

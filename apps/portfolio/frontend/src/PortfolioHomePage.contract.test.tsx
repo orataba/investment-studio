@@ -412,8 +412,16 @@ describe('Holdings rendered page contract', () => {
         { name: 'Type' },
       ),
     ).toBeInTheDocument()
-    expect(within(fcnRegion).getByRole('button', { name: /View\s*: Default \(Edited\)/ })).toBeInTheDocument()
+    expect(within(fcnRegion).getByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+    expect(within(fcnRegion).queryByRole('button', { name: 'Update View' })).not.toBeInTheDocument()
     expect(within(optionsRegion).getByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'holdings_fcn',
+      )?.[2] as { views: Array<{ id: string; state: { columns: string[] } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'position')?.state.columns).not.toContain('coupon')
+    })
 
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
@@ -461,6 +469,87 @@ describe('Holdings rendered page contract', () => {
     ]) {
       expect(within(securityTable).getByRole('columnheader', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
     }
+  })
+
+  it('restores a saved column override for the FCN Default view', async () => {
+    apiMocks.getPortfolioTableViewStore.mockImplementation(
+      async (_portfolioId: string, viewScope: string) => ({
+        store:
+          viewScope === 'holdings_fcn'
+            ? {
+                activeViewId: 'position',
+                views: [
+                  {
+                    id: 'position',
+                    name: 'Default',
+                    state: { columns: ['contract', 'currency', 'notional'] },
+                  },
+                ],
+              }
+            : null,
+      }),
+    )
+    renderHoldings(holdingsWorkspaceFixture({ rows: [fcnHolding()] }))
+    await waitForHoldings()
+
+    const fcnRegion = screen.getByRole('region', { name: 'FCN' })
+    expect(await within(fcnRegion).findByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('table', { name: 'FCN holdings' })).queryByRole(
+        'columnheader',
+        { name: 'Annual Coupon' },
+      ),
+    ).not.toBeInTheDocument()
+    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
+  })
+
+  it('updates the Security Default view directly from the Columns dialog', async () => {
+    renderHoldings()
+    const user = userEvent.setup()
+    await waitForHoldings()
+
+    const securitiesRegion = screen.getByRole('region', { name: 'Securities' })
+    await user.click(within(securitiesRegion).getByRole('button', { name: 'Securities Columns' }))
+    const dialog = screen.getByRole('dialog', { name: 'Choose security columns' })
+    await user.click(within(dialog).getByRole('button', { name: 'Position' }))
+    const quantityField = within(dialog).getByText('Quantity').closest('label')!
+    await user.click(within(quantityField).getByRole('checkbox'))
+    await user.click(within(dialog).getByRole('button', { name: 'Update' }))
+
+    expect(within(securitiesRegion).getByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+    expect(within(securitiesRegion).queryByRole('button', { name: 'Update View' })).not.toBeInTheDocument()
+    expect(
+      within(screen.getByRole('table', { name: 'Security holdings' })).queryByRole(
+        'columnheader',
+        { name: 'Quantity' },
+      ),
+    ).not.toBeInTheDocument()
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'holdings',
+      )?.[2] as { views: Array<{ id: string; state: { columns: string[] } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'default')?.state.columns).not.toContain('quantity')
+    })
+
+    apiMocks.savePortfolioTableViewStore.mockClear()
+    await user.click(within(securitiesRegion).getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', { name: 'Currency' }))
+    expect(screen.queryByRole('button', { name: 'Update View' })).not.toBeInTheDocument()
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'holdings',
+      )?.[2] as { views: Array<{ id: string; state: { groupBy: string } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'default')?.state.groupBy).toBe('currency')
+    })
+
+    apiMocks.savePortfolioTableViewStore.mockClear()
+    await user.click(within(securitiesRegion).getByRole('button', { name: 'Sort Instrument: ascending' }))
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'holdings',
+      )?.[2] as { views: Array<{ id: string; state: { sortField: string | null } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'default')?.state.sortField).toBe('instrument')
+    })
   })
 
   it('does not render a prior portfolio workspace while a new portfolio is loading', async () => {

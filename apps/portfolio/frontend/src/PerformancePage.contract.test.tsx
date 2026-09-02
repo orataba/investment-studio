@@ -156,6 +156,43 @@ describe('Performance rendered page contract', () => {
     expect(screen.queryByRole('button', { name: /View\s*:/ })).not.toBeInTheDocument()
   })
 
+  it('updates the active Default calculation view from the Columns dialog', async () => {
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+    const user = userEvent.setup()
+
+    expect(await screen.findByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Columns' }))
+    const dialog = screen.getByRole('dialog', { name: 'Choose calculation columns' })
+    const beginWeightField = within(dialog).getByText('Begin Weight').closest('label')!
+    await user.click(within(beginWeightField).getByRole('checkbox'))
+    await user.click(within(dialog).getByRole('button', { name: 'Update' }))
+
+    expect(screen.getByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Update View' })).not.toBeInTheDocument()
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'performance_calculation',
+      )?.[2] as { views: Array<{ id: string; state: { columns: string[] } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'risk-attribution')?.state.columns).not.toContain('begin_weight')
+    })
+
+    apiMocks.savePortfolioTableViewStore.mockClear()
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    const groupDialog = screen.getByRole('dialog', { name: 'Group performance calculations' })
+    await user.click(within(groupDialog).getByRole('button', { name: 'Currency' }))
+    expect(screen.queryByRole('button', { name: 'Update View' })).not.toBeInTheDocument()
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'performance_calculation',
+      )?.[2] as { views: Array<{ id: string; state: { groupBy: string } }> } | undefined
+      expect(savedStore?.views.find((view) => view.id === 'risk-attribution')?.state.groupBy).toBe('currency')
+    })
+  })
+
   // Characterization gap: the restored PerformancePage currently has no chart DOM.
   // Keep the shared-window assertion on summary and Calculation until that surface exists.
   it('uses one selected date window for summary and Calculation and keeps ordinary returns at two decimals', async () => {

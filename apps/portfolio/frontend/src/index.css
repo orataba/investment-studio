@@ -2753,17 +2753,6 @@ input[type='checkbox'] {
   color: var(--portfolio-accent);
 }
 
-.portfolio-table-toolbar-button-active {
-  border-color: var(--portfolio-line-strong);
-  background: transparent;
-  color: var(--portfolio-ink);
-}
-
-.portfolio-table-toolbar-button-active:hover:not(:disabled) {
-  border-color: var(--portfolio-line-strong);
-  color: var(--portfolio-ink);
-}
-
 .portfolio-table-toolbar-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -2910,20 +2899,6 @@ input[type='checkbox'] {
   height: 16px;
 }
 
-.portfolio-table-view-save-icon {
-  display: inline-flex;
-  width: 16px;
-  height: 16px;
-  align-items: center;
-  justify-content: center;
-}
-
-.portfolio-table-view-save-icon svg {
-  display: block;
-  width: 16px;
-  height: 16px;
-}
-
 .portfolio-table-view-delete-icon {
   display: inline-flex;
   width: 15px;
@@ -3025,13 +3000,6 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.portfolio-table-view-option-edited {
-  flex: 0 0 auto;
-  color: var(--portfolio-accent);
-  font-size: 11px;
-  font-weight: 400;
-}
-
 .portfolio-table-view-option-description {
   overflow: hidden;
   color: var(--portfolio-muted);
@@ -3067,61 +3035,6 @@ input[type='checkbox'] {
   opacity: 0.48;
 }
 
-.portfolio-table-view-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(17, 17, 17, 0.24);
-}
-
-.portfolio-table-view-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(520px, calc(100vw - 48px));
-  border: 1px solid var(--portfolio-line-strong);
-  border-top: 2px solid var(--portfolio-ink);
-  border-radius: 0;
-  background: #ffffff;
-  box-shadow: 0 18px 42px rgba(17, 17, 17, 0.12);
-}
-
-.portfolio-table-view-modal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px 8px;
-}
-
-.portfolio-table-view-modal-header button,
-.portfolio-table-view-modal-actions button {
-  min-height: 30px;
-  padding: 6px 10px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: transparent;
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 1.2;
-  box-shadow: none;
-}
-
-.portfolio-table-view-modal-header button:hover,
-.portfolio-table-view-modal-actions button:hover {
-  border-color: var(--portfolio-accent);
-  color: var(--portfolio-accent);
-}
-
-.portfolio-table-view-modal-body {
-  display: grid;
-  gap: 12px;
-  padding: 0 16px 12px;
-}
-
 .portfolio-table-view-field {
   display: grid;
   gap: 6px;
@@ -3150,33 +3063,6 @@ input[type='checkbox'] {
   border-color: var(--portfolio-accent);
   outline: none;
   box-shadow: 0 0 0 1px var(--portfolio-accent) inset;
-}
-
-.portfolio-table-view-warning {
-  margin: 2px 0 0;
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.portfolio-table-view-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 10px 16px 16px;
-  border-top: 1px solid var(--portfolio-line);
-}
-
-.portfolio-table-view-modal-actions .portfolio-table-view-danger-button {
-  border-color: #b42318;
-  background: #b42318;
-  color: #ffffff;
-}
-
-.portfolio-table-view-modal-actions .portfolio-table-view-danger-button:hover:not(:disabled) {
-  border-color: #8f1d13;
-  background: #8f1d13;
-  color: #ffffff;
 }
 
 .portfolio-table-th-label {

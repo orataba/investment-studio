@@ -388,7 +388,7 @@ export default function WatchlistEntryPage() {
         >
           <div
             ref={createDialogRef}
-            className="watchlists-modal watchlists-save-modal"
+            className="watchlists-modal watchlists-compact-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-watchlist-title"
@@ -396,10 +396,7 @@ export default function WatchlistEntryPage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
-              <div>
-                <div className="panel-title" id="create-watchlist-title">Create Watchlist</div>
-                <div className="section-heading">Create A New List For Instruments And Views</div>
-              </div>
+              <div className="panel-title" id="create-watchlist-title">Create Watchlist</div>
               <button
                 type="button"
                 disabled={isCreatingWatchlist}
@@ -435,7 +432,7 @@ export default function WatchlistEntryPage() {
               </label>
             </div>
 
-            <div className="watchlists-modal-actions">
+            <div className="watchlists-modal-actions watchlists-modal-actions-sticky">
               <button
                 type="button"
                 disabled={isCreatingWatchlist}
