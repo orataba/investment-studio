@@ -71,6 +71,28 @@ textarea {
   border-bottom: 1px solid var(--platform-line);
 }
 
+.home-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.home-logout {
+  padding: 7px 11px;
+  border: 1px solid var(--platform-line-strong);
+  border-radius: 4px;
+  color: var(--platform-muted);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.home-logout:hover,
+.home-logout:focus-visible {
+  border-color: var(--platform-ink);
+  color: var(--platform-ink);
+  outline: none;
+}
+
 .home-brand {
   display: grid;
   gap: 2px;
@@ -133,14 +155,17 @@ textarea {
   transition: background-color 140ms ease;
 }
 
-.home-primary-links > a:first-child {
+.home-primary-links > a:nth-child(odd) {
   border-right: 1px solid var(--platform-line);
+}
+
+.home-primary-links > a:nth-child(-n + 2) {
+  border-bottom: 1px solid var(--platform-line);
 }
 
 .home-primary-links > a:hover,
 .home-primary-links > a:focus-visible,
-.home-registry-link:hover,
-.home-registry-link:focus-visible {
+.home-primary-links > a:focus-visible {
   background: #f7f8fa;
   outline: none;
 }
@@ -185,42 +210,119 @@ textarea {
   font-weight: 300;
 }
 
-.home-registry-link {
+.login-shell {
+  min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
-  gap: 22px;
-  margin-top: 42px;
-  padding: 22px 30px;
-  border-top: 1px solid var(--platform-line);
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(42, 103, 145, .15), transparent 36%),
+    linear-gradient(145deg, #f8fafc 0%, #eef3f7 52%, #e6edf3 100%);
+}
+
+.login-panel {
+  width: min(440px, 100%);
+  padding: 38px 40px 42px;
+  border: 1px solid rgba(148, 163, 184, .55);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .12);
+}
+
+.login-brand {
+  display: grid;
+  gap: 3px;
+  padding-bottom: 24px;
   border-bottom: 1px solid var(--platform-line);
-  transition: background-color 140ms ease;
 }
 
-.home-registry-link-copy {
-  display: grid;
-  gap: 5px;
-  justify-self: center;
-  text-align: center;
-}
-
-.home-registry-link > .home-link-number {
-  justify-self: start;
-}
-
-.home-registry-link > .home-link-arrow {
-  justify-self: end;
-}
-
-.home-registry-link strong {
-  color: var(--platform-ink);
-  font-size: 17px;
-  letter-spacing: -.01em;
-}
-
-.home-registry-link small {
+.login-brand span,
+.login-copy > span {
   color: var(--platform-faint);
-  font-size: 11px;
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.login-brand strong {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.login-copy {
+  padding: 34px 0 24px;
+}
+
+.login-copy h1 {
+  margin: 8px 0 10px;
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: -.03em;
+}
+
+.login-copy p {
+  margin: 0;
+  color: var(--platform-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.login-form {
+  display: grid;
+  gap: 18px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.login-form label > span {
+  color: var(--platform-muted);
+  font-size: 12px;
+}
+
+.login-form input {
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid var(--platform-line-strong);
+  border-radius: 5px;
+  color: var(--platform-ink);
+  background: #ffffff;
+}
+
+.login-form input:focus {
+  border-color: var(--platform-accent);
+  box-shadow: 0 0 0 3px rgba(11, 102, 178, .12);
+  outline: none;
+}
+
+.login-form button {
+  min-height: 44px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 5px;
+  color: #ffffff;
+  background: #174968;
+  cursor: pointer;
+}
+
+.login-form button:hover:not(:disabled),
+.login-form button:focus-visible {
+  background: #103b56;
+  outline: none;
+}
+
+.login-form button:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+
+.login-error {
+  margin: -4px 0 0;
+  color: var(--platform-negative);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 @media (max-width: 760px) {
@@ -254,14 +356,16 @@ textarea {
     padding: 24px 18px 26px;
   }
 
-  .home-primary-links > a:first-child {
+  .home-primary-links > a:nth-child(odd) {
     border-right: 0;
+  }
+
+  .home-primary-links > a:not(:last-child) {
     border-bottom: 1px solid var(--platform-line);
   }
 
-  .home-registry-link {
-    margin-top: 32px;
-    padding: 20px 18px;
+  .login-panel {
+    padding: 30px 24px 34px;
   }
 }
 

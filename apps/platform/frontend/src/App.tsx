@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import DataOperationsDashboard from './DataOperationsDashboard'
 import InstrumentRegistryPage from './InstrumentRegistryPage'
+import LoginPage from './LoginPage'
 import { stripAppBasePath } from './appPath'
 import { instrumentsForVisibility } from './instrumentVisibility'
 import {
@@ -29,6 +30,7 @@ import {
 } from './instrumentRegistryModel'
 
 const INSTRUMENT_REGISTRY_PATH = '/instruments'
+const LOGIN_PATH = '/login'
 
 function normalizePath(pathname: string) {
   const normalized = pathname.replace(/\/+$/, '')
@@ -427,6 +429,10 @@ export default function App() {
       )
       throw requestError
     }
+  }
+
+  if (currentPath === LOGIN_PATH) {
+    return <LoginPage />
   }
 
   if (currentPath === INSTRUMENT_REGISTRY_PATH) {

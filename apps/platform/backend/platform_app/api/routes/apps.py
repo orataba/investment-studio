@@ -44,5 +44,15 @@ def list_apps() -> PlatformAppsResponse:
                     "and other shared market data operations."
                 ),
             ),
+            PlatformAppCard(
+                app_id="regime",
+                name="Asset Regime Dashboard",
+                url=settings.regime_url,
+                api_url=None,
+                eyebrow="Market regime",
+                description=(
+                    "Review current market regimes, signals, and release evidence."
+                ),
+            ),
         ],
     )

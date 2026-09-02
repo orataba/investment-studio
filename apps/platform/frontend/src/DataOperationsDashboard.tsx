@@ -10,10 +10,12 @@ type PlatformAppsResponse = {
 
 const WATCHLIST_URL = import.meta.env.VITE_WATCHLIST_URL || '/watchlist'
 const PORTFOLIO_URL = import.meta.env.VITE_PORTFOLIO_URL || '/portfolio'
+const REGIME_URL = import.meta.env.VITE_REGIME_URL || 'http://127.0.0.1:3010'
 
 export default function DataOperationsDashboard() {
   const [watchlistUrl, setWatchlistUrl] = useState(WATCHLIST_URL)
   const [portfolioUrl, setPortfolioUrl] = useState(PORTFOLIO_URL)
+  const [regimeUrl, setRegimeUrl] = useState(REGIME_URL)
 
   useEffect(() => {
     let cancelled = false
@@ -28,12 +30,24 @@ export default function DataOperationsDashboard() {
           response.apps.find((app) => app.app_id === 'portfolio')?.url
             || PORTFOLIO_URL,
         )
+        setRegimeUrl(
+          response.apps.find((app) => app.app_id === 'regime')?.url
+            || REGIME_URL,
+        )
       })
       .catch(() => undefined)
     return () => {
       cancelled = true
     }
   }, [])
+
+  async function logout() {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+    }).catch(() => undefined)
+    window.location.assign(appPath('/login'))
+  }
 
   return (
     <main className="platform-shell home-shell">
@@ -42,7 +56,10 @@ export default function DataOperationsDashboard() {
           <span>Portfolio Operations</span>
           <strong>Workbench</strong>
         </a>
-        <LanguageSelector />
+        <div className="home-actions">
+          <LanguageSelector />
+          <button className="home-logout" type="button" onClick={logout}>退出</button>
+        </div>
       </header>
 
       <section className="home-intro">
@@ -72,16 +89,25 @@ export default function DataOperationsDashboard() {
           </span>
           <span className="home-link-arrow" aria-hidden="true">↗</span>
         </a>
+        <a href={appPath('/instruments')}>
+          <span className="home-link-number">03</span>
+          <span className="home-link-copy">
+            <small>Shared database ops</small>
+            <strong>Instrument Registry</strong>
+            <span>Maintain shared instruments, identifiers, FX, NAV, and market data.</span>
+          </span>
+          <span className="home-link-arrow" aria-hidden="true">→</span>
+        </a>
+        <a href={regimeUrl}>
+          <span className="home-link-number">04</span>
+          <span className="home-link-copy">
+            <small>Market regime</small>
+            <strong>Regime Dashboard</strong>
+            <span>Review current market regimes, signals, and release evidence.</span>
+          </span>
+          <span className="home-link-arrow" aria-hidden="true">↗</span>
+        </a>
       </nav>
-
-      <a className="home-registry-link" href={appPath('/instruments')}>
-        <span className="home-link-number">03</span>
-        <span className="home-registry-link-copy">
-          <strong>Instrument Registry</strong>
-          <small>Shared instruments and market data</small>
-        </span>
-        <span className="home-link-arrow" aria-hidden="true">→</span>
-      </a>
     </main>
   )
 }

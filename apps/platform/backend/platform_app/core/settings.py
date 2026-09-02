@@ -24,8 +24,15 @@ class Settings(BaseSettings):
     ]
     watchlist_url: str = "http://127.0.0.1:5173"
     portfolio_url: str = "http://127.0.0.1:5174"
+    regime_url: str = "http://127.0.0.1:3010"
     watchlist_api_url: str = "http://127.0.0.1:8000"
     portfolio_api_url: str = "http://127.0.0.1:8001"
+    auth_username: str | None = None
+    auth_password_hash_file: Path | None = None
+    auth_session_secret_file: Path | None = None
+    auth_cookie_name: str = "__Secure-yungu_session"
+    auth_cookie_domain: str | None = None
+    auth_session_ttl_seconds: int = 24 * 60 * 60
     database_url: str
     alembic_database_url: str | None = None
     database_schema: str | None = "instrument_registry"
@@ -102,6 +109,16 @@ class Settings(BaseSettings):
                 "downstream API URLs must be absolute HTTP or HTTPS URLs."
             )
         return normalized
+
+    @field_validator("auth_session_ttl_seconds", mode="before")
+    @classmethod
+    def _validate_auth_session_ttl_seconds(cls, value: object) -> int:
+        seconds = int(value)
+        if seconds < 300 or seconds > 7 * 24 * 60 * 60:
+            raise ValueError(
+                "auth_session_ttl_seconds must be between 300 and 604800."
+            )
+        return seconds
 
     @field_validator("email_imap_folders", mode="before")
     @classmethod

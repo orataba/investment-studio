@@ -86,9 +86,10 @@ requires another bind address.
 
 ## Network and access-control boundary
 
-The six application services do not implement user login, identity, or RBAC.
-They are safe deployment primitives only while kept on loopback or behind a
-separately reviewed access layer. A production ingress must:
+The six application services do not enforce access independently. The Platform
+API provides a signed-cookie login for the shared ingress, but every application
+service is still safe only while kept on loopback or behind that reviewed access
+layer. A production ingress must:
 
 - keep PostgreSQL and the three `810x` API ports private;
 - terminate TLS;
@@ -98,8 +99,33 @@ separately reviewed access layer. A production ingress must:
 
 Cloud-console login, a hard-to-guess IP, or an unrestricted company-network bind
 does not provide page-level access control. Until an authentication design is
-chosen and operated, use server-local checks or a controlled SSH tunnel. Do not
-set `HOST=0.0.0.0` merely to make the current apps reachable.
+configured and operated, use server-local checks or a controlled SSH tunnel. Do
+not set `HOST=0.0.0.0` merely to make the current apps reachable.
+
+The `yunguyungu.com` deployment uses the Nginx configuration at
+`infra/nginx/yunguyungu.conf` and these Platform settings in the external
+`platform.env`:
+
+```text
+PORTFOLIO_OPS_PLATFORM_AUTH_USERNAME=yungu
+PORTFOLIO_OPS_PLATFORM_AUTH_PASSWORD_HASH_FILE=/home/portfolio-ops/.config/portfolio-ops/auth/password-hash
+PORTFOLIO_OPS_PLATFORM_AUTH_SESSION_SECRET_FILE=/home/portfolio-ops/.config/portfolio-ops/auth/session-secret
+PORTFOLIO_OPS_PLATFORM_AUTH_COOKIE_DOMAIN=yunguyungu.com
+PORTFOLIO_OPS_PLATFORM_REGIME_URL=https://regime.yunguyungu.com
+```
+
+Both referenced files must be owned by the service user with mode `0600`. The
+password file stores a scrypt hash, never the plaintext password. Nginx applies
+the same session check to pages and APIs on the root, Watchlist, Portfolio, and
+Regime hosts. Only the login page, its static assets, and the rate-limited login
+endpoint are public.
+
+For a dedicated server database, `infra/postgres/docker-compose.server.yml`
+binds PostgreSQL only to `127.0.0.1:55433`, reads its password from a Docker
+secret file, and keeps data in a named volume. Set
+`PORTFOLIO_OPS_POSTGRES_PASSWORD_FILE` to an absolute root-owned `0600` file
+before starting that Compose project. This profile is separate from the
+insecure local-development Compose defaults.
 
 The repository default for the DataHub Tushare provider is an external HTTP URL,
 so its API key crosses a plaintext transport unless the deployment overrides it

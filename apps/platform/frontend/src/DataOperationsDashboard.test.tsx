@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 import DataOperationsDashboard from './DataOperationsDashboard'
+import LoginPage from './LoginPage'
 import {
   EmailNavInventoryPanel,
   type EmailNavInventoryPayload,
@@ -92,7 +93,7 @@ afterEach(() => {
 })
 
 describe('DataOperationsDashboard', () => {
-  it('renders only the three workspace entrances on Home', () => {
+  it('renders the four workspace entrances on Home', () => {
     vi.stubGlobal('window', {
       location: {
         hostname: '127.0.0.1',
@@ -110,12 +111,31 @@ describe('DataOperationsDashboard', () => {
     expect(markup).toContain('href="/watchlist"')
     expect(markup).toContain('href="/portfolio"')
     expect(markup).toContain('href="/instruments"')
+    expect(markup).toContain('href="http://127.0.0.1:3010"')
     expect(markup).toContain('Watchlist')
     expect(markup).toContain('Portfolio')
     expect(markup).toContain('Instrument Registry')
+    expect(markup).toContain('Regime Dashboard')
     expect(markup).not.toContain('Email NAV')
     expect(markup).not.toContain('operational status')
     expect(markup).not.toContain('/api/dashboard')
+  })
+
+  it('renders a full login form', () => {
+    vi.stubGlobal('window', {
+      location: {
+        hostname: 'yunguyungu.com',
+        origin: 'https://yunguyungu.com',
+        protocol: 'https:',
+        search: '',
+      },
+    })
+
+    const markup = renderToStaticMarkup(<LoginPage />)
+
+    expect(markup).toContain('name="username"')
+    expect(markup).toContain('name="password"')
+    expect(markup).toContain('进入工作台')
   })
 })
 
