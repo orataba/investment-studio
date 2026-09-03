@@ -111,14 +111,25 @@ PORTFOLIO_OPS_PLATFORM_AUTH_USERNAME=yungu
 PORTFOLIO_OPS_PLATFORM_AUTH_PASSWORD_HASH_FILE=/home/portfolio-ops/.config/portfolio-ops/auth/password-hash
 PORTFOLIO_OPS_PLATFORM_AUTH_SESSION_SECRET_FILE=/home/portfolio-ops/.config/portfolio-ops/auth/session-secret
 PORTFOLIO_OPS_PLATFORM_AUTH_COOKIE_DOMAIN=yunguyungu.com
+PORTFOLIO_OPS_PLATFORM_DATABASE_DASHBOARD_URL=https://data.yunguyungu.com/instruments
+PORTFOLIO_OPS_PLATFORM_DATABASE_DASHBOARD_API_URL=https://data.yunguyungu.com/api/instruments
+PORTFOLIO_OPS_PLATFORM_WATCHLIST_URL=https://watchlist.yunguyungu.com
+PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=https://portfolio.yunguyungu.com
 PORTFOLIO_OPS_PLATFORM_REGIME_URL=https://regime.yunguyungu.com
 ```
 
+Keep `yunguyungu.com` as the login and application portal. Create four `A`
+records named `data`, `watchlist`, `portfolio`, and `regime`, all pointing to
+the server IPv4 address. The TLS certificate at
+`/etc/letsencrypt/live/yunguyungu.com/` must include the root domain and all
+four subdomains before the homepage links are switched from temporary access
+URLs to these production hosts.
+
 Both referenced files must be owned by the service user with mode `0600`. The
 password file stores a scrypt hash, never the plaintext password. Nginx applies
-the same session check to pages and APIs on the root, Watchlist, Portfolio, and
-Regime hosts. Only the login page, its static assets, and the rate-limited login
-endpoint are public.
+the same session check to pages and APIs on the root, Data, Watchlist,
+Portfolio, and Regime hosts. Only the login page, its static assets, and the
+rate-limited login endpoint are public.
 
 For a dedicated server database, `infra/postgres/docker-compose.server.yml`
 binds PostgreSQL only to `127.0.0.1:55433`, reads its password from a Docker

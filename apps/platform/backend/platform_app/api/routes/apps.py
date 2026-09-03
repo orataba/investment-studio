@@ -36,8 +36,8 @@ def list_apps() -> PlatformAppsResponse:
             PlatformAppCard(
                 app_id="database_dashboard",
                 name="Database Dashboard",
-                url="/database-dashboard",
-                api_url="/api/instruments",
+                url=settings.database_dashboard_url,
+                api_url=settings.database_dashboard_api_url,
                 eyebrow="Shared database ops",
                 description=(
                     "Shared instruments, FX, NAV imports, email refresh rules, "

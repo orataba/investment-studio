@@ -41,4 +41,4 @@ def portfolio_page() -> RedirectResponse:
 
 @app.get("/database-dashboard")
 def database_dashboard_page() -> RedirectResponse:
-    return RedirectResponse(url=f"{settings.frontend_url}/database-dashboard", status_code=307)
+    return RedirectResponse(url=settings.database_dashboard_url, status_code=307)

@@ -11,6 +11,8 @@ def test_homepage_apps_include_regime(monkeypatch) -> None:
     class StubSettings:
         watchlist_url = "https://watchlist.example.test"
         portfolio_url = "https://portfolio.example.test"
+        database_dashboard_url = "https://data.example.test/instruments"
+        database_dashboard_api_url = "https://data.example.test/api/instruments"
         regime_url = "https://regime.example.test"
         watchlist_api_url = "http://127.0.0.1:8100"
         portfolio_api_url = "http://127.0.0.1:8101"
@@ -26,4 +28,6 @@ def test_homepage_apps_include_regime(monkeypatch) -> None:
         "database_dashboard",
         "regime",
     ]
+    assert response.json()["apps"][2]["url"] == "https://data.example.test/instruments"
+    assert response.json()["apps"][2]["api_url"] == "https://data.example.test/api/instruments"
     assert response.json()["apps"][3]["url"] == "https://regime.example.test"

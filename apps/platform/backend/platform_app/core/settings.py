@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     ]
     watchlist_url: str = "http://127.0.0.1:5173"
     portfolio_url: str = "http://127.0.0.1:5174"
+    database_dashboard_url: str = "/instruments"
+    database_dashboard_api_url: str = "/api/instruments"
     regime_url: str = "http://127.0.0.1:3010"
     watchlist_api_url: str = "http://127.0.0.1:8000"
     portfolio_api_url: str = "http://127.0.0.1:8001"

@@ -10,11 +10,13 @@ type PlatformAppsResponse = {
 
 const WATCHLIST_URL = import.meta.env.VITE_WATCHLIST_URL || '/watchlist'
 const PORTFOLIO_URL = import.meta.env.VITE_PORTFOLIO_URL || '/portfolio'
+const DATABASE_DASHBOARD_URL = import.meta.env.VITE_DATABASE_DASHBOARD_URL || appPath('/instruments')
 const REGIME_URL = import.meta.env.VITE_REGIME_URL || 'http://127.0.0.1:3010'
 
 export default function DataOperationsDashboard() {
   const [watchlistUrl, setWatchlistUrl] = useState(WATCHLIST_URL)
   const [portfolioUrl, setPortfolioUrl] = useState(PORTFOLIO_URL)
+  const [databaseDashboardUrl, setDatabaseDashboardUrl] = useState(DATABASE_DASHBOARD_URL)
   const [regimeUrl, setRegimeUrl] = useState(REGIME_URL)
 
   useEffect(() => {
@@ -29,6 +31,10 @@ export default function DataOperationsDashboard() {
         setPortfolioUrl(
           response.apps.find((app) => app.app_id === 'portfolio')?.url
             || PORTFOLIO_URL,
+        )
+        setDatabaseDashboardUrl(
+          response.apps.find((app) => app.app_id === 'database_dashboard')?.url
+            || DATABASE_DASHBOARD_URL,
         )
         setRegimeUrl(
           response.apps.find((app) => app.app_id === 'regime')?.url
@@ -89,7 +95,7 @@ export default function DataOperationsDashboard() {
           </span>
           <span className="home-link-arrow" aria-hidden="true">↗</span>
         </a>
-        <a href={appPath('/instruments')}>
+        <a href={databaseDashboardUrl}>
           <span className="home-link-number">03</span>
           <span className="home-link-copy">
             <small>Shared database ops</small>
