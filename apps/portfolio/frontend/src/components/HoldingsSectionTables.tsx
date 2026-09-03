@@ -273,7 +273,7 @@ const HOLDINGS_SECTION_COLUMN_WIDTHS: Record<string, number> = {
   underlying_spot: 150,
   currency: 90,
   notional: 150,
-  underlying_terms: 330,
+  underlying_terms: 400,
   risk: 220,
   coupon: 120,
   issue_date: 120,
@@ -695,34 +695,48 @@ export default function HoldingsSectionTables({
       render: (row) =>
         row.derivative_contract?.contract_type === 'fcn' ? (
           <div className="derivative-underlying-list">
-            {row.derivative_contract.terms.underlyings.map((underlying) => (
-              <div key={underlying.instrument_id} className="derivative-underlying-item">
-                {linkedInstrumentName(
-                  workspace,
-                  underlying.instrument_id,
-                  row.fcn_risk?.underlyings.find(
-                    (item) => item.instrument_id === underlying.instrument_id,
-                  )?.instrument_name ??
-                    namesById.get(underlying.instrument_id) ??
+            {row.derivative_contract.terms.underlyings.map((underlying) => {
+              const current = row.fcn_risk?.underlyings.find(
+                (item) => item.instrument_id === underlying.instrument_id,
+              )
+              const currency = current?.currency || ''
+              const price = (value: number | null | undefined) =>
+                currency ? formatUnitPrice(value, currency) : formatNumber(value, 4)
+              const term = (
+                label: string,
+                value: number | null | undefined,
+                level: number | null | undefined,
+              ) => (
+                <span>
+                  <span>{label}</span>{' '}
+                  {price(value)}
+                  {level == null ? '' : ` (${formatNumber(level, 2)}%)`}
+                </span>
+              )
+              return (
+                <div key={underlying.instrument_id} className="derivative-underlying-item">
+                  {linkedInstrumentName(
+                    workspace,
                     underlying.instrument_id,
-                )}
-                <small>
-                  Initial {formatNumber(underlying.initial_reference_price, 4)} · Strike{' '}
-                  {underlying.strike_level_pct == null
-                    ? '—'
-                    : `${formatNumber(underlying.strike_level_pct, 2)}%`}{' '}
-                  · KI{' '}
-                  {underlying.knock_in_level_pct == null
-                    ? '—'
-                    : `${formatNumber(underlying.knock_in_level_pct, 2)}%`}{' '}
-                  · KO{' '}
-                  {underlying.knock_out_level_pct == null
-                    ? '—'
-                    : `${formatNumber(underlying.knock_out_level_pct, 2)}%`}{' '}
-                  · {underlying.deliverable ? 'Deliverable' : 'Cash settled'}
-                </small>
-              </div>
-            ))}
+                    current?.instrument_name ??
+                      namesById.get(underlying.instrument_id) ??
+                      underlying.instrument_id,
+                  )}
+                  <small className="derivative-underlying-prices">
+                    {term('Spot', current?.spot, null)}
+                    {term('Strike', current?.strike_price, underlying.strike_level_pct)}
+                    {term('KI', current?.knock_in_price, underlying.knock_in_level_pct)}
+                    {term('KO', current?.knock_out_price, underlying.knock_out_level_pct)}
+                  </small>
+                  <small>
+                    <span>{underlying.deliverable ? 'Deliverable' : 'Cash settled'}</span>
+                    {' · '}
+                    <span>Initial</span>{' '}
+                    {price(current?.initial_reference_price ?? underlying.initial_reference_price)}
+                  </small>
+                </div>
+              )
+            })}
           </div>
         ) : (
           '—'
@@ -736,19 +750,18 @@ export default function HoldingsSectionTables({
         if (!risk) {
           return '—'
         }
-        const worst = risk.underlyings.find(
-          (item) => item.instrument_id === risk.worst_underlying_instrument_id,
+        const deliveryBuffer = risk.underlyings.find(
+          (item) => item.instrument_id === risk.delivery_buffer_underlying_instrument_id,
         )
         const warning = !['open', 'knocked_out', 'matured'].includes(risk.risk_state)
         return (
           <div className="holding-risk-cell">
             {riskPill(fcnRiskLabel(risk.risk_state), warning)}
-            {worst ? (
-              <small>
-                {worst.instrument_name}: {formatPercent(worst.performance_to_reference_pct)} vs initial
-                {signedDistance(worst.distance_to_knock_in_pct, 'KI')
-                  ? ` · ${signedDistance(worst.distance_to_knock_in_pct, 'KI')}`
-                  : ''}
+            {deliveryBuffer ? (
+              <small title="Spot / delivery strike - 1. This monitors current price distance and does not confirm a delivery event.">
+                <span>Delivery buffer</span>{' · '}
+                {deliveryBuffer.instrument_name}: {' '}
+                {signedDistance(deliveryBuffer.distance_to_strike_pct, 'delivery strike')}
               </small>
             ) : null}
           </div>

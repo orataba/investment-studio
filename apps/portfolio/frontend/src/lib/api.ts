@@ -905,11 +905,12 @@ export type PortfolioHoldingRow = {
   fcn_risk?: {
     lifecycle_status: string
     risk_state: string
-    worst_underlying_instrument_id: string | null
+    delivery_buffer_underlying_instrument_id: string | null
     underlyings: Array<{
       instrument_id: string
       instrument_name: string
       currency: string
+      deliverable: boolean
       spot: number | null
       quote_as_of_date: string | null
       quote_status: string

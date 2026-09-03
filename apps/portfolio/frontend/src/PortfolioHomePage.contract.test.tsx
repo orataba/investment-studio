@@ -155,6 +155,7 @@ function cashHolding(overrides: Partial<PortfolioHoldingRow> = {}) {
 }
 
 function fcnHolding() {
+  const contract = fcnContractFixture()
   return holdingFixture({
     line_id: 'holding:fcn-1',
     position_reference_id: 'fcn-1',
@@ -162,7 +163,7 @@ function fcnHolding() {
     holding_kind: 'derivative_contract',
     holding_category: 'derivatives',
     instrument_core: null,
-    derivative_contract: fcnContractFixture(),
+    derivative_contract: contract,
     quantity: 1,
     market_value: 500,
     market_value_base: 500,
@@ -181,6 +182,32 @@ function fcnHolding() {
     forward_risk_share: null,
     forward_contribution_to_variance: null,
     forward_annualized_volatility: null,
+    fcn_risk: {
+      lifecycle_status: 'open',
+      risk_state: 'open',
+      delivery_buffer_underlying_instrument_id: 'asset-1',
+      underlyings: [
+        {
+          instrument_id: 'asset-1',
+          instrument_name: 'Alpha Fund',
+          currency: 'USD',
+          deliverable: true,
+          spot: 110,
+          quote_as_of_date: '2026-07-15',
+          quote_status: 'complete',
+          initial_reference_price: 100,
+          strike_price: 100,
+          knock_in_price: 70,
+          knock_out_price: 120,
+          performance_to_reference_pct: 0.1,
+          distance_to_strike_pct: 0.1,
+          distance_to_knock_in_pct: 110 / 70 - 1,
+          distance_to_knock_out_pct: 110 / 120 - 1,
+          current_region: 'between_strike_and_knock_out',
+          missing_terms: [],
+        },
+      ],
+    },
   })
 }
 
@@ -602,6 +629,16 @@ describe('Holdings rendered page contract', () => {
     >
     const fcnSectionIndex = exportedRows.findIndex((row) => row[0] === 'FCN')
     expect(exportedRows[fcnSectionIndex + 1]).not.toContain('Annual Coupon')
+    expect(
+      exportedRows[fcnSectionIndex + 2].some((cell) =>
+        String(cell).includes('spot 110 USD, strike 100 USD (100%)'),
+      ),
+    ).toBe(true)
+    expect(
+      exportedRows[fcnSectionIndex + 2].some((cell) =>
+        String(cell).includes('Alpha Fund: 0.1 vs delivery strike'),
+      ),
+    ).toBe(true)
 
     for (const scope of [
       'holdings',
@@ -793,7 +830,13 @@ describe('Holdings rendered page contract', () => {
     }
     const fcnNameCell = within(fcnTable).getByRole('cell', { name: 'Alpha FCN' })
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
-    expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
+    const underlyingCell = within(fcnTable).getByText('Alpha Fund').closest('td')!
+    expect(underlyingCell).toHaveTextContent('Spot $110.0000')
+    expect(underlyingCell).toHaveTextContent('Strike $100.0000 (100.00%)')
+    expect(underlyingCell).toHaveTextContent('KI $70.0000 (70.00%)')
+    expect(underlyingCell).toHaveTextContent('KO $120.0000 (120.00%)')
+    const deliveryRiskCell = within(fcnTable).getByText('Delivery buffer').closest('td')!
+    expect(deliveryRiskCell).toHaveTextContent('Alpha Fund: 10.00% above delivery strike')
 
     const fcnTableWidth = fcnTable.style.minWidth
     await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))

@@ -79,7 +79,7 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 | 表面 | 行范围 | 字段合同 |
 | --- | --- | --- |
 | `Securities` | `holding_category=securities` 的股票、基金、ETF 等 Registry instrument | 独立视图与字段；字段覆盖当前开放头寸、行情、成本、未实现盈亏、标的 return/risk 与 Forward RC。唯一可排序并可使用 `Group By` 的表。 |
-| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、组合权重与估值状态。风险视图还展示真实 underlying spot、相对 initial/strike/KI/KO 的距离与当前价格区域；缺少行情或必要条款时显示不可用，不推断历史 barrier event。 |
+| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 spot、initial 以及 strike/KI/KO 的实际价格和百分比条款、是否可交付、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、组合权重与估值状态。`Delivery buffer = spot / strike price - 1`；只有所有可交付 underlying 的行情与 strike 都完整时，才选取其中最小值作为接票监控，任一缺失则整个指标不可用。它表示现价相对接票价的距离，不等于从现价跌至接票价的百分比，也不确认已经发生交付。缺少行情或必要条款时显示不可用，不推断历史 barrier event。 |
 | `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、组合权重、lifecycle 与估值状态。风险视图还展示 underlying spot、moneyness、intrinsic value、portfolio-level backing 与简洁 risk state。 |
 | `Cash & Settlement` | `holding_category=cash_and_settlement` | 固定字段；settled cash 与 pending monetary row 都按账户与币种分别展示本币余额、base value、FX cost basis、未实现汇兑损益和权重；pending row 另外展示结算边界与关联资产。 |
 

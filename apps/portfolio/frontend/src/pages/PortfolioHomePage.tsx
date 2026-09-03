@@ -3141,7 +3141,11 @@ export default function PortfolioHomePage() {
           contract?.terms.underlyings
             .map((underlying) => {
               const name = namesById.get(underlying.instrument_id) ?? underlying.instrument_id
-              return `${name}: initial ${underlying.initial_reference_price ?? 'N/A'}, strike ${underlying.strike_level_pct ?? 'N/A'}%, KI ${underlying.knock_in_level_pct ?? 'N/A'}%, KO ${underlying.knock_out_level_pct ?? 'N/A'}%, ${underlying.deliverable ? 'deliverable' : 'cash settled'}`
+              const current = row.fcn_risk?.underlyings.find(
+                (item) => item.instrument_id === underlying.instrument_id,
+              )
+              const currency = current?.currency || 'N/A'
+              return `${name}: spot ${current?.spot ?? 'N/A'} ${currency}, strike ${current?.strike_price ?? 'N/A'} ${currency} (${underlying.strike_level_pct ?? 'N/A'}%), KI ${current?.knock_in_price ?? 'N/A'} ${currency} (${underlying.knock_in_level_pct ?? 'N/A'}%), KO ${current?.knock_out_price ?? 'N/A'} ${currency} (${underlying.knock_out_level_pct ?? 'N/A'}%), initial ${current?.initial_reference_price ?? underlying.initial_reference_price ?? 'N/A'} ${currency}, ${underlying.deliverable ? 'deliverable' : 'cash settled'}`
             })
             .join('; '),
           row.fcn_risk
@@ -3150,11 +3154,12 @@ export default function PortfolioHomePage() {
                 ...row.fcn_risk.underlyings
                   .filter(
                     (underlying) =>
-                      underlying.instrument_id === row.fcn_risk?.worst_underlying_instrument_id,
+                      underlying.instrument_id ===
+                      row.fcn_risk?.delivery_buffer_underlying_instrument_id,
                   )
                   .map(
                     (underlying) =>
-                      `${underlying.instrument_name}: ${underlying.performance_to_reference_pct ?? 'N/A'} vs initial, ${underlying.distance_to_knock_in_pct ?? 'N/A'} vs KI`,
+                      `${underlying.instrument_name}: ${underlying.distance_to_strike_pct ?? 'N/A'} vs delivery strike`,
                   ),
               ].join('; ')
             : null,

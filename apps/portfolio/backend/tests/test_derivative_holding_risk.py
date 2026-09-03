@@ -35,6 +35,37 @@ def _option_obligation(
     }
 
 
+def _fcn_underlying(
+    instrument_id: str,
+    *,
+    initial: float = 100,
+    strike_level: float = 80,
+    deliverable: bool,
+) -> dict[str, object]:
+    return {
+        "instrument_id": instrument_id,
+        "initial_reference_price": initial,
+        "strike_level_pct": strike_level,
+        "knock_in_level_pct": 70,
+        "knock_out_level_pct": 105,
+        "deliverable": deliverable,
+    }
+
+
+def _fcn_holding(*underlyings: dict[str, object]) -> dict[str, object]:
+    return {
+        "line_id": "fcn-1",
+        "holding_kind": "derivative_contract",
+        "quantity": 1,
+        "derivative_contract": {
+            "derivative_contract_id": "fcn-1",
+            "contract_type": "fcn",
+            "currency": "USD",
+            "terms": {"underlyings": list(underlyings)},
+        },
+    }
+
+
 def test_option_risk_uses_portfolio_level_backing_across_written_contracts(monkeypatch) -> None:
     rows = [
         {
@@ -239,6 +270,7 @@ def test_fcn_risk_reports_current_levels_without_inferring_historical_barrier_ev
                             "strike_level_pct": 80,
                             "knock_in_level_pct": 70,
                             "knock_out_level_pct": 105,
+                            "deliverable": True,
                         }
                     ]
                 },
@@ -273,9 +305,13 @@ def test_fcn_risk_reports_current_levels_without_inferring_historical_barrier_ev
     assert risk["lifecycle_status"] == "open"
     assert risk["risk_state"] == "current_price_at_or_below_knock_in"
     assert underlying["current_region"] == "at_or_below_knock_in"
+    assert underlying["deliverable"] is True
     assert underlying["strike_price"] == pytest.approx(80)
     assert underlying["knock_in_price"] == pytest.approx(70)
+    assert underlying["knock_out_price"] == pytest.approx(105)
+    assert underlying["distance_to_strike_pct"] == pytest.approx(65 / 80 - 1)
     assert underlying["distance_to_knock_in_pct"] == pytest.approx(65 / 70 - 1)
+    assert risk["delivery_buffer_underlying_instrument_id"] == "stock-1"
 
     enrich_derivative_holding_risk(
         rows,
@@ -309,6 +345,102 @@ def test_fcn_risk_reports_current_levels_without_inferring_historical_barrier_ev
     )
     assert rows[0]["fcn_risk"]["lifecycle_status"] == "matured"
     assert rows[0]["fcn_risk"]["risk_state"] == "matured"
+
+
+def test_fcn_delivery_buffer_uses_nearest_deliverable_strike(monkeypatch) -> None:
+    rows = [
+        _fcn_holding(
+            _fcn_underlying("stock-1", deliverable=True),
+            _fcn_underlying(
+                "stock-2",
+                initial=200,
+                strike_level=95,
+                deliverable=True,
+            ),
+            _fcn_underlying("stock-3", strike_level=100, deliverable=False),
+        )
+    ]
+    monkeypatch.setattr(
+        "portfolio_app.services.derivative_holding_risk._quote_by_instrument",
+        lambda instrument_ids, as_of_date: (
+            {
+                instrument_id: {
+                    "instrument_id": instrument_id,
+                    "instrument_name": f"Stock {instrument_id[-1]}",
+                    "currency": "USD",
+                }
+                for instrument_id in instrument_ids
+            },
+            {
+                "stock-1": {
+                    "value": 90,
+                    "currency": "USD",
+                    "quote_date": "2026-09-01",
+                    "status": "complete",
+                },
+                "stock-2": {
+                    "value": 190,
+                    "currency": "USD",
+                    "quote_date": "2026-09-01",
+                    "status": "complete",
+                },
+                "stock-3": {
+                    "value": 70,
+                    "currency": "USD",
+                    "quote_date": "2026-09-01",
+                    "status": "complete",
+                },
+            },
+        ),
+    )
+
+    enrich_derivative_holding_risk(rows, transactions=[], as_of_date=date(2026, 9, 1))
+
+    risk = rows[0]["fcn_risk"]
+    assert risk["delivery_buffer_underlying_instrument_id"] == "stock-2"
+    assert risk["underlyings"][1]["distance_to_strike_pct"] == pytest.approx(0)
+
+
+def test_fcn_delivery_buffer_is_unavailable_without_complete_deliverable_quote(monkeypatch) -> None:
+    rows = [
+        _fcn_holding(
+            _fcn_underlying("stock-1", deliverable=True),
+            _fcn_underlying("stock-2", deliverable=True),
+        )
+    ]
+    monkeypatch.setattr(
+        "portfolio_app.services.derivative_holding_risk._quote_by_instrument",
+        lambda instrument_ids, as_of_date: (
+            {
+                instrument_id: {
+                    "instrument_id": instrument_id,
+                    "instrument_name": instrument_id,
+                    "currency": "USD",
+                }
+                for instrument_id in instrument_ids
+            },
+            {
+                "stock-1": {
+                    "value": 90,
+                    "currency": "USD",
+                    "quote_date": "2026-09-01",
+                    "status": "complete",
+                },
+                "stock-2": {
+                    "value": None,
+                    "currency": "USD",
+                    "quote_date": None,
+                    "status": "unavailable",
+                },
+            },
+        ),
+    )
+
+    enrich_derivative_holding_risk(rows, transactions=[], as_of_date=date(2026, 9, 1))
+
+    risk = rows[0]["fcn_risk"]
+    assert risk["risk_state"] == "quote_unavailable"
+    assert risk["delivery_buffer_underlying_instrument_id"] is None
 
 
 def test_fcn_incomplete_terms_do_not_claim_a_complete_price_region(monkeypatch) -> None:

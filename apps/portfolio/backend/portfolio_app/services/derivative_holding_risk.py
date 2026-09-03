@@ -146,6 +146,7 @@ def _fcn_underlying_risk(
         "instrument_id": instrument_id,
         "instrument_name": str((detail or {}).get("instrument_name") or instrument_id),
         "currency": str((detail or {}).get("currency") or (quote or {}).get("currency") or ""),
+        "deliverable": bool(item.get("deliverable")),
         "spot": spot,
         "quote_as_of_date": (quote or {}).get("quote_date"),
         "quote_status": (quote or {}).get("status") or "unavailable",
@@ -337,15 +338,25 @@ def enrich_derivative_holding_risk(
             for item in underlyings
             if isinstance(item, dict)
         ] if isinstance(underlyings, list) else []
-        complete_performance = [
+        deliverable_items = [
             item
             for item in risk_items
-            if _number(item.get("performance_to_reference_pct")) is not None
+            if item.get("deliverable") is True
         ]
-        worst = min(
-            complete_performance,
-            key=lambda item: float(item["performance_to_reference_pct"]),
-            default=None,
+        complete_delivery_items = [
+            item
+            for item in deliverable_items
+            if item.get("quote_status") == "complete"
+            and _number(item.get("distance_to_strike_pct")) is not None
+        ]
+        delivery_buffer_item = (
+            min(
+                complete_delivery_items,
+                key=lambda item: float(item["distance_to_strike_pct"]),
+            )
+            if deliverable_items
+            and len(complete_delivery_items) == len(deliverable_items)
+            else None
         )
         lifecycle_status = fcn_lifecycle.get(
             str(contract.get("derivative_contract_id") or ""),
@@ -364,8 +375,10 @@ def enrich_derivative_holding_risk(
         row["fcn_risk"] = {
             "lifecycle_status": lifecycle_status,
             "risk_state": risk_state,
-            "worst_underlying_instrument_id": (
-                str(worst.get("instrument_id") or "") if worst else None
+            "delivery_buffer_underlying_instrument_id": (
+                str(delivery_buffer_item.get("instrument_id") or "")
+                if delivery_buffer_item
+                else None
             ),
             "underlyings": risk_items,
         }

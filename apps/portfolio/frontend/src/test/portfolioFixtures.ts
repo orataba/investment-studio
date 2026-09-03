@@ -58,7 +58,7 @@ export function fcnContractFixture(
           initial_reference_price: 100,
           strike_level_pct: 100,
           knock_in_level_pct: 70,
-          knock_out_level_pct: null,
+          knock_out_level_pct: 120,
           deliverable: true,
         },
       ],

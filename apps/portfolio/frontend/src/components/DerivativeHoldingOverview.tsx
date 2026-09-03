@@ -250,7 +250,12 @@ export default function DerivativeHoldingOverview({
             <dl className="derivative-risk-facts">
               <div><dt>Current</dt><dd>{formatUnitPrice(underlying.spot, underlying.currency)}</dd></div>
               <div><dt>Vs initial</dt><dd>{formatPercent(underlying.performance_to_reference_pct)}</dd></div>
-              <div><dt>Strike distance</dt><dd>{distanceLabel(underlying.distance_to_strike_pct, 'strike')}</dd></div>
+              <div>
+                <dt title={underlying.deliverable ? 'Spot / delivery strike - 1. This monitors current price distance and does not confirm a delivery event.' : undefined}>
+                  {underlying.deliverable ? 'Delivery buffer' : 'Strike distance'}
+                </dt>
+                <dd>{distanceLabel(underlying.distance_to_strike_pct, underlying.deliverable ? 'delivery strike' : 'strike')}</dd>
+              </div>
               <div><dt>KI distance</dt><dd>{distanceLabel(underlying.distance_to_knock_in_pct, 'KI')}</dd></div>
               <div><dt>KO distance</dt><dd>{distanceLabel(underlying.distance_to_knock_out_pct, 'KO')}</dd></div>
               <div><dt>Current region</dt><dd>{formatLabel(underlying.current_region)}</dd></div>

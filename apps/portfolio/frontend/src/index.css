@@ -3376,6 +3376,12 @@ input[type='checkbox'] {
   line-height: 1.4;
 }
 
+.derivative-underlying-prices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
 .holding-risk-cell {
   display: grid;
   justify-items: start;
