@@ -34,7 +34,14 @@ printf '%s\n' \
   'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$PWD" "${INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL:-}" "${INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL:-}" "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" "${INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL:-}" "${INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL:-}" "${INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL:-}" "${INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL:-}" >> "$CAPTURE_PATH"' \
   'printf "%s|%s\n" "$PWD" "$*" >> "$COMMAND_CAPTURE_PATH"' \
   'if [[ "$PWD" == */shared-data/instruments && "$*" == "-m alembic current" && -n "${FAKE_REGISTRY_CURRENT:-}" ]]; then printf "%s (head)\n" "$FAKE_REGISTRY_CURRENT"; fi' \
-  'if [[ "$1" == */alembic_revision_is_descendant.py ]]; then case "${FAKE_REGISTRY_CURRENT:-}" in 20260715_0012|20260716_0013|20260717_0014|20260717_0015|20260731_0016|20260804_0017|20260806_0018|20260807_0019) exit 0 ;; *) exit 1 ;; esac; fi' \
+  'if [[ "$1" == */alembic_revision_is_descendant.py ]]; then' \
+  '  case "${FAKE_REGISTRY_CURRENT:-}" in' \
+  '    20260904_0032) exit 0 ;;' \
+  '    20260715_0012|20260716_0013|20260717_0014|20260717_0015|20260731_0016|20260804_0017|20260806_0018|20260807_0019)' \
+  '      if [[ "$*" == *"--target 20260715_0012" ]]; then exit 0; fi ;;' \
+  '  esac' \
+  '  exit 1' \
+  'fi' \
   > "$FAKE_PYTHON"
 chmod +x "$FAKE_PYTHON"
 
@@ -63,12 +70,20 @@ grep -q 'postgresql://portfolio-alembic@explicit/investment_studio' "$CAPTURE_PA
 grep -q 'postgresql://watchlist@explicit/investment_studio' "$CAPTURE_PATH"
 
 prerequisite_line="$(grep -n '/shared-data|-m alembic upgrade 20260823_0007' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
+registry_prerequisite_line="$(grep -n '/shared-data/instruments|-m alembic upgrade 20260902_0029' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
 registry_line="$(grep -n '/shared-data/instruments|-m alembic upgrade head' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
 rename_line="$(grep -n '/shared-data|-m alembic upgrade head' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
-[[ "$prerequisite_line" -lt "$registry_line" && "$registry_line" -lt "$rename_line" ]]
+watchlist_line="$(grep -n '/apps/watchlist/backend|-m alembic upgrade head' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
+if ! [[ "$prerequisite_line" -lt "$registry_prerequisite_line" \
+  && "$registry_prerequisite_line" -lt "$rename_line" \
+  && "$rename_line" -lt "$watchlist_line" \
+  && "$watchlist_line" -lt "$registry_line" ]]; then
+  echo "Historical app migrations must complete before the final shared-schema rename." >&2
+  exit 1
+fi
 
 : > "$COMMAND_CAPTURE_PATH"
-for registry_revision in 20260804_0017 20260806_0018 20260807_0019; do
+for registry_revision in 20260804_0017 20260806_0018 20260807_0019 20260904_0032; do
   : > "$COMMAND_CAPTURE_PATH"
   export FAKE_REGISTRY_CURRENT="$registry_revision"
   PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
@@ -80,6 +95,11 @@ for registry_revision in 20260804_0017 20260806_0018 20260807_0019; do
   grep -q '/shared-data/instruments|-m alembic upgrade head' "$COMMAND_CAPTURE_PATH"
   if grep -q 'upgrade 20260823_0007' "$COMMAND_CAPTURE_PATH"; then
     echo "migrate_all tried to return ingestion to its pre-rename revision." >&2
+    exit 1
+  fi
+  if [[ "$registry_revision" == "20260904_0032" ]] \
+    && grep -q 'upgrade 20260902_0029' "$COMMAND_CAPTURE_PATH"; then
+    echo "migrate_all tried to return shared data to its pre-rename revision." >&2
     exit 1
   fi
 done
