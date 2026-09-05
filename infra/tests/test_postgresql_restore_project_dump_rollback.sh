@@ -137,8 +137,8 @@ replacement="$(
     --tuples-only --no-align --command "SELECT to_regclass('portfolio.replacement_payload') IS NULL"
 )"
 
-[[ "$sentinel" == "original-data" ]]
-[[ "$replacement" == "t" ]]
+test "$sentinel" = "original-data"
+test "$replacement" = "t"
 test -n "$(find "$TEST_ROOT/backups" -name '*.pgdump' -type f -print -quit)"
 test -n "$(find "$TEST_ROOT/backups" -name '*.pgdump.sha256' -type f -print -quit)"
 test -n "$(find "$TEST_ROOT/backups" -name '*.schemas.sha256' -type f -print -quit)"
@@ -171,7 +171,7 @@ INVESTMENT_STUDIO_RESTORE_MIGRATION_RUNNER="$SUCCESSFUL_MIGRATION_RUNNER" \
 INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER=none \
   "$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh" "$INCOMING_DUMP"
 
-[[ "$(cat "$MIGRATION_ENV")" == "match|data_ingestion" ]]
+test "$(cat "$MIGRATION_ENV")" = "match|data_ingestion"
 
 incoming_value="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
@@ -182,8 +182,8 @@ original_removed="$(
     --tuples-only --no-align --command "SELECT to_regclass('portfolio.restore_sentinel') IS NULL"
 )"
 
-[[ "$incoming_value" == "incoming-data" ]]
-[[ "$original_removed" == "t" ]]
+test "$incoming_value" = "incoming-data"
+test "$original_removed" = "t"
 
 : > "$EVENT_LOG"
 set +e
@@ -202,7 +202,7 @@ LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
 rollback_failure_status=$?
 set -e
 
-[[ $rollback_failure_status -eq 70 ]]
+test "$rollback_failure_status" -eq 70
 grep -q '^helper-rollback-sql-injected$' "$EVENT_LOG"
 if awk 'seen && /launchctl:bootstrap/ { found=1 } /^helper-rollback-sql-injected$/ { seen=1 } END { exit found ? 0 : 1 }' "$EVENT_LOG"; then
   echo "Managed services restarted after helper-based database rollback failed." >&2
@@ -218,9 +218,11 @@ preserved_value="$(
 )"
 preserved_schema_count="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
-    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_data', 'data_ingestion', 'portfolio', 'watchlist')"
+    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')"
 )"
-[[ "$preserved_value" == "incoming-data" ]]
-[[ "$preserved_schema_count" == "4" ]]
+# Migration never ran, and the failed atomic rollback must preserve the incoming
+# dump's legacy schema names. Use test so Bash 3.2 also honors errexit here.
+test "$preserved_value" = "incoming-data"
+test "$preserved_schema_count" = "4"
 
 echo "restore failure rollback and success-path integration test passed."
