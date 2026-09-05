@@ -158,7 +158,7 @@ printf '%s\n' \
   'platform_alembic_status=missing' \
   'if [[ -n "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" && "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" == "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
   'printf "%s|%s\n" "$platform_alembic_status" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" > "$MIGRATION_ENV"' \
-  'psql "${INVESTMENT_STUDIO_DATA_DATABASE_URL/+psycopg/}" --no-password --set ON_ERROR_STOP=1 --command "ALTER SCHEMA platform RENAME TO data_ingestion"' \
+  'psql "${INVESTMENT_STUDIO_DATA_DATABASE_URL/+psycopg/}" --no-password --set ON_ERROR_STOP=1 --command "ALTER SCHEMA platform RENAME TO data_ingestion; ALTER SCHEMA instrument_registry RENAME TO instrument_data"' \
   > "$SUCCESSFUL_MIGRATION_RUNNER"
 chmod +x "$SUCCESSFUL_MIGRATION_RUNNER"
 export MIGRATION_ENV
@@ -218,7 +218,7 @@ preserved_value="$(
 )"
 preserved_schema_count="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
-    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'data_ingestion', 'portfolio', 'watchlist')"
+    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_data', 'data_ingestion', 'portfolio', 'watchlist')"
 )"
 [[ "$preserved_value" == "incoming-data" ]]
 [[ "$preserved_schema_count" == "4" ]]
