@@ -48,7 +48,8 @@ def test_active_docs_cover_every_materialized_scalar_return_window() -> None:
     assert "./docs/DATA_MODEL_AND_API.md" in readme
     assert "./docs/RETURN_SERIES_CONTRACT.md" in readme
     assert "请求的** `as_of_date`" in return_contract
-    assert "不共享业务 helper、read model 或运行时 API" in return_contract
+    assert "独立计算行情收益和组合绩效" in return_contract
+    assert "标的风险跟进和只读研究上下文的 API 连接不改变这一计算边界" in return_contract
 
 
 def test_generic_return_field_descriptions_do_not_mislabel_price_return_series() -> None:

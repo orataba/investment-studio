@@ -13,6 +13,15 @@
 
 本文只定义当前 `instrument` API 和数据合同。
 
+研究工作台在 `watchlist` schema 内维护 `research_topic`、`research_entry`、`risk_review_rule` 和 `risk_case`。专题关联标的或组合；entry 保存人工证据、对话、输入快照、工具证据与回答。`risk_review_rule` 保存回撤和各周期跌幅复核线及初始校准；`risk_case` 分别记录客观触发状态、人工跟进、复核日期和历史。
+
+- `/api/research/catalogue`、`/connections` 提供登记标的与外部证据连接状态。
+- `/api/research/topics` 管理持续专题；专题下的 `/entries`、`/files`、`/analysis` 保存材料或发起助手运行。
+- `/api/research/runs/{run_id}/context`、`/tools` 只向绑定运行的受限工具提供证据；运行失败保留输入，服务重启将未完成运行标为失败。
+- `/api/risk` 只读当前事项；`/api/risk/rules/{instrument_id}`、`/api/risk/cases` 和单事项更新接口管理复核与跟进。
+
+原始上传文件位于外部 document storage，数据库保存引用和提取文字。助手没有行情或交易写入工具；其回答是待复核研究内容。Portfolio 的标的风险路由代理同一组 Watchlist 事项 API，组合账本与风险模型保持独立。完整路由见 [workbench.py](../backend/watchlist_app/api/routes/workbench.py)，数值口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。
+
 ## 2. 当前代码入口
 
 - 后端包：`apps/watchlist/backend/watchlist_app`
@@ -38,7 +47,7 @@
 
 ```text
 shared instruments / local evidence / holdings ingest
-  -> Registry facts + Watchlist-local profiles and holdings
+  -> Instrument Data facts + Watchlist-local profiles and holdings
   -> recalc
   -> read models
   -> watchlists / instrument detail / monitoring / optional backend extensions
@@ -75,7 +84,7 @@ shared instruments / local evidence / holdings ingest
 其中：
 
 - taxonomy tables
-  管 Watchlist-local、按 instrument type 隔离的分类树和当前叶子赋值；Registry 不保存 taxonomy
+  管 Watchlist-local、按 instrument type 隔离的分类树和当前叶子赋值；Instrument Data 不保存 taxonomy
 - attribute tables
   管 `fund_vehicle`、研究标签、监控评估等非树形字段
 - 基金 peer 口径
@@ -97,7 +106,7 @@ shared instruments / local evidence / holdings ingest
 
 ### 4.3 Local Evidence and Holdings
 
-Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为只读审计证据，不再参与行情、收益、风险或图表计算；canonical NAV 的写入和修订属于 Platform/Registry。
+Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为只读审计证据，不再参与行情、收益、风险或图表计算；canonical NAV 的写入和修订属于 后台 CLI。
 
 - historical NAV audit rows
 - holdings snapshots / positions
@@ -140,7 +149,7 @@ Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为�
 
 Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return_mtd / return_ytd / return_1y` 必须完整投影到 `watchlist_row_read_model`、field registry、筛选/排序和导出。新增窗口时不能只改计算 snapshot 而遗漏 migration、repository 或 serializer。窗口边界及 return semantics 见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 
-每个 `watchlist_row_read_model.last_nav_date` 是该 instrument 的 metric as-of，不是名单共用日期。Screener 即使未选日期列也必须在每行返回 `metric_as_of_date`，并在 `snapshot_metadata` 返回行终点的 min/max、是否混合及缺失数量。Peer snapshot 只比较相同 as-of；路径风险还必须记录 Registry frequency/calendar 缺点状态。
+每个 `watchlist_row_read_model.last_nav_date` 是该 instrument 的 metric as-of，不是名单共用日期。Screener 即使未选日期列也必须在每行返回 `metric_as_of_date`，并在 `snapshot_metadata` 返回行终点的 min/max、是否混合及缺失数量。Peer snapshot 只比较相同 as-of；路径风险还必须记录 Instrument Data frequency/calendar 缺点状态。
 
 ### 4.6 Recalc Jobs
 
@@ -149,7 +158,7 @@ Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return
 - `recalc_job`
 
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
-Registry 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
+Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 
 ## 5. 产品框架如何落地
 
@@ -240,7 +249,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 注意：
 
-- Watchlist 不提供 instrument 创建、canonical NAV 写入或行情刷新接口；这些操作只属于 Database Dashboard
+- Watchlist 不提供 instrument 创建、canonical NAV 写入或行情刷新接口；这些操作通过 `investment-studio data` CLI 维护
 
 也就是说，watchlist detail 里 canonical quote/NAV history 是只读视图；派生 payload 需要保留实际 `metric_family / quote_basis / role`，避免场内 ETF 或指数的 `close` 被误标成 NAV。
 
@@ -263,10 +272,10 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 说明：
 
-- 这组接口服务 `public_fund / private_fund / etf / equity / index` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Registry
+- 这组接口服务 `public_fund / private_fund / etf / equity / index` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Instrument Data
 - 节点带 `instrument_type`，assignment 必须与资产类型一致；不同类型之间不能交叉赋值
 - 公募、私募、ETF 和指数 assignment 默认允许为空，正式分类由详情页人工 `PUT` 确认
-- 股票分类由 Registry 的 canonical `exchange_code` 映射到市场/交易所节点，接口拒绝人工改写
+- 股票分类由 Instrument Data 的 canonical `exchange_code` 映射到市场/交易所节点，接口拒绝人工改写
 - 派生字段统一为 `instrument_taxonomy_level_1..7 / instrument_taxonomy_leaf / instrument_taxonomy_path`
 
 ### 6.7 Screener
@@ -313,7 +322,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 - 详情页 canonical 路由已经收口到 `/instruments/:instrumentId`
 - `watchlist` 来源只作为 query context 透传；canonical 详情路径不依赖来源名单
-- 共享资产浏览与维护统一放在 `Database Dashboard`；股票从添加弹窗搜索本地 FMP 目录并按需 materialize
+- 添加弹窗只选择已登记的共享资产；供应商目录搜索、新资产登记及数据维护通过后台 CLI 执行
 
 ## 8. 开发时的默认判断
 

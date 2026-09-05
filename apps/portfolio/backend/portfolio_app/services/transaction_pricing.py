@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from portfolio_ops_instrument_core import canonical_price_contract
+from investment_studio_instrument_core import canonical_price_contract
 
 
 def transaction_price_scale(

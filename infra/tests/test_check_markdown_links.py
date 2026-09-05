@@ -26,6 +26,14 @@ def test_accepts_indexed_living_documentation(tmp_path: Path) -> None:
     assert MODULE.main([str(tmp_path)]) == 0
 
 
+def test_submodule_owns_its_documentation_policy(tmp_path: Path) -> None:
+    _write(tmp_path / "README.md", "# Parent\n")
+    child = tmp_path / "apps" / "regime"
+    _write(child / ".git", "gitdir: ../../.git/modules/apps/regime\n")
+    _write(child / "archive" / "2026-09-04-review.md", "[Missing](none.md)\n")
+    assert MODULE.main([str(tmp_path)]) == 0
+
+
 def test_rejects_broken_and_undiscoverable_documents(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

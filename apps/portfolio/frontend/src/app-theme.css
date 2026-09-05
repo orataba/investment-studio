@@ -1,0 +1,796 @@
+.page-shell {
+  padding: 20px clamp(16px, 2.6vw, 40px) 50px;
+}
+
+.portfolio-workspace-page {
+  gap: 0;
+}
+
+.portfolio-toolbar-band {
+  gap: 11px;
+  padding: 0 0 12px;
+}
+
+.workspace-breadcrumbs {
+  min-height: 38px;
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.workspace-breadcrumb-link {
+  color: var(--portfolio-muted);
+}
+
+.workspace-breadcrumb-link:hover,
+.workspace-breadcrumb-current {
+  color: var(--portfolio-ink);
+}
+
+.workspace-breadcrumb-separator {
+  color: var(--portfolio-faint);
+}
+
+.workspace-app-heading {
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 1px 0 0;
+}
+
+.workspace-app-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.workspace-app-as-of {
+  color: var(--portfolio-faint);
+}
+
+.portfolio-selector-row {
+  gap: 15px;
+  padding: 0;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.portfolio-selector-row .workspace-selector-chip {
+  min-height: 31px;
+  padding: 5px 0 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--portfolio-muted);
+}
+
+.portfolio-selector-row .workspace-selector-chip-inactive:hover {
+  border-color: transparent;
+  border-bottom-color: var(--portfolio-line-strong);
+  background: transparent;
+  color: var(--portfolio-ink);
+}
+
+.portfolio-selector-row .workspace-selector-chip-active {
+  border-color: transparent;
+  border-bottom-color: var(--portfolio-accent);
+  background: transparent;
+  color: var(--portfolio-ink);
+}
+
+.portfolio-selector-row .workspace-selector-chip-label-active,
+.portfolio-selector-row .workspace-selector-chip-active .workspace-selector-menu-trigger {
+  color: var(--portfolio-ink);
+}
+
+.workspace-create-link {
+  padding: 5px 0 7px;
+  color: var(--portfolio-accent);
+}
+
+.workspace-selector-menu,
+.portfolio-nav-settings-panel,
+.research-bounds-menu,
+.research-freeze-menu,
+.taxonomy-picker-menu,
+.taxonomy-context-menu,
+.portfolio-table-view-menu,
+.transaction-instrument-filter-results {
+  border: 1px solid var(--portfolio-line-strong);
+  border-top: 2px solid var(--portfolio-ink);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgba(23, 33, 43, 0.13);
+}
+
+.workspace-selector-menu button,
+.taxonomy-context-menu-item {
+  border-radius: 0;
+}
+
+.workspace-selector-menu button:hover,
+.taxonomy-context-menu-item:hover {
+  background: var(--portfolio-accent-soft);
+  color: var(--portfolio-ink);
+}
+
+.portfolio-header-row,
+.portfolio-entry-hero,
+.account-page-heading {
+  min-height: 92px;
+  padding: 19px 0 17px;
+  border: 0;
+  border-top: 2px solid var(--portfolio-ink);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.portfolio-name,
+.portfolio-entry-title {
+  font-size: clamp(25px, 2.7vw, 33px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.portfolio-nav-value,
+.portfolio-change-value,
+.portfolio-change-positive,
+.portfolio-change-negative {
+  font-size: 17px;
+}
+
+.portfolio-settings-button,
+.portfolio-settings-modal-header button,
+.portfolio-settings-modal-actions button,
+.portfolio-table-toolbar-button,
+.overview-columns-button,
+.performance-window-action {
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.portfolio-tabs,
+.portfolio-workspace-page .portfolio-tabs {
+  gap: 22px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+}
+
+.portfolio-workspace-page .portfolio-tab {
+  flex: 0 0 auto;
+  padding: 13px 0 11px;
+  border-radius: 0;
+  color: var(--portfolio-muted);
+  background: transparent;
+}
+
+.portfolio-workspace-page .portfolio-tab:hover {
+  color: var(--portfolio-ink);
+  background: transparent;
+}
+
+.portfolio-workspace-page .portfolio-tab-active {
+  color: var(--portfolio-ink);
+  background: transparent;
+}
+
+.portfolio-tab-active::after,
+.portfolio-workspace-page .portfolio-tab-active::after {
+  display: block;
+  height: 2px;
+  background: var(--portfolio-accent);
+}
+
+.portfolio-entry-shell {
+  gap: 12px;
+  padding: 0;
+}
+
+.portfolio-entry-nav {
+  padding: 0;
+  border-radius: 0;
+  color: var(--portfolio-muted);
+  background: transparent;
+  font-size: 13px;
+}
+
+.portfolio-entry-list-shell {
+  gap: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.portfolio-entry-card {
+  padding: 15px 0;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.portfolio-entry-card:first-of-type {
+  border-top: 0;
+}
+
+.portfolio-entry-card:hover {
+  border-color: var(--portfolio-line);
+  background: var(--portfolio-band);
+  box-shadow: none;
+  transform: none;
+}
+
+.portfolio-entry-card-menu {
+  border-radius: 0;
+}
+
+.portfolio-entry-card-arrow {
+  color: var(--portfolio-faint);
+  transition: none;
+}
+
+.portfolio-entry-card:hover .portfolio-entry-card-arrow {
+  color: var(--portfolio-accent);
+  transform: none;
+}
+
+.portfolio-entry-create-card {
+  padding: 15px 0 0;
+  border: 0;
+}
+
+.performance-block-grid,
+.performance-section-stack,
+.risk-page-surface {
+  gap: 18px;
+}
+
+/* Primary work surfaces use horizontal rules rather than card containers. */
+.portfolio-section-block,
+.holdings-surface,
+.transaction-workbench-grid,
+.taxonomy-page-table,
+.research-chart-panel,
+.research-metrics-panel,
+.research-validation-grid,
+.research-settings-bar,
+.account-directory-panel,
+.account-detail-panel {
+  border: 0;
+  border-top: 2px solid var(--portfolio-ink);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.portfolio-workspace-page .portfolio-section-block > .portfolio-detail-toolbar,
+.portfolio-workspace-page .portfolio-detail-surface > .portfolio-detail-toolbar,
+.holdings-section-heading,
+.transaction-activity-toolbar,
+.taxonomy-topbar {
+  min-height: 48px;
+  padding: 11px 0 9px;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line);
+  background: transparent;
+}
+
+.portfolio-workspace-page .portfolio-detail-toolbar .panel-title {
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.portfolio-section-block > .table-shell,
+.portfolio-section-block > table,
+.holdings-surface > .table-shell {
+  border-top: 0;
+}
+
+.overview-performance-block {
+  padding: 15px 0 0;
+}
+
+.overview-nav-grid {
+  gap: 18px 24px;
+}
+
+.overview-nav-chart-panel {
+  min-width: 0;
+  padding-right: 22px;
+  border-right: 1px solid var(--portfolio-line);
+  overflow: visible;
+}
+
+.overview-key-metrics {
+  align-self: stretch;
+}
+
+.overview-key-metrics-table {
+  border: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  overflow: visible;
+}
+
+.overview-key-metrics-table thead th {
+  background: var(--portfolio-band);
+}
+
+.portfolio-summary-strip {
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  overflow: visible;
+}
+
+.summary-card {
+  min-width: 0;
+  padding: 13px 15px;
+  border: 0;
+  border-right: 1px solid var(--portfolio-line);
+  background: #ffffff;
+}
+
+.summary-card:last-child {
+  border-right: 0;
+}
+
+.summary-card-warning {
+  background: #fffaf2;
+}
+
+.portfolio-workspace-page table thead th,
+.accounts-data-table thead th,
+.taxonomy-page table thead th,
+.research-metrics-panel table thead th {
+  border-bottom-color: var(--portfolio-line-strong);
+  background: var(--portfolio-band);
+  color: var(--portfolio-muted);
+}
+
+.portfolio-workspace-page table tbody tr:hover,
+.accounts-data-table tbody tr:hover,
+.taxonomy-page table tbody tr:hover {
+  background: rgba(23, 107, 120, 0.035);
+}
+
+.holdings-filter-bar,
+.transaction-filter-bar,
+.performance-window-bar,
+.taxonomy-analytics-policy-bar {
+  border: 0;
+  border-top: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: var(--portfolio-band);
+}
+
+.holdings-filter-input,
+.transaction-filter-input,
+.performance-window-input,
+.overview-benchmark-search-box input,
+.portfolio-table-config-search-input,
+.risk-scope-select-box select,
+.taxonomy-topbar select,
+.taxonomy-topbar input,
+.portfolio-settings-grid select,
+.portfolio-create-grid input {
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.portfolio-table-config-backdrop,
+.overview-columns-modal-backdrop,
+.portfolio-settings-modal-backdrop,
+.taxonomy-modal-overlay,
+.transaction-entry-backdrop,
+.transaction-drawer-backdrop {
+  background: rgba(23, 33, 43, 0.28);
+  backdrop-filter: none;
+}
+
+.portfolio-table-config-header,
+.portfolio-table-config-actions,
+.overview-columns-modal-header,
+.overview-columns-modal-actions,
+.portfolio-settings-modal-header,
+.portfolio-settings-modal-actions,
+.taxonomy-modal-header {
+  background: var(--portfolio-band);
+}
+
+.risk-chart-panel,
+.risk-target-panel,
+.risk-matrix-panel,
+.rolling-risk-chart {
+  border: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: #ffffff;
+  overflow: visible;
+}
+
+.risk-chart-panel,
+.risk-target-panel,
+.risk-matrix-panel {
+  padding: 13px 0;
+}
+
+.rolling-risk-chart-head {
+  padding: 10px 0 8px;
+  background: transparent;
+}
+
+.rolling-risk-chart-plot {
+  min-width: 0;
+  padding: 8px 0 4px;
+  overflow: visible;
+}
+
+.risk-toggle-group {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+.risk-toggle-group button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.risk-toggle-group button.risk-toggle-active {
+  border-bottom-color: var(--portfolio-accent);
+  background: transparent;
+  color: var(--portfolio-ink);
+  box-shadow: none;
+}
+
+.accounts-workbench {
+  gap: 20px;
+}
+
+.account-directory-panel {
+  border-top-width: 2px;
+}
+
+.account-directory-header,
+.account-detail-header,
+.account-panel-header,
+.account-section-heading {
+  padding: 12px 0 10px;
+  border-bottom: 1px solid var(--portfolio-line);
+  background: transparent;
+}
+
+.account-directory-item {
+  margin: 0;
+  padding-right: 8px;
+  padding-left: 8px;
+  border-bottom: 1px solid var(--portfolio-line);
+  border-radius: 0;
+}
+
+.account-directory-item:hover,
+.account-directory-item-active {
+  background: var(--portfolio-accent-soft);
+}
+
+.account-detail-tabbar {
+  padding: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+.account-detail-tabbar button {
+  border-radius: 0;
+}
+
+.account-balance-grid > *,
+.account-overview-section,
+.account-derived-summary {
+  border-color: var(--portfolio-line);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.taxonomy-page {
+  display: grid;
+  gap: 18px;
+}
+
+.taxonomy-topbar,
+.taxonomy-page-table {
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.taxonomy-topbar {
+  overflow: visible;
+}
+
+.taxonomy-picker-trigger,
+.taxonomy-default-target-select,
+.taxonomy-tree-toggle,
+.research-bounds-trigger,
+.research-freeze-trigger,
+.research-icon-button {
+  border-radius: 0;
+}
+
+.research-settings-bar,
+.research-chart-panel,
+.research-metrics-panel {
+  padding: 13px 0;
+}
+
+.transaction-inspector,
+.transaction-inspector-card,
+.transaction-fact-highlight,
+.transaction-capture-section,
+.transaction-capture-batch-detail,
+.position-lot-inspector,
+.option-outcome-contract-card,
+.fund-distribution-task-card {
+  border-color: var(--portfolio-line);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.fund-distribution-task-panel {
+  padding: 14px 16px;
+  border: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-left: 3px solid var(--portfolio-warning);
+  border-radius: 0;
+  background: #fffaf2;
+  box-shadow: none;
+}
+
+.fund-distribution-task-count,
+.transaction-capture-status,
+.investment-research-importance,
+.investment-research-note-tags span {
+  border-radius: 2px;
+}
+
+.risk-target-gap-track,
+.risk-target-gap-fill {
+  border-radius: 0;
+}
+
+.taxonomy-target-edit-lock-message,
+.taxonomy-target-validation-message {
+  border-radius: 2px;
+}
+
+/* Unified chart language and unclipped plotting surfaces. */
+.portfolio-nav-chart,
+.portfolio-nav-chart-plot,
+.portfolio-nav-drawdown-plot,
+.price-chart-shell,
+.instrument-price-chart,
+.research-chart,
+.research-chart-panel,
+.rolling-risk-chart,
+.rolling-risk-chart-plot,
+.portfolio-security-chart-panel,
+.fcn-underlying-chart-panel {
+  min-width: 0;
+  overflow: visible;
+}
+
+.portfolio-nav-chart-svg,
+.price-chart-svg,
+.research-chart-svg,
+.rolling-risk-chart-svg,
+.option-payoff-chart {
+  display: block;
+  max-width: 100%;
+  overflow: visible;
+  background: #ffffff;
+}
+
+.portfolio-workspace-page .portfolio-nav-grid-line,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-grid-line,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-grid-line-stub,
+.instrument-price-chart-instrument .price-chart-grid-line,
+.price-chart-grid-line,
+.rolling-risk-guide,
+.research-chart-axis {
+  stroke: var(--studio-chart-grid);
+  stroke-width: 0.75;
+  stroke-dasharray: 0;
+}
+
+.portfolio-workspace-page .portfolio-nav-axis-label,
+.price-chart-axis-label,
+.rolling-risk-axis-label,
+.rolling-risk-x-label,
+.research-chart-axis-label,
+.research-chart-panel-label {
+  fill: var(--studio-chart-axis);
+}
+
+.portfolio-workspace-page .portfolio-nav-area,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-area,
+.instrument-price-chart-instrument .price-chart-area,
+.price-chart-area,
+.research-chart-area,
+.rolling-risk-area {
+  fill: var(--studio-chart-area);
+}
+
+.portfolio-workspace-page .portfolio-nav-drawdown-area,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-area {
+  fill: rgba(166, 70, 67, 0.08);
+}
+
+.portfolio-workspace-page .portfolio-nav-line,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-line,
+.instrument-price-chart-instrument .price-chart-line,
+.price-chart-line,
+.research-chart-line,
+.rolling-risk-line {
+  stroke: var(--studio-chart-primary);
+  stroke-width: 1.7;
+}
+
+.portfolio-workspace-page .portfolio-nav-line-benchmark,
+.research-chart-line-muted,
+.rolling-risk-line-benchmark {
+  stroke: var(--studio-chart-secondary);
+  stroke-width: 1.4;
+}
+
+.portfolio-workspace-page .portfolio-nav-drawdown-line,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-line,
+.research-chart-line-drawdown {
+  stroke: var(--studio-chart-negative);
+  stroke-width: 1.45;
+}
+
+.portfolio-workspace-page .portfolio-nav-point,
+.price-chart-point,
+.rolling-risk-point,
+.rolling-risk-endpoint {
+  fill: #ffffff;
+  stroke: var(--studio-chart-primary);
+}
+
+.portfolio-workspace-page .portfolio-nav-value-tag rect {
+  fill: var(--studio-chart-primary);
+}
+
+.instrument-price-chart-instrument .portfolio-instrument-series-label span {
+  color: var(--studio-chart-primary);
+}
+
+.portfolio-workspace-page .portfolio-nav-chart-tooltip,
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-chart-tooltip,
+.price-chart-tooltip {
+  z-index: 20;
+  border-color: var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(23, 33, 43, 0.12);
+  backdrop-filter: none;
+}
+
+.portfolio-nav-range-button,
+.price-chart-range-button {
+  border-radius: 0;
+}
+
+.price-chart-range-button-active {
+  border-color: transparent;
+  border-bottom-color: var(--portfolio-accent);
+  background: transparent;
+  color: var(--portfolio-ink);
+}
+
+.portfolio-security-shell,
+.holding-detail-page {
+  color: var(--portfolio-ink);
+}
+
+.portfolio-security-detail-nav,
+.holding-detail-toolbar {
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+}
+
+@media (max-width: 980px) {
+  .overview-nav-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-nav-chart-panel {
+    padding-right: 0;
+    padding-bottom: 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--portfolio-line);
+  }
+
+  .portfolio-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summary-card:nth-child(2n) {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .page-shell {
+    padding: 16px 14px 32px;
+  }
+
+  .portfolio-header-row,
+  .portfolio-entry-hero,
+  .account-page-heading {
+    padding: 18px 0 16px;
+  }
+
+  .portfolio-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .portfolio-tabs {
+    flex-wrap: nowrap;
+  }
+
+  .portfolio-summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-card,
+  .summary-card:nth-child(2n) {
+    border-right: 0;
+    border-bottom: 1px solid var(--portfolio-line);
+  }
+
+  .summary-card:last-child {
+    border-bottom: 0;
+  }
+
+  .accounts-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .account-directory-panel {
+    position: static;
+  }
+}

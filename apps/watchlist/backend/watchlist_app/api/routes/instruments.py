@@ -14,6 +14,7 @@ from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
     get_shared_price_bars,
+    get_shared_reference_data,
     list_shared_instruments,
     resolve_shared_instrument,
 )
@@ -21,6 +22,15 @@ from watchlist_app.services.shared_instrument_registry import (
 
 router = APIRouter()
 PRICE_BAR_INSTRUMENT_TYPES = {"etf", "equity", "index"}
+
+
+@router.get("/{instrument_id}/reference-data")
+def read_instrument_reference(instrument_id: str) -> dict[str, object]:
+    """Read a collected asset snapshot without contacting providers."""
+    record = get_shared_reference_data(instrument_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return record
 
 
 @router.get("")

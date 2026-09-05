@@ -5,7 +5,7 @@ from datetime import date, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
-from portfolio_ops_instrument_core import (
+from investment_studio_instrument_core import (
     CorporateActionEvent as CorporateActionEventContract,
     DataStatus as CoverageState,
     InstrumentCore as InstrumentCoreContract,
@@ -33,9 +33,13 @@ TargetMemberType = Literal[
 ]
 DefaultTargetDimension = Literal["weight", "risk_budget"]
 TransactionCommandType = Literal[
+    "short_sell",
+    "buy_to_cover",
+    "short_opening_balance",
     "buy",
     "sell",
     "option_write",
+    "option_opening_balance",
     "option_buy_to_close",
     "dividend",
     "dividend_reinvestment",
@@ -56,6 +60,10 @@ TransactionAssetDomain = Literal["security", "derivative", "cash"]
 TransactionAssetSubtype = Literal["fcn", "option"]
 TransactionImportAssetType = Literal["security", "fcn", "option", "cash"]
 TransactionImportAction = Literal[
+    "physical_long", "physical_written",
+    "short_sell",
+    "buy_to_cover",
+    "short_opening_balance",
     "buy",
     "sell",
     "dividend",
@@ -65,9 +73,11 @@ TransactionImportAction = Literal[
     "transfer_in",
     "opening_balance",
     "entry",
+    "opening_written",
     "early_exit",
     "coupon",
     "knock_in_close",
+    "knock_in_observation",
     "knock_out_close",
     "maturity_close",
     "buy_to_open",
@@ -104,6 +114,7 @@ LifecycleEventType = Literal[
 ]
 POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
     {
+        "short_sell", "buy_to_cover",
         "buy",
         "sell",
         "dividend_reinvestment",
@@ -111,6 +122,9 @@ POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
     }
 )
 FeeCategory = Literal[
+    "financing_interest",
+    "borrow_fee",
+    "payment_in_lieu",
     "unknown",
     "transaction_cost",
     "management_fee",
@@ -149,7 +163,7 @@ LedgerSourceType = TransactionType | Literal["corporate_action"]
 PositionLotOpeningType = TransactionType | Literal["corporate_action"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
 ResearchRunReliabilityState = Literal["current", "stale", "unassessed", "not_completed"]
-ResearchExecutionStatus = Literal["ready", "manual_review_required"]
+ResearchExecutionStatus = Literal["ready", "manual_review_required", "no_trade"]
 ResearchLifecycle = Literal["held", "observed", "former"]
 ResearchEligibility = Literal["eligible", "pm_review_required"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
@@ -370,12 +384,17 @@ class SharedFxRatesResponse(BaseModel):
     rates: list[SharedFxRateRecord]
 
 
+CashPurpose = Literal["operating", "margin", "collateral", "financing"]
+
+
 class AccountRecord(BaseModel):
     account_id: str
     portfolio_id: str
     account_name: str
     account_type: AccountType
     account_category: AccountCategory
+    cash_purpose: CashPurpose | None = None
+    collateral_reference: str | None = None
     currency: str
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
@@ -395,6 +414,8 @@ class AccountCreateRequest(BaseModel):
 
     account_name: str = Field(min_length=1)
     account_category: AccountCategory
+    cash_purpose: CashPurpose | None = None
+    collateral_reference: str | None = Field(default=None, max_length=2000)
     currency: str = Field(min_length=1, max_length=8)
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
@@ -425,6 +446,8 @@ class AccountCreateRequest(BaseModel):
             if self.cost_basis_method is not None:
                 raise ValueError("Cash accounts must not carry a cost-basis method.")
         else:
+            if self.cash_purpose is not None or self.collateral_reference is not None:
+                raise ValueError("Cash purpose and collateral reference belong to cash accounts only.")
             if not self.default_settlement_cash_account_id:
                 raise ValueError(
                     "Holding accounts require a default settlement cash account."
@@ -441,6 +464,8 @@ class AccountUpdateRequest(BaseModel):
 
     account_name: str | None = Field(default=None, min_length=1)
     account_category: AccountCategory | None = None
+    cash_purpose: CashPurpose | None = None
+    collateral_reference: str | None = Field(default=None, max_length=2000)
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
@@ -463,6 +488,25 @@ class OptionContractTerms(BaseModel):
     expiry_date: date
     strike: Decimal = Field(gt=0, lt=Decimal("1e16"))
     contract_multiplier: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    settlement_type: Literal["physical", "cash"] | None = None
+    exercise_style: Literal["american", "european", "bermudan"] | None = None
+    exercise_dates: list[date] | None = None
+    strike_currency: SupportedCurrency | None = None
+    settlement_formula: str | None = Field(default=None, max_length=2000)
+    terms_reference: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_exercise_schedule(self) -> "OptionContractTerms":
+        if self.exercise_style == "bermudan" and not self.exercise_dates:
+            raise ValueError("Bermudan options require explicit exercise_dates.")
+        if self.exercise_dates is not None:
+            if self.exercise_style != "bermudan":
+                raise ValueError("exercise_dates apply only to Bermudan options.")
+            if len(set(self.exercise_dates)) != len(self.exercise_dates):
+                raise ValueError("exercise_dates must be unique.")
+            if any(value > self.expiry_date for value in self.exercise_dates):
+                raise ValueError("Exercise dates must not follow expiry.")
+        return self
 
     @field_validator("underlying_instrument_id", mode="before")
     @classmethod
@@ -517,6 +561,13 @@ class FCNContractTerms(BaseModel):
     issuer: str = Field(min_length=1)
     counterparty: str = Field(min_length=1)
     underlyings: list[FCNUnderlyingTerms] = Field(min_length=1)
+    knock_in_observation: Literal["daily_close", "continuous", "final_close"] | None = None
+    knock_out_observation_dates: list[date] | None = None
+    coupon_payment_dates: list[date] | None = None
+    coupon_day_count: str | None = Field(default=None, max_length=100)
+    settlement_type: Literal["cash", "physical", "conditional"] | None = None
+    payoff_description: str | None = Field(default=None, max_length=4000)
+    terms_reference: str | None = Field(default=None, max_length=500)
 
     @field_validator("issuer", "counterparty", mode="before")
     @classmethod
@@ -536,6 +587,18 @@ class FCNContractTerms(BaseModel):
         instrument_ids = [item.instrument_id for item in self.underlyings]
         if len(instrument_ids) != len(set(instrument_ids)):
             raise ValueError("FCN underlyings must use unique instrument_id values.")
+        for label, dates in (
+            ("knock_out_observation_dates", self.knock_out_observation_dates),
+            ("coupon_payment_dates", self.coupon_payment_dates),
+        ):
+            if dates is None:
+                continue
+            if len(set(dates)) != len(dates):
+                raise ValueError(f"{label} must be unique.")
+            if any(value < self.issue_date for value in dates):
+                raise ValueError(f"{label} must not precede issue_date.")
+        if any(value > self.maturity_date for value in self.knock_out_observation_dates or []):
+            raise ValueError("Knock-out observations must not follow maturity.")
         return self
 
 
@@ -574,11 +637,51 @@ class DerivativeContractRecord(DerivativeContractCreate):
     account_id: str
     currency: SupportedCurrency
     created_at: str
+    row_version: int = 1
+    amendments: list[dict[str, JsonValue]] = Field(default_factory=list)
+
+
+class DerivativeContractAmendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_row_version: int = Field(ge=1)
+    terms: OptionContractTerms | FCNContractTerms
+    reason: str = Field(min_length=1, max_length=2000)
+    reviewed_by: str = Field(min_length=1, max_length=200)
+
+    @field_validator("reason", "reviewed_by", mode="before")
+    @classmethod
+    def required_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
 
 
 class DerivativeContractListResponse(BaseModel):
     portfolio_id: str
     derivative_contracts: list[DerivativeContractRecord]
+
+
+class LotSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    opening_transaction_id: str = Field(min_length=1)
+    quantity: Decimal = Field(gt=0, lt=Decimal("1e16"))
+
+
+def _validate_disposal_lots(selections: list[LotSelection], quantity: Decimal | None) -> None:
+    if len({item.opening_transaction_id for item in selections}) != len(selections):
+        raise ValueError("Each selected opening transaction must appear only once.")
+    if sum(item.quantity for item in selections) != quantity:
+        raise ValueError("Selected lot quantities must equal the disposal quantity.")
+
+
+class AssetDelivery(BaseModel):
+    """Actual non-cash consideration, valued from the settlement confirmation."""
+
+    model_config = ConfigDict(extra="forbid")
+    account_id: str = Field(min_length=1)
+    instrument_id: str = Field(min_length=1)
+    quantity: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    fair_value: Decimal = Field(ge=0, lt=Decimal("1e20"))
+    currency: SupportedCurrency
+    fx_rate_to_contract: Decimal = Field(gt=0, lt=Decimal("1e16"))
 
 
 class TransactionRecord(BaseModel):
@@ -632,6 +735,8 @@ class TransactionRecord(BaseModel):
     source_system: str | None = None
     external_reference: str | None = None
     net_cash_effect: float | None = None
+    asset_deliveries: list[AssetDelivery] = Field(default_factory=list)
+    lot_selections: list[LotSelection] = Field(default_factory=list)
     note: str | None = None
     created_at: str | None = None
     row_version: int = Field(default=1, ge=1)
@@ -887,6 +992,7 @@ class PositionLotRealizationRecord(BaseModel):
 
 
 class PositionLotRecord(BaseModel):
+    position_side: Literal["long", "short"] = "long"
     position_lot_id: str
     portfolio_id: str
     account_id: str
@@ -993,8 +1099,23 @@ class TransactionAccountingImpact(BaseModel):
     fx_coverage_status: Literal["complete", "stale", "unavailable"]
 
 
+class TransactionCashFxImpact(BaseModel):
+    transaction_id: str
+    posting_role: str
+    account_id: str
+    currency: SupportedCurrency
+    recognition_date: date | None = None
+    recognition_fx_rate_to_base: float | None = None
+    local_exposure_released: float
+    historical_cost_basis_base: float | None = None
+    fair_value_base: float | None = None
+    realized_cash_fx_pnl_base: float | None = None
+    fx_coverage_status: Literal["complete", "stale", "unavailable"]
+
+
 class TransactionWorkspaceResponse(BaseModel):
     portfolio_id: str
+    base_currency: SupportedCurrency
     portfolio_inception_date: date
     summary: TransactionListSummary
     derivation_boundary: DerivationBoundaryStatus
@@ -1003,6 +1124,7 @@ class TransactionWorkspaceResponse(BaseModel):
     transactions: list[TransactionRecord]
     selected_transaction: TransactionRecord | None = None
     accounting_impact: TransactionAccountingImpact | None = None
+    cash_fx_impacts: list[TransactionCashFxImpact] = Field(default_factory=list)
     delete_scope_row_versions: dict[str, int]
     ledger_summary: LedgerPostingListSummary
     ledger_postings: list[LedgerPostingRecord]
@@ -1801,9 +1923,9 @@ class ResearchSettingsRecord(BaseModel):
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
-    gross_exposure: float | None = Field(default=None, gt=0)
+    gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
-    max_gross_exposure: float | None = Field(default=None, gt=0)
+    max_gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
     top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] = Field(default_factory=list)
     backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
@@ -1839,9 +1961,9 @@ class ResearchSettingsUpdateRequest(BaseModel):
     contribution_mode: PortfolioRiskContributionMode = "signed"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
-    gross_exposure: float | None = Field(default=None, gt=0)
+    gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
-    max_gross_exposure: float | None = Field(default=None, gt=0)
+    max_gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     frozen_taxonomy_node_ids: list[str] | None = None
     top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] | None = None
     backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
@@ -2056,6 +2178,8 @@ class ResearchMemberTargetRecord(BaseModel):
     configured_weight: float | None = None
     configured_risk_share: float | None = None
     selected_target_value: float | None = None
+    trade_constraint: Literal["adjustable", "no_trade"] = "adjustable"
+    risk_model_status: Literal["modeled", "excluded"] = "modeled"
 
 
 class ResearchSolvedResultRowRecord(BaseModel):
@@ -2070,6 +2194,8 @@ class ResearchSolvedResultRowRecord(BaseModel):
     target_value_base: float | None = None
     target_risk_share: float | None = None
     forward_risk_contribution: float | None = None
+    trade_constraint: Literal["adjustable", "no_trade"] = "adjustable"
+    risk_model_status: Literal["modeled", "excluded"] = "modeled"
 
 
 class ResearchSolvedResultGroupRecord(BaseModel):
@@ -2084,6 +2210,8 @@ class ResearchSolvedResultGroupRecord(BaseModel):
     min_weight: float | None = None
     max_weight: float | None = None
     bound_status: str | None = None
+    trade_constraint: Literal["adjustable", "no_trade", "mixed"] = "adjustable"
+    risk_model_status: Literal["modeled", "excluded", "mixed"] = "modeled"
     rows: list[ResearchSolvedResultRowRecord] = Field(default_factory=list)
 
 
@@ -2109,6 +2237,9 @@ class ResearchSolveEventRecord(BaseModel):
     return_rows_after_policy: int | None = None
     missing_return_row_count: int | None = None
     missing_return_row_fraction: float | None = None
+    leading_incomplete_return_row_count: int | None = None
+    post_warmup_missing_return_row_count: int | None = None
+    post_warmup_missing_return_row_fraction: float | None = None
     dropped_return_rows: list[dict[str, object]] = Field(default_factory=list)
     latest_complete_return_date: str | None = None
     trailing_complete_return_staleness_days: int | None = None
@@ -2123,6 +2254,8 @@ class ResearchSolveEventRecord(BaseModel):
     gross_exposure: float | None = None
     risky_allocation_scaling_factor: float | None = None
     member_count: int = 0
+    no_trade_member_count: int = 0
+    risk_model_excluded_member_count: int = 0
     scope_solve_count: int | None = None
 
 
@@ -2137,6 +2270,8 @@ class ResearchTargetWeightGapRecord(BaseModel):
     target_value_base: float | None = None
     base_currency: str
     action: str
+    trade_constraint: Literal["adjustable", "no_trade"] = "adjustable"
+    risk_model_status: Literal["modeled", "excluded"] = "modeled"
     research_lifecycle: ResearchLifecycle | None = None
     research_eligibility: ResearchEligibility | None = None
     research_pm_approved: bool | None = None
@@ -2161,6 +2296,8 @@ class ResearchTargetRowRecord(BaseModel):
     implementation_weight: float | None = None
     gap_to_implementation: float | None = None
     action: str | None = None
+    trade_constraint: Literal["adjustable", "no_trade"] = "adjustable"
+    risk_model_status: Literal["modeled", "excluded"] = "modeled"
     research_lifecycle: ResearchLifecycle | None = None
     research_eligibility: ResearchEligibility | None = None
     research_pm_approved: bool | None = None
@@ -2201,9 +2338,14 @@ class ResearchBacktestExecutionRecord(BaseModel):
     taxonomy_configuration_effective_from: str | None = None
     target_weights: list[ResearchBacktestTargetWeightRecord] = Field(default_factory=list)
     cash_target_weight: float
+    derivative_target_weight: float = 0.0
+    derivative_reference_weight: float = 0.0
+    derivative_target_value: float = 0.0
+    derivative_no_trade: bool = True
     risky_buy_turnover: float
     risky_sell_turnover: float
     cash_leg_turnover: float
+    derivative_leg_turnover: float = 0.0
     one_way_turnover: float
     commission_cost: float
     tax_cost: float
@@ -2228,9 +2370,20 @@ class ResearchBacktestMethodologyRecord(BaseModel):
     decision_rule: str
     execution_rule: str
     cash_return_rule: str
+    derivative_rule: str | None = None
     cost_rule: str
     contribution_linking: str
     assumptions: dict[str, float | int] = Field(default_factory=dict)
+
+
+class ResearchDerivativeCapitalEventRecord(BaseModel):
+    effective_date: str
+    actual_value_base: float | None = None
+    target_value: float
+    reference_weight: float | None = None
+    previous_value: float
+    capital_change: float
+    source: str = "actual_derivative_ledger"
 
 
 class ResearchBacktestSkippedRebalanceRecord(BaseModel):
@@ -2247,6 +2400,7 @@ class ResearchBacktestPointInTimeCoverageRecord(BaseModel):
     historical_instrument_count: int = 0
     first_usable_observation_by_instrument: dict[str, str] = Field(default_factory=dict)
     skipped_rebalances: list[ResearchBacktestSkippedRebalanceRecord] = Field(default_factory=list)
+    pending_rebalances: list[ResearchBacktestSkippedRebalanceRecord] = Field(default_factory=list)
     unavailable_reason: str | None = None
 
 
@@ -2327,6 +2481,9 @@ class ResearchBacktestRecord(BaseModel):
         ResearchBacktestContributionReconciliationRecord
     ] = Field(default_factory=list)
     execution_records: list[ResearchBacktestExecutionRecord] = Field(default_factory=list)
+    derivative_capital_events: list[ResearchDerivativeCapitalEventRecord] = Field(
+        default_factory=list
+    )
     total_turnover: float = 0.0
     total_cost: float = 0.0
     methodology: ResearchBacktestMethodologyRecord | None = None
@@ -2603,8 +2760,8 @@ class TargetSetLineInput(BaseModel):
     target_member_type: TargetMemberType | None = None
     target_member_id: str | None = None
     taxonomy_node_id: str | None = None
-    target_weight: float | None = None
-    target_risk_share: float | None = None
+    target_weight: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    target_risk_share: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     notes: str | None = None
 
     @field_validator("target_member_type", mode="before")
@@ -3469,7 +3626,19 @@ class LedgerPostingListResponse(BaseModel):
     ledger_postings: list[LedgerPostingRecord]
 
 
+class PhysicalOptionDelivery(BaseModel):
+    stock_record_reference: str | None = Field(default=None, max_length=200)
+    model_config = ConfigDict(extra="forbid")
+    stock_account_id: str = Field(min_length=1)
+    settlement_cash_account_id: str = Field(min_length=1)
+    allow_stock_short: bool = False
+    fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_category: FeeCategory = "unknown"
+    taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+
+
 class TransactionCreateRequest(BaseModel):
+    record_reference: str | None = Field(default=None, max_length=200)
     model_config = ConfigDict(extra="forbid")
 
     transaction_type: TransactionCommandType
@@ -3485,6 +3654,9 @@ class TransactionCreateRequest(BaseModel):
     instrument_id: str | None = None
     derivative_contract_id: str | None = None
     derivative_contract: DerivativeContractCreate | None = None
+    asset_deliveries: list[AssetDelivery] = Field(default_factory=list, max_length=20)
+    lot_selections: list[LotSelection] = Field(default_factory=list, max_length=100)
+    option_delivery: PhysicalOptionDelivery | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     gross_amount: Decimal = Field(ge=0, lt=Decimal("1e20"))
@@ -3564,6 +3736,15 @@ class TransactionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_amount_contract(self) -> "TransactionCreateRequest":
+        if self.option_delivery and self.lifecycle_event_type not in {"option_long_exercise", "option_writer_assignment"}:
+            raise ValueError("Option delivery details require an exercise or assignment outcome.")
+        if self.asset_deliveries:
+            if self.transaction_type != "maturity_redemption" or not self.derivative_contract_id:
+                raise ValueError("Asset deliveries require an FCN redemption.")
+            if self.lifecycle_event_type not in {"fcn_knock_in", "fcn_maturity"}:
+                raise ValueError("Asset deliveries require an explicit FCN final settlement event.")
+            if not self.note or not self.note.strip():
+                raise ValueError("Asset delivery requires settlement confirmation evidence in note.")
         if self.instrument_id and self.derivative_contract_id:
             raise ValueError(
                 "A transaction may reference an instrument or a derivative contract, not both."
@@ -3607,7 +3788,7 @@ class TransactionCreateRequest(BaseModel):
         if self.external_reference is not None and self.source_system is None:
             raise ValueError("external_reference requires source_system.")
         lifecycle_transaction_types: dict[str, set[str]] = {
-            "fcn_knock_in": {"maturity_redemption"},
+            "fcn_knock_in": {"maturity_redemption", "lifecycle_event"},
             "fcn_knock_out": {"maturity_redemption"},
             "fcn_maturity": {"maturity_redemption"},
             "option_long_expiry": {"maturity_redemption"},
@@ -3633,8 +3814,9 @@ class TransactionCreateRequest(BaseModel):
         if self.transaction_type == "lifecycle_event":
             if not self.derivative_contract_id:
                 raise ValueError("Lifecycle events require derivative_contract_id.")
-            if inline_contract_type is not None and inline_contract_type != "option":
-                raise ValueError("Option lifecycle events require an option contract.")
+            expected_contract_type = "fcn" if self.lifecycle_event_type == "fcn_knock_in" else "option"
+            if inline_contract_type is not None and inline_contract_type != expected_contract_type:
+                raise ValueError(f"This lifecycle event requires a {expected_contract_type} contract.")
             writer_close_event = self.lifecycle_event_type in {
                 "option_writer_expiry",
                 "option_writer_cash_settlement",
@@ -3649,6 +3831,11 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("This lifecycle event must not carry quantity.")
             if self.price is not None:
                 raise ValueError("Lifecycle events must not carry price.")
+            if self.lifecycle_event_type == "fcn_knock_in":
+                if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0 or self.settlement_cash_account_id:
+                    raise ValueError("FCN knock-in observation must not change cash or position; record redemption separately.")
+                if not self.note or not self.note.strip():
+                    raise ValueError("FCN knock-in observation requires the confirmed observation evidence in note.")
             if self.lifecycle_event_type == "option_writer_expiry":
                 if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
                     raise ValueError("Option writer expiry must not carry cash amounts.")
@@ -3673,7 +3860,9 @@ class TransactionCreateRequest(BaseModel):
                         "Option writer assignment must not carry settlement_cash_account_id."
                     )
 
-        if self.transaction_type in {"buy", "sell"}:
+        if self.transaction_type in {"short_sell", "buy_to_cover", "short_opening_balance"} and not self.instrument_id:
+            raise ValueError("Stock short transactions require instrument_id.")
+        if self.transaction_type in {"buy", "sell", "short_sell", "buy_to_cover"}:
             if not has_asset_reference:
                 raise ValueError(
                     "Security transactions require an instrument or derivative contract."
@@ -3848,7 +4037,19 @@ class TransactionCreateRequest(BaseModel):
                 "entitlement_date is only allowed for dividend, dividend reinvestment, coupon, fee, and tax."
             )
 
-        if self.transaction_type == "opening_balance":
+        if self.transaction_type == "option_opening_balance":
+            if self.lot_selections:
+                raise ValueError("Opening balances cannot select disposal lots.")
+            if not self.derivative_contract_id or self.instrument_id:
+                raise ValueError("Written option opening balance requires a derivative contract only.")
+            if inline_contract_type is not None and inline_contract_type != "option":
+                raise ValueError("Written option opening balance requires an option contract.")
+
+        if self.lot_selections:
+            if self.transaction_type not in {"sell", "buy_to_cover", "maturity_redemption"}:
+                raise ValueError("Explicit lot selection requires a sale, cover, or redemption.")
+            _validate_disposal_lots(self.lot_selections, self.quantity)
+        if self.transaction_type in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
             if has_asset_reference:
                 if self.acquisition_date is None:
                     self.acquisition_date = self.trade_date
@@ -3869,16 +4070,16 @@ class TransactionCreateRequest(BaseModel):
         elif self.acquisition_date is not None:
             raise ValueError("acquisition_date is only allowed for security opening balance.")
 
-        zero_gross_allowed = (
+        zero_gross_allowed = bool(self.asset_deliveries) or (
             self.transaction_type == "lifecycle_event"
             and self.lifecycle_event_type
-            in {"option_writer_expiry", "option_writer_assignment"}
+            in {"option_writer_expiry", "option_writer_assignment", "fcn_knock_in"}
         ) or (
             self.transaction_type == "maturity_redemption"
             and self.lifecycle_event_type
             in {"option_long_expiry", "option_long_exercise"}
         ) or (
-            self.transaction_type == "opening_balance" and has_asset_reference
+            self.transaction_type in {"opening_balance", "option_opening_balance", "short_opening_balance"} and has_asset_reference
         )
         if self.gross_amount <= 0 and not zero_gross_allowed:
             raise ValueError(
@@ -3900,8 +4101,11 @@ class OptionOutcomeCreateRequest(BaseModel):
     outcome: Literal["expired", "cash_settled", "physical"]
     quantity: Decimal = Field(gt=0, lt=Decimal("1e16"))
     event_date: date
+    trade_time: str | None = None
     settlement_date: date
+    lot_selections: list[LotSelection] = Field(default_factory=list, max_length=100)
     stock_account_id: str | None = None
+    allow_stock_short: bool = False
     settlement_cash_account_id: str | None = None
     cash_settlement_amount: Decimal | None = Field(
         default=None,
@@ -3909,8 +4113,14 @@ class OptionOutcomeCreateRequest(BaseModel):
         lt=Decimal("1e20"),
     )
     fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_category: FeeCategory = "unknown"
     taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
     note: str | None = None
+
+    @field_validator("trade_time", mode="before")
+    @classmethod
+    def validate_trade_time(cls, value: object) -> object:
+        return TransactionCreateRequest.validate_trade_time(value)
 
     @field_validator("derivative_contract_id", mode="before")
     @classmethod
@@ -3934,6 +4144,14 @@ class OptionOutcomeCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "OptionOutcomeCreateRequest":
+        if self.fee_category != "unknown" and self.fees == 0:
+            raise ValueError("fee_category requires a positive attached fee.")
+        if self.lot_selections and self.side != "long":
+            raise ValueError("Outcome lot selection applies to long option lots only.")
+        if self.lot_selections:
+            _validate_disposal_lots(self.lot_selections, self.quantity)
+        if self.allow_stock_short and self.outcome != "physical":
+            raise ValueError("Stock short permission is only applicable to physical delivery.")
         if self.settlement_date < self.event_date:
             raise ValueError("settlement_date must not be earlier than event_date.")
         if self.outcome == "expired":
@@ -3961,6 +4179,7 @@ class OptionOutcomeCreateRequest(BaseModel):
 
 
 class InternalTransferCreateRequest(BaseModel):
+    record_reference: str | None = Field(default=None, max_length=200)
     model_config = ConfigDict(extra="forbid")
 
     trade_date: date
@@ -4041,6 +4260,7 @@ class TransactionImportInternalTransferRequest(InternalTransferCreateRequest):
 
 
 class TransactionImportCommand(BaseModel):
+    record_reference: str | None = Field(default=None, max_length=200)
     """Public business command shared by machine JSON and transaction files."""
 
     model_config = ConfigDict(extra="forbid")
@@ -4060,6 +4280,9 @@ class TransactionImportCommand(BaseModel):
     instrument_id: str | None = None
     derivative_contract_id: str | None = None
     derivative_contract: DerivativeContractCreate | None = None
+    asset_deliveries: list[AssetDelivery] = Field(default_factory=list, max_length=20)
+    lot_selections: list[LotSelection] = Field(default_factory=list, max_length=100)
+    option_delivery: PhysicalOptionDelivery | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     gross_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
@@ -4751,7 +4974,7 @@ class UnresolvedOptionActionRecord(BaseModel):
     open_contract_quantity: float
     underlying_instrument_id: str
     expiry_date: date
-    days_past_expiry: int = Field(ge=1)
+    days_past_expiry: int = Field(ge=0)
 
 
 class UnresolvedOptionActionsResponse(BaseModel):

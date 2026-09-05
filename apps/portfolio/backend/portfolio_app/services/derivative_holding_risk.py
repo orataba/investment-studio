@@ -219,7 +219,7 @@ def enrich_derivative_holding_risk(
                 written_call_required.get(underlying_id, 0.0) + required_quantity
             )
         elif option_type == "put":
-            currency = str(contract.get("currency") or "").strip().upper()
+            currency = str((details.get(underlying_id) or {}).get("currency") or "").strip().upper()
             strike_notional = _number(row.get("strike_notional")) or 0.0
             if currency:
                 written_put_required[currency] = (
@@ -269,7 +269,7 @@ def enrich_derivative_holding_risk(
                     "currency": None,
                 }
             elif is_written and option_type == "put":
-                currency = str(contract.get("currency") or "").strip().upper()
+                currency = str((detail or {}).get("currency") or "").strip().upper()
                 required = written_put_required.get(currency, 0.0)
                 available = max(settled_cash.get(currency, 0.0), 0.0)
                 backing = {
@@ -279,14 +279,14 @@ def enrich_derivative_holding_risk(
                     "ratio": min(available / required, 1.0) if required > 0 else None,
                     "shortfall": max(required - available, 0.0),
                     "currency": currency,
-                }
+                } if currency else None
             expiry_date = str(terms.get("expiry_date") or "")[:10]
             days_to_expiry = (
                 (date.fromisoformat(expiry_date) - as_of_date).days
                 if expiry_date
                 else None
             )
-            if days_to_expiry is not None and days_to_expiry < 0:
+            if days_to_expiry is not None and days_to_expiry <= 0:
                 risk_state = "expired_unresolved"
             elif backing is not None and (_number(backing.get("shortfall")) or 0.0) > 0:
                 risk_state = "uncovered"

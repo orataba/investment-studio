@@ -1,5 +1,6 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { LanguageSelector, matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
 
 import {
   copyWatchlistItems,
@@ -24,7 +25,6 @@ import {
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
-  materializePlatformSecurity,
   resolveSharedInstrumentsFile,
   updateWatchlistView,
   runScreenerQuery,
@@ -33,7 +33,7 @@ import { searchWatchlistInstrumentCandidates } from '../lib/watchlistInstrumentS
 import {
   buildInstrumentDetailPath,
   buildWatchlistPath,
-  PLATFORM_HOME_URL,
+  HOME_URL,
 } from '../lib/navigation'
 import { clampColumnWidth, nextSortAction } from '../lib/tableControls'
 import {
@@ -42,6 +42,9 @@ import {
 } from '../lib/watchlistMetricSemantics'
 import { fieldSupportsAllInstrumentTypes } from '../lib/watchlistFieldScope'
 import LoadingOverlay from '../components/LoadingOverlay'
+import ResearchPage from './ResearchPage'
+import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
+import WorkspaceToolIcon from '../components/WorkspaceToolIcon'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
@@ -421,6 +424,8 @@ function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecor
   if (fieldKey === 'instrument_name') {
     return 180
   }
+  if (fieldKey === 'instrument_type') return 88
+
   if (fieldKey === 'ticker_or_isin') {
     return 96
   }
@@ -528,19 +533,33 @@ function renderCell(
   sparkline: ReturnSparklineSeries | undefined,
   field: FieldRegistryRecord | undefined,
   row: Record<string, unknown>,
+  openRisk: (id: string) => void,
 ) {
   if (fieldKey === 'instrument_name') {
     return (
-      <Link to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
+      <span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
-      </Link>
+      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)} aria-label={`${value || instrumentId} 有风险事项，查看风险关注`} title="有风险事项仍在触发 · 点击查看"><WorkspaceToolIcon kind="risk" /></button>}</span>
     )
   }
 
-  if (fieldKey === 'ticker_or_isin') {
-    return <span className="ticker-pill">{String(value || '—')}</span>
+  if (fieldKey === 'instrument_type') {
+    const labels: Record<string, string> = { private_fund: '私募基金', public_fund: '公募基金', equity: '股票', etf: 'ETF', index: '指数' }
+    return labels[String(value)] || String(value || '—')
   }
 
+  if (fieldKey === 'ticker_or_isin') {
+    return <span translate="no" className="ticker-pill">{String(value || '—')}</span>
+  }
+
+  if (fieldKey === 'attr.research_stage') {
+    const labels: Record<string, string> = { watching: '观察中', researching: '研究中', candidate: '候选', paused: '暂缓', archived: '归档' }
+    return labels[String(value)] || '观察中'
+  }
+  if (fieldKey === 'attr.risk_attention') {
+    const labels: Record<string, string> = { attention: '风险关注', limited: '监测受限', no_trigger: '暂无触发' }
+    return <button className="watchlist-risk-cell" onClick={() => openRisk(instrumentId)}>{labels[String(value)] || '待核查'}</button>
+  }
   if (fieldKey === 'attr.coverage_status') {
     return value == null || value === '' ? '—' : <span className="status-badge status-attribute">{String(value)}</span>
   }
@@ -617,14 +636,14 @@ function renderCell(
   }
 
   if (Array.isArray(value)) {
-    return value.length ? value.join(', ') : '—'
+    return value.length ? value.map((item, index) => <React.Fragment key={index}>{index ? ', ' : ''}<span>{String(item)}</span></React.Fragment>) : '—'
   }
 
   if (value == null || value === '') {
     return '—'
   }
 
-  return String(value)
+  return <span translate={fieldKey.match(/(?:notes?|description|manager|issuer|analyst|name)$/) ? 'no' : undefined}>{String(value)}</span>
 }
 
 function watchlistExportCell(value: unknown): TableCell {
@@ -827,7 +846,11 @@ export default function WatchlistsPage() {
   }
 
   const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal)
-  const activeInstrumentTypes = watchlistDetail?.instrument_types || EMPTY_INSTRUMENT_TYPES
+  const activeInstrumentTypes = useMemo(() => {
+    const all = watchlistDetail?.instrument_types || EMPTY_INSTRUMENT_TYPES
+    const selected = workingFilters.instrument_type
+    return Array.isArray(selected) && selected.length ? all.filter(type => selected.includes(type)) : all
+  }, [watchlistDetail?.instrument_types, workingFilters.instrument_type])
   const displayFieldRegistry = useMemo(
     () =>
       fieldRegistry.map((field) => ({
@@ -867,6 +890,9 @@ export default function WatchlistsPage() {
 
     const requestedFields = (workingColumns.length ? [...workingColumns] : [primaryDisplayColumn])
       .filter((fieldKey) => scopedFieldKeys.has(fieldKey))
+    if (scopedFieldKeys.has('attr.risk_attention') && !requestedFields.includes('attr.risk_attention')) {
+      requestedFields.push('attr.risk_attention')
+    }
     const effectiveGroupBy = availableGroupByCodes.has(workingGroupBy) ? workingGroupBy : 'none'
     if (effectiveGroupBy === TAXONOMY_GROUP_BY_CODE) {
       TAXONOMY_ASSIGNMENT_FIELD_KEYS.forEach((fieldKey) => {
@@ -1094,15 +1120,10 @@ export default function WatchlistsPage() {
 
     const timeoutId = window.setTimeout(() => {
       searchWatchlistInstrumentCandidates(instrumentSearch, 12)
-        .then(({ results, securityCatalogError }) => {
+        .then(({ results }) => {
           if (cancelled) {
             return
           }
-          setModalError(
-            securityCatalogError
-              ? `Security catalog partially unavailable; Registry results remain available. ${securityCatalogError}`
-              : null,
-          )
           setSharedInstrumentResults(results)
           setSelectedInstrumentId((current) => {
             if (current && results.some((item) => item.instrument_id === current)) {
@@ -1116,7 +1137,7 @@ export default function WatchlistsPage() {
             setModalError(
               loadError instanceof Error
                 ? loadError.message
-                : 'Failed to load shared registry.',
+                : 'Failed to load registered assets.',
             )
             setSharedInstrumentResults([])
             setSelectedInstrumentId('')
@@ -1280,7 +1301,7 @@ export default function WatchlistsPage() {
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `These identifiers were not found in the shared registry: ${missingIdentifiers.join(', ')}.`,
+          `These identifiers were not found among registered assets: ${missingIdentifiers.join(', ')}.`,
         )
       }
       if (unsupportedIdentifiers.length) {
@@ -1297,7 +1318,7 @@ export default function WatchlistsPage() {
       setNotice(
         skippedCount > 0
           ? `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count}; ${skippedCount} already existed in this watchlist.`
-          : `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count} from shared registry.`,
+          : `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count} registered assets.`,
       )
     } catch (batchError) {
       setModalError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
@@ -1570,7 +1591,7 @@ export default function WatchlistsPage() {
   const watchlistTableMinWidth = compactWatchlistColumns.totalWidth
   const activeGroupBy = workingGroupBy && workingGroupBy !== 'none' ? workingGroupBy : null
   const usesFixedInstrumentTypeSections =
-    watchlistDetail?.owner_type !== 'system' && activeInstrumentTypes.length > 1
+    activeGroupBy === TAXONOMY_GROUP_BY_CODE && activeInstrumentTypes.length > 1
   const showGroupHeaders = Boolean(activeGroupBy) || usesFixedInstrumentTypeSections
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
@@ -1677,7 +1698,7 @@ export default function WatchlistsPage() {
     const matchesCategory = !selectedFieldCategory || field.category_code === selectedFieldCategory
     const matchesSearch =
       !fieldSearch.trim() ||
-      field.label.toLowerCase().includes(fieldSearch.trim().toLowerCase()) ||
+      matchesSystemLabel(field.label, fieldSearch) ||
       field.field_key.toLowerCase().includes(fieldSearch.trim().toLowerCase())
     return matchesCategory && matchesSearch
   })
@@ -1717,7 +1738,7 @@ export default function WatchlistsPage() {
   const filterableFields = useMemo(
     () => {
       const fields = scopedFieldRegistry
-        .filter((field) => field.filter_mode === 'multi_select' && !isTaxonomyFieldKey(field.field_key))
+        .filter((field) => field.filter_mode === 'multi_select' && ['instrument_type', 'currency', 'management_firm_name', 'attr.research_stage', 'attr.risk_attention', 'attr.primary_geographic_exposure', 'attr.fund_vehicle'].includes(field.field_key))
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
       return fieldSupportsAllInstrumentTypes(TAXONOMY_FILTER_FIELD, activeInstrumentTypes)
         ? [TAXONOMY_FILTER_FIELD, ...fields]
@@ -2442,6 +2463,27 @@ export default function WatchlistsPage() {
   }, [])
 
 
+  function openRisk(id?: string) {
+    const next = new URLSearchParams(watchlistSearchParams)
+    next.set('risk', '1')
+    if (id) next.set('risk_instrument', id)
+    else next.delete('risk_instrument')
+    for (const key of ['assistant', 'topic', 'instruments', 'question']) next.delete(key)
+    setWatchlistSearchParams(next)
+  }
+
+  function openAssistant(id?: string, question?: string) {
+    const next = new URLSearchParams(watchlistSearchParams)
+    next.set('assistant', '1')
+    next.delete('risk'); next.delete('risk_instrument'); next.delete('topic')
+    const ids = id || (rowsAreCurrent ? selectedRows.join(',') : '')
+    if (ids) next.set('instruments', ids)
+    else next.delete('instruments')
+    if (question) next.set('question', question)
+    else next.delete('question')
+    setWatchlistSearchParams(next)
+  }
+
   if (loading) {
     return (
       <div className="watchlists-page">
@@ -2462,11 +2504,29 @@ export default function WatchlistsPage() {
 
   return (
     <>
+      {watchlistSearchParams.get('assistant') === '1' && <ResearchPage watchlistId={watchlistId} onClose={() => {
+        const next = new URLSearchParams(watchlistSearchParams)
+        next.delete('assistant'); next.delete('topic'); next.delete('instruments'); next.delete('question')
+        setWatchlistSearchParams(next)
+      }} />}
+      {watchlistSearchParams.get('risk') === '1' && <WatchlistRiskDrawer
+        key={watchlistId}
+        watchlistId={watchlistId}
+        watchlistName={activeWatchlist?.name || '当前列表'}
+        focusInstrumentId={watchlistSearchParams.get('risk_instrument') || undefined}
+        onClose={() => {
+          const next = new URLSearchParams(watchlistSearchParams)
+          next.delete('risk'); next.delete('risk_instrument')
+          setWatchlistSearchParams(next)
+        }}
+        onAskAssistant={openAssistant}
+        onChanged={() => setReloadToken((value) => value + 1)}
+      />}
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">
         <div className="watchlist-breadcrumbs">
-          <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
+          <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
             Home
           </a>
           <span className="watchlist-breadcrumb-separator">/</span>
@@ -2474,10 +2534,17 @@ export default function WatchlistsPage() {
             Watchlist
           </Link>
           <span className="watchlist-breadcrumb-separator">/</span>
-          <span className="watchlist-breadcrumb-current">{activeWatchlist?.name || 'Watchlists'}</span>
+          <span translate={activeWatchlist && activeWatchlist.owner_type !== 'system' ? 'no' : undefined} className="watchlist-breadcrumb-current">{activeWatchlist?.name || 'Watchlists'}</span>
+          <LanguageSelector />
         </div>
 
-        <div className="watchlist-app-title">Watchlist</div>
+        <div className="watchlist-heading-row">
+          <div className="watchlist-app-title">Watchlist</div>
+          <div className="watchlist-workspace-tools" aria-label="当前列表工具">
+            <button className="watchlist-workspace-tool watchlist-workspace-tool-risk" onClick={() => openRisk()}><WorkspaceToolIcon kind="risk" /><span>风险关注</span></button>
+            <button className="watchlist-workspace-tool watchlist-workspace-tool-assistant" onClick={() => openAssistant()}><WorkspaceToolIcon kind="assistant" /><span>{selectedRows.length && rowsAreCurrent ? `问助手 (${selectedRows.length})` : '研究助手'}</span></button>
+          </div>
+        </div>
 
         <div className="watchlists-switch-row">
           <Link to="/watchlists" className="watchlist-switcher-chip watchlist-switcher-chip-inactive watchlist-switcher-chip-home">
@@ -2776,9 +2843,9 @@ export default function WatchlistsPage() {
                                 <div className="watchlists-filter-values-title">
                                   {selectedFilterFieldRecord.label}
                                 </div>
-                                <div className="watchlists-filter-values-subtitle">
-                                  {selectedFilterFieldRecord.description || selectedFilterFieldRecord.field_key}
-                                </div>
+                                {selectedFilterFieldRecord.description && <div className="watchlists-filter-values-subtitle">
+                                  {selectedFilterFieldRecord.description}
+                                </div>}
                               </div>
                               <button
                                 type="button"
@@ -3226,6 +3293,7 @@ export default function WatchlistsPage() {
                                     sparklineMap[instrumentId]?.[column],
                                     fieldByKey.get(column),
                                     row,
+                                    openRisk,
                                   )}
                                 </td>
                               )
@@ -3363,9 +3431,9 @@ export default function WatchlistsPage() {
                       />
                       <div>
                         <div className="watchlists-field-label">{field.label}</div>
-                        <div className="watchlists-field-meta">
-                          {field.field_key}
-                        </div>
+                        {field.description && <div className="watchlists-field-meta">
+                          {field.description}
+                        </div>}
                       </div>
                     </label>
                   )
@@ -3807,7 +3875,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Add</div>
-                <div className="section-heading">Registry &amp; FMP Security Search</div>
+                <div className="section-heading">Registered Assets</div>
               </div>
               <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
                 Close
@@ -3826,14 +3894,13 @@ export default function WatchlistsPage() {
                 />
               </label>
               <p className="watchlists-registry-note">
-                Public funds, private funds, indexes, and existing A-share ETFs come from the shared Registry. FMP
-                catalogs discover stocks and ETFs; new stocks and overseas ETFs load FMP EOD, while A-share ETFs keep
-                a fixed Tushare market-data source. Taxonomy remains inside Watchlist.
+                Select an existing asset to add to this watchlist. New assets and market-data sources are maintained
+                through the backend CLI. Classification and research remain in Watchlist.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
                   <span className="ticker-pill">{primarySharedIdentifier(selectedSharedInstrument)}</span>
-                  <span className="watchlists-registry-name">{selectedSharedInstrument.instrument_name}</span>
+                  <span className="watchlists-registry-name" translate="no">{selectedSharedInstrument.instrument_name}</span>
                   <span className="watchlists-registry-secondary">
                     {selectedSharedInstrument.currency} · {formatLabel(selectedSharedInstrument.instrument_type)}
                   </span>
@@ -3841,7 +3908,7 @@ export default function WatchlistsPage() {
               ) : null}
               <div className="watchlists-registry-list">
                 {isSearchingInstruments ? (
-                  <div className="loading-state">Searching shared registry…</div>
+                  <div className="loading-state">Searching registered assets…</div>
                 ) : null}
                 {!isSearchingInstruments
                   ? sharedInstrumentResults.map((instrument) => (
@@ -3855,11 +3922,11 @@ export default function WatchlistsPage() {
                       >
                         <div className="watchlists-registry-row-main">
                           <span>{primarySharedIdentifier(instrument)}</span>
-                          <span className="watchlists-registry-secondary">{instrument.instrument_name}</span>
+                          <span className="watchlists-registry-secondary" translate="no">{instrument.instrument_name}</span>
                         </div>
                         <div className="watchlists-registry-meta">
                           <span>{formatLabel(instrument.instrument_type)}</span>
-                          <span>{instrument.coverage_state || 'registry'}</span>
+                          <span>{instrument.coverage_state || 'registered'}</span>
                         </div>
                       </button>
                     ))
@@ -3867,8 +3934,8 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && !sharedInstrumentResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `No Registry or local stock or ETF catalog result matched "${instrumentSearch.trim()}".`
-                      : 'No public fund, private fund, ETF, stock, or index instruments are available.'}
+                      ? `No registered asset matched "${instrumentSearch.trim()}".`
+                      : 'No registered assets are available. Add assets through backend maintenance.'}
                   </div>
                 ) : null}
               </div>
@@ -3902,18 +3969,8 @@ export default function WatchlistsPage() {
                   setIsAdding(true)
                   setModalError(null)
                   try {
-                    const registryInstrument =
-                      selectedSharedInstrument.source === 'security_catalog' &&
-                      !selectedSharedInstrument.existing_instrument_id
-                        ? await materializePlatformSecurity(
-                            selectedSharedInstrument.instrument_type as 'equity' | 'etf',
-                            selectedSharedInstrument.catalog_provider!,
-                            selectedSharedInstrument.catalog_symbol!,
-                          )
-                        : selectedSharedInstrument
-                    const instrumentId =
-                      selectedSharedInstrument.existing_instrument_id ||
-                      registryInstrument.instrument_id
+                    const registryInstrument = selectedSharedInstrument
+                    const instrumentId = registryInstrument.instrument_id
                     const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId])
                     await refreshWatchlistDetail(undefined, sourceWatchlistId)
                     setInstrumentSearch('')

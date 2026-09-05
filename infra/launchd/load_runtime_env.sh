@@ -3,9 +3,9 @@
 # Shared runtime-environment validation for managed service installers and
 # runners. Dotenv assignments are parsed as data, never sourced as shell code.
 
-portfolio_ops_require_password_free_database_url() {
+investment_studio_require_password_free_database_url() {
   if [[ $# -ne 1 ]]; then
-    echo "Usage: portfolio_ops_require_password_free_database_url <database-url>" >&2
+    echo "Usage: investment_studio_require_password_free_database_url <database-url>" >&2
     return 64
   fi
   local database_url="$1"
@@ -21,9 +21,9 @@ portfolio_ops_require_password_free_database_url() {
   fi
 }
 
-portfolio_ops_sqlalchemy_database_url() {
+investment_studio_sqlalchemy_database_url() {
   if [[ $# -ne 1 ]]; then
-    echo "Usage: portfolio_ops_sqlalchemy_database_url <database-url>" >&2
+    echo "Usage: investment_studio_sqlalchemy_database_url <database-url>" >&2
     return 64
   fi
   local database_url="$1"
@@ -41,16 +41,16 @@ portfolio_ops_sqlalchemy_database_url() {
   esac
 }
 
-portfolio_ops_reject_repository_env_files() {
+investment_studio_reject_repository_env_files() {
   if [[ $# -ne 1 ]]; then
-    echo "Usage: portfolio_ops_reject_repository_env_files <project-root>" >&2
+    echo "Usage: investment_studio_reject_repository_env_files <project-root>" >&2
     return 64
   fi
 
   local project_root="$1"
-  local app repository_env
-  for app in platform watchlist portfolio; do
-    repository_env="$project_root/apps/$app/backend/.env"
+  local relative_root repository_env
+  for relative_root in home/backend shared-data apps/watchlist/backend apps/portfolio/backend; do
+    repository_env="$project_root/$relative_root/.env"
     if [[ -e "$repository_env" || -L "$repository_env" ]]; then
       echo "Repository runtime environment files are not allowed for managed services: $repository_env" >&2
       echo "Move the values to the matching external environment file and remove the repository file or symlink." >&2
@@ -59,9 +59,9 @@ portfolio_ops_reject_repository_env_files() {
   done
 }
 
-portfolio_ops_resolve_external_env_root() {
+investment_studio_resolve_external_env_root() {
   if [[ $# -ne 2 ]]; then
-    echo "Usage: portfolio_ops_resolve_external_env_root <project-root> <external-env-root>" >&2
+    echo "Usage: investment_studio_resolve_external_env_root <project-root> <external-env-root>" >&2
     return 64
   fi
 
@@ -104,9 +104,9 @@ portfolio_ops_resolve_external_env_root() {
   printf '%s\n' "$resolved_env_root"
 }
 
-portfolio_ops_runtime_env_file() {
+investment_studio_runtime_env_file() {
   if [[ $# -ne 2 ]]; then
-    echo "Usage: portfolio_ops_runtime_env_file <app> <external-env-root>" >&2
+    echo "Usage: investment_studio_runtime_env_file <app> <external-env-root>" >&2
     return 64
   fi
 
@@ -118,9 +118,9 @@ portfolio_ops_runtime_env_file() {
   printf '%s\n' "$external_file"
 }
 
-portfolio_ops_validate_env_file() {
+investment_studio_validate_env_file() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: portfolio_ops_validate_env_file <env-file> <allowed-prefix> [allowed-prefix ...]" >&2
+    echo "Usage: investment_studio_validate_env_file <env-file> <allowed-prefix> [allowed-prefix ...]" >&2
     return 64
   fi
 
@@ -190,16 +190,16 @@ portfolio_ops_validate_env_file() {
   done < "$env_file"
 }
 
-portfolio_ops_load_env_file() {
+investment_studio_load_env_file() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: portfolio_ops_load_env_file <env-file> <allowed-prefix> [allowed-prefix ...]" >&2
+    echo "Usage: investment_studio_load_env_file <env-file> <allowed-prefix> [allowed-prefix ...]" >&2
     return 64
   fi
 
   local env_file="$1"
   shift
   local allowed_prefixes=("$@")
-  portfolio_ops_validate_env_file "$env_file" "${allowed_prefixes[@]}" || return
+  investment_studio_validate_env_file "$env_file" "${allowed_prefixes[@]}" || return
 
   while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     local line="${raw_line%$'\r'}"

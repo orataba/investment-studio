@@ -1,3 +1,4 @@
+import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
@@ -14,7 +15,7 @@ import {
 import {
   buildInstrumentDetailPath,
   buildWatchlistPath,
-  PLATFORM_HOME_URL,
+  HOME_URL,
 } from '../lib/navigation'
 
 function formatDateTime(value: string | null | undefined) {
@@ -104,10 +105,10 @@ function InstrumentLink({ instrument }: { instrument: MonitoringInstrumentRecord
   const detailPath =
     'recalc_job_id' in instrument ? resolveJobDetailPath(instrument) : resolveDetailPath(instrument)
   if (!detailPath) {
-    return <span>{instrument.instrument_name}</span>
+    return <span translate="no">{instrument.instrument_name}</span>
   }
   return (
-    <Link className="table-link" to={detailPath}>
+    <Link className="table-link" to={detailPath} translate="no">
       {instrument.instrument_name}
     </Link>
   )
@@ -413,7 +414,7 @@ export default function MonitoringPage() {
     <div className="terminal-page">
       <section className="panel">
         <div className="watchlist-breadcrumbs">
-          <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
+          <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
             Home
           </a>
           <span className="watchlist-breadcrumb-separator">/</span>
@@ -422,8 +423,9 @@ export default function MonitoringPage() {
           </Link>
           <span className="watchlist-breadcrumb-separator">/</span>
           <span className="watchlist-breadcrumb-current">Monitoring</span>
+          <LanguageSelector />
         </div>
-        <div className="panel-header">
+        <div className="panel-header monitoring-page-header">
           <div>
             <div className="panel-title">Monitoring</div>
             <h1 className="page-title">Investment Monitoring</h1>
@@ -454,8 +456,8 @@ export default function MonitoringPage() {
             <Link to="/watchlists" className="toolbar-link">
               Watchlists
             </Link>
-            <a href={PLATFORM_HOME_URL} className="toolbar-link">
-              Platform Home
+            <a data-workspace-link href={HOME_URL} className="toolbar-link">
+              Investment Studio
             </a>
           </div>
         </div>

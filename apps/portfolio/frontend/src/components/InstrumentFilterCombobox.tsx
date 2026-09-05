@@ -194,7 +194,7 @@ export default function InstrumentFilterCombobox({
             >
               <span className="holding-name-stack">
                 <strong>{instrumentPrimaryIdentifier(instrument)}</strong>
-                <span className="holding-secondary">{instrument.instrument_name}</span>
+                <span className="holding-secondary" translate="no">{instrument.instrument_name}</span>
               </span>
               <span className="transaction-picker-meta">
                 {instrument.instrument_type} · {instrument.currency}

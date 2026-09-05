@@ -15,7 +15,7 @@ from portfolio_app.services import (
     research_solver,
     valuation_fx,
 )
-from portfolio_app.services.market_data import resolve_quote_point, resolve_quote_series
+from portfolio_app.services.market_data import previous_quote_point, resolve_quote_point, resolve_quote_series
 
 
 def _point(
@@ -314,6 +314,63 @@ def test_previous_quote_is_locked_to_selected_series_identity():
         previous["quote_basis"],
         previous["currency"],
     ) == ("price", "close", "USD")
+
+
+def test_performance_market_point_lookup_matches_canonical_causal_selection():
+    detail = _detail(
+        [
+            _point(as_of_date="2026-01-01", value="100"),
+            _point(as_of_date="2026-01-02", value="101"),
+        ]
+    )
+    lookup = performance._MarketPointLookup(end_date=date(2026, 1, 3))
+
+    for as_of_date in (date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)):
+        expected = resolve_quote_point(
+            detail,
+            candidate_bases=["close"],
+            as_of_date=as_of_date,
+        ).point
+        actual = lookup.point(
+            detail,
+            candidate_bases=["close"],
+            as_of_date=as_of_date,
+        )
+        assert actual == expected
+
+    selected = lookup.point(
+        detail,
+        candidate_bases=["close"],
+        as_of_date=date(2026, 1, 3),
+    )
+    assert lookup.previous(detail, selected_point=selected) == previous_quote_point(
+        detail,
+        selected_point=selected,
+    ).point
+
+
+def test_performance_market_point_lookup_falls_back_when_future_row_invalidates_full_series():
+    detail = _detail(
+        [
+            _point(as_of_date="2026-01-01", value="100"),
+            _point(as_of_date="2026-01-03", value="780", currency="HKD"),
+        ]
+    )
+    lookup = performance._MarketPointLookup(end_date=date(2026, 1, 3))
+
+    expected = resolve_quote_point(
+        detail,
+        candidate_bases=["close"],
+        as_of_date=date(2026, 1, 1),
+    ).point
+    actual = lookup.point(
+        detail,
+        candidate_bases=["close"],
+        as_of_date=date(2026, 1, 1),
+    )
+
+    assert expected is not None
+    assert actual == expected
 
 
 def test_explicit_price_contract_only_allows_canonical_unit_and_scale():

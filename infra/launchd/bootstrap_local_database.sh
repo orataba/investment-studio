@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATABASE_NAME="${PORTFOLIO_OPS_LOCAL_DATABASE_NAME:-portfolio_ops}"
-DATABASE_ROLE="${PORTFOLIO_OPS_LOCAL_DATABASE_ROLE:-portfolio_ops}"
-DATABASE_PASSWORD="${PORTFOLIO_OPS_LOCAL_DATABASE_PASSWORD:-portfolio_ops}"
+DATABASE_NAME="${INVESTMENT_STUDIO_LOCAL_DATABASE_NAME:-investment_studio}"
+DATABASE_ROLE="${INVESTMENT_STUDIO_LOCAL_DATABASE_ROLE:-investment_studio}"
+DATABASE_PASSWORD="${INVESTMENT_STUDIO_LOCAL_DATABASE_PASSWORD:-}"
 
 if [[ ! "$DATABASE_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
   echo "Invalid local database name: $DATABASE_NAME" >&2
@@ -51,11 +51,12 @@ fi
 role_exists="$($PSQL_BIN --host 127.0.0.1 --port 5432 --dbname postgres --no-password --tuples-only --no-align \
   --command "SELECT 1 FROM pg_roles WHERE rolname = '$DATABASE_ROLE'")"
 if [[ "$role_exists" != "1" ]]; then
-  "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
-    --command "CREATE ROLE $DATABASE_ROLE LOGIN PASSWORD '$DATABASE_PASSWORD'"
-else
-  "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
-    --command "ALTER ROLE $DATABASE_ROLE WITH LOGIN PASSWORD '$DATABASE_PASSWORD'" >/dev/null
+  if [[ -z "$DATABASE_PASSWORD" ]]; then
+    echo "Set INVESTMENT_STUDIO_LOCAL_DATABASE_PASSWORD explicitly when creating a new database role." >&2
+    exit 64
+  fi
+  printf "CREATE ROLE %s LOGIN PASSWORD '%s';\n" "$DATABASE_ROLE" "$DATABASE_PASSWORD" | \
+    "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password -v ON_ERROR_STOP=1 >/dev/null
 fi
 
 database_exists="$($PSQL_BIN --host 127.0.0.1 --port 5432 --dbname postgres --no-password --tuples-only --no-align \

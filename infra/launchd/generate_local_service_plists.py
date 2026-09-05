@@ -9,10 +9,10 @@ from urllib.parse import urlsplit
 
 
 APP_SERVICES = (
-    "platform-api",
+    "home-api",
     "watchlist-api",
     "portfolio-api",
-    "platform-web",
+    "home-web",
     "watchlist-web",
     "portfolio-web",
 )
@@ -20,7 +20,7 @@ MARKET_DATA_REFRESH_SERVICE = "market-data-refresh"
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Portfolio Operations user LaunchAgent plists.")
+    parser = argparse.ArgumentParser(description="Generate Investment Studio user LaunchAgent plists.")
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--python-bin", required=True)
     parser.add_argument("--node-bin", required=True)
@@ -53,14 +53,14 @@ def _write_plist(target: Path, payload: dict[str, object]) -> None:
 
 def main() -> int:
     args = _parse_args()
-    database_url = os.environ.get("PORTFOLIO_OPS_LOCAL_DATABASE_URL", "").strip()
+    database_url = os.environ.get("INVESTMENT_STUDIO_LOCAL_DATABASE_URL", "").strip()
     if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
         raise SystemExit(
-            "PORTFOLIO_OPS_LOCAL_DATABASE_URL must be an explicit PostgreSQL URL"
+            "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must be an explicit PostgreSQL URL"
         )
     if urlsplit(database_url).password is not None:
         raise SystemExit(
-            "PORTFOLIO_OPS_LOCAL_DATABASE_URL must not contain a password; use a 0600 .pgpass file"
+            "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must not contain a password; use a 0600 .pgpass file"
         )
     if not 0 <= args.refresh_hour <= 23:
         raise SystemExit("--refresh-hour must be between 0 and 23")
@@ -103,9 +103,9 @@ def main() -> int:
             "StandardOutPath": str(log_dir / f"{service}.log"),
             "StandardErrorPath": str(log_dir / f"{service}.error.log"),
         }
-        if service.endswith("-api"):
+        if service in {"watchlist-api", "portfolio-api"}:
             payload["EnvironmentVariables"] = {
-                "PORTFOLIO_OPS_LOCAL_DATABASE_URL": database_url,
+                "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
             }
         _write_plist(launch_agents_dir / f"{label}.plist", payload)
 
@@ -116,10 +116,10 @@ def main() -> int:
             refresh_runner,
             str(project_root),
             args.python_bin,
-            str(project_root / "var" / "market-data-refresh.lock"),
+            str(Path.home() / ".local/state/investment-studio/market-data-refresh.lock"),
             str(env_root),
         ],
-        "WorkingDirectory": str(project_root / "apps" / "platform" / "backend"),
+        "WorkingDirectory": str(project_root / "shared-data"),
         "RunAtLoad": True,
         "KeepAlive": False,
         "StartCalendarInterval": [
@@ -137,11 +137,11 @@ def main() -> int:
         "ThrottleInterval": 60,
         "Umask": 0o077,
         "EnvironmentVariables": {
-            "PORTFOLIO_OPS_LOCAL_DATABASE_URL": database_url,
-            "PORTFOLIO_OPS_LOCAL_REFRESH_HOUR": str(args.refresh_hour),
-            "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE": str(args.refresh_minute),
-            "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR": str(args.refresh_retry_hour),
-            "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE": str(args.refresh_retry_minute),
+            "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR": str(args.refresh_hour),
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": str(args.refresh_minute),
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR": str(args.refresh_retry_hour),
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE": str(args.refresh_retry_minute),
         },
         "StandardOutPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.log"),
         "StandardErrorPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.error.log"),

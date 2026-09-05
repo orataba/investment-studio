@@ -1,31 +1,31 @@
-name: portfolio-operations-workbench
+name: investment-studio
 
 services:
   postgres:
     image: postgres:17.10-bookworm@sha256:c5a38822eb132d1f7e2cb1082d202400b07afa67a58cfe99ba3f04af2f3474e8
-    container_name: portfolio-ops-postgres
+    container_name: investment-studio-postgres
     restart: unless-stopped
     shm_size: 256mb
     environment:
-      POSTGRES_DB: portfolio_ops
-      POSTGRES_USER: portfolio_ops
+      POSTGRES_DB: investment_studio
+      POSTGRES_USER: investment_studio
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     ports:
       - "127.0.0.1:55433:5432"
     volumes:
-      - portfolio-ops-postgres-data:/var/lib/postgresql/data
+      - investment-studio-postgres-data:/var/lib/postgresql/data
     secrets:
       - postgres_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U portfolio_ops -d portfolio_ops"]
+      test: ["CMD-SHELL", "pg_isready -U investment_studio -d investment_studio"]
       interval: 10s
       timeout: 5s
       retries: 12
 
 volumes:
-  portfolio-ops-postgres-data:
-    name: portfolio-ops-postgres-data-v1
+  investment-studio-postgres-data:
+    name: investment-studio-postgres-data-v1
 
 secrets:
   postgres_password:
-    file: ${PORTFOLIO_OPS_POSTGRES_PASSWORD_FILE:?set PORTFOLIO_OPS_POSTGRES_PASSWORD_FILE}
+    file: ${INVESTMENT_STUDIO_POSTGRES_PASSWORD_FILE:?set INVESTMENT_STUDIO_POSTGRES_PASSWORD_FILE}

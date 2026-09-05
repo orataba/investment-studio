@@ -2,30 +2,30 @@
 set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-systemd-transaction-test.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-systemd-transaction-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 PROJECT_ROOT="$TEST_ROOT/project"
 ENV_ROOT="$TEST_ROOT/secure-env"
 MOCK_BIN="$TEST_ROOT/bin"
 mkdir -p \
-  "$PROJECT_ROOT/apps/platform/backend" \
-  "$PROJECT_ROOT/apps/platform/backend/scripts" \
+  "$PROJECT_ROOT/shared-data" \
+  "$PROJECT_ROOT/shared-data/scripts" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend/scripts" \
-  "$PROJECT_ROOT/apps/platform/frontend/dist" \
+  "$PROJECT_ROOT/home/frontend/dist" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist" \
   "$PROJECT_ROOT/deploy" \
   "$PROJECT_ROOT/infra/launchd" \
   "$PROJECT_ROOT/infra/postgres" \
   "$PROJECT_ROOT/infra/scripts" \
-  "$PROJECT_ROOT/packages/instrument-core/python" \
+  "$PROJECT_ROOT/shared-data/instruments/python" \
   "$ENV_ROOT" \
   "$MOCK_BIN"
 touch \
-  "$PROJECT_ROOT/apps/platform/frontend/dist/index.html" \
+  "$PROJECT_ROOT/home/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist/index.html" \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
@@ -57,7 +57,7 @@ printf '%s\n' \
   'with Path(environ["EVENT_LOG"]).open("a", encoding="utf-8") as event_log:' \
   '    event_log.write("catalog-refresh\n")' \
   'raise SystemExit(1 if environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
-  > "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py"
+  > "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
 
 printf '%s\n' \
   '#!/usr/bin/env python3' \
@@ -71,16 +71,16 @@ chmod +x "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'portfolio_ops_create_project_schema_backup() {' \
+  'investment_studio_create_project_schema_backup() {' \
   '  local _database_url="$1" backup_root="$2" label="$3"' \
   '  mkdir -p "$backup_root"' \
-  '  PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH="$backup_root/$label-test.pgdump"' \
-  '  PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH="$backup_root/$label-test.schemas"' \
-  '  : > "$PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH"' \
-  '  printf "%s\n" instrument_registry platform portfolio watchlist > "$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH"' \
+  '  INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH="$backup_root/$label-test.pgdump"' \
+  '  INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH="$backup_root/$label-test.schemas"' \
+  '  : > "$INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH"' \
+  '  printf "%s\n" instrument_registry platform portfolio watchlist > "$INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH"' \
   '  printf "backup\n" >> "$EVENT_LOG"' \
   '}' \
-  'portfolio_ops_restore_project_schema_backup() {' \
+  'investment_studio_restore_project_schema_backup() {' \
   '  printf "database-restore\n" >> "$EVENT_LOG"' \
   '  [[ "${ROLLBACK_FAIL:-false}" != "true" ]]' \
   '}' \
@@ -149,32 +149,34 @@ printf '%s\n' \
 chmod +x "$MOCK_BIN/systemctl"
 
 chmod 700 "$ENV_ROOT"
-CANONICAL_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops'
+CANONICAL_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio'
 printf '%s\n' \
-  "PORTFOLIO_OPS_PLATFORM_DATABASE_URL=$CANONICAL_URL" \
-  "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL=$CANONICAL_URL" \
-  > "$ENV_ROOT/platform.env"
-printf '%s\n' "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL=$CANONICAL_URL" \
+  "INVESTMENT_STUDIO_DATA_DATABASE_URL=$CANONICAL_URL" \
+  "INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL=$CANONICAL_URL" \
+  > "$ENV_ROOT/data.env"
+printf '%s\n' "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/watchlist.env"
-printf '%s\n' "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL=$CANONICAL_URL" \
+printf '%s\n' "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/portfolio.env"
-chmod 600 "$ENV_ROOT/platform.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env"
+chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env"
+  : > "$ENV_ROOT/home.env"
+  chmod 600 "$ENV_ROOT/home.env"
 
 MANAGED_UNITS=(
-  portfolio-ops-platform-api.service
-  portfolio-ops-watchlist-api.service
-  portfolio-ops-portfolio-api.service
-  portfolio-ops-platform-web.service
-  portfolio-ops-watchlist-web.service
-  portfolio-ops-portfolio-web.service
+  investment-studio-home-api.service
+  investment-studio-watchlist-api.service
+  investment-studio-portfolio-api.service
+  investment-studio-home-web.service
+  investment-studio-watchlist-web.service
+  investment-studio-portfolio-web.service
 )
 ORIGINAL_ACTIVE_UNITS=(
-  portfolio-ops-platform-api.service
-  portfolio-ops-market-data-refresh.timer
+  investment-studio-home-api.service
+  investment-studio-market-data-refresh.timer
 )
 ORIGINAL_ENABLED_UNITS=(
-  portfolio-ops-platform-api.service
-  portfolio-ops-watchlist-api.service
+  investment-studio-home-api.service
+  investment-studio-watchlist-api.service
 )
 
 prepare_case() {
@@ -185,7 +187,7 @@ prepare_case() {
   printf '%s\n' "${ORIGINAL_ACTIVE_UNITS[@]}" > "$case_root/active"
   printf '%s\n' "${ORIGINAL_ENABLED_UNITS[@]}" > "$case_root/enabled"
   for unit in "${MANAGED_UNITS[@]}"; do
-    if [[ "$unit" == "portfolio-ops-watchlist-web.service" ]]; then
+    if [[ "$unit" == "investment-studio-watchlist-web.service" ]]; then
       continue
     fi
     printf 'previous-unit:%s\n' "$unit" > "$case_root/config/systemd/user/$unit"
@@ -207,7 +209,7 @@ run_case() {
   ENV_ROOT="$ENV_ROOT" \
   RUN_MIGRATIONS=true \
   START_SERVICES=true \
-  PORTFOLIO_OPS_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
+  INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
     "$REPOSITORY_ROOT/infra/systemd/install_app_services.sh"
 }
 
@@ -220,7 +222,7 @@ assert_original_state_restored() {
     <(printf '%s\n' "${ORIGINAL_ENABLED_UNITS[@]}" | sort) \
     <(sort "$case_root/enabled")
   for unit in "${MANAGED_UNITS[@]}"; do
-    if [[ "$unit" == "portfolio-ops-watchlist-web.service" ]]; then
+    if [[ "$unit" == "investment-studio-watchlist-web.service" ]]; then
       test ! -e "$case_root/config/systemd/user/$unit"
     else
       grep -Fxq "previous-unit:$unit" "$case_root/config/systemd/user/$unit"
@@ -232,7 +234,7 @@ SUCCESS_CASE="$TEST_ROOT/success"
 prepare_case "$SUCCESS_CASE"
 run_case "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 diff -u \
-  <(printf '%s\n' "${MANAGED_UNITS[@]}" portfolio-ops-market-data-refresh.timer | sort) \
+  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer | sort) \
   <(sort "$SUCCESS_CASE/active")
 diff -u \
   <(printf '%s\n' "${MANAGED_UNITS[@]}" | sort) \
@@ -244,7 +246,7 @@ for unit in "${MANAGED_UNITS[@]}"; do
     exit 1
   fi
 done
-test -f "$SUCCESS_CASE/backups/portfolio-ops-pre-systemd-install-test.pgdump"
+test -f "$SUCCESS_CASE/backups/investment-studio-pre-systemd-install-test.pgdump"
 grep -q 'Safety backup retained at:' "$SUCCESS_CASE/output"
 backup_line="$(grep -n '^backup$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 migration_line="$(grep -n '^migrate$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
@@ -336,7 +338,7 @@ grep -q '^database-restore$' "$AUDIT_CASE/events"
 RESTART_CASE="$TEST_ROOT/restart-failure"
 prepare_case "$RESTART_CASE"
 set +e
-START_FAIL_UNIT=portfolio-ops-portfolio-api.service \
+START_FAIL_UNIT=investment-studio-portfolio-api.service \
   run_case "$RESTART_CASE" > "$RESTART_CASE/output" 2>&1
 restart_status=$?
 set -e
@@ -347,8 +349,8 @@ fi
 assert_original_state_restored "$RESTART_CASE"
 restart_line="$(grep -n 'systemctl:restart' "$RESTART_CASE/events" | head -n 1 | cut -d: -f1)"
 database_restore_line="$(grep -n '^database-restore$' "$RESTART_CASE/events" | head -n 1 | cut -d: -f1)"
-restored_api_line="$(grep -n 'systemctl:start portfolio-ops-platform-api.service' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
-restored_timer_line="$(grep -n 'systemctl:start portfolio-ops-market-data-refresh.timer' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
+restored_api_line="$(grep -n 'systemctl:start investment-studio-home-api.service' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
+restored_timer_line="$(grep -n 'systemctl:start investment-studio-market-data-refresh.timer' "$RESTART_CASE/events" | tail -n 1 | cut -d: -f1)"
 if [[ -z "$restart_line" || -z "$database_restore_line" || -z "$restored_api_line" || -z "$restored_timer_line" \
   || "$restart_line" -ge "$database_restore_line" \
   || "$database_restore_line" -ge "$restored_api_line" \
@@ -361,7 +363,7 @@ ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
 prepare_case "$ROLLBACK_CASE"
 set +e
 ROLLBACK_FAIL=true \
-START_FAIL_UNIT=portfolio-ops-portfolio-api.service \
+START_FAIL_UNIT=investment-studio-portfolio-api.service \
   run_case "$ROLLBACK_CASE" > "$ROLLBACK_CASE/output" 2>&1
 rollback_status=$?
 set -e

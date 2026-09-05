@@ -18,7 +18,7 @@ PNG_SCREENSHOT_OVERLAP = b"\x89PNG\r\n\x1a\nportfolio-overlap-fixture"
 def _upload_capture(
     client,
     *,
-    portfolio_id: str = "portfolio-ops",
+    portfolio_id: str = "investment-studio",
     content: bytes = PNG_SCREENSHOT,
     filename: str = "broker-fill.png",
 ):
@@ -35,7 +35,7 @@ def _create_batch(
     capture_ids: list[str],
     purpose: str = "auto",
     *,
-    portfolio_id: str = "portfolio-ops",
+    portfolio_id: str = "investment-studio",
 ):
     response = client.post(
         f"/api/portfolios/{portfolio_id}/transaction-capture-batches",
@@ -79,20 +79,20 @@ def test_screenshot_upload_is_content_addressed_evidence(client) -> None:
     replay = _upload_capture(client)
     assert replay["capture_id"] == capture["capture_id"]
 
-    listing = client.get("/api/portfolios/portfolio-ops/transaction-captures")
+    listing = client.get("/api/portfolios/investment-studio/transaction-captures")
     assert listing.status_code == 200, listing.text
     assert [item["capture_id"] for item in listing.json()["captures"]] == [
         capture["capture_id"]
     ]
 
     detail = client.get(
-        f"/api/portfolios/portfolio-ops/transaction-captures/{capture['capture_id']}"
+        f"/api/portfolios/investment-studio/transaction-captures/{capture['capture_id']}"
     )
     assert detail.status_code == 200, detail.text
     assert detail.json() == capture
 
     image = client.get(
-        f"/api/portfolios/portfolio-ops/transaction-captures/{capture['capture_id']}/image"
+        f"/api/portfolios/investment-studio/transaction-captures/{capture['capture_id']}/image"
     )
     assert image.status_code == 200, image.text
     assert image.content == PNG_SCREENSHOT
@@ -102,7 +102,7 @@ def test_screenshot_upload_is_content_addressed_evidence(client) -> None:
 
 def test_screenshot_upload_rejects_non_raster_content(client) -> None:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-captures",
+        "/api/portfolios/investment-studio/transaction-captures",
         files={
             "file": (
                 "unsafe.svg",
@@ -158,7 +158,7 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
     assert replay["batch_id"] == batch["batch_id"]
 
     listing = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches"
+        "/api/portfolios/investment-studio/transaction-capture-batches"
     )
     assert listing.status_code == 200, listing.text
     assert [item["batch_id"] for item in listing.json()["batches"]] == [
@@ -166,7 +166,7 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
     ]
 
     context = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/agent-context"
     )
     assert context.status_code == 200, context.text
@@ -184,6 +184,8 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
     )
     assert any("complete screenshot batch" in item for item in payload["instructions"])
     assert any("fixed by the user's open workspace" in item for item in payload["instructions"])
+    assert any("underlying_instrument_id" in item for item in payload["instructions"])
+    assert any("physical option exercise or assignment" in item.lower() and "option_delivery" in item for item in payload["instructions"])
     account = next(
         item for item in payload["accounts"] if item["account_id"] == "broker-us-core"
     )
@@ -248,7 +250,7 @@ def test_screenshot_analysis_run_is_queued_once(client, monkeypatch) -> None:
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-runs"
     )
     assert response.status_code == 202, response.text
@@ -257,14 +259,14 @@ def test_screenshot_analysis_run_is_queued_once(client, monkeypatch) -> None:
     assert queued["analysis_run_attempt"] == 1
     assert calls == [
         {
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 1,
         }
     ]
 
     conflict = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-runs"
     )
     assert conflict.status_code == 409
@@ -290,13 +292,13 @@ def test_interrupted_screenshot_analysis_can_be_retried(
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     queued = queue_transaction_capture_analysis_run(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
     )
     assert queued["analysis_run_attempt"] == 1
     if interrupted_status == "running":
         started, _revision = mark_transaction_capture_analysis_run_started(
-            portfolio_id="portfolio-ops",
+            portfolio_id="investment-studio",
             batch_id=batch["batch_id"],
             attempt=1,
         )
@@ -313,7 +315,7 @@ def test_interrupted_screenshot_analysis_can_be_retried(
         session.commit()
 
     detail = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
@@ -329,7 +331,7 @@ def test_interrupted_screenshot_analysis_can_be_retried(
         lambda **kwargs: calls.append(kwargs),
     )
     retried = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-runs"
     )
     assert retried.status_code == 202, retried.text
@@ -337,7 +339,7 @@ def test_interrupted_screenshot_analysis_can_be_retried(
     assert retried.json()["analysis_run_attempt"] == 2
     assert calls == [
         {
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 2,
         }
@@ -355,18 +357,18 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     queued = queue_transaction_capture_analysis_run(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
     )
     started, _revision = mark_transaction_capture_analysis_run_started(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
     )
     assert started is True
 
     revision = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -398,7 +400,7 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
         assert stored.analysis_run_status == "running"
 
     detail = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
@@ -418,7 +420,7 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     queued = queue_transaction_capture_analysis_run(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
     )
     monkeypatch.setattr(
@@ -428,13 +430,13 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     )
 
     transaction_capture_runner.run_transaction_capture_analysis(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
     )
 
     detail = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
@@ -470,13 +472,13 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     queued = queue_transaction_capture_analysis_run(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
     )
 
     def create_revision(**_kwargs) -> tuple[int, bool]:
         create_transaction_capture_analysis_revision(
-            portfolio_id="portfolio-ops",
+            portfolio_id="investment-studio",
             batch_id=batch["batch_id"],
             source=source,
             harness=harness,
@@ -509,13 +511,13 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
     )
 
     transaction_capture_runner.run_transaction_capture_analysis(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
     )
 
     detail = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
@@ -531,7 +533,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
     )
     batch = _create_batch(client, [first["capture_id"], second["capture_id"]])
     before = client.get(
-        "/api/portfolios/portfolio-ops/transactions"
+        "/api/portfolios/investment-studio/transactions"
     ).json()["summary"]["total_transactions"]
     transaction_import = {
         "source_system": "wrong-screenshot-source",
@@ -581,7 +583,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
         "questions": [],
     }
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -599,7 +601,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
 
     transaction_import["source_system"] = "portfolio_screenshot_assistant"
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -615,7 +617,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
 
     transaction_import["records"][0]["external_reference"] = f"{batch['batch_id']}#1"
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -637,7 +639,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
     assert result["preview"]["valid_count"] == 1
     assert result["preview"]["error_count"] == 0
     assert (
-        client.get("/api/portfolios/portfolio-ops/transactions")
+        client.get("/api/portfolios/investment-studio/transactions")
         .json()["summary"]["total_transactions"]
         == before
     )
@@ -662,7 +664,7 @@ def test_capture_batch_derives_recorded_state_from_persisted_source_identity(cli
         ],
     }
     revision = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "human",
@@ -705,7 +707,7 @@ def test_capture_batch_derives_recorded_state_from_persisted_source_identity(cli
     assert revision_payload["preview"]["error_count"] == 0
 
     commit = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "capture-ledger-state-1"},
         json={
             **transaction_import,
@@ -716,7 +718,7 @@ def test_capture_batch_derives_recorded_state_from_persisted_source_identity(cli
     created_transaction_id = commit.json()["transactions"][0]["transaction_id"]
 
     detail = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}"
     )
     assert detail.status_code == 200, detail.text
@@ -724,7 +726,7 @@ def test_capture_batch_derives_recorded_state_from_persisted_source_identity(cli
     assert detail.json()["recorded_transaction_ids"] == [created_transaction_id]
 
     listing = client.get(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches"
+        "/api/portfolios/investment-studio/transaction-capture-batches"
     )
     listed_batch = next(
         item
@@ -743,7 +745,7 @@ def test_position_snapshot_analysis_does_not_require_fake_transactions(client) -
         purpose="portfolio_initialization",
     )
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -784,14 +786,14 @@ def test_position_snapshot_analysis_does_not_require_fake_transactions(client) -
 
 def test_existing_transaction_match_is_preserved_without_a_duplicate_proposal(client) -> None:
     existing_transactions = client.get(
-        "/api/portfolios/portfolio-ops/transactions"
+        "/api/portfolios/investment-studio/transactions"
     ).json()["transactions"]
     existing_transaction_id = existing_transactions[0]["transaction_id"]
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "human",
@@ -834,7 +836,7 @@ def test_ambiguous_account_assignment_stays_reviewable_without_a_proposal(client
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "assistant",
@@ -885,7 +887,7 @@ def test_analysis_rejects_accounts_outside_the_current_portfolio(client) -> None
     capture = _upload_capture(client)
     batch = _create_batch(client, [capture["capture_id"]])
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "human",
@@ -927,7 +929,7 @@ def test_analysis_rejects_evidence_outside_the_batch(client) -> None:
     )
     batch = _create_batch(client, [included["capture_id"]])
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "human",
@@ -969,7 +971,7 @@ def test_analysis_rejects_account_evidence_outside_the_batch(client) -> None:
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        "/api/portfolios/investment-studio/transaction-capture-batches/"
         f"{batch['batch_id']}/analysis-revisions",
         json={
             "source": "human",

@@ -1,6 +1,6 @@
-.portfolio-ops-sparkline-cell {
-  --portfolio-ops-sparkline-stroke: #1f6fbc;
-  --portfolio-ops-sparkline-area: rgba(31, 111, 188, 0.14);
+.investment-studio-sparkline-cell {
+  --investment-studio-sparkline-stroke: #1f6fbc;
+  --investment-studio-sparkline-area: rgba(31, 111, 188, 0.14);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -11,17 +11,17 @@
   vertical-align: middle;
 }
 
-.portfolio-ops-sparkline-cell[data-trend='positive'] {
-  --portfolio-ops-sparkline-stroke: #0f766e;
-  --portfolio-ops-sparkline-area: rgba(15, 118, 110, 0.14);
+.investment-studio-sparkline-cell[data-trend='positive'] {
+  --investment-studio-sparkline-stroke: #0f766e;
+  --investment-studio-sparkline-area: rgba(15, 118, 110, 0.14);
 }
 
-.portfolio-ops-sparkline-cell[data-trend='negative'] {
-  --portfolio-ops-sparkline-stroke: #b42318;
-  --portfolio-ops-sparkline-area: rgba(180, 35, 24, 0.14);
+.investment-studio-sparkline-cell[data-trend='negative'] {
+  --investment-studio-sparkline-stroke: #b42318;
+  --investment-studio-sparkline-area: rgba(180, 35, 24, 0.14);
 }
 
-.portfolio-ops-sparkline {
+.investment-studio-sparkline {
   display: block;
   width: 96px;
   max-width: 100%;
@@ -30,19 +30,19 @@
   overflow: visible;
 }
 
-.portfolio-ops-sparkline-area {
-  fill: var(--portfolio-ops-sparkline-area);
+.investment-studio-sparkline-area {
+  fill: var(--investment-studio-sparkline-area);
 }
 
-.portfolio-ops-sparkline-path {
+.investment-studio-sparkline-path {
   fill: none;
-  stroke: var(--portfolio-ops-sparkline-stroke);
+  stroke: var(--investment-studio-sparkline-stroke);
   stroke-width: 1.85;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.portfolio-ops-sparkline-empty {
+.investment-studio-sparkline-empty {
   display: inline-flex;
   align-items: center;
   justify-content: center;

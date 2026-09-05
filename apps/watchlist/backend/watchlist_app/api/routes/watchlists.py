@@ -836,9 +836,8 @@ def add_items_to_watchlist(
         raise HTTPException(
             status_code=404,
             detail=(
-                f'Instrument not found in shared registry: {missing_label}. '
-                "Search and materialize stocks through the equity search; "
-                "register other instrument types in Database Dashboard."
+                f'Instrument not registered: {missing_label}. '
+                "Register the asset through backend maintenance before adding it to Watchlist."
             ),
         )
     if unsupported_instrument_ids:
@@ -847,7 +846,7 @@ def add_items_to_watchlist(
             status_code=400,
             detail=(
                 f"Watchlist currently supports public funds, private funds, ETFs, stocks, and indexes only: {unsupported_label}. "
-                "Use Database Dashboard for shared master data, then add supported instruments here."
+                "Use backend maintenance for shared asset data, then add supported instruments here."
             ),
         )
 

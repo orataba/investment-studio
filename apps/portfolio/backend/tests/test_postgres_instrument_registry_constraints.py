@@ -21,7 +21,7 @@ if BACKEND_ROOT_STR in sys.path:
 sys.path.insert(0, BACKEND_ROOT_STR)
 
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "shared-data" / "instruments" / "python"
 INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
 if INSTRUMENT_CORE_PYTHON_STR in sys.path:
     sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
@@ -32,18 +32,18 @@ from portfolio_app.db.models import (
     PortfolioRecordModel,
     TransactionRecordModel,
 )
-from portfolio_ops_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core import instrument_store as shared_store
 
 
 pytestmark = pytest.mark.postgresql_integration
 
-def _run_instrument_registry_upgrade() -> None:
-    config = Config(str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini"))
+def _run_instrument_registry_upgrade(revision: str = "head") -> None:
+    config = Config(str(WORKSPACE_ROOT / "shared-data" / "instruments" / "alembic.ini"))
     config.set_main_option(
         "script_location",
-        str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
+        str(WORKSPACE_ROOT / "shared-data" / "instruments" / "alembic"),
     )
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
 
 
 def _run_portfolio_upgrade(database_url: str) -> None:
@@ -60,10 +60,10 @@ def _admin_database_url(database_url: str) -> str:
 
 @pytest.fixture
 def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL")
+    base_database_url = os.getenv("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
     if not base_database_url:
-        pytest.skip("PORTFOLIO_OPS_TEST_POSTGRES_URL is not explicitly configured.")
-    database_name = f"portfolio_ops_portfolio_fk_{uuid4().hex[:8]}"
+        pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured.")
+    database_name = f"investment_studio_portfolio_fk_{uuid4().hex[:8]}"
     database_url = make_url(base_database_url).set(database=database_name).render_as_string(hide_password=False)
     admin_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
     try:
@@ -75,11 +75,11 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA", "instrument_data")
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
 
     from portfolio_app.core import settings as settings_module
     from portfolio_app.db import session as session_module
@@ -88,8 +88,9 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_instrument_registry_upgrade()
+    _run_instrument_registry_upgrade("20260902_0029")
     _run_portfolio_upgrade(database_url)
+    _run_instrument_registry_upgrade()
 
     session_factory = session_module.get_session_factory()
     identifier_value = f"PORTFK{uuid4().hex[:8].upper()}"
@@ -171,7 +172,7 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
         engine.dispose()
 
     assert constraint is not None
-    assert constraint["referred_schema"] == "instrument_registry"
+    assert constraint["referred_schema"] == "instrument_data"
     assert constraint["referred_table"] == "instrument"
 
     session_factory = session_module.get_session_factory()

@@ -36,17 +36,17 @@ def _alembic_config() -> Config:
 def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_reuse(client) -> None:
     before_ids = {
         item["transaction_id"]
-        for item in portfolio_store.list_transactions("portfolio-ops")
+        for item in portfolio_store.list_transactions("investment-studio")
     }
     headers = {"Idempotency-Key": "deposit-request-001"}
 
     first = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         headers=headers,
         json=_deposit_payload(),
     )
     replay = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         headers=headers,
         json=_deposit_payload(),
     )
@@ -58,12 +58,12 @@ def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_re
     assert first.json()["row_version"] == 1
     after_ids = {
         item["transaction_id"]
-        for item in portfolio_store.list_transactions("portfolio-ops")
+        for item in portfolio_store.list_transactions("investment-studio")
     }
     assert after_ids - before_ids == {transaction_id}
 
     conflict = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         headers=headers,
         json=_deposit_payload(amount=1001.0),
     )
@@ -71,7 +71,7 @@ def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_re
     assert "different payload" in conflict.json()["detail"].lower()
 
     change_log = client.get(
-        "/api/portfolios/portfolio-ops/transactions/change-log",
+        "/api/portfolios/investment-studio/transactions/change-log",
         params={"transaction_id": transaction_id},
     )
     assert change_log.status_code == 200
@@ -85,7 +85,7 @@ def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_re
     assert created["request_idempotency_key"] == "deposit-request-001"
 
     workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": transaction_id},
     )
     assert workspace.status_code == 200
@@ -95,7 +95,7 @@ def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_re
 
 def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(client) -> None:
     created = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json=_deposit_payload(),
     )
     assert created.status_code == 200
@@ -103,7 +103,7 @@ def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(
     assert created.json()["row_version"] == 1
 
     missing_version = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json=_deposit_payload(amount=1250.0, note="Unversioned correction"),
     )
     assert missing_version.status_code == 422
@@ -115,7 +115,7 @@ def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(
         "expected_row_version": 1,
     }
     updated = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json=update_payload,
     )
     assert updated.status_code == 200
@@ -123,31 +123,31 @@ def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(
     assert updated.json()["gross_amount"] == 1250.0
 
     stale = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={**update_payload, "gross_amount": 1300.0, "expected_row_version": 1},
     )
     assert stale.status_code == 409
     assert "row version" in stale.json()["detail"].lower()
-    assert portfolio_store.get_transaction("portfolio-ops", transaction_id)["row_version"] == 2
+    assert portfolio_store.get_transaction("investment-studio", transaction_id)["row_version"] == 2
 
     stale_delete = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={"expected_row_versions": {transaction_id: 1}},
     )
     assert stale_delete.status_code == 409
     assert "row version" in stale_delete.json()["detail"].lower()
-    assert portfolio_store.get_transaction("portfolio-ops", transaction_id)["row_version"] == 2
+    assert portfolio_store.get_transaction("investment-studio", transaction_id)["row_version"] == 2
 
     deleted = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={"expected_row_versions": {transaction_id: 2}},
     )
     assert deleted.status_code == 200
 
     change_log = client.get(
-        "/api/portfolios/portfolio-ops/transactions/change-log",
+        "/api/portfolios/investment-studio/transactions/change-log",
         params={"transaction_id": transaction_id},
     )
     assert change_log.status_code == 200
@@ -172,12 +172,12 @@ def test_internal_transfer_post_idempotency_replays_the_original_pair(client) ->
     headers = {"Idempotency-Key": "cash-sweep-request-001"}
 
     first = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         headers=headers,
         json=payload,
     )
     replay = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         headers=headers,
         json=payload,
     )
@@ -189,7 +189,7 @@ def test_internal_transfer_post_idempotency_replays_the_original_pair(client) ->
     assert {item["row_version"] for item in first.json()["transactions"]} == {1}
 
     conflict = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         headers=headers,
         json={**payload, "gross_amount": 251.0},
     )
@@ -198,12 +198,12 @@ def test_internal_transfer_post_idempotency_replays_the_original_pair(client) ->
 
 def test_reset_round_trip_preserves_versions_and_copy_starts_new_facts_at_version_one(client) -> None:
     created = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json=_deposit_payload(),
     )
     transaction_id = created.json()["transaction_id"]
     updated = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={**_deposit_payload(amount=1100.0), "expected_row_version": 1},
     )
     assert updated.status_code == 200
@@ -213,9 +213,9 @@ def test_reset_round_trip_preserves_versions_and_copy_starts_new_facts_at_versio
     with session_factory() as session:
         loaded = portfolio_store._load_store_from_db(session)
     portfolio_store.reset_store(deepcopy(loaded))
-    assert portfolio_store.get_transaction("portfolio-ops", transaction_id)["row_version"] == 2
+    assert portfolio_store.get_transaction("investment-studio", transaction_id)["row_version"] == 2
 
-    copied = portfolio_store.copy_portfolio("portfolio-ops")
+    copied = portfolio_store.copy_portfolio("investment-studio")
     assert copied is not None
     copied_transactions = portfolio_store.list_transactions(str(copied["portfolio_id"]))
     assert copied_transactions

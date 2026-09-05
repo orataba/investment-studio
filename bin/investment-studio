@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
+if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  printf '%s\n' \
+    'Investment Studio' \
+    '  investment-studio services <start|stop|restart|status> <home|investments|regime|all>' \
+    '  investment-studio data <group> <action> [arguments]' \
+    'Use investment-studio data --help for private data maintenance commands.'
+  exit 0
+fi
+if [[ "${1:-}" == "services" ]]; then
+  shift
+  exec "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/manage_services.py" "$@"
+fi
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+RUNTIME_ENV_ROOT="${ENV_ROOT:-$HOME/.config/orataba/secrets/investment-studio}"
+investment_studio_load_env_file "$RUNTIME_ENV_ROOT/data.env" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
+export PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON_BIN" -m studio_data.cli "$@"

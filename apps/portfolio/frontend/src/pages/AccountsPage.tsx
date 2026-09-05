@@ -392,6 +392,8 @@ export default function AccountsPage() {
     return {
       account_name: form.account_name.trim(),
       account_category: form.account_category,
+      cash_purpose: form.account_category === 'cash' ? form.cash_purpose : null,
+      collateral_reference: form.account_category === 'cash' && form.cash_purpose === 'collateral' ? form.collateral_reference || null : null,
       currency: form.currency.trim().toUpperCase(),
       institution: form.institution.trim() || null,
       default_settlement_cash_account_id:
@@ -454,6 +456,8 @@ export default function AccountsPage() {
         const updatePayload: PortfolioAccountUpdatePayload = {
           account_name: payload.account_name,
           account_category: payload.account_category,
+          cash_purpose: payload.cash_purpose,
+          collateral_reference: payload.collateral_reference,
           institution: payload.institution,
           default_settlement_cash_account_id: payload.default_settlement_cash_account_id,
           cost_basis_method: payload.cost_basis_method,
@@ -589,7 +593,7 @@ export default function AccountsPage() {
                       onClick={() => selectAccount(accountRow.account.account_id)}
                     >
                       <span className="account-directory-item-head">
-                        <span className="account-directory-name">{accountRow.account.account_name}</span>
+                        <span className="account-directory-name" translate="no">{accountRow.account.account_name}</span>
                         <span className={`account-status-pill account-status-${accountRow.account.status}`}>
                           {formatLabel(accountRow.account.status)}
                         </span>
@@ -628,7 +632,7 @@ export default function AccountsPage() {
                   <header className="account-detail-header">
                     <div className="account-detail-identity">
                       <span className="account-detail-eyebrow">Selected account</span>
-                      <h2>{selectedAccount.account.account_name}</h2>
+                      <h2 translate="no">{selectedAccount.account.account_name}</h2>
                       <div className="account-detail-tags">
                         <span>{accountCategoryLabel(selectedAccount.account.account_category)}</span>
                         <span>{selectedAccount.account.currency}</span>
@@ -1098,6 +1102,13 @@ export default function AccountsPage() {
                   </select>
                 </label>
 
+                {form.account_category === 'cash' ? <>
+                  <label><span>现金用途</span><select value={form.cash_purpose} onChange={(event) => setForm((current) => ({ ...current, cash_purpose: event.target.value as AccountFormState['cash_purpose'] }))}>
+                    <option value="operating">普通结算现金</option><option value="margin">券商保证金账户（可有融资借方）</option><option value="collateral">已抵押现金（不可自由使用）</option><option value="financing">独立融资负债</option>
+                  </select></label>
+                  {form.cash_purpose === 'collateral' ? <label><span>抵押对象及券商确认依据</span><input value={form.collateral_reference} onChange={(event) => setForm((current) => ({ ...current, collateral_reference: event.target.value }))} placeholder="合约号、业务号及分配说明" /></label> : null}
+                  <p className="field-help">借款与还款、抵押与释放用账户间内部现金划转记录，不是入金或收益；融资利息和融券费按实际账单记费用。本系统不推算券商购买力或保证金许可。</p>
+                </> : null}
                 {form.account_category !== 'cash' ? (
                   <label>
                     <span>Default Settlement Cash</span>
@@ -1112,7 +1123,7 @@ export default function AccountsPage() {
                       disabled={compatibleDepositAccounts.length === 0}
                     >
                       {compatibleDepositAccounts.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
+                        <option key={account.account_id} value={account.account_id} translate="no">
                           {account.account_name}
                         </option>
                       ))}
@@ -1216,9 +1227,8 @@ export default function AccountsPage() {
             <div className="transaction-form">
               <div className="portfolio-detail-meta">
                 Changing cost method from {formatCostMethodLabel(pendingCostMethodChange.currentMethod)} to{' '}
-                {formatCostMethodLabel(pendingCostMethodChange.nextMethod)} will replay this account's transaction
-                history and recalculate cost basis, average cost, realized gain, and unrealized gain. Market value,
-                cash flows, and time-weighted return are not changed by this accounting method.
+                {formatCostMethodLabel(pendingCostMethodChange.nextMethod)} is allowed only before asset transactions exist.
+                Historical cost and realized gains will not be restated. Use a new account if a different cost method is required.
               </div>
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
               <div className="transaction-form-footer">
@@ -1248,6 +1258,8 @@ export default function AccountsPage() {
 }
 
 type AccountFormState = {
+  cash_purpose: 'operating' | 'margin' | 'collateral' | 'financing'
+  collateral_reference: string
   account_name: string
   account_category: PortfolioAccountCategory
   currency: string
@@ -1276,6 +1288,8 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
   return {
     account_name: '',
     account_category: 'cash',
+    cash_purpose: 'operating',
+    collateral_reference: '',
     currency: defaultCashAccount?.currency ?? 'USD',
     institution: '',
     default_settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
@@ -1290,6 +1304,8 @@ function buildAccountFormFromRecord(account: PortfolioAccountRecord): AccountFor
   return {
     account_name: account.account_name,
     account_category: account.account_category,
+    cash_purpose: account.cash_purpose ?? 'operating',
+    collateral_reference: account.collateral_reference ?? '',
     currency: account.currency,
     institution: account.institution ?? '',
     default_settlement_cash_account_id: account.default_settlement_cash_account_id ?? '',
@@ -1332,7 +1348,7 @@ function AccountTransactionRow({
           )}
         </span>
       </td>
-      <td className="holding-name-cell" data-label="Instrument">
+      <td className="holding-name-cell" data-label="Instrument" translate="no">
         {transaction.instrument_ref || transaction.derivative_contract ? (
           <div className="holding-name-stack">
             <span>
@@ -1343,7 +1359,7 @@ function AccountTransactionRow({
                 derivative_contract: transaction.derivative_contract,
               })}
             </span>
-            <span className="holding-secondary">{transaction.derivative_contract?.contract_name ?? transaction.instrument_ref?.instrument_name}</span>
+            <span className="holding-secondary" translate="no">{transaction.derivative_contract?.contract_name ?? transaction.instrument_ref?.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
@@ -1393,7 +1409,7 @@ function PositionRow({
           >
             {primaryIdentifier(position)}
           </Link>
-          <span className="holding-secondary">{position.derivative_contract?.contract_name ?? position.instrument_ref?.instrument_name}</span>
+          <span className="holding-secondary" translate="no">{position.derivative_contract?.contract_name ?? position.instrument_ref?.instrument_name}</span>
         </div>
       </td>
       <td data-label="Quantity / Price">
@@ -1453,7 +1469,7 @@ function LedgerPostingRow({
           </span>
         </div>
       </td>
-      <td className="holding-name-cell" data-label="Instrument">
+      <td className="holding-name-cell" data-label="Instrument" translate="no">
         {posting.instrument_ref || posting.derivative_contract ? (
           <div className="holding-name-stack">
             <span>
@@ -1464,7 +1480,7 @@ function LedgerPostingRow({
                 derivative_contract: posting.derivative_contract,
               })}
             </span>
-            <span className="holding-secondary">{posting.derivative_contract?.contract_name ?? posting.instrument_ref?.instrument_name}</span>
+            <span className="holding-secondary" translate="no">{posting.derivative_contract?.contract_name ?? posting.instrument_ref?.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
@@ -1517,7 +1533,7 @@ function LedgerPostingRow({
         >
           {posting.transaction_id}
         </Link>
-        <span title={posting.note ?? undefined}>{posting.note || 'No note'}</span>
+        <span title={posting.note ?? undefined} translate={posting.note ? 'no' : undefined}>{posting.note || 'No note'}</span>
       </td>
     </tr>
   )

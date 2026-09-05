@@ -1,42 +1,6 @@
-function normalizeConfiguredUrl(value: string | undefined) {
-  const normalized = (value || '').trim().replace(/\/$/, '')
-  return normalized || null
-}
+import { resolveWorkspaceUrl } from '../../../../../packages/ui/src/navigation'
 
-function isLoopbackUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return (
-      url.hostname === '127.0.0.1' ||
-      url.hostname === 'localhost' ||
-      url.hostname === '::1' ||
-      url.hostname === '[::1]'
-    )
-  } catch {
-    return false
-  }
-}
-
-function buildSiblingAppUrl(port: string) {
-  if (typeof window === 'undefined') {
-    return `http://127.0.0.1:${port}`
-  }
-  const hostname = window.location.hostname.includes(':')
-    ? `[${window.location.hostname}]`
-    : window.location.hostname
-  return `${window.location.protocol}//${hostname}:${port}`
-}
-
-function normalizeAppUrl(value: string | undefined, port: string) {
-  const normalized = normalizeConfiguredUrl(value)
-  if (!normalized || isLoopbackUrl(normalized)) {
-    return buildSiblingAppUrl(port)
-  }
-  return normalized
-}
-
-export const PLATFORM_HOME_URL = normalizeAppUrl(import.meta.env.VITE_PLATFORM_URL, '5172')
-export const PLATFORM_API_URL = normalizeAppUrl(import.meta.env.VITE_PLATFORM_API_URL, '8002')
+export const HOME_URL = resolveWorkspaceUrl(import.meta.env.VITE_HOME_URL, 'home')
 
 export const WATCHLIST_ENTRY_PATH = '/watchlists'
 

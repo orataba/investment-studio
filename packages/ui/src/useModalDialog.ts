@@ -22,7 +22,7 @@ export function useModalDialog(
 ): RefObject<HTMLDivElement | null> {
   const dialogRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
-  const modalTokenRef = useRef(Symbol('portfolio-ops-modal'))
+  const modalTokenRef = useRef(Symbol('investment-studio-modal'))
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -41,6 +41,9 @@ export function useModalDialog(
         return
       }
       const dialog = dialogRef.current
+      if (dialog?.contains(document.activeElement)) {
+        return
+      }
       const target = initialFocusRef?.current ?? dialog?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ?? dialog
       target?.focus()
     })

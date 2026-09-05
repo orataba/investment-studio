@@ -173,7 +173,7 @@ def _patch_market_data(monkeypatch: pytest.MonkeyPatch, *, include_start_rate: b
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],

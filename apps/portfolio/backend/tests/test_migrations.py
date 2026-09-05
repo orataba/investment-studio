@@ -195,7 +195,7 @@ def test_schema_reconciliation_rejects_non_null_effective_window() -> None:
                     effective_to
                 ) VALUES (
                     'taxonomy-reconciliation-window',
-                    'portfolio-ops',
+                    'investment-studio',
                     'Reconciliation Window',
                     'custom',
                     NULL,
@@ -316,7 +316,7 @@ def _insert_reserved_cash_taxonomy(
     connection.execute(
         sa.insert(taxonomy).values(
             taxonomy_id=taxonomy_id,
-            portfolio_id="portfolio-ops",
+            portfolio_id="investment-studio",
             name=taxonomy_id,
             taxonomy_type="custom",
             purpose=None,
@@ -353,7 +353,7 @@ def _insert_legacy_cash_risk_rows(connection: sa.Connection) -> sa.TableClause:
     connection.execute(
         sa.insert(taxonomy).values(
             taxonomy_id=taxonomy_id,
-            portfolio_id="portfolio-ops",
+            portfolio_id="investment-studio",
             name="Cash Risk Migration",
             taxonomy_type="custom",
             purpose=None,
@@ -562,7 +562,7 @@ def test_cash_migrations_canonicalize_weights_and_remove_reserved_nodes(
     from portfolio_app.core.settings import get_settings
 
     database_url = f"sqlite+pysqlite:///{tmp_path / 'cash-migrations.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL", database_url)
     get_settings.cache_clear()
     config = _alembic_config()
     command.upgrade(config, "20260711_0032")
@@ -586,8 +586,8 @@ def test_cash_migrations_canonicalize_weights_and_remove_reserved_nodes(
                     default_planning_taxonomy_id,
                     risk_policy_json
                 ) VALUES (
-                    'portfolio-ops',
-                    'Portfolio Operations',
+                    'investment-studio',
+                    'Investment Studio',
                     'USD',
                     'Asia/Shanghai',
                     'market_close',
@@ -688,7 +688,7 @@ def test_canonical_cash_migration_rejects_nested_reserved_cash_node() -> None:
         connection.execute(
             sa.insert(taxonomy).values(
                 taxonomy_id=taxonomy_id,
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 name="Nested Reserved Cash",
                 taxonomy_type="custom",
                 purpose=None,
@@ -750,7 +750,7 @@ def test_canonical_cash_migration_rejects_top_sleeve_bounds_reference() -> None:
         )
         connection.execute(
             sa.insert(research_settings).values(
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 as_of_mode="dynamic",
                 lookback_days=90,
                 calculation_frequency="auto",
@@ -1148,7 +1148,7 @@ def test_cash_risk_migration_preflight_rejects_invalid_weight_enabled_cash_row()
         connection.execute(
             sa.insert(taxonomy).values(
                 taxonomy_id="taxonomy-invalid-cash-weight",
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 name="Invalid Cash Weight",
                 taxonomy_type="custom",
                 purpose=None,
@@ -1245,7 +1245,7 @@ def test_snapshot_coverage_migration_backfills_legacy_state_and_is_reversible() 
     with engine.begin() as connection:
         connection.execute(
             sa.insert(snapshot).values(
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 as_of_date=legacy_date,
                 coverage_state="partial",
                 nav=100.0,
@@ -1278,7 +1278,7 @@ def test_snapshot_coverage_migration_backfills_legacy_state_and_is_reversible() 
                     snapshot.c.book_pnl_coverage_state,
                     snapshot.c.attribution_coverage_state,
                 ).where(
-                    snapshot.c.portfolio_id == "portfolio-ops",
+                    snapshot.c.portfolio_id == "investment-studio",
                     snapshot.c.as_of_date == legacy_date,
                 )
             ).one()
@@ -1307,7 +1307,7 @@ def test_snapshot_coverage_migration_backfills_legacy_state_and_is_reversible() 
         with engine.begin() as connection:
             connection.execute(
                 sa.delete(snapshot).where(
-                    snapshot.c.portfolio_id == "portfolio-ops",
+                    snapshot.c.portfolio_id == "investment-studio",
                     snapshot.c.as_of_date == legacy_date,
                 )
             )
@@ -1364,7 +1364,7 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
         state_count = connection.scalar(
             sa.text(
                 "SELECT count(*) FROM portfolio_calculation_state "
-                "WHERE portfolio_id = 'portfolio-ops'"
+                "WHERE portfolio_id = 'investment-studio'"
             )
         )
         if int(state_count or 0) == 0:
@@ -1372,7 +1372,7 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
                 sa.text(
                     "INSERT INTO portfolio_calculation_state "
                     "(portfolio_id, daily_snapshot_status) "
-                    "VALUES ('portfolio-ops', 'current')"
+                    "VALUES ('investment-studio', 'current')"
                 )
             )
         else:
@@ -1380,7 +1380,7 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
                 sa.text(
                     "UPDATE portfolio_calculation_state "
                     "SET daily_snapshot_status = 'current' "
-                    "WHERE portfolio_id = 'portfolio-ops'"
+                    "WHERE portfolio_id = 'investment-studio'"
                 )
             )
 
@@ -1435,7 +1435,7 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
                     market_value_base, portfolio_weight, holding_json,
                     calculated_at
                 ) VALUES (
-                    'portfolio-ops', '2099-02-01', 'broker-us-core',
+                    'investment-studio', '2099-02-01', 'broker-us-core',
                     'option-contract-1', :holding_kind, 'USD', 1,
                     NULL, NULL, NULL, NULL, NULL, NULL, '{}',
                     '2099-02-01T00:00:00Z'
@@ -1456,7 +1456,7 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
             calculation_status = connection.scalar(
                 sa.text(
                     "SELECT daily_snapshot_status FROM portfolio_calculation_state "
-                    "WHERE portfolio_id = 'portfolio-ops'"
+                    "WHERE portfolio_id = 'investment-studio'"
                 )
             )
 
@@ -1545,7 +1545,7 @@ def test_listing_reference_migration_backfills_etf_exchange_identity() -> None:
         universe_update = connection.execute(
             sa.update(universe)
             .where(
-                universe.c.portfolio_id == "portfolio-ops",
+                universe.c.portfolio_id == "investment-studio",
                 universe.c.instrument_id == "fund-us-agg",
             )
             .values(instrument_ref_json=legacy_reference)
@@ -1554,7 +1554,7 @@ def test_listing_reference_migration_backfills_etf_exchange_identity() -> None:
         assert universe_update.rowcount == 1
         connection.execute(
             sa.insert(snapshot).values(
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 as_of_date=snapshot_date,
                 account_id="broker-us-core",
                 instrument_id="fund-us-agg",
@@ -1579,13 +1579,13 @@ def test_listing_reference_migration_backfills_etf_exchange_identity() -> None:
         )
         universe_reference = connection.scalar(
             sa.select(universe.c.instrument_ref_json).where(
-                universe.c.portfolio_id == "portfolio-ops",
+                universe.c.portfolio_id == "investment-studio",
                 universe.c.instrument_id == "fund-us-agg",
             )
         )
         holding = connection.scalar(
             sa.select(snapshot.c.holding_json).where(
-                snapshot.c.portfolio_id == "portfolio-ops",
+                snapshot.c.portfolio_id == "investment-studio",
                 snapshot.c.as_of_date == snapshot_date,
                 snapshot.c.account_id == "broker-us-core",
                 snapshot.c.position_reference_id == "fund-us-agg",

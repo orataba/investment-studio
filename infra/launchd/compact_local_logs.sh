@@ -2,9 +2,9 @@
 set -euo pipefail
 umask 077
 
-LOG_DIR="${1:-${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}}"
-MAX_BYTES="${PORTFOLIO_OPS_LOCAL_LOG_MAX_BYTES:-104857600}"
-RETAIN_BYTES="${PORTFOLIO_OPS_LOCAL_LOG_RETAIN_BYTES:-10485760}"
+LOG_DIR="${1:-${LOG_DIR:-$HOME/Library/Logs/investment-studio}}"
+MAX_BYTES="${INVESTMENT_STUDIO_LOCAL_LOG_MAX_BYTES:-104857600}"
+RETAIN_BYTES="${INVESTMENT_STUDIO_LOCAL_LOG_RETAIN_BYTES:-10485760}"
 
 for value_name in MAX_BYTES RETAIN_BYTES; do
   value="${!value_name}"

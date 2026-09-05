@@ -1,0 +1,926 @@
+from dataclasses import replace
+from datetime import date
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from portfolio_app.api.contracts import ResearchSettingsUpdateRequest
+from portfolio_app.services import research_solver as solver
+from portfolio_app.services.risk_model import normalize_portfolio_risk_policy
+
+
+@pytest.mark.parametrize(
+    ("capital_mode", "field_name", "extra"),
+    [
+        ("fixed_gross", "gross_exposure", {}),
+        ("target_volatility", "max_gross_exposure", {"target_volatility": 0.1}),
+    ],
+)
+def test_research_settings_reject_nonfinite_exposure(capital_mode, field_name, extra):
+    with pytest.raises(ValueError):
+        ResearchSettingsUpdateRequest.model_validate(
+            {
+                "capital_mode": capital_mode,
+                field_name: float("inf"),
+                **extra,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"capital_mode": "mystery"}, "capital mode"),
+        ({"target_dimension": "mystery"}, "target dimension"),
+        ({"calculation_frequency": "weekly"}, "calculation frequency"),
+        ({"capital_mode": "fixed_gross", "gross_exposure": float("inf")}, "finite and positive"),
+        ({"capital_mode": "fixed_gross", "gross_exposure": None}, "requires gross_exposure"),
+        ({"capital_mode": "unit_notional", "target_volatility": 0.1}, "must not set"),
+    ],
+)
+def test_research_solve_core_rejects_invalid_configuration(overrides, message):
+    inputs = {
+        "calculation_frequency": "daily",
+        "target_dimension": "risk_budget",
+        "capital_mode": "unit_notional",
+        "gross_exposure": None,
+        "target_volatility": None,
+        "max_gross_exposure": None,
+        **overrides,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        solver._validate_research_solve_configuration(**inputs)
+
+
+def replay(
+    decisions,
+    returns,
+    *,
+    cash_yield=0.0,
+    commission=0.0,
+    end=date(2026, 6, 3),
+    delay=0,
+    derivative_events=None,
+    cash_borrowing_allowed=False,
+):
+    return solver._replay_backtest_decisions(
+        decisions,
+        returns_by_instrument=returns,
+        as_of_date=end,
+        cash_yield_annual=cash_yield,
+        commission_bps=commission,
+        tax_bps=0.0,
+        slippage_bps=0.0,
+        implementation_delay_days=delay,
+        derivative_capital_events=derivative_events,
+        cash_borrowing_allowed=cash_borrowing_allowed,
+    )
+
+
+def decision(day, weights, derivative_weight=0.0):
+    return {
+        "decision_date": day,
+        "derivative_target_weight": derivative_weight,
+        "target_weights": [
+            {"instrument_id": key, "target_weight": weight, "top_sleeve_label": key}
+            for key, weight in weights.items()
+        ],
+    }
+
+
+def test_mixed_publication_dates_compound_every_intervening_return():
+    result = replay(
+        [decision("2026-06-01", {"a": 0.5, "b": 0.5})],
+        {
+            "a": pd.Series([0.0, 0.1, 0.1], index=[date(2026, 6, d) for d in (1, 2, 3)]),
+            "b": pd.Series([0.0, 0.0], index=[date(2026, 6, d) for d in (1, 3)]),
+        },
+    )
+    assert result["points"][-1]["value"] == pytest.approx(0.5 * 1.1 ** 2 + 0.5)
+    assert max(abs(r["residual"]) for r in result["contribution_reconciliation_points"]) < 1e-12
+
+
+def test_derivative_capital_is_not_interest_bearing_cash():
+    result = replay(
+        [decision("2026-06-01", {"a": 0.5}, 0.4)],
+        {"a": pd.Series([0.0, 0.0], index=[date(2026, 6, 1), date(2026, 7, 1)])},
+        cash_yield=0.1,
+        end=date(2026, 7, 1),
+        derivative_events=[
+            {
+                "effective_date": "2026-06-01",
+                "target_value": 0.4,
+                "actual_value_base": 40.0,
+                "reference_weight": 0.4,
+                "source": "actual_derivative_ledger",
+            }
+        ],
+    )
+    assert result["points"][-1]["value"] == pytest.approx(0.9 + 0.1 * 1.1 ** (30 / 365.25))
+    assert result["execution_records"][0]["derivative_target_weight"] == 0.4
+    assert result["execution_records"][0]["cash_target_weight"] == pytest.approx(0.1)
+    assert result["execution_records"][0]["derivative_leg_turnover"] == 0.0
+    assert result["derivative_capital_events"][0]["capital_change"] == pytest.approx(0.4)
+    assert "__derivatives__" in {r["top_sleeve_id"] for r in result["top_sleeve_weight_points"][-1]["sleeves"]}
+
+
+def test_written_option_liability_is_signed_no_trade_capital():
+    result = replay(
+        [decision("2026-06-01", {"a": 1.1}, -0.1)],
+        {"a": pd.Series([0.0, 0.0], index=[date(2026, 6, 1), date(2026, 6, 3)])},
+        derivative_events=[
+            {
+                "effective_date": "2026-06-01",
+                "target_value": -0.1,
+                "actual_value_base": -10.0,
+                "reference_weight": -0.1,
+                "source": "actual_derivative_ledger",
+            }
+        ],
+    )
+
+    execution = result["execution_records"][0]
+    assert result["points"][-1]["value"] == pytest.approx(1.0)
+    assert execution["derivative_target_weight"] == pytest.approx(-0.1)
+    assert execution["cash_target_weight"] == pytest.approx(0.0)
+    assert execution["derivative_leg_turnover"] == 0.0
+
+
+def test_derivative_capital_change_after_decision_invalidates_security_execution():
+    result = replay(
+        [decision("2026-06-01", {"a": 0.95})],
+        {
+            "a": pd.Series(
+                [0.0, 0.0],
+                index=[date(2026, 6, 2), date(2026, 6, 3)],
+            )
+        },
+        derivative_events=[
+            {
+                "effective_date": "2026-06-02",
+                "target_value": 0.15,
+                "actual_value_base": 15.0,
+                "reference_weight": 0.15,
+                "source": "actual_derivative_ledger",
+            }
+        ],
+    )
+
+    assert result["execution_records"] == []
+    assert result["points"][-1]["value"] == pytest.approx(1.0)
+    assert result["derivative_capital_events"][0]["capital_change"] == pytest.approx(0.15)
+    assert "stale capital budget" in result["skipped_executions"][0]["reason"]
+
+
+def test_derivative_capital_increase_cannot_create_hidden_cash_borrowing():
+    with pytest.raises(ValueError, match="implicit cash borrowing"):
+        replay(
+            [decision("2026-06-01", {"a": 0.95})],
+            {
+                "a": pd.Series(
+                    [0.0, 0.0, 0.0],
+                    index=[date(2026, 6, 1), date(2026, 6, 2), date(2026, 6, 3)],
+                )
+            },
+            derivative_events=[
+                {
+                    "effective_date": "2026-06-02",
+                    "target_value": 0.15,
+                    "actual_value_base": 15.0,
+                    "reference_weight": 0.15,
+                    "source": "actual_derivative_ledger",
+                }
+            ],
+        )
+
+
+def test_derivative_event_funding_decision_can_override_global_delay():
+    old_target = decision("2026-06-01", {"a": 0.95})
+    funding_target = decision("2026-06-02", {"a": 0.8}, derivative_weight=0.15)
+    funding_target["implementation_delay_days"] = 0
+
+    result = replay(
+        [old_target, funding_target],
+        {
+            "a": pd.Series(
+                [0.0, 0.0],
+                index=[date(2026, 6, 2), date(2026, 6, 3)],
+            )
+        },
+        delay=1,
+        derivative_events=[
+            {
+                "effective_date": "2026-06-02",
+                "target_value": 0.15,
+                "actual_value_base": 15.0,
+                "reference_weight": 0.15,
+                "source": "actual_derivative_ledger",
+            }
+        ],
+    )
+
+    execution = result["execution_records"][0]
+    assert execution["decision_date"] == "2026-06-02"
+    assert execution["scheduled_execution_date"] == "2026-06-02"
+    assert execution["actual_execution_date"] == "2026-06-02"
+    assert execution["cash_target_weight"] == pytest.approx(0.05)
+    assert execution["derivative_leg_turnover"] == 0.0
+    assert "superseded" in result["skipped_executions"][0]["reason"]
+    cash_values = [
+        sleeve["value"]
+        for point in result["top_sleeve_weight_points"]
+        for sleeve in point["sleeves"]
+        if sleeve["top_sleeve_id"] == "__cash__"
+    ]
+    assert min(cash_values) >= 0.0
+
+
+def test_explicit_leverage_mode_can_replay_negative_financing_cash():
+    result = replay(
+        [decision("2026-06-01", {"a": 1.1})],
+        {
+            "a": pd.Series(
+                [0.0, 0.0],
+                index=[date(2026, 6, 1), date(2026, 6, 3)],
+            )
+        },
+        cash_borrowing_allowed=True,
+    )
+
+    assert result["execution_records"][0]["cash_target_weight"] == pytest.approx(-0.1)
+
+
+def test_fully_invested_target_pays_fees_without_hidden_cash_borrowing():
+    result = replay(
+        [decision("2026-06-01", {"a": 1.0})],
+        {"a": pd.Series([0.0, 0.0], index=[date(2026, 6, 1), date(2026, 6, 3)])},
+        commission=100.0,
+    )
+    assert result["points"][-1]["value"] == pytest.approx(1 / 1.01)
+    assert all(r["value"] >= -1e-12 for r in result["top_sleeve_weight_points"][-1]["sleeves"])
+    assert result["total_cost"] == pytest.approx(1 - 1 / 1.01)
+
+
+def test_unfilled_old_target_cannot_overwrite_a_newer_rebalance():
+    result = replay(
+        [decision("2026-06-01", {"a": 1.0}), decision("2026-06-02", {"b": 1.0})],
+        {
+            "a": pd.Series([0.0], index=[date(2026, 6, 3)]),
+            "b": pd.Series([0.0, 0.0], index=[date(2026, 6, d) for d in (2, 3)]),
+        },
+    )
+    assert [r["decision_date"] for r in result["execution_records"]] == ["2026-06-02"]
+    assert "superseded" in result["skipped_executions"][0]["reason"]
+
+
+def test_delayed_decision_beyond_cutoff_is_pending_not_missing_history():
+    result = replay(
+        [decision("2026-06-03", {"a": 1.0})],
+        {"a": pd.Series([0.0], index=[date(2026, 6, 3)])}, delay=1,
+    )
+    assert not result["skipped_executions"]
+    assert result["pending_executions"][0]["date"] == "2026-06-03"
+    assert not result["execution_records"]
+
+
+@pytest.mark.parametrize("frequency", ["1m", "3m"])
+def test_extending_backtest_end_does_not_remove_initial_allocation(frequency):
+    short = solver._rebalance_schedule(start_date=date(2026, 8, 3), end_date=date(2026, 8, 31), frequency=frequency)
+    extended = solver._rebalance_schedule(start_date=date(2026, 8, 3), end_date=date(2026, 9, 3), frequency=frequency)
+    assert short == [date(2026, 8, 3)]
+    assert extended == short + [date(2026, 9, 1)]
+
+
+def allocation_state():
+    days = [day.date() for day in pd.bdate_range("2026-01-01", "2026-06-30")]
+    phase = np.arange(len(days))
+    navs = {
+        "a": np.cumprod(1 + 0.002 + 0.012 * np.sin(phase)),
+        "b": np.cumprod(1 + 0.001 + 0.004 * np.cos(phase / 3)),
+    }
+    details = {
+        key: {
+            "instrument_id": key, "instrument_name": key, "instrument_type": "public_fund",
+            "currency": "CNY", "quote_selection_policy": {"total_return": ["total_return_nav"]},
+            "market_data": [
+                {"metric_family": "nav", "quote_basis": "total_return_nav", "as_of_date": day.isoformat(),
+                 "value": value, "currency": "CNY", "price_unit": "per_unit", "price_scale": 1, "status": "complete"}
+                for day, value in zip(days, nav)
+            ],
+        } for key, nav in navs.items()
+    }
+    return solver.TaxonomyResearchState(
+        portfolio_id="review", planning_taxonomy_id="review-taxonomy", taxonomy_name="Review",
+        root_default_target_dimension="weight", base_currency="CNY", as_of_date=days[-1],
+        node_by_id={key: {"node_name": key, "default_target_dimension": "weight"} for key in navs},
+        children_by_parent={None: list(navs)}, node_path_by_id={key: key for key in navs},
+        node_depth_by_id={key: 1 for key in navs}, node_subtree_by_id={key: {key} for key in navs},
+        direct_assignments_by_node={key: [{"target_scope": "instrument", "target_entity_id": key}] for key in navs},
+        target_sets_by_scope_type={(None, "saa"): [{"target_set_id": "targets", "weight_enabled": True, "status": "active"}]},
+        target_lines_by_set_id={"targets": {
+            ("taxonomy_node", "a"): {"target_weight": 0.3},
+            ("taxonomy_node", "b"): {"target_weight": 0.2},
+            ("derivative_bucket", "__derivatives__"): {"target_weight": 0.4},
+            ("cash_bucket", "__cash__"): {"target_weight": 0.1},
+        }},
+        account_name_by_id={}, instrument_detail_cache=details, direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(), top_sleeve_weight_bounds={},
+    )
+
+
+def risk_budget_state(*, frozen=frozenset(), top_bounds=None):
+    state = allocation_state()
+    return replace(
+        state,
+        root_default_target_dimension="risk_budget",
+        frozen_taxonomy_node_ids=frozen,
+        top_sleeve_weight_bounds=top_bounds or {},
+        target_sets_by_scope_type={
+            (None, "saa"): [
+                {
+                    "target_set_id": "targets",
+                    "risk_budget_enabled": True,
+                    "weight_enabled": True,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "targets": {
+                ("taxonomy_node", "a"): {"target_weight": 0.5, "target_risk_share": 0.5},
+                ("taxonomy_node", "b"): {"target_weight": 0.5, "target_risk_share": 0.5},
+                ("derivative_bucket", "__derivatives__"): {"target_weight": 0.0},
+                ("cash_bucket", "__cash__"): {"target_weight": 0.0},
+            }
+        },
+    )
+
+
+def solve_state(state, *, capital_mode="volatility_cap", target_volatility=0.5, actuals=False):
+    return solver._solve_current_scope(
+        state, scope_node_id=None, as_of_date=state.as_of_date, lookback_days=30,
+        calculation_frequency="daily", target_dimension="weight", capital_mode=capital_mode,
+        gross_exposure=None, target_volatility=target_volatility, max_gross_exposure=None,
+        missing_return_policy="strict", apply_capital_overlay=True,
+        risk_model_config={"covariance_model_id": "sample_covariance", "contribution_mode": "abs", "parameters": {"min_observations": 15}},
+        include_actuals=actuals, resolve_frozen_actuals=actuals,
+    )
+
+
+def test_volatility_cap_does_not_spend_fixed_capital_reserves():
+    state = allocation_state()
+    state.current_valuation_cache["actual-valuation::2026-06-30"] = {
+        "position_value_by_instrument": {"a": 30.0, "b": 20.0},
+        "cash_value_by_account": {"cash": 10.0},
+        "derivative_total_value": 40.0,
+    }
+    solved = solve_state(state, actuals=True)
+    weights = {row["member_id"]: row["target_weight"] for row in solved.member_target_rows}
+    assert weights == pytest.approx({"a": 0.3, "b": 0.2, "__derivatives__": 0.4, "__cash__": 0.1})
+    assert solved.solve_event["gross_exposure"] == pytest.approx(0.5)
+    derivative = next(row for row in solved.member_target_rows if row["member_id"] == "__derivatives__")
+    assert derivative["configured_weight"] == pytest.approx(0.4)
+    assert derivative["trade_constraint"] == "no_trade"
+    assert derivative["risk_model_status"] == "excluded"
+
+
+def test_volatility_overlay_keeps_frozen_weight_and_reports_infeasibility():
+    state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({"b"}))
+    state.current_valuation_cache["actual-valuation::2026-06-30"] = {
+        "position_value_by_instrument": {"a": 30, "b": 20},
+        "cash_value_by_account": {"cash": 10}, "derivative_total_value": 40,
+    }
+    solved = solve_state(state, target_volatility=0.025, actuals=True)
+    weights = {row["member_id"]: row["target_weight"] for row in solved.member_target_rows}
+    assert weights["b"] == pytest.approx(0.2)
+    assert weights["a"] < 0.3
+    with pytest.raises(ValueError, match="Frozen sleeve weights make the volatility constraint infeasible"):
+        solve_state(state, target_volatility=0.00001, actuals=True)
+
+
+def test_parent_no_trade_constraint_reaches_every_descendant_instrument():
+    base = allocation_state()
+    parent_node = {"node_name": "parent", "default_target_dimension": "weight"}
+    root_lines = dict(base.target_lines_by_set_id["targets"])
+    root_lines.pop(("taxonomy_node", "a"))
+    root_lines[("taxonomy_node", "parent")] = {"target_weight": 0.3}
+    state = replace(
+        base,
+        node_by_id={
+            **base.node_by_id,
+            "parent": parent_node,
+            "a": {**base.node_by_id["a"], "parent_taxonomy_node_id": "parent"},
+        },
+        children_by_parent={None: ["parent", "b"], "parent": ["a"]},
+        node_path_by_id={**base.node_path_by_id, "parent": "parent", "a": "parent / a"},
+        node_depth_by_id={**base.node_depth_by_id, "parent": 1, "a": 2},
+        node_subtree_by_id={**base.node_subtree_by_id, "parent": {"parent", "a"}},
+        target_lines_by_set_id={"targets": root_lines},
+        frozen_taxonomy_node_ids=frozenset({"parent"}),
+    )
+    state.current_valuation_cache["actual-valuation::2026-06-30"] = {
+        "position_value_by_instrument": {"a": 30.0, "b": 20.0},
+        "cash_value_by_account": {"cash": 10.0},
+        "derivative_total_value": 40.0,
+    }
+
+    solved = solve_state(state, actuals=True)
+
+    parent = next(row for row in solved.member_target_rows if row["member_id"] == "parent")
+    descendant = next(row for row in solved.leaf_target_rows if row["member_id"] == "a")
+    assert parent["target_weight"] == pytest.approx(0.3)
+    assert parent["trade_constraint"] == "no_trade"
+    assert descendant["target_weight"] == pytest.approx(0.3)
+    assert descendant["trade_constraint"] == "no_trade"
+    assert descendant["risk_model_status"] == "modeled"
+    assert all(
+        event["no_trade_member_count"] == event["member_count"]
+        for event in solved.scope_solve_events
+        if event["scope_node_id"] in {"parent", "a"}
+    )
+
+
+def test_research_honors_explicit_analytics_scope_exclusion():
+    state = allocation_state()
+    state.instrument_analytics_scopes["a"] = {
+        "risk_eligible": False, "risk_budget_eligible": False, "exclusion_reason": "Not modeled",
+    }
+    with pytest.raises(ValueError, match="not eligible for Research risk allocation"):
+        solve_state(state)
+
+
+def test_new_policy_can_use_history_available_before_its_effective_date(monkeypatch):
+    state = allocation_state()
+    monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(solver, "taxonomy_configuration_revisions_through", lambda *args: [{
+        "effective_from": "2026-06-01",
+        "taxonomy_assignments": [{"target_scope": "instrument", "target_entity_id": key, "status": "active"} for key in ("a", "b")],
+    }])
+    result = solver.build_current_target_backtest(
+        "review", planning_taxonomy_id="review-taxonomy", comparator_taxonomy_node_id=None,
+        as_of_date=state.as_of_date, lookback_days=90, target_dimension="weight",
+        capital_mode="unit_notional", gross_exposure=None, target_volatility=None, max_gross_exposure=None,
+        _direct_fx_instruments={},
+    )["backtest"]
+    assert result["points"]
+    assert result["point_in_time_coverage"]["first_decision_date"] == "2026-06-01"
+    assert result["execution_records"][0]["derivative_target_weight"] == pytest.approx(0.0)
+    assert result["execution_records"][0]["derivative_no_trade"] is True
+
+
+def test_rolling_holdout_does_not_drop_first_return_of_each_test_window():
+    days = pd.date_range("2026-01-01", "2026-04-30", freq="D")
+    points = [{"date": day.date().isoformat(), "value": 1.001 ** i} for i, day in enumerate(days)]
+    result = solver._build_walk_forward_validation(points, [], training_months=1, test_months=1)
+    assert [r["date"] for r in result["oos_points"][1:]] == [
+        day.date().isoformat() for day in days if day.date() >= date(2026, 2, 1)
+    ]
+    assert result["oos_points"][-1]["value"] == pytest.approx(1.001 ** 89)
+
+
+def test_risk_window_uses_pre_weekend_close_and_does_not_fill_stale_tail():
+    members = [solver.ScopeMemberRecord("instrument", key, key) for key in ("a", "b")]
+    series = {
+        ("instrument", "a"): pd.Series([100, 110, 121], index=[date(2026, 5, 29), date(2026, 6, 1), date(2026, 6, 2)]),
+        ("instrument", "b"): pd.Series([100, 105], index=[date(2026, 5, 29), date(2026, 6, 1)]),
+    }
+    aligned, _, _ = solver._align_member_series(
+        members, series, start_date=date(2026, 5, 31), end_date=date(2026, 6, 2),
+    )
+    assert aligned[0].returns.loc[date(2026, 6, 1)] == pytest.approx(0.1)
+    assert aligned[1].returns.loc[date(2026, 6, 1)] == pytest.approx(0.05)
+    assert pd.isna(aligned[1].returns.loc[date(2026, 6, 2)])
+
+
+def test_frozen_risk_sleeve_is_part_of_the_full_risk_budget_equation():
+    state = risk_budget_state(frozen=frozenset({"a"}))
+    state.current_valuation_cache["actual-valuation::2026-06-30"] = {
+        "position_value_by_instrument": {"a": 80.0, "b": 20.0},
+        "cash_value_by_account": {},
+        "derivative_total_value": 0.0,
+    }
+
+    solved = solver._solve_current_scope(
+        state,
+        scope_node_id=None,
+        as_of_date=state.as_of_date,
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="risk_budget",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        apply_capital_overlay=True,
+        risk_model_config={
+            "covariance_model_id": "sample_covariance",
+            "contribution_mode": "abs",
+            "parameters": {"min_observations": 15},
+        },
+        include_actuals=True,
+        resolve_frozen_actuals=True,
+    )
+
+    weights = {row["member_id"]: row["target_weight"] for row in solved.member_target_rows}
+    assert weights["a"] == pytest.approx(0.8)
+    assert weights["b"] == pytest.approx(0.2)
+    assert solved.solve_event["max_risk_share_gap"] > 0.4
+    assert solved.solve_event["target_status"] == "constrained_optimum"
+    assert solved.solve_event["execution_ready"] is True
+    frozen = next(row for row in solved.member_target_rows if row["member_id"] == "a")
+    assert frozen["trade_constraint"] == "no_trade"
+    assert frozen["risk_model_status"] == "modeled"
+
+
+def test_fully_frozen_risk_scope_evaluates_unique_allocation_without_optimizer_failure():
+    problem = solver.RiskBudgetProblem(
+        bucket_ids=["long_bond", "intermediate_bond"],
+        covariance=np.asarray([[0.012, 0.004], [0.004, 0.003]], dtype="float64"),
+        target_risk_shares=np.asarray([0.6, 0.4], dtype="float64"),
+        lower_bounds=np.asarray([0.35, 0.65], dtype="float64"),
+        upper_bounds=np.asarray([0.35, 0.65], dtype="float64"),
+        reference_weights=np.asarray([0.6, 0.4], dtype="float64"),
+        contribution_mode="signed",
+    )
+
+    solved = solver._solve_risk_budget_problem(problem, enforce_tolerance=False)
+
+    assert solved.solver_kind == "fixed_bounds_evaluation"
+    assert solved.weights == pytest.approx([0.35, 0.65])
+    assert solved.target_status == "constrained_optimum"
+    assert solved.execution_ready is True
+
+
+def test_bounded_risk_budget_returns_verified_nonready_candidate_when_minimax_stalls():
+    problem = solver.RiskBudgetProblem(
+        bucket_ids=["constrained", "other"],
+        covariance=np.asarray(
+            [
+                [0.03933687871948729, -0.012020495209918393],
+                [-0.012020495209918393, 0.021313950182252708],
+            ],
+            dtype="float64",
+        ),
+        target_risk_shares=np.asarray([0.9201704202981265, 0.07982957970187353]),
+        lower_bounds=np.zeros(2, dtype="float64"),
+        upper_bounds=np.asarray([0.057399634779505646, 1.0], dtype="float64"),
+        reference_weights=np.asarray([0.9201704202981265, 0.07982957970187353]),
+        contribution_mode="signed",
+    )
+
+    solved = solver._solve_risk_budget_problem(problem, enforce_tolerance=False)
+
+    assert solved.weights.sum() == pytest.approx(1.0)
+    assert solved.weights[0] <= problem.upper_bounds[0] + 1e-10
+    assert solved.target_status == "constrained_target_miss"
+    assert solved.execution_ready is False
+    assert "fallback" in solved.solver_kind
+
+
+def test_backtest_executes_the_verified_optimum_under_binding_constraints(monkeypatch):
+    state = risk_budget_state(top_bounds={"a": {"min_weight": None, "max_weight": 0.1}})
+    monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(
+        solver,
+        "taxonomy_configuration_revisions_through",
+        lambda *args, **kwargs: [
+            {
+                "effective_from": "2026-06-01",
+                "taxonomy_assignments": [
+                    {"target_scope": "instrument", "target_entity_id": key, "status": "active"}
+                    for key in ("a", "b")
+                ],
+            }
+        ],
+    )
+
+    result = solver.build_current_target_backtest(
+        "review",
+        planning_taxonomy_id="review-taxonomy",
+        comparator_taxonomy_node_id=None,
+        as_of_date=state.as_of_date,
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="risk_budget",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        rebalance_frequency="1m",
+        top_sleeve_weight_bounds=[{"taxonomy_node_id": "a", "max_weight": 0.1}],
+        risk_model_config={
+            "covariance_model_id": "sample_covariance",
+            "contribution_mode": "abs",
+            "parameters": {"min_observations": 15},
+        },
+        _direct_fx_instruments={},
+    )["backtest"]
+
+    assert result["point_in_time_coverage"]["status"] == "complete"
+    assert result["point_in_time_coverage"]["decision_count"] > 0
+    assert result["execution_records"]
+    first_weights = {
+        item["instrument_id"]: item["target_weight"]
+        for item in result["execution_records"][0]["target_weights"]
+    }
+    assert first_weights["a"] == pytest.approx(0.1, abs=1e-6)
+    assert result["point_in_time_coverage"]["skipped_rebalances"] == []
+
+
+def test_overlay_preserves_explicit_derivative_target_and_routes_financing_to_cash():
+    derivative_key = f"{solver.TARGET_MEMBER_DERIVATIVE}::{solver.SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
+    cash_key = f"{solver.TARGET_MEMBER_CASH}::{solver.SYSTEM_CASH_TARGET_MEMBER_ID}"
+    allocated = solver._allocate_fixed_capital_weights(
+        member_index=[derivative_key, cash_key],
+        preferred_weights=pd.Series({derivative_key: 0.3, cash_key: 0.1}),
+        total_weight=-0.5,
+    )
+
+    assert allocated[derivative_key] == pytest.approx(0.3)
+    assert allocated[cash_key] == pytest.approx(-0.8)
+    assert allocated.sum() == pytest.approx(-0.5)
+
+
+def test_covariance_honors_configured_trailing_staleness_parameter():
+    returns = pd.DataFrame(
+        {"a": [0.01, -0.01, 0.02], "b": [-0.005, 0.004, 0.003]},
+        index=[date(2026, 1, day) for day in (6, 7, 8)],
+    )
+    with pytest.raises(ValueError, match="maximum allowed for daily is 0 days"):
+        solver._estimate_covariance(
+            returns,
+            model_id="sample_covariance",
+            lookback_days=30,
+            parameters={"min_observations": 2, "max_period_staleness_days": 0},
+            missing_return_policy="strict",
+            calculation_frequency="daily",
+            as_of_date=date(2026, 1, 10),
+        )
+
+
+def test_backtest_treats_excess_early_complete_case_loss_as_a_warmup_gap():
+    error = ValueError(
+        "Risk budget solve complete-case drop would remove 2 of 4 return rows "
+        "(50.00%), exceeding the 10.00% limit."
+    )
+    assert solver._is_rebalance_data_gap_error(error) is True
+
+
+def test_complete_case_coverage_reports_leading_boundary_separately_from_later_gaps():
+    returns = pd.DataFrame(
+        {
+            "a": [None, None, 0.01, 0.02, 0.01, 0.03, 0.01, 0.02, 0.01, 0.02, 0.01, 0.02],
+            "b": [0.01, 0.01, 0.02, 0.01, None, 0.01, 0.02, 0.01, 0.02, 0.01, 0.02, 0.01],
+        },
+        index=[date(2026, 1, day) for day in range(1, 13)],
+        dtype="float64",
+    )
+
+    coverage = solver._apply_missing_return_policy(
+        returns,
+        min_observations=5,
+        label="QA",
+        missing_return_policy="complete_case_drop",
+        calculation_frequency="daily",
+        as_of_date=date(2026, 1, 12),
+    )
+
+    assert coverage.leading_incomplete_row_count == 2
+    assert coverage.post_warmup_missing_row_count == 1
+    assert coverage.post_warmup_missing_row_fraction == pytest.approx(0.1)
+    assert coverage.missing_row_count == 3
+    assert coverage.rows_after == 9
+
+
+def test_recursive_solve_reports_the_failing_scope_path(monkeypatch):
+    state = replace(
+        risk_budget_state(),
+        children_by_parent={None: ["parent"], "parent": ["a", "b"]},
+        target_sets_by_scope_type={
+            (None, "saa"): [{"target_set_id": "root", "risk_budget_enabled": True, "status": "active"}],
+            ("parent", "saa"): [{"target_set_id": "child", "risk_budget_enabled": True, "status": "active"}],
+        },
+        target_lines_by_set_id={
+            "root": {("taxonomy_node", "parent"): {"target_risk_share": 1.0}},
+            "child": {
+                ("taxonomy_node", "a"): {"target_risk_share": 0.5},
+                ("taxonomy_node", "b"): {"target_risk_share": 0.5},
+            },
+        },
+    )
+    state.node_by_id["parent"] = {"node_name": "Parent", "default_target_dimension": "risk_budget"}
+    state.node_path_by_id.update({"parent": "Top Level / Parent", "a": "Top Level / Parent / a", "b": "Top Level / Parent / b"})
+    state.node_depth_by_id.update({"parent": 1, "a": 2, "b": 2})
+    state.node_subtree_by_id["parent"] = {"parent", "a", "b"}
+    monkeypatch.setattr(solver, "_solver_return_window", lambda **kwargs: pd.DataFrame())
+
+    with pytest.raises(ValueError, match="Top Level / Parent solve failed"):
+        solver._solve_current_scope(
+            state,
+            scope_node_id=None,
+            as_of_date=state.as_of_date,
+            lookback_days=30,
+            calculation_frequency="daily",
+            target_dimension="risk_budget",
+            capital_mode="unit_notional",
+            gross_exposure=None,
+            target_volatility=None,
+            max_gross_exposure=None,
+            missing_return_policy="strict",
+            apply_capital_overlay=True,
+            risk_model_config={"covariance_model_id": "sample_covariance", "contribution_mode": "signed"},
+            include_actuals=False,
+        )
+
+
+def test_sample_covariance_matches_independent_n_minus_one_formula():
+    dates = [day.date() for day in pd.bdate_range("2026-01-05", periods=8)]
+    returns = pd.DataFrame(
+        {
+            "equity": [0.01, -0.02, 0.015, 0.005, -0.01, 0.012, 0.003, -0.004],
+            "bonds": [0.002, 0.004, -0.001, 0.003, 0.001, -0.002, 0.002, 0.001],
+            "gold": [-0.005, 0.008, 0.004, -0.003, 0.006, 0.002, -0.001, 0.007],
+        },
+        index=dates,
+    )
+    annualization = solver._infer_periods_per_year(dates)
+    expected = np.cov(returns.to_numpy(), rowvar=False, ddof=1) * annualization
+
+    actual = solver.estimate_covariance(
+        returns,
+        model_id="sample_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 2, "max_period_staleness_days": 5},
+        as_of_date=dates[-1],
+    )
+
+    assert actual.to_numpy() == pytest.approx(expected, rel=1e-11, abs=1e-12)
+
+
+def test_ewma_covariance_matches_independent_weighted_formula():
+    dates = [day.date() for day in pd.bdate_range("2026-01-05", periods=7)]
+    values = np.asarray(
+        [
+            [0.010, 0.002],
+            [-0.020, 0.004],
+            [0.015, -0.001],
+            [0.005, 0.003],
+            [-0.010, 0.001],
+            [0.012, -0.002],
+            [0.003, 0.002],
+        ]
+    )
+    decay = 0.91
+    raw_weights = decay ** np.arange(len(values) - 1, -1, -1)
+    weights = raw_weights / raw_weights.sum()
+    mean = np.average(values, axis=0, weights=weights)
+    centered = values - mean
+    expected = (centered * weights[:, None]).T @ centered
+    expected *= solver._infer_periods_per_year(dates)
+
+    actual = solver.estimate_covariance(
+        pd.DataFrame(values, index=dates, columns=["equity", "bonds"]),
+        model_id="ewma_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 2, "decay": decay, "max_period_staleness_days": 5},
+        as_of_date=dates[-1],
+    )
+
+    assert actual.to_numpy() == pytest.approx(expected, rel=1e-11, abs=1e-12)
+
+
+def test_composite_covariance_preserves_ewma_vol_and_shrinks_correlation():
+    dates = [day.date() for day in pd.bdate_range("2026-01-05", periods=9)]
+    returns = pd.DataFrame(
+        {
+            "equity": [0.01, -0.02, 0.015, 0.005, -0.01, 0.012, 0.003, -0.004, 0.006],
+            "bonds": [0.002, 0.004, -0.001, 0.003, 0.001, -0.002, 0.002, 0.001, -0.001],
+            "gold": [-0.005, 0.008, 0.004, -0.003, 0.006, 0.002, -0.001, 0.007, 0.003],
+        },
+        index=dates,
+    )
+    decay = 0.93
+    shrinkage = 0.2
+    parameters = {
+        "min_observations": 2,
+        "corr_min_observations": 2,
+        "vol_decay": decay,
+        "corr_shrinkage": shrinkage,
+        "max_period_staleness_days": 5,
+    }
+    actual = solver.estimate_covariance(
+        returns,
+        model_id="ewma_vol_shrinkage_corr_covariance",
+        lookback_days=30,
+        parameters=parameters,
+        as_of_date=dates[-1],
+    )
+    ewma = solver.estimate_covariance(
+        returns,
+        model_id="ewma_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 2, "decay": decay, "max_period_staleness_days": 5},
+        as_of_date=dates[-1],
+    )
+    expected_corr = (1 - shrinkage) * returns.corr().to_numpy() + shrinkage * np.eye(3)
+    expected_vol = np.sqrt(np.diag(ewma.to_numpy()))
+    expected = np.diag(expected_vol) @ expected_corr @ np.diag(expected_vol)
+
+    assert actual.to_numpy() == pytest.approx(expected, rel=1e-10, abs=1e-11)
+    assert np.linalg.eigvalsh(actual.to_numpy()).min() >= -1e-12
+
+
+@pytest.mark.parametrize(
+    ("policy", "message"),
+    [
+        ({"covariance_model_id": "mystery_covariance"}, "Unsupported production covariance model"),
+        ({"contribution_mode": "automatic"}, "Unsupported production risk-contribution mode"),
+    ],
+)
+def test_production_risk_policy_rejects_unknown_methods(policy, message):
+    with pytest.raises(ValueError, match=message):
+        normalize_portfolio_risk_policy(policy)
+
+
+def test_unconstrained_signed_risk_budget_uses_convex_solution():
+    problem = solver.RiskBudgetProblem(
+        bucket_ids=["equity", "bonds", "gold"],
+        covariance=np.asarray(
+            [[0.04, 0.006, 0.002], [0.006, 0.01, -0.001], [0.002, -0.001, 0.0225]],
+            dtype="float64",
+        ),
+        target_risk_shares=np.asarray([0.4, 0.35, 0.25], dtype="float64"),
+        lower_bounds=np.zeros(3, dtype="float64"),
+        upper_bounds=np.ones(3, dtype="float64"),
+        reference_weights=np.asarray([0.4, 0.35, 0.25], dtype="float64"),
+        contribution_mode="signed",
+    )
+
+    solved = solver._solve_risk_budget_problem(problem)
+
+    assert solved.solver_kind == "convex_log_barrier"
+    assert solved.execution_ready is True
+    assert solved.max_abs_share_gap <= solver.RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
+
+
+def test_convex_risk_budget_accepts_numerically_verified_candidate_after_lbfgs_abnormal_stop():
+    problem = solver.RiskBudgetProblem(
+        bucket_ids=["a", "b", "c"],
+        covariance=np.asarray(
+            [
+                [1.0193241515138032, 0.5246675471093647, -1.2185483649299054],
+                [0.5246675471093647, 4.289182433289571, -1.307669634545842],
+                [-1.2185483649299054, -1.307669634545842, 1.572987142846229],
+            ],
+            dtype="float64",
+        ),
+        target_risk_shares=np.asarray(
+            [0.44091209435992496, 0.4660387024171107, 0.09304920322296428]
+        ),
+        lower_bounds=np.zeros(3, dtype="float64"),
+        upper_bounds=np.ones(3, dtype="float64"),
+        reference_weights=np.asarray(
+            [0.44091209435992496, 0.4660387024171107, 0.09304920322296428]
+        ),
+        contribution_mode="signed",
+    )
+
+    solved = solver._solve_risk_budget_problem(problem)
+
+    assert solved.solver_kind == "convex_log_barrier"
+    assert solved.execution_ready is True
+    assert solved.max_abs_share_gap <= solver.RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
+
+
+def test_risk_budget_rejects_malformed_constraints_instead_of_dropping_them():
+    returns = pd.DataFrame(
+        {"a": [0.01, -0.01, 0.02], "b": [-0.005, 0.004, 0.003]},
+        index=[date(2026, 1, day) for day in (6, 7, 8)],
+    )
+    with pytest.raises(ValueError, match="lower-bound dimension"):
+        solver._solve_risk_budget_weights(
+            target_shares=np.asarray([0.5, 0.5]),
+            return_window=returns,
+            reference_weights=None,
+            as_of_date=date(2026, 1, 8),
+            lookback_days=30,
+            calculation_frequency="daily",
+            missing_return_policy="strict",
+            lower_bounds=np.asarray([0.0]),
+        )
+
+    invalid_covariance = solver.RiskBudgetProblem(
+        bucket_ids=["a", "b"],
+        covariance=np.asarray([[0.01, 0.02], [0.02, 0.01]]),
+        target_risk_shares=np.asarray([0.5, 0.5]),
+        lower_bounds=np.zeros(2),
+        upper_bounds=np.ones(2),
+        reference_weights=np.asarray([0.5, 0.5]),
+        contribution_mode="signed",
+    )
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        solver._solve_risk_budget_problem(invalid_covariance)

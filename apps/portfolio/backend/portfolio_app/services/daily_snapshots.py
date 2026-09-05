@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from uuid import uuid4
 
-from portfolio_ops_instrument_core.db_models import Instrument
+from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import and_, case, delete, func, or_, select, update
 
 from portfolio_app.db.models import (
@@ -61,6 +61,9 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-daily-mark-to-last-risk-observations-v1"
     "-base-currency-fx-attribution-v1"
     "-holding-cost-fx-monetary-continuity-v2"
+    "-option-exposure-strike-currency-v1"
+    "-written-opening-liability-per-share-capital-return-v1"
+    "-physical-fcn-delivery-stock-short-selected-lots-cash-purpose-v1"
 )
 
 
@@ -1741,6 +1744,9 @@ def _aggregate_holding_rows(
                 ),
                 "holding_kind": holding_kind
                 or ("settled_cash" if is_cash_row else "position"),
+                "cash_purpose": first_row.get("cash_purpose"),
+                "collateral_reference": first_row.get("collateral_reference"),
+                "financing_liability": _sum_complete([row.get("financing_liability") for row in instrument_rows]),
                 "available_for_trading": bool(
                     first_row.get(
                         "available_for_trading",
@@ -1869,7 +1875,8 @@ def _aggregate_holding_rows(
                 ),
                 "unrealized_return": (
                     (market_value - cost_basis) / abs(cost_basis)
-                    if market_value is not None
+                    if holding_kind not in {"derivative_contract", "option_obligation"}
+                    and market_value is not None
                     and cost_basis is not None
                     and abs(cost_basis) > 1e-12
                     else None
@@ -1879,6 +1886,7 @@ def _aggregate_holding_rows(
                     / abs(cost_basis_historical_base)
                     if not is_cash_row
                     and not is_pending_row
+                    and holding_kind not in {"derivative_contract", "option_obligation"}
                     and market_value_base is not None
                     and cost_basis_historical_base is not None
                     and abs(cost_basis_historical_base) > 1e-12
@@ -1916,6 +1924,7 @@ def _aggregate_holding_rows(
                     [row.get("open_contract_quantity") for row in instrument_rows]
                 ),
                 "required_underlying_quantity": required_underlying_quantity,
+                "strike_currency": first_row.get("strike_currency"),
                 "obligation_status": _first_present(
                     instrument_rows, "obligation_status"
                 ),
@@ -2122,9 +2131,13 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "derivative_contract",
     "holding_kind",
     "available_for_trading",
+    "cash_purpose",
+    "collateral_reference",
+    "financing_liability",
     "economic_instrument_id",
     "economic_instrument_ref",
     "transaction_ids",
+    "account_ids",
     "instrument_core",
     "quantity",
     "last_price",
@@ -2177,6 +2190,7 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "option_type",
     "contract_multiplier",
     "strike_notional",
+    "strike_currency",
     "strike_notional_base",
     "premium_received_gross",
     "premium_basis_remaining",
@@ -2205,6 +2219,49 @@ def project_instrument_holding_row(source_row: dict[str, object]) -> dict[str, o
         for field_name in _INSTRUMENT_HOLDING_PROJECTION_FIELDS
         if field_name in source_row
     }
+
+
+def list_materialized_derivative_risk_context(
+    portfolio_id: str,
+    *,
+    as_of_date: date,
+) -> list[dict[str, object]]:
+    """Load only the snapshot rows needed to assess option backing."""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        snapshot = session.scalar(
+            select(PortfolioDailySnapshotModel).where(
+                PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
+                PortfolioDailySnapshotModel.as_of_date == as_of_date,
+            )
+        )
+        if snapshot is None:
+            return []
+        rows = list(
+            session.scalars(
+                select(PortfolioDailyHoldingSnapshotModel)
+                .where(
+                    PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id,
+                    PortfolioDailyHoldingSnapshotModel.as_of_date == as_of_date,
+                    PortfolioDailyHoldingSnapshotModel.holding_kind.in_(
+                        ("position", "settled_cash", "option_obligation")
+                    ),
+                )
+                .order_by(
+                    PortfolioDailyHoldingSnapshotModel.position_reference_id,
+                    PortfolioDailyHoldingSnapshotModel.account_id,
+                    PortfolioDailyHoldingSnapshotModel.holding_kind,
+                )
+            ).all()
+        )
+        snapshot_payload = _restore_snapshot(dict(snapshot.snapshot_json))
+
+    total_nav_base = _safe_float(snapshot_payload.get("nav"))
+    return [
+        project_instrument_holding_row(row)
+        for row in _aggregate_holding_rows(rows, total_nav_base=total_nav_base)
+    ]
 
 
 def build_materialized_position_holding_projection(

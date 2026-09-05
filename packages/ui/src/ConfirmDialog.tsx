@@ -57,7 +57,7 @@ export default function ConfirmDialog({
 
   return (
     <div
-      className="portfolio-ops-dialog-backdrop"
+      className="investment-studio-dialog-backdrop"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           closeDialog()
@@ -66,20 +66,20 @@ export default function ConfirmDialog({
     >
       <div
         ref={dialogRef}
-        className="portfolio-ops-dialog"
+        className="investment-studio-dialog"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
         tabIndex={-1}
       >
-        <div className="portfolio-ops-dialog-header">
+        <div className="investment-studio-dialog-header">
           <h2 id={titleId}>{title}</h2>
         </div>
-        <div className="portfolio-ops-dialog-body">
+        <div className="investment-studio-dialog-body">
           <div id={descriptionId}>{description}</div>
           {confirmationText ? (
-            <label className="portfolio-ops-dialog-confirmation">
+            <label className="investment-studio-dialog-confirmation">
               <span>
                 Type <strong>{confirmationText}</strong> to confirm.
               </span>
@@ -93,18 +93,18 @@ export default function ConfirmDialog({
             </label>
           ) : null}
           {error ? (
-            <div className="portfolio-ops-dialog-error" role="alert">
+            <div className="investment-studio-dialog-error" role="alert">
               {error}
             </div>
           ) : null}
         </div>
-        <div className="portfolio-ops-dialog-actions">
+        <div className="investment-studio-dialog-actions">
           <button type="button" disabled={busy} onClick={closeDialog}>
             Cancel
           </button>
           <button
             type="button"
-            className={`portfolio-ops-dialog-${confirmTone}`}
+            className={`investment-studio-dialog-${confirmTone}`}
             disabled={busy || confirmDisabled || !confirmationMatches}
             onClick={() => {
               void Promise.resolve(onConfirm()).catch(() => undefined)

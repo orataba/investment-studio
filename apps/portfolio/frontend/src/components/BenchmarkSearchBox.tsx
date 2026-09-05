@@ -51,7 +51,8 @@ export default function BenchmarkSearchBox({
   className,
 }: BenchmarkSearchBoxProps) {
   const [focused, setFocused] = useState(false)
-  const rootRef = useRef<HTMLLabelElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const deferredSearch = useDeferredValue(searchValue)
   const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === selectedInstrumentId) ?? null
   const selectedLabel = selectedInstrument ? benchmarkInstrumentLabel(selectedInstrument) : ''
@@ -104,9 +105,10 @@ export default function BenchmarkSearchBox({
   }, [deferredSearch, instruments])
 
   return (
-    <label className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined} ref={rootRef}>
+    <div className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined} ref={rootRef}>
       <div className="overview-benchmark-search-box">
         <input
+          ref={inputRef}
           type="search"
           aria-label="Compare benchmark"
           placeholder={placeholder}
@@ -150,12 +152,13 @@ export default function BenchmarkSearchBox({
                   type="button"
                   key={instrument.instrument_id}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
+                  onClick={(event) => {
+                    if (event.detail > 0) inputRef.current?.blur()
                     onSelectInstrument(instrument)
                     setFocused(false)
                   }}
                 >
-                  <strong>{instrument.instrument_name}</strong>
+                  <strong translate="no">{instrument.instrument_name}</strong>
                   <span>
                     {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.instrument_type)} · {instrument.currency}
                   </span>
@@ -167,6 +170,6 @@ export default function BenchmarkSearchBox({
           </div>
         ) : null}
       </div>
-    </label>
+    </div>
   )
 }

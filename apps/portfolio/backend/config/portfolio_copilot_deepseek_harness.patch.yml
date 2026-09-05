@@ -105,13 +105,13 @@
       config:
         serverName: portfolio
         transport: stdio
-        command: /Users/shaw/Projects/portfolio-operations-workbench/.venv/bin/python
+        command: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PROJECT_ROOT + '/.venv/bin/python'
         args: ['-m', 'portfolio_app.assistant_mcp']
-        cwd: /Users/shaw/Projects/portfolio-operations-workbench/apps/portfolio/backend
+        cwd: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PROJECT_ROOT + '/apps/portfolio/backend'
         env:
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_API_BASE_URL: !!js process.env.PORTFOLIO_OPS_PORTFOLIO_COPILOT_API_BASE_URL ?? 'http://127.0.0.1:8001/api'
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID: !!js process.env.PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID: !!js process.env.PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME: !!js process.env.PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL ?? 'http://127.0.0.1:8001/api'
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME
         toolCallTimeoutMs: 60000
         failOnStartupError: true

@@ -8,7 +8,7 @@
 依次阅读：
 
 1. 本文：知道模块归属、数据流、计算时钟和变更检查范围。
-2. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)：知道什么可以共享、什么必须留在 app 私域。
+2. [ARCHITECTURE.md](./ARCHITECTURE.md)：知道什么可以共享、什么必须留在 app 私域。
 3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)：知道单库四 schema、迁移顺序和测试数据库边界。
 4. 对应 app 的 README 和 docs：只深入当前任务涉及的模块。
 5. 涉及 Portfolio 指标时，先查
@@ -31,10 +31,10 @@ infra/scripts/verify_repository.sh static
 数据供应商 / 人工文件 / 邮件证据
                   |
                   v
-        Platform ingestion (`platform`)
+        Data ingestion (`data_ingestion`)
                   |
                   v
-共享身份与 canonical 市场事实 (`instrument_registry`)
+共享身份与 canonical 市场事实 (`instrument_data`)
              /                         \
             v                           v
 Watchlist (`watchlist`)          Portfolio (`portfolio`)
@@ -42,53 +42,55 @@ Watchlist (`watchlist`)          Portfolio (`portfolio`)
 ```
 
 四个 schema 在同一个 PostgreSQL database 中。Watchlist 和 Portfolio 直接读取
-`instrument_registry`，不通过 Platform HTTP 取共享事实，也不互相调用业务 API。Platform 下线不应阻断
-二者的核心读写；只会暂停主数据维护和摄取。
+`instrument_data`，不通过入口 HTTP 取共享事实，也不互相调用业务 API。入口服务下线不应阻断
+二者的核心数据读写；共享数据维护和摄取由 CLI/定时任务独立执行。
 
 ### 2.1 写入所有权
 
 | 事实或状态 | 唯一写入方 | 不能放在哪里 |
 | --- | --- | --- |
-| instrument、identifier、canonical NAV/price/FX、quote policy | Platform/Registry 写路径 | Watchlist 或 Portfolio 的私有表 |
-| 邮件游标、附件证据、解析任务、候选路由 | Platform `platform` schema | `instrument_registry` |
-| watchlist membership、单资产研究、monitoring、recalc read model | Watchlist | Registry 或 Portfolio |
-| portfolio、account、transaction、FCN/Option contract、ledger、snapshot、taxonomy、research run | Portfolio | Registry 或 Watchlist |
-| 稳定共享资产合同与 DB helper | `packages/instrument-core` | app 之间复制一份近似合同 |
+| instrument、identifier、canonical NAV/price/FX、quote policy | 后台 CLI → `instrument_data` | Watchlist 或 Portfolio 的私有表 |
+| 邮件游标、附件证据、解析任务、候选路由 | 后台摄取 → `data_ingestion` | `instrument_data` |
+| watchlist membership、单资产研究、monitoring、recalc read model | Watchlist | Instrument Data 或 Portfolio |
+| portfolio、account、transaction、FCN/Option contract、ledger、snapshot、taxonomy、research run | Portfolio | Instrument Data 或 Watchlist |
+| 稳定共享资产合同与 DB helper | `shared-data/instruments` | app 之间复制一份近似合同 |
 | 已经跨 app 稳定复用的 UI 基础能力 | `packages/ui` | 为单一页面预先建立通用框架 |
 
 FCN 和 Option 是 Portfolio-local 不可变合约，不是共享市场资产。只有 underlying 或 deliverable
-证券引用 Registry。直接债券当前不进入 Registry、Watchlist 或 Portfolio 交易主链路。
+证券引用 Instrument Data。直接债券当前不进入 Instrument Data、Watchlist 或 Portfolio 交易主链路。
 
 ## 3. 目录与代码定位
 
 ```text
-apps/platform/                 平台入口、Database Dashboard、数据摄取
-  backend/platform_app/
+home/                         登录与导航主页，不是业务 App
+  backend/home_api/
   frontend/src/
+shared-data/                  Watchlist/Portfolio 的 CLI 数据维护与定时作业，无 HTTP
+  studio_data/
+  alembic/
 apps/watchlist/                watchlist、单资产详情、monitoring、recalc
   backend/watchlist_app/
   frontend/src/
 apps/portfolio/                组合运营、计算、风险、研究
   backend/portfolio_app/
   frontend/src/
-packages/instrument-core/      共享资产合同、模型和 store helper
+apps/regime/                  独立 Git 子模块、自有数据与运行；不共享根 Python 环境
+shared-data/instruments/       共享资产合同、模型、store helper 与 Alembic 迁移
 packages/ui/                   小而稳定的跨 app UI 基础能力
-infra/instrument_registry/     Registry Alembic migration chain
 infra/launchd/                 macOS 托管服务和每日刷新
 infra/systemd/                 Linux 用户级 systemd 部署
 infra/scripts/                 统一迁移、审计和质量门
 docs/                          当前仓库级合同与手册
 ```
 
-后端包名固定为 `platform_app`、`watchlist_app`、`portfolio_app`。三个 app 可以独立启动和测试，
-但运行时 database URL 必须指向同一个 canonical PostgreSQL database。
+主页包为 `home_api`，不连接数据库。后台维护包为 `studio_data`，业务包为 `watchlist_app`、`portfolio_app`；后三者使用同一个 PostgreSQL 数据库，各自维护明确的分区。
 
 ### 3.1 修改什么，至少检查什么
 
 | 修改类型 | 主要代码 | 同步检查 |
 | --- | --- | --- |
-| 新增或修改资产类型、identifier、quote contract | `packages/instrument-core`、Registry migration、Platform | Watchlist/Portfolio DB constraints、API contract、前端类型、搜索/导入、跨 schema PostgreSQL tests |
-| 修改供应商或市场数据选择 | Platform ingestion/Registry store | source entitlement、币种/scale、availability/freshness、quote policy、下游 stale/recalc |
+| 新增或修改资产类型、identifier、quote contract | `shared-data/instruments`、Instrument Data migration、后台 CLI | Watchlist/Portfolio DB constraints、API contract、前端类型、搜索/导入、跨 schema PostgreSQL tests |
+| 修改供应商或市场数据选择 | Data ingestion/Instrument Data store | source entitlement、币种/scale、availability/freshness、quote policy、下游 stale/recalc |
 | 修改 Watchlist 指标 | Watchlist canonical recalc/read model | `RETURN_SERIES_CONTRACT.md`、详情页和主表字段、monitoring、导出 |
 | 修改交易 | Portfolio command/store/ledger | Preview/Commit、日期与金额合同、lots/obligations、cash posting、snapshot invalidation、导入导出、审计日志 |
 | 修改 Portfolio 计算 | Portfolio calculation service | `01_CALCULATION_SPEC.md`、Holdings 字典、coverage/unavailable 语义、`calculation_version` 和重建路径 |
@@ -128,7 +130,7 @@ docs/                          当前仓库级合同与手册
 
 ### 4.3 事实、派生与重建
 
-交易、账户、Registry 行情和 FX 是事实或必要配置。ledger postings、lots、daily snapshots、holding
+交易、账户、Instrument Data 行情和 FX 是事实或必要配置。ledger postings、lots、daily snapshots、holding
 snapshots、contribution slices 和大部分页面 payload 是可重建派生结果。源事实变更后先标记受影响组合
 stale，由 durable worker 串行重建；读路径不能临时维护第二套真相。
 
@@ -161,8 +163,8 @@ stale，由 durable worker 串行重建；读路径不能临时维护第二套�
 
 ```bash
 infra/scripts/sync_python_env.sh
-npm --prefix packages/instrument-core/ts ci
-npm --prefix apps/platform/frontend ci
+npm --prefix shared-data/instruments/ts ci
+npm --prefix home/frontend ci
 npm --prefix apps/watchlist/frontend ci
 npm --prefix apps/portfolio/frontend ci
 ```
@@ -173,7 +175,7 @@ npm --prefix apps/portfolio/frontend ci
 需要六个 app 服务和每日刷新长期运行时，使用受控安装器：
 
 ```bash
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   infra/launchd/install_local_services.sh
 ```
 
@@ -199,7 +201,7 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 infra/scripts/verify_repository.sh all-local
 ```
 
-它覆盖仓库卫生、Markdown 链接、三个 backend 快速测试、shared TypeScript、三个 frontend test/build
+它覆盖仓库卫生、Markdown 链接、Home、Data、Portfolio、Watchlist 四组 backend 快速测试、shared TypeScript、三个 frontend test/build
 以及便携 infra tests。
 
 涉及 migration、search path、cross-schema FK、PostgreSQL constraint 或数据库并发时，按
@@ -208,7 +210,7 @@ infra/scripts/verify_repository.sh all-local
 migration，不是只读检查；不得指向真实业务库。对真实运行库只执行只读发布审计：
 
 ```bash
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   .venv/bin/python infra/scripts/audit_live_data.py --fail-on-warning --json
 ```
 

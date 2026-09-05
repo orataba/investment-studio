@@ -14,7 +14,7 @@ describe('instrument detail architecture', () => {
     expect(listedDetailTabs('equity')).toContain('fundamentals')
     expect(listedDetailTabs('equity')).toContain('events')
     expect(listedDetailTabs('equity')).toContain('research')
-    expect(listedDetailTabs('index')).toContain('methodology')
+    expect(listedDetailTabs('index')).toContain('profile')
     expect(listedDetailTabs('index')).toContain('research')
   })
 

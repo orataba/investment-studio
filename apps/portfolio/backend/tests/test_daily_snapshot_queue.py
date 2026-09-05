@@ -8,7 +8,7 @@ from time import monotonic, sleep
 
 import pytest
 
-from portfolio_ops_instrument_core.db_models import Instrument
+from investment_studio_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import (
     PortfolioCalculationStateModel,
@@ -18,7 +18,7 @@ from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshot_worker, daily_snapshots
 
 
-PORTFOLIO_ID = "portfolio-ops"
+PORTFOLIO_ID = "investment-studio"
 
 
 def test_incremental_rebase_carries_market_risk_return_history() -> None:

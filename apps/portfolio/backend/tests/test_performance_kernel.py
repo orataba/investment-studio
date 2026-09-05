@@ -95,6 +95,37 @@ def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_spl
     assert change_pct > -0.10
 
 
+def test_daily_snapshots_skip_redundant_lot_pricing_without_changing_results(client, monkeypatch):
+    original = performance.build_position_lots
+    pricing_calls = []
+
+    def record_pricing(*args, **kwargs):
+        pricing_calls.append(kwargs.get("resolve_pricing"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(performance, "build_position_lots", record_pricing)
+    portfolio = portfolio_store.get_portfolio("investment-studio")
+    accounts = portfolio_store.list_accounts("investment-studio")
+    transactions = portfolio_store.list_transactions("investment-studio")
+    target = date(2026, 4, 15)
+    actual = performance.build_daily_portfolio_snapshots(
+        portfolio, accounts, transactions, start_date=target, end_date=target,
+        include_materialized_rows=True,
+    )
+    assert pricing_calls == [False]
+
+    def priced_lots(*args, **kwargs):
+        kwargs["resolve_pricing"] = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(performance, "build_position_lots", priced_lots)
+    expected = performance.build_daily_portfolio_snapshots(
+        portfolio, accounts, transactions, start_date=target, end_date=target,
+        include_materialized_rows=True,
+    )
+    assert actual == expected
+
+
 def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
     monkeypatch,
 ) -> None:
@@ -201,6 +232,144 @@ def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
     )
     assert crossing_state["historical_cost_basis_base"] == pytest.approx(-300.0)
     assert released_basis == pytest.approx(1000.0)
+
+
+def test_transaction_cash_fx_impact_realizes_only_the_released_foreign_exposure(
+    monkeypatch,
+) -> None:
+    rates = {
+        date(2026, 1, 1): 7.0,
+        date(2026, 1, 2): 7.5,
+        date(2026, 1, 3): 8.0,
+    }
+
+    def resolve_rate(*, as_of_date, **_kwargs):
+        return {"rate": rates[as_of_date], "stale": False}
+
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, as_of_date, **_kwargs: (
+            float(amount) * rates[as_of_date],
+            False,
+        ),
+    )
+
+    postings = [
+        {
+            "transaction_id": "deposit-usd",
+            "account_id": "cash-usd",
+            "cash_amount_delta": 100.0,
+            "currency": "USD",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "effective_date": "2026-01-01",
+            "source_transaction_type": "deposit",
+            "posting_role": "external_cash_flow",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+        {
+            "transaction_id": "withdraw-usd",
+            "account_id": "cash-usd",
+            "cash_amount_delta": -60.0,
+            "currency": "USD",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
+            "effective_date": "2026-01-02",
+            "source_transaction_type": "withdrawal",
+            "posting_role": "external_cash_flow",
+            "created_at": "2026-01-02T09:00:00Z",
+        },
+    ]
+
+    impacts = ledger.build_transaction_cash_fx_impacts(
+        transaction_ids={"withdraw-usd"},
+        postings=postings,
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=resolve_rate,
+    )
+
+    assert len(impacts) == 1
+    impact = impacts[0]
+    assert impact["local_exposure_released"] == pytest.approx(60.0)
+    assert impact["historical_cost_basis_base"] == pytest.approx(420.0)
+    assert impact["fair_value_base"] == pytest.approx(450.0)
+    assert impact["realized_cash_fx_pnl_base"] == pytest.approx(30.0)
+    assert impact["recognition_date"] == "2026-01-02"
+    assert impact["fx_coverage_status"] == "complete"
+
+    balances = ledger.settled_monetary_balances_from_postings(
+        postings=postings,
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=resolve_rate,
+    )
+    assert balances[0]["amount"] == pytest.approx(40.0)
+    assert balances[0]["cost_basis_historical_base"] == pytest.approx(280.0)
+    assert balances[0]["unrealized_fx_pnl_base"] == pytest.approx(40.0)
+
+
+def test_internal_cash_transfer_preserves_basis_without_realizing_fx() -> None:
+    postings = [
+        {
+            "transaction_id": "opening-usd",
+            "account_id": "cash-a",
+            "cash_amount_delta": 100.0,
+            "currency": "USD",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "effective_date": "2026-01-01",
+            "source_transaction_type": "opening_balance",
+            "posting_role": "opening_cash",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+        {
+            "transaction_id": "transfer-out",
+            "account_id": "cash-a",
+            "cash_amount_delta": -100.0,
+            "currency": "USD",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
+            "effective_date": "2026-01-02",
+            "source_transaction_type": "transfer_out",
+            "posting_role": "internal_transfer_cash",
+            "transfer_group_id": "transfer-1",
+            "created_at": "2026-01-02T09:00:00Z",
+        },
+        {
+            "transaction_id": "transfer-in",
+            "account_id": "cash-b",
+            "cash_amount_delta": 100.0,
+            "currency": "USD",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
+            "effective_date": "2026-01-02",
+            "source_transaction_type": "transfer_in",
+            "posting_role": "internal_transfer_cash",
+            "transfer_group_id": "transfer-1",
+            "created_at": "2026-01-02T09:00:01Z",
+        },
+    ]
+
+    impacts = ledger.build_transaction_cash_fx_impacts(
+        transaction_ids={"transfer-out", "transfer-in"},
+        postings=postings,
+        as_of_date=date(2026, 1, 2),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        resolve_fx_rate_on=lambda *, as_of_date, **_kwargs: {
+            "rate": 7.0 if as_of_date == date(2026, 1, 1) else 7.5,
+            "stale": False,
+        },
+    )
+
+    assert impacts == []
 
 
 def test_fx_conversion_uses_executed_countervalue_for_new_cash_basis(
@@ -666,6 +835,7 @@ def test_written_option_cash_and_liability_fx_translation_offset(
         base_currency="CNY",
         nav=10_000.0,
         convert_amount_on=valuation_fx.convert_amount_on,
+        instrument_detail_cache_get=lambda *_args: {"currency": "USD"},
         direct_fx_instruments={},
         instrument_detail_cache={},
     )[0]
@@ -1119,7 +1289,7 @@ def _minimal_store(
 
 
 def test_seed_portfolio_performance_uses_external_boundary_flows(client):
-    snapshots_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    snapshots_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshots_response.status_code == 200
     snapshots_payload = snapshots_response.json()
     assert snapshots_payload["summary"]["latest_complete_as_of_date"] == "2026-04-15"
@@ -1135,7 +1305,7 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert by_date["2026-04-12"]["external_cash_in"] == 0.0
     assert by_date["2026-04-12"]["external_cash_out"] == 0.0
 
-    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
+    performance_response = client.get("/api/portfolios/investment-studio/performance")
     assert performance_response.status_code == 200
     performance_payload = performance_response.json()
     summary = performance_payload["summary"]
@@ -1194,13 +1364,13 @@ def test_annualization_treats_a_clamped_leap_day_anniversary_as_one_year() -> No
 
 
 def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
-    first_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    first_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert first_response.status_code == 200
-    assert _daily_snapshot_row_count("portfolio-ops") > 0
+    assert _daily_snapshot_row_count("investment-studio") > 0
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
 
@@ -1209,31 +1379,31 @@ def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkey
 
     monkeypatch.setattr(performance, "build_daily_portfolio_snapshots", fail_dynamic_snapshot_build)
 
-    second_snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    second_snapshot_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert second_snapshot_response.status_code == 200
-    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
+    performance_response = client.get("/api/portfolios/investment-studio/performance")
     assert performance_response.status_code == 200
 
 
 def test_refresh_materializes_holdings_and_contribution_slices(client):
-    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert response.status_code == 200
 
-    assert _daily_snapshot_row_count("portfolio-ops") > 0
-    assert _daily_holding_row_count("portfolio-ops") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "instrument") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "account") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "instrument_type") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "currency") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "cash_detail") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "instrument_detail") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "account_detail") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "instrument_type_detail") > 0
-    assert _daily_contribution_slice_count("portfolio-ops", "currency_detail") > 0
+    assert _daily_snapshot_row_count("investment-studio") > 0
+    assert _daily_holding_row_count("investment-studio") > 0
+    assert _daily_contribution_slice_count("investment-studio", "instrument") > 0
+    assert _daily_contribution_slice_count("investment-studio", "account") > 0
+    assert _daily_contribution_slice_count("investment-studio", "instrument_type") > 0
+    assert _daily_contribution_slice_count("investment-studio", "currency") > 0
+    assert _daily_contribution_slice_count("investment-studio", "cash_detail") > 0
+    assert _daily_contribution_slice_count("investment-studio", "instrument_detail") > 0
+    assert _daily_contribution_slice_count("investment-studio", "account_detail") > 0
+    assert _daily_contribution_slice_count("investment-studio", "instrument_type_detail") > 0
+    assert _daily_contribution_slice_count("investment-studio", "currency_detail") > 0
 
 
 def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(client, monkeypatch):
-    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert response.status_code == 200
 
     def fail_live_holdings(*_args, **_kwargs):
@@ -1245,12 +1415,12 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     monkeypatch.setattr(workspace_routes, "build_holdings_report", fail_live_holdings)
     monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
 
-    holdings_response = client.get("/api/workspace/holdings?portfolio_id=portfolio-ops")
+    holdings_response = client.get("/api/workspace/holdings?portfolio_id=investment-studio")
     assert holdings_response.status_code == 200
     assert all("instrument_return_series_all" not in row for row in holdings_response.json()["rows"])
 
     full_holdings_response = client.get(
-        "/api/workspace/holdings?portfolio_id=portfolio-ops&include_details=true"
+        "/api/workspace/holdings?portfolio_id=investment-studio&include_details=true"
     )
     assert full_holdings_response.status_code == 200
     assert all("instrument_return_series_all" in row for row in full_holdings_response.json()["rows"])
@@ -1277,20 +1447,20 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
         expected_day_change_base / expected_prior_market_value
     )
 
-    contribution_response = client.get("/api/portfolios/portfolio-ops/performance/contribution?axis=instrument")
+    contribution_response = client.get("/api/portfolios/investment-studio/performance/contribution?axis=instrument")
     assert contribution_response.status_code == 200
     assert contribution_response.json()["daily_slices"]
 
     for materialized_axis in ("account", "instrument_type", "currency"):
         materialized_response = client.get(
-            "/api/portfolios/portfolio-ops/performance/contribution"
+            "/api/portfolios/investment-studio/performance/contribution"
             f"?axis={materialized_axis}"
         )
         assert materialized_response.status_code == 200
         assert materialized_response.json()["daily_slices"]
 
     lookback_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/contribution"
+        "/api/portfolios/investment-studio/performance/contribution"
         "?axis=instrument&start_date=2025-01-01&end_date=2026-04-15"
     )
     assert lookback_response.status_code == 200
@@ -1300,14 +1470,14 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
 
 
 def test_materialized_contribution_rejects_missing_tail_snapshot(client):
-    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert response.status_code == 200
 
     session_factory = get_session_factory()
     with session_factory() as session:
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -1317,7 +1487,7 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
         session.commit()
 
     report = daily_snapshots.build_materialized_contribution_report(
-        "portfolio-ops",
+        "investment-studio",
         start_date=latest_snapshot_date,
         end_date=latest_snapshot_date,
         axis="instrument",
@@ -1329,11 +1499,11 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
 def test_materialized_contribution_outside_snapshot_range_preserves_request_metadata(
     client,
 ):
-    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert response.status_code == 200
 
     contribution_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/contribution"
+        "/api/portfolios/investment-studio/performance/contribution"
         "?axis=instrument&start_date=2027-01-01&end_date=2027-01-02"
     )
 
@@ -1351,7 +1521,7 @@ def test_materialized_contribution_outside_snapshot_range_preserves_request_meta
 
 
 def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(client):
-    initial_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    initial_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert initial_response.status_code == 200
 
     refresh_response = client.post(
@@ -1363,7 +1533,7 @@ def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(clie
     )
     assert refresh_response.status_code == 202
     refresh_payload = refresh_response.json()
-    assert refresh_payload["portfolio_ids"] == ["portfolio-ops"]
+    assert refresh_payload["portfolio_ids"] == ["investment-studio"]
     assert refresh_payload["accepted"][0]["status"] == "accepted"
     assert refresh_payload["accepted"][0]["daily_snapshot_status"] == "stale"
     assert refresh_payload["accepted"][0]["dirty_from"] == "2026-04-14"
@@ -1392,7 +1562,7 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -1517,7 +1687,7 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     instrument_ref = {
@@ -1643,7 +1813,7 @@ def test_external_flow_window_starts_on_settlement_effective_date(
 ):
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -1705,7 +1875,7 @@ def test_external_flow_window_starts_on_settlement_effective_date(
 def test_default_inception_calculation_counts_first_day_deposit_once(client, monkeypatch):
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     portfolio_id = "inception-calculation-deposit-test"
@@ -1774,7 +1944,7 @@ def test_imported_opening_anchor_matches_default_and_explicit_inception_windows(
 ):
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -1903,7 +2073,7 @@ def test_imported_opening_anchor_matches_default_and_explicit_inception_windows(
 def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, monkeypatch):
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     portfolio_id = "same-day-inception-mwrr-test"
@@ -2039,7 +2209,7 @@ def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch)
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     instrument_ref = {
@@ -2131,7 +2301,7 @@ def test_explicit_performance_period_uses_requested_eod_close_boundary(client, m
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -2253,7 +2423,7 @@ def test_close_to_close_twr_uses_trade_cost_and_neutralizes_midperiod_external_f
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -2473,7 +2643,7 @@ def test_close_to_close_twr_uses_trade_cost_and_neutralizes_midperiod_external_f
 
 def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
+        "/api/portfolios/investment-studio/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
     )
     assert response.status_code == 200
     calculation_summary = response.json()["summary"]
@@ -2486,7 +2656,7 @@ def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
     )
 
     groups_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/calculation/groups"
+        "/api/portfolios/investment-studio/performance/calculation/groups"
         "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
     )
     assert groups_response.status_code == 200
@@ -2500,7 +2670,7 @@ def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
     )
 
     contribution_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/contribution"
+        "/api/portfolios/investment-studio/performance/contribution"
         "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
     )
     assert contribution_response.status_code == 200
@@ -2517,7 +2687,7 @@ def test_period_calculation_route_reuses_materialized_daily_inputs(
     client,
     monkeypatch,
 ):
-    daily_snapshots.ensure_portfolio_daily_snapshots("portfolio-ops")
+    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
 
     def reject_daily_replay(*args, **kwargs):
         del args, kwargs
@@ -2539,7 +2709,7 @@ def test_period_calculation_route_reuses_materialized_daily_inputs(
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/performance/calculation"
+        "/api/portfolios/investment-studio/performance/calculation"
         "?start_date=2026-04-12&end_date=2026-04-15"
     )
 
@@ -2550,13 +2720,13 @@ def test_period_calculation_route_reuses_materialized_daily_inputs(
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/portfolios/portfolio-ops/snapshots/daily",
-        "/api/portfolios/portfolio-ops/performance",
-        "/api/portfolios/portfolio-ops/performance/calculation",
-        "/api/portfolios/portfolio-ops/performance/calculation/groups",
-        "/api/portfolios/portfolio-ops/performance/calendar",
-        "/api/portfolios/portfolio-ops/performance/contribution",
-        "/api/portfolios/portfolio-ops/performance/boundary-holdings",
+        "/api/portfolios/investment-studio/snapshots/daily",
+        "/api/portfolios/investment-studio/performance",
+        "/api/portfolios/investment-studio/performance/calculation",
+        "/api/portfolios/investment-studio/performance/calculation/groups",
+        "/api/portfolios/investment-studio/performance/calendar",
+        "/api/portfolios/investment-studio/performance/contribution",
+        "/api/portfolios/investment-studio/performance/boundary-holdings",
     ],
 )
 def test_performance_endpoints_reject_reversed_date_windows(client, path):
@@ -2586,7 +2756,7 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -2740,7 +2910,7 @@ def test_confirmed_later_purchase_starts_return_on_position_effective_day(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -2966,7 +3136,7 @@ def test_retained_cash_remains_in_portfolio_twr_denominator(client, monkeypatch)
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -3131,7 +3301,7 @@ def test_zero_nav_gap_breaks_history_and_refunding_starts_new_segment(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -3340,7 +3510,7 @@ def test_performance_summary_reports_full_calendar_year_twr_annualized_and_irr(c
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -3449,7 +3619,7 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -3620,7 +3790,7 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -3760,7 +3930,7 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -3872,7 +4042,7 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -3970,7 +4140,7 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4130,7 +4300,7 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4306,7 +4476,7 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4434,7 +4604,7 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4529,7 +4699,7 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4666,7 +4836,7 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4765,7 +4935,7 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -4876,7 +5046,7 @@ def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(client
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -5090,7 +5260,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -5253,8 +5423,11 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     assert moving_average["line"]["realized_pnl"] == 0.0
     assert moving_average["line"]["unrealized_pnl_change"] == 0.0
     assert moving_average["calculation_group"]["capital_gains"] == 0.0
-    assert moving_average["calculation_group"]["realized_capital_gains"] == 100000.0
-    assert moving_average["calculation_group"]["unrealized_pnl_change"] == -100000.0
+    # 10,000 shares cost 750,000: selling 6,000 at the pooled cost of 75
+    # realizes zero, and the remaining 4,000 at 75 have no unrealized gain.
+    # The calculation view must not silently substitute FIFO for this account.
+    assert moving_average["calculation_group"]["realized_capital_gains"] == 0.0
+    assert moving_average["calculation_group"]["unrealized_pnl_change"] == 0.0
     assert moving_average["calculation_group"]["total_pnl"] == 0.0
 
     assert fifo["line"]["total_pnl"] == 0.0
@@ -5301,7 +5474,7 @@ def test_account_contribution_report_tracks_interest_income(client, monkeypatch)
     monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -5394,7 +5567,7 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -5526,7 +5699,7 @@ def test_attached_sell_charges_are_not_double_counted_in_performance_pnl(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -5652,7 +5825,7 @@ def test_period_gain_split_replays_confirmed_share_adjustment(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD"],
             "maintained_pairs": [],
@@ -5780,7 +5953,7 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -5924,7 +6097,7 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -6066,7 +6239,7 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -6313,7 +6486,7 @@ def test_instrument_contribution_report_surfaces_instrument_currency_gains(clien
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -6506,7 +6679,7 @@ def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_g
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -6634,7 +6807,7 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -6783,7 +6956,7 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -6879,6 +7052,295 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
     assert isclose(slice_by_date["2026-01-02"]["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["daily_contribution"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_fx_conversion_is_a_flow_neutral_transfer_between_account_groups(
+    client,
+    monkeypatch,
+) -> None:
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": as_of_date,
+                "value": "7.80",
+                "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date in ("2026-01-01", "2026-01-02")
+        ],
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(fx_detail)
+        if instrument_id == "fx-usd-hkd"
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_shared_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD", "HKD"],
+            "maintained_pairs": ["USD/HKD"],
+            "rates": [
+                {
+                    "base_currency": "USD",
+                    "quote_currency": "HKD",
+                    "rate": 7.8,
+                    "as_of_date": "2026-01-02",
+                    "source_kind": "direct",
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
+                    "status": "complete",
+                }
+            ],
+        },
+    )
+    portfolio_id = "fx-conversion-account-flow-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "counter_amount": None,
+                "fx_rate": None,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "fx_conversion",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "counter_amount": 780.0,
+                "fx_rate": 7.8,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": "cash-hkd-main",
+                "created_at": "2026-01-01T10:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    store["accounts"].append(
+        {
+            "account_id": "cash-hkd-main",
+            "portfolio_id": portfolio_id,
+            "account_name": "Main HKD Cash",
+            "account_type": "deposit_account",
+            "currency": "HKD",
+            "institution": "Test Bank",
+            "default_settlement_cash_account_id": None,
+            "cost_basis_method": None,
+            "account_category": "cash",
+            "opened_at": "2026-01-01",
+            "status": "active",
+        }
+    )
+    _write_store(store)
+
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution?axis=account"
+    )
+
+    assert response.status_code == 200, response.json()
+    slices = {
+        (row["group_key"], row["as_of_date"]): row
+        for row in response.json()["daily_slices"]
+    }
+    source = slices[("cash-usd-main", "2026-01-02")]
+    target = slices[("cash-hkd-main", "2026-01-02")]
+    assert source["total_pnl"] == pytest.approx(0.0), {
+        key: (source.get(key), target.get(key))
+        for key in (
+            "beginning_value_base",
+            "ending_value_base",
+            "total_pnl",
+            "daily_return",
+            "coverage_state",
+        )
+    }
+    assert target["total_pnl"] == pytest.approx(0.0)
+    assert target["daily_return"] == pytest.approx(0.0)
+
+
+def test_position_transfer_uses_fair_value_for_account_attribution(
+    client,
+    monkeypatch,
+) -> None:
+    instrument_id = "equity-position-transfer"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Position Transfer Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda requested_id: deepcopy(instrument_detail)
+        if requested_id == instrument_id
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_shared_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+    portfolio_id = "position-transfer-account-flow-test"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Position Transfer Equity",
+        "instrument_type": "equity",
+        "exchange_code": "XNYS",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    common_transfer = {
+        "portfolio_id": portfolio_id,
+        "trade_date": "2026-01-02",
+        "settlement_date": "2026-01-02",
+        "settlement_cash_account_id": None,
+        "instrument_id": instrument_id,
+        "instrument_ref": instrument_ref,
+        "quantity": 1.0,
+        "price": None,
+        "gross_amount": 100.0,
+        "counter_amount": None,
+        "fx_rate": None,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": "USD",
+        "transfer_scope": "internal_portfolio",
+        "transfer_object_type": "position",
+        "transfer_group_id": "trf-fair-value",
+        "created_at": "2026-01-02T09:00:00Z",
+    }
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": None,
+                "instrument_id": instrument_id,
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "counter_amount": None,
+                "fx_rate": None,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                **common_transfer,
+                "transaction_id": "txn-0002",
+                "transaction_type": "transfer_out",
+                "account_id": "broker-us-core",
+                "counterparty_account_id": "broker-us-secondary",
+            },
+            {
+                **common_transfer,
+                "transaction_id": "txn-0003",
+                "transaction_type": "transfer_in",
+                "account_id": "broker-us-secondary",
+                "counterparty_account_id": "broker-us-core",
+            },
+        ],
+    )
+    store["accounts"].append(
+        {
+            "account_id": "broker-us-secondary",
+            "portfolio_id": portfolio_id,
+            "account_name": "Secondary Brokerage",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "account_category": "security",
+            "opened_at": "2026-01-01",
+            "status": "active",
+        }
+    )
+    _write_store(store)
+
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution?axis=account"
+    )
+
+    assert response.status_code == 200, response.json()
+    slices = {
+        (row["group_key"], row["as_of_date"]): row
+        for row in response.json()["daily_slices"]
+    }
+    source = slices[("broker-us-core", "2026-01-02")]
+    target = slices[("broker-us-secondary", "2026-01-02")]
+    assert source["total_pnl"] == pytest.approx(10.0), {
+        key: (source.get(key), target.get(key))
+        for key in (
+            "beginning_value_base",
+            "ending_value_base",
+            "total_pnl",
+            "daily_return",
+            "coverage_state",
+        )
+    }
+    assert target["total_pnl"] == pytest.approx(0.0)
+    assert source["daily_return"] == pytest.approx(0.1)
+    assert target["daily_return"] is None
 
 
 def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
@@ -6981,7 +7443,7 @@ def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(cl
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7150,7 +7612,7 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7294,7 +7756,7 @@ def test_taxonomy_contribution_and_entries_keep_cash_outside_security_taxonomy(c
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7482,7 +7944,7 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7625,7 +8087,7 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7769,7 +8231,7 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -7962,7 +8424,7 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8064,7 +8526,7 @@ def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8224,7 +8686,7 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8358,7 +8820,7 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8518,7 +8980,7 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8723,7 +9185,7 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -8894,7 +9356,7 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9047,7 +9509,7 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9181,7 +9643,7 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9337,7 +9799,7 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(c
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9510,7 +9972,7 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_grou
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9676,7 +10138,7 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9776,7 +10238,7 @@ def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monk
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -9934,7 +10396,7 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -10062,7 +10524,7 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -10191,7 +10653,7 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -10348,7 +10810,7 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -10525,7 +10987,7 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -10737,7 +11199,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -10941,7 +11403,7 @@ def test_stale_fx_cannot_qualify_as_a_fresh_portfolio_valuation(monkeypatch):
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -11150,7 +11612,7 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -11431,7 +11893,7 @@ def test_multiday_foreign_price_and_fx_moves_do_not_create_phantom_realized_gain
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -11637,7 +12099,7 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -11843,7 +12305,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],
@@ -11959,7 +12421,7 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
     monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -12079,7 +12541,7 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -12211,7 +12673,7 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
@@ -12313,7 +12775,7 @@ def test_account_contribution_carries_pending_settlement_in_ending_values(client
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 

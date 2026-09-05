@@ -1,4 +1,5 @@
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { Fragment, type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
@@ -8,22 +9,26 @@ import {
   getPortfolios,
   getPortfolioRiskPolicy,
   getWorkspaceSummaryForPortfolio,
+  SUPPORTED_PORTFOLIO_CURRENCIES,
+  updatePortfolioSettings,
   updatePortfolioRiskPolicy,
   type PortfolioResearchMissingReturnPolicy,
   type PortfolioRiskContributionMode,
   type PortfolioRiskCovarianceModel,
   type PortfolioRiskPolicyRecord,
   type PortfolioWorkspaceSummary,
+  type SupportedPortfolioCurrency,
 } from '../lib/api'
 import {
   buildPortfolioSectionPath,
-  PLATFORM_HOME_URL,
+  HOME_URL,
 } from '../lib/navigation'
 import { workspacePrimaryNavigation } from '../lib/portfolioIa'
 import { preloadPortfolioSection } from '../lib/preload'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
+import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
 
 type WorkspaceTab = {
   label: string
@@ -77,6 +82,8 @@ export default function PortfolioWorkspaceLayout({
   controls,
   busy = false,
 }: PortfolioWorkspaceLayoutProps) {
+  const { research_enabled } = usePortfolioCapabilities()
+  const visiblePortfolioTabs = portfolioTabs.filter((item) => item.href !== '/research' || research_enabled)
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
@@ -93,6 +100,8 @@ export default function PortfolioWorkspaceLayout({
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
   const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
+  const [settingsBaseCurrency, setSettingsBaseCurrency] =
+    useState<SupportedPortfolioCurrency>('CNY')
   const [riskPolicyLookbackDays, setRiskPolicyLookbackDays] = useState(String(DEFAULT_RISK_POLICY_WINDOW_DAYS))
   const [riskPolicyMissingReturnPolicy, setRiskPolicyMissingReturnPolicy] =
     useState<PortfolioResearchMissingReturnPolicy>('strict')
@@ -317,6 +326,14 @@ export default function PortfolioWorkspaceLayout({
     setRiskSettingsOpen(true)
     setRiskSettingsLoading(true)
     setRiskSettingsError(null)
+    if (
+      activeSummary
+      && SUPPORTED_PORTFOLIO_CURRENCIES.includes(
+        activeSummary.base_currency as SupportedPortfolioCurrency,
+      )
+    ) {
+      setSettingsBaseCurrency(activeSummary.base_currency as SupportedPortfolioCurrency)
+    }
     try {
       const policy = await getPortfolioRiskPolicy(resolvedPortfolioId)
       applyRiskPolicy(policy)
@@ -341,13 +358,21 @@ export default function PortfolioWorkspaceLayout({
     setRiskSettingsSaving(true)
     setRiskSettingsError(null)
     try {
-      const policy = await updatePortfolioRiskPolicy(resolvedPortfolioId, {
-        covariance_model_id: riskPolicyModelId,
-        lookback_days: resolvedLookbackDays,
-        calculation_frequency: 'daily',
-        missing_return_policy: riskPolicyMissingReturnPolicy,
-        contribution_mode: riskPolicyContributionMode,
-      })
+      const baseCurrencyChanged = settingsBaseCurrency !== activeSummary?.base_currency
+      const [policy] = await Promise.all([
+        updatePortfolioRiskPolicy(resolvedPortfolioId, {
+          covariance_model_id: riskPolicyModelId,
+          lookback_days: resolvedLookbackDays,
+          calculation_frequency: 'daily',
+          missing_return_policy: riskPolicyMissingReturnPolicy,
+          contribution_mode: riskPolicyContributionMode,
+        }),
+        baseCurrencyChanged
+          ? updatePortfolioSettings(resolvedPortfolioId, {
+              base_currency: settingsBaseCurrency,
+            })
+          : Promise.resolve(null),
+      ])
       applyRiskPolicy(policy)
       window.dispatchEvent(
         new CustomEvent('portfolio-risk-policy-updated', {
@@ -357,8 +382,13 @@ export default function PortfolioWorkspaceLayout({
           },
         }),
       )
+      setSummaryRevision((current) => current + 1)
       setRiskSettingsOpen(false)
-      setSelectorNotice('Risk model settings updated.')
+      setSelectorNotice(
+        baseCurrencyChanged
+          ? `Reporting currency changed to ${settingsBaseCurrency}; portfolio values are recalculating.`
+          : 'Portfolio settings updated.',
+      )
     } catch (error) {
       setRiskSettingsError(extractErrorMessage(error))
     } finally {
@@ -382,7 +412,7 @@ export default function PortfolioWorkspaceLayout({
       <header className="portfolio-workspace-shell" aria-busy={summaryBusy}>
         <div className="portfolio-toolbar-band">
           <div className="workspace-breadcrumbs">
-            <a href={PLATFORM_HOME_URL} className="workspace-breadcrumb-link">
+            <a data-workspace-link href={HOME_URL} className="workspace-breadcrumb-link">
               Home
             </a>
             <span className="workspace-breadcrumb-separator">/</span>
@@ -390,11 +420,12 @@ export default function PortfolioWorkspaceLayout({
               Portfolio
             </Link>
             <span className="workspace-breadcrumb-separator">/</span>
-            <Link to={portfolioHomePath} className="workspace-breadcrumb-link">
+            <Link to={portfolioHomePath} className="workspace-breadcrumb-link" translate="no">
               {portfolioName}
             </Link>
             <span className="workspace-breadcrumb-separator">/</span>
             <span className="workspace-breadcrumb-current">{activeSection}</span>
+            <LanguageSelector />
           </div>
           <div className="workspace-app-heading">
             <div className="workspace-app-title">Portfolio</div>
@@ -425,7 +456,7 @@ export default function PortfolioWorkspaceLayout({
                     <Link
                       className="workspace-selector-chip-label workspace-selector-chip-label-active"
                       to={portfolioHomePath}
-                    >
+                     translate="no">
                       {portfolio.portfolio_name}
                     </Link>
                     <button
@@ -464,7 +495,7 @@ export default function PortfolioWorkspaceLayout({
                   key={portfolio.portfolio_id}
                   to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}
                 >
-                  <span className="workspace-selector-chip-label">{portfolio.portfolio_name}</span>
+                  <span className="workspace-selector-chip-label" translate="no">{portfolio.portfolio_name}</span>
                 </Link>
               ),
             )}
@@ -495,7 +526,7 @@ export default function PortfolioWorkspaceLayout({
                   </>
                 ) : (
                   <>
-                    <span className="portfolio-name">{portfolioName}</span>
+                    <span className="portfolio-name" translate="no">{portfolioName}</span>
                     {activeSummary ? (
                       <>
                         <span className="portfolio-nav-value">
@@ -530,8 +561,8 @@ export default function PortfolioWorkspaceLayout({
                 type="button"
                 className="portfolio-settings-button"
                 onClick={() => void handleOpenRiskSettings()}
-                aria-label="Production risk model settings"
-                disabled={!resolvedPortfolioId}
+                aria-label="Portfolio Settings"
+                disabled={!resolvedPortfolioId || summaryBusy}
               >
                 Settings
               </button>
@@ -552,14 +583,14 @@ export default function PortfolioWorkspaceLayout({
                 className="portfolio-settings-modal"
                 role="dialog"
                 aria-modal="true"
-                aria-labelledby="portfolio-risk-settings-title"
+                aria-labelledby="portfolio-settings-title"
                 aria-busy={riskSettingsLoading || riskSettingsSaving}
                 tabIndex={-1}
               >
                 <div className="portfolio-settings-modal-header">
                   <div>
-                    <div className="panel-title" id="portfolio-risk-settings-title">
-                      Production Risk Model
+                    <div className="panel-title" id="portfolio-settings-title">
+                      Portfolio Settings
                     </div>
                   </div>
                   <button
@@ -583,6 +614,30 @@ export default function PortfolioWorkspaceLayout({
                 ) : (
                   <form className="portfolio-settings-form" onSubmit={(event) => void handleSaveRiskSettings(event)}>
                     <div className="portfolio-settings-grid">
+                      <label className="portfolio-settings-field-wide">
+                        <span>Reporting / Base Currency</span>
+                        <select
+                          aria-label="Reporting / Base Currency"
+                          value={settingsBaseCurrency}
+                          onChange={(event) =>
+                            setSettingsBaseCurrency(event.target.value as SupportedPortfolioCurrency)
+                          }
+                          disabled={riskSettingsSaving}
+                        >
+                          {SUPPORTED_PORTFOLIO_CURRENCIES.map((currencyCode) => (
+                            <option key={currencyCode} value={currencyCode}>
+                              {currencyCode}
+                            </option>
+                          ))}
+                        </select>
+                        <small>
+                          Transactions keep their original currencies. Historical NAV,
+                          returns, attribution, and P&amp;L are recalculated in this currency.
+                        </small>
+                      </label>
+                      <div className="portfolio-settings-section-title portfolio-settings-field-wide">
+                        Production Risk Model
+                      </div>
                       <label>
                         <span>Risk Window</span>
                         <select
@@ -662,7 +717,7 @@ export default function PortfolioWorkspaceLayout({
             </div>
           ) : null}
           <nav className="portfolio-tabs" aria-label="Portfolio sections">
-            {portfolioTabs.map((item) => (
+            {visiblePortfolioTabs.map((item) => (
               <Link
                 key={item.label}
                 className={`portfolio-tab ${activeSection === item.label ? 'portfolio-tab-active' : ''}`}
@@ -683,7 +738,7 @@ export default function PortfolioWorkspaceLayout({
         </div>
       </header>
 
-      {children}
+      <Fragment key={`${resolvedPortfolioId}:${summaryRevision}`}>{children}</Fragment>
       <ConfirmDialog
         open={Boolean(pendingPortfolioDelete)}
         title="Delete Portfolio"

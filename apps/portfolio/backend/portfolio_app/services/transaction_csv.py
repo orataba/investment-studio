@@ -61,6 +61,11 @@ IMPORT_COLUMNS = (
     "fcn_issuer",
     "fcn_counterparty",
     "fcn_underlyings_json",
+    "derivative_additional_terms_json",
+    "asset_deliveries_json",
+    "lot_selections_json",
+    "record_reference",
+    "option_delivery_json",
     "quantity",
     "price",
     "gross_amount",
@@ -94,6 +99,10 @@ NUMERIC_SOURCE_FIELDS = {
     "taxes": "source_taxes",
 }
 SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+CORE_DERIVATIVE_TERM_KEYS = {
+    "option": {"underlying_instrument_id", "option_type", "expiry_date", "strike", "contract_multiplier"},
+    "fcn": {"notional", "annual_coupon_rate_pct", "issue_date", "final_observation_date", "maturity_date", "issuer", "counterparty", "underlyings"},
+}
 DERIVATIVE_DEFINITION_COLUMNS = frozenset(
     {
         "derivative_contract_name",
@@ -111,6 +120,7 @@ DERIVATIVE_DEFINITION_COLUMNS = frozenset(
         "fcn_issuer",
         "fcn_counterparty",
         "fcn_underlyings_json",
+        "derivative_additional_terms_json",
     }
 )
 OPTION_TERM_COLUMNS = frozenset(
@@ -197,6 +207,12 @@ def _build_derivative_contract(
         raise ValueError(
             "derivative_contract_id is required when defining a derivative contract."
         )
+    additional_terms = json.loads(str(values.get("derivative_additional_terms_json") or "{}"))
+    if not isinstance(additional_terms, dict):
+        raise ValueError("derivative_additional_terms_json must be a JSON object.")
+    core_terms = CORE_DERIVATIVE_TERM_KEYS[contract_type]
+    if core_terms.intersection(additional_terms):
+        raise ValueError("Use the dedicated columns for core derivative terms; JSON must not override them.")
     if contract_type == "option":
         unexpected = sorted(
             column for column in FCN_TERM_COLUMNS if values.get(column) is not None
@@ -209,6 +225,7 @@ def _build_derivative_contract(
             )
         terms = OptionContractTerms.model_validate(
             {
+                **additional_terms,
                 "underlying_instrument_id": values.get(
                     "option_underlying_instrument_id"
                 ),
@@ -230,6 +247,7 @@ def _build_derivative_contract(
             )
         terms = FCNContractTerms.model_validate(
             {
+                **additional_terms,
                 "notional": values.get("fcn_notional"),
                 "annual_coupon_rate_pct": values.get(
                     "fcn_annual_coupon_rate_pct"
@@ -311,6 +329,9 @@ def parse_transaction_csv(
             normalized = _desanitize_cell(str(raw_row.get(column) or "").strip())
             values[column] = normalized if normalized else None
         try:
+            if values.get("lot_selections_json"):
+                values["lot_selections"] = json.loads(str(values["lot_selections_json"]))
+            values.pop("lot_selections_json", None)
             asset_type, _transaction_type, _lifecycle_event_type = (
                 resolve_transaction_import_action(values)
             )
@@ -347,6 +368,16 @@ def parse_transaction_csv(
                     errors=errors,
                 )
             )
+            continue
+        try:
+            if values.get("option_delivery_json"):
+                values["option_delivery"] = json.loads(str(values["option_delivery_json"]))
+            values.pop("option_delivery_json", None)
+            if values.get("asset_deliveries_json"):
+                values["asset_deliveries"] = json.loads(str(values["asset_deliveries_json"]))
+            values.pop("asset_deliveries_json", None)
+        except (ValueError, TypeError):
+            parsed_rows.append(ParsedTransactionCsvRow(row_number=row_number, transaction=None, internal_transfer=None, errors=("Delivery and lot-selection fields must contain valid JSON.",)))
             continue
         parsed_command = parse_transaction_import_command(
             values,
@@ -431,6 +462,7 @@ def _internal_transfer_command(
     command = {
         **transfer_out,
         "transaction_type": "internal_transfer",
+        "record_reference": transfer_in.get("transaction_id"),
         "transfer_object_type": transfer_out.get("transfer_object_type"),
         "account_id": from_account_id,
         "counterparty_account_id": to_account_id,
@@ -598,8 +630,34 @@ def transaction_export_rows(
                     ),
                 }
             )
+        if contract_type:
+            core_terms = CORE_DERIVATIVE_TERM_KEYS[contract_type]
+            additional_terms = {
+                key: value for key, value in derivative_terms.items()
+                if key not in core_terms and value is not None
+            }
+            flattened_derivative["derivative_additional_terms_json"] = (
+                json.dumps(additional_terms, ensure_ascii=False, separators=(",", ":"))
+                if additional_terms else ""
+            )
         row: dict[str, object] = {}
         for column in IMPORT_COLUMNS:
+            if column == "trade_time" and record.get("trade_time_is_estimated"):
+                row[column] = ""
+                continue
+            if column == "record_reference":
+                row[column] = record.get("record_reference") or record.get("transaction_id") or ""
+                continue
+            if column == "lot_selections_json":
+                row[column] = json.dumps(record["lot_selections"], separators=(",", ":")) if record.get("lot_selections") else ""
+                continue
+            if column == "option_delivery_json":
+                row[column] = json.dumps(record["option_delivery"], ensure_ascii=False, separators=(",", ":")) if record.get("option_delivery") else ""
+                continue
+            if column == "asset_deliveries_json":
+                deliveries = [{key: value for key, value in leg.items() if key != "instrument_ref"} for leg in record.get("asset_deliveries") or []]
+                row[column] = json.dumps(deliveries, ensure_ascii=False, separators=(",", ":")) if deliveries else ""
+                continue
             if column == "asset_type":
                 row[column] = asset_type
                 continue

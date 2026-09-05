@@ -1,4 +1,4 @@
-# Portfolio Operations Workbench Portfolio
+# Investment Studio — Portfolio
 
 Portfolio 承载组合、账户、交易、账本、持仓、绩效、风险、taxonomy 和研究。源交易与账户是事实；ledger postings、lots、daily snapshots、contribution slices 和页面 payload 是可重建派生结果。
 
@@ -16,12 +16,16 @@ Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxo
 关键运行约束：
 
 - FCN 和 Option 是 Portfolio-local immutable contracts；只有 underlying/deliverable 证券引用 Registry；
-- 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 交付仍保持独立事实；
+- Portfolio 的 reporting/base currency 在组合 Settings 管理；切换后交易事实币种不变，所有旧口径派生快照失效并全量重算；
+- 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 实物交付尚未支持，不能用虚构现金兑付及独立买股替代；
+- 已有期权空头使用 `opening_written` 导入期初账面负债，不重复记录历史权利金现金；FCN 敲入观察使用 `knock_in_observation`，不提前清仓；
+- 账户出现资产交易后不允许切换成本法并重述历史。Option 的交割方式、行权风格以及 FCN 观察条款按已确认合约保存；未知条款明确保留为未确认；
 - 交易的 trade、position-effective、entitlement、settlement 和 snapshot 时钟不能互相替代；
 - 所有写路径先保存 canonical facts，再标记最早受影响日期并重建派生读模型；
 - daily snapshot 重算的外部入口只写 durable calculation state 并返回 `202`；单线程 worker 合并 generation、保留最早 `dirty_from`，发布前复核 source generation；
 - 组合 summary、Overview 和默认 Holdings 共享同一 fresh-complete snapshot 选择规则；
 - Taxonomy/TargetSet 是 planning truth，Research 消费它们，不建立第二套目标体系；
+- Portfolio taxonomy 与 Watchlist taxonomy 的节点、assignment 和版本完全独立，同名不代表关联；
 - 条件不足的收益、风险和研究结果明确 unavailable，不用旧算法、等权或不完整样本兜底。
 
 ## 文档
@@ -58,14 +62,14 @@ apps/portfolio/
 
 ```bash
 PROJECT_ROOT="$PWD"
-RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio"
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
-portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
-portfolio_ops_load_env_file \
-  "$(portfolio_ops_runtime_env_file portfolio "$RUNTIME_ENV_ROOT")" \
-  PORTFOLIO_OPS_PORTFOLIO_
-: "${PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL:?portfolio.env must set the canonical database URL}"
-PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python" \
+investment_studio_reject_repository_env_files "$PROJECT_ROOT"
+investment_studio_load_env_file \
+  "$(investment_studio_runtime_env_file portfolio "$RUNTIME_ENV_ROOT")" \
+  INVESTMENT_STUDIO_PORTFOLIO_
+: "${INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL:?portfolio.env must set the canonical database URL}"
+PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python" \
   "$PROJECT_ROOT/.venv/bin/python" -m uvicorn portfolio_app.main:app \
   --host 127.0.0.1 --port 8001 --reload
 ```

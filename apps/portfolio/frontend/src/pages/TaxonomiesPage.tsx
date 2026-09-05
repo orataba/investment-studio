@@ -3607,7 +3607,7 @@ export default function TaxonomiesPage() {
                           role="option"
                           aria-selected={selected}
                         >
-                          <strong>{instrument.instrument_name}</strong>
+                          <strong translate="no">{instrument.instrument_name}</strong>
                           <span>
                             {primaryIdentifier(instrument)} · {formatLabel(instrument.instrument_type)} · {instrument.currency}
                           </span>

@@ -22,6 +22,7 @@ class InstrumentResearchProfile(TimestampMixin, Base):
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    research_stage: Mapped[str] = mapped_column(Text, nullable=False, default="watching", server_default="watching")
     thesis: Mapped[str] = mapped_column(Text, nullable=False, default="")
     current_view: Mapped[str] = mapped_column(Text, nullable=False, default="")
     why_now: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -65,6 +66,7 @@ class InstrumentResearchProfileRevision(Base):
         primary_key=True,
     )
     revision_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    research_stage: Mapped[str] = mapped_column(Text, nullable=False, default="watching", server_default="watching")
     thesis: Mapped[str] = mapped_column(Text, nullable=False, default="")
     current_view: Mapped[str] = mapped_column(Text, nullable=False, default="")
     why_now: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -123,6 +125,7 @@ class InstrumentResearchNote(Base):
     source_refs: Mapped[str] = mapped_column(Text, nullable=False, default="")
     people: Mapped[str] = mapped_column(Text, nullable=False, default="")
     author: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     follow_up_date: Mapped[date | None] = mapped_column(Date)
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -172,6 +175,7 @@ class InstrumentResearchNoteRevision(Base):
     source_refs: Mapped[str] = mapped_column(Text, nullable=False, default="")
     people: Mapped[str] = mapped_column(Text, nullable=False, default="")
     author: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     follow_up_date: Mapped[date | None] = mapped_column(Date)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_by: Mapped[str | None]

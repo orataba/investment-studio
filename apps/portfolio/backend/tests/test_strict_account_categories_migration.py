@@ -69,7 +69,7 @@ def _seed_mixed_account() -> None:
                     "derivative_contract_id, portfolio_id, account_id, contract_name, "
                     "contract_type, currency, external_reference, terms_json, created_at"
                     ") VALUES ("
-                    ":contract_id, 'portfolio-ops', 'broker-us-core', :contract_id, "
+                    ":contract_id, 'investment-studio', 'broker-us-core', :contract_id, "
                     ":contract_type, 'USD', :external_reference, :terms, "
                     "'2026-01-01T00:00:00Z')"
                 ),
@@ -103,7 +103,7 @@ def _seed_mixed_account() -> None:
                 "return_coverage_state, book_pnl_coverage_state, "
                 "attribution_coverage_state, snapshot_json, calculated_at"
                 ") VALUES ("
-                "'portfolio-ops', '2026-04-15', 'complete', 'complete', "
+                "'investment-studio', '2026-04-15', 'complete', 'complete', "
                 "'complete', 'complete', 'complete', '{}', "
                 "'2026-04-15T23:59:59Z')"
             )
@@ -112,7 +112,7 @@ def _seed_mixed_account() -> None:
             sa.text(
                 "INSERT INTO portfolio_calculation_state ("
                 "portfolio_id, daily_snapshot_status"
-                ") VALUES ('portfolio-ops', 'fresh')"
+                ") VALUES ('investment-studio', 'fresh')"
             )
         )
 
@@ -126,7 +126,7 @@ def test_migration_splits_mixed_accounts_and_moves_derivative_facts() -> None:
         categories = connection.execute(
             sa.text(
                 "SELECT account_category FROM account_record "
-                "WHERE portfolio_id = 'portfolio-ops' "
+                "WHERE portfolio_id = 'investment-studio' "
                 "AND (account_id = 'broker-us-core' "
                 "     OR account_id LIKE 'broker-us-core-%')"
             )
@@ -172,14 +172,14 @@ def test_migration_splits_mixed_accounts_and_moves_derivative_facts() -> None:
         assert connection.scalar(
             sa.text(
                 "SELECT count(*) FROM portfolio_daily_snapshot "
-                "WHERE portfolio_id = 'portfolio-ops'"
+                "WHERE portfolio_id = 'investment-studio'"
             )
         ) == 0
         state = connection.execute(
             sa.text(
                 "SELECT daily_snapshot_status, dirty_from "
                 "FROM portfolio_calculation_state "
-                "WHERE portfolio_id = 'portfolio-ops'"
+                "WHERE portfolio_id = 'investment-studio'"
             )
         ).one()
         assert state[0] == "stale"

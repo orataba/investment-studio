@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
   getPortfolioInstrumentEventTasks,
+  reconcilePortfolioInstrumentEventTasks,
   reviewPortfolioInstrumentEventTask,
   type PortfolioInstrumentEventTaskRecord,
 } from '../lib/api'
@@ -30,6 +31,7 @@ export default function FundDistributionTasksPanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null)
+  const [reconciling, setReconciling] = useState(false)
   const [dismissTaskId, setDismissTaskId] = useState<string | null>(null)
   const [dismissReason, setDismissReason] = useState('')
   const [reviewedBy, setReviewedBy] = useState('')
@@ -113,8 +115,21 @@ export default function FundDistributionTasksPanel({
     }
   }
 
-  if (!loading && !error && !orderedTasks.length) {
-    return null
+  async function reconcileDistributionEvents() {
+    setReconciling(true)
+    setError(null)
+    try {
+      const response = await reconcilePortfolioInstrumentEventTasks(portfolioId, true)
+      setTasks(response.tasks)
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to refresh distribution events.',
+      )
+    } finally {
+      setReconciling(false)
+    }
   }
 
   return (
@@ -123,11 +138,11 @@ export default function FundDistributionTasksPanel({
         <div>
           <div className="panel-title">Fund Distribution Review</div>
           <div className="portfolio-detail-meta">
-            Confirmed Registry events never post cash or units automatically.
+            Confirmed distribution events never post cash or units automatically.
           </div>
         </div>
-        {orderedTasks.length ? (
-          <div className="fund-distribution-task-header-actions">
+        <div className="fund-distribution-task-header-actions">
+          {orderedTasks.length ? (
             <label className="fund-distribution-reviewer-field">
               <span>Operator identity</span>
               <input
@@ -138,13 +153,26 @@ export default function FundDistributionTasksPanel({
                 onChange={(event) => setReviewedBy(event.target.value)}
               />
             </label>
+          ) : null}
+          <button
+            type="button"
+            className="toolbar-link"
+            disabled={loading || reconciling || workingTaskId !== null}
+            onClick={reconcileDistributionEvents}
+          >
+            {reconciling ? 'Refreshing Distribution Events…' : 'Refresh Distribution Events'}
+          </button>
+          {orderedTasks.length ? (
             <span className="fund-distribution-task-count">{orderedTasks.length} need attention</span>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
       {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
-      {loading ? <div className="portfolio-detail-meta">Checking Registry events…</div> : null}
+      {loading ? <div className="portfolio-detail-meta">Checking distribution events…</div> : null}
+      {!loading && !error && !orderedTasks.length ? (
+        <div className="portfolio-detail-meta">No distribution events currently need attention.</div>
+      ) : null}
 
       <div className="fund-distribution-task-list">
         {orderedTasks.map((task) => {
@@ -156,7 +184,7 @@ export default function FundDistributionTasksPanel({
           return (
             <article className="fund-distribution-task-card" key={task.instrument_event_task_id}>
               <div className="fund-distribution-task-copy">
-                <div className="fund-distribution-task-title">
+                <div className="fund-distribution-task-title" translate="no">
                   {task.instrument_name ?? task.instrument_id}
                 </div>
                 <div className="portfolio-detail-meta">
@@ -211,7 +239,7 @@ export default function FundDistributionTasksPanel({
                         task,
                         'processed',
                         linkedTransactionIds,
-                        'Reconfirmed against the current Registry event revision.',
+                        'Reconfirmed against the current distribution event revision.',
                       )
                     }
                   >

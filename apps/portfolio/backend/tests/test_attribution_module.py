@@ -198,6 +198,70 @@ def test_daily_group_return_golden(
     assert extracted == pytest.approx(expected) if expected is not None else extracted is None
 
 
+def test_taxonomy_group_labels_use_full_paths_when_leaf_names_repeat() -> None:
+    taxonomy = {"taxonomy_id": "allocation"}
+    nodes = {
+        "equity": {
+            "taxonomy_node_id": "equity",
+            "node_name": "Equity",
+            "parent_taxonomy_node_id": None,
+            "status": "active",
+        },
+        "alternatives": {
+            "taxonomy_node_id": "alternatives",
+            "node_name": "Alternatives",
+            "parent_taxonomy_node_id": None,
+            "status": "active",
+        },
+        "equity-growth": {
+            "taxonomy_node_id": "equity-growth",
+            "node_name": "Growth",
+            "parent_taxonomy_node_id": "equity",
+            "status": "active",
+        },
+        "alternatives-growth": {
+            "taxonomy_node_id": "alternatives-growth",
+            "node_name": "Growth",
+            "parent_taxonomy_node_id": "alternatives",
+            "status": "active",
+        },
+    }
+    assignments = {
+        "equity-fund": [
+            {
+                "taxonomy_node_id": "equity-growth",
+                "status": "active",
+            }
+        ],
+        "macro-fund": [
+            {
+                "taxonomy_node_id": "alternatives-growth",
+                "status": "active",
+            }
+        ],
+    }
+
+    equity_key, equity_label = attribution.resolve_taxonomy_group_for_date(
+        taxonomy=taxonomy,
+        taxonomy_nodes_by_id=nodes,
+        assignments_by_entity=assignments,
+        target_entity_id="equity-fund",
+        as_of_date=date(2026, 1, 2),
+    )
+    alternatives_key, alternatives_label = attribution.resolve_taxonomy_group_for_date(
+        taxonomy=taxonomy,
+        taxonomy_nodes_by_id=nodes,
+        assignments_by_entity=assignments,
+        target_entity_id="macro-fund",
+        as_of_date=date(2026, 1, 2),
+    )
+
+    assert equity_key == "equity-growth"
+    assert alternatives_key == "alternatives-growth"
+    assert equity_label == "Equity / Growth"
+    assert alternatives_label == "Alternatives / Growth"
+
+
 def test_taxonomy_reducers_keep_cash_and_derivatives_as_system_groups() -> None:
     taxonomy = {
         "taxonomy_id": "strategy",

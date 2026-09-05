@@ -5,6 +5,7 @@ from typing import cast
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy import select
 
+from portfolio_app.core.settings import get_settings
 from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.api.assemblers import resolve_transaction_net_cash_effect
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
@@ -13,6 +14,7 @@ from portfolio_app.services.daily_snapshots import (
     DAILY_SNAPSHOT_CALCULATION_VERSION,
     build_materialized_position_holding_projection,
     ensure_portfolio_daily_snapshots,
+    list_materialized_derivative_risk_context,
 )
 from portfolio_app.services.derivative_holding_risk import (
     enrich_derivative_holding_risk,
@@ -39,10 +41,7 @@ from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument_details,
 )
-from portfolio_app.services.instrument_event_tasks import (
-    instrument_event_task_quality_warnings,
-    reconcile_instrument_event_tasks,
-)
+from portfolio_app.services.instrument_event_tasks import instrument_event_task_quality_warnings
 from portfolio_app.services.performance import (
     build_holdings_report,
     corporate_action_quality_warnings,
@@ -485,25 +484,17 @@ def _compact_sparkline_points(value: object) -> list[object]:
     return [points[index] for index in selected_indices]
 
 
-def _public_holdings_workspace_response(
-    workspace: dict[str, object],
+def _enrich_position_cycle_costs(
+    rows: list[object],
     *,
-    include_details: bool,
     transactions: list[dict[str, object]],
     as_of_date: date,
-) -> dict[str, object]:
-    rows = workspace.get("rows")
-    row_items = rows if isinstance(rows, list) else []
-    enrich_derivative_holding_risk(
-        [row for row in row_items if isinstance(row, dict)],
-        transactions=transactions,
-        as_of_date=as_of_date,
-    )
+) -> None:
     position_cycle_costs = build_current_position_cycle_costs(
         transactions,
         as_of_date=as_of_date,
     )
-    for row in row_items:
+    for row in rows:
         if not isinstance(row, dict):
             continue
         position_reference_id = str(
@@ -539,6 +530,25 @@ def _public_holdings_workspace_response(
             and abs(quantity) > 1e-12
             else None
         )
+
+
+def _public_holdings_workspace_response(
+    workspace: dict[str, object],
+    *,
+    include_details: bool,
+    transactions: list[dict[str, object]],
+    as_of_date: date,
+) -> dict[str, object]:
+    rows = workspace.get("rows")
+    row_items = rows if isinstance(rows, list) else []
+    enrich_derivative_holding_risk(
+        [row for row in row_items if isinstance(row, dict)],
+        transactions=transactions,
+        as_of_date=as_of_date,
+    )
+    _enrich_position_cycle_costs(
+        row_items, transactions=transactions, as_of_date=as_of_date,
+    )
     instrument_types = {
         str(instrument_core.get("instrument_type") or "").strip().lower()
         for row in row_items
@@ -547,11 +557,6 @@ def _public_holdings_workspace_response(
     }
     instrument_ids = set(_instrument_ids_from_holdings_workspace(workspace))
     portfolio_id = str(workspace.get("portfolio_id") or "").strip()
-    if portfolio_id:
-        reconcile_instrument_event_tasks(
-            portfolio_ids=[portfolio_id],
-            instrument_ids=instrument_ids,
-        )
     workspace["quality_warnings"] = (
         corporate_action_quality_warnings(
             instrument_types,
@@ -912,7 +917,11 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
             {"label": "Transactions", "href": "/transactions", "status": "api-backed"},
             {"label": "Accounts", "href": "/accounts", "status": "api-backed"},
             {"label": "Taxonomies", "href": "/taxonomies", "status": "workspace-backed"},
-            {"label": "Research", "href": "/research", "status": "workspace-backed"},
+            *(
+                [{"label": "Research", "href": "/research", "status": "workspace-backed"}]
+                if get_settings().research_enabled
+                else []
+            ),
         ],
     }
 
@@ -1147,6 +1156,9 @@ def holdings_workspace(
             "derivative_contract": position.get("derivative_contract"),
             "holding_kind": position.get("holding_kind") or "position",
             "available_for_trading": position.get("available_for_trading", True),
+            "cash_purpose": position.get("cash_purpose"),
+            "collateral_reference": position.get("collateral_reference"),
+            "financing_liability": position.get("financing_liability"),
             "economic_instrument_id": position.get("economic_instrument_id"),
             "economic_instrument_ref": position.get("economic_instrument_ref"),
             "transaction_ids": list(position.get("transaction_ids") or []),
@@ -1232,6 +1244,7 @@ def holdings_workspace(
             "expiry_date": position.get("expiry_date"),
             "days_to_expiry": position.get("days_to_expiry"),
             "strike": position.get("strike"),
+            "strike_currency": position.get("strike_currency"),
             "option_type": position.get("option_type"),
             "contract_multiplier": position.get("contract_multiplier"),
             "strike_notional": position.get("strike_notional"),
@@ -1383,6 +1396,11 @@ def position_holding_projection(
 
     rows = response.get("rows")
     row_items = rows if isinstance(rows, list) else []
+    resolved_as_of_date = as_of_date or _parse_iso_date(response.get("as_of_date")) or date.today()
+    transactions = list_transactions(resolved_portfolio_id)
+    _enrich_position_cycle_costs(
+        row_items, transactions=transactions, as_of_date=resolved_as_of_date,
+    )
     instrument_types = {
         str(instrument_core.get("instrument_type") or "").strip().lower()
         for row in row_items
@@ -1396,24 +1414,52 @@ def position_holding_projection(
         and isinstance((instrument_core := row.get("instrument_core")), dict)
         and str(instrument_core.get("instrument_id") or "").strip()
     }
-    if instrument_ids:
-        reconcile_instrument_event_tasks(
-            portfolio_ids=[resolved_portfolio_id],
-            instrument_ids=instrument_ids,
-        )
-        response["quality_warnings"] = (
-            corporate_action_quality_warnings(
-                instrument_types,
-                instrument_ids,
-                transactions=list_transactions(resolved_portfolio_id),
-                as_of_date=(
-                    as_of_date
-                    or _parse_iso_date(response.get("as_of_date"))
-                    or date.today()
-                ),
+    try:
+        if instrument_ids:
+            response["quality_warnings"] = (
+                corporate_action_quality_warnings(
+                    instrument_types,
+                    instrument_ids,
+                    transactions=transactions,
+                    as_of_date=resolved_as_of_date,
+                )
+                + instrument_event_task_quality_warnings(resolved_portfolio_id)
             )
-            + instrument_event_task_quality_warnings(resolved_portfolio_id)
-        )
-    else:
-        response["quality_warnings"] = []
+        else:
+            response["quality_warnings"] = []
+
+        derivative_rows = [
+            row
+            for row in row_items
+            if isinstance(row, dict)
+            and isinstance(row.get("derivative_contract"), dict)
+        ]
+        if derivative_rows:
+            risk_context_rows = list_materialized_derivative_risk_context(
+                resolved_portfolio_id,
+                as_of_date=resolved_as_of_date,
+            )
+            selected_keys = {
+                (str(row.get("line_id") or ""), str(row.get("holding_kind") or ""))
+                for row in derivative_rows
+            }
+            risk_rows = [
+                *derivative_rows,
+                *[
+                    row
+                    for row in risk_context_rows
+                    if (
+                        str(row.get("line_id") or ""),
+                        str(row.get("holding_kind") or ""),
+                    )
+                    not in selected_keys
+                ],
+            ]
+            enrich_derivative_holding_risk(
+                risk_rows,
+                transactions=transactions,
+                as_of_date=resolved_as_of_date,
+            )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     return response

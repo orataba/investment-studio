@@ -358,6 +358,8 @@ class AccountRecordModel(Base):
     account_name: Mapped[str] = mapped_column(String, nullable=False)
     account_type: Mapped[str] = mapped_column(String, nullable=False)
     account_category: Mapped[str] = mapped_column(String, nullable=False)
+    cash_purpose: Mapped[str | None] = mapped_column(String)
+    collateral_reference: Mapped[str | None] = mapped_column(String)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     institution: Mapped[str | None] = mapped_column(String)
     default_settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
@@ -415,6 +417,8 @@ class DerivativeContractRecordModel(Base):
     currency: Mapped[str] = mapped_column(String, nullable=False)
     external_reference: Mapped[str | None] = mapped_column(String(200))
     terms_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    amendments_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(
@@ -428,7 +432,7 @@ class TransactionRecordModel(Base):
         CheckConstraint(
             "position_effective_date IS NULL OR ("
             "transaction_type IN ('buy', 'sell', 'dividend_reinvestment', "
-            "'maturity_redemption') "
+            "'maturity_redemption', 'short_sell', 'buy_to_cover') "
             "AND position_effective_date >= trade_date"
             ")",
             name="position_effective_date",
@@ -540,6 +544,8 @@ class TransactionRecordModel(Base):
     settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    asset_deliveries_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    lot_selections_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     derivative_contract_id: Mapped[str | None] = mapped_column(String)
     quantity: Mapped[float | None]
     source_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))

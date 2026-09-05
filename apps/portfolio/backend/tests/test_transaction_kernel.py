@@ -52,7 +52,7 @@ def _share_split_event(
 
 def test_transaction_asset_domain_is_derived_and_filterable(client):
     account_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "USD Options",
             "account_category": "option",
@@ -65,7 +65,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
     option_account_id = account_response.json()["account_id"]
 
     security_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-08-01",
@@ -81,7 +81,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
     assert security_response.status_code == 200, security_response.json()
 
     derivative_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-08-02",
@@ -110,7 +110,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
     assert derivative_response.status_code == 200, derivative_response.json()
 
     cash_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-08-03",
@@ -128,7 +128,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
     }
     for asset_domain, (asset_subtype, summary_field) in expected.items():
         response = client.get(
-            "/api/portfolios/portfolio-ops/transactions",
+            "/api/portfolios/investment-studio/transactions",
             params={
                 "asset_domain": asset_domain,
                 "start_date": "2026-08-01",
@@ -143,7 +143,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
         assert payload["summary"][summary_field] == 1
 
     option_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         params={
             "asset_domain": "derivative",
             "asset_subtype": "option",
@@ -159,15 +159,33 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
     assert option_payload["summary"]["option_transactions"] == 1
     assert option_payload["summary"]["fcn_transactions"] == 0
 
+    related_cash_response = client.get(
+        "/api/portfolios/investment-studio/transactions",
+        params={
+            "account_id": "cash-usd-main",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-03",
+        },
+    )
+    assert related_cash_response.status_code == 200
+    assert {
+        item["transaction_id"]
+        for item in related_cash_response.json()["transactions"]
+    } == {
+        security_response.json()["transaction_id"],
+        derivative_response.json()["transaction_id"],
+        cash_response.json()["transaction_id"],
+    }
+
     workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"asset_domain": "derivative", "asset_subtype": "option"},
     )
     assert workspace_response.status_code == 200
     assert "domain-option" in workspace_response.json()["position_reference_ids"]
 
     invalid_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         params={"asset_domain": "mixed"},
     )
     assert invalid_response.status_code == 422
@@ -240,11 +258,11 @@ def test_store_reset_rejects_legacy_asset_references():
 
 
 def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_backend(client):
-    response = client.get("/api/portfolios/portfolio-ops/instruments")
+    response = client.get("/api/portfolios/investment-studio/instruments")
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["portfolio_id"] == "portfolio-ops"
+    assert payload["portfolio_id"] == "investment-studio"
     assert {item["instrument_core"]["instrument_id"] for item in payload["instruments"]} >= {
         "equity-us-abbv",
         "fund-us-agg",
@@ -311,11 +329,11 @@ def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> N
 
 
 def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(client):
-    baseline_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    baseline_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert baseline_response.status_code == 200
 
     created_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",
@@ -328,7 +346,7 @@ def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(cl
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "stale"
         assert state.dirty_from == date(2026, 4, 16)
@@ -336,14 +354,14 @@ def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(cl
     assert daily_snapshot_worker.run_daily_snapshot_recalculation_worker_once()
 
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.dirty_from is None
         assert state.refreshed_to == date(2026, 4, 16)
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -353,13 +371,13 @@ def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(cl
 
 def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
     daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
-    existing = portfolio_store.get_transaction("portfolio-ops", "txn-0002")
+    existing = portfolio_store.get_transaction("investment-studio", "txn-0002")
     assert existing is not None
 
     updated = portfolio_store.update_transaction(
-        "portfolio-ops",
+        "investment-studio",
         "txn-0002",
         transaction_type=str(existing["transaction_type"]),
         trade_date=date(2026, 4, 20),
@@ -390,7 +408,7 @@ def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "stale"
         assert state.dirty_from == date(2026, 2, 3)
@@ -404,7 +422,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
         build_calls["count"] += 1
         if build_calls["count"] == 1:
             portfolio_store.create_transaction(
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 transaction_type="deposit",
                 trade_date=date(2026, 4, 18),
                 trade_time=None,
@@ -438,7 +456,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
     )
 
     result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
 
     assert build_calls["count"] == 2
@@ -446,14 +464,14 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
     assert result["refreshed_to"] == date(2026, 4, 18)
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.dirty_from is None
         assert state.refreshed_to == date(2026, 4, 18)
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -463,7 +481,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
 
 def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "FIFO Default Account",
             "account_category": "security",
@@ -481,7 +499,7 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
 
 def test_account_category_is_first_class_and_legacy_scope_is_rejected(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "First Class Options",
             "account_category": "option",
@@ -495,7 +513,7 @@ def test_account_category_is_first_class_and_legacy_scope_is_rejected(client):
     assert "allowed_instrument_types" not in response.json()
 
     legacy_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Legacy Mixed Account",
             "account_type": "securities_account",
@@ -510,7 +528,7 @@ def test_account_category_is_first_class_and_legacy_scope_is_rejected(client):
 
 def test_holding_account_requires_same_currency_cash_and_stable_history_category(client):
     cross_currency_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Invalid HKD Options",
             "account_category": "option",
@@ -522,7 +540,7 @@ def test_holding_account_requires_same_currency_cash_and_stable_history_category
     assert "same currency" in cross_currency_response.json()["detail"]
 
     editable_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Empty Holding Account",
             "account_category": "security",
@@ -533,14 +551,14 @@ def test_holding_account_requires_same_currency_cash_and_stable_history_category
     assert editable_response.status_code == 200
     editable_account_id = editable_response.json()["account_id"]
     changed_response = client.patch(
-        f"/api/portfolios/portfolio-ops/accounts/{editable_account_id}",
+        f"/api/portfolios/investment-studio/accounts/{editable_account_id}",
         json={"account_category": "fcn"},
     )
     assert changed_response.status_code == 200
     assert changed_response.json()["account_category"] == "fcn"
 
     protected_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
+        "/api/portfolios/investment-studio/accounts/broker-us-core",
         json={"account_category": "option"},
     )
     assert protected_response.status_code == 400
@@ -549,7 +567,7 @@ def test_holding_account_requires_same_currency_cash_and_stable_history_category
 
 def test_transaction_rejects_asset_on_wrong_account_category(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-08-02",
@@ -579,7 +597,7 @@ def test_transaction_rejects_asset_on_wrong_account_category(client):
     assert "Option category" in response.json()["detail"]
 
     option_account_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Wrong Security Exit Account",
             "account_category": "option",
@@ -589,7 +607,7 @@ def test_transaction_rejects_asset_on_wrong_account_category(client):
     )
     assert option_account_response.status_code == 200
     wrong_exit_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-08-02",
@@ -608,7 +626,7 @@ def test_transaction_rejects_asset_on_wrong_account_category(client):
 
 def test_account_cost_method_can_be_updated_before_instrument_history(client):
     created_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Cost Method Editable Account",
             "account_category": "security",
@@ -624,7 +642,7 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
     account = created_response.json()
 
     updated_response = client.patch(
-        f"/api/portfolios/portfolio-ops/accounts/{account['account_id']}",
+        f"/api/portfolios/investment-studio/accounts/{account['account_id']}",
         json={
             "account_name": "Cost Method Editable Account",
             "institution": "Test Broker",
@@ -639,9 +657,9 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
     assert updated_response.json()["cost_basis_method"] == "moving_average"
 
 
-def test_account_cost_method_change_restates_instrument_history(client):
+def test_account_cost_method_change_preserves_instrument_history(client):
     created_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Cost Method Restatement Account",
             "account_category": "security",
@@ -662,7 +680,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
         ("2026-04-12", "sell", 6000.0, 75.0),
     ]:
         transaction_response = client.post(
-            "/api/portfolios/portfolio-ops/transactions",
+            "/api/portfolios/investment-studio/transactions",
             json={
                 "transaction_type": transaction_type,
                 "trade_date": trade_date,
@@ -680,7 +698,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
         assert transaction_response.status_code == 200
 
     fifo_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert fifo_lots_response.status_code == 200
@@ -690,7 +708,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
     assert sum(lot["realized_pnl"] for lot in fifo_lots) == pytest.approx(100000.0)
 
     updated_response = client.patch(
-        f"/api/portfolios/portfolio-ops/accounts/{account['account_id']}",
+        f"/api/portfolios/investment-studio/accounts/{account['account_id']}",
         json={
             "account_name": "Cost Method Restatement Account",
             "institution": "Test Broker",
@@ -700,24 +718,24 @@ def test_account_cost_method_change_restates_instrument_history(client):
             "status": "active",
         },
     )
-    assert updated_response.status_code == 200
-    assert updated_response.json()["cost_basis_method"] == "moving_average"
+    assert updated_response.status_code == 400
+    assert "cannot change after asset transaction history exists" in updated_response.json()["detail"]
 
     restated_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert restated_lots_response.status_code == 200
     restated_lots = restated_lots_response.json()["position_lots"]
-    assert len(restated_lots) == 1
-    assert sum(lot["remaining_cost_basis"] for lot in restated_lots) == pytest.approx(300000.0)
-    assert sum(lot["realized_cost_basis"] for lot in restated_lots) == pytest.approx(450000.0)
-    assert sum(lot["realized_pnl"] for lot in restated_lots) == pytest.approx(0.0)
+    assert len(restated_lots) == len(fifo_lots)
+    assert sum(lot["remaining_cost_basis"] for lot in restated_lots) == pytest.approx(400000.0)
+    assert sum(lot["realized_cost_basis"] for lot in restated_lots) == pytest.approx(350000.0)
+    assert sum(lot["realized_pnl"] for lot in restated_lots) == pytest.approx(100000.0)
 
 
 def test_transaction_fact_can_be_updated_and_deleted(client):
     created_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",
@@ -731,7 +749,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     transaction_id = created_response.json()["transaction_id"]
 
     updated_response = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-17",
@@ -751,7 +769,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
 
     deleted_response = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        f"/api/portfolios/investment-studio/transactions/{transaction_id}",
         json={
             "expected_row_versions": {
                 transaction_id: updated_payload["row_version"]
@@ -763,7 +781,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     assert deleted_payload["deleted_count"] == 1
     assert deleted_payload["deleted_transaction_ids"] == [transaction_id]
 
-    listing_response = client.get("/api/portfolios/portfolio-ops/transactions")
+    listing_response = client.get("/api/portfolios/investment-studio/transactions")
     assert listing_response.status_code == 200
     assert transaction_id not in {
         item["transaction_id"] for item in listing_response.json()["transactions"]
@@ -772,7 +790,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
 
 def test_deleting_transfer_leg_removes_entire_pair(client):
     before_inception = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-01-01",
             "from_account_id": "cash-usd-main",
@@ -785,7 +803,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert "inception_date 2026-01-02" in before_inception.json()["detail"]
 
     caller_named_group = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-16",
             "from_account_id": "cash-usd-main",
@@ -798,7 +816,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert caller_named_group.status_code == 422
 
     sourced_transfer = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         headers={"Idempotency-Key": "sourced-transfer-1"},
         json={
             "trade_date": "2026-04-15",
@@ -821,7 +839,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert sourced_legs["transfer_in"]["external_reference"] is None
 
     duplicate_source = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         headers={"Idempotency-Key": "sourced-transfer-2"},
         json={
             "trade_date": "2026-04-15",
@@ -836,7 +854,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert duplicate_source.status_code == 409
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-16",
             "from_account_id": "cash-usd-main",
@@ -854,7 +872,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
         for transaction in transfer_payload["transactions"]
     }
     workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": delete_target},
     )
     assert workspace_response.status_code == 200
@@ -862,7 +880,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
 
     incomplete_delete = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{delete_target}",
+        f"/api/portfolios/investment-studio/transactions/{delete_target}",
         json={
             "expected_row_versions": {
                 delete_target: transfer_payload["transactions"][0]["row_version"]
@@ -874,7 +892,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
 
     deleted_response = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{delete_target}",
+        f"/api/portfolios/investment-studio/transactions/{delete_target}",
         json={"expected_row_versions": expected_row_versions},
     )
     assert deleted_response.status_code == 200
@@ -886,11 +904,11 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
 def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
     from portfolio_app.services.portfolio_store import create_transactions, list_transactions
 
-    before_ids = {item["transaction_id"] for item in list_transactions("portfolio-ops")}
+    before_ids = {item["transaction_id"] for item in list_transactions("investment-studio")}
 
     with pytest.raises(KeyError, match="gross_amount"):
         create_transactions(
-            portfolio_id="portfolio-ops",
+            portfolio_id="investment-studio",
             records=[
                 {
                     "transaction_type": "deposit",
@@ -931,14 +949,14 @@ def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
             ],
         )
 
-    after = list_transactions("portfolio-ops")
+    after = list_transactions("investment-studio")
     assert {item["transaction_id"] for item in after} == before_ids
     assert all(item["note"] != "batch rollback sentinel" for item in after)
 
 
 def test_rejects_cross_currency_security_facts(client):
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -957,7 +975,7 @@ def test_rejects_cross_currency_security_facts(client):
     assert "Securities account currency must match asset currency" in buy_response.json()["detail"]
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "from_account_id": "broker-us-core",
@@ -972,7 +990,7 @@ def test_rejects_cross_currency_security_facts(client):
 
 
 def test_holdings_and_account_workspace_use_base_currency_valuation(client):
-    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
+    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "investment-studio"})
     assert holdings_response.status_code == 200
     holdings = holdings_response.json()
     assert holdings["base_currency"] == "USD"
@@ -1009,7 +1027,7 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
     assert hkd_row["allocation"] == pytest.approx(expected_hkd_allocation)
     assert holdings["totals"]["allocation"] == pytest.approx(expected_total_market_value / expected_total_nav)
 
-    accounts_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
+    accounts_response = client.get("/api/portfolios/investment-studio/accounts/workspace")
     assert accounts_response.status_code == 200
     accounts_workspace = accounts_response.json()
     hk_account = next(
@@ -1022,7 +1040,7 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
 def test_holdings_workspace_replays_requested_as_of_date(client):
     response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-02"},
+        params={"portfolio_id": "investment-studio", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
     holdings = response.json()
@@ -1043,12 +1061,12 @@ def test_holdings_workspace_replays_requested_as_of_date(client):
 
 
 def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
-    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
+    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "investment-studio"})
     assert baseline_summary_response.status_code == 200
     baseline_nav = baseline_summary_response.json()["nav"]
 
     baseline_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"as_of_date": "2026-04-15"},
     )
     assert baseline_response.status_code == 200
@@ -1060,7 +1078,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     baseline_cash_balance = baseline_cash_row["derived_cash_balance"]
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1079,7 +1097,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     assert buy_response.status_code == 200
 
     trade_date_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"as_of_date": "2026-04-15"},
     )
     assert trade_date_response.status_code == 200
@@ -1099,12 +1117,12 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     )
     assert trade_date_broker_row["position_market_value"] >= 206.47
 
-    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
+    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "investment-studio"})
     assert post_buy_summary_response.status_code == 200
     assert post_buy_summary_response.json()["nav"] == pytest.approx(baseline_nav)
 
     settlement_date_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"as_of_date": "2026-04-16"},
     )
     assert settlement_date_response.status_code == 200
@@ -1120,7 +1138,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
 def test_holdings_workspace_includes_shared_price_sparklines(client):
     response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "include_details": True},
+        params={"portfolio_id": "investment-studio", "include_details": True},
     )
     assert response.status_code == 200
     holdings = response.json()
@@ -1163,7 +1181,7 @@ def test_live_holdings_workspace_propagates_position_day_change(client, monkeypa
         lambda *_args, **_kwargs: None,
     )
 
-    response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
+    response = client.get("/api/workspace/holdings", params={"portfolio_id": "investment-studio"})
     assert response.status_code == 200
     holdings = response.json()
 
@@ -1185,13 +1203,13 @@ def test_live_holdings_workspace_propagates_position_day_change(client, monkeypa
 
 def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/instruments/equity-us-abbv/price-chart",
+        "/api/portfolios/investment-studio/instruments/equity-us-abbv/price-chart",
         params={"as_of_date": "2026-04-15", "range": "1m"},
     )
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["portfolio_id"] == "portfolio-ops"
+    assert payload["portfolio_id"] == "investment-studio"
     assert payload["instrument_core"]["instrument_id"] == "equity-us-abbv"
     assert payload["range_key"] == "1m"
     assert payload["chart_basis"] == "adjusted_close"
@@ -1204,7 +1222,7 @@ def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client)
 
 def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/position-preview",
+        "/api/portfolios/investment-studio/transactions/position-preview",
         params={
             "account_id": "broker-us-core",
             "position_kind": "instrument",
@@ -1215,7 +1233,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["portfolio_id"] == "portfolio-ops"
+    assert payload["portfolio_id"] == "investment-studio"
     assert payload["account_id"] == "broker-us-core"
     assert payload["position_kind"] == "instrument"
     assert payload["position_reference_id"] == "equity-us-abbv"
@@ -1225,7 +1243,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 
 def test_position_lots_support_historical_as_of_date(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"position_reference_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
@@ -1240,7 +1258,7 @@ def test_position_lots_support_historical_as_of_date(client):
 
 def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(client):
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Test MA Equity Source",
             "account_category": "security",
@@ -1252,7 +1270,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Test Equity Destination",
             "account_category": "security",
@@ -1266,7 +1284,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     for trade_date, price, gross_amount in [("2026-04-01", 10.0, 1000.0), ("2026-04-02", 20.0, 2000.0)]:
         buy_response = client.post(
-            "/api/portfolios/portfolio-ops/transactions",
+            "/api/portfolios/investment-studio/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -1284,7 +1302,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         assert buy_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-10",
             "from_account_id": source_account["account_id"],
@@ -1299,7 +1317,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
     assert {txn["gross_amount"] for txn in transfer_batch["transactions"]} == {2250.0}
 
     destination_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": destination_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert destination_lots_response.status_code == 200
@@ -1309,7 +1327,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
     assert destination_lots[0]["entry_cost_basis"] == pytest.approx(2250.0)
 
     source_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": source_account["account_id"], "position_reference_id": "equity-us-abbv", "status": "open"},
     )
     assert source_lots_response.status_code == 200
@@ -1323,7 +1341,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
 def test_position_transfer_allows_zero_cost_basis_lots(client):
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Zero Cost Source",
             "account_category": "security",
@@ -1336,7 +1354,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Zero Cost Destination",
             "account_category": "security",
@@ -1350,7 +1368,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     ).json()
 
     opening_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
@@ -1364,7 +1382,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert opening_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-21",
             "transfer_object_type": "position",
@@ -1378,11 +1396,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert {transaction["gross_amount"] for transaction in transfer_response.json()["transactions"]} == {0.0}
 
     source_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": source_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     destination_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": destination_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert source_lots_response.status_code == 200
@@ -1398,7 +1416,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert destination_lots[0]["entry_cost_basis"] == pytest.approx(0.0)
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-22",
@@ -1415,7 +1433,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
 
 
 def test_copy_portfolio_remaps_counterparty_account_ids(client):
-    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
+    copy_response = client.post("/api/portfolios/investment-studio/copy")
     assert copy_response.status_code == 200
     copied_portfolio_id = copy_response.json()["portfolio_id"]
 
@@ -1431,7 +1449,7 @@ def test_copy_portfolio_remaps_counterparty_account_ids(client):
 
 def test_fx_conversion_target_account_filter_includes_dual_account_fact(client):
     transactions_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         params={"account_id": "cash-cny-main", "transaction_type": "fx_conversion"},
     )
     assert transactions_response.status_code == 200
@@ -1441,7 +1459,7 @@ def test_fx_conversion_target_account_filter_includes_dual_account_fact(client):
 
 
 def test_rejects_backdated_sell_before_position_exists(client):
-    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
+    copy_response = client.post("/api/portfolios/investment-studio/copy")
     assert copy_response.status_code == 200
     copied_portfolio_id = copy_response.json()["portfolio_id"]
     destination_account_response = client.post(
@@ -1451,7 +1469,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-reserve-portfolio-ops-copy",
+            "default_settlement_cash_account_id": "cash-usd-reserve-investment-studio-copy",
             "cost_basis_method": "fifo",
             "opened_at": "2026-01-15",
             "status": "active",
@@ -1465,8 +1483,8 @@ def test_rejects_backdated_sell_before_position_exists(client):
         json={
             "transaction_type": "sell",
             "trade_date": "2026-01-20",
-            "account_id": "broker-us-core-portfolio-ops-copy",
-            "settlement_cash_account_id": "cash-usd-main-portfolio-ops-copy",
+            "account_id": "broker-us-core-investment-studio-copy",
+            "settlement_cash_account_id": "cash-usd-main-investment-studio-copy",
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 200.0,
@@ -1483,7 +1501,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
         f"/api/portfolios/{copied_portfolio_id}/transactions/internal-transfer",
         json={
             "trade_date": "2026-01-20",
-            "from_account_id": "broker-us-core-portfolio-ops-copy",
+            "from_account_id": "broker-us-core-investment-studio-copy",
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
@@ -1496,7 +1514,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
 
 def test_rejects_inconsistent_buy_sell_amount_contracts(client):
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1515,7 +1533,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
     assert "gross_amount must equal quantity multiplied by price" in buy_response.text
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -1536,7 +1554,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
 
 def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client):
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1559,7 +1577,7 @@ def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client
 
 def test_preserves_transaction_source_precision_and_keeps_float_calculation_projection(client):
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1590,7 +1608,7 @@ def test_preserves_transaction_source_precision_and_keeps_float_calculation_proj
 
 def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_contracts(client):
     opening_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Opening Balance Review",
             "account_category": "security",
@@ -1604,7 +1622,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
     ).json()
 
     opening_balance_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
@@ -1620,7 +1638,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
     assert "security opening balance" in opening_balance_response.text.lower()
 
     reinvestment_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1638,7 +1656,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
 
 def test_rejects_opening_balance_settlement_account_and_deposit_account_instrument(client):
     opening_balance_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
@@ -1652,7 +1670,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
     assert "opening balance must not carry settlement_cash_account_id" in opening_balance_response.text.lower()
 
     deposit_account_security_opening_balance = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
@@ -1669,7 +1687,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
 
 def test_opening_balance_is_fixed_to_portfolio_inception(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-03",
@@ -1686,7 +1704,7 @@ def test_opening_balance_is_fixed_to_portfolio_inception(client):
 
 def test_transaction_cannot_predate_portfolio_inception(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-01-01",
@@ -1704,7 +1722,7 @@ def test_transaction_cannot_predate_portfolio_inception(client):
 
 def test_rejects_deposit_account_fee_with_instrument_reference(client):
     fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -1718,7 +1736,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
     assert "deposit-account fee and tax must not reference an asset" in fee_response.json()["detail"].lower()
 
     fee_with_settlement_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -1737,7 +1755,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
 
 def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     deposit_with_quantity = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1751,7 +1769,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "cash-flow transactions must not carry quantity or price" in deposit_with_quantity.text.lower()
 
     deposit_with_settlement = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1765,7 +1783,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "cash-flow transactions must not carry settlement_cash_account_id" in deposit_with_settlement.text.lower()
 
     interest_with_settlement = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "interest",
             "trade_date": "2026-04-15",
@@ -1779,7 +1797,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "interest must not carry settlement_cash_account_id" in interest_with_settlement.text.lower()
 
     drip_with_settlement = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1795,7 +1813,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "dividend reinvestment must not carry settlement_cash_account_id" in drip_with_settlement.text.lower()
 
     deposit_with_counterparty = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1809,7 +1827,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "counterparty_account_id is only allowed for fx_conversion" in deposit_with_counterparty.text.lower()
 
     dividend_with_quantity = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -1827,7 +1845,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
 
 def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_allocation(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Income Attribution Review",
             "account_category": "security",
@@ -1841,7 +1859,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1859,7 +1877,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert buy_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -1875,7 +1893,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert dividend_response.status_code == 200
 
     lots_after_dividend_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={
             "account_id": account["account_id"],
             "position_reference_id": "equity-us-abbv",
@@ -1889,7 +1907,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert lot_after_dividend["realized_pnl"] == pytest.approx(0.0)
 
     roc_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-16",
@@ -1905,7 +1923,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert roc_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -1918,7 +1936,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
 
 def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(client):
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Flat Position Source",
             "account_category": "security",
@@ -1931,7 +1949,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Flat Position Destination",
             "account_category": "security",
@@ -1945,7 +1963,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1961,7 +1979,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -1977,7 +1995,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert sell_response.status_code == 200
 
     oversell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -1994,7 +2012,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert "exceeds account position as of trade_date" in oversell_response.json()["detail"]
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-12",
             "from_account_id": source_account["account_id"],
@@ -2008,7 +2026,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert "exceeds source position as of trade_date" in transfer_response.json()["detail"]
 
     roc_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-12",
@@ -2019,13 +2037,13 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "currency": "USD",
         },
     )
-    assert roc_response.status_code == 400
-    assert "exceeds account position cost basis as of trade_date" in roc_response.json()["detail"]
+    assert roc_response.status_code == 409
+    assert "requires an open account position as of trade_date" in roc_response.json()["detail"]
 
 
 def test_rejects_instrument_income_and_expense_without_open_position(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Post-Close Income Review",
             "account_category": "security",
@@ -2039,7 +2057,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2055,7 +2073,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -2071,7 +2089,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert sell_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-12",
@@ -2086,7 +2104,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert "requires an account position or written-option obligation" in dividend_response.json()["detail"]
 
     fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-13",
@@ -2103,7 +2121,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
 
 def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -2118,7 +2136,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     assert "must not carry nested fees or taxes" in fee_response.text.lower()
 
     tax_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "tax",
             "trade_date": "2026-04-15",
@@ -2134,7 +2152,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
 
 def test_rejects_dividend_reinvestment_without_entitled_position(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Empty DRIP Review",
             "account_category": "security",
@@ -2148,7 +2166,7 @@ def test_rejects_dividend_reinvestment_without_entitled_position(client):
     ).json()
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -2166,7 +2184,7 @@ def test_rejects_dividend_reinvestment_without_entitled_position(client):
 
 def test_accepts_entitlement_date_on_dividend_reinvestment(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -2185,7 +2203,7 @@ def test_accepts_entitlement_date_on_dividend_reinvestment(client):
 
 def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Late Income Review",
             "account_category": "security",
@@ -2200,7 +2218,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
 
     for trade_date in ("2026-04-01", "2026-04-02"):
         buy_response = client.post(
-            "/api/portfolios/portfolio-ops/transactions",
+            "/api/portfolios/investment-studio/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -2216,7 +2234,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
         assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -2232,7 +2250,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert sell_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -2248,7 +2266,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert dividend_response.json()["entitlement_date"] == "2026-04-10"
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -2259,7 +2277,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert open_lot["income_cash_amount"] == pytest.approx(50.0)
 
     historical_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={
             "account_id": account["account_id"],
             "position_reference_id": "equity-us-abbv",
@@ -2472,7 +2490,7 @@ def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition
 
 def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sold(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Late DRIP Review",
             "account_category": "security",
@@ -2486,7 +2504,7 @@ def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sol
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-01",
@@ -2502,7 +2520,7 @@ def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sol
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -2518,7 +2536,7 @@ def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sol
     assert sell_response.status_code == 200
 
     drip_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -2534,16 +2552,16 @@ def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sol
     assert drip_response.status_code == 200
     assert drip_response.json()["entitlement_date"] == "2026-04-10"
 
-    ledger_response = client.get("/api/portfolios/portfolio-ops/ledger-postings")
+    ledger_response = client.get("/api/portfolios/investment-studio/ledger-postings")
     assert ledger_response.status_code == 200
 
-    workspace_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
+    workspace_response = client.get("/api/portfolios/investment-studio/accounts/workspace")
     assert workspace_response.status_code == 200
 
 
 def test_rejects_entitlement_date_on_return_of_capital(client):
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-15",
@@ -2644,7 +2662,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
 
 def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "DRIP Attribution Review",
             "account_category": "security",
@@ -2658,7 +2676,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2674,7 +2692,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     assert buy_response.status_code == 200
 
     drip_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -2689,7 +2707,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     assert drip_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -2859,7 +2877,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
 
 def test_rejects_settlement_before_trade_date(client):
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2879,7 +2897,7 @@ def test_rejects_settlement_before_trade_date(client):
     assert "settlement_date must not be earlier than trade_date" in buy_response.text
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "settlement_date": "2026-04-01",
@@ -2895,7 +2913,7 @@ def test_rejects_settlement_before_trade_date(client):
 
 def test_rejects_transactions_outside_account_lifecycle(client):
     closed_account_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Closed Equity Sleeve",
             "account_category": "security",
@@ -2912,7 +2930,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     closed_account = closed_account_response.json()
 
     late_trade_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2931,7 +2949,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     assert "is closed on 2026-04-15" in late_trade_response.json()["detail"]
 
     future_account_response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Future HKD Cash",
             "account_category": "cash",
@@ -2945,7 +2963,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     future_account = future_account_response.json()
 
     early_fx_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fx_conversion",
             "trade_date": "2026-04-15",
@@ -2965,7 +2983,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
 
 def test_defaults_trade_time_and_trade_at_when_not_provided(client):
     deposit_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -2986,7 +3004,7 @@ def test_defaults_trade_time_and_trade_at_when_not_provided(client):
 
 def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client):
     later_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -3001,7 +3019,7 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     assert later_response.status_code == 200
 
     earlier_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -3016,7 +3034,7 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     assert earlier_response.status_code == 200
 
     transactions_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         params={"account_id": "cash-usd-main", "transaction_type": "deposit"},
     )
     assert transactions_response.status_code == 200
@@ -3247,7 +3265,7 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        "/api/portfolios/investment-studio/transactions/execution-quote",
         params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
     )
     assert response.status_code == 200
@@ -3260,7 +3278,7 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
 
 def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Timed Equity Sleeve",
             "account_category": "security",
@@ -3274,7 +3292,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -3293,7 +3311,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -3315,7 +3333,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
 
 def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Same Day Equity",
             "account_category": "security",
@@ -3329,7 +3347,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -3349,7 +3367,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -3369,14 +3387,14 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert sell_response.status_code == 200
 
     account_workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"account_id": account["account_id"]},
     )
     assert account_workspace_response.status_code == 200
     assert account_workspace_response.json()["positions"] == []
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -3387,7 +3405,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert lots[0]["realized_pnl"] == pytest.approx(1000.0)
 
     ledger_response = client.get(
-        f"/api/portfolios/portfolio-ops/transactions/{sell_response.json()['transaction_id']}/ledger-postings"
+        f"/api/portfolios/investment-studio/transactions/{sell_response.json()['transaction_id']}/ledger-postings"
     )
     assert ledger_response.status_code == 200
     sell_position_posting = next(
@@ -3400,7 +3418,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
 
 def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Entry Price Review Account",
             "account_category": "security",
@@ -3414,7 +3432,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-16",
@@ -3432,7 +3450,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     assert buy_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv", "status": "open"},
     )
     assert lots_response.status_code == 200
@@ -3449,7 +3467,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
 
 def test_moving_average_position_lots_match_account_cost_basis_method(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "MA Review Account",
             "account_category": "security",
@@ -3464,7 +3482,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
 
     for trade_date, price in [("2026-04-10", 100.0), ("2026-04-11", 120.0)]:
         buy_response = client.post(
-            "/api/portfolios/portfolio-ops/transactions",
+            "/api/portfolios/investment-studio/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -3482,7 +3500,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
         assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -3500,7 +3518,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     assert sell_response.status_code == 200
 
     account_workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"account_id": account["account_id"]},
     )
     assert account_workspace_response.status_code == 200
@@ -3512,7 +3530,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     assert account_position["cost_basis"] == pytest.approx(16500.0)
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -3672,7 +3690,7 @@ def test_current_position_cycle_cost_uses_post_split_quantities() -> None:
 
 def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Transfer Source",
             "account_category": "security",
@@ -3685,7 +3703,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Transfer Dest",
             "account_category": "security",
@@ -3699,7 +3717,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -3717,7 +3735,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     assert buy_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "from_account_id": source_account["account_id"],
@@ -3732,9 +3750,9 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     assert "must match source cost basis" in transfer_response.json()["detail"]
 
 
-def test_rejects_return_of_capital_above_remaining_cost_basis(client):
+def test_return_of_capital_above_remaining_cost_basis_recognizes_excess(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "ROC Review",
             "account_category": "security",
@@ -3748,7 +3766,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -3766,7 +3784,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
     assert buy_response.status_code == 200
 
     roc_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-15",
@@ -3779,13 +3797,19 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
             "currency": "USD",
         },
     )
-    assert roc_response.status_code == 400
-    assert "exceeds account position cost basis" in roc_response.json()["detail"]
+    assert roc_response.status_code == 200, roc_response.text
+    lots = client.get(
+        "/api/portfolios/investment-studio/position-lots",
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
+    ).json()["position_lots"]
+    assert sum(row["remaining_quantity"] for row in lots) == 10
+    assert sum(row["remaining_cost_basis"] for row in lots) == 0
+    assert sum(row["realized_pnl"] for row in lots) == 500
 
 
 def test_accounts_workspace_includes_selected_account_linked_transactions(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={"account_id": "broker-us-core"},
     )
     assert response.status_code == 200
@@ -3807,15 +3831,26 @@ def test_accounts_workspace_includes_selected_account_linked_transactions(client
     assert selected_account_row["linked_transaction_count"] <= payload["linked_transactions_summary"]["total_transactions"]
 
 
-def test_transactions_workspace_returns_selected_fact_ledger_and_related_position_lots(client):
+def test_transactions_workspace_returns_selected_fact_ledger_and_related_position_lots(client, monkeypatch):
+    from portfolio_app.api.routes import transactions as transaction_routes
+
+    original_cash_fx = transaction_routes.build_transaction_cash_fx_impacts
+    cash_fx_dates = []
+
+    def capture_cash_fx_date(**kwargs):
+        cash_fx_dates.append(kwargs["as_of_date"])
+        return original_cash_fx(**kwargs)
+
+    monkeypatch.setattr(transaction_routes, "build_transaction_cash_fx_impacts", capture_cash_fx_date)
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": "txn-0003"},
     )
     assert response.status_code == 200
 
     payload = response.json()
     assert payload["selected_transaction_id"] == "txn-0003"
+    assert cash_fx_dates == [date.today()]
     assert payload["selected_transaction"]["transaction_id"] == "txn-0003"
     assert payload["delete_scope_row_versions"] == {
         "txn-0003": payload["selected_transaction"]["row_version"]
@@ -3829,7 +3864,7 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
 
 def test_transactions_workspace_splits_partial_sale_price_and_fx_realization(client):
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": "txn-0007"},
     )
     assert response.status_code == 200
@@ -3853,7 +3888,7 @@ def test_transactions_workspace_splits_partial_sale_price_and_fx_realization(cli
 
 def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Settlement Timing Review",
             "account_category": "security",
@@ -3867,7 +3902,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -3886,7 +3921,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     assert buy_response.status_code == 200
 
     ledger_response = client.get(
-        f"/api/portfolios/portfolio-ops/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
+        f"/api/portfolios/investment-studio/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
     )
     assert ledger_response.status_code == 200
     postings = ledger_response.json()["ledger_postings"]
@@ -3900,7 +3935,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
 
 def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "T Plus One Fund Account",
             "account_category": "security",
@@ -3914,7 +3949,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -3939,7 +3974,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
     assert transaction["economic_date"] == "2026-04-12"
 
     trade_day_positions = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={
             "account_id": account["account_id"],
             "as_of_date": "2026-04-10",
@@ -3967,7 +4002,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
     )
 
     effective_day_positions = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={
             "account_id": account["account_id"],
             "as_of_date": "2026-04-12",
@@ -3996,7 +4031,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
     )
 
     ledger_response = client.get(
-        f"/api/portfolios/portfolio-ops/transactions/{transaction['transaction_id']}/ledger-postings"
+        f"/api/portfolios/investment-studio/transactions/{transaction['transaction_id']}/ledger-postings"
     )
     assert ledger_response.status_code == 200
     postings = ledger_response.json()["ledger_postings"]
@@ -4020,7 +4055,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
     assert bridge_posting["attribution_account_id"] == account["account_id"]
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={
             "account_id": account["account_id"],
             "position_reference_id": "equity-us-abbv",
@@ -4033,7 +4068,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
 
 def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Confirmed Later Disposal Review",
             "account_category": "security",
@@ -4047,7 +4082,7 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -4065,7 +4100,7 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
     assert buy_response.status_code == 200
 
     premature_sale = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -4084,7 +4119,7 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
     assert "as of trade_date" in premature_sale.json()["detail"]
 
     delayed_sale = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -4102,14 +4137,14 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
     assert delayed_sale.status_code == 200
 
     trade_day = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={
             "account_id": account["account_id"],
             "as_of_date": "2026-04-12",
         },
     )
     effective_day = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
+        "/api/portfolios/investment-studio/accounts/workspace",
         params={
             "account_id": account["account_id"],
             "as_of_date": "2026-04-13",
@@ -4133,7 +4168,7 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
 
 def test_security_opening_balance_preserves_acquisition_date_in_position_lots(client):
     account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "Imported Lot Account",
             "account_category": "security",
@@ -4147,7 +4182,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     ).json()
 
     opening_balance_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
@@ -4166,7 +4201,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     assert opening_balance_response.json()["acquisition_date"] == "2025-03-01"
 
     lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={
             "account_id": account["account_id"],
             "position_reference_id": "equity-us-abbv",
@@ -4182,3 +4217,78 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     assert lot["opened_at"] == "2026-01-02"
     assert lot["acquisition_date"] == "2025-03-01"
     assert lot["holding_period_days"] == (date(2026, 4, 15) - date(2025, 3, 1)).days
+
+
+def test_position_timeline_uses_numeric_sequence_past_four_digits() -> None:
+    account = {
+        "account_id": "sequence-boundary-account",
+        "account_type": "securities_account",
+        "cost_basis_method": "fifo",
+    }
+    common = {
+        "portfolio_id": "sequence-boundary-portfolio",
+        "account_id": account["account_id"],
+        "instrument_id": "equity-us-abbv",
+        "instrument_ref": {
+            "instrument_id": "equity-us-abbv",
+            "instrument_name": "ABBV",
+            "instrument_type": "equity",
+            "currency": "USD",
+            "identifiers": [],
+        },
+        "trade_date": "2026-04-15",
+        "settlement_date": "2026-04-15",
+        "trade_at": "2026-04-15T04:00:00Z",
+        "created_at": "2026-04-15T04:00:00Z",
+        "currency": "USD",
+        "fees": 0.0,
+        "taxes": 0.0,
+    }
+    lots = build_position_lots(
+        "sequence-boundary-portfolio",
+        [account],
+        [
+            {
+                **common,
+                "transaction_id": "txn-9999",
+                "transaction_sequence": 9999,
+                "transaction_type": "buy",
+                "quantity": 10.0,
+                "gross_amount": 1000.0,
+            },
+            {
+                **common,
+                "transaction_id": "txn-10000",
+                "transaction_sequence": 10000,
+                "transaction_type": "sell",
+                "quantity": 4.0,
+                "gross_amount": 440.0,
+            },
+        ],
+        resolve_pricing=False,
+    )
+
+    assert len(lots) == 1
+    assert lots[0]["remaining_quantity"] == pytest.approx(6.0)
+    assert lots[0]["realized_pnl"] == pytest.approx(40.0)
+
+
+def test_fx_conversion_rejects_large_amount_mismatch_hidden_by_rate_tolerance(client) -> None:
+    response = client.post(
+        "/api/portfolios/investment-studio/transactions",
+        json={
+            "transaction_type": "fx_conversion",
+            "trade_date": "2026-04-15",
+            "account_id": "cash-usd-main",
+            "counterparty_account_id": "cash-hkd-main",
+            "gross_amount": 100000,
+            "counter_amount": 780000.5,
+            "fx_rate": 7.8,
+            "fees": 0,
+            "taxes": 0,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "transaction amount precision" in response.json()["detail"]

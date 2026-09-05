@@ -3,29 +3,29 @@ set -euo pipefail
 umask 077
 
 if [[ $# -ne 1 || "$1" != "--confirm-destroy-project-schemas" ]]; then
-  echo "Usage: PORTFOLIO_OPS_LOCAL_DATABASE_URL=postgresql://user@host/database $0 --confirm-destroy-project-schemas" >&2
-  echo "This command permanently deletes the instrument_registry, platform, portfolio, and watchlist schemas." >&2
+  echo "Usage: INVESTMENT_STUDIO_LOCAL_DATABASE_URL=postgresql://user@host/database $0 --confirm-destroy-project-schemas" >&2
+  echo "This command permanently deletes instrument_registry, data_ingestion (formerly platform), portfolio, and watchlist." >&2
   exit 64
 fi
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 SERVICE_CONTROL="$PROJECT_ROOT/infra/launchd/control_local_services.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
 RUNTIME_ENV_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../launchd" && pwd)/load_runtime_env.sh"
-LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
+LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.investment-studio}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 
 if [[ -z "$DATABASE_URL" ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must explicitly identify the database to rebuild." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must explicitly identify the database to rebuild." >&2
   exit 64
 fi
 case "$DATABASE_URL" in
   postgresql://*|postgresql+psycopg://*) ;;
   *)
-    echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+    echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
     exit 64
     ;;
 esac
@@ -50,7 +50,7 @@ if [[ ! -f "$RUNTIME_ENV_HELPER" ]]; then
   exit 1
 fi
 source "$RUNTIME_ENV_HELPER"
-portfolio_ops_require_password_free_database_url "$DATABASE_URL"
+investment_studio_require_password_free_database_url "$DATABASE_URL"
 source "$BACKUP_HELPER"
 
 PSQL_BIN="${PSQL_BIN:-$(command -v psql || true)}"
@@ -59,15 +59,15 @@ if [[ -z "$PSQL_BIN" || ! -x "$PSQL_BIN" ]]; then
   exit 1
 fi
 
-CONNECTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-schema-rebuild-connection.XXXXXX")"
+CONNECTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-schema-rebuild-connection.XXXXXX")"
 chmod 700 "$CONNECTION_DIR"
 trap 'rm -rf "$CONNECTION_DIR"' EXIT
-portfolio_ops_prepare_libpq_connection "$DATABASE_URL" "$CONNECTION_DIR"
-LIBPQ_DATABASE_URL="$PORTFOLIO_OPS_LIBPQ_DATABASE_URL"
-LIBPQ_PASSFILE="$PORTFOLIO_OPS_LIBPQ_PASSFILE"
+investment_studio_prepare_libpq_connection "$DATABASE_URL" "$CONNECTION_DIR"
+LIBPQ_DATABASE_URL="$INVESTMENT_STUDIO_LIBPQ_DATABASE_URL"
+LIBPQ_PASSFILE="$INVESTMENT_STUDIO_LIBPQ_PASSFILE"
 
 target_identity="$(
-  portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+  investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
     "$PSQL_BIN" "$LIBPQ_DATABASE_URL" \
     --no-password \
     --set ON_ERROR_STOP=1 \
@@ -75,7 +75,7 @@ target_identity="$(
     --no-align \
     --command "SELECT current_database() || '|' || current_user"
 )"
-expected_identity="$PORTFOLIO_OPS_LIBPQ_DATABASE_NAME|$PORTFOLIO_OPS_LIBPQ_DATABASE_USER"
+expected_identity="$INVESTMENT_STUDIO_LIBPQ_DATABASE_NAME|$INVESTMENT_STUDIO_LIBPQ_DATABASE_USER"
 if [[ "$target_identity" != "$expected_identity" ]]; then
   echo "Could not verify the rebuild target identity." >&2
   rm -rf "$CONNECTION_DIR"
@@ -83,13 +83,13 @@ if [[ "$target_identity" != "$expected_identity" ]]; then
 fi
 echo "Verified rebuild target: $target_identity"
 
-SERVICE_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-schema-rebuild-state.XXXXXX")"
+SERVICE_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/investment-studio-schema-rebuild-state.XXXXXX")"
 restart_required="false"
 mutation_started="false"
 
 stop_all_managed_services() {
   local service
-  for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
+  for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web market-data-refresh; do
     launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
   done
 }
@@ -134,7 +134,7 @@ LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   "$SERVICE_CONTROL" stop "$SERVICE_STATE_FILE"
 
 mutation_started="true"
-portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
   "$PSQL_BIN" "$LIBPQ_DATABASE_URL" \
   --no-password \
   --set ON_ERROR_STOP=1 \
@@ -142,7 +142,9 @@ portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
   --command '
     DROP SCHEMA IF EXISTS watchlist CASCADE;
     DROP SCHEMA IF EXISTS portfolio CASCADE;
+    DROP SCHEMA IF EXISTS data_ingestion CASCADE;
     DROP SCHEMA IF EXISTS platform CASCADE;
+    DROP SCHEMA IF EXISTS instrument_data CASCADE;
     DROP SCHEMA IF EXISTS instrument_registry CASCADE;
     CREATE SCHEMA instrument_registry;
     CREATE SCHEMA platform;
@@ -152,19 +154,19 @@ portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
 
 # Every migration chain receives the exact URL that psql just used. ENV_ROOT is
 # intentionally empty so no dotenv source can redirect an individual chain.
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
 
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"

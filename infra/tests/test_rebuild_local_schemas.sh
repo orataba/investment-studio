@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REBUILD_SCRIPT="$REPOSITORY_ROOT/infra/postgres/rebuild_local_schemas.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-rebuild-test.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-rebuild-test.XXXXXX")"
 REAL_PYTHON="$(command -v python3)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -26,7 +26,7 @@ printf '%s\n' \
   'printf "psql" >> "$EVENT_LOG"' \
   'for argument in "$@"; do printf "|%s" "$argument" >> "$EVENT_LOG"; done' \
   'printf "\n" >> "$EVENT_LOG"' \
-  'if [[ "$*" == *"current_database()"* ]]; then printf "%s\n" "portfolio_ops|portfolio_ops"; fi' \
+  'if [[ "$*" == *"current_database()"* ]]; then printf "%s\n" "investment_studio|investment_studio"; fi' \
   > "$MOCK_BIN/psql"
 
 printf '%s\n' \
@@ -35,23 +35,23 @@ printf '%s\n' \
   'action="$1"' \
   'state_file="$2"' \
   'printf "services:%s\n" "$action" >> "$EVENT_LOG"' \
-  'if [[ "$action" == "stop" ]]; then printf "%s\n" platform-api portfolio-web > "$state_file"; fi' \
+  'if [[ "$action" == "stop" ]]; then printf "%s\n" home-api portfolio-web > "$state_file"; fi' \
   > "$PROJECT_ROOT/infra/launchd/control_local_services.sh"
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
-    "$PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL" \
-    "$PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL" \
-    "$PORTFOLIO_OPS_PLATFORM_DATABASE_URL" \
-    "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" \
-    "$PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA" \
-    "$PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA" \
-    "$PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL" \
-    "$PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL" \
-    "$PORTFOLIO_OPS_WATCHLIST_DATABASE_URL" \
-    "$PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL" > "$MIGRATION_ENV"' \
+    "$INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_DATA_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA" \
+    "$INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA" \
+    "$INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL" > "$MIGRATION_ENV"' \
   'printf "migrate\n" >> "$EVENT_LOG"' \
   '[[ "${MIGRATION_FAIL:-false}" != "true" ]]' \
   > "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
@@ -61,12 +61,12 @@ chmod +x \
   "$PROJECT_ROOT/infra/launchd/control_local_services.sh" \
   "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 
-DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops'
-PASSWORD_DATABASE_URL="${DATABASE_URL/portfolio_ops@/portfolio_ops:sensitive-password@}"
+DATABASE_URL='postgresql://investment_studio@127.0.0.1:5432/investment_studio'
+PASSWORD_DATABASE_URL="${DATABASE_URL/investment_studio@/investment_studio:sensitive-password@}"
 export EVENT_LOG MIGRATION_ENV
 
 set +e
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
   "$REBUILD_SCRIPT" > "$TEST_ROOT/unconfirmed.out" 2>&1
 unconfirmed_status=$?
 set -e
@@ -82,7 +82,7 @@ PROJECT_ROOT="$PROJECT_ROOT" \
 PSQL_BIN="$MOCK_BIN/psql" \
 PYTHON_BIN="$REAL_PYTHON" \
 TMPDIR="$TEST_ROOT/tmp" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
   "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
   > "$TEST_ROOT/password-url.out" 2>&1
 password_url_status=$?
@@ -99,7 +99,7 @@ PROJECT_ROOT="$PROJECT_ROOT" \
 PSQL_BIN="$MOCK_BIN/psql" \
 PYTHON_BIN="$REAL_PYTHON" \
 TMPDIR="$TEST_ROOT/tmp" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
   > "$TEST_ROOT/success.out" 2>&1
 
@@ -109,7 +109,7 @@ grep -q -- '--set|ON_ERROR_STOP=1' "$EVENT_LOG"
 grep -q -- '--single-transaction' "$EVENT_LOG"
 grep -q 'DROP SCHEMA IF EXISTS platform CASCADE' "$EVENT_LOG"
 grep -q 'CREATE SCHEMA platform' "$EVENT_LOG"
-expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_registry|platform|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
+expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_data|data_ingestion|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
 [[ "$(cat "$MIGRATION_ENV")" == "$expected_migration_env" ]]
 
 : > "$EVENT_LOG"
@@ -119,7 +119,7 @@ PSQL_BIN="$MOCK_BIN/psql" \
 PYTHON_BIN="$REAL_PYTHON" \
 TMPDIR="$TEST_ROOT/tmp" \
 MIGRATION_FAIL=true \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
   > "$TEST_ROOT/failure.out" 2>&1
 failure_status=$?

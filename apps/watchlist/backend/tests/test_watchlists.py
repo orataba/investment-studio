@@ -1042,15 +1042,9 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
     assert overview_view["columns"] == [
-        "instrument_name",
-        "attr.coverage_status",
-        "return_chart_1m",
-        "latest_quote",
-        "latest_quote_date",
-        "return_1w",
-        "return_mtd",
-        "return_ytd",
-        "attr.current_drawdown",
+        "instrument_name", "instrument_type", "attr.instrument_taxonomy_path",
+        "attr.research_stage", "return_chart_1m", "return_ytd",
+        "attr.current_drawdown", "attr.risk_attention", "attr.research_updated_at", "latest_quote_date",
     ]
     classification_view = next(
         item
@@ -1243,7 +1237,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
     assert payload["detail_view_type"] == "index"
     assert payload["detail_subject_id"] == "index-csi-300"
 
-    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from investment_studio_instrument_core import instrument_store as shared_store
     from watchlist_app.db.session import get_session_factory
 
     assert shared_store.upsert_price_bars(
@@ -1511,6 +1505,17 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     assert "primary_geographic_exposure" not in definition_keys
     assert "etf_index_fit" not in definition_keys
     assert "index_methodology_quality" not in definition_keys
+
+    wrong_market_response = client.put(
+        "/api/instrument-attributes/instruments/equity-demo/settings",
+        json={
+            "taxonomy_node_id": "equity-hk-information-technology",
+            "coverage_status": "Invested",
+            "updated_by": "test",
+        },
+    )
+    assert wrong_market_response.status_code == 422
+    assert "Registry exchange market" in wrong_market_response.json()["detail"]
 
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
@@ -2226,15 +2231,14 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
     assert row["return_1m"] == pytest.approx(10.0, abs=1e-6)
     assert row["return_3m"] == pytest.approx(21.0, abs=1e-6)
     assert row["return_6m"] == pytest.approx(34.444444, abs=1e-6)
-    # The fixture has less than one year of history and intentionally sparse
-    # daily observations. Annualized return remains unavailable, while path
-    # metrics describe the available canonical observations and carry an
-    # explicit partial-data-quality status in the detail payload.
+    # Endpoint-to-endpoint returns remain available because their boundaries
+    # exist. Annualized and path-dependent risk metrics fail closed because the
+    # intentionally sparse daily series cannot reveal the path inside gaps.
     assert row["annualized_return"] is None
-    assert row["max_drawdown"] == pytest.approx(0.0)
-    assert row["volatility"] is not None
-    assert row["sharpe_ratio"] is not None
-    assert row["attr.current_drawdown"] == pytest.approx(0.0)
+    assert row["max_drawdown"] is None
+    assert row["volatility"] is None
+    assert row["sharpe_ratio"] is None
+    assert row["attr.current_drawdown"] is None
 
     field_registry = client.get("/api/field-registry", params={"instrument_type": "index"})
     assert field_registry.status_code == 200
@@ -2394,8 +2398,15 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert risk_payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
     assert risk_payload["scatter_points"] == []
     assert risk_metrics["annualized_return"]["investment"] is None
-    assert risk_metrics["volatility"]["investment"] is not None
-    assert risk_payload["drawdown_summary"] is not None
+    assert risk_metrics["volatility"]["investment"] is None
+    assert risk_metrics["sharpe_ratio"]["investment"] is None
+    assert risk_metrics["max_drawdown"]["investment"] is None
+    assert risk_metrics["calmar_ratio"]["investment"] is None
+    assert risk_payload["drawdown_summary"] is None
+    assert risk_payload["current_drawdown"] is None
+    assert risk_payload["risk_structure"] is None
+    assert risk_payload["current_watch"] is None
+    assert risk_payload["change_monitor"] is None
     assert risk_payload["data_quality"]["status"] == "partial_missing_observations"
     assert risk_payload["data_quality"]["note"]
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
@@ -2681,7 +2692,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     )
     assert recalc_archived_peer_response.status_code == 200
 
-    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from investment_studio_instrument_core import instrument_store as shared_store
     from watchlist_app.db import session as session_module
 
     shared_store.archive_instrument(
@@ -2900,7 +2911,7 @@ def test_watchlist_rejects_unknown_shared_instrument_ids(client: TestClient) -> 
         json={"instrument_ids": ["not-in-registry"]},
     )
     assert add_response.status_code == 404
-    assert "Database Dashboard" in add_response.json()["detail"]
+    assert "backend maintenance" in add_response.json()["detail"]
 
 
 def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
@@ -3433,7 +3444,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
 def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     client: TestClient,
 ) -> None:
-    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from investment_studio_instrument_core import instrument_store as shared_store
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
     from watchlist_app.services.recalc_worker import process_next_recalc_job
@@ -3914,7 +3925,7 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
         json={"instrument_ids": ["fund-archived"]},
     )
     assert add_response.status_code == 404
-    assert "Database Dashboard" in add_response.json()["detail"]
+    assert "backend maintenance" in add_response.json()["detail"]
 
 
 def test_watchlist_add_returns_502_when_shared_registry_is_unreachable(
@@ -4111,7 +4122,7 @@ def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
     assert overview_view["default_group_by"] == "none"
-    assert "latest_cumulative_nav" in overview_view["columns"]
+    assert "attr.risk_attention" in overview_view["columns"]
 
     screener = client.post(
         "/api/screener/query",
@@ -4314,7 +4325,7 @@ def test_default_all_public_funds_watchlist_removes_archived_registry_members(
     assert initial.status_code == 200
     assert initial.json()["item_count"] == len(PUBLIC_FUND_IDS)
 
-    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from investment_studio_instrument_core import instrument_store as shared_store
     from watchlist_app.db.session import get_session_factory
 
     archived = shared_store.archive_instrument(

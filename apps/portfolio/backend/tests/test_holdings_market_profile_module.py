@@ -474,6 +474,7 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
         base_currency="USD",
         nav=10_000.0,
         convert_amount_on=lambda amount, **_kwargs: (float(amount) * 2.0, False),
+        instrument_detail_cache_get=lambda *_args: {"currency": "USD"},
     )
 
     assert [row["derivative_contract_id"] for row in rows] == [
@@ -617,6 +618,66 @@ def test_negative_settled_cash_is_an_explicit_operational_alert() -> None:
                 "or financing fact."
             ),
             "related_line_ids": ["cash:USD"],
+        }
+    ]
+
+
+@pytest.mark.parametrize("premium_currency", ["USD", "HKD"])
+def test_long_option_exposure_and_expiry_are_first_class_holding_fields(premium_currency: str) -> None:
+    contract = _option_contract(
+        "long-option",
+        expiry_date="2026-01-10",
+        strike="25",
+    )
+    contract["currency"] = premium_currency
+
+    def convert(amount, **kwargs):
+        assert kwargs["from_currency"] == "USD"
+        return float(amount), False
+
+    fields = holdings_market_profile.option_contract_exposure_fields(
+        derivative_contract=contract,
+        quantity=2.0,
+        as_of_date=date(2026, 1, 3),
+        base_currency="USD",
+        convert_amount_on=convert,
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        instrument_detail_cache_get=lambda *_args: {"currency": "USD"},
+    )
+
+    assert fields == {
+        "open_contract_quantity": 2.0,
+        "required_underlying_quantity": 200.0,
+        "related_underlying_id": "equity-a",
+        "expiry_date": "2026-01-10",
+        "days_to_expiry": 7,
+        "strike": 25.0,
+        "strike_currency": "USD",
+        "option_type": "call",
+        "contract_multiplier": 100.0,
+        "strike_notional": 5_000.0,
+        "strike_notional_base": 5_000.0,
+    }
+
+    alerts = holdings_market_profile.summarize_holdings_operational_status(
+        [
+            {
+                "line_id": "broker:long-option",
+                "holding_kind": "derivative_contract",
+                "derivative_contract": contract,
+                **fields,
+            }
+        ],
+        as_of_date=date(2026, 1, 3),
+    )["operational_alerts"]
+    assert alerts == [
+        {
+            "code": "option_expiry_next_7_days",
+            "severity": "warning",
+            "title": "Option expiry within 7 days",
+            "message": "1 open option line(s) require expiry review.",
+            "related_line_ids": ["broker:long-option"],
         }
     ]
 

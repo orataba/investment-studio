@@ -300,7 +300,7 @@ def _build_monitoring_dashboard(session: Session) -> dict[str, object]:
         profile = research_profiles.get(instrument_id)
         notes = research_notes_by_instrument.get(instrument_id, [])
         follow_up_dates = [
-            note.follow_up_date for note in notes if note.follow_up_date is not None
+            note.follow_up_date for note in notes if note.follow_up_date is not None and note.completed_at is None
         ]
         next_follow_up_date = min(follow_up_dates) if follow_up_dates else None
         next_review_date = profile.next_review_date if profile is not None else None

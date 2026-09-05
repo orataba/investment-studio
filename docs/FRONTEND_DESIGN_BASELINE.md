@@ -1,11 +1,11 @@
 # Frontend Design Baseline
 
-本文档记录当前前端设计约束，作为 `Platform / Watchlist / Portfolio` 后续 UI 修改的基线。
+本文档记录当前前端设计约束，作为 Investment Studio 入口、Watchlist 和 Portfolio 后续 UI 修改的基线。
 
 ## Product Hierarchy
 
-- `Platform`
-  是平台入口和 `Database Dashboard`，信息密度低于业务 app，但仍然使用数据终端式布局。
+- `Investment Studio`
+  是全屏登录页和轻量应用入口，提供 Watchlist、Portfolio、Regime 三个入口；不提供后台数据维护页面。
 - `Watchlist`
   是公募 / 私募 / ETF / 股票 / 指数工作区，详情页属于嵌套资产 detail，header 轻于 Portfolio。
 - `Portfolio`
@@ -21,10 +21,12 @@
 ## Visual System
 
 - 页面背景使用白色，不再使用米黄、沙色、暖灰渐变或装饰性底色。
+- 首页、Watchlist、Portfolio 和 Regime 的页面外框统一居中、最大宽度 1680px，桌面左右内边距 18px；640px 及以下使用 14px。导航与主内容对齐，入口列表不再另设较窄的外框；固定预留滚动条空间，避免长短页面切换时横向跳动。
 - 表格、panel、筛选区和图表容器以白底为主；层级通过黑色标题、灰色边线、字号和间距表达。
 - `--band` / `--*-band` 只用于表头、分组行和轻量 hover，颜色限定为冷中性灰。
 - 状态和涨跌保留红绿语义色，但状态 pill 不再依赖大面积彩色底。
 - 主交互色使用蓝色，选中状态优先用下划线、边线或左侧 marker，不使用大面积色块。
+- 语言选择与页面导航同行，和退出等工具按钮统一为 30px 高、直角、细灰边框；不单独占据一行页头。窄屏允许自然换行。
 
 ## Typography
 
@@ -72,6 +74,7 @@
 - Overview chart 使用白底、细灰 grid、蓝色主线和克制 tooltip。
 - Portfolio overview 主图使用 `Portfolio Value / TWR Index` 口径；drawdown 是主图下方的附属区，并固定基于 TWR，不和资产规模曲线混为同级。
 - 组合价值、fund quote、performance、risk 等图表优先保持可扫读，不使用渐变背景或装饰性卡片。
+- 图表时间跨度选项放在标题右侧；时间滑块紧贴图表下沿，不另设底色卡片。轨道使用 2px 浅灰线，范围选择用灰蓝色细线；手柄为白底直边矩形，无阴影，保留蓝色 hover / 键盘焦点反馈。
 - Benchmark 对比曲线只在双方有重叠日期窗口时展示；图表横轴按真实日期比例定位，不把缺口期压缩成等距样本。
 - Risk correlation 默认 scope 为 `Current Holdings`，`Full Universe` 是显式可选分析。矩阵只在成员、period start/end、日期顺序与完整窗口全部一致时渲染；常数序列、缺成员或缺日期显示结构化 unavailable reason，不能 zero-fill 或 pairwise fallback；
 - 数据 palette 避免棕色、橙色、米黄色作为主视觉；必要的警示含义用文字色或边框表达。
@@ -97,7 +100,7 @@
 提交前至少执行：
 
 ```bash
-npm --prefix apps/platform/frontend run build
+npm --prefix home/frontend run build
 npm --prefix apps/watchlist/frontend run build
 npm --prefix apps/portfolio/frontend run build
 git diff --check

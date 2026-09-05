@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from portfolio_ops_instrument_core import (
+from investment_studio_instrument_core import (
     FUND_INSTRUMENT_TYPES,
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
@@ -2268,7 +2268,14 @@ class CanonicalRecalcService:
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         )
-        current_drawdown = _current_drawdown(calculation_nav_points)
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
+        current_drawdown = (
+            None
+            if has_unresolved_gaps
+            else _current_drawdown(calculation_nav_points)
+        )
         if current_drawdown is not None:
             watchlist_attributes["current_drawdown"] = current_drawdown
         else:
@@ -2342,6 +2349,12 @@ class CanonicalRecalcService:
             valuation_selection=valuation_selection,
             total_return_selection=nav_selection,
         )
+        chart_payload["research_returns"] = {
+            "metadata": _selection_metadata(nav_selection),
+            "frequency": calculation_frequency_profile,
+            "currency": str(nav_selection["points"][-1]["currency"]) if nav_selection["points"] else shared_currency,
+            "points": [{"date": p["as_of_date"].isoformat(), "value": p["value"]} for p in calculation_nav_points],
+        }
         peer_comparison = self._peer_comparison_payload(
             session,
             instrument_id=instrument_id,
@@ -2393,6 +2406,9 @@ class CanonicalRecalcService:
             exposure_snapshot=exposure_snapshot,
             now=now,
         )
+
+        from watchlist_app.services.risk_workbench import refresh_risk_cases
+        refresh_risk_cases(session, [instrument_id])
 
         shared_instrument_at_end = (
             get_shared_instrument(instrument_id) if uses_shared_market_data else shared_instrument
@@ -2490,7 +2506,10 @@ class CanonicalRecalcService:
                 if window is not None
                 else None
             )
-        max_drawdown = _compute_drawdown(nav_points)
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
+        max_drawdown = None if has_unresolved_gaps else _compute_drawdown(nav_points)
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
             session,
@@ -2537,10 +2556,15 @@ class CanonicalRecalcService:
         now: datetime,
     ):
         latest = nav_points[-1]
-        volatility = _compute_volatility(nav_points)
-        downside_volatility = _compute_downside_deviation(nav_points)
-        sharpe_ratio = _compute_sharpe(nav_points)
-        sortino_ratio = _compute_sortino(nav_points)
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
+        volatility = None if has_unresolved_gaps else _compute_volatility(nav_points)
+        downside_volatility = (
+            None if has_unresolved_gaps else _compute_downside_deviation(nav_points)
+        )
+        sharpe_ratio = None if has_unresolved_gaps else _compute_sharpe(nav_points)
+        sortino_ratio = None if has_unresolved_gaps else _compute_sortino(nav_points)
         return self.snapshot_repository.replace_risk(
             session,
             snapshot_id=f"risk:{instrument_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
@@ -3298,11 +3322,27 @@ class CanonicalRecalcService:
         ) > 0
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
-        drawdown_summary = _compute_drawdown_summary(nav_points)
-        current_drawdown = _current_drawdown(nav_points)
-        current_watch = _build_current_risk_watch(nav_points, drawdown_summary)
-        risk_structure = _build_risk_structure(nav_points, drawdown_summary)
-        change_monitor = _build_risk_change_monitor(nav_points, drawdown_summary)
+        drawdown_summary = (
+            None if has_unresolved_gaps else _compute_drawdown_summary(nav_points)
+        )
+        current_drawdown = (
+            None if has_unresolved_gaps else _current_drawdown(nav_points)
+        )
+        current_watch = (
+            None
+            if has_unresolved_gaps
+            else _build_current_risk_watch(nav_points, drawdown_summary)
+        )
+        risk_structure = (
+            None
+            if has_unresolved_gaps
+            else _build_risk_structure(nav_points, drawdown_summary)
+        )
+        change_monitor = (
+            None
+            if has_unresolved_gaps
+            else _build_risk_change_monitor(nav_points, drawdown_summary)
+        )
         peer_metrics_by_key = {
             str(row.get("metric_key")): row
             for row in (peer_comparison or {}).get("metrics", [])
@@ -3353,7 +3393,7 @@ class CanonicalRecalcService:
                     "gap_detection_basis"
                 ),
                 "note": (
-                    "Metrics use the available canonical observations; missing sessions may understate intragap path variation."
+                    "Path-dependent risk metrics are withheld because canonical sessions are missing. Endpoint returns remain available."
                     if has_unresolved_gaps
                     else None
                 ),

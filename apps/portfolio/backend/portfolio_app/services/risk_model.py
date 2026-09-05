@@ -71,12 +71,16 @@ def _normalize_risk_window(value: object) -> int:
 
 def _normalized_covariance_model(value: object) -> str:
     normalized = str(value or RESEARCH_COVARIANCE_MODEL_ID).strip().lower()
-    return normalized if normalized in SUPPORTED_COVARIANCE_MODELS else RESEARCH_COVARIANCE_MODEL_ID
+    if normalized not in SUPPORTED_COVARIANCE_MODELS:
+        raise ValueError(f"Unsupported production covariance model: {value}.")
+    return normalized
 
 
 def _normalized_contribution_mode(value: object) -> str:
     normalized = str(value or RESEARCH_RISK_CONTRIBUTION_MODE).strip().lower()
-    return normalized if normalized in SUPPORTED_CONTRIBUTION_MODES else RESEARCH_RISK_CONTRIBUTION_MODE
+    if normalized not in SUPPORTED_CONTRIBUTION_MODES:
+        raise ValueError(f"Unsupported production risk-contribution mode: {value}.")
+    return normalized
 
 
 def normalize_portfolio_risk_policy(

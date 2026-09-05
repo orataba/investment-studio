@@ -1,0 +1,654 @@
+.page-shell {
+  padding: 20px clamp(16px, 2.6vw, 40px) 48px;
+}
+
+.terminal-page,
+.watchlists-page,
+.instrument-detail-shell {
+  gap: 16px;
+}
+
+/* Application chrome stays quiet so the data begins near the top of the page. */
+.watchlist-breadcrumbs,
+.instrument-detail-topbar {
+  min-height: 38px;
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.watchlist-breadcrumb-separator,
+.instrument-detail-breadcrumb-separator {
+  color: var(--faint);
+}
+
+.watchlist-entry-shell {
+  padding: 0;
+}
+
+.watchlist-entry-hero,
+.watchlists-pagehead > .watchlist-app-title,
+.instrument-detail-hero,
+.listed-detail-hero {
+  border: 0;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.watchlist-entry-hero {
+  align-items: baseline;
+  min-height: 86px;
+  margin-top: 12px;
+  padding: 19px 0 16px;
+}
+
+.watchlist-entry-title {
+  font-size: clamp(25px, 2.5vw, 32px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.watchlist-entry-hero-meta {
+  padding: 0;
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 14px;
+}
+
+.watchlist-entry-list-shell,
+.watchlist-entry-grid {
+  gap: 0;
+  border-color: var(--line-strong);
+}
+
+.watchlist-entry-card {
+  padding: 15px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.watchlist-entry-card:hover,
+.watchlist-entry-card-system:hover {
+  border-color: var(--line);
+  background: var(--band);
+  box-shadow: none;
+  transform: none;
+}
+
+.watchlist-entry-card-system {
+  background: transparent;
+}
+
+.watchlist-entry-card-leading {
+  color: var(--faint);
+}
+
+.watchlist-entry-grip button,
+.watchlist-menu-trigger,
+.watchlist-entry-card-menu {
+  border-radius: 0;
+}
+
+.watchlist-entry-card-metrics {
+  padding-right: 4px;
+}
+
+.watchlist-entry-card-metrics strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.watchlist-entry-card-arrow {
+  color: var(--faint);
+  transition: none;
+}
+
+.watchlist-entry-card:hover .watchlist-entry-card-arrow {
+  color: var(--accent);
+  transform: none;
+}
+
+.watchlist-entry-create-card {
+  padding: 15px 0 0;
+  border: 0;
+}
+
+.watchlist-create-link {
+  min-height: 32px;
+  padding: 0;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.watchlist-menu,
+.watchlists-menu,
+.instrument-chart-menu-panel,
+.instrument-product-tags-picker-panel,
+.instrument-chart-compare-results {
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--ink);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgba(23, 33, 43, 0.13);
+}
+
+.watchlist-menu button,
+.watchlists-menu-item,
+.instrument-chart-compare-results button {
+  border-radius: 0;
+}
+
+.watchlist-menu button:hover,
+.watchlists-menu-item:hover,
+.watchlists-menu-item-active {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.watchlists-pagehead {
+  gap: 11px;
+}
+
+.watchlist-app-title {
+  display: flex;
+  align-items: center;
+  min-height: 68px;
+  padding: 16px 0;
+  font-size: 27px;
+  font-weight: 500;
+}
+
+.watchlists-switch-row,
+.instrument-detail-tabs-row {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.watchlist-switcher-chip,
+.instrument-detail-tab {
+  border-radius: 0;
+}
+
+.watchlist-switcher-chip-active,
+.instrument-detail-tab-active {
+  color: var(--ink) !important;
+}
+
+.instrument-detail-tab-active::after {
+  height: 2px;
+  background: var(--accent);
+}
+
+.watchlists-main {
+  border: 0;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.watchlists-toolbar {
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--band);
+}
+
+.toolbar button,
+.toolbar-link,
+.toolbar-select,
+.watchlists-toolbar-button,
+.watchlists-pagination-button,
+.watchlists-square-button,
+.editor-actions button,
+.table-action,
+.instrument-detail-actions button {
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.button-primary,
+.toolbar-link-active {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: #ffffff !important;
+}
+
+.watchlist-switcher-chip-active {
+  border-color: transparent !important;
+  border-bottom-color: var(--accent) !important;
+  background: transparent !important;
+  color: var(--ink) !important;
+}
+
+.watchlist-switcher-chip-active .watchlist-menu-trigger {
+  color: var(--muted);
+}
+
+.watchlists-current-search input,
+.watchlists-inline-select,
+.watchlists-view-group,
+.form-input,
+.form-select,
+.form-textarea,
+.instrument-chart-compare select,
+.instrument-settings-taxonomy-select {
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.watchlists-toolbar-count {
+  border-radius: 2px;
+  background: var(--ink);
+}
+
+.watchlists-main .table-shell {
+  border: 0;
+  background: #ffffff;
+}
+
+.watchlists-table thead th,
+.monitoring-table thead th,
+.nav-history-table thead th,
+.instrument-detail-shell table thead th {
+  border-bottom-color: var(--line-strong);
+  background: var(--band);
+  color: var(--muted);
+}
+
+.watchlists-table tbody tr:hover,
+.monitoring-table tbody tr:hover,
+.instrument-detail-shell table tbody tr:hover {
+  background: rgba(23, 107, 120, 0.035);
+}
+
+.watchlists-group-row td,
+.watchlists-instrument-type-group-row td {
+  background: var(--band);
+}
+
+.watchlists-pagination {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.watchlists-modal-backdrop,
+.instrument-modal-backdrop {
+  background: rgba(23, 33, 43, 0.28);
+  backdrop-filter: none;
+}
+
+.watchlists-modal-header,
+.watchlists-modal-actions {
+  background: var(--band);
+}
+
+.instrument-detail-hero {
+  min-height: 118px;
+  padding: 21px 0 18px;
+}
+
+.instrument-detail-title {
+  font-size: clamp(31px, 3.6vw, 42px);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+
+.instrument-detail-badges {
+  gap: 14px;
+  border-color: var(--line);
+}
+
+.instrument-detail-badges .context-chip {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.instrument-detail-badges .context-chip::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.instrument-detail-tabs-row {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: none;
+}
+
+/* Sections use rules and spacing instead of stacked rounded cards. */
+.instrument-quote-panel,
+.instrument-performance-shell,
+.instrument-risk-shell,
+.instrument-price-shell,
+.instrument-edit-surface,
+.instrument-corporate-actions-panel,
+.listed-data-panel,
+.listed-chart-panel,
+.instrument-research-section,
+.instrument-monitoring-section,
+.instrument-people-section,
+.instrument-strategy-section,
+.instrument-documents-section,
+.detail-grid > .panel,
+.monitoring-overview-grid + .panel,
+.terminal-page > .panel:not(.instrument-detail-shell) {
+  border: 0;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.terminal-page > .panel:not(.instrument-detail-shell) {
+  min-width: 0;
+}
+
+.terminal-page > .panel:not(.instrument-detail-shell) .table-shell {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.instrument-section-header,
+.instrument-performance-section-header,
+.instrument-risk-section-header,
+.instrument-price-section-header,
+.instrument-research-section-header,
+.instrument-monitoring-section-header,
+.instrument-people-section-header,
+.instrument-strategy-section-header,
+.instrument-documents-section-header,
+.listed-data-panel .panel-header,
+.terminal-page > .panel:not(.instrument-detail-shell) > .panel-header {
+  padding: 13px 0 11px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.instrument-section-title {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.instrument-card-grid,
+.listed-metric-grid,
+.instrument-quote-facts-grid,
+.instrument-monitoring-facts-grid {
+  gap: 0;
+}
+
+.instrument-card-grid > *,
+.listed-metric-grid > *,
+.instrument-quote-facts-grid > *,
+.instrument-monitoring-facts-grid > * {
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.instrument-card-grid > *:last-child,
+.listed-metric-grid > *:last-child,
+.instrument-quote-facts-grid > *:last-child,
+.instrument-monitoring-facts-grid > *:last-child {
+  border-right: 0;
+}
+
+/* Unified chart language and unclipped plotting surfaces. */
+.instrument-chart-shell,
+.instrument-chart-main,
+.instrument-chart-stage,
+.instrument-chart-plot-shell,
+.instrument-chart-tooltip-layer,
+.instrument-drawdown-shell,
+.instrument-rolling-risk-chart,
+.instrument-rolling-risk-chart-plot,
+.listed-chart-panel,
+.listed-chart-shell {
+  min-width: 0;
+  overflow: visible;
+}
+
+.instrument-line-chart,
+.instrument-drawdown-chart,
+.instrument-rolling-risk-chart-svg,
+.listed-candlestick-chart,
+.listed-growth-chart,
+.listed-index-level-chart {
+  display: block;
+  max-width: 100%;
+  background: #ffffff;
+  overflow: visible;
+}
+
+.instrument-chart-band {
+  fill: var(--studio-chart-band);
+}
+
+.instrument-gridline,
+.instrument-gridline-vertical,
+.instrument-gridline-axis-stub,
+.instrument-rolling-risk-guide,
+.listed-chart-grid {
+  stroke: var(--studio-chart-grid);
+  stroke-width: 0.75;
+  stroke-dasharray: 0;
+}
+
+.instrument-gridline-emphasis,
+.listed-chart-divider {
+  stroke: var(--studio-chart-grid-strong);
+  stroke-width: 1;
+}
+
+.instrument-y-axis-label,
+.instrument-x-axis-label,
+.instrument-rolling-risk-axis-label,
+.instrument-rolling-risk-x-label,
+.listed-chart-axis {
+  fill: var(--studio-chart-axis);
+}
+
+.instrument-line-area,
+.instrument-rolling-risk-area,
+.instrument-drawdown-area,
+.listed-index-level-area {
+  fill: var(--studio-chart-area);
+}
+
+.instrument-drawdown-area {
+  fill: rgba(166, 70, 67, 0.08);
+}
+
+.instrument-line-path,
+.instrument-rolling-risk-line,
+.instrument-drawdown-line,
+.listed-index-level-line,
+.listed-growth-line {
+  stroke: var(--studio-chart-primary);
+  stroke-width: 1.7;
+}
+
+.instrument-line-path-benchmark,
+.instrument-rolling-risk-line-benchmark,
+.instrument-drawdown-line-benchmark {
+  stroke: var(--studio-chart-secondary);
+  stroke-width: 1.45;
+}
+
+.instrument-line-path-secondary {
+  stroke: var(--studio-chart-tertiary);
+  stroke-width: 1.45;
+}
+
+.instrument-drawdown-line {
+  stroke: var(--studio-chart-negative);
+}
+
+.instrument-line-dot,
+.instrument-hover-point,
+.instrument-hover-point-drawdown,
+.instrument-rolling-risk-point,
+.instrument-rolling-risk-endpoint {
+  fill: #ffffff;
+  stroke: var(--studio-chart-primary);
+}
+
+.instrument-hover-point-benchmark {
+  fill: #ffffff;
+  stroke: var(--studio-chart-secondary);
+}
+
+.instrument-hover-point-drawdown {
+  stroke: var(--studio-chart-negative);
+}
+
+.instrument-series-label span {
+  color: var(--studio-chart-primary);
+}
+
+.instrument-drawdown-header-value-primary {
+  color: var(--studio-chart-negative);
+}
+
+.instrument-series-label-benchmark-row span,
+.instrument-drawdown-header-value-benchmark {
+  color: var(--studio-chart-secondary);
+}
+
+.listed-candle-up line,
+.listed-candle-up rect {
+  stroke: var(--studio-chart-positive);
+  fill: var(--studio-chart-positive);
+}
+
+.listed-candle-down line,
+.listed-candle-down rect {
+  stroke: var(--studio-chart-negative);
+  fill: var(--studio-chart-negative);
+}
+
+.instrument-chart-tooltip,
+.instrument-rolling-risk-tooltip {
+  z-index: 20;
+  border-color: var(--line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(23, 33, 43, 0.12);
+  backdrop-filter: none;
+}
+
+.listed-segmented-control,
+.instrument-chart-settings-trigger {
+  border-radius: 0;
+}
+
+.investment-research-importance,
+.investment-research-note-tags span {
+  border-radius: 2px;
+}
+
+.listed-segmented-control button.active {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.instrument-chart-settings-trigger:hover,
+.instrument-chart-settings-trigger-active {
+  border-color: var(--accent);
+  background: #ffffff;
+  color: var(--accent);
+}
+
+.monitoring-page-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: flex-start;
+}
+
+.monitoring-page-header > div:first-child {
+  min-width: 0;
+}
+
+.monitoring-page-header > .toolbar {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.monitoring-page-header .monitoring-toolbar-field {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .page-shell {
+    padding: 16px 14px 32px;
+  }
+
+  .watchlist-entry-hero,
+  .instrument-detail-hero {
+    padding: 18px 0 16px;
+  }
+
+  .watchlists-toolbar {
+    align-items: stretch;
+  }
+
+  .instrument-detail-tabs-row {
+    overflow-x: auto;
+  }
+
+  .instrument-detail-tabs {
+    flex-wrap: nowrap;
+  }
+
+  .listed-chart-shell {
+    overflow-x: auto;
+  }
+
+  .monitoring-page-header > .toolbar {
+    justify-content: flex-start;
+  }
+
+  .monitoring-page-header .monitoring-toolbar-field {
+    width: 100%;
+  }
+
+  .monitoring-page-header .toolbar-select {
+    min-width: 0;
+    width: 100%;
+  }
+}

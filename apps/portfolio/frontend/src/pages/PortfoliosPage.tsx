@@ -1,3 +1,4 @@
+import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
@@ -13,7 +14,7 @@ import {
   type SupportedPortfolioCurrency,
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
-import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildPortfolioSectionPath, HOME_URL } from '../lib/navigation'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
@@ -309,11 +310,12 @@ export default function PortfoliosPage() {
     <section className="terminal-page">
       <header className="portfolio-entry-shell">
         <div className="workspace-breadcrumbs">
-          <a href={PLATFORM_HOME_URL} className="workspace-breadcrumb-link">
+          <a data-workspace-link href={HOME_URL} className="workspace-breadcrumb-link">
             Home
           </a>
           <span className="workspace-breadcrumb-separator">/</span>
           <span className="workspace-breadcrumb-current">Portfolio</span>
+          <LanguageSelector />
         </div>
         <div className="portfolio-entry-hero">
           <h1 className="portfolio-entry-title">All Portfolios</h1>
@@ -415,7 +417,7 @@ export default function PortfoliosPage() {
             </div>
             <Link className="portfolio-entry-card-main" to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}>
               <div className="portfolio-entry-card-title-stack">
-                <strong>{portfolio.portfolio_name}</strong>
+                <strong translate="no">{portfolio.portfolio_name}</strong>
                 <span>
                   {portfolio.securities_count} Securities | Started {formatAsOfDate(portfolio.inception_date)} | As of {formatAsOfDate(portfolio.as_of_date)}
                 </span>

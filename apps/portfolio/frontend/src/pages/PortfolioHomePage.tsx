@@ -19,6 +19,7 @@ import HoldingsSectionTables, {
   type HoldingsSectionVisibleColumns,
 } from '../components/HoldingsSectionTables'
 import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
+import HoldingsOperationalStatus from '../components/HoldingsOperationalStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import { OPTION_OUTCOME_RECORDED_EVENT } from '../components/OptionOutcomePrompt'
@@ -280,12 +281,13 @@ type HoldingsTableView = PortfolioTableViewOption & {
 }
 
 type HoldingsViewStore = {
+  systemViewSignature: string
   activeViewId: string
   views: HoldingsTableView[]
 }
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
-const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.columnWidths.v4'
+const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'investment_studio.portfolio.holdings.columnWidths.v4'
 const HOLDINGS_VIEW_AUTOSAVE_DELAY_MS = 250
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
@@ -557,6 +559,14 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   },
 ]
 
+const HOLDINGS_SYSTEM_VIEW_SIGNATURE = JSON.stringify(
+  SYSTEM_HOLDINGS_VIEWS.map((view) => ({
+    id: view.id,
+    name: view.name,
+    state: view.state,
+  })),
+)
+
 const HOLDINGS_GROUP_BY_OPTIONS: Array<{
   value: HoldingsGroupByKey
   label: string
@@ -585,6 +595,16 @@ function holdingName(row: PortfolioHoldingRow) {
 }
 
 function holdingReferenceId(row: PortfolioHoldingRow) {
+  if (
+    row.holding_kind === 'settled_cash' ||
+    row.holding_kind === 'restricted_cash' ||
+    row.holding_kind === 'pending_subscription' ||
+    row.holding_kind === 'settlement_receivable' ||
+    row.holding_kind === 'settlement_payable' ||
+    row.holding_kind === 'position_recognition_adjustment'
+  ) {
+    return row.position_reference_id ?? row.instrument_core?.instrument_id ?? row.line_id
+  }
   return (
     row.derivative_contract_id ??
     row.position_reference_id ??
@@ -635,7 +655,7 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
     case 'quote_series_unavailable':
       return 'Trend unavailable because no eligible quote series was found.'
     case 'total_return_basis_unavailable':
-      return 'Trend unavailable because Registry has no confirmed total-return basis for this instrument.'
+      return 'Trend unavailable because shared asset data has no confirmed total-return basis for this instrument.'
     case 'total_return_series_unavailable':
       return 'Trend unavailable because the confirmed total-return series has no usable observations.'
     default:
@@ -1682,9 +1702,11 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
         .filter((view): view is HoldingsTableView => view !== null)
     : []
   const storedViewById = new Map(storedViews.map((view) => [view.id, view]))
+  const storedSystemViewsAreCurrent =
+    record.systemViewSignature === HOLDINGS_SYSTEM_VIEW_SIGNATURE
   const systemViews = SYSTEM_HOLDINGS_VIEWS.map((systemView) => {
     const storedView = storedViewById.get(systemView.id)
-    return storedView
+    return storedSystemViewsAreCurrent && storedView
       ? {
           ...systemView,
           state: storedView.state,
@@ -1701,7 +1723,11 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
     typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
       ? record.activeViewId
       : SYSTEM_HOLDINGS_VIEWS[0].id
-  return { activeViewId, views }
+  return {
+    systemViewSignature: HOLDINGS_SYSTEM_VIEW_SIGNATURE,
+    activeViewId,
+    views,
+  }
 }
 
 function getHoldingsViews(store: HoldingsViewStore) {
@@ -2541,10 +2567,14 @@ export default function PortfolioHomePage() {
     portfolioId: string
     serializedStore: string
   } | null>(null)
+  const currentPortfolioIdRef = useRef(portfolioId)
+  currentPortfolioIdRef.current = portfolioId
   const holdingsViewSaveQueueRef = useRef(new SerialTaskQueue())
   const [holdingsViewStoreReadyPortfolioId, setHoldingsViewStoreReadyPortfolioId] =
     useState<string | null>(null)
   const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
+  const [holdingsViewLoadRetryToken, setHoldingsViewLoadRetryToken] = useState(0)
+  const [holdingsViewSaveRetryToken, setHoldingsViewSaveRetryToken] = useState(0)
   const [activeHoldingsViewId, setActiveHoldingsViewId] = useState(initialHoldingsViewStore.activeViewId)
   const [holdingsColumns, setHoldingsColumns] = useState<HoldingsColumnKey[]>(() => initialHoldingsViewState.columns)
   const [holdingsSectionVisibleColumns, setHoldingsSectionVisibleColumns] =
@@ -2900,9 +2930,6 @@ export default function PortfolioHomePage() {
   function handleSelectInstrument(instrumentId: string | null, holdingLineId?: string) {
     const normalizedInstrumentId = instrumentId?.trim() || null
     if (!normalizedInstrumentId || !portfolioId) {
-      return
-    }
-    if (normalizedInstrumentId.toLowerCase().startsWith('cash:')) {
       return
     }
     const next = new URLSearchParams(searchParams)
@@ -3474,7 +3501,9 @@ export default function PortfolioHomePage() {
           : defaultStore
         persistedHoldingsViewStoreRef.current = {
           portfolioId,
-          serializedStore: JSON.stringify(nextStore),
+          serializedStore: response.store
+            ? JSON.stringify(response.store)
+            : JSON.stringify(nextStore),
         }
         setHoldingsViewStore(nextStore)
         setActiveHoldingsViewId(nextStore.activeViewId)
@@ -3494,7 +3523,7 @@ export default function PortfolioHomePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId])
+  }, [holdingsViewLoadRetryToken, portfolioId])
 
   useEffect(() => {
     if (!portfolioId || holdingsViewStoreReadyPortfolioId !== portfolioId) {
@@ -3507,17 +3536,17 @@ export default function PortfolioHomePage() {
     ) {
       return
     }
-    persistedHoldingsViewStoreRef.current = { portfolioId, serializedStore }
     holdingsViewSaveQueueRef.current
       .enqueue(() => savePortfolioTableViewStore(portfolioId, 'holdings', holdingsViewStore))
       .then(
         () => {
-          if (persistedHoldingsViewStoreRef.current?.portfolioId === portfolioId) {
+          if (currentPortfolioIdRef.current === portfolioId) {
+            persistedHoldingsViewStoreRef.current = { portfolioId, serializedStore }
             setHoldingsViewStoreError(null)
           }
         },
         (requestError: unknown) => {
-          if (persistedHoldingsViewStoreRef.current?.portfolioId === portfolioId) {
+          if (currentPortfolioIdRef.current === portfolioId) {
             setHoldingsViewStoreError(
               `Failed to save holdings table views: ${
                 requestError instanceof Error ? requestError.message : 'backend write failed.'
@@ -3526,7 +3555,12 @@ export default function PortfolioHomePage() {
           }
         },
       )
-  }, [holdingsViewStore, holdingsViewStoreReadyPortfolioId, portfolioId])
+  }, [
+    holdingsViewSaveRetryToken,
+    holdingsViewStore,
+    holdingsViewStoreReadyPortfolioId,
+    portfolioId,
+  ])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -3691,11 +3725,24 @@ export default function PortfolioHomePage() {
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
         {holdingsViewStoreError ? (
-          <div className="inline-notice inline-notice-error" role="alert">
-            {holdingsViewStoreError}
+          <div className="inline-notice inline-notice-error holdings-view-error" role="alert">
+            <span>{holdingsViewStoreError}</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (holdingsViewStoreReadyPortfolioId === portfolioId) {
+                  setHoldingsViewSaveRetryToken((value) => value + 1)
+                } else {
+                  setHoldingsViewLoadRetryToken((value) => value + 1)
+                }
+              }}
+            >
+              {holdingsViewStoreReadyPortfolioId === portfolioId ? 'Retry save' : 'Retry views'}
+            </button>
           </div>
         ) : null}
         <QualityWarningsNotice warnings={workspace?.quality_warnings} />
+        <HoldingsOperationalStatus alerts={workspace?.operational_alerts} />
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}

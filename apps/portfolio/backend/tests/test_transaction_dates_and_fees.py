@@ -275,7 +275,7 @@ def test_fee_category_is_never_inferred_and_requires_an_actual_fee() -> None:
 
 def test_transaction_api_round_trips_dates_and_fee_category(client) -> None:
     fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-16",
@@ -293,7 +293,7 @@ def test_transaction_api_round_trips_dates_and_fee_category(client) -> None:
     assert fee["fee_category"] == "management_fee"
 
     deposit_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",

@@ -2,7 +2,7 @@ import {
   canonicalPriceContract,
   type InstrumentCore,
   type PriceUnit,
-} from '../../../../../packages/instrument-core/ts/src'
+} from '../../../../../shared-data/instruments/ts/src'
 import type { PortfolioDerivativeContractCreate } from './api'
 
 export type TransactionPriceContractInput = {

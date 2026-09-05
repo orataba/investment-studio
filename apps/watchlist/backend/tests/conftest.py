@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault(
-    "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL",
+    "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL",
     "sqlite+pysqlite:///:memory:",
 )
 BACKEND_ROOT_STR = str(BACKEND_ROOT)
@@ -25,14 +25,14 @@ if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
 sys.path.insert(0, BACKEND_ROOT_STR)
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "shared-data" / "instruments" / "python"
 INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
 if INSTRUMENT_CORE_PYTHON_STR in sys.path:
     sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
 sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
-from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
-from portfolio_ops_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core.db_models import InstrumentRegistryBase
+from investment_studio_instrument_core import instrument_store as shared_store
 
 
 TEST_NAV_PROVIDER = "watchlist_test_fixture"
@@ -427,7 +427,7 @@ def _rekey_fresh_test_instrument(
 ) -> None:
     """Assign an explicit fixture id before any market-data ledger is written."""
 
-    from portfolio_ops_instrument_core.db_models import Instrument, InstrumentIdentifier
+    from investment_studio_instrument_core.db_models import Instrument, InstrumentIdentifier
 
     with session_factory() as session:
         source = session.get(Instrument, generated_instrument_id)
@@ -568,7 +568,7 @@ def seed_shared_instrument(instrument: dict[str, object]) -> None:
         if canonical_instrument_id:
             # Canonical alias topology has no public authoring API.  Keep this
             # fixture-only mutation narrow and do not touch NAV ledger tables.
-            from portfolio_ops_instrument_core.db_models import Instrument
+            from investment_studio_instrument_core.db_models import Instrument
 
             with session_factory() as session:
                 target = session.get(Instrument, target_instrument_id)
@@ -586,7 +586,7 @@ def mutate_shared_instrument_metadata_for_drift(
     """Simulate Registry master-data drift without rebuilding its NAV ledger."""
 
     from watchlist_app.db import session as session_module
-    from portfolio_ops_instrument_core.db_models import Instrument, InstrumentIdentifier
+    from investment_studio_instrument_core.db_models import Instrument, InstrumentIdentifier
 
     with session_module.get_session_factory()() as session:
         target = session.get(Instrument, instrument_id)
@@ -617,11 +617,11 @@ def _run_alembic_upgrade(database_url: str) -> None:
 @pytest.fixture
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     database_path = tmp_path / "test.db"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_EMAIL_SYNC_ENABLED", "false")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_ENABLED", "false")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_EMAIL_SYNC_ENABLED", "false")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_RECALC_WORKER_ENABLED", "false")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
 
     from watchlist_app.core import settings as settings_module
     from watchlist_app.db import session as session_module

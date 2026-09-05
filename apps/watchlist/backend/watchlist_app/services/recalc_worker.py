@@ -136,6 +136,10 @@ def run_recalc_worker_loop(
                     limit=settings.recalc_worker_reconcile_batch_size,
                     after_instrument_id=reconcile_cursor,
                 )
+                from watchlist_app.services.risk_workbench import refresh_risk_cases
+                with get_session_factory()() as risk_session:
+                    refresh_risk_cases(risk_session)
+                    risk_session.commit()
                 reconcile_cursor = reconciliation.next_cursor
                 next_reconcile_at = time.monotonic() + (
                     settings.recalc_worker_reconcile_interval_seconds

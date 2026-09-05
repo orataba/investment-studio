@@ -4,6 +4,7 @@ import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 import CalculationStatus from '../components/CalculationStatus'
 import FundDistributionTasksPanel from '../components/FundDistributionTasksPanel'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import RegistryInstrumentPicker, { instrumentSearchLabel, primaryIdentifier } from '../components/RegistryInstrumentPicker'
 import {
   createPortfolioInternalTransfer,
   commitPortfolioTransactionImport,
@@ -22,13 +23,11 @@ import {
   getPortfolioTransactionCaptureBatches,
   getPortfolioTransactionsWorkspace,
   importPortfolioTransactionFile,
-  materializePlatformSecurity,
   portfolioTransactionDownloadUrl,
   portfolioTransactionCaptureImageUrl,
   portfolioTransactionTemplateUrl,
   previewPortfolioTransactionFile,
   reviewPortfolioInstrumentEventTask,
-  searchPlatformSecurityCatalog,
   startPortfolioTransactionCaptureAnalysis,
   uploadPortfolioTransactionCapture,
   type PortfolioAccountRecord,
@@ -36,6 +35,7 @@ import {
   type PortfolioDerivativeContractCreate,
   type PortfolioDerivativeContractRecord,
   type PortfolioOptionDeliveryLink,
+  type PortfolioOptionOutcomePayload,
   type PortfolioPositionLotRecord,
   type PortfolioSharedFxRateRecord,
   type PortfolioTransactionPositionPreviewResponse,
@@ -93,6 +93,7 @@ import {
 import { executionQuoteUnavailableMessage } from '../lib/executionQuotePresentation'
 import {
   buildHumanReviewedCaptureProposal,
+  changeTransactionCaptureAction,
   cloneTransactionImport,
   hasTransactionCaptureImport,
   transactionCaptureProposalReady,
@@ -106,6 +107,9 @@ import {
   derivativeContractFromDraft,
   type DerivativeContractDraft,
 } from '../lib/derivativeContractDraft'
+import { DerivativeSettlementFields } from '../components/DerivativeSettlementFields'
+import { ContractAmendmentEditor } from '../components/ContractAmendmentEditor'
+import { TransactionDeliveryReview } from '../components/TransactionDeliveryReview'
 import {
   resolveTransactionAction,
   transactionActionGroups,
@@ -118,7 +122,7 @@ const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME
 const TRANSACTION_FILTER_TYPE_GROUPS = [
   {
     label: 'Trades',
-    types: ['buy', 'sell', 'option_write', 'option_buy_to_close'],
+    types: ['buy', 'sell', 'short_sell', 'buy_to_cover', 'option_write', 'option_buy_to_close'],
   },
   {
     label: 'Income and capital',
@@ -134,7 +138,7 @@ const TRANSACTION_FILTER_TYPE_GROUPS = [
   },
   {
     label: 'Transfers and setup',
-    types: ['transfer_out', 'transfer_in', 'opening_balance'],
+    types: ['transfer_out', 'transfer_in', 'opening_balance', 'short_opening_balance', 'option_opening_balance'],
   },
 ] as const
 
@@ -142,6 +146,9 @@ const FEE_CATEGORIES: Array<{ value: PortfolioFeeCategory; label: string }> = [
   { value: 'unknown', label: 'Unknown / unclassified' },
   { value: 'transaction_cost', label: 'Transaction cost' },
   { value: 'management_fee', label: 'Management fee' },
+  { value: 'financing_interest', label: '融资利息' },
+  { value: 'borrow_fee', label: '融券费用' },
+  { value: 'payment_in_lieu', label: '空头股息补偿' },
   { value: 'custody_fee', label: 'Custody fee' },
   { value: 'administration_fee', label: 'Administration fee' },
   { value: 'performance_fee', label: 'Performance fee' },
@@ -164,7 +171,7 @@ const TRANSACTION_ENTRY_KINDS: Array<{
   {
     value: 'security',
     label: 'Security',
-    description: 'Equity, ETF, fund, and other Registry securities',
+    description: 'Equity, ETF, fund, and other registered securities',
   },
   {
     value: 'fcn',
@@ -258,6 +265,9 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
   Array<{ value: PortfolioTransactionImportAction; label: string }>
 > = {
   security: [
+    { value: 'short_sell', label: '证券卖空' },
+    { value: 'buy_to_cover', label: '买回证券空头' },
+    { value: 'short_opening_balance', label: '期初证券空头' },
     { value: 'buy', label: 'Buy' },
     { value: 'sell', label: 'Sell' },
     { value: 'dividend', label: 'Dividend' },
@@ -273,6 +283,7 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
     { value: 'entry', label: 'Entry' },
     { value: 'early_exit', label: 'Early exit' },
     { value: 'coupon', label: 'Coupon' },
+    { value: 'knock_in_observation', label: 'FCN Knock-In Observation' },
     { value: 'knock_in_close', label: 'Knock-in close' },
     { value: 'knock_out_close', label: 'Knock-out close' },
     { value: 'maturity_close', label: 'Maturity close' },
@@ -281,6 +292,8 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
     { value: 'opening_balance', label: 'Opening balance' },
   ],
   option: [
+    { value: 'physical_long', label: '多头实物行权（关联交付）' },
+    { value: 'physical_written', label: '空头实物指派（关联交付）' },
     { value: 'buy_to_open', label: 'Buy to open' },
     { value: 'sell_to_close', label: 'Sell to close' },
     { value: 'sell_to_open', label: 'Sell to open' },
@@ -289,6 +302,7 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
     { value: 'cash_settle_long', label: 'Cash settle long' },
     { value: 'expire_written', label: 'Expire written' },
     { value: 'cash_settle_written', label: 'Cash settle written' },
+    { value: 'opening_written', label: 'Written Option Opening Balance' },
     { value: 'fee', label: 'Fee' },
     { value: 'tax', label: 'Tax' },
     { value: 'opening_balance', label: 'Opening balance' },
@@ -338,116 +352,6 @@ function captureInputValue(value: string | number | null | undefined) {
   return value == null ? '' : String(value)
 }
 
-function primaryIdentifier(
-  instrument:
-    | SecuritySearchOption
-    | {
-        instrument_id: string
-        identifiers: Array<{ identifier_value: string; is_primary: boolean }>
-      },
-) {
-  return (
-    instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
-    instrument.identifiers[0]?.identifier_value ??
-    instrument.instrument_id
-  )
-}
-
-function instrumentSearchLabel(instrument: SecuritySearchOption) {
-  return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
-}
-
-function RegistryInstrumentPicker({
-  label,
-  value,
-  instruments,
-  onSelect,
-}: {
-  label: string
-  value: string
-  instruments: SharedInstrumentRecord[]
-  onSelect: (instrumentId: string) => void
-}) {
-  const [query, setQuery] = useState('')
-  const deferredQuery = useDeferredValue(query)
-  const selectedInstrument =
-    instruments.find((instrument) => instrument.instrument_id === value) ?? null
-  const inputValue = selectedInstrument
-    ? instrumentSearchLabel(selectedInstrument)
-    : query
-  const normalizedQuery = deferredQuery.trim().toLowerCase()
-  const results = useMemo(() => {
-    if (!normalizedQuery) {
-      return []
-    }
-    return instruments
-      .filter((instrument) =>
-        [
-          primaryIdentifier(instrument),
-          instrument.instrument_name,
-          instrument.instrument_type,
-          instrument.currency,
-        ]
-          .join(' ')
-          .toLowerCase()
-          .includes(normalizedQuery),
-      )
-      .slice(0, 12)
-  }, [instruments, normalizedQuery])
-  const showResults = !selectedInstrument && query.trim() !== ''
-
-  function selectResult(instrument: SharedInstrumentRecord) {
-    setQuery('')
-    onSelect(instrument.instrument_id)
-  }
-
-  return (
-    <div className="transaction-instrument-search transaction-registry-picker">
-      <label className="transaction-picker-search">
-        <span>{label}</span>
-        <input
-          type="search"
-          value={inputValue}
-          placeholder="Search ticker or name"
-          onChange={(event) => {
-            setQuery(event.target.value)
-            if (selectedInstrument) {
-              onSelect('')
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || results.length === 0) {
-              return
-            }
-            event.preventDefault()
-            selectResult(results[0])
-          }}
-        />
-      </label>
-      {showResults ? (
-        <div className="transaction-instrument-results">
-          {results.map((instrument) => (
-            <button
-              type="button"
-              key={instrument.instrument_id}
-              className="transaction-instrument-result"
-              onClick={() => selectResult(instrument)}
-            >
-              <div className="holding-name-stack">
-                <span>{primaryIdentifier(instrument)}</span>
-                <span className="holding-secondary">{instrument.instrument_name}</span>
-              </div>
-              <span className="transaction-picker-meta">{instrument.currency}</span>
-            </button>
-          ))}
-          {!results.length ? (
-            <div className="transaction-instrument-empty">No matching Registry security.</div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  )
-}
 
 function isTransferTransaction(transactionType: string) {
   return transactionType === 'transfer_in' || transactionType === 'transfer_out'
@@ -590,8 +494,8 @@ function requiresSettlement(
     return false
   }
   if (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close'
   ) {
@@ -630,8 +534,8 @@ function eligibleAccounts(
   }
 
   if (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
@@ -697,19 +601,16 @@ function isSelectableInstrument(
   if (isFxConversionTransaction(transactionType)) {
     return false
   }
-  const currencyIsVerified =
-    !('catalog_symbol' in instrument) || instrument.currency_verified
   if (
     accountCurrency &&
-    currencyIsVerified &&
     instrument.currency.toUpperCase() !== accountCurrency.toUpperCase()
   ) {
     return false
   }
 
   if (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
@@ -731,14 +632,18 @@ function isSelectableInstrument(
   return true
 }
 
+function isOpeningBalance(transactionType: string) {
+  return ['opening_balance', 'short_opening_balance'].includes(transactionType) || transactionType === 'option_opening_balance'
+}
+
 function usesQuantity(
   transactionType: string,
   accountType?: string | null,
   transferObjectType?: string | null,
 ) {
   if (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend_reinvestment' ||
@@ -751,13 +656,13 @@ function usesQuantity(
     return true
   }
 
-  return transactionType === 'opening_balance' && accountType === 'securities_account'
+  return isOpeningBalance(transactionType) && accountType === 'securities_account'
 }
 
 function usesPrice(transactionType: string) {
   return (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close'
   )
@@ -824,7 +729,10 @@ function grossAmountLabel(transactionType: string, lifecycleEventType?: string |
     return 'Transferred Cost / Amount'
   }
 
-  if (transactionType === 'opening_balance') {
+  if (transactionType === 'option_opening_balance') {
+    return 'Opening Premium Liability'
+  }
+  if (isOpeningBalance(transactionType)) {
     return 'Opening Amount'
   }
 
@@ -833,8 +741,8 @@ function grossAmountLabel(transactionType: string, lifecycleEventType?: string |
 
 function showsFeeField(transactionType: string, lifecycleEventType?: string | null) {
   return (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
@@ -850,8 +758,8 @@ function showsFeeField(transactionType: string, lifecycleEventType?: string | nu
 
 function showsTaxField(transactionType: string, lifecycleEventType?: string | null) {
   return (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
@@ -882,7 +790,7 @@ function previewNetCashEffect(
     return null
   }
 
-  if (transactionType === 'buy') {
+  if (['buy', 'buy_to_cover'].includes(transactionType)) {
     return -(grossAmount + fees + taxes)
   }
   if (transactionType === 'option_write') {
@@ -892,7 +800,7 @@ function previewNetCashEffect(
     return -(grossAmount + fees + taxes)
   }
   if (
-    transactionType === 'sell' ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
@@ -935,16 +843,17 @@ function quantityDeltaForPreview(
   if (previewAccountRole === 'source' && transactionType === 'transfer_in' && transferObjectType === 'position') {
     return -quantity
   }
+  if (transactionType === 'short_opening_balance') return -quantity
   if (
-    transactionType === 'buy' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
     transactionType === 'dividend_reinvestment' ||
     (transactionType === 'transfer_in' && transferObjectType === 'position') ||
-    transactionType === 'opening_balance'
+    ['opening_balance', 'short_opening_balance'].includes(transactionType)
   ) {
     return quantity
   }
   if (
-    transactionType === 'sell' ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'maturity_redemption' ||
     (transactionType === 'transfer_out' && transferObjectType === 'position')
   ) {
@@ -954,6 +863,8 @@ function quantityDeltaForPreview(
 }
 
 type TransactionFormState = {
+  lot_selections: NonNullable<PortfolioTransactionCreatePayload['lot_selections']>
+  asset_deliveries: NonNullable<PortfolioTransactionCreatePayload['asset_deliveries']>
   asset_domain: TransactionAssetDomain
   transaction_type: string
   lifecycle_event_type: string
@@ -967,6 +878,7 @@ type TransactionFormState = {
   counterparty_account_id: string
   settlement_cash_account_id: string
   delivery_stock_account_id: string
+  allow_stock_short: boolean
   transfer_object_type: string
   instrument_id: string
   derivative_contract_id: string
@@ -996,6 +908,8 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     accounts.find((account) => account.account_type === 'deposit_account')
 
   return {
+    asset_deliveries: [],
+    lot_selections: [],
     asset_domain: 'security',
     transaction_type: 'buy',
     lifecycle_event_type: '',
@@ -1009,6 +923,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     delivery_stock_account_id: '',
+    allow_stock_short: false,
     transfer_object_type: 'cash',
     instrument_id: '',
     derivative_contract_id: '',
@@ -1029,6 +944,8 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 
 function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord): TransactionFormState {
   return {
+    asset_deliveries: transaction.asset_deliveries ?? [],
+    lot_selections: transaction.lot_selections ?? [],
     asset_domain: transaction.asset_domain,
     transaction_type: transaction.transaction_type,
     lifecycle_event_type: transaction.lifecycle_event_type || '',
@@ -1043,6 +960,7 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     counterparty_account_id: transaction.counterparty_account_id || '',
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
     delivery_stock_account_id: '',
+    allow_stock_short: false,
     transfer_object_type: transaction.transfer_object_type || 'cash',
     instrument_id: transaction.instrument_id || '',
     derivative_contract_id: transaction.derivative_contract_id || '',
@@ -1072,15 +990,15 @@ function supportsEntitlementDate(transactionType: string, hasAssetReference: boo
 
 function supportsPositionEffectiveDate(transactionType: string) {
   return (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
+    ['buy', 'buy_to_cover'].includes(transactionType) ||
+    ['sell', 'short_sell'].includes(transactionType) ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'maturity_redemption'
   )
 }
 
 function supportsAcquisitionDate(transactionType: string, accountType?: string | null) {
-  return transactionType === 'opening_balance' && accountType === 'securities_account'
+  return isOpeningBalance(transactionType) && accountType === 'securities_account'
 }
 
 function canEditTransaction(transaction: PortfolioTransactionRecord | null) {
@@ -1147,6 +1065,7 @@ export default function TransactionsPage() {
   const autoQuantityKeyRef = useRef<string | null>(null)
   const autoGrossDerivedRef = useRef(false)
   const submittingTransactionRef = useRef(false)
+  const transactionRequestRef = useRef<{ signature: string; key: string } | null>(null)
   const [accounts, setAccounts] = useState<PortfolioAccountRecord[]>([])
   const [instruments, setInstruments] = useState<SharedInstrumentRecord[]>([])
   const [derivativeContracts, setDerivativeContracts] = useState<PortfolioDerivativeContractRecord[]>([])
@@ -1190,6 +1109,7 @@ export default function TransactionsPage() {
     fileName: string
     file: File
     preview: PortfolioTransactionFilePreviewResponse
+    idempotencyKey: string
   } | null>(null)
   const [fileImportError, setFileImportError] = useState<string | null>(null)
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
@@ -1198,10 +1118,6 @@ export default function TransactionsPage() {
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
   const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
-  const [securityCatalogResults, setSecurityCatalogResults] = useState<SecuritySearchOption[]>([])
-  const [securityCatalogLoading, setSecurityCatalogLoading] = useState(false)
-  const [securityCatalogError, setSecurityCatalogError] = useState<string | null>(null)
-  const [securityMaterializing, setSecurityMaterializing] = useState(false)
   const [derivativeDraft, setDerivativeDraft] = useState<DerivativeContractDraft>(() =>
     buildInitialDerivativeContractDraft(),
   )
@@ -1230,7 +1146,7 @@ export default function TransactionsPage() {
     setEditingTransactionId(null)
     setActiveEventTask(null)
     setActiveEventTaskReviewer('')
-  })
+  }, entryKindControlRef)
   const captureAssistantDialogRef = useModalDialog(captureAssistantOpen, () => {
     if (uploadingCapture || savingCaptureReview || committingCapture) {
       return
@@ -1455,52 +1371,6 @@ export default function TransactionsPage() {
   }, [captureAnalysisActiveKey, portfolioId])
 
   useEffect(() => {
-    const query = deferredInstrumentSearch.trim()
-    if (!drawerOpen || form.asset_domain !== 'security' || !query) {
-      setSecurityCatalogResults([])
-      setSecurityCatalogLoading(false)
-      setSecurityCatalogError(null)
-      return undefined
-    }
-
-    let cancelled = false
-    const timeoutId = window.setTimeout(() => {
-      setSecurityCatalogLoading(true)
-      setSecurityCatalogError(null)
-      searchPlatformSecurityCatalog(query, 12)
-        .then(({ results, catalogErrors }) => {
-          if (!cancelled) {
-            setSecurityCatalogResults(results)
-            const unavailableCatalogs = Object.keys(catalogErrors)
-            setSecurityCatalogError(
-              unavailableCatalogs.length
-                ? `${unavailableCatalogs.map((item) => item.toUpperCase()).join(' and ')} catalog unavailable.`
-                : null,
-            )
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setSecurityCatalogResults([])
-            setSecurityCatalogError(
-              error instanceof Error ? error.message : 'Failed to search the local stock and ETF catalogs.',
-            )
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setSecurityCatalogLoading(false)
-          }
-        })
-    }, 250)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timeoutId)
-    }
-  }, [deferredInstrumentSearch, drawerOpen, form.asset_domain])
-
-  useEffect(() => {
     let cancelled = false
 
     if (!portfolioId) {
@@ -1592,11 +1462,13 @@ export default function TransactionsPage() {
   const shouldRequireAsset = form.asset_domain !== 'cash'
   const shouldAllowRegistryInstrument = form.asset_domain === 'security'
   const shouldAllowDerivativeContract = form.asset_domain === 'derivative'
+  const canDeliverFcn = form.transaction_type === 'maturity_redemption' && ['fcn_knock_in', 'fcn_maturity'].includes(form.lifecycle_event_type)
+  const activeAssetDeliveries = canDeliverFcn ? form.asset_deliveries : []
   const shouldRequireSettlement = requiresSettlement(
     form.transaction_type,
     selectedAccount?.account_type,
     form.lifecycle_event_type,
-  )
+  ) && !(activeAssetDeliveries.length && Number(form.gross_amount) === 0 && Number(form.fees) === 0 && Number(form.taxes) === 0)
   const shouldUseQuantity =
     usesQuantity(
       form.transaction_type,
@@ -1613,6 +1485,7 @@ export default function TransactionsPage() {
   const shouldPreviewPosition =
     shouldUseQuantity &&
     form.transaction_type !== 'option_write' &&
+    form.transaction_type !== 'option_opening_balance' &&
     form.transaction_type !== 'option_buy_to_close' &&
     form.transaction_type !== 'lifecycle_event'
 
@@ -1687,7 +1560,15 @@ export default function TransactionsPage() {
     resolvedAssetType,
     activeOptionType,
     { newDerivativeContract: isCreatingDerivativeContract },
-  )
+  ).map((group) => ({
+    ...group,
+    actions: group.actions.filter((action) => {
+      if (activeDerivativeContract?.contract_type !== 'option') return true
+      const settlement = activeDerivativeContract.terms.settlement_type
+      return !(settlement === 'cash' && isPhysicalOptionLifecycle(action.lifecycleEventType)) &&
+        !(settlement === 'physical' && ['option_long_cash_settlement', 'option_writer_cash_settlement'].includes(action.lifecycleEventType ?? ''))
+    }),
+  }))
   const selectedActionValue = transactionActionValue(
     formActionGroups,
     form.transaction_type,
@@ -1705,7 +1586,7 @@ export default function TransactionsPage() {
       : selectedAccount?.account_id ?? form.account_id
   const resolvedTransactionCurrency = selectedAccount?.currency?.toUpperCase() ?? ''
   const activeDerivativeCurrency =
-    selectedDerivativeContract?.currency?.toUpperCase() ?? resolvedTransactionCurrency
+    (isPhysicalOptionOutcome && selectedDerivativeContract?.contract_type === 'option' ? selectedDerivativeContract.terms.strike_currency : null)?.toUpperCase() ?? selectedDerivativeContract?.currency?.toUpperCase() ?? resolvedTransactionCurrency
   const deliveryStockAccountOptions = useMemo(
     () =>
       accounts
@@ -1738,9 +1619,9 @@ export default function TransactionsPage() {
   }, [fxRates, isFxConversion, resolvedCounterpartyCurrency, resolvedTransactionCurrency])
   const settlementAccountOptions = useMemo(() => {
     return cashAccounts
-      .filter((account) => account.currency.toUpperCase() === resolvedTransactionCurrency)
+      .filter((account) => account.currency.toUpperCase() === (isPhysicalOptionOutcome ? activeDerivativeCurrency : resolvedTransactionCurrency))
       .sort((left, right) => left.account_name.localeCompare(right.account_name))
-  }, [cashAccounts, resolvedTransactionCurrency])
+  }, [cashAccounts, resolvedTransactionCurrency, isPhysicalOptionOutcome, activeDerivativeCurrency])
   const instrumentInputValue = selectedInstrument && !form.instrument_search
     ? instrumentSearchLabel(selectedInstrument)
     : form.instrument_search
@@ -1776,25 +1657,9 @@ export default function TransactionsPage() {
           .toLowerCase()
         return haystack.includes(normalizedSearch)
       })
-    const seenInstrumentIds = new Set(registryMatches.map((instrument) => instrument.instrument_id))
-    const fmpMatches = securityCatalogResults.filter((instrument) => {
-      const existingInstrumentId =
-        'existing_instrument_id' in instrument ? instrument.existing_instrument_id : null
-      if (existingInstrumentId && seenInstrumentIds.has(existingInstrumentId)) {
-        return false
-      }
-      return isSelectableInstrument(
-        form.transaction_type,
-        instrument,
-        selectedAccount,
-        selectedAccount?.currency,
-        form.transfer_object_type,
-      )
-    })
-    return [...registryMatches, ...fmpMatches].slice(0, 12)
+    return registryMatches.slice(0, 12)
   }, [
     deferredInstrumentSearch,
-    securityCatalogResults,
     form.transaction_type,
     form.transfer_object_type,
     instruments,
@@ -2182,46 +2047,8 @@ export default function TransactionsPage() {
     window.setTimeout(() => accountSelectRef.current?.focus(), 0)
   }
 
-  async function selectInstrument(instrument: SecuritySearchOption) {
-    if (!('catalog_symbol' in instrument)) {
-      commitSelectedInstrument(instrument)
-      return
-    }
-    if (!portfolioId || securityMaterializing) {
-      return
-    }
-    setSecurityMaterializing(true)
-    setSecurityCatalogError(null)
-    try {
-      const materialized = await materializePlatformSecurity(
-        instrument.instrument_type,
-        instrument.catalog_provider,
-        instrument.catalog_symbol,
-      )
-      const refreshed = await getPortfolioInstruments(portfolioId)
-      setInstruments(refreshed.instruments)
-      const preparedInstrument = refreshed.instruments.find(
-        (candidate) => candidate.instrument_id === materialized.instrument_id,
-      ) ?? materialized
-      if (
-        selectedAccount &&
-        preparedInstrument.currency.toUpperCase() !== selectedAccount.currency.toUpperCase()
-      ) {
-        setSecurityCatalogError(
-          `FMP verified ${preparedInstrument.currency} as the quote currency. ` +
-          `Select or create a ${preparedInstrument.currency} securities account to use it.`,
-        )
-        return
-      }
-      commitSelectedInstrument(preparedInstrument)
-      setSecurityCatalogResults([])
-    } catch (error) {
-      setSecurityCatalogError(
-        error instanceof Error ? error.message : 'Failed to prepare the FMP security data.',
-      )
-    } finally {
-      setSecurityMaterializing(false)
-    }
+  function selectInstrument(instrument: SecuritySearchOption) {
+    commitSelectedInstrument(instrument)
   }
 
   function selectDerivativeContract(contractId: string) {
@@ -2268,7 +2095,7 @@ export default function TransactionsPage() {
     setPricingAnchor('price')
     setForm((current) => {
       const factDate =
-        current.transaction_type === 'opening_balance'
+        isOpeningBalance(current.transaction_type)
           ? localTodayIso()
           : current.trade_date
       return {
@@ -2300,7 +2127,7 @@ export default function TransactionsPage() {
     }
     const nextTransactionType = selectedAction.transactionType
     const portfolioInceptionDate = transactionsWorkspace?.portfolio_inception_date
-    if (nextTransactionType === 'opening_balance' && !portfolioInceptionDate) {
+    if (isOpeningBalance(nextTransactionType) && !portfolioInceptionDate) {
       setFormError('Portfolio inception date is unavailable. Reload after the database migration completes.')
       return
     }
@@ -2319,10 +2146,10 @@ export default function TransactionsPage() {
         autoGrossDerivedRef.current = false
       }
       let factDate =
-        nextTransactionType === 'opening_balance'
+        isOpeningBalance(nextTransactionType)
           ? portfolioInceptionDate!
-          : current.transaction_type === 'opening_balance' &&
-              nextTransactionType !== 'opening_balance'
+          : isOpeningBalance(current.transaction_type) &&
+              !isOpeningBalance(nextTransactionType)
             ? localTodayIso()
             : current.trade_date
       if (
@@ -2347,13 +2174,14 @@ export default function TransactionsPage() {
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
         trade_date: factDate,
         settlement_date:
-          nextTransactionType === 'opening_balance' ||
-          current.transaction_type === 'opening_balance'
+          isOpeningBalance(nextTransactionType) ||
+          isOpeningBalance(current.transaction_type)
             ? factDate
             : current.settlement_date,
         gross_amount:
           selectedAction.lifecycleEventType === 'option_long_expiry' ||
           selectedAction.lifecycleEventType === 'option_writer_expiry' ||
+          selectedAction.lifecycleEventType === 'fcn_knock_in' && nextTransactionType === 'lifecycle_event' ||
           isPhysicalOptionLifecycle(selectedAction.lifecycleEventType)
             ? '0'
             : shouldClearAutoSellQuantity
@@ -3217,6 +3045,7 @@ export default function TransactionsPage() {
         fileName: file.name,
         file,
         preview,
+        idempotencyKey: transactionIdempotencyKey('file-import'),
       })
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
@@ -3254,7 +3083,7 @@ export default function TransactionsPage() {
         targetPortfolioId,
         pendingImport.file,
         pendingImport.preview.preview_digest,
-        transactionIdempotencyKey('file-import'),
+        pendingImport.idempotencyKey,
       )
       if (currentPortfolioIdRef.current !== targetPortfolioId) {
         return
@@ -3290,6 +3119,7 @@ export default function TransactionsPage() {
     ?? latestCaptureBatch
 
   function openCreateDrawer() {
+    transactionRequestRef.current = null
     setEditingTransactionId(null)
     setActiveEventTask(null)
     setActiveEventTaskReviewer('')
@@ -3307,6 +3137,7 @@ export default function TransactionsPage() {
   }
 
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
+    transactionRequestRef.current = null
     setEditingTransactionId(transaction.transaction_id)
     setActiveEventTask(null)
     setActiveEventTaskReviewer('')
@@ -3335,6 +3166,7 @@ export default function TransactionsPage() {
     transactionType: 'dividend' | 'dividend_reinvestment',
     reviewedBy: string,
   ) {
+    transactionRequestRef.current = null
     const initial = buildInitialFormState(accounts)
     const account = accounts.find((item) => item.account_id === task.account_id)
     const settlementAccount = accounts.find(
@@ -3368,7 +3200,7 @@ export default function TransactionsPage() {
           ? formatCalculatedFormNumber(reinvestedQuantity, 12)
           : '',
       gross_amount: formatCalculatedFormNumber(expectedGrossAmount, 8),
-      note: `Registry distribution ${task.event_action_id}`,
+      note: `Fund distribution ${task.event_action_id}`,
       instrument_search: '',
     })
     setPricingAnchor('gross_amount')
@@ -3382,30 +3214,13 @@ export default function TransactionsPage() {
     setDrawerOpen(true)
   }
 
-  useEffect(() => {
-    if (!drawerOpen) {
-      return
+  function transactionRequestKey(operation: 'create' | 'transfer' | 'option-outcome', payload: object) {
+    const signature = JSON.stringify([portfolioId, operation, payload])
+    if (transactionRequestRef.current?.signature !== signature) {
+      transactionRequestRef.current = { signature, key: transactionIdempotencyKey(operation) }
     }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') {
-        return
-      }
-      if (submittingTransaction) {
-        return
-      }
-      setDrawerOpen(false)
-      setEditingTransactionId(null)
-      setActiveEventTask(null)
-      setActiveEventTaskReviewer('')
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    window.setTimeout(() => {
-      const firstControl =
-        entryKindControlRef.current ?? accountSelectRef.current ?? securitySearchRef.current
-      firstControl?.focus()
-    }, 0)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [drawerOpen, submittingTransaction])
+    return transactionRequestRef.current.key
+  }
 
   async function handleCreateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -3462,7 +3277,7 @@ export default function TransactionsPage() {
           ? resolvedDerivativeContract !== null
           : true
     if (shouldRequireAsset && !hasSelectedAsset) {
-      setFormError('Select a Registry security or Portfolio derivative contract.')
+      setFormError('Select a registered security or Portfolio derivative contract.')
       return
     }
     if (
@@ -3589,7 +3404,7 @@ export default function TransactionsPage() {
           : await createPortfolioTransaction(
               portfolioId,
               payload,
-              transactionIdempotencyKey('create'),
+              transactionRequestKey('create', payload),
             )
         setDrawerOpen(false)
         setEditingTransactionId(null)
@@ -3663,7 +3478,7 @@ export default function TransactionsPage() {
         const created = await createPortfolioInternalTransfer(
           portfolioId,
           payload,
-          transactionIdempotencyKey('transfer'),
+          transactionRequestKey('transfer', payload),
         )
         setDrawerOpen(false)
         setNotice(`Added paired ${formatLabel(transferObjectType)} transfer ${created.transfer_group_id}.`)
@@ -3710,25 +3525,27 @@ export default function TransactionsPage() {
       submittingTransactionRef.current = true
       setSubmittingTransaction(true)
       try {
+        const payload: PortfolioOptionOutcomePayload = {
+          derivative_contract_id: selectedDerivativeContract.derivative_contract_id,
+          side: form.lifecycle_event_type === 'option_writer_assignment' ? 'written' : 'long',
+          outcome: 'physical',
+          quantity: Number(form.quantity),
+          event_date: form.trade_date,
+          trade_time: form.trade_time || null,
+          settlement_date: form.settlement_date || form.trade_date,
+          lot_selections: form.transaction_type === 'maturity_redemption' ? form.lot_selections : [],
+          stock_account_id: selectedDeliveryStockAccount.account_id,
+          ...(form.allow_stock_short ? { allow_stock_short: true } : {}),
+          settlement_cash_account_id: settlementAccount.account_id,
+          fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
+          fee_category: shouldShowFeeCategory ? form.fee_category : 'unknown',
+          taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
+          note: form.note.trim() || null,
+        }
         const created = await createPortfolioOptionOutcome(
           portfolioId,
-          {
-            derivative_contract_id: selectedDerivativeContract.derivative_contract_id,
-            side:
-              form.lifecycle_event_type === 'option_writer_assignment'
-                ? 'written'
-                : 'long',
-            outcome: 'physical',
-            quantity: Number(form.quantity),
-            event_date: form.trade_date,
-            settlement_date: form.settlement_date || form.trade_date,
-            stock_account_id: selectedDeliveryStockAccount.account_id,
-            settlement_cash_account_id: settlementAccount.account_id,
-            fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
-            taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
-            note: form.note.trim() || null,
-          },
-          transactionIdempotencyKey('option-outcome'),
+          payload,
+          transactionRequestKey('option-outcome', payload),
         )
         const optionTransaction = created.transactions.find(
           (transaction) => transaction.lifecycle_event_type === form.lifecycle_event_type,
@@ -3759,14 +3576,14 @@ export default function TransactionsPage() {
 
     const zeroCashLifecycle =
       (form.transaction_type === 'lifecycle_event' &&
-        form.lifecycle_event_type === 'option_writer_expiry') ||
+        (form.lifecycle_event_type === 'option_writer_expiry' || form.lifecycle_event_type === 'fcn_knock_in')) ||
       (form.transaction_type === 'maturity_redemption' &&
         form.lifecycle_event_type === 'option_long_expiry')
     const zeroCostAssetOpening =
-      form.transaction_type === 'opening_balance' &&
+      isOpeningBalance(form.transaction_type) &&
       form.asset_domain !== 'cash' &&
       hasSelectedAsset
-    const zeroGrossAllowed = zeroCashLifecycle || zeroCostAssetOpening
+    const zeroGrossAllowed = zeroCashLifecycle || zeroCostAssetOpening || activeAssetDeliveries.length > 0
     const grossAmount = zeroCashLifecycle ? 0 : Number(computedGrossAmount)
     if (
       !Number.isFinite(grossAmount) ||
@@ -3791,6 +3608,8 @@ export default function TransactionsPage() {
     }
 
     const payload: PortfolioTransactionCreatePayload = {
+      asset_deliveries: activeAssetDeliveries,
+      lot_selections: ['sell', 'buy_to_cover', 'maturity_redemption'].includes(form.transaction_type) ? form.lot_selections : [],
       transaction_type: form.transaction_type,
       lifecycle_event_type: form.lifecycle_event_type || null,
       trade_date: form.trade_date,
@@ -3852,7 +3671,7 @@ export default function TransactionsPage() {
         : await createPortfolioTransaction(
             portfolioId,
             payload,
-            transactionIdempotencyKey('create'),
+            transactionRequestKey('create', payload),
           )
       let eventReviewError: string | null = null
       if (activeEventTask && !isEditingTransaction) {
@@ -3872,7 +3691,7 @@ export default function TransactionsPage() {
           eventReviewError =
             reviewError instanceof Error
               ? reviewError.message
-              : 'The Registry event review could not be linked.'
+              : 'The distribution event review could not be linked.'
         }
       }
       setDrawerOpen(false)
@@ -4283,7 +4102,7 @@ export default function TransactionsPage() {
               >
                 <option value="">All accounts</option>
                 {accounts.map((account) => (
-                  <option key={account.account_id} value={account.account_id}>
+                  <option key={account.account_id} value={account.account_id} translate="no">
                     {account.account_name}
                   </option>
                 ))}
@@ -4356,7 +4175,7 @@ export default function TransactionsPage() {
               >
                 <option value="">All assets</option>
                 {selectedFilterEntryKind !== 'fcn' && selectedFilterEntryKind !== 'option' ? (
-                  <optgroup label="Registry securities">
+                  <optgroup label="Registered securities">
                     {transactionFilterInstruments.map((instrument) => (
                       <option key={instrument.instrument_id} value={instrument.instrument_id}>
                         {instrumentSearchLabel(instrument)}
@@ -4549,11 +4368,11 @@ export default function TransactionsPage() {
                               {transaction.instrument_ref ? (
                                 <>
                                   <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
-                                  <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
+                                  <span className="holding-secondary" translate="no">{transaction.instrument_ref.instrument_name}</span>
                                 </>
                               ) : transaction.derivative_contract ? (
                                 <>
-                                  <strong>{transaction.derivative_contract.contract_name}</strong>
+                                  <strong translate="no">{transaction.derivative_contract.contract_name}</strong>
                                   <span className="holding-secondary">
                                     {transaction.derivative_contract.derivative_contract_id}
                                   </span>
@@ -4581,7 +4400,7 @@ export default function TransactionsPage() {
                                 className="table-inline-link"
                                 to={transactionAccountHref(portfolioId, transaction.account.account_id)}
                                 onClick={stopTransactionRowSelection}
-                              >
+                               translate="no">
                                 {transaction.account.account_name}
                               </Link>
                               <span className="holding-secondary">
@@ -4792,6 +4611,35 @@ export default function TransactionsPage() {
                           </em>
                         </div>
                       ) : null}
+                      {transactionsWorkspace.cash_fx_impacts.map((impact) => (
+                        <div
+                          className="transaction-fact-highlight transaction-accounting-highlight"
+                          key={`${impact.transaction_id}:${impact.posting_role}:${impact.account_id}`}
+                          title={`Released exposure ${formatCurrency(impact.local_exposure_released, impact.currency)}; historical base basis ${formatCurrency(impact.historical_cost_basis_base, transactionsWorkspace.base_currency)}; settlement fair value ${formatCurrency(impact.fair_value_base, transactionsWorkspace.base_currency)}; settlement FX ${formatNumber(impact.recognition_fx_rate_to_base, 6)}.`}
+                        >
+                          <span>
+                            Realized cash FX · {transactionsWorkspace.base_currency}
+                            {impact.fx_coverage_status === 'complete'
+                              ? ''
+                              : ` · ${formatLabel(impact.fx_coverage_status)}`}
+                          </span>
+                          <strong className={signedValueClass(impact.realized_cash_fx_pnl_base)}>
+                            {formatSignedCurrency(
+                              impact.realized_cash_fx_pnl_base,
+                              transactionsWorkspace.base_currency,
+                            )}
+                          </strong>
+                          <em>
+                            {formatCurrency(
+                              impact.local_exposure_released,
+                              impact.currency,
+                            )}{' released · '}
+                            {accountNameById[impact.account_id] ?? impact.account_id}
+                          </em>
+                        </div>
+                      ))}
+                      {selectedTransaction.derivative_contract ? <ContractAmendmentEditor key={`${selectedTransaction.derivative_contract_id}:${selectedTransaction.derivative_contract.row_version}`} contract={selectedTransaction.derivative_contract} onSaved={() => refreshTransactions(filters, selectedTransaction.transaction_id)} /> : null}
+                      {(selectedTransaction.asset_deliveries ?? []).map((leg, index) => <p key={index} translate="no">{accountNameById[leg.account_id] ?? leg.account_id} · {leg.instrument_id} · {leg.quantity} · {leg.fair_value} {leg.currency}</p>)}
                       <dl className="transaction-fact-list">
                         <div>
                           <dt>
@@ -4811,7 +4659,7 @@ export default function TransactionsPage() {
                         </div>
                         <div>
                           <dt>Account</dt>
-                          <dd><Link className="table-inline-link" to={transactionAccountHref(portfolioId, selectedTransaction.account.account_id)}>{selectedTransaction.account.account_name}</Link></dd>
+                          <dd><Link className="table-inline-link" to={transactionAccountHref(portfolioId, selectedTransaction.account.account_id)} translate="no">{selectedTransaction.account.account_name}</Link></dd>
                         </div>
                         <div>
                           <dt>Settlement</dt>
@@ -4871,7 +4719,7 @@ export default function TransactionsPage() {
                       {selectedTransaction.note ? (
                         <div className="transaction-inspector-note">
                           <span>Note</span>
-                          <p>{selectedTransaction.note}</p>
+                          <p translate="no">{selectedTransaction.note}</p>
                         </div>
                       ) : null}
                     </div>
@@ -5446,10 +5294,7 @@ export default function TransactionsPage() {
                                                 value={record.transaction_action}
                                                 onChange={(event) => updateTransactionCaptureReviewRecord(
                                                   recordIndex,
-                                                  (current) => ({
-                                                    ...current,
-                                                    transaction_action: event.target.value as PortfolioTransactionImportAction,
-                                                  }),
+                                                  (current) => changeTransactionCaptureAction(current, event.target.value as PortfolioTransactionImportAction),
                                                 )}
                                               >
                                                 {TRANSACTION_CAPTURE_ACTIONS[record.asset_type].map((action) => (
@@ -5636,10 +5481,10 @@ export default function TransactionsPage() {
                                           {record.asset_type === 'security' ? (
                                             <div className="transaction-capture-review-grid transaction-capture-review-asset-grid">
                                               <label className="transaction-capture-review-wide">
-                                                <span>Registry security</span>
+                                                <span>Registered security</span>
                                                 <input
                                                   list={`capture-review-security-${recordNumber}`}
-                                                  aria-label={`Record ${recordNumber} registry security`}
+                                                  aria-label={`Record ${recordNumber} registered security`}
                                                   value={record.instrument_id ?? ''}
                                                   onChange={(event) => updateTransactionCaptureReviewRecord(
                                                     recordIndex,
@@ -5696,7 +5541,7 @@ export default function TransactionsPage() {
                                                   ))}
                                                 </select>
                                               </label>
-                                              <span>
+                                              <span translate="no">
                                                 {record.derivative_contract
                                                   ? 'The contract below will be created only with the reviewed transaction.'
                                                   : selectedDerivativeContract
@@ -6349,6 +6194,15 @@ export default function TransactionsPage() {
                                               />
                                             </label>
                                           </div>
+                                          <TransactionDeliveryReview
+                                            record={record}
+                                            accounts={accounts}
+                                            instruments={instruments}
+                                            requireOptionDelivery={['physical_long', 'physical_written'].includes(record.transaction_action)}
+                                            canAddAssetDelivery={record.asset_type === 'fcn' && ['knock_in_close', 'maturity_close'].includes(record.transaction_action)}
+                                            canSelectLots={accounts.find(account => account.account_id === record.account_id)?.cost_basis_method === 'fifo' && ['sell', 'buy_to_cover', 'sell_to_close', 'early_exit', 'knock_in_close', 'knock_out_close', 'maturity_close', 'expire_long', 'cash_settle_long', 'physical_long'].includes(record.transaction_action)}
+                                            onChange={changes => updateTransactionCaptureReviewRecord(recordIndex, current => ({ ...current, ...changes }))}
+                                          />
                                         </article>
                                       )
                                     })}
@@ -6692,29 +6546,21 @@ export default function TransactionsPage() {
                               type="button"
                               key={instrument.instrument_id}
                               className="transaction-instrument-result"
-                              disabled={securityMaterializing}
                               onClick={() => void selectInstrument(instrument)}
                             >
                               <div className="holding-name-stack">
                                 <span>{primaryIdentifier(instrument)}</span>
-                                <span className="holding-secondary">{instrument.instrument_name}</span>
+                                <span className="holding-secondary" translate="no">{instrument.instrument_name}</span>
                               </div>
                               <span className="transaction-picker-meta">
-                                {'currency_verified' in instrument && !instrument.currency_verified
-                                  ? `${instrument.currency} · verify on add`
-                                  : instrument.currency}
+                                {instrument.currency}
                               </span>
                             </button>
                           ))}
                           {!filteredInstrumentOptions.length ? (
                             <div className="transaction-instrument-empty">
-                              {securityCatalogLoading
-                                ? 'Searching Registry and the local stock and ETF catalogs…'
-                                : 'No matching security.'}
+                              No registered asset matches. Add new assets through backend maintenance.
                             </div>
-                          ) : null}
-                          {securityCatalogError ? (
-                            <div className="transaction-instrument-empty">{securityCatalogError}</div>
                           ) : null}
                         </div>
                       ) : null}
@@ -6845,6 +6691,7 @@ export default function TransactionsPage() {
                     />
                   </label>
 
+                  <DerivativeSettlementFields draft={derivativeDraft} setDraft={setDerivativeDraft} />
                   {derivativeDraft.contract_type === 'option' ? (
                     <>
                       <RegistryInstrumentPicker
@@ -6905,7 +6752,7 @@ export default function TransactionsPage() {
                   ) : (
                     <>
                       <label className="transaction-ticket-field">
-                        <span>Notional</span>
+                        <span>Notional per Contract</span>
                         <input
                           type="number"
                           min="0"
@@ -7115,6 +6962,9 @@ export default function TransactionsPage() {
 
               <div className="transaction-form-grid transaction-ticket-grid">
                 {isPhysicalOptionOutcome ? (
+                  <label><input type="checkbox" checked={form.allow_stock_short} onChange={event => setForm(current => ({ ...current, allow_stock_short: event.target.checked }))} />Broker confirmed a short stock position on delivery</label>
+                ) : null}
+                {isPhysicalOptionOutcome ? (
                   <label className="transaction-ticket-field">
                     <span>Security Account</span>
                     <select
@@ -7210,7 +7060,7 @@ export default function TransactionsPage() {
                         ? activeDerivativeContract.terms.expiry_date
                         : undefined
                     }
-                    disabled={form.transaction_type === 'opening_balance'}
+                    disabled={isOpeningBalance(form.transaction_type)}
                     onChange={(event) => {
                       const nextTradeDate = event.target.value
                       setForm((current) => {
@@ -7241,7 +7091,7 @@ export default function TransactionsPage() {
                     type="date"
                     min={form.trade_date}
                     value={form.settlement_date}
-                    disabled={form.transaction_type === 'opening_balance'}
+                    disabled={isOpeningBalance(form.transaction_type)}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -7251,7 +7101,7 @@ export default function TransactionsPage() {
                   />
                 </label>
 
-                {form.transaction_type === 'opening_balance' ? (
+                {isOpeningBalance(form.transaction_type) ? (
                   <span className="transaction-ticket-hint">
                     Opening balances are fixed to portfolio inception{' '}
                     {transactionsWorkspace?.portfolio_inception_date}.
@@ -7281,7 +7131,7 @@ export default function TransactionsPage() {
                   </label>
                 ) : null}
 
-                {!isPhysicalOptionOutcome ? (
+                {(
                   <label className="transaction-ticket-field">
                     <span>Trade Time (optional)</span>
                     <input
@@ -7297,7 +7147,7 @@ export default function TransactionsPage() {
                       }
                     />
                   </label>
-                ) : null}
+                )}
 
                 {supportsEntitlementDate(form.transaction_type, hasAssetReference) ? (
                   <label className="transaction-ticket-field">
@@ -7582,6 +7432,37 @@ export default function TransactionsPage() {
                     </div>
                   ) : null}
 
+                  {['sell', 'buy_to_cover', 'maturity_redemption'].includes(form.transaction_type) && selectedAccount?.cost_basis_method === 'fifo' ? <fieldset>
+                    <legend>指定开仓批次（可选）</legend>
+                    <p className="field-help">留空按 FIFO。填写开仓或接收转仓记录编号；各批数量之和必须等于本次处置量，系统会核对交易时点的剩余数量。</p>
+                    {form.lot_selections.map((selection, index) => <div className="transaction-ticket-grid" key={index}>
+                      <label><span>开仓记录编号</span><input aria-label={`Lot ${index + 1} opening transaction`} value={selection.opening_transaction_id} onChange={event => setForm(current => ({ ...current, lot_selections: current.lot_selections.map((item, row) => row === index ? { ...item, opening_transaction_id: event.target.value } : item) }))} /></label>
+                      <label><span>处置数量</span><input type="number" min="0" step="any" value={selection.quantity} onChange={event => setForm(current => ({ ...current, lot_selections: current.lot_selections.map((item, row) => row === index ? { ...item, quantity: event.target.value } : item) }))} /></label>
+                      <button type="button" onClick={() => setForm(current => ({ ...current, lot_selections: current.lot_selections.filter((_, row) => row !== index) }))}>移除批次</button>
+                    </div>)}
+                    <button type="button" onClick={() => setForm(current => ({ ...current, lot_selections: [...current.lot_selections, { opening_transaction_id: '', quantity: '' }] }))}>添加指定批次</button>
+                  </fieldset> : null}
+                  {canDeliverFcn ? (
+                    <fieldset>
+                      <legend>Actual asset delivery</legend>
+                      <p>Enter confirmed total fair value for each delivered security. Gross amount records only actual cash in lieu, not the shares.</p>
+                      {form.asset_deliveries.map((leg, index) => {
+                        const updateLeg = (changes: Partial<typeof leg>) => setForm(current => ({ ...current, asset_deliveries: current.asset_deliveries.map((item, row) => row === index ? { ...item, ...changes } : item) }))
+                        return <div className="transaction-form-grid" key={index}>
+                          <label><span>Receiving account</span><select value={leg.account_id} onChange={event => {
+                            const account = accounts.find(item => item.account_id === event.target.value)
+                            updateLeg({ account_id: event.target.value, currency: account?.currency ?? leg.currency, fx_rate_to_contract: account?.currency === resolvedTransactionCurrency ? 1 : '' })
+                          }}><option value="">Select account</option>{accounts.filter(item => item.account_category === 'security').map(item => <option key={item.account_id} value={item.account_id}>{item.account_name}</option>)}</select></label>
+                          <RegistryInstrumentPicker label="Delivered security" value={leg.instrument_id} instruments={instruments} onSelect={instrument_id => updateLeg({ instrument_id })} />
+                          <label><span>Delivered quantity</span><input type="number" step="any" min="0" value={leg.quantity} onChange={event => updateLeg({ quantity: event.target.value })} /></label>
+                          <label><span>Confirmed total fair value</span><input type="number" step="any" min="0" value={leg.fair_value} onChange={event => updateLeg({ fair_value: event.target.value })} /></label>
+                          <label><span>FX: contract currency per delivery currency</span><input type="number" step="any" min="0" value={leg.fx_rate_to_contract} onChange={event => updateLeg({ fx_rate_to_contract: event.target.value })} /></label>
+                          <button type="button" onClick={() => setForm(current => ({ ...current, asset_deliveries: current.asset_deliveries.filter((_, row) => row !== index) }))}>Remove delivery</button>
+                        </div>
+                      })}
+                      <button type="button" onClick={() => setForm(current => ({ ...current, asset_deliveries: [...current.asset_deliveries, { account_id: '', instrument_id: '', quantity: '', fair_value: '', currency: resolvedTransactionCurrency, fx_rate_to_contract: 1 }] }))}>Add delivered security</button>
+                    </fieldset>
+                  ) : null}
                   <label className="transaction-notes-field">
                     <span>Note</span>
                     <textarea
@@ -7826,6 +7707,7 @@ export default function TransactionsPage() {
                   </ul>
                 </div>
               ) : null}
+              {activePendingFileImport.preview.rows.filter(row => row.transaction).map(row => <TransactionDeliveryReview key={row.row_number} record={row.transaction!} accounts={accounts} />)}
             </div>
           ) : null
         }

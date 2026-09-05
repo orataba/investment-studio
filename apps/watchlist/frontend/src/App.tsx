@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router'
-import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+
+import './research-workbench.css'
 
 import LoadingOverlay from './components/LoadingOverlay'
 
@@ -9,15 +10,15 @@ const MonitoringPage = lazy(() => import('./pages/MonitoringPage'))
 const WatchlistEntryPage = lazy(() => import('./pages/WatchlistEntryPage'))
 const WatchlistsPage = lazy(() => import('./pages/WatchlistsPage'))
 
+const ResearchPage = lazy(() => import('./pages/ResearchPage'))
+
 export default function App() {
   return (
     <div className="app-shell">
-      <div className="app-utility-bar">
-        <LanguageSelector />
-      </div>
       <main className="page-shell page-shell-terminal">
         <Suspense fallback={<LoadingOverlay label="Loading page" />}>
           <Routes>
+            <Route path="/assistant" element={<ResearchPage />} />
             <Route path="/" element={<WatchlistEntryPage />} />
             <Route path="/watchlists" element={<WatchlistEntryPage />} />
             <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />

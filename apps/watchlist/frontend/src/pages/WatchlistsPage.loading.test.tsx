@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -54,7 +55,7 @@ describe('WatchlistsPage loading', () => {
     ])
     apiMocks.getFieldRegistry.mockResolvedValue({
       categories: [],
-      total_fields: 1,
+      total_fields: 2,
       fields: [
         {
           field_key: 'instrument_name',
@@ -73,6 +74,13 @@ describe('WatchlistsPage loading', () => {
           source_metric_code: 'instrument_name',
           default_width: 220,
           default_visible: true,
+        },
+        {
+          field_key: 'attr.risk_attention', label: '风险关注', category_code: 'research',
+          data_type: 'string', formatter_code: 'text', sort_mode: 'text',
+          filter_mode: 'multi_select', group_mode: 'none', instrument_scope_json: [],
+          product_scope_json: [], availability_rule_json: {}, source_domain: 'research',
+          source_metric_code: 'risk_attention', default_width: 120, default_visible: false,
         },
       ],
     })
@@ -114,7 +122,7 @@ describe('WatchlistsPage loading', () => {
       default_filters_summary: {},
     })
     apiMocks.runScreenerQuery.mockResolvedValue({
-      rows: [{ instrument_id: 'fund-1', instrument_name: 'Fund 1' }],
+      rows: [{ instrument_id: 'fund-1', instrument_name: 'Fund 1', 'attr.risk_attention': 'attention' }],
       groups: [],
       total_rows: 1,
       stale_row_count: 0,
@@ -133,11 +141,13 @@ describe('WatchlistsPage loading', () => {
     })
 
     render(
-      <MemoryRouter initialEntries={['/watchlists/all-private-funds']}>
-        <Routes>
-          <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/watchlists/all-private-funds']}>
+          <Routes>
+            <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
     )
 
     await waitFor(() => expect(apiMocks.runScreenerQuery).toHaveBeenCalled())
@@ -147,9 +157,13 @@ describe('WatchlistsPage loading', () => {
       JSON.stringify(payload),
     )
     expect(new Set(criteriaKeys).size).toBe(criteriaKeys.length)
+    expect(apiMocks.runScreenerQuery.mock.calls[0][0].selected_fields).toContain('attr.risk_attention')
+    expect(screen.getByRole('button', { name: 'Fund 1 有风险事项，查看风险关注' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '风险关注：升序' })).toBeNull()
+
   })
 
-  it('keeps instrument type as the fixed outer section for mixed custom watchlists', async () => {
+  it('uses a flat table until grouping is explicitly selected for mixed watchlists', async () => {
     apiMocks.getWatchlists.mockResolvedValue([
       {
         watchlist_id: 'mixed-research',
@@ -250,15 +264,19 @@ describe('WatchlistsPage loading', () => {
     })
 
     render(
-      <MemoryRouter initialEntries={['/watchlists/mixed-research']}>
-        <Routes>
-          <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/watchlists/mixed-research']}>
+          <Routes>
+            <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
     )
 
-    await waitFor(() => expect(screen.getByText('Public Fund')).toBeTruthy())
-    expect(screen.getByText('Equity')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Fund 1')).toBeTruthy())
+    expect(screen.getByText('Equity 1')).toBeTruthy()
+    expect(screen.queryByText('Public Fund')).toBeNull()
+    expect(screen.queryByText('Equity')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Group By/ }))
     expect(screen.getByRole('button', { name: 'None' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
@@ -414,11 +432,13 @@ describe('WatchlistsPage loading', () => {
     })
 
     render(
-      <MemoryRouter initialEntries={['/watchlists/coverage']}>
-        <Routes>
-          <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/watchlists/coverage']}>
+          <Routes>
+            <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
     )
 
     fireEvent.click(await screen.findByRole('button', { name: 'Columns' }))

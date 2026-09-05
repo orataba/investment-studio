@@ -12,6 +12,7 @@ from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.instrument_taxonomy import (
     SUPPORTED_TAXONOMY_INSTRUMENT_TYPES,
     build_taxonomy_context,
+    taxonomy_node_matches_equity_market,
     taxonomy_node_supports_instrument,
     taxonomy_tree_payload,
 )
@@ -95,6 +96,14 @@ def update_instrument_taxonomy_assignment(
                 detail=(
                     f'{instrument_type} instruments require a leaf category from the '
                     f'{instrument_type} taxonomy; {node_type} node {node_id!r} is not assignable.'
+                ),
+            )
+        if not taxonomy_node_matches_equity_market(instrument=instrument, node=node):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Equity taxonomy category must belong to the instrument's "
+                    "Registry exchange market."
                 ),
             )
     taxonomy_repository.upsert_assignment(

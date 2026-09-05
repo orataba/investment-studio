@@ -7,7 +7,7 @@
 | 需要解决的问题 | 权威文档 |
 | --- | --- |
 | 第一次接手项目、定位代码和评估修改影响 | [Developer Guide](./DEVELOPER_GUIDE.md) |
-| Platform、Registry、Watchlist、Portfolio 的职责和数据流 | [Platform Boundaries](./PLATFORM_BOUNDARIES.md) |
+| 主页、后台维护、Watchlist、Portfolio 的职责和数据流 | [Architecture](./ARCHITECTURE.md) |
 | 同事如何使用三个应用 | [User Manual](./USER_MANUAL.md) |
 | 数据库拓扑、迁移、重建、恢复与 PostgreSQL 测试 | [Database Workflow](./DATABASE_WORKFLOW.md) |
 | macOS 常驻服务、定时刷新、日志和卸载 | [macOS Local Service](./LOCAL_MACOS_SERVICE.md) |
@@ -23,12 +23,13 @@
 
 | 模块 | 入口 |
 | --- | --- |
-| Platform | [apps/platform/README.md](../apps/platform/README.md) |
+| Home 登录与导航 | [home/README.md](../home/README.md) |
+| CLI 数据维护 | [shared-data/README.md](../shared-data/README.md) |
 | Watchlist | [apps/watchlist/README.md](../apps/watchlist/README.md) |
 | Portfolio | [apps/portfolio/README.md](../apps/portfolio/README.md) 与 [Portfolio 文档索引](../apps/portfolio/docs/README.md) |
-| Instrument Core | [packages/instrument-core/README.md](../packages/instrument-core/README.md) 与 [Instrument Core Contract](../packages/instrument-core/INSTRUMENT_CORE_CONTRACT.md) |
+| Instrument Core | [shared-data/instruments/README.md](../shared-data/instruments/README.md) 与 [Instrument Core Contract](../shared-data/instruments/INSTRUMENT_CORE_CONTRACT.md) |
 | Shared UI | [packages/ui/README.md](../packages/ui/README.md) |
-| Instrument Registry migrations | [infra/instrument_registry/README.md](../infra/instrument_registry/README.md) |
+| Instrument Data migrations | [shared-data/instruments/MIGRATIONS.md](../shared-data/instruments/MIGRATIONS.md) |
 
 Watchlist 的详细产品与计算文档由其 app README 直接索引；Portfolio 指标、Holdings 字段、交易操作和 GIPS 方法由 Portfolio 文档索引管理。根目录 README 和 app README 只负责导航、范围和启动方式，不重复完整公式或字段字典。
 

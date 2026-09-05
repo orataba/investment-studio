@@ -1,2 +1,2 @@
-"""API package for Portfolio Operations Portfolio."""
+"""API package for Investment Studio Portfolio."""
 

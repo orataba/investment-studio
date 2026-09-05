@@ -171,14 +171,7 @@ def test_registry_batch_skips_fund_nav_audit_ledger(monkeypatch) -> None:
 def test_public_holdings_response_uses_canonical_instrument_core_ids(
     monkeypatch,
 ) -> None:
-    reconciliation_calls: list[dict[str, object]] = []
     warning_calls: list[tuple[set[str], set[str]]] = []
-
-    monkeypatch.setattr(
-        workspace_routes,
-        "reconcile_instrument_event_tasks",
-        lambda **kwargs: reconciliation_calls.append(kwargs) or {"portfolio-1": 0},
-    )
 
     def capture_warnings(instrument_types, instrument_ids, **_kwargs):
         warning_calls.append((set(instrument_types), set(instrument_ids)))
@@ -229,12 +222,6 @@ def test_public_holdings_response_uses_canonical_instrument_core_ids(
     )
 
     assert payload["detail_level"] == "compact"
-    assert reconciliation_calls == [
-        {
-            "portfolio_ids": ["portfolio-1"],
-            "instrument_ids": {"equity-1"},
-        }
-    ]
     assert warning_calls == [({"equity", "cash"}, {"equity-1"})]
 
 
@@ -356,7 +343,7 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
 
 
 def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> None:
-    snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    snapshot_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshot_response.status_code == 200
 
     original_bulk_loader = workspace_routes.get_registry_instrument_details
@@ -384,7 +371,7 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
     response = client.get(
         "/api/workspace/holdings",
         params={
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "as_of_date": "2026-04-15",
             "include_details": True,
         },
@@ -398,7 +385,7 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
 
 
 def test_workspace_summary_uses_one_bulk_detail_map(client, monkeypatch) -> None:
-    snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    snapshot_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshot_response.status_code == 200
 
     original_bulk_loader = workspace_routes.get_registry_instrument_details
@@ -416,7 +403,7 @@ def test_workspace_summary_uses_one_bulk_detail_map(client, monkeypatch) -> None
 
     response = client.get(
         "/api/workspace/summary",
-        params={"portfolio_id": "portfolio-ops"},
+        params={"portfolio_id": "investment-studio"},
     )
 
     assert response.status_code == 200
@@ -429,8 +416,18 @@ def test_workspace_summary_uses_one_bulk_detail_map(client, monkeypatch) -> None
 
 
 def test_position_holding_projection_skips_portfolio_wide_analytics(client, monkeypatch) -> None:
-    snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    snapshot_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshot_response.status_code == 200
+    holdings_response = client.get(
+        "/api/workspace/holdings",
+        params={"portfolio_id": "investment-studio", "as_of_date": "2026-04-15"},
+    )
+    assert holdings_response.status_code == 200
+    expected = next(
+        row for row in holdings_response.json()["rows"]
+        if row.get("instrument_core", {}).get("instrument_id") == "equity-us-abbv"
+    )
+    assert expected["break_even_price"] is not None
 
     def fail_portfolio_wide_load(*_args, **_kwargs):
         raise AssertionError("single-instrument holding projection must not build portfolio-wide analytics")
@@ -442,7 +439,7 @@ def test_position_holding_projection_skips_portfolio_wide_analytics(client, monk
     response = client.get(
         "/api/workspace/holdings/position",
         params={
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-15",
         },
@@ -453,6 +450,8 @@ def test_position_holding_projection_skips_portfolio_wide_analytics(client, monk
     assert payload["as_of_date"] == "2026-04-15"
     assert len(payload["rows"]) == 1
     assert payload["rows"][0]["instrument_core"]["instrument_id"] == "equity-us-abbv"
+    assert payload["rows"][0]["break_even_price"] == expected["break_even_price"]
+    assert payload["rows"][0]["net_invested"] == expected["net_invested"]
     assert "row" not in payload
     assert "price_chart_1m" not in payload["rows"][0]
     assert "instrument_return_series_all" not in payload["rows"][0]
@@ -460,11 +459,60 @@ def test_position_holding_projection_skips_portfolio_wide_analytics(client, monk
     assert len(response.content) < 5_000
 
 
+def test_position_holding_projection_maps_registry_enrichment_failure_to_502(
+    client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        workspace_routes,
+        "build_materialized_position_holding_projection",
+        lambda *_args, **_kwargs: {
+            "portfolio_id": "investment-studio",
+            "as_of_date": "2026-04-15",
+            "rows": [
+                {
+                    "line_id": "option-registry-failure",
+                    "holding_kind": "position",
+                    "derivative_contract": {
+                        "derivative_contract_id": "option-registry-failure",
+                    },
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "list_materialized_derivative_risk_context",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fail_registry_enrichment(*_args, **_kwargs):
+        raise workspace_routes.InstrumentRegistryError("Registry detail unavailable.")
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "enrich_derivative_holding_risk",
+        fail_registry_enrichment,
+    )
+
+    response = client.get(
+        "/api/workspace/holdings/position",
+        params={
+            "portfolio_id": "investment-studio",
+            "position_reference_id": "option-registry-failure",
+            "as_of_date": "2026-04-15",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Registry detail unavailable."
+
+
 def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_detail(
     client,
     monkeypatch,
 ) -> None:
-    portfolio_id = "portfolio-ops"
+    portfolio_id = "investment-studio"
     as_of_date = date(2026, 4, 15)
     account_id = "account-us-brokerage"
     derivative_contract_id = "option-us-short-call"
@@ -688,11 +736,6 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     )
     monkeypatch.setattr(
         workspace_routes,
-        "reconcile_instrument_event_tasks",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        workspace_routes,
         "corporate_action_quality_warnings",
         lambda *_args, **_kwargs: [],
     )
@@ -759,6 +802,8 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     detail_obligation = next(
         row for row in detail_rows if row["holding_kind"] == "option_obligation"
     )
+    assert detail_obligation["option_risk"]["underlying_instrument_id"] == "equity-us-abbv"
+    assert detail_obligation["option_risk"]["backing"]["kind"] == "portfolio_underlying_shares"
     assert all("instrument_return_1m" not in row for row in detail_rows)
     assert all("price_chart_1m" not in row for row in detail_rows)
     for field_name in (
@@ -789,7 +834,7 @@ def test_position_holding_projection_fails_closed_when_snapshot_is_unavailable(c
     response = client.get(
         "/api/workspace/holdings/position",
         params={
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-12",
         },
@@ -966,11 +1011,6 @@ def test_dynamic_event_holding_rejects_registry_market_profile(
     )
     monkeypatch.setattr(
         workspace_routes,
-        "reconcile_instrument_event_tasks",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        workspace_routes,
         "corporate_action_quality_warnings",
         lambda *_args, **_kwargs: [],
     )
@@ -1032,7 +1072,7 @@ def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_chart
     response = client.get(
         "/api/workspace/holdings",
         params={
-            "portfolio_id": "portfolio-ops",
+            "portfolio_id": "investment-studio",
             "as_of_date": "2026-04-15",
             "include_details": True,
         },

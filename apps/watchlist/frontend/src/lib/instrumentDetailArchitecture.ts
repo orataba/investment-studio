@@ -14,7 +14,7 @@ export type ListedDetailTab =
   | 'portfolio'
   | 'fundamentals'
   | 'events'
-  | 'methodology'
+  | 'profile'
   | 'monitoring'
 
 export type FundDetailTabCode =
@@ -32,7 +32,7 @@ export type FundDetailTabCode =
 const LISTED_TABS: Record<'etf' | 'equity' | 'index', readonly ListedDetailTab[]> = {
   etf: ['overview', 'research', 'performance', 'risk', 'price', 'portfolio', 'monitoring'],
   equity: ['overview', 'research', 'performance', 'risk', 'price', 'fundamentals', 'events', 'monitoring'],
-  index: ['overview', 'research', 'performance', 'risk', 'price', 'methodology', 'monitoring'],
+  index: ['overview', 'research', 'performance', 'risk', 'price', 'profile', 'monitoring'],
 }
 
 const FUND_TAB_LABELS: Record<

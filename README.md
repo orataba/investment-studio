@@ -1,35 +1,38 @@
-# Portfolio Operations Workbench
+# Investment Studio
 
-用于资产主数据、观察池研究和投资组合运营的 monorepo。系统由三个可独立运行的应用组成，并共享同一个 PostgreSQL 数据库中的 canonical 资产底座。
+用于观察池研究和投资组合运营的 monorepo。`home/` 只是登录与导航主页，不是业务 App；Watchlist 和 Portfolio 共享 PostgreSQL 资产数据，Regime 保持独立项目和数据库。
 
 ## 系统一览
 
 | 模块 | 长期职责 | 数据所有权 |
 | --- | --- | --- |
-| `Platform` | 平台入口、Instrument Registry、行情/NAV/FX 摄取 | `instrument_registry` canonical facts；`platform` 摄取状态与原始证据 |
+| `home/` | 登录与 Watchlist、Portfolio、Regime 导航 | 不连接业务数据库、不读取数据源密钥 |
+| `shared-data/` | CLI 数据接入、导入、修正与自动更新；无 HTTP 服务 | `instrument_data` 资产事实；`data_ingestion` 接入状态与原始证据 |
 | `Watchlist` | 观察池、单资产研究、监控和本地 read model | `watchlist` |
 | `Portfolio` | 账户、交易、账本、持仓、绩效、风险和研究 | `portfolio` |
-| `instrument-core` | 跨应用稳定复用的资产与行情合同 | 共享 Python/TypeScript contract |
+| `apps/regime/` | 独立 Git 子模块；状态识别与自身数据更新 | 独立 `market_data` 数据库与 Regime runtime |
+| `shared-data/instruments/` | 数据层内的共享资产模型、类型合同与迁移 | 共享 Python/TypeScript contract 与 `instrument_data` |
 | `packages/ui` | 已在多个应用中稳定复用的前端基础能力 | 无业务事实 |
 
 ```text
 供应商 / 邮件 / 人工文件
            |
            v
-Platform ingestion -> instrument_registry
+CLI data_ingestion -> instrument_data
                          /           \
                         v             v
                  Watchlist         Portfolio
 ```
 
-Watchlist 和 Portfolio 直接读取 `instrument_registry`，不通过 Platform HTTP 获取共享事实，也不互相调用业务 API。FCN 和 Option 是 Portfolio-local 合约，不进入 Registry。
+Watchlist 和 Portfolio 直接读取 `instrument_data`，不通过维护 HTTP 获取共享事实。两者独立计算收益和账本；标的风险跟进由 Watchlist 统一保存，Portfolio 经其 API 读取和更新。Watchlist 研究助手可通过显式配置的只读接口取得 Portfolio 持仓和 Regime 状态。FCN 和 Option 是 Portfolio-local 合约，不进入共享资产数据。
 
 ## 从哪里开始
 
 - 新开发者或 AI：[Developer Guide](./docs/DEVELOPER_GUIDE.md)
 - 使用系统的同事：[User Manual](./docs/USER_MANUAL.md)
 - 全部权威文档及维护规则：[Documentation Index](./docs/README.md)
-- Platform 开发：[apps/platform/README.md](./apps/platform/README.md)
+- 登录与主页：[Home](./home/README.md)
+- 后台 CLI 数据维护：[Data](./shared-data/README.md)
 - Watchlist 开发：[apps/watchlist/README.md](./apps/watchlist/README.md)
 - Portfolio 开发：[apps/portfolio/README.md](./apps/portfolio/README.md)
 
@@ -39,18 +42,40 @@ Watchlist 和 Portfolio 直接读取 `instrument_registry`，不通过 Platform 
 
 ```bash
 infra/scripts/sync_python_env.sh
-npm --prefix packages/instrument-core/ts ci
-npm --prefix apps/platform/frontend ci
+npm --prefix shared-data/instruments/ts ci
+npm --prefix home/frontend ci
 npm --prefix apps/watchlist/frontend ci
 npm --prefix apps/portfolio/frontend ci
 ```
 
-运行时 secrets 只能来自显式进程环境或仓库外的受控目录。三个 backend 目录只保留 `.env.example`，不得创建真实 `.env` 或软链接；密码通过权限为 `0600` 的 `.pgpass` 提供，不写入 URL、文档或 Git。
+运行时 secrets 只能来自显式进程环境或仓库外的受控目录。源码目录只保留 `.env.example`，不得创建真实 `.env` 或软链接；数据库密码通过权限为 `0600` 的 `.pgpass` 提供，不写入 URL、文档或 Git。主页使用 `home.env`，数据维护使用 `data.env`，两者不共享配置文件。
 
 - 新机器恢复既有业务数据：[New Machine Restore](./docs/NEW_MACHINE_RESTORE.md)
 - macOS 长期运行：[macOS Local Service](./docs/LOCAL_MACOS_SERVICE.md)
 - Linux 服务器：[Server Deployment](./docs/SERVER_DEPLOYMENT.md)
 - 数据库迁移、重建和 PostgreSQL 测试：[Database Workflow](./docs/DATABASE_WORKFLOW.md)
+
+## 应用与运行分组
+
+`home/apps.json` 只定义导航卡片；修改它即可增删入口，不创建或删除数据库。
+部署地址由 `home.env` 中的 `INVESTMENT_STUDIO_HOME_APP_URLS` JSON 对象覆盖。
+
+```bash
+bin/investment-studio services status all
+bin/investment-studio services restart home
+bin/investment-studio services restart investments
+bin/investment-studio services restart regime
+```
+
+`investments` 同时管理 Watchlist、Portfolio 和共享数据更新；`regime` 委托自己的服务工具。
+停止某组不会删除其数据。首次安装仍分别使用 Studio 与 Regime 的安装流程。
+
+Regime 的代码位于 `apps/regime` Git 子模块。已有仓库执行
+`git submodule update --init apps/regime`；新机器可使用 `git clone --recurse-submodules`。
+Studio 与 Regime 都是私有仓库，递归检出需要同时具有两个仓库的读取权限。Regime 的代码和 UI 回归测试在子模块内提交，先推送子模块，再提交 Studio 的引用；Studio CI 不代替 Regime 自身的 CI。
+子模块内部有自己的 `main` 与远端；先在其中提交并同步，再在根仓库记录子模块版本。
+根仓库提交或推送不会自动推送 Regime。父仓库测试也不代替 Regime 自己的测试与发布校验。
+移除入口只需修改导航；删除子模块和其运行数据是另外的显式操作。
 
 ## 统一验证
 
@@ -70,3 +95,5 @@ infra/scripts/verify_repository.sh all-local
 - `nav/` 是明确保留的恢复资产；数据库 dump、checksum、运行日志、研究产物、依赖目录和构建产物不进入 Git。
 - 文档只保存当前合同和可执行 runbook。Review 记录、测试数字、发布快照和一次性交接说明留在 commit、PR 或任务记录中，不在仓库建立文档归档。
 - 新共享层必须有当前的跨应用消费者；不为假设中的兼容需求提前抽象。
+- Watchlist/Portfolio 数据库与角色统一为 `investment_studio`，服务、容器与外部目录使用 `investment-studio`。历史迁移版本与数据库内部技术字段不为品牌命名而重写。
+- 真实数据库、密钥、附件、日志与计算产物不放在源码仓库；实际位置见 [Architecture](./docs/ARCHITECTURE.md)。

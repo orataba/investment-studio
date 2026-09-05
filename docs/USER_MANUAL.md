@@ -1,26 +1,24 @@
-# Portfolio Operations Workbench 使用手册
+# Investment Studio 使用手册
 
 ## 1. 系统入口
 
 系统地址由维护人按环境提供，仓库文档不固定服务器 IP 或域名：
 
-| 环境 | Platform | Watchlist | Portfolio |
+| 环境 | Investment Studio | Watchlist | Portfolio |
 | --- | --- | --- | --- |
 | 本机 | `http://127.0.0.1:5172/` | `http://127.0.0.1:5173/` | `http://127.0.0.1:5174/` |
-| 托管服务器 | 维护人提供的受控 HTTPS 入口 | 由 Platform 入口进入或使用受控直达地址 | 由 Platform 入口进入或使用受控直达地址 |
+| 托管服务器 | 维护人提供的受控 HTTPS 入口 | 由首页进入或使用受控直达地址 | 由首页进入或使用受控直达地址 |
 
 推荐使用最新版 Chrome 或 Edge。三个入口可以分别加入浏览器收藏夹。日常只打开维护人提供的三个
 前端入口；`8100 / 8101 / 8102` 是服务器内部 API 端口，除服务器本机维护排查外不直接访问。
 
-项目当前没有内建用户登录或 RBAC。托管入口必须由维护人通过反向代理同时提供 TLS、页面认证和
-API 认证；不能直接把 `310x / 810x` 端口暴露到公网或普通办公网络，也不能把云控制台登录当成
-页面访问控制。在受控入口尚未配置时，只允许本机使用或通过受控 SSH tunnel 维护验收。
+托管入口提供全屏登录，并由反向代理统一保护页面和 API。后台 API 端口只监听本机，不能直接暴露到公网。
 
-Platform 是系统总入口，首页会展示可进入的业务应用。Watchlist 和 Portfolio 也可以通过各自地址直接打开。页面打不开时，先确认电脑已连接公司网络，再刷新浏览器；仍不可用时记录访问地址、发生时间、浏览器、页面截图或错误提示，交给维护人排查。
+Investment Studio 是系统总入口，首页提供 Watchlist、Portfolio 和 Regime。页面打不开时，先确认网络连接，再刷新浏览器；仍不可用时记录访问地址、发生时间、浏览器、页面截图或错误提示，交给维护人排查。
 
 维护人登录服务器后，可在 loopback 上用以下地址判断服务是否存活：
 
-- Platform API：`http://127.0.0.1:8102/api/health`
+- 入口 API：`http://127.0.0.1:8102/api/health`
 - Watchlist API：`http://127.0.0.1:8100/api/health`
 - Portfolio API：`http://127.0.0.1:8101/api/health`
 
@@ -28,13 +26,14 @@ Platform 是系统总入口，首页会展示可进入的业务应用。Watchlis
 
 ## 2. 系统分工
 
-Portfolio Operations Workbench 分为三块：
+Investment Studio 的入口与业务应用：
 
-- Platform：共享资产库和行情主数据。维护 instrument、identifier、NAV、close price、FX 等基础事实。
+- Investment Studio 首页：登录后进入 Watchlist、Portfolio、Regime；数据维护不出现在前台。
 - Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、投资研究、监控和导出。
 - Portfolio：组合管理工作台。用于账户、交易、持仓、绩效、风险、分类体系和研究调仓。
+- Regime：独立项目提供的市场状态与信号面板，通过首页进入。
 
-三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股、A 股，以及 FMP 当前账户已覆盖的伦敦、Xetra、巴黎、阿姆斯特丹、米兰和瑞士主要市场目录；ETF 使用独立目录。用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载主源数据。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+Watchlist 和 Portfolio 共用可复用的资产数据；Regime 独立保存自己的数据。新增市场资产由后台 CLI 建档，网页只能选择已登记资产。FCN 和期权属于 Portfolio 的组合合约，仍在组合交易流程中创建，其标的引用已登记资产。
 
 市场数据按 instrument 固定一个 primary source：股票包括 A 股统一使用 FMP；A 股公募和 A 股 ETF 使用 DataHub Tushare，港股/美股 ETF 使用 FMP；A 股指数先核验 FMP 的精确代码和历史覆盖，核验成功才用 FMP，否则固定使用 Tushare。刷新时不会因空响应或错误切到第二 provider，也不双写同一序列。
 
@@ -51,98 +50,37 @@ Portfolio Operations Workbench 分为三块：
 
 资产、行情、交易和 taxonomy 都是正式业务事实，保存前应确认含义、日期、币种和数值。不要把测试资产、测试交易或临时标签录入正式 watchlist / portfolio。需要试验功能时，先与维护人确认是否有专用测试组合或测试列表。
 
-同一资产只维护一个 canonical instrument。新增前先在 Platform 搜索名称、ticker、ISIN 或其他 identifier。若发现重复资产，不要继续新增下游数据，应先合并或停用重复记录。
+同一资产只维护一个 canonical instrument。新增前先用后台 CLI 搜索名称、ticker、ISIN 或其他 identifier。若发现重复资产，不要继续新增下游数据，应先合并或停用重复记录。
 
 日期要按实际业务日期填写。基金 NAV 使用净值日期，指数 close 使用收盘日期，交易使用 trade date 和必要的 settlement date。Portfolio 默认交易时间为 Asia/Shanghai 12:00；同一天多笔交易需要体现先后顺序时，应填写准确 trade time。
 
 币种要与资产、账户和现金流一致。当前 Portfolio 交易币种支持 USD、HKD、CNY、EUR、GBP、CHF。跨币种组合需要维护 FX，否则组合市值、绩效和风险会出现缺口。
 
-## 4. Platform 使用
+## 4. 后台数据维护
 
-### 4.1 进入共享资产库
-
-打开维护人提供的 Platform 地址，进入 `Database Dashboard`。这里管理所有模块共用的 instrument 和市场数据。
-
-常用操作顺序：
-
-1. 在搜索框输入资产名称、ticker、ISIN 或内部编号。
-2. 检查搜索结果中是否已有同一资产。
-3. 公募、私募、指数等不存在时按运营流程新建 instrument；股票和目录已覆盖的 ETF 不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地证券目录。
-4. 填写 instrument type、名称、币种和 identifier。
-5. 录入或导入市场数据。
-6. 回到 Watchlist 或 Portfolio 引用该 instrument。
-
-### 4.2 新建 instrument
-
-新建时必须至少维护一个 identifier，并指定一个 primary identifier。常见填写方式：
-
-- 公募：instrument type 选 `public_fund`；Tushare `.OF` 净值属于这一类。
-- 私募：instrument type 选 `private_fund`；邮件净值来源属于这一类。
-- 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码；先验证 FMP 精确覆盖，再一次性选择 FMP 或 Tushare 主源。
-- 股票：不在这里手工注册。Watchlist/Portfolio 搜索本地 FMP 目录后，系统按交易所创建 `equity` identity，并按需回补 EOD。
-- ETF：与股票使用同一搜索操作，但底层保持独立 `etf` 类型。港股和美股 ETF 从本地 FMP 目录建档并按需回补 FMP EOD；A 股 ETF 固定使用 Tushare 行情、复权、档案和持仓，不在刷新时切换到 FMP。
-- 欧洲非上市基金：使用 `public_fund` 或 `private_fund`，以 ISIN/正式产品代码保持唯一 identity，并按现有 NAV 导入流程维护。当前不从 FMP 自动发现或抓取欧洲共同基金；没有具体产品和可验证数据源时不新增另一套基金管线。
-- 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
-
-不要在 Platform 为直接债券、某一笔 FCN 或期权新建 instrument。FCN/期权的合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
-
-命名应使用公司内部可识别的正式名称。名称中不要混入临时判断、评级、日期或个人备注；这些信息应放在 Watchlist 研究字段或 Portfolio notes 中。
-
-### 4.3 维护市场数据
-
-基金只维护两种 canonical NAV：
-
-- 单位净值使用 NAV / `official_nav`。
-- 需要体现总回报时，只使用分红再投资复权累计净值 / `total_return_nav`。
-- 单位净值加历史现金分红的普通累计值不是复权累计净值，不得录入 total return；无法确认供应商口径或缺少完整分红再投资信息时保持空值/NA。
-- 同一日期同一口径不要重复录入多个冲突值。
-
-指数维护 close 序列：
-
-- close 用于 Watchlist 指数 performance/risk 字段。
-- close 本身不代表价格收益或全收益；必须按指数官方口径在 source settings 中维护
-  `return_semantics=price_return` 或 `return_semantics=total_return`。无法确认时保持 Unknown，
-  系统不会据此计算 benchmark-relative 指标。
-- close 日期越完整，YTD、MTD、1M、年化收益、回撤、波动率和 Sharpe 越可靠。
-
-FX 维护 spot：
-
-- 系统维护 USD/HKD、USD/CNY、USD/EUR、USD/GBP、USD/CHF；其他币种不在当前 Portfolio 范围。
-- Platform 维护 FX 后会触发下游组合刷新。
-
-欧洲证券在目录搜索阶段显示交易所的默认币种，首次选中时会读取 FMP profile 确认该 listing 的实际报价币种。伦敦的 `GBp/GBX` 报价会先按 `0.01` 转为 canonical GBP 再写入价格和估值；伦敦的 USD 报价 ETF 仍保留 USD，不按交易所强行改成 GBP。
-
-行情录入后，下游不会立即“猜算”缺失历史。若需要完整区间分析，应补齐区间内必要日期的数据。
-
-基金 NAV 文件导入支持 CSV、TSV、文本、XLSX 和旧版 XLS，并在正式写入前展示解析预览；工作簿可包含供应商原始列和多个 sheet，后端按内容识别格式和 canonical NAV 字段。选中资产的 Market-data series 可按当前 Family/Basis 筛选下载 CSV 或 Excel，保留 `as_of_date`、metric/quote basis、原始数值精度、币种、price contract、status 和 provider。该下载是类型化行情审计文件，不等同于 NAV 导入模板；只有字段满足 NAV 导入契约的文件才能回灌。
-
-### 4.4 刷新和生命周期
-
-资产有 active / archived 生命周期。已停用或重复资产应 archive，不应删除业务历史。Archive 后下游新搜索一般不再优先展示，但历史记录仍可追溯。
-
-手动刷新会请求系统重新读取或计算相关市场数据。刷新后 Watchlist recalc 和 Portfolio snapshot 可能需要一点时间完成。若页面仍为空，检查 source settings、行情覆盖日期、资产类型和下游刷新状态。
-
-托管环境在任务加载/用户登录时先运行一次，并默认每天 `21:00 Asia/Shanghai` 自动运行统一刷新。邮件通道会扫描配置中的所有目录，`INBOX` 和产品专用目录都必须显式列入；平时按目录 UID 增量读取，不会每次全量下载邮箱。源数据刷新后还会单独协调方法版本落后的基金净值投影，这一步只读已落库证据，不重复扫描邮箱。某个目录、附件、基金或投影失败时会留下可重试状态和运行摘要，不应把“任务进程退出”误当成全部基金已经成功更新。
+共享资产注册、数据接入、邮件解析、NAV 文件导入、人工修正和状态检查只通过后台 CLI 进行，没有数据管理网页或专用公开域名。现有定时任务继续自动运行。维护人员参见 [Investment Studio CLI](../shared-data/README.md)。
 
 ## 5. Watchlist 使用
 
 ### 5.1 打开观察列表
 
-从 Platform 进入 Watchlist，或访问维护人提供的 Watchlist 地址。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
+从 Investment Studio 首页进入 Watchlist，或访问维护人提供的 Watchlist 地址。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
-Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。公募、私募和指数来自 Registry；股票和 ETF 也可搜索本地证券目录，首次添加时由 Platform API 按需准备共享 identity 与主源行情。
+Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。所有类型都只选择已登记的共享资产，不从网页抓取行情或注册新资产。
 
 ### 5.2 添加资产
 
-在列表页面搜索资产并加入当前 watchlist。公募、私募和指数搜索不到时，回到 Platform 检查 instrument 是否存在、是否 active、identifier 是否正确；股票或 ETF 搜索不到时，检查本地证券目录最近一次刷新是否成功。不要用相似名称新建重复资产。
+在列表页面搜索资产并加入当前 watchlist。搜索不到时，请维护人员检查资产是否已登记、是否 active、identifier 是否正确；新资产通过后台 CLI 登记。不要用相似名称新建重复资产。
 
 加入后，资产会出现在主表中。若指标为空，先看资产详情页的数据状态，再看 Monitoring 是否提示缺失行情、缺失必填研究信息或 recalc 失败。
 
-`Add From File` 支持 CSV、TSV、文本和 XLSX，读取 `Identifier`、`Ticker`、`ISIN`、`Ticker / ISIN` 或 `Instrument ID` 列；没有表头时读取第一列。文件中的 identifier 会先去重并全部到共享 Registry 解析，存在未找到或不支持的类型时整批不添加，避免得到半截 watchlist。Excel 单元格必须是字面值，不能用公式生成 identifier。
+`Add From File` 支持 CSV、TSV、文本和 XLSX，读取 `Identifier`、`Ticker`、`ISIN`、`Ticker / ISIN` 或 `Instrument ID` 列；没有表头时读取第一列。文件中的 identifier 会先去重并全部到共享 Instrument Data 解析，存在未找到或不支持的类型时整批不添加，避免得到半截 watchlist。Excel 单元格必须是字面值，不能用公式生成 identifier。
 
 ### 5.3 主表浏览
 
 主表支持分批显示、筛选、排序、列配置、分组和导出：
+
+系统默认视图平铺资产，把分类、研究阶段、收益和风险关注作为列；需要分组时再选择 Group By。已有自定义视图保留原设置。
 
 - 分批显示：页面先显示前 `80` 行，可继续显示更多或全部；全选只选中当前已经显示的行。
 - 排序：点击列头或使用当前 view 的默认排序。
@@ -151,13 +89,13 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 - Group By：只提供对当前名单全部资产都成立、且适合聚合的结构化维度；混合名单可按资产类型和通用工作流字段查看，基金专属或其他定性研究判断不会进入 Group By。
 - Download：导出当前筛选和排序后的全量结果，不只导出当前页。
 
-导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。CSV/Excel 都导出当前 view 的可见字段和筛选、排序后的全量结果；涉及端点敏感指标时会同时带出 metric as-of、return kind、quote basis 和 series type。导出首列固定包含 `instrument_id`，因此可通过 `Add From File` 把这些成员加入另一 watchlist；导入只读取 identifier 列，其他分析字段不会回灌或覆盖 Registry 事实。
+导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。CSV/Excel 都导出当前 view 的可见字段和筛选、排序后的全量结果；涉及端点敏感指标时会同时带出 metric as-of、return kind、quote basis 和 series type。导出首列固定包含 `instrument_id`，因此可通过 `Add From File` 把这些成员加入另一 watchlist；导入只读取 identifier 列，其他分析字段不会回灌或覆盖 Instrument Data 事实。
 
 Watchlist 允许不同 instrument 的最新数据日期不同。`1M / 3M / YTD` 等字段各自从该行显示的 `Metric As Of` 回看，不使用名单中最晚日期统一截断。页脚会显示当前结果的 as-of 范围；若同一分组内终点不同，收益和风险平均显示 `—`，不要把它理解为 0。Peer 排名只使用同一 as-of 的可比样本。
 
 ### 5.4 视图和字段
 
-Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type；混合资产名单只允许选择对名单内全部类型都有效的字段。例如基金字段不会出现在同时含有股票或 ETF 的名单中；指数 performance/risk 字段依赖 Registry 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
+Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type；混合资产名单只允许选择对名单内全部类型都有效的字段。例如基金字段不会出现在同时含有股票或 ETF 的名单中；指数 performance/risk 字段依赖 Instrument Data 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
 
 列配置用于当前分析任务，不改变底层数据。若某个字段长期需要在团队视图中出现，应创建或调整 view，而不是让每个人临时改列。
 
@@ -165,13 +103,13 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 
 `Group By` 只改变当前视图的组织方式，不写 taxonomy 或研究属性，也不支持通过拖拽改变资产分类。需要修改 taxonomy、投资状态或研究判断时，应进入资产详情页的对应编辑区。
 
-Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registry 不保存 taxonomy。公募与私募已经是不同的 `instrument_type`，各自在类型内使用基金/策略分类；ETF 使用 ETF 分类，股票按市场/交易所分类，指数使用指数分类。股票交易所分类由 Registry 的 canonical `exchange_code` 映射，其余资产分类仍由研究或业务负责人在 Watchlist 内人工设置。
+Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Instrument Data 不保存 taxonomy。公募与私募已经是不同的 `instrument_type`，各自在类型内使用基金/策略分类；ETF 使用 ETF 分类，股票按市场/交易所分类，指数使用指数分类。股票交易所分类由 Instrument Data 的 canonical `exchange_code` 映射，其余资产分类仍由研究或业务负责人在 Watchlist 内人工设置。
 
 ### 5.6 基金详情页
 
 基金详情页共享 Overview、Performance、Risk、Strategy、Documents、Research、Monitoring 基础结构。Overview 同时承载报价/NAV 主图；公募另外使用 Fees、Portfolio、Management，私募使用 Terms、Exposure、Organization。评级只在 Research 中由人工维护，并应在 timeline notes 记录证据与变更原因。
 
-基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；这些设置在 Watchlist 内按 instrument 共享，并不写回 Registry。
+基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；这些设置在 Watchlist 内按 instrument 共享，并不写回 Instrument Data。
 
 常用区域：
 
@@ -188,35 +126,47 @@ Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registr
 
 ### 5.7 ETF、股票和指数详情页
 
-ETF、股票和指数共用 Overview、Research、Performance、Risk、Price 外壳，但内容不相同：ETF 增加 Portfolio（档案、费用、行业/国家配置和持仓），股票增加 Fundamentals 与 Events，指数增加 Methodology（指数档案、成分权重和来源合同）。三类资产与基金共用投研记录能力，但研究问题按资产特征变化；它们不使用基金专属的 people 或 strategy profile。行情分析可基于 Registry quote selection policy 选中的序列计算：
+ETF、股票和指数共用 Overview、Research、Performance、Risk、Price 外壳，但内容不相同：ETF 增加 Portfolio（档案、费用、行业/国家配置和持仓），股票增加 Fundamentals 与 Events，指数增加 Profile（指数基础档案）。指数分析使用指数本身的行情序列，不采集成分权重。三类资产与基金共用投研记录能力，但研究问题按资产特征变化；它们不使用基金专属的 people 或 strategy profile。行情分析可基于共享资产数据的 quote selection policy 选中的序列计算：
 
 - `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 和年化收益。
 - 最大回撤、当前回撤。
 - 年化波动率、Sharpe。
 - 与 benchmark 或其他资产的图表对比。
 
-`close / last` 只是字段身份；是否为 total return 或 price return 必须由 Registry `return_semantics` 明确声明。未声明时可以保留独立行情展示，但需要同类收益语义的相对指标会失败关闭。若指标为空，优先检查 Platform 中是否有 policy 允许的完整行情、日期是否覆盖分析区间、return semantics 是否明确，以及 Watchlist recalc 是否完成。
+`close / last` 只是字段身份；是否为 total return 或 price return 必须由 Instrument Data `return_semantics` 明确声明。未声明时可以保留独立行情展示，但需要同类收益语义的相对指标会失败关闭。若指标为空，优先检查 共享资产数据中是否有 policy 允许的完整行情、日期是否覆盖分析区间、return semantics 是否明确，以及 Watchlist recalc 是否完成。
 
 ### 5.8 Monitoring 和 recalc
 
 Monitoring 页面用于发现需要处理的问题，包括缺失报价、缺失必填研究信息、需要刷新、正在运行或失败的 recalc job。处理顺序：
 
-1. 先补 Platform 主档或行情。
+1. 先通过后台 CLI 补充资产主档或行情。
 2. 再补 Watchlist taxonomy / attributes。
 3. 触发或等待 recalc。
 4. 回到主表或详情页确认字段恢复。
 
 recalc 失败时，不要手工改计算结果。应查看失败资产、失败字段和错误信息，补齐源数据后重新计算。
 
+### 5.9 研究对话与风险跟进
+
+研究页按专题保存问题、对话和材料，可选择观察列表、标的及关联组合。上传的原件与已提取文字分别保留；扫描 PDF 没有文字层时需要补充摘要。研究助手按问题读取现有证据并调用计算工具，回答保存为待复核内容，不修改行情、交易或组合配置。观察列表成员不能当作实际持仓；关联组合只提供当前持仓上下文。
+
+风险侧栏显示数据覆盖限制、区间跌幅和人工记录，可补充跟进意见、复核日期并标为处理中或已处理。自动信号是否解除由新数据判断；“已处理”不会取消仍在触发的风险条件。Portfolio 的标的风险入口与此处共享记录，组合层面的风险计算仍在 Portfolio。
+
+近 1 日、1 周、1 月和1季的跌幅复核线首次由合格日频样本生成，此后保持固定并可人工调整；它们是复核容忍线，不是 VaR、止损指令或尾部概率。低频、缺口或未确认分红断点会使相应读数不可用，具体口径见 [Watchlist 收益与风险合同](../apps/watchlist/docs/RETURN_SERIES_CONTRACT.md)。
+
 ## 6. Portfolio 使用
 
 ### 6.1 创建与打开组合
 
-从 Platform 进入 Portfolio，或访问维护人提供的 Portfolio 地址。进入后选择具体组合。组合页面通常包含 Overview、Holdings、Accounts、Transactions、Performance、Risk、Taxonomies、Research。
+从 Investment Studio 首页进入 Portfolio，或访问维护人提供的 Portfolio 地址。进入后选择具体组合。组合页面通常包含 Overview、Holdings、Accounts、Transactions、Performance、Risk、Taxonomies、Research。
 
-创建组合时必须明确选择基础币种（USD、HKD、CNY、EUR、GBP 或 CHF）。基础币种决定组合 NAV、汇总市值、绩效和风险金额的统一表达口径；各账户和交易仍保留自己的事实币种，非基础币种现金与持仓按对应 as-of date 的 Registry FX 换算。应按实际投资汇报口径选择基础币种，不能因为某一笔交易使用港币就改成港币，也不能在缺少 FX 时把不同币种金额直接相加。
+创建组合时必须明确选择基础币种（USD、HKD、CNY、EUR、GBP 或 CHF）。基础币种决定组合 NAV、汇总市值、绩效和风险金额的统一表达口径；各账户和交易仍保留自己的事实币种，非基础币种现金与持仓按对应 as-of date 的 Instrument Data FX 换算。应按实际投资汇报口径选择基础币种，不能因为某一笔交易使用港币就改成港币，也不能在缺少 FX 时把不同币种金额直接相加。
 
 Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险和研究结果都由这些事实计算得出。不要直接修改结果表来“修正”展示值，应回到交易、账户、行情或 taxonomy 源头处理。
+
+组合页右上角 `Settings` 可以修改组合的 Reporting / Base Currency。修改只改变汇报口径，不改写账户、交易、证券或合约的事实币种；系统会清除旧口径的派生快照，并从组合 inception date 按新币种重算 NAV、收益、归因、风险与损益。若历史 FX 不完整，依赖它的结果应显示不可用，不能把缺失汇率当作 1。切换前应确认新币种是实际长期汇报基准，而不是为了配合某一笔交易临时切换。
+
+Portfolio Taxonomies 是 Portfolio 自己的规划和分析分类。它与 Watchlist taxonomy 在节点身份、层级、assignment、版本和生命周期上都完全独立，二者没有映射或继承关系；即使名称相同也只表示文字碰巧相同，不能据此复制、推断或同步分类。Portfolio 的 Holdings、Performance、TargetSet 和 Research 只消费 Portfolio taxonomy。
 
 ### 6.2 Accounts
 
@@ -238,7 +188,9 @@ Accounts 管理组合内账户。新增账户时直接选择 `Cash`、`Security`
 - currency：账户币种。
 - institution：机构或平台。
 - default settlement cash account：持仓账户对应的同币种结算 Cash 账户。
-- cost basis method：成本法，支持 `fifo` 和 `moving_average`。
+- cost basis method：成本法，支持 `fifo` 和 `moving_average`；已有持仓历史后不能直接切换。
+- cash purpose：仅现金账户使用，区分普通结算、保证金、抵押与融资。抵押余额不是自由交易现金，保证金/融资账户的负余额是负债；内部借还、抵押转移不记为外部入金或收益。
+- collateral reference：已抵押资金的确认依据。账户用途按真实安排填写，不用于消除负现金提示。
 - status：账户状态。
 
 账户已有交易或衍生品合约后不能更改 category；需要调整时应创建正确类别的账户并按事实迁移。账户币种在创建后固定，避免历史现金、成本、NAV 和风险换算口径发生漂移。
@@ -258,16 +210,17 @@ Transactions 是组合事实入口。新增时先选 `Security`、`FCN`、`Optio
 - Option：`buy_to_open`、`sell_to_close`、`sell_to_open`、`buy_to_close`、`expire_long`、`cash_settle_long`、`expire_written`、`cash_settle_written`、`fee`、`tax`、`opening_balance`。所有动作使用 Option 账户和本地合约，并明确区分多头与空头方向；`Long Option Opening Balance` 只表示多头。
 - Cash & Operations：`deposit`、`withdrawal`、`interest`、`fx_conversion`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。Cash 动作不关联 instrument 或衍生品合约；换汇还需目标现金账户、counter amount 和 fx rate。
 
-FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
+FCN 与期权使用 Portfolio 本地合约，不从 共享资产列表中选择一个“衍生品资产”：
 
-- 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易动作只选择同一 `derivative_contract_id`。
-- 期权动作明确区分 `Buy to Open`、`Sell to Close`、`Sell to Open`、`Buy to Close`，并在选定合约后标明 Call 或 Put；另外分别提供 long/writer expiry 与 long/writer cash settlement。数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式；真实结果发生后再确认。
-- FCN 支持买入、coupon，以及 normal maturity、knock-in、knock-out 关闭结果。系统记录事件，不自动验证障碍是否触发，也不把交付资产与关闭事件绑定成一笔复合交易。
-- FCN 合约主条款记录名义本金、年化票息率、发行日、最终观察日、到期日、发行人和对手方；每个 underlying 单独记录 Registry security、初始参考价、strike/knock-in/knock-out 百分比水平和是否可交付。
-- 提前实物行权或被指派时，在 `Transactions → Option` 选择已有合约，再从 Action 选择 `Exercise Long` 或 `Assign Written`；一次确认会原子生成零现金期权关闭腿和按 strike 的股票买卖腿，并建立一对一关联，Activity 中作为一项活动显示。组合任一页面打开时，若期权已经过期但 long/writer quantity 仍未关闭，也会弹出一次简洁的待确认提示，并可从页头入口重新打开。确认作废或现金结算会直接生成对应结果；Call/Put 与 long/written 决定实物交割方向，multiplier 决定股票数量，费用和税费只记在股票腿。合约与 underlying 币种不一致时不能推断实物交割，应录入经核对的现金结算。FCN 敲入后的资产接收仍另录普通证券交易。
-- 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
+- 首笔 FCN/期权交易同时创建本地合约，记录合约名称、币种、账户和条款；Option 条款必须用 `underlying_instrument_id` 明确引用 Instrument Data 股票或 ETF，不能只在合约名或 note 中描述标的；后续交易动作只选择同一 `derivative_contract_id`。
+- 期权动作明确区分买入开仓、卖出平仓、卖出开仓、买入平仓，并分别支持长短仓期初、到期作废、现金结算和实物结果。数量单位是合约张数，权利金总额按张数、每单位权利金和合约乘数计算。经确认的结算方式、行权风格和行权币种保存在合约条款中并参与校验；未知条款留空，不猜测。
+- FCN 支持买入、提前退出、票息、敲入观察，以及正常到期、敲入、敲出关闭。敲入观察不关闭仓位、不动现金；最终实物兑付在同一记录填写交付证券、数量、确认总价值及汇率，系统建立证券成本和来源关联，不另造现金兑付与证券买入。系统记录已确认事件，不自动判断障碍是否触发。
+- FCN 合约主条款记录名义本金、年化票息率、发行日、最终观察日、到期日、发行人和对手方；每个 underlying 单独记录 Instrument Data security、初始参考价、strike/knock-in/knock-out 百分比水平和是否可交付。
+- 实物行权或被指派时，在交易页的期权入口选择已有合约及实物结果；一次确认原子生成零现金期权关闭腿和按行权价的股票腿，并建立一对一关联。期权过期且仍有未关闭数量时，也可从页头待确认入口处理。Call/Put 与买卖方向决定股票交付方向，乘数决定股票数量；费用、费用分类和税费只记在股票腿。权利金与股票币种可以不同，但股票腿必须使用明确的行权币种，且与标的报价及交付账户币种一致；不支持的跨币种转换不能改记成虚构现金结算。
+- 先买股票再交付，填写各自真实交易时间；券商确认先形成股票空头时，明确选择该结果，后续按实际成交买回，不改造历史时间。指定批次用于 FIFO 账户的处置；实物行权页选择的是期权多头开仓批次，不是交付股票批次，留空按账户成本法。
+- 合约条款补充或纠错使用合约详情中的审计修订入口，提交完整条款、确认人及依据；系统保留前后版本并核对历史。不能在后续交易中覆盖条款，也不能用修订将原合约替换为另一个产品。
 
-买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。FCN 的建仓、退出、期初、票息及敲入/敲出必须发生在 issue date 至 maturity date（含）之间，到期事件不得早于 maturity date。
+买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Instrument Data 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。FCN 的建仓、退出、期初、票息及敲入/敲出必须发生在 issue date 至 maturity date（含）之间，到期事件不得早于 maturity date。
 
 Portfolio 创建时必须确定 inception date。任何交易都不得早于该日期；所有 `opening_balance` 的 trade date 与 settlement date 固定为该日期。已有资产可保留更早的 acquisition date，零成本 opening position 允许 gross amount 为 0；除此之外，Option long/writer expiry 与实物行权/指派的期权关闭腿允许零 gross amount。运行期新增现金应录为 Deposit，新增持仓应录为实际 Buy 或 Transfer，不能用 opening balance 绕过外部现金流。Cash Fee / Tax 不填写 entitlement date；资产关联费用要求 entitlement date 当日存在 long position 或 written-option obligation。Option 独立 Fee / Tax 是合约级现金费用，不改变 long lot 或 writer obligation。Return of Capital 用 trade date 表示 entitlement/record date、settlement date 表示到账日。
 
@@ -275,9 +228,13 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 页面右上角把文件操作 `Export / Import / Template` 与录入操作 `From Screenshot / Record Transaction` 分组展示。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
 
-`From Screenshot` 只处理当前打开的 Portfolio。一次可上传 1–10 张 PNG、JPEG 或 WebP；重叠截图应放在同一批次，由 Agent 结合当前组合账户、持仓、合约、Registry 标的和既有交易一起理解。上传后自动开始分析，结果是一份可直接修改的草稿，不会自行创建交易。用户核对账户、日期、数量、价格、金额、重复关系及衍生品条款后，点击一次 `Confirm & record`；页面先运行 Preview，校验不通过就保留草稿和错误供修改，通过才立即原子入账。AI 问题只是提示，不需要逐项打勾；历史批次和详细 AI 说明位于次要入口。持仓或现金快照可以只形成初始化/对账候选，不会被自动伪造成历史成交。
+`From Screenshot` 只处理当前打开的 Portfolio。一次可上传 1–10 张 PNG、JPEG 或 WebP；重叠截图应放在同一批次，由 Agent 结合当前组合账户、持仓、合约、Instrument Data 标的和既有交易一起理解。上传后自动开始分析，结果是一份可直接修改的草稿，不会自行创建交易。用户核对账户、日期、数量、价格、金额、重复关系及衍生品条款后，点击一次 `Confirm & record`；页面先运行 Preview，校验不通过就保留草稿和错误供修改，通过才立即原子入账。AI 问题只是提示，不需要逐项打勾；历史批次和详细 AI 说明位于次要入口。持仓或现金快照可以只形成初始化/对账候选，不会被自动伪造成历史成交。
 
 交易截图识别等外部系统使用同一 JSON Preview/Commit 接口，同样先校验、后确认并原子入账；页面、CSV/Excel、截图助手和外部接口共用交易动作、账户/币种、持仓历史、来源去重和幂等规则。具体对接合同见 [Portfolio 标准交易记录 JSON 接口对接说明](TRANSACTION_IMPORT_API_GUIDE.md)，Agent 运行边界见 [Portfolio Copilot Harness 设计](PORTFOLIO_COPILOT_HARNESS.md)。
+
+AI 草稿、JSON、CSV 和 Excel 中的新 Option 都必须把挂钩证券写入合约条款的 `underlying_instrument_id`，并由预览核对 Instrument Data 身份、币种和条款。文件支持 `physical_long` / `physical_written` 加 `option_delivery_json`，一行原子生成两腿；不能再导入同笔交付股票。AI 复核可将误识别的现金结果改为实物结果并补填交付账户、费用分类，也可添加、修改或移除 FCN 交付证券和指定批次；缺失信息必须依据回单人工补齐，预览通过后才入账。
+
+Transactions 的 Fund Distribution Review 默认只读取已经保存的事项，不会因为打开页面而写入新任务。需要核对新增分红事件时，先点击 `Refresh Distribution Events`，再逐项核对；刷新只建立待审事项，不会自动生成现金或份额交易。
 
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。页面或文件填写的 `source_system + external_reference` 是整笔 Transfer 的来源身份，系统只把它保存在 transfer-out 腿；导出折叠和再次导入仍会保留并查重。
 
@@ -287,7 +244,7 @@ Holdings 若显示 `Negative settled cash` critical alert，表示账本已有�
 
 ### 6.4 Holdings
 
-Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权重、成本和未实现盈亏。持仓来自交易、行情和账户计算，不手工录入。若持仓数量不对，优先检查 Transactions；若市值不对，优先检查 Platform 行情和 FX；若成本不对，检查账户成本法和历史交易顺序。
+Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权重、成本和未实现盈亏。持仓来自交易、行情和账户计算，不手工录入。若持仓数量不对，优先检查 Transactions；若市值不对，优先检查 共享行情和 FX；若成本不对，检查账户成本法和历史交易顺序。
 
 Securities 字段按 `Identity / Quote / Instrument Trend / Position / Cost / P&L / Risk` 七组管理，不把不同口径堆在一起：
 
@@ -296,11 +253,11 @@ Securities 字段按 `Identity / Quote / Instrument Trend / Position / Cost / P&
 - P&L 把本币价格未实现、base-currency 价格未实现、base-currency 汇兑未实现和 base-currency 总未实现分开，并保证总额等于价格项加汇兑项。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
 - Instrument Trend 的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 与 Vol / Drawdown 使用标的自身已确认的本币 total-return series，包含分红等复权、不含汇率变化，也不读取历史买卖份额或成本。
 
-FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收期权/FCN 的虚构实时 fair value，不计算日常衍生品未实现盈亏、Greeks、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。Holdings 风险列可使用 Registry 的真实 underlying spot 计算期权 moneyness/intrinsic、written backing，以及 FCN 的实际 strike/KI/KO 价格。FCN `Delivery buffer = spot / strike price - 1`；所有可交付标的的行情和 strike 都完整时取其中最小值，任一缺失则不发布这个聚合指标。它只表示当前现价相对接票价的距离，不代表衍生品估值、从现价到接票价的跌幅或已经发生的 barrier/delivery event。
+FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收期权/FCN 的虚构实时 fair value，不计算日常衍生品未实现盈亏、Greeks、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。Holdings 风险列可使用 Instrument Data 的真实 underlying spot 计算期权 moneyness/intrinsic、written backing，以及 FCN 的实际 strike/KI/KO 价格。FCN `Delivery buffer = spot / strike price - 1`；所有可交付标的的行情和 strike 都完整时取其中最小值，任一缺失则不发布这个聚合指标。它只表示当前现价相对接票价的距离，不代表衍生品估值、从现价到接票价的跌幅或已经发生的 barrier/delivery event。
 
 页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。instrument 数量紧邻标题。Securities、FCN 与 Options 可以独立使用 `View` 和 `Columns`；FCN、Options 均以 `Default` 为日常视图，并提供面向条款和估值的系统视图，系统视图切换不改变表格框架宽度。`Cash & Settlement` 使用固定字段，不提供没有实际价值的视图或列配置。每个 settled cash 行对应一个具体账户和币种，并展示该账户从历史流入汇率形成的未实现汇兑损益；组合内部现金划转沿用原成本，不在划转日重置，真正换汇则按录入的成交金额和汇率建立新币种成本。`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
 
-只有 instrument 或 contract 名称可以打开详情；点击普通字段不会跳页。在表格数据区按住鼠标左右拖动可以横向浏览宽表，减少误触。
+只有资产、合约或现金/结算行的名称可以打开详情；点击普通字段不会跳页。在表格数据区按住鼠标左右拖动可以横向浏览宽表，减少误触。
 
 CSV/Excel 同样只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立表头；Securities、FCN、Options 跟随当前视图的可见字段，Cash & Settlement 使用与页面一致的固定字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
 
@@ -308,9 +265,9 @@ Security Group/subtotal 是**当前持仓篮子**：金额加总，比例用组�
 
 组合 NAV 等总览已经在页面顶部；四类 signed NAV 构成和 `Portfolio Total` 对账统一到 Overview 的 `Asset Mix` 查看。组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
 
-默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
+默认列表使用 compact payload；sparkline 是有界采样，打开持仓详情后按资产类型加载相关交易、lots 和图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。已平仓的衍生品保留合约和交易历史，不退回普通证券模板或展示虚构的当前风险。
 
-详情页根据对象采用不同结构。普通 Security detail 展示标的行情、当前仓位、分账户开放 lots、股票自身交易与已实现/未实现损益，同时单列挂钩期权的交易和损益；实物交割的股票腿与期权腿可相互核对。Option detail 展示合约属性、underlying 真实价格走势图与 strike、到期 payoff、intrinsic value、moneyness、剩余 premium/liability、到期和 backing 风险；没有可靠数据时不估造 time value、fair value 或 Greeks。FCN detail 按每个 underlying 展示真实价格路径及 initial/strike/KI/KO 参考线和距离，并集中呈现期限与价格区域风险；当前价格越线不等于系统确认历史 barrier event。
+详情页根据对象采用不同结构。普通 Security detail 展示标的行情、当前仓位、分账户开放 lots、股票自身交易与已实现/未实现损益，同时单列挂钩期权的交易和损益；实物交割的股票腿与期权腿可相互核对。Option detail 展示合约属性、underlying 真实价格走势图与 strike、到期 payoff、intrinsic value、moneyness、剩余 premium/liability、到期和 backing 风险；没有可靠数据时不估造 time value、fair value 或 Greeks。FCN detail 按每个 underlying 展示真实价格路径及 initial/strike/KI/KO 参考线和距离，并集中呈现期限与价格区域风险；当前价格越线不等于系统确认历史 barrier event。Cash detail 只展示指定账户的本币余额、基准币价值、历史汇率成本、未实现汇兑损益、可用性和相关账本事实；Settlement detail 展示应收/应付金额、确认日、结算日、状态和关联资产。Cash 与 Settlement 不展示证券图表或 position lots。
 
 ### 6.5 Overview
 
@@ -372,7 +329,7 @@ Risk 是当前权重口径的风险工作台，使用市场资产历史收益与
 - risk contribution：看各资产或分组对组合风险的贡献。
 - benchmark：选择可用 benchmark 后比较风险曲线。
 
-风险结果依赖资产收益序列。Production Risk Model 的 `1M / 3M / 6M / 12M / 24M` 从 holdings as-of date 按自然月回看，不是 30/90 个交易日；起止日都是 EOD boundary，只使用 `(start EOD, as-of EOD]` 的收益行。计算频率优先读取 Registry expected frequency，daily 数据按 instrument 自己的 market calendar 区分休市和缺点；即使所有持仓共同漏掉同一个预期交易日，也不会把“彼此仍对齐”误当成完整数据。若 start 落在周末或休市日，首条收益从此前最近有效收盘连接到此后首个有效交易日；不会虚构非交易日 close，也不会因为最新数据较早就把窗口整体向前挪。缺少历史行情、只有期末净值但没有对应期初净值、期间起止不一致、尾部数据陈旧或缺少 FX 时，结果会明确显示 unavailable。
+风险结果依赖资产收益序列。Production Risk Model 的 `1M / 3M / 6M / 12M / 24M` 从 holdings as-of date 按自然月回看，不是 30/90 个交易日；起止日都是 EOD boundary，只使用 `(start EOD, as-of EOD]` 的收益行。计算频率优先读取 Instrument Data expected frequency，daily 数据按 instrument 自己的 market calendar 区分休市和缺点；即使所有持仓共同漏掉同一个预期交易日，也不会把“彼此仍对齐”误当成完整数据。若 start 落在周末或休市日，首条收益从此前最近有效收盘连接到此后首个有效交易日；不会虚构非交易日 close，也不会因为最新数据较早就把窗口整体向前挪。缺少历史行情、只有期末净值但没有对应期初净值、期间起止不一致、尾部数据陈旧或缺少 FX 时，结果会明确显示 unavailable。
 
 Forward RC 先对当前 leaf instruments 运行一次组合级 covariance；taxonomy/sleeve 只加总这些资产相对于同一组合 variance 的贡献，不会在分组后重新估计一套风险。Rolling Risk 和 Correlation Matrix 都要求所有 active members 在共同历史内使用完全一致的 period start/end 与日期序列。缺少成员、缺少日期、日期逆序、常数收益或窗口覆盖不足时，页面列出具体成员与日期并保持 unavailable；不会补 0、静默取交集或用每对资产不同的日期拼矩阵。
 
@@ -451,7 +408,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 ### 7.1 新基金进入观察池
 
-1. Platform 搜索基金 ticker / ISIN / 名称。
+1. 后台 CLI 搜索基金 ticker / ISIN / 名称。
 2. 不存在时按产品性质新建 `public_fund` 或 `private_fund`；Tushare 来源属于公募，邮件来源属于私募。
 3. 维护基金币种、primary identifier 和 `official_nav / total_return_nav`。
 4. 系统会自动把 active 公募或私募同步到对应的 `All 公募 / All 私募`；需要进入其他名单时再人工添加。
@@ -461,8 +418,8 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 ### 7.2 新指数用于比较
 
-1. Platform 新建或确认 index instrument，并验证 FMP 是否有精确 symbol 与历史 EOD。
-2. 验证成功则固定 FMP；否则固定 Tushare。维护 close、return semantics，并在 Tushare 可用时读取 index profile 与最新成分权重。
+1. 后台 CLI 新建或确认 index instrument，并验证 FMP 是否有精确 symbol 与历史 EOD。
+2. 验证成功则固定 FMP；否则固定 Tushare。维护 close、return semantics 和指数基础档案。
 3. Watchlist 加入指数池，检查 Performance / Risk。
 4. Portfolio Overview、Performance、Risk 或 Research 中搜索并选择该指数作为 benchmark。
 5. 若 benchmark 没有曲线，检查 close 日期是否覆盖组合或回测区间。
@@ -471,7 +428,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 1. Portfolio 进入对应组合。
 2. Accounts 确认证券账户和默认结算现金账户存在。
-3. 在 Transactions 直接搜索资产。公募、私募和指数来自 Registry；股票与目录覆盖的 ETF 直接搜索本地证券目录，不要求先加入 Watchlist。首次选中时系统会核实交易所和报价币种、建立或确认 identity，并按资产/市场既定主源加载数据。
+3. 在 Transactions 搜索已登记资产，不要求先加入 Watchlist。资产不存在时，由维护人员通过后台 CLI 建档、核实币种及数据源，再回到 Transactions 选择；页面不登记新市场资产或抓取供应商数据。
 4. Transactions 新增 `buy`。
 5. 填写 account、instrument、trade date、settlement date、quantity、price、gross amount、fee、tax、currency。
 6. 保存后查看 ledger posting、Holdings 和 Overview。
@@ -498,7 +455,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 ## 8. 常见问题
 
-- 找不到资产：先到 Platform 搜索名称、ticker、ISIN；确认 active 状态和 identifier；仍没有再新建。
+- 找不到资产：由维护人员通过后台 CLI 搜索名称、ticker、ISIN；确认 active 状态和 identifier；仍没有再新建。
 - Watchlist 指标为空：检查资产类型是否适用、行情是否覆盖、recalc 是否完成、字段是否属于该 instrument scope。
 - 指数没有风险指标：检查 close 序列是否足够长，日期是否连续或覆盖所选区间。
 - 基金图表没有 benchmark：benchmark 资产需要可用 NAV 或 close，且日期与基金有交集。

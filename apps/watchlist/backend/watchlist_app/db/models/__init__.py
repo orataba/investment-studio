@@ -72,3 +72,5 @@ __all__ = [
     "WatchlistView",
     "WatchlistViewColumn",
 ]
+
+from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry, RiskCase, RiskReviewRule

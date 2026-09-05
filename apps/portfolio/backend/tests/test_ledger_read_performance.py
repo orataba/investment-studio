@@ -263,7 +263,7 @@ def test_account_workspace_reports_settled_and_pending_monetary_fx(
     }
     monkeypatch.setattr(
         ledger,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["CNY", "USD"], "rates": []},
     )
     monkeypatch.setattr(
@@ -540,7 +540,7 @@ def test_accounts_workspace_http_contract_preserves_option_obligations(
     client,
     monkeypatch,
 ) -> None:
-    portfolio_id = "portfolio-ops"
+    portfolio_id = "investment-studio"
     account = next(
         item
         for item in accounts_route.list_accounts(portfolio_id)

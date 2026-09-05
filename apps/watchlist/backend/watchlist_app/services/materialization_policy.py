@@ -6,5 +6,5 @@ policy changes without a source-data write.  Bump this value whenever such a
 policy change requires every instrument read model to be rebuilt.
 """
 
-WATCHLIST_MATERIALIZATION_VERSION = "watchlist-materialization/v8"
+WATCHLIST_MATERIALIZATION_VERSION = "watchlist-materialization/v10"
 UNVERSIONED_MATERIALIZATION = "unversioned"

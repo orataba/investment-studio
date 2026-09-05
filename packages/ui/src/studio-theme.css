@@ -1,0 +1,231 @@
+:root {
+  color-scheme: light;
+  font-family: var(
+    --investment-studio-font-sans,
+    "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif
+  );
+
+  /* Restrained institutional palette shared by every workspace. */
+  --studio-bg: #f4f5f6;
+  --studio-surface: #ffffff;
+  --studio-surface-soft: #f7f8f9;
+  --studio-surface-tint: #eef3f4;
+  --studio-ink: #17212b;
+  --studio-muted: #525f6b;
+  --studio-faint: #77818b;
+  --studio-line: #e1e5e8;
+  --studio-line-strong: #c8d0d5;
+  --studio-accent: #176b78;
+  --studio-accent-strong: #11545f;
+  --studio-accent-soft: #edf5f5;
+  --studio-positive: #24745b;
+  --studio-negative: #a64643;
+  --studio-warning: #94672f;
+  --studio-info: #4f6f8a;
+
+  /* One visual grammar for NAV, price, risk and research charts. */
+  --studio-chart-primary: #176b78;
+  --studio-chart-secondary: #86545e;
+  --studio-chart-tertiary: #607080;
+  --studio-chart-grid: #e1e5e8;
+  --studio-chart-grid-strong: #c8d0d5;
+  --studio-chart-axis: #66717c;
+  --studio-chart-area: rgba(23, 107, 120, 0.09);
+  --studio-chart-band: rgba(23, 33, 43, 0.035);
+  --studio-chart-positive: #24745b;
+  --studio-chart-negative: #a64643;
+
+  /* Existing application aliases. */
+  --surface: var(--studio-surface);
+  --ink: var(--studio-ink);
+  --muted: var(--studio-muted);
+  --faint: var(--studio-faint);
+  --line: var(--studio-line);
+  --line-strong: var(--studio-line-strong);
+  --band: var(--studio-surface-soft);
+  --band-strong: var(--studio-surface-tint);
+  --accent: var(--studio-accent);
+  --accent-soft: var(--studio-accent-soft);
+  --positive: var(--studio-positive);
+  --negative: var(--studio-negative);
+  --warning: var(--studio-warning);
+
+  --portfolio-ink: var(--studio-ink);
+  --portfolio-muted: var(--studio-muted);
+  --portfolio-faint: var(--studio-faint);
+  --portfolio-line: var(--studio-line);
+  --portfolio-line-strong: var(--studio-line-strong);
+  --portfolio-band: var(--studio-surface-soft);
+  --portfolio-band-strong: var(--studio-surface-tint);
+  --portfolio-accent: var(--studio-accent);
+  --portfolio-accent-soft: var(--studio-accent-soft);
+  --portfolio-positive: var(--studio-positive);
+  --portfolio-negative: var(--studio-negative);
+  --portfolio-warning: var(--studio-warning);
+}
+
+:root[lang^="zh"] {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Aptos", "Inter", "Segoe UI", sans-serif;
+}
+
+* {
+  scrollbar-color: #aab4bb transparent;
+}
+
+body {
+  background: var(--studio-surface);
+  color: var(--studio-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(23, 107, 120, 0.16);
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+button,
+input,
+select,
+textarea,
+.language-switcher {
+  border-radius: 0;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 1px solid var(--studio-accent);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+summary:focus:not(:focus-visible),
+[tabindex]:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-input-modality='pointer'] :is(button, a, select, summary, [tabindex], input[type='checkbox'], input[type='radio'], input[type='range']):focus {
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-input-modality='pointer'] select:focus {
+  border-color: var(--studio-line-strong);
+}
+
+input:focus,
+select:focus-visible,
+textarea:focus {
+  border-color: var(--studio-accent);
+  box-shadow: 0 0 0 1px var(--studio-accent) inset;
+}
+
+/* The language selector draws one keyboard-focus indicator on its wrapper. */
+.language-switcher select:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.language-switcher {
+  min-height: 30px;
+  border-color: var(--studio-line-strong);
+  background: var(--studio-surface);
+}
+
+.language-switcher:hover,
+:root:not([data-input-modality='pointer']) .language-switcher:has(select:focus-visible) {
+  border-color: var(--studio-accent);
+  color: var(--studio-accent);
+  background: var(--studio-surface);
+}
+
+.inline-notice,
+.error-state,
+.empty-state,
+.loading-state {
+  border-color: var(--studio-line);
+  border-radius: 0;
+  background: var(--studio-surface);
+}
+
+.context-chip,
+.coverage-pill,
+.status-pill,
+.account-status-pill,
+.transaction-type-pill {
+  border-radius: 2px;
+}
+
+.button-primary,
+.primary-button,
+.login-form button,
+.transaction-primary-action {
+  border-color: var(--studio-accent) !important;
+  background: var(--studio-accent) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.button-primary:hover:not(:disabled),
+.primary-button:hover:not(:disabled),
+.login-form button:hover:not(:disabled),
+.transaction-primary-action:hover:not(:disabled) {
+  border-color: var(--studio-accent-strong) !important;
+  background: var(--studio-accent-strong) !important;
+  color: #ffffff !important;
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+thead th {
+  color: var(--studio-muted);
+}
+
+tbody tr {
+  transition: background-color 100ms ease;
+}
+
+tbody tr:hover {
+  background: rgba(23, 107, 120, 0.035);
+}
+
+.watchlists-modal,
+.overview-columns-modal,
+.portfolio-settings-modal,
+.portfolio-table-config-modal,
+.portfolio-create-modal,
+.taxonomy-modal,
+.transaction-entry-modal,
+.transaction-drawer,
+.confirm-dialog {
+  border: 1px solid var(--studio-line-strong) !important;
+  border-top: 2px solid var(--studio-ink) !important;
+  border-radius: 0 !important;
+  background: var(--studio-surface) !important;
+  box-shadow: 0 18px 46px rgba(23, 33, 43, 0.14) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

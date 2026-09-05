@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> None:
-    empty_response = client.get("/api/portfolios/portfolio-ops/table-views/holdings")
+    empty_response = client.get("/api/portfolios/investment-studio/table-views/holdings")
     assert empty_response.status_code == 200
     assert empty_response.json()["store"] is None
 
@@ -17,16 +17,16 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
             }
         ],
     }
-    put_response = client.put("/api/portfolios/portfolio-ops/table-views/holdings", json={"store": store})
+    put_response = client.put("/api/portfolios/investment-studio/table-views/holdings", json={"store": store})
     assert put_response.status_code == 200
     payload = put_response.json()
-    assert payload["portfolio_id"] == "portfolio-ops"
+    assert payload["portfolio_id"] == "investment-studio"
     assert payload["view_scope"] == "holdings"
     assert payload["store"] == store
     assert payload["created_at"]
     assert payload["updated_at"]
 
-    get_response = client.get("/api/portfolios/portfolio-ops/table-views/holdings")
+    get_response = client.get("/api/portfolios/investment-studio/table-views/holdings")
     assert get_response.status_code == 200
     assert get_response.json()["store"] == store
 
@@ -35,13 +35,13 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
         "views": [],
     }
     performance_response = client.put(
-        "/api/portfolios/portfolio-ops/table-views/performance_calculation",
+        "/api/portfolios/investment-studio/table-views/performance_calculation",
         json={"store": performance_store},
     )
     assert performance_response.status_code == 200
     assert performance_response.json()["store"] == performance_store
 
-    holdings_response = client.get("/api/portfolios/portfolio-ops/table-views/holdings")
+    holdings_response = client.get("/api/portfolios/investment-studio/table-views/holdings")
     assert holdings_response.status_code == 200
     assert holdings_response.json()["store"] == store
 
@@ -50,28 +50,28 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
         "holdings_options",
     ):
         section_response = client.get(
-            f"/api/portfolios/portfolio-ops/table-views/{section_scope}"
+            f"/api/portfolios/investment-studio/table-views/{section_scope}"
         )
         assert section_response.status_code == 200
         assert section_response.json()["store"] is None
 
     updated_store = {**store, "activeViewId": "system:default"}
-    update_response = client.put("/api/portfolios/portfolio-ops/table-views/holdings", json={"store": updated_store})
+    update_response = client.put("/api/portfolios/investment-studio/table-views/holdings", json={"store": updated_store})
     assert update_response.status_code == 200
     assert update_response.json()["store"] == updated_store
 
 
 def test_table_view_store_rejects_unknown_scope_and_missing_portfolio(client) -> None:
-    bad_scope = client.get("/api/portfolios/portfolio-ops/table-views/not-a-scope")
+    bad_scope = client.get("/api/portfolios/investment-studio/table-views/not-a-scope")
     assert bad_scope.status_code == 422
 
     retired_total_scope = client.get(
-        "/api/portfolios/portfolio-ops/table-views/holdings_total"
+        "/api/portfolios/investment-studio/table-views/holdings_total"
     )
     assert retired_total_scope.status_code == 422
 
     retired_cash_scope = client.get(
-        "/api/portfolios/portfolio-ops/table-views/holdings_cash"
+        "/api/portfolios/investment-studio/table-views/holdings_cash"
     )
     assert retired_cash_scope.status_code == 422
 

@@ -1,4 +1,4 @@
-.portfolio-ops-dialog-backdrop {
+.investment-studio-dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 3000;
@@ -9,7 +9,7 @@
   background: rgba(15, 23, 42, 0.52);
 }
 
-.portfolio-ops-dialog {
+.investment-studio-dialog {
   box-sizing: border-box;
   width: min(480px, 100%);
   border: 1px solid #cbd5e1;
@@ -18,40 +18,40 @@
   color: #111827;
 }
 
-.portfolio-ops-dialog:focus {
+.investment-studio-dialog:focus {
   outline: 2px solid #2563eb;
   outline-offset: 3px;
 }
 
-.portfolio-ops-dialog-header,
-.portfolio-ops-dialog-body,
-.portfolio-ops-dialog-actions {
+.investment-studio-dialog-header,
+.investment-studio-dialog-body,
+.investment-studio-dialog-actions {
   padding: 16px 18px;
 }
 
-.portfolio-ops-dialog-header {
+.investment-studio-dialog-header {
   border-bottom: 1px solid #e2e8f0;
 }
 
-.portfolio-ops-dialog-header h2 {
+.investment-studio-dialog-header h2 {
   margin: 0;
   font-size: 17px;
   line-height: 1.3;
 }
 
-.portfolio-ops-dialog-body {
+.investment-studio-dialog-body {
   display: grid;
   gap: 16px;
   font-size: 13px;
   line-height: 1.55;
 }
 
-.portfolio-ops-dialog-confirmation {
+.investment-studio-dialog-confirmation {
   display: grid;
   gap: 7px;
 }
 
-.portfolio-ops-dialog-confirmation input {
+.investment-studio-dialog-confirmation input {
   box-sizing: border-box;
   width: 100%;
   min-height: 36px;
@@ -60,40 +60,62 @@
   font: inherit;
 }
 
-.portfolio-ops-dialog-error {
+.investment-studio-dialog-error {
   border: 1px solid #fecaca;
   padding: 9px 10px;
   background: #fef2f2;
   color: #991b1b;
 }
 
-.portfolio-ops-dialog-actions {
+.investment-studio-dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   border-top: 1px solid #e2e8f0;
 }
 
-.portfolio-ops-dialog-actions button {
-  min-height: 34px;
-  padding: 7px 12px;
+.investment-studio-dialog-actions button {
+  min-height: 30px;
+  padding: 6px 10px;
+  appearance: none;
+  border: 1px solid #cbd5e1;
+  border-radius: 0;
+  background: transparent;
+  color: #111827;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
+  box-shadow: none;
+  cursor: pointer;
 }
 
-.portfolio-ops-dialog-danger {
+.investment-studio-dialog-actions .investment-studio-dialog-danger {
+  border-color: #b42318;
+  color: #b42318;
+}
+
+.investment-studio-dialog-actions .investment-studio-dialog-primary {
+  border-color: #0b66b2;
+  color: #0b66b2;
+}
+
+.investment-studio-dialog-actions button:hover:not(:disabled) {
+  border-color: #0b66b2;
+  color: #0b66b2;
+}
+
+.investment-studio-dialog-actions .investment-studio-dialog-danger:hover:not(:disabled) {
   border-color: #991b1b;
-  background: #991b1b;
-  color: #fff;
+  color: #991b1b;
 }
 
-.portfolio-ops-dialog-primary {
-  border-color: #1d4ed8;
-  background: #1d4ed8;
-  color: #fff;
+.investment-studio-dialog-actions button:focus-visible {
+  outline: 1px solid #0b66b2;
+  outline-offset: 2px;
 }
 
-.portfolio-ops-dialog-danger:disabled,
-.portfolio-ops-dialog-primary:disabled {
-  border-color: #cbd5e1;
-  background: #e2e8f0;
-  color: #64748b;
+.investment-studio-dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }

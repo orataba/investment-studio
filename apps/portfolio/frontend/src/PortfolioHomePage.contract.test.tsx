@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
+import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioHomePage from './pages/PortfolioHomePage'
@@ -68,11 +68,16 @@ function renderHoldings(
         <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
         <Route
           path="/portfolios/:portfolioId/holdings/:instrumentId"
-          element={<div data-testid="holding-detail-route">Holding detail</div>}
+          element={<HoldingDetailRouteProbe />}
         />
       </Routes>
     </MemoryRouter>,
   )
+}
+
+function HoldingDetailRouteProbe() {
+  const { instrumentId } = useParams()
+  return <div data-testid="holding-detail-route">{instrumentId}</div>
 }
 
 async function waitForHoldings() {
@@ -318,7 +323,7 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
 
-  it('omits Operational Status and categories without holdings', async () => {
+  it('keeps operational alerts visible when their holding category is empty', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
         operational_summary: {
@@ -365,8 +370,9 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Operational Status')).not.toBeInTheDocument()
-    expect(screen.queryByText('Overdue settlement')).not.toBeInTheDocument()
+    const operationalStatus = screen.getByRole('region', { name: 'Operational Status' })
+    expect(within(operationalStatus).getByText('Overdue settlement')).toBeInTheDocument()
+    expect(within(operationalStatus).getByText('A settlement is overdue.')).toBeInTheDocument()
   })
 
   it('prompts once for an expired option and records expiry on the contract date', async () => {
@@ -427,10 +433,12 @@ describe('Holdings rendered page contract', () => {
           outcome: 'expired',
           quantity: 2,
           event_date: '2026-07-10',
+          trade_time: null,
           settlement_date: '2026-07-10',
           stock_account_id: null,
           settlement_cash_account_id: null,
           cash_settlement_amount: null,
+          note: null,
           fees: 0,
           taxes: 0,
         },
@@ -521,6 +529,36 @@ describe('Holdings rendered page contract', () => {
     expect(await screen.findByTestId('holding-detail-route')).toBeInTheDocument()
   })
 
+  it('opens cash and settlement rows with their own monetary identity', async () => {
+    const user = userEvent.setup()
+    const pending = cashHolding({
+      line_id: 'pending:settlement_receivable:cash-account:asset-1:USD:2026-07-17:2026-07-17',
+      position_reference_id: null,
+      holding_kind: 'settlement_receivable',
+      economic_instrument_id: 'asset-1',
+      instrument_core: instrumentFixture({
+        instrument_id: 'pending:settlement_receivable:cash-account:asset-1:USD:2026-07-17:2026-07-17',
+        instrument_name: 'Settlement receivable · Alpha Fund',
+        instrument_type: 'other',
+        currency: 'USD',
+        identifiers: [],
+      }),
+      available_for_trading: false,
+      settlement_date: '2026-07-17',
+      pending_until_date: '2026-07-17',
+      pending_status: 'awaiting_settlement',
+    })
+    renderHoldings(holdingsWorkspaceFixture({ rows: [pending] }))
+    await waitForHoldings()
+
+    const cashTable = screen.getByRole('table', { name: 'Cash and settlement holdings' })
+    await user.click(within(cashTable).getByRole('button', { name: 'Settlement receivable · Alpha Fund' }))
+
+    expect(await screen.findByTestId('holding-detail-route')).toHaveTextContent(
+      'pending:settlement_receivable:cash-account:asset-1:USD:2026-07-17:2026-07-17',
+    )
+  })
+
   it('shows one holdings empty state without empty tables', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
@@ -564,7 +602,9 @@ describe('Holdings rendered page contract', () => {
   })
 
   it('surfaces a failed section view save', async () => {
-    apiMocks.savePortfolioTableViewStore.mockRejectedValue(new Error('View save offline.'))
+    apiMocks.savePortfolioTableViewStore
+      .mockRejectedValueOnce(new Error('View save offline.'))
+      .mockResolvedValue({})
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [fcnHolding()],
@@ -579,6 +619,11 @@ describe('Holdings rendered page contract', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('View save failed')
     expect(screen.getByRole('status')).toHaveAttribute('title', 'View save offline.')
+    await user.click(screen.getByRole('button', { name: 'Retry save' }))
+    await waitFor(() => {
+      expect(apiMocks.savePortfolioTableViewStore).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
   })
 
   it('keeps each table field selection and persisted view scope independent', async () => {
@@ -685,7 +730,7 @@ describe('Holdings rendered page contract', () => {
     }
   })
 
-  it('restores a saved column override for the FCN Default view', async () => {
+  it('migrates stale system views to the current FCN column contract', async () => {
     apiMocks.getPortfolioTableViewStore.mockImplementation(
       async (_portfolioId: string, viewScope: string) => ({
         store:
@@ -709,12 +754,17 @@ describe('Holdings rendered page contract', () => {
     const fcnRegion = screen.getByRole('region', { name: 'FCN' })
     expect(await within(fcnRegion).findByRole('button', { name: /View\s*: Default$/ })).toBeInTheDocument()
     expect(
-      within(screen.getByRole('table', { name: 'FCN holdings' })).queryByRole(
+      within(screen.getByRole('table', { name: 'FCN holdings' })).getByRole(
         'columnheader',
         { name: 'Annual Coupon' },
       ),
-    ).not.toBeInTheDocument()
-    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
+    ).toBeInTheDocument()
+    await waitFor(() => {
+      const savedStore = apiMocks.savePortfolioTableViewStore.mock.calls.find(
+        ([portfolioId, viewScope]) => portfolioId === '3' && viewScope === 'holdings_fcn',
+      )?.[2] as { systemViewSignature?: string } | undefined
+      expect(savedStore?.systemViewSignature).toBeTruthy()
+    })
   })
 
   it('updates the Security Default view directly from the Columns dialog', async () => {

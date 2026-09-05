@@ -1,4 +1,4 @@
-"""Portfolio Operations Watchlist backend package."""
+"""Investment Studio Watchlist backend package."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
-INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "shared-data" / "instruments" / "python"
 
 if INSTRUMENT_CORE_PYTHON.exists():
     instrument_core_path = str(INSTRUMENT_CORE_PYTHON)

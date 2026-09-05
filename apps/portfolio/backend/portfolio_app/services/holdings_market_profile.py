@@ -4,7 +4,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import date, datetime
 
-from portfolio_ops_instrument_core import InstrumentCore as SharedInstrumentCore
+from investment_studio_instrument_core import InstrumentCore as SharedInstrumentCore
 
 from portfolio_app.services import valuation_fx
 
@@ -149,6 +149,74 @@ def is_derivative_contract(value: object) -> bool:
         and str(value.get("contract_type") or "").strip().lower()
         in {"fcn", "option"}
     )
+
+
+def option_contract_exposure_fields(
+    *,
+    derivative_contract: dict[str, object] | None,
+    quantity: float,
+    as_of_date: date,
+    base_currency: str,
+    convert_amount_on: Callable[..., tuple[float | None, bool]],
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    instrument_detail_cache_get: Callable[..., dict[str, object] | None],
+    safe_float: SafeFloat = _safe_float,
+) -> dict[str, object]:
+    """Project contract exposure for an open long-option position."""
+
+    if (
+        not isinstance(derivative_contract, dict)
+        or str(derivative_contract.get("contract_type") or "").strip().lower()
+        != "option"
+    ):
+        return {}
+    raw_terms = derivative_contract.get("terms")
+    terms = raw_terms if isinstance(raw_terms, dict) else {}
+    open_contract_quantity = abs(quantity)
+    multiplier = safe_float(terms.get("contract_multiplier"))
+    required_underlying_quantity = (
+        open_contract_quantity * multiplier if multiplier is not None else None
+    )
+    strike = safe_float(terms.get("strike"))
+    strike_notional = (
+        strike * required_underlying_quantity
+        if strike is not None and required_underlying_quantity is not None
+        else None
+    )
+    underlying_id = str(terms.get("underlying_instrument_id") or "").strip()
+    underlying = instrument_detail_cache_get(underlying_id, instrument_detail_cache)
+    currency = str((underlying or {}).get("currency") or "").strip().upper()
+    strike_notional_base, _ = (
+        convert_amount_on(
+            strike_notional,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if strike_notional is not None and currency
+        else (None, False)
+    )
+    expiry_date = _parse_iso_date(terms.get("expiry_date"))
+    return {
+        "open_contract_quantity": open_contract_quantity,
+        "required_underlying_quantity": required_underlying_quantity,
+        "related_underlying_id": (
+            str(terms.get("underlying_instrument_id") or "").strip() or None
+        ),
+        "expiry_date": expiry_date.isoformat() if expiry_date is not None else None,
+        "days_to_expiry": (
+            (expiry_date - as_of_date).days if expiry_date is not None else None
+        ),
+        "strike": strike,
+        "strike_currency": currency or None,
+        "option_type": str(terms.get("option_type") or "").strip().lower() or None,
+        "contract_multiplier": multiplier,
+        "strike_notional": strike_notional,
+        "strike_notional_base": strike_notional_base,
+    }
 
 
 def resolve_position_valuation(
@@ -550,6 +618,7 @@ def build_cash_holding_rows(
     cash_day_change: DayChangeMetrics,
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
     safe_float: SafeFloat = _safe_float,
+    account_lookup: dict[str, dict[str, object]] | None = None,
     cash_instrument_id: Callable[[str], str] = cash_holding_instrument_id,
     cash_instrument_ref: Callable[[str], dict[str, object]] = cash_holding_instrument_ref,
 ) -> list[dict[str, object]]:
@@ -569,6 +638,8 @@ def build_cash_holding_rows(
         if not account_id:
             raise ValueError("Cash balance is missing account_id.")
         position_reference_id = f"{instrument_id}:{account_id}"
+        account = (account_lookup or {}).get(account_id, {})
+        cash_purpose = str(account.get("cash_purpose") or "operating")
         day_change = cash_day_change(
             amount=amount,
             currency=currency,
@@ -591,7 +662,10 @@ def build_cash_holding_rows(
                 "account_id": account_id,
                 "line_id": position_reference_id,
                 "holding_kind": "settled_cash",
-                "available_for_trading": True,
+                "available_for_trading": amount > 0 and cash_purpose in {"operating", "margin"},
+                "cash_purpose": cash_purpose,
+                "collateral_reference": account.get("collateral_reference"),
+                "financing_liability": abs(amount) if amount < 0 and cash_purpose in {"margin", "financing"} else 0.0,
                 "instrument_ref": cash_instrument_ref(currency),
                 "quantity": amount,
                 "cost_basis_method": None,
@@ -995,6 +1069,7 @@ def build_option_obligation_holding_rows(
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
     safe_float: SafeFloat = _safe_float,
     convert_amount_on: Callable[..., tuple[float | None, bool]],
+    instrument_detail_cache_get: Callable[..., dict[str, object] | None],
     direct_fx_instruments: dict[tuple[str, str], str] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> list[dict[str, object]]:
@@ -1135,16 +1210,20 @@ def build_option_obligation_holding_rows(
         strike_notional = (
             strike * required_underlying_quantity if strike is not None else None
         )
+        underlying = instrument_detail_cache_get(
+            related_underlying_id, instrument_detail_cache if instrument_detail_cache is not None else {},
+        )
+        strike_currency = str((underlying or {}).get("currency") or "").strip().upper()
         strike_notional_base, _ = (
             convert_amount_on(
                 strike_notional,
                 as_of_date=as_of_date,
-                from_currency=currency,
+                from_currency=strike_currency,
                 to_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments or {},
                 instrument_detail_cache=instrument_detail_cache or {},
             )
-            if strike_notional is not None
+            if strike_notional is not None and strike_currency
             else (None, False)
         )
         expiry_date = _parse_iso_date(first.get("expiry_date"))
@@ -1186,6 +1265,7 @@ def build_option_obligation_holding_rows(
                 "expiry_date": expiry_date.isoformat() if expiry_date else None,
                 "days_to_expiry": days_to_expiry,
                 "strike": strike,
+                "strike_currency": strike_currency or None,
                 "option_type": first.get("option_type"),
                 "contract_multiplier": first.get("contract_multiplier"),
                 "strike_notional": strike_notional,
@@ -1287,6 +1367,18 @@ def summarize_holdings_operational_status(
         for row in rows
         if str(row.get("holding_kind") or "") == "option_obligation"
     ]
+    option_rows = [
+        row
+        for row in rows
+        if row in obligation_rows
+        or (
+            isinstance(row.get("derivative_contract"), dict)
+            and str(row["derivative_contract"].get("contract_type") or "")
+            .strip()
+            .lower()
+            == "option"
+        )
+    ]
     expiry_buckets_by_key: dict[str, dict[str, object]] = {}
     for row in obligation_rows:
         expiry_date = _parse_iso_date(row.get("expiry_date"))
@@ -1376,6 +1468,7 @@ def summarize_holdings_operational_status(
         for row in rows
         if str(row.get("holding_kind") or "") == "settled_cash"
         and (safe_float(row.get("market_value")) or 0.0) < -1e-9
+        and row.get("cash_purpose") not in {"margin", "financing"}
     ]
 
     operational_alerts: list[dict[str, object]] = []
@@ -1394,52 +1487,50 @@ def summarize_holdings_operational_status(
                 ],
             }
         )
-    due_count = int(
-        expiry_buckets_by_key.get("expired_or_due", {}).get("obligation_count") or 0
-    )
+    due_rows = [
+        row
+        for row in option_rows
+        if _expiry_bucket(
+            (expiry_date - as_of_date).days
+            if (expiry_date := _parse_iso_date(row.get("expiry_date"))) is not None
+            else None
+        )
+        == "expired_or_due"
+    ]
+    due_count = len(due_rows)
     if due_count:
-        due_line_ids = [
-            str(row.get("line_id") or "")
-            for row in obligation_rows
-            if _expiry_bucket(
-                (expiry_date - as_of_date).days
-                if (expiry_date := _parse_iso_date(row.get("expiry_date")))
-                is not None
-                else None
-            )
-            == "expired_or_due"
-        ]
         operational_alerts.append(
             {
                 "code": "option_expiry_due",
                 "severity": "critical",
                 "title": "Option expiry action due",
-                "message": f"{due_count} open obligation line(s) are at or past expiry.",
-                "related_line_ids": due_line_ids,
+                "message": f"{due_count} open option line(s) are at or past expiry.",
+                "related_line_ids": [
+                    str(row.get("line_id") or "") for row in due_rows
+                ],
             }
         )
-    near_expiry_count = int(
-        expiry_buckets_by_key.get("next_7_days", {}).get("obligation_count") or 0
-    )
+    near_expiry_rows = [
+        row
+        for row in option_rows
+        if _expiry_bucket(
+            (expiry_date - as_of_date).days
+            if (expiry_date := _parse_iso_date(row.get("expiry_date"))) is not None
+            else None
+        )
+        == "next_7_days"
+    ]
+    near_expiry_count = len(near_expiry_rows)
     if near_expiry_count:
-        near_expiry_line_ids = [
-            str(row.get("line_id") or "")
-            for row in obligation_rows
-            if _expiry_bucket(
-                (expiry_date - as_of_date).days
-                if (expiry_date := _parse_iso_date(row.get("expiry_date")))
-                is not None
-                else None
-            )
-            == "next_7_days"
-        ]
         operational_alerts.append(
             {
                 "code": "option_expiry_next_7_days",
                 "severity": "warning",
                 "title": "Option expiry within 7 days",
-                "message": f"{near_expiry_count} open obligation line(s) require expiry review.",
-                "related_line_ids": near_expiry_line_ids,
+                "message": f"{near_expiry_count} open option line(s) require expiry review.",
+                "related_line_ids": [
+                    str(row.get("line_id") or "") for row in near_expiry_rows
+                ],
             }
         )
     if overdue_rows:
@@ -1872,6 +1963,17 @@ def build_materialized_holding_rows(
             if instrument_id is not None
             else None
         )
+        option_exposure = option_contract_exposure_fields(
+            derivative_contract=derivative_contract,
+            quantity=quantity,
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            convert_amount_on=convert_amount_on,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_cache_get=instrument_detail_cache_get,
+            safe_float=safe_float,
+        )
         rows.append(
             {
                 "line_id": f"{account_id}:{position_reference_id}",
@@ -1930,6 +2032,7 @@ def build_materialized_holding_rows(
                 "valuation_basis": "carried_cost" if event_valued else "market_quote",
                 "performance_eligible": not event_valued,
                 "risk_eligible": not event_valued,
+                **option_exposure,
                 **_translated_day_change_fields(day_change),
                 "day_change_value": day_change_value,
                 "currency": currency,
@@ -1969,6 +2072,7 @@ def build_materialized_holding_rows(
             normalize_currency=normalize_currency,
             safe_float=safe_float,
             convert_amount_on=convert_amount_on,
+            instrument_detail_cache_get=instrument_detail_cache_get,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )

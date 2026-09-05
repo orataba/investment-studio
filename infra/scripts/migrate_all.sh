@@ -68,22 +68,22 @@ load_env_file() {
 }
 
 if [[ -n "$ENV_ROOT" ]]; then
-  for app in platform portfolio watchlist; do
+  for app in data portfolio watchlist; do
     load_env_file "$ENV_ROOT/$app.env" true
   done
 fi
 
 for required_database_variable in \
-  PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
-  PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
-  PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
-  PORTFOLIO_OPS_WATCHLIST_DATABASE_URL; do
+  INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL \
+  INVESTMENT_STUDIO_DATA_DATABASE_URL \
+  INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
+  INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL; do
   if [[ -z "${!required_database_variable:-}" ]]; then
     echo "Set $required_database_variable explicitly before running migrations." >&2
     exit 1
   fi
 done
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA="${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA:-instrument_registry}"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA="${INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA:-instrument_data}"
 
 "$PYTHON_BIN" "$SCRIPT_DIR/validate_migration_targets.py"
 
@@ -134,9 +134,9 @@ registry_revision_is_descendant() {
       --target "$target_revision"
 }
 
-INSTRUMENT_CORE_PYTHON="$PROJECT_ROOT/packages/instrument-core/python"
-PLATFORM_BACKEND="$PROJECT_ROOT/apps/platform/backend"
-REGISTRY_MIGRATION_ROOT="$PROJECT_ROOT/infra/instrument_registry"
+INSTRUMENT_CORE_PYTHON="$PROJECT_ROOT/shared-data/instruments/python"
+HOME_BACKEND="$PROJECT_ROOT/shared-data"
+REGISTRY_MIGRATION_ROOT="$PROJECT_ROOT/shared-data/instruments"
 REGISTRY_NAV_LEDGER_REVISION="20260715_0012"
 registry_current_revision="$(
   current_migration_revision \
@@ -152,15 +152,29 @@ else
     "$REGISTRY_MIGRATION_ROOT" \
     "$INSTRUMENT_CORE_PYTHON" \
     "20260715_0011"
+  # Registry 0012 consumes the evidence snapshot under its historical schema
+  # name. Finish that contract before the ingestion schema is renamed in 0008.
+  run_migration \
+    "data ingestion prerequisite" \
+    "$HOME_BACKEND" \
+    "$HOME_BACKEND:$INSTRUMENT_CORE_PYTHON" \
+    "20260823_0007"
+fi
+# Historical app migrations reference instrument_registry explicitly. Complete
+# them before the final shared-schema rename; never downgrade a renamed DB.
+registry_target="20260902_0029"
+if registry_revision_is_descendant "$registry_current_revision" "20260904_0030"; then
+  registry_target="head"
 fi
 run_migration \
-  "platform" \
-  "$PLATFORM_BACKEND" \
-  "$PLATFORM_BACKEND:$INSTRUMENT_CORE_PYTHON"
-run_migration \
-  "instrument registry NAV contract" \
+  "shared asset data prerequisite" \
   "$REGISTRY_MIGRATION_ROOT" \
-  "$INSTRUMENT_CORE_PYTHON"
+  "$INSTRUMENT_CORE_PYTHON" \
+  "$registry_target"
+run_migration \
+  "data ingestion" \
+  "$HOME_BACKEND" \
+  "$HOME_BACKEND:$INSTRUMENT_CORE_PYTHON"
 run_migration \
   "portfolio" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
@@ -169,5 +183,7 @@ run_migration \
   "watchlist" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/watchlist/backend:$INSTRUMENT_CORE_PYTHON"
+
+run_migration "shared asset data" "$REGISTRY_MIGRATION_ROOT" "$INSTRUMENT_CORE_PYTHON"
 
 echo "All release migrations completed successfully."

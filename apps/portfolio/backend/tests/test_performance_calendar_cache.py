@@ -10,10 +10,10 @@ def test_return_calendar_reuses_the_bounded_cached_performance_window(
     client,
     monkeypatch,
 ) -> None:
-    snapshots_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    snapshots_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert snapshots_response.status_code == 200
 
-    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
+    performance_response = client.get("/api/portfolios/investment-studio/performance")
     assert performance_response.status_code == 200
 
     def fail_rebuild(*_args, **_kwargs):
@@ -23,11 +23,11 @@ def test_return_calendar_reuses_the_bounded_cached_performance_window(
     monkeypatch.setattr(workspace_cache, "build_materialized_performance_report", fail_rebuild)
 
     calendar_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/calendar?frequency=monthly"
+        "/api/portfolios/investment-studio/performance/calendar?frequency=monthly"
     )
     assert calendar_response.status_code == 200
     weekly_response = client.get(
-        "/api/portfolios/portfolio-ops/performance/calendar?frequency=weekly"
+        "/api/portfolios/investment-studio/performance/calendar?frequency=weekly"
     )
     assert weekly_response.status_code == 200
 

@@ -123,7 +123,7 @@ def test_analytics_scope_research_migration_is_constrained_guarded_and_reversibl
                     "effective_from, effective_to, policy_version, "
                     "superseded_by_policy_id, created_at"
                     ") VALUES ("
-                    "'migration-policy-1', 'portfolio-ops', 'migration-taxonomy', "
+                    "'migration-policy-1', 'investment-studio', 'migration-taxonomy', "
                     "'migration-node', 1, 1, 'ordinary', 'market', NULL, "
                     "'2026-01-01', NULL, 1, NULL, '2026-08-07T00:00:00Z'"
                     ")"

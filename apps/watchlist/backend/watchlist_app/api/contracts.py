@@ -232,6 +232,7 @@ class ManualProfileUpsertRequest(BaseModel):
 
 
 class InstrumentResearchProfileInput(BaseModel):
+    research_stage: Literal["watching", "researching", "candidate", "paused", "archived"] = "watching"
     thesis: str = ""
     current_view: str = ""
     why_now: str = ""
@@ -260,6 +261,7 @@ class InstrumentResearchProfileUpsertRequest(BaseModel):
 
 
 class InstrumentResearchNoteInput(BaseModel):
+    completed_at: datetime | None = None
     note_date: date
     note_type: Literal[
         "research_update",

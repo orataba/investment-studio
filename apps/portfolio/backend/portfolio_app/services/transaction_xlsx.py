@@ -80,6 +80,7 @@ INVALID_FILL = PatternFill(fill_type="solid", fgColor="FECACA")
 THIN_GRAY_BORDER = Border(bottom=Side(style="thin", color="CBD5E1"))
 
 FEE_CATEGORY_VALUES = (
+    "financing_interest", "borrow_fee", "payment_in_lieu",
     "unknown",
     "transaction_cost",
     "management_fee",
@@ -94,10 +95,15 @@ OPTION_TYPE_VALUES = ("call", "put")
 ASSET_TYPE_GUIDANCE = {
     "security": "股票、ETF、公募基金、私募基金及其他 Registry 证券",
     "fcn": "Fixed Coupon Note 合约交易、收益及结束结果",
-    "option": "Call/Put 期权开平仓、到期及现金结算",
+    "option": "Call/Put 期权长短仓期初、开平仓、到期、现金结算及实物交割",
     "cash": "现金流、换汇、费用、税费和现金账户操作",
 }
 TRANSACTION_ACTION_GUIDANCE = {
+    "short_sell": "股票/ETF 实际卖空；先处置已有多头，差额建立空头",
+    "buy_to_cover": "股票/ETF 买回已有空头，不超出待买回数量",
+    "short_opening_balance": "期初已存在的股票/ETF 空头；正数量及剩余净账面负债，不重复产生现金；原开仓日填 acquisition_date",
+    "physical_long": "期权多头实物行权；option_delivery_json 必填，原子生成股票腿，不另记交付成交",
+    "physical_written": "卖出期权实物指派；option_delivery_json 必填，原子生成股票腿，不另记交付成交",
     "buy": "买入；基金对应申购",
     "sell": "卖出；基金对应赎回",
     "dividend": "现金分红",
@@ -107,6 +113,7 @@ TRANSACTION_ACTION_GUIDANCE = {
     "early_exit": "FCN 提前退出",
     "coupon": "FCN 票息收入",
     "knock_in_close": "FCN 敲入结果并结束合约",
+    "knock_in_observation": "记录已确认敲入；不关闭持仓、不动现金，note 填写观察依据",
     "knock_out_close": "FCN 敲出结果并结束合约",
     "maturity_close": "FCN 正常到期并结束合约",
     "buy_to_open": "期权多头买入开仓",
@@ -126,8 +133,12 @@ TRANSACTION_ACTION_GUIDANCE = {
     "transfer_out": "以 account_id 为转出方、对手账户为转入方",
     "transfer_in": "以对手账户为转出方、account_id 为转入方",
     "opening_balance": "Portfolio inception date 已经存在的现金或多头持仓",
+    "opening_written": "Portfolio inception date 已存在的期权空头；gross_amount 为剩余账面权利金负债，不再产生现金收入；acquisition_date 为原开仓日期",
 }
 FEE_CATEGORY_GUIDANCE = {
+    "financing_interest": "实际融资利息支出",
+    "borrow_fee": "实际证券借券费用",
+    "payment_in_lieu": "空头持仓的股息补偿支出，不是股息收入",
     "unknown": "未分类；未填写时的系统默认值",
     "transaction_cost": "与某笔交易直接相关的佣金或手续费",
     "management_fee": "管理费",
@@ -138,6 +149,14 @@ FEE_CATEGORY_GUIDANCE = {
 }
 
 FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
+    "lot_selections_json": ("指定开仓批次", "可选", "FIFO 卖出、买回或兑付可指定 [{opening_transaction_id, quantity}]，数量之和必须等于本次处置量。文件内可引用 record_reference。留空使用账户成本法。"),
+    "record_reference": ("本行引用编号", "可选", "文件内唯一编号，供后续指定批次引用。导出自动保留引用；转仓行代表接收批次。不是券商业务号。"),
+    "option_delivery_json": ("期权原子实物交割", "physical_long / physical_written 必填", "一行同时表达期权结果及实际股票腿；填写 stock_account_id、settlement_cash_account_id、fees、fee_category、taxes，以及券商已形成股票空头时的 allow_stock_short。外层 fees/taxes 为零，费用分类留 unknown；两腿共用本行 trade_time。数量和行权价由合约校验，不要另填独立股票成交。"),
+    "asset_deliveries_json": ("FCN 实物交付列表", "实物兑付时必填", "每项包含 account_id、instrument_id、quantity、fair_value（该腿总确认价值）、currency、fx_rate_to_contract。gross_amount 仅填实际碎股/尾差现金；note 填交割确认依据。"),
+    "derivative_additional_terms_json": (
+        "补充合约条款 JSON", "新建衍生品合约时选填",
+        '期权示例：{"settlement_type":"physical","exercise_style":"american","strike_currency":"USD","terms_reference":"broker-confirmation"}。FCN 可填写 knock_in_observation、knock_out_observation_dates、coupon_payment_dates、coupon_day_count、settlement_type、payoff_description、terms_reference。不确定的条款留空，不推测；基础条款使用专用列。',
+    ),
     "asset_type": (
         "资产类型",
         "条件必填",
@@ -152,7 +171,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "trade_time": (
         "交易时间",
         "可选",
-        "格式 HH:MM；未知请留空，系统会标记为估算时间。",
+        "格式 HH:MM；期权实物交割两腿共用此时刻，先买股后交付须填写各自真实时间；未知留空并标记为估算，不改写时间绕过仓位校验。",
     ),
     "settlement_date": (
         "结算日期",
@@ -162,7 +181,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "position_effective_date": (
         "持仓生效日",
         "可选",
-        "仅买入、卖出、红利再投资、到期赎回可用；不能早于 trade_date。",
+        "买入、卖出、卖空、买回、红利再投资、到期赎回可用；不能早于 trade_date。期权实物交割的股票腿从 trade_date 生效。",
     ),
     "entitlement_date": (
         "权益确认日",
@@ -172,7 +191,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "acquisition_date": (
         "取得日期",
         "可选",
-        "仅证券、FCN 或 Option 多头期初余额可用；未填时使用 trade_date。",
+        "证券/FCN/Option 多头、Option 空头及股票/ETF 空头期初的原开仓日；不得晚于 inception date，未填时使用 trade_date；现金期初不填。",
     ),
     "account_id": (
         "交易账户 ID",
@@ -212,7 +231,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "option_underlying_instrument_id": (
         "期权标的证券 ID",
         "新 Option 必填",
-        "仅新建 Option 合约时填写。",
+        "仅新建 Option 合约时填写 Registry 中的精确证券 ID；该 ID 成为合约与标的的永久关联。",
     ),
     "option_type": (
         "期权类型",
@@ -230,7 +249,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
         "新 Option 必填",
         "仅新建 Option 合约时填写正数，例如 100。",
     ),
-    "fcn_notional": ("FCN 名义本金", "新 FCN 必填", "仅新建 FCN 合约时填写正数。"),
+    "fcn_notional": ("FCN 每张合约名义本金", "新 FCN 必填", "每张合约名义本金，填正数；总名义本金为此值乘以 quantity，折价或溢价成交金额可与名义本金不同。"),
     "fcn_annual_coupon_rate_pct": (
         "FCN 年化票息 (%)",
         "可选",
@@ -342,6 +361,12 @@ def _template_example(
 
 
 TEMPLATE_EXAMPLE_ROWS = (
+    _template_example("证券｜实际卖空", "SHORT-SALE-001", asset_type="security", transaction_action="short_sell", trade_date="2026-05-04", account_id="USD_SECURITY_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=100, price=100, gross_amount=10000, fees=2, note="券商已确认卖空成交，不是卖出未持有股票的普通多头"),
+    _template_example("证券｜买回空头", "SHORT-COVER-001", asset_type="security", transaction_action="buy_to_cover", trade_date="2026-05-05", account_id="USD_SECURITY_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=50, price=90, gross_amount=4500, fees=2),
+    _template_example("证券｜期初空头负债", "SHORT-OPENING-001", asset_type="security", transaction_action="short_opening_balance", trade_date="2026-01-02", acquisition_date="2025-12-15", account_id="USD_SECURITY_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=100, gross_amount=9998, note="原成交净收入形成剩余负债，不新增权利金或现金；trade_date 必须为组合 inception"),
+    _template_example("Option｜多头实物行权", "OPTION-PHYSICAL-LONG-001", asset_type="option", transaction_action="physical_long", trade_date="2026-06-19", account_id="USD_OPTION_ACCOUNT_ID", derivative_contract_id="EXISTING_OPTION_ID", quantity=1, gross_amount=0, option_delivery_json='{"stock_account_id":"USD_SECURITY_ACCOUNT_ID","settlement_cash_account_id":"USD_CASH_ACCOUNT_ID","fees":2,"taxes":0,"allow_stock_short":false}', note="按已确认条款原子生成交付腿，不另填股票腿"),
+    _template_example("Option｜空头指派并形成股票空头", "OPTION-PHYSICAL-WRITTEN-001", asset_type="option", transaction_action="physical_written", trade_date="2026-06-19", account_id="USD_OPTION_ACCOUNT_ID", derivative_contract_id="EXISTING_WRITTEN_CALL_ID", quantity=1, gross_amount=0, option_delivery_json='{"stock_account_id":"USD_SECURITY_ACCOUNT_ID","settlement_cash_account_id":"USD_CASH_ACCOUNT_ID","fees":2,"taxes":0,"allow_stock_short":true}', note="券商已确认指派形成股票空头；后续实际买回另记 buy_to_cover"),
+    _template_example("FCN｜实物收股及碎股现金", "FCN-PHYSICAL-001", asset_type="fcn", transaction_action="knock_in_close", trade_date="2026-06-19", account_id="FCN_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID", derivative_contract_id="EXISTING_FCN_ID", quantity=1, gross_amount=75, asset_deliveries_json='[{"account_id":"USD_SECURITY_ACCOUNT_ID","instrument_id":"FCN_UNDERLYING_ID","quantity":999,"fair_value":74925,"currency":"USD","fx_rate_to_contract":1}]', note="发行人确认收股 999、单价公允价值 75、碎股现金 75；gross_amount 不包含股票价值"),
     _template_example(
         "现金｜外部入金",
         "CASH-DEPOSIT-001",
@@ -724,6 +749,37 @@ TEMPLATE_EXAMPLE_ROWS = (
         note="上线日前已持有的期权；首次出现时在同一行定义合约条款",
     ),
     _template_example(
+        "Option｜期初空头负债",
+        "OPENING-WRITTEN-001",
+        asset_type="option",
+        transaction_action="opening_written",
+        trade_date="2026-01-01",
+        acquisition_date="2025-12-15",
+        account_id="OPTION_ACCOUNT_ID",
+        derivative_contract_id="NEW_WRITTEN_OPTION_ID",
+        derivative_contract_name="Existing USD Written Put",
+        option_underlying_instrument_id="REGISTRY_UNDERLYING_A_ID",
+        option_type="put",
+        option_expiry_date="2026-06-19",
+        option_strike=100,
+        option_contract_multiplier=100,
+        quantity=2,
+        gross_amount=1000,
+        derivative_additional_terms_json='{"settlement_type":"physical","exercise_style":"american","strike_currency":"USD","terms_reference":"broker-opening-statement"}',
+        note="账面期初负债 1000；原权利金已在期初现金中，不再次记现金收入",
+    ),
+    _template_example(
+        "FCN｜敲入观察，不赎回",
+        "FCN-KNOCK-IN-OBSERVATION-001",
+        asset_type="fcn",
+        transaction_action="knock_in_observation",
+        trade_date="2026-06-10",
+        account_id="FCN_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        gross_amount=0,
+        note="发行人通知：本日已触及敲入条件；合约继续存续，票息及最终交割另记",
+    ),
+    _template_example(
         "Option｜HKD 独立费用",
         "OPTION-FEE-001",
         asset_type="option",
@@ -803,66 +859,6 @@ TEMPLATE_EXAMPLE_ROWS = (
         quantity=2,
         gross_amount=13000,
         note="现金流出；gross_amount 必须为正，不填 price",
-    ),
-    _template_example(
-        "Option 实物行权拆分 1/2｜多头现金结算",
-        "OPTION-PHYSICAL-CASH-001",
-        asset_type="option",
-        transaction_action="cash_settle_long",
-        trade_date="2026-12-18",
-        settlement_date="2026-12-18",
-        account_id="OPTION_ACCOUNT_ID",
-        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
-        derivative_contract_id="EXISTING_PHYSICAL_OPTION_ID",
-        quantity=1,
-        gross_amount=2000,
-        note="独立事实 1：按内在价值记录 Option 现金结算；不设置关联或配对 ID",
-    ),
-    _template_example(
-        "Option 实物行权拆分 2/2｜标的股票买入",
-        "OPTION-PHYSICAL-STOCK-001",
-        asset_type="security",
-        transaction_action="buy",
-        trade_date="2026-12-18",
-        settlement_date="2026-12-18",
-        position_effective_date="2026-12-18",
-        account_id="USD_SECURITY_ACCOUNT_ID",
-        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
-        instrument_id="REGISTRY_OPTION_DELIVERED_EQUITY_ID",
-        quantity=100,
-        price=120,
-        gross_amount=12000,
-        note="独立事实 2：按交付日市场或参考价记录股票买入，不与 Option 行绑定",
-    ),
-    _template_example(
-        "Option 空头 Call 指派拆分 1/2｜空头现金结算",
-        "OPTION-ASSIGNMENT-CASH-001",
-        asset_type="option",
-        transaction_action="cash_settle_written",
-        trade_date="2026-12-18",
-        settlement_date="2026-12-18",
-        account_id="OPTION_ACCOUNT_ID",
-        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
-        derivative_contract_id="EXISTING_ASSIGNED_CALL_ID",
-        quantity=1,
-        gross_amount=2000,
-        note="独立事实 1：按内在价值记录空头 Call 现金结算；不设置关联或配对 ID",
-    ),
-    _template_example(
-        "Option 空头 Call 指派拆分 2/2｜标的股票卖出",
-        "OPTION-ASSIGNMENT-STOCK-001",
-        asset_type="security",
-        transaction_action="sell",
-        trade_date="2026-12-18",
-        settlement_date="2026-12-18",
-        position_effective_date="2026-12-18",
-        account_id="USD_SECURITY_ACCOUNT_ID",
-        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
-        instrument_id="REGISTRY_OPTION_ASSIGNED_EQUITY_ID",
-        quantity=100,
-        price=120,
-        gross_amount=12000,
-        note="独立事实 2：按交付日市场或参考价记录股票卖出，不与 Option 行绑定",
     ),
     _template_example(
         "FCN｜新合约进入",
@@ -987,7 +983,7 @@ TEMPLATE_EXAMPLE_ROWS = (
         note="FCN 正常结束；不填 price",
     ),
     _template_example(
-        "FCN 敲入交付拆分 1/2｜敲入结束",
+        "FCN｜敲入后实际现金兑付",
         "FCN-KNOCK-IN-001",
         asset_type="fcn",
         transaction_action="knock_in_close",
@@ -998,23 +994,7 @@ TEMPLATE_EXAMPLE_ROWS = (
         derivative_contract_id="EXISTING_FCN_ID",
         quantity=1,
         gross_amount=100000,
-        note="独立事实 1：结束 FCN；若交付证券，另录 buy，不设置关联或配对 ID",
-    ),
-    _template_example(
-        "FCN 敲入交付拆分 2/2｜交付证券买入",
-        "FCN-DELIVERED-SECURITY-001",
-        asset_type="security",
-        transaction_action="buy",
-        trade_date="2026-09-01",
-        settlement_date="2026-09-01",
-        position_effective_date="2026-09-01",
-        account_id="USD_SECURITY_ACCOUNT_ID",
-        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
-        instrument_id="REGISTRY_FCN_DELIVERED_EQUITY_ID",
-        quantity=1538.46153846,
-        price=65,
-        gross_amount=100000,
-        note="独立事实 2：按交付日市场或参考价记录证券买入，不与 FCN 行绑定",
+        note="仅用于最终观察后、发行人已确认实际发生的现金兑付；实物收股尚不支持，不能伪造现金和独立买股",
     ),
     _template_example(
         "FCN｜敲出结束",
@@ -1095,7 +1075,7 @@ def _style_transaction_header(
             label, requiredness, guidance = FIELD_GUIDANCE[column]
             cell.comment = Comment(
                 f"{label}\n填写要求：{requiredness}\n{guidance}",
-                "Portfolio Operations",
+                "Investment Studio",
             )
     worksheet.row_dimensions[1].height = 34
     for index, column in enumerate(IMPORT_COLUMNS, start=1):
@@ -1256,6 +1236,7 @@ def _render_template_instructions(worksheet) -> None:
         "4. 金额、数量、单价、费用和税费一律填写非负绝对值；资金或持仓方向由 transaction_action 决定。gross_amount 不含 fees 和 taxes。",
         "5. Security 填 instrument_id；FCN/Option 填 derivative_contract_id。首次建立 FCN/Option 时，在同一行补充合约条款；已有合约只填合约 ID。",
         "6. 填完后保存为 .xlsx，在系统中先 Import 预览。Excel 下拉和格式校验只防常见输入错误；账户归属、币种、持仓历史和跨字段规则以预览校验结果为准。",
+        "7. Option 实物行权或指派不可拆成两行导入；请在 Holdings 的 Option outcome 中处理，系统会按合约条款原子生成并关联 Option 结果与标的股票交付。",
     )
     for row_index, step in enumerate(steps, start=4):
         worksheet.merge_cells(
@@ -1277,6 +1258,7 @@ def _render_template_instructions(worksheet) -> None:
         "交易方向只由 transaction_action 表达。FCN/Option 的到期、敲入、敲出和现金结算都直接选择该资产对应的交易动作，不需要再填写额外的事件分类字段。",
         "fees、taxes 和 fee_category 可留空，分别按 0、0 和 unknown 处理。所有交易（包括 Transfer）都建议填写 source_system + external_reference；Transfer 的来源身份记录在成对交易的 transfer_out 腿。",
         "不要在 Transactions 页使用公式、宏、合并单元格或负数。上传仅接受 Transactions 页的字面值，最多 5,000 条交易记录。",
+        "Option 新合约必须填写 option_underlying_instrument_id。实物行权或指派必须使用系统专用流程，不能用 cash_settle_* 加普通股票买卖来替代。",
     )
     for row_index, rule in enumerate(rules, start=12):
         worksheet.merge_cells(

@@ -15,6 +15,7 @@ from watchlist_app.db.models.research import (
 
 
 PROFILE_TEXT_FIELDS = (
+    "research_stage",
     "thesis",
     "current_view",
     "why_now",
@@ -193,6 +194,7 @@ class SQLAlchemyInstrumentResearchRepository:
             people=str(values.get("people") or "").strip(),
             author=str(values.get("author") or "").strip(),
             follow_up_date=cast(date | None, values.get("follow_up_date")),
+            completed_at=values.get("completed_at"),
             revision_number=1,
             created_at=now,
             updated_at=now,
@@ -229,6 +231,7 @@ class SQLAlchemyInstrumentResearchRepository:
             "people": str(values.get("people") or "").strip(),
             "author": str(values.get("author") or "").strip(),
             "follow_up_date": cast(date | None, values.get("follow_up_date")),
+            "completed_at": values.get("completed_at"),
         }
         if all(getattr(record, field) == value for field, value in normalized.items()):
             return record
@@ -313,6 +316,7 @@ class SQLAlchemyInstrumentResearchRepository:
                 people=record.people,
                 author=record.author,
                 follow_up_date=record.follow_up_date,
+                completed_at=record.completed_at,
                 recorded_at=recorded_at,
                 recorded_by=recorded_by,
             )

@@ -12,12 +12,12 @@ Usage: verify_repository.sh COMMAND [APP]
 
 Commands:
   static
-  backend [all|platform|portfolio|watchlist]
-  frontend [all|platform|portfolio|watchlist]
+  backend [all|home|data|portfolio|watchlist]
+  frontend [all|home|portfolio|watchlist]
   shared-typescript
   infra [all|portable|postgresql]
   migration-heads
-  postgres-integration [all|platform|portfolio|watchlist]
+  postgres-integration [all|data|portfolio|watchlist]
   all-local
 
 Dependency installation is intentionally separate. Run
@@ -43,15 +43,23 @@ selected_apps() {
   local selection="${1:-all}"
   case "$selection" in
     all)
-      printf '%s\n' platform portfolio watchlist
+      printf '%s\n' home data portfolio watchlist
       ;;
-    platform|portfolio|watchlist)
+    home|data|portfolio|watchlist)
       printf '%s\n' "$selection"
       ;;
     *)
       echo "Unknown app selection: $selection" >&2
       exit 64
       ;;
+  esac
+}
+
+backend_root() {
+  case "$1" in
+    home) printf '%s\n' "$PROJECT_ROOT/home/backend" ;;
+    data) printf '%s\n' "$PROJECT_ROOT/shared-data" ;;
+    *) printf '%s\n' "$PROJECT_ROOT/apps/$1/backend" ;;
   esac
 }
 
@@ -81,8 +89,8 @@ run_backend() {
   while IFS= read -r app_name; do
     echo "Running $app_name backend tests without PostgreSQL integration cases."
     (
-      cd "$PROJECT_ROOT/apps/$app_name/backend"
-      PYTHONPATH="$PROJECT_ROOT/apps/$app_name/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+      cd "$(backend_root "$app_name")"
+      PYTHONPATH="$(backend_root "$app_name"):$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
         "$PYTHON_BIN" -m pytest -m "not postgresql_integration" --strict-markers -ra
     )
   done <<< "$selected"
@@ -92,11 +100,13 @@ run_frontend() {
   local selected app_name
   selected="$(selected_apps "${1:-all}")"
   require_node
-  if [[ "${1:-all}" == "all" || "${1:-all}" == "platform" ]]; then
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "home" ]]; then
     run_shared_typescript
   fi
   while IFS= read -r app_name; do
+    [[ "$app_name" == "data" ]] && continue
     local frontend_root="$PROJECT_ROOT/apps/$app_name/frontend"
+    [[ "$app_name" == "home" ]] && frontend_root="$PROJECT_ROOT/home/frontend"
     if [[ ! -d "$frontend_root/node_modules" ]]; then
       echo "Missing node_modules for $app_name; run npm --prefix $frontend_root ci first." >&2
       exit 1
@@ -109,7 +119,7 @@ run_frontend() {
 
 run_shared_typescript() {
   require_node
-  local package_root="$PROJECT_ROOT/packages/instrument-core/ts"
+  local package_root="$PROJECT_ROOT/shared-data/instruments/ts"
   if [[ ! -d "$package_root/node_modules" ]]; then
     echo "Missing node_modules for instrument-core TypeScript package; run npm --prefix $package_root ci first." >&2
     exit 1
@@ -155,23 +165,23 @@ run_migration_heads() {
 
   echo "Verifying every Alembic chain is at all heads."
   (
-    cd "$PROJECT_ROOT/infra/instrument_registry"
-    PYTHONPATH="$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    cd "$PROJECT_ROOT/shared-data/instruments"
+    PYTHONPATH="$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
   (
-    cd "$PROJECT_ROOT/apps/platform/backend"
-    PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    cd "$PROJECT_ROOT/shared-data"
+    PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
   (
     cd "$PROJECT_ROOT/apps/portfolio/backend"
-    PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
   (
     cd "$PROJECT_ROOT/apps/watchlist/backend"
-    PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
 }
@@ -180,19 +190,20 @@ run_postgres_integration() {
   require_python
   local selected app_name report
   selected="$(selected_apps "${1:-all}")"
-  if [[ -z "${PORTFOLIO_OPS_TEST_POSTGRES_URL:-}" ]]; then
-    echo "Set PORTFOLIO_OPS_TEST_POSTGRES_URL explicitly for PostgreSQL integration tests." >&2
+  if [[ -z "${INVESTMENT_STUDIO_TEST_POSTGRES_URL:-}" ]]; then
+    echo "Set INVESTMENT_STUDIO_TEST_POSTGRES_URL explicitly for PostgreSQL integration tests." >&2
     exit 64
   fi
   mkdir -p "$JUNIT_DIR"
 
   local reports=()
   while IFS= read -r app_name; do
+    [[ "$app_name" == "home" ]] && continue
     report="$JUNIT_DIR/$app_name-postgres.xml"
     rm -f "$report"
     (
-      cd "$PROJECT_ROOT/apps/$app_name/backend"
-      PYTHONPATH="$PROJECT_ROOT/apps/$app_name/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+      cd "$(backend_root "$app_name")"
+      PYTHONPATH="$(backend_root "$app_name"):$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
         "$PYTHON_BIN" -m pytest -m postgresql_integration \
           --strict-markers -ra --junitxml="$report"
     )

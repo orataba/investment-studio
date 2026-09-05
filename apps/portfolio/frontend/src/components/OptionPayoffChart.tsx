@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
-import type { PortfolioDerivativeContractRecord, PortfolioHoldingRow } from '../lib/api'
+import type { PortfolioDerivativeContractRecord, PortfolioPositionHoldingRow } from '../lib/api'
 import { formatCurrency, formatUnitPrice } from '../lib/format'
 import { isOptionObligationHolding } from '../lib/holdingPresentation'
 
@@ -8,11 +9,14 @@ type OptionContract = Extract<PortfolioDerivativeContractRecord, { contract_type
 
 type OptionPayoffChartProps = {
   contract: OptionContract
-  holding: PortfolioHoldingRow
+  holding: PortfolioPositionHoldingRow
 }
 
 export default function OptionPayoffChart({ contract, holding }: OptionPayoffChartProps) {
+  const { t } = useLanguage()
   const terms = contract.terms
+  // Decimal contract terms arrive as JSON strings from the contract endpoint.
+  const strike = Number(terms.strike)
   const isWritten = isOptionObligationHolding(holding) || holding.quantity < 0
   const openContracts =
     holding.open_contract_quantity ?? Math.abs(holding.quantity)
@@ -39,23 +43,20 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
     const height = 220
     const padding = { left: 48, right: 18, top: 20, bottom: 36 }
     const maxUnderlying = Math.max(
-      terms.strike * 2,
-      (spot ?? terms.strike) * 1.35,
+      strike * 2,
+      (spot ?? strike) * 1.35,
       1,
     )
     const payoff = (underlyingPrice: number) => {
       const intrinsic =
         terms.option_type === 'call'
-          ? Math.max(underlyingPrice - terms.strike, 0)
-          : Math.max(terms.strike - underlyingPrice, 0)
+          ? Math.max(underlyingPrice - strike, 0)
+          : Math.max(strike - underlyingPrice, 0)
       return isWritten
         ? payoffPremiumPerShare - intrinsic
         : intrinsic - payoffPremiumPerShare
     }
-    const points = Array.from({ length: 81 }, (_, index) => {
-      const underlyingPrice = (maxUnderlying * index) / 80
-      return { underlyingPrice, value: payoff(underlyingPrice) }
-    })
+    const points = [0, strike, maxUnderlying].map((underlyingPrice) => ({ underlyingPrice, value: payoff(underlyingPrice) }))
     const allValues = [...points.map((point) => point.value), 0]
     const minValue = Math.min(...allValues)
     const maxValue = Math.max(...allValues)
@@ -71,7 +72,7 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
       padding,
       maxUnderlying,
       zeroY: projectY(0),
-      strikeX: projectX(terms.strike),
+      strikeX: projectX(strike),
       spotX: spot == null ? null : projectX(spot),
       path: points
         .map(
@@ -82,14 +83,14 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
       minValue,
       maxValue,
     }
-  }, [isWritten, payoffPremiumPerShare, spot, terms.option_type, terms.strike])
+  }, [isWritten, payoffPremiumPerShare, spot, terms.option_type, strike])
 
   const breakEven =
     payoffPremiumPerShare == null
       ? null
       : terms.option_type === 'call'
-        ? terms.strike + payoffPremiumPerShare
-        : Math.max(terms.strike - payoffPremiumPerShare, 0)
+        ? strike + payoffPremiumPerShare
+        : strike - payoffPremiumPerShare
   const maximumLossPerShare =
     premiumPerShare == null
       ? null
@@ -98,7 +99,7 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
         : terms.option_type === 'put'
           ? payoffPremiumPerShare == null
             ? null
-            : Math.max(terms.strike - payoffPremiumPerShare, 0)
+            : Math.max(strike - payoffPremiumPerShare, 0)
           : null
 
   return (
@@ -115,7 +116,7 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
           className="option-payoff-chart"
           viewBox={`0 0 ${geometry.width} ${geometry.height}`}
           role="img"
-          aria-label={`${isWritten ? 'Written' : 'Long'} ${terms.option_type} expiry payoff excluding opening charges`}
+          aria-label={t('Standalone option expiry payoff based on remaining premium basis')}
         >
           <line
             x1={geometry.padding.left}
@@ -142,7 +143,7 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
           ) : null}
           <path d={geometry.path} className="option-payoff-line" />
           <text x={geometry.strikeX + 4} y={geometry.padding.top + 12} className="option-payoff-label">
-            Strike
+            {t('Strike')}
           </text>
           <text x={geometry.padding.left} y={geometry.height - 10} className="option-payoff-label">
             0
@@ -166,12 +167,14 @@ export default function OptionPayoffChart({ contract, holding }: OptionPayoffCha
       )}
       <dl className="derivative-risk-facts">
         <div><dt>Premium basis / share</dt><dd>{formatUnitPrice(premiumPerShare, contract.currency)}</dd></div>
-        <div><dt>Break-even</dt><dd>{formatUnitPrice(breakEven, holding.option_risk?.underlying_quote_currency)}</dd></div>
+        <div><dt>Break-even</dt><dd>{breakEven != null && breakEven < 0 ? t('No non-negative break-even') : formatUnitPrice(breakEven, holding.option_risk?.underlying_quote_currency)}</dd></div>
         <div>
           <dt>Maximum loss / share</dt>
           <dd>{isWritten && terms.option_type === 'call' ? 'Unlimited' : formatUnitPrice(maximumLossPerShare, contract.currency)}</dd>
         </div>
       </dl>
+      <p className="holding-detail-note">{t('Expiry scenario for the option alone; underlying holdings and other hedges are excluded. This is not the current option value.')}</p>
+      <p className="holding-detail-note">{t(isWritten ? 'Written payoff uses remaining gross premium before fees and taxes.' : 'Long payoff uses remaining cost including allocated opening charges; future closing charges are excluded.')}</p>
     </section>
   )
 }

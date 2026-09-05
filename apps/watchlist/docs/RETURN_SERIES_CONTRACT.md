@@ -94,4 +94,12 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
   [`materialization_policy.py`](../backend/watchlist_app/services/materialization_policy.py) 中的常量唯一维护，文档不复制易漂移的版本号。方法或 payload 改变时必须提升对应版本并重建旧结果。
 - `return_3m / return_6m` 与其他标量 performance 字段一样，从 canonical performance snapshot 投影到 watchlist row read model；迁移、repository、serializer、field registry 和导出不得缺少其中任一层。
 - Sparkline 字段为 `return_chart_1d / 1w / 1m / 1y`。
-- Portfolio 与 Watchlist 不共享业务 helper、read model 或运行时 API。两边以本文边界、Registry series identity 和黄金用例保持一致：同一 instrument、请求日期、已确认 total-return basis 和窗口下，Watchlist 标量收益与 Portfolio Holdings instrument row 必须相同；Portfolio group / total 的当前权重篮子计算仍只属于 Portfolio。
+- Portfolio 与 Watchlist 独立计算行情收益和组合绩效，不共享这些业务 helper 或 read model。两边以本文边界、Registry series identity 和黄金用例保持一致：同一 instrument、请求日期、已确认 total-return basis 和窗口下，Watchlist 标量收益与 Portfolio Holdings instrument row 必须相同；Portfolio group / total 的当前权重篮子计算仍只属于 Portfolio。标的风险跟进和只读研究上下文的 API 连接不改变这一计算边界。
+
+## 7. 研究比较与跌幅复核线
+
+研究对话的比较工具采用请求区间内的共同实际观察日，不前向填充。首尾收益、路径回撤和相邻区间相关性均以该共同样本为准，不冒充完整日频路径或年化指标；样本日期、观察数、币种、实际收益口径和剔除原因随结果返回。不同币种不直接混算；收益口径混合或缺失观察值时明确披露可比性限制。没有共同基准时不生成超额收益，观察列表也不代表全市场排名。
+
+标的风险的近 1 日、1 周、1 月、1 季分别使用最近 1、5、21、63 个日频观察间隔。只有已就绪、无未确认断点且无缺口的日频序列才参与；不足窗口则显示不可用。复核线首次使用最多 252 个对数收益、至少 63 个收益的样本标准差 `sigma` 校准，按 `100 × (1 − exp(−k × sigma × sqrt(n)))` 得到正的跌幅容忍值。四个窗口的 `k` 为 3、2.5、2、1.5，最低容忍值为 0.5%、1%、2%、3%，向上取整到 0.5 个百分点。这些是初始复核规则，不是经验分位数或预测损失概率。
+
+规则和校准样本保存后不随日常波动自动抬升，可逐窗口人工修改或关闭。自动观察由现有 recalc 流程更新；GET 只读，不因打开页面生成事项。资料不足不能证明风险恢复；触发解除与人工跟进状态分别保留。实现和验证见 [price_risk.py](../backend/watchlist_app/services/price_risk.py) 与 [test_price_risk.py](../backend/tests/test_price_risk.py)。

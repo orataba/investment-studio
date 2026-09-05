@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from portfolio_ops_instrument_core import fx_rates as shared_fx_rates
-from portfolio_ops_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core import fx_rates as shared_fx_rates
+from investment_studio_instrument_core import instrument_store as shared_store
 
 from portfolio_app.db.session import get_session_factory
 
@@ -85,7 +85,7 @@ def list_registry_corporate_actions(
         raise InstrumentRegistryError("Failed to query shared corporate actions.") from error
 
 
-def get_platform_fx_rates() -> dict[str, object]:
+def get_shared_fx_rates() -> dict[str, object]:
     try:
         return shared_fx_rates.get_fx_payload(get_session_factory())
     except Exception as error:  # pragma: no cover - defensive wrapper

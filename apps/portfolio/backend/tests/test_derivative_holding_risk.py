@@ -119,7 +119,8 @@ def test_option_risk_uses_portfolio_level_backing_across_written_contracts(monke
         }
 
 
-def test_written_put_backing_nets_positive_and_negative_cash_accounts(monkeypatch) -> None:
+@pytest.mark.parametrize("premium_currency", ["USD", "HKD"])
+def test_written_put_backing_nets_positive_and_negative_cash_accounts(monkeypatch, premium_currency) -> None:
     rows = [
         {
             "line_id": "cash-positive",
@@ -135,6 +136,7 @@ def test_written_put_backing_nets_positive_and_negative_cash_accounts(monkeypatc
         },
         _option_obligation("put-a", quantity=1, option_type="put"),
     ]
+    rows[-1]["derivative_contract"]["currency"] = premium_currency
     monkeypatch.setattr(
         "portfolio_app.services.derivative_holding_risk._quote_by_instrument",
         lambda instrument_ids, as_of_date: (

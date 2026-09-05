@@ -19,6 +19,9 @@ from watchlist_app.db.models.read_models import (
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+from watchlist_app.services.calculation_frequency import (
+    assess_latest_observation_freshness,
+)
 from watchlist_app.services.materialization_policy import (
     WATCHLIST_MATERIALIZATION_VERSION,
 )
@@ -70,12 +73,19 @@ def _load_reconciliation_targets(
             instrument_id: {
                 "source_cutoff_at": source_cutoff_at,
                 "materialization_version": materialization_version,
+                "data_freshness_status": data_freshness_status,
             }
-            for instrument_id, source_cutoff_at, materialization_version in session.execute(
+            for (
+                instrument_id,
+                source_cutoff_at,
+                materialization_version,
+                data_freshness_status,
+            ) in session.execute(
                 select(
                     InstrumentChartReadModel.instrument_id,
                     InstrumentChartReadModel.source_cutoff_at,
                     InstrumentChartReadModel.materialization_version,
+                    InstrumentChartReadModel.data_freshness_status,
                 ).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
             ).all()
         }
@@ -158,6 +168,9 @@ def _load_reconciliation_targets(
                         and all(version == local_versions[0] for version in local_versions)
                         else None
                     ),
+                    "local_data_freshness_status": (
+                        chart_state_by_id.get(instrument_id) or {}
+                    ).get("data_freshness_status"),
                 }
             )
 
@@ -361,6 +374,45 @@ def _source_data_is_materialized(
     )
 
 
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
+
+
+def _freshness_has_aged(
+    *,
+    shared_instrument: dict[str, object] | None,
+    local_latest_date: date | None,
+    local_data_freshness_status: object,
+) -> bool:
+    """Detect a previously fresh projection that became stale with the clock.
+
+    Source watermarks do not advance on days when a provider publishes nothing,
+    but freshness is still a function of today's completed market sessions.  A
+    materialized stale/partial/unavailable result has already crossed this
+    boundary, so only a currently fresh projection needs another recalculation.
+    """
+
+    if (
+        str(local_data_freshness_status or "").strip().lower() != "fresh"
+        or local_latest_date is None
+    ):
+        return False
+    source_settings = (
+        dict(shared_instrument.get("source_settings") or {})
+        if isinstance(shared_instrument, dict)
+        else {}
+    )
+    assessment = assess_latest_observation_freshness(
+        latest_observation_date=local_latest_date,
+        current_date=_utc_today(),
+        resolved_frequency="daily",
+        expected_frequency=source_settings.get("expected_frequency"),
+        market_calendar=source_settings.get("market_calendar"),
+        release_lag_days=source_settings.get("release_lag_days"),
+    )
+    return assessment["status"] == "stale"
+
+
 def _primary_shared_identifier(shared_instrument: dict[str, object] | None) -> str | None:
     if not isinstance(shared_instrument, dict):
         return None
@@ -494,6 +546,13 @@ def schedule_instrument_refreshes_if_stale(
                 local_cutoff_at = _parse_iso_datetime(
                     target.get("local_source_cutoff_at")
                 )
+                freshness_aged = _freshness_has_aged(
+                    shared_instrument=shared_instrument,
+                    local_latest_date=local_latest_date,
+                    local_data_freshness_status=target.get(
+                        "local_data_freshness_status"
+                    ),
+                )
                 metadata_drift = _instrument_metadata_drift(
                     instrument=local_instrument,
                     shared_instrument=shared_instrument,
@@ -507,6 +566,7 @@ def schedule_instrument_refreshes_if_stale(
                     and shared_updated_at is None
                     and not metadata_drift
                     and not materialization_drift
+                    and not freshness_aged
                 ):
                     continue
                 if not metadata_drift and not materialization_drift:
@@ -515,7 +575,7 @@ def schedule_instrument_refreshes_if_stale(
                         shared_latest_date=shared_latest_date,
                         local_source_cutoff_at=local_cutoff_at,
                         local_latest_date=local_latest_date,
-                    ):
+                    ) and not freshness_aged:
                         continue
                 if instrument_id in open_instrument_ids:
                     scheduled_count += 1
@@ -572,6 +632,7 @@ def schedule_instrument_refresh_if_stale(
     local_latest_date: date | None,
     local_source_cutoff_at: datetime | None = None,
     local_materialization_version: str | None = WATCHLIST_MATERIALIZATION_VERSION,
+    local_data_freshness_status: str | None = None,
     trigger_ref_type: str,
     trigger_ref_id: str | None = None,
 ) -> bool:
@@ -593,11 +654,17 @@ def schedule_instrument_refresh_if_stale(
         str(local_materialization_version or "").strip()
         != WATCHLIST_MATERIALIZATION_VERSION
     )
+    freshness_aged = _freshness_has_aged(
+        shared_instrument=shared_instrument,
+        local_latest_date=local_latest_date,
+        local_data_freshness_status=local_data_freshness_status,
+    )
     if (
         shared_latest_date is None
         and shared_updated_at is None
         and not metadata_drift
         and not materialization_drift
+        and not freshness_aged
     ):
         return False
     if not metadata_drift and not materialization_drift:
@@ -606,7 +673,7 @@ def schedule_instrument_refresh_if_stale(
             shared_latest_date=shared_latest_date,
             local_source_cutoff_at=local_cutoff_at,
             local_latest_date=local_latest_date,
-        ):
+        ) and not freshness_aged:
             return False
     return _enqueue_stale_recalc_job(
         instrument_id=normalized_instrument_id,

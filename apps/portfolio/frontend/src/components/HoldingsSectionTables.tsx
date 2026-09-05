@@ -350,22 +350,6 @@ function sumComplete(
   return total
 }
 
-function sumAvailable(
-  rows: PortfolioHoldingRow[],
-  accessor: (row: PortfolioHoldingRow) => number | null | undefined,
-) {
-  let hasValue = false
-  const total = rows.reduce((sum, row) => {
-    const value = finiteNumber(accessor(row))
-    if (value == null) {
-      return sum
-    }
-    hasValue = true
-    return sum + value
-  }, 0)
-  return hasValue ? total : null
-}
-
 function accountLabel(row: PortfolioHoldingRow) {
   const derivativeAccount = row.derivative_contract?.account_id?.trim()
   if (derivativeAccount) {
@@ -1117,7 +1101,12 @@ export default function HoldingsSectionTables({
   ]
 
   const cashColumns: FixedColumn[] = [
-    { key: 'description', label: 'Description', render: (row) => row.instrument_core?.instrument_name ?? row.line_id },
+    {
+      key: 'description',
+      label: 'Description',
+      opensDetail: true,
+      render: (row) => row.instrument_core?.instrument_name ?? row.line_id,
+    },
     { key: 'type', label: 'Type', render: holdingKindLabel },
     { key: 'currency', label: 'Currency', align: 'center', render: holdingCurrency },
     { key: 'account', label: 'Account', render: accountLabel },
@@ -1279,7 +1268,7 @@ export default function HoldingsSectionTables({
                     workspace.base_currency,
                   ),
                   strike_notional_base: formatCurrency(
-                    sumAvailable(optionRows, (row) => row.strike_notional_base),
+                    sumComplete(optionRows, (row) => row.strike_notional_base),
                     workspace.base_currency,
                   ),
                   weight: formatPercent(sumComplete(optionRows, (row) => row.allocation)),
@@ -1320,6 +1309,7 @@ export default function HoldingsSectionTables({
               ),
               weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
             }}
+            onSelectHolding={onSelectHolding}
           />
         </section>
       ) : null}

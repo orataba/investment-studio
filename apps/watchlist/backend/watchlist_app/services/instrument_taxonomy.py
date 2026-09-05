@@ -7,6 +7,7 @@ from watchlist_app.reference_data.instrument_taxonomy import (
     INSTRUMENT_TAXONOMY_DERIVED_KEYS,
     INSTRUMENT_TAXONOMY_MAX_LEVELS,
 )
+from watchlist_app.services.instrument_resolution import equity_default_taxonomy_node
 
 
 SUPPORTED_TAXONOMY_INSTRUMENT_TYPES = (
@@ -22,6 +23,19 @@ def taxonomy_node_supports_instrument(*, instrument_type: str, node: object) -> 
     normalized_instrument_type = str(instrument_type or "").strip().lower()
     node_type = str(_node_value(node, "instrument_type") or "").strip().lower()
     return node_type == normalized_instrument_type and bool(_node_value(node, "is_leaf"))
+
+
+def taxonomy_node_matches_equity_market(*, instrument: object, node: object) -> bool:
+    """Keep Watchlist equity classification inside the Registry market branch."""
+
+    if str(_node_value(instrument, "instrument_type") or "").strip().lower() != "equity":
+        return True
+    default_node_id = equity_default_taxonomy_node(instrument)
+    if default_node_id is None:
+        return False
+    market_prefix = default_node_id.removesuffix("-unclassified")
+    node_id = str(_node_value(node, "node_id") or "").strip()
+    return node_id == default_node_id or node_id.startswith(f"{market_prefix}-")
 
 
 def _node_value(node: object, key: str) -> object:

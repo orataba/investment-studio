@@ -3,13 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
+LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.investment-studio}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
-LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}"
+LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/investment-studio}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 domain="gui/$UID"
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web; do
+for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web; do
   label="$LABEL_PREFIX.$service"
   if details="$(launchctl print "$domain/$label" 2>/dev/null)"; then
     state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
@@ -54,7 +54,7 @@ else
   printf '%-20s not installed (schedule=%s)\n' "$refresh_service" "$refresh_schedule"
 fi
 
-refresh_summary="$PROJECT_ROOT/var/market-data-refresh-summary.json"
+refresh_summary="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}/market-data-refresh-summary.json"
 if [[ -f "$refresh_summary" && -x "$PYTHON_BIN" ]]; then
   "$PYTHON_BIN" - "$refresh_summary" <<'PY'
 from __future__ import annotations

@@ -124,6 +124,10 @@ def _schedule_instrument_refresh(
             getattr(chart_record, "materialization_version", None),
             getattr(source_row, "materialization_version", None),
         ),
+        local_data_freshness_status=(
+            getattr(chart_record, "data_freshness_status", None)
+            or getattr(source_row, "data_freshness_status", None)
+        ),
         trigger_ref_type=trigger_ref_type,
         trigger_ref_id=instrument_id,
     )

@@ -37,7 +37,7 @@ def _create_holding_account(
     settlement_cash_account_id: str = "cash-usd-main",
 ) -> str:
     response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": account_name,
             "account_category": account_category,
@@ -474,6 +474,13 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
         ),
     ]
 
+    # The simulated redemption occurs at the actual final observation/maturity.
+    for transaction in transactions:
+        contract = transaction.get("derivative_contract")
+        if contract and contract["contract_type"] == "fcn":
+            contract["terms"]["final_observation_date"] = "2026-09-01"
+            contract["terms"]["maturity_date"] = "2026-09-01"
+
     validate_transaction_position_history(
         "portfolio",
         transactions,
@@ -520,12 +527,15 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
     assert sum(float(row.get("cash_amount_delta") or 0) for row in fcn_income) == pytest.approx(2_000)
 
 
-def test_event_valued_fcn_is_carried_at_remaining_cost_without_quote() -> None:
+@pytest.mark.parametrize("contract_type", ["fcn", "option"])
+def test_event_valued_lot_has_carrying_cost_but_no_unrealized_pnl(
+    contract_type: str,
+) -> None:
     accounts = [
         {
             "account_id": "broker",
             "account_type": "securities_account",
-            "account_category": "security",
+            "account_category": contract_type,
             "cost_basis_method": "fifo",
         }
     ]
@@ -534,11 +544,12 @@ def test_event_valued_fcn_is_carried_at_remaining_cost_without_quote() -> None:
             "txn-1",
             "buy",
             "2026-01-01",
-            instrument_id="fcn-1",
-            instrument_type="fcn",
+            instrument_id=f"{contract_type}-1",
+            instrument_type=contract_type,
             quantity=1.0,
-            price=100_000.0,
+            price=1_000.0 if contract_type == "option" else 100_000.0,
             gross_amount=100_000.0,
+            option_underlying_id="equity-1" if contract_type == "option" else None,
         )
     ]
 
@@ -555,7 +566,7 @@ def test_event_valued_fcn_is_carried_at_remaining_cost_without_quote() -> None:
     assert len(lots) == 1
     assert lots[0]["remaining_cost_basis"] == pytest.approx(100_000.0)
     assert lots[0]["current_market_value"] == pytest.approx(100_000.0)
-    assert lots[0]["unrealized_pnl"] == pytest.approx(0.0)
+    assert lots[0]["unrealized_pnl"] is None
 
 
 def test_event_valued_fcn_daily_holding_uses_cost_without_market_lookup(
@@ -571,7 +582,7 @@ def test_event_valued_fcn_daily_holding_uses_cost_without_market_lookup(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -696,6 +707,13 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
         ),
     ]
 
+    # The simulated redemption occurs at the actual final observation/maturity.
+    for transaction in transactions:
+        contract = transaction.get("derivative_contract")
+        if contract and contract["contract_type"] == "fcn":
+            contract["terms"]["final_observation_date"] = "2026-02-01"
+            contract["terms"]["maturity_date"] = "2026-02-01"
+
     validate_transaction_position_history(
         "portfolio",
         transactions,
@@ -799,7 +817,7 @@ def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -924,7 +942,7 @@ def test_independent_fcn_close_and_stock_buy_reconcile_to_nav(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -1349,7 +1367,7 @@ def test_written_option_write_date_nav_changes_only_by_charges(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -1482,7 +1500,7 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -1756,7 +1774,7 @@ def test_market_risk_return_excludes_long_option_cash_settlement_pnl(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -1899,7 +1917,7 @@ def test_delayed_option_cash_settlement_does_not_create_market_risk_return(
 ) -> None:
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -1999,7 +2017,7 @@ def test_market_risk_return_keeps_security_income_and_excludes_fcn_coupon_and_ca
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -2131,7 +2149,7 @@ def test_market_risk_is_unavailable_without_any_modeled_market_asset(
 ) -> None:
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
     portfolio = {
@@ -2474,7 +2492,7 @@ def test_transaction_csv_collapses_internal_transfer_pair_into_importable_comman
     rendered = render_transaction_csv(
         [
             {
-                "portfolio_id": "portfolio-ops",
+                "portfolio_id": "investment-studio",
                 "transaction_id": "txn-transfer-out",
                 "transaction_sequence": 42,
                 "row_version": 2,
@@ -2498,7 +2516,7 @@ def test_transaction_csv_collapses_internal_transfer_pair_into_importable_comman
                 "counterparty_account_id": "cash-b",
             },
             {
-                "portfolio_id": "portfolio-ops",
+                "portfolio_id": "investment-studio",
                 "transaction_id": "txn-transfer-in",
                 "transaction_sequence": 43,
                 "row_version": 2,
@@ -2564,7 +2582,7 @@ def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(c
         ]
     )
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert preview_response.status_code == 200
@@ -2574,7 +2592,7 @@ def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(c
     assert preview["rows"][0]["internal_transfer"]["from_account_id"] == "cash-usd-main"
 
     import_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-internal-transfer-1"},
         json={
             "csv_text": csv_text,
@@ -2593,7 +2611,7 @@ def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(c
     ) == 1
 
     download_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions.csv"
+        "/api/portfolios/investment-studio/transactions.csv"
     )
     assert download_response.status_code == 200
     _headers, exported_rows = parse_transaction_csv(download_response.text)
@@ -2612,7 +2630,7 @@ def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(c
 
 def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(client) -> None:
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "CSV Transfer Source",
             "account_category": "security",
@@ -2625,7 +2643,7 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": "CSV Transfer Destination",
             "account_category": "security",
@@ -2655,7 +2673,7 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
         ]
     )
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert preview_response.status_code == 200
@@ -2663,7 +2681,7 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
     assert preview["error_count"] == 0, preview
 
     import_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-position-transfer-1"},
         json={
             "csv_text": csv_text,
@@ -2711,7 +2729,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     )
 
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert preview_response.status_code == 200
@@ -2724,7 +2742,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
         "preview_digest": preview["preview_digest"],
     }
     first_import = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-option-write-1"},
         json=import_payload,
     )
@@ -2735,7 +2753,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     assert created["net_cash_effect"] == pytest.approx(500.0)
 
     replay = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-option-write-1"},
         json=import_payload,
     )
@@ -2743,13 +2761,13 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     assert replay.json()["transactions"][0]["transaction_id"] == created["transaction_id"]
 
     duplicate_preview = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     ).json()
     assert duplicate_preview["error_count"] == 1
     assert "already exist" in duplicate_preview["batch_errors"][0]
 
-    download = client.get("/api/portfolios/portfolio-ops/transactions.csv")
+    download = client.get("/api/portfolios/investment-studio/transactions.csv")
     assert download.status_code == 200
     assert "CALL-001-WRITE" in download.text
 
@@ -2774,7 +2792,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
         ]
     )
     settlement_preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": settlement_csv},
     )
     assert settlement_preview_response.status_code == 200
@@ -2784,7 +2802,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
         settlement_preview["batch_errors"],
     )
     settlement_import = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-option-cash-settlement-1"},
         json={
             "csv_text": settlement_csv,
@@ -2801,7 +2819,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     }
 
     workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": settlement_id},
     )
     assert workspace_response.status_code == 200
@@ -2809,7 +2827,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
 
     delete_response = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{settlement_id}",
+        f"/api/portfolios/investment-studio/transactions/{settlement_id}",
         json={"expected_row_versions": expected_row_versions},
     )
     assert delete_response.status_code == 200
@@ -2827,14 +2845,14 @@ def test_direct_transaction_source_identity_conflict_returns_409(client) -> None
         "external_reference": "CASH-001",
     }
     first_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         headers={"Idempotency-Key": "direct-source-identity-1"},
         json=payload,
     )
     assert first_response.status_code == 200
 
     conflict_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         headers={"Idempotency-Key": "direct-source-identity-2"},
         json=payload,
     )
@@ -2851,7 +2869,7 @@ def test_inline_derivative_contract_rejects_unknown_registry_underlying(client) 
         account_category="option",
     )
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
@@ -2918,7 +2936,7 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
         }
 
     first_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json=payload("option-reference-a"),
     )
     assert first_response.status_code == 200, first_response.json()
@@ -2926,7 +2944,7 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
     assert created["derivative_contract_id"] == "option-reference-a"
     assert created["derivative_contract"]["contract_name"] == "option-reference-a"
 
-    listed = client.get("/api/portfolios/portfolio-ops/transactions")
+    listed = client.get("/api/portfolios/investment-studio/transactions")
     assert listed.status_code == 200, listed.json()
     listed_transaction = next(
         item
@@ -2940,7 +2958,7 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
     )
 
     duplicate_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json=payload("option-reference-b"),
     )
     assert duplicate_response.status_code == 409
@@ -2955,7 +2973,7 @@ def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None
         account_category="option",
     )
     create_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
@@ -2983,12 +3001,12 @@ def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None
     )
     assert create_response.status_code == 200, create_response.json()
 
-    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
+    copy_response = client.post("/api/portfolios/investment-studio/copy")
     assert copy_response.status_code == 200, copy_response.json()
     copied_portfolio_id = copy_response.json()["portfolio_id"]
 
     original_contracts = client.get(
-        "/api/portfolios/portfolio-ops/derivative-contracts"
+        "/api/portfolios/investment-studio/derivative-contracts"
     ).json()["derivative_contracts"]
     copied_contracts = client.get(
         f"/api/portfolios/{copied_portfolio_id}/derivative-contracts"
@@ -3003,7 +3021,7 @@ def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None
     assert copied["portfolio_id"] == copied_portfolio_id
 
 
-def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
+def test_documented_multi_asset_csv_preserves_physical_fcn_delivery(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3045,13 +3063,13 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     )
 
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert preview_response.status_code == 200
     preview = preview_response.json()
-    assert preview["row_count"] == 12
-    assert preview["valid_count"] == 12, (
+    assert preview["row_count"] == 11
+    assert preview["valid_count"] == 11, (
         preview["rows"],
         preview["batch_errors"],
     )
@@ -3061,7 +3079,7 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     )
 
     import_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "csv-mixed-independent-facts-1"},
         json={
             "csv_text": csv_text,
@@ -3070,12 +3088,15 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     )
     assert import_response.status_code == 200
     created = import_response.json()["transactions"]
-    assert len(created) == 12
+    assert len(created) == 11
+    redemption = next(row for row in created if row["external_reference"] == "FCN-CLOSE-001")
+    assert redemption["gross_amount"] == 0
+    assert Decimal(redemption["asset_deliveries"][0]["fair_value"]) == Decimal("75000")
 
-    accounts = portfolio_store.list_accounts("portfolio-ops")
-    transactions = portfolio_store.list_transactions("portfolio-ops")
+    accounts = portfolio_store.list_accounts("investment-studio")
+    transactions = portfolio_store.list_transactions("investment-studio")
     open_lots = build_position_lots(
-        "portfolio-ops",
+        "investment-studio",
         accounts,
         transactions,
         status="open",
@@ -3106,7 +3127,7 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     assert imported_obligation["status"] == "cash_settled"
     assert imported_obligation["remaining_quantity"] == pytest.approx(0.0)
     postings = derive_ledger_postings(
-        "portfolio-ops",
+        "investment-studio",
         transactions,
         account_cost_methods={
             str(account["account_id"]): str(account.get("cost_basis_method") or "fifo")
@@ -3123,11 +3144,12 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     )
 
     download_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions.csv"
+        "/api/portfolios/investment-studio/transactions.csv"
     )
     assert download_response.status_code == 200
     exported_csv = download_response.text
-    assert "FCN-STOCK-001" in exported_csv
+    assert "FCN-STOCK-001" not in exported_csv
+    assert "asset_deliveries_json" in exported_csv
 
 
 def test_transaction_contract_distinguishes_long_and_writer_option_events() -> None:
@@ -3261,7 +3283,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     )
     long_option_id = "option-inspector-long"
     long_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
@@ -3289,7 +3311,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     )
     assert long_response.status_code == 200, long_response.json()
     long_workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": long_response.json()["transaction_id"]},
     )
     assert long_workspace.status_code == 200
@@ -3299,7 +3321,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     assert long_workspace.json()["related_option_obligations"] == []
 
     long_fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-05-02",
@@ -3314,7 +3336,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     assert long_fee_response.status_code == 200, long_fee_response.json()
     assert long_fee_response.json()["net_cash_effect"] == pytest.approx(-10.0)
     long_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
+        "/api/portfolios/investment-studio/position-lots",
         params={
             "account_id": long_account_id,
             "position_reference_id": long_option_id,
@@ -3332,7 +3354,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     )
     writer_option_id = "option-inspector-writer"
     writer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "option_write",
             "trade_date": "2026-05-01",
@@ -3360,7 +3382,7 @@ def test_transaction_workspace_projects_long_lots_and_writer_obligations(client)
     )
     assert writer_response.status_code == 200, writer_response.json()
     writer_workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": writer_response.json()["transaction_id"]},
     )
     assert writer_workspace.status_code == 200
@@ -3379,7 +3401,7 @@ def test_written_option_fee_requires_open_obligation(client) -> None:
     )
     option_id = "option-writer-fee"
     write_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "option_write",
             "trade_date": "2026-05-01",
@@ -3418,12 +3440,12 @@ def test_written_option_fee_requires_open_obligation(client) -> None:
         "currency": "USD",
     }
     fee_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json=fee_payload,
     )
     assert fee_response.status_code == 200, fee_response.json()
     fee_workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": fee_response.json()["transaction_id"]},
     )
     assert fee_workspace.status_code == 200
@@ -3433,7 +3455,7 @@ def test_written_option_fee_requires_open_obligation(client) -> None:
     ] == pytest.approx(0.0)
 
     close_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "option_buy_to_close",
             "trade_date": "2026-05-03",
@@ -3449,7 +3471,7 @@ def test_written_option_fee_requires_open_obligation(client) -> None:
     assert close_response.status_code == 200, close_response.json()
 
     same_day_fee = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             **fee_payload,
             "trade_date": "2026-05-03",
@@ -3459,7 +3481,7 @@ def test_written_option_fee_requires_open_obligation(client) -> None:
     assert same_day_fee.status_code == 200, same_day_fee.json()
 
     rejected_fee = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             **fee_payload,
             "trade_date": "2026-05-04",

@@ -74,6 +74,16 @@ def test_transaction_xlsx_is_typed_safe_and_round_trip_importable() -> None:
     assert rows[0].transaction.note == "=literal note"
 
 
+@pytest.mark.parametrize("file_format", ["csv", "xlsx"])
+@pytest.mark.parametrize("estimated", [False, True])
+def test_file_round_trip_preserves_known_versus_estimated_trade_time(file_format, estimated):
+    record = {**_deposit_record("trade-time-roundtrip"), "trade_time": "12:00", "trade_time_is_estimated": estimated}
+    csv_content = render_transaction_csv([record]) if file_format == "csv" else transaction_xlsx_to_csv(render_transaction_xlsx([record]))
+    _, rows = parse_transaction_csv(csv_content)
+    assert rows[0].errors == ()
+    assert rows[0].transaction.trade_time == (None if estimated else "12:00")
+
+
 def test_transaction_xlsx_rejects_formula_cells() -> None:
     workbook = load_workbook(BytesIO(render_transaction_xlsx_template()))
     worksheet = workbook[TRANSACTION_SHEET_NAME]
@@ -157,6 +167,12 @@ def test_transaction_xlsx_template_guides_manual_entry_without_importing_example
     assert currency_validation.type == "list"
     assert currency_validation.formula1 == "CurrencyValues"
 
+    lists = workbook[LISTS_SHEET_NAME]
+    for asset_type, column in {"security": 4, "fcn": 7, "option": 10, "cash": 13}.items():
+        for row_index, action in enumerate(TRANSACTION_ACTIONS[asset_type], start=2):
+            assert lists.cell(row_index, column).value == action
+            assert lists.cell(row_index, column + 1).value, f"Missing template guidance for {action}"
+
     examples = workbook[EXAMPLES_SHEET_NAME]
     assert examples.cell(1, 1).value == "资产类型与交易动作示例（仅供参考，不会上传）"
     assert examples.cell(2, 1).value is not None
@@ -222,19 +238,16 @@ def test_transaction_xlsx_template_guides_manual_entry_without_importing_example
         "Option｜CNY 合约期初多头",
         "Option｜HKD 独立费用",
         "Option｜HKD 独立税费",
-        "Option 实物行权拆分 1/2｜多头现金结算",
-        "Option 实物行权拆分 2/2｜标的股票买入",
-        "Option 空头 Call 指派拆分 1/2｜空头现金结算",
-        "Option 空头 Call 指派拆分 2/2｜标的股票卖出",
         "FCN｜新合约进入",
         "FCN｜HKD 合约期初持仓",
         "FCN｜提前退出",
         "FCN｜票息收入",
         "FCN｜独立费用",
         "FCN｜独立税费",
-        "FCN 敲入交付拆分 1/2｜敲入结束",
-        "FCN 敲入交付拆分 2/2｜交付证券买入",
+        "FCN｜敲入后实际现金兑付",
     } <= example_scenarios
+    assert not any("Option 实物行权拆分" in scenario for scenario in example_scenarios)
+    assert not any("Option 空头 Call 指派拆分" in scenario for scenario in example_scenarios)
 
 
 def test_transaction_csv_rejects_old_protocol_and_cross_asset_fields() -> None:
@@ -260,7 +273,7 @@ def test_transaction_csv_rejects_old_protocol_and_cross_asset_fields() -> None:
     )
     assert invalid_rows[0].errors == (
         "A new OPTION contract can only be defined on: "
-        "buy_to_open, opening_balance, sell_to_open.",
+        "buy_to_open, opening_balance, opening_written, sell_to_open.",
     )
 
     _headers, invalid_rows = parse_transaction_csv(
@@ -299,7 +312,7 @@ def test_transaction_transfer_actions_resolve_direction_from_the_selected_side()
 
 def test_transaction_file_preview_checks_asset_account_category(client) -> None:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={
             "csv_text": (
                 "asset_type,transaction_action,trade_date,account_id,instrument_id,"
@@ -387,7 +400,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     xlsx_content = render_transaction_xlsx([record])
 
     csv_preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/files/preview",
+        "/api/portfolios/investment-studio/transactions/files/preview",
         files={"file": ("transactions.csv", csv_content, "text/csv")},
         data={"default_source_system": "portfolio_file_upload"},
     )
@@ -395,7 +408,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     assert csv_preview_response.json()["error_count"] == 0
 
     xlsx_preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/files/preview",
+        "/api/portfolios/investment-studio/transactions/files/preview",
         files={"file": ("transactions.xlsx", xlsx_content, XLSX_MEDIA_TYPE)},
         data={"default_source_system": "portfolio_file_upload"},
     )
@@ -405,7 +418,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     assert preview["error_count"] == 0
 
     import_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/files/import",
+        "/api/portfolios/investment-studio/transactions/files/import",
         headers={"Idempotency-Key": "xlsx-api-import-1"},
         files={"file": ("transactions.xlsx", xlsx_content, XLSX_MEDIA_TYPE)},
         data={
@@ -416,7 +429,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     assert import_response.status_code == 200, import_response.text
     assert import_response.json()["created_count"] == 1
 
-    export_response = client.get("/api/portfolios/portfolio-ops/transactions.xlsx")
+    export_response = client.get("/api/portfolios/investment-studio/transactions.xlsx")
     assert export_response.status_code == 200
     assert export_response.headers["content-type"].startswith(XLSX_MEDIA_TYPE)
     _headers, exported_rows = parse_transaction_csv(
@@ -429,7 +442,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     )
 
     template_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/xlsx-template"
+        "/api/portfolios/investment-studio/transactions/xlsx-template"
     )
     assert template_response.status_code == 200
     assert template_response.headers["content-disposition"] == (
@@ -453,7 +466,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
     template_workbook.close()
 
     csv_template_response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/csv-template"
+        "/api/portfolios/investment-studio/transactions/csv-template"
     )
     assert csv_template_response.status_code == 200
     assert csv_template_response.headers["content-disposition"] == (
@@ -472,7 +485,7 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
 
 def test_transaction_file_api_rejects_unsupported_extensions(client) -> None:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/files/preview",
+        "/api/portfolios/investment-studio/transactions/files/preview",
         files={"file": ("transactions.xls", b"legacy", "application/vnd.ms-excel")},
     )
 
@@ -484,7 +497,7 @@ def test_transaction_file_api_rejects_unsupported_extensions(client) -> None:
 
 def test_transaction_file_preview_enforces_inception_and_accepts_transfer_identity(client) -> None:
     early_deposit = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={
             "csv_text": (
                 "asset_type,transaction_action,trade_date,account_id,gross_amount,currency\n"
@@ -499,7 +512,7 @@ def test_transaction_file_preview_enforces_inception_and_accepts_transfer_identi
     )
 
     late_opening = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={
             "csv_text": (
                 "asset_type,transaction_action,trade_date,account_id,gross_amount,currency\n"
@@ -514,7 +527,7 @@ def test_transaction_file_preview_enforces_inception_and_accepts_transfer_identi
     ][0]
 
     transfer = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={
             "csv_text": (
                 "asset_type,transaction_action,trade_date,account_id,"
@@ -542,14 +555,14 @@ def test_transfer_file_source_identity_prevents_replay_across_batches(client) ->
         "10,USD,custodian,TRANSFER-REPLAY-001\n"
     )
     preview = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert preview.status_code == 200
     assert preview.json()["error_count"] == 0
 
     imported = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        "/api/portfolios/investment-studio/transactions/csv/import",
         headers={"Idempotency-Key": "transfer-file-batch-1"},
         json={
             "csv_text": csv_text,
@@ -571,7 +584,7 @@ def test_transfer_file_source_identity_prevents_replay_across_batches(client) ->
     assert transfer_in["external_reference"] is None
 
     repeated_preview = client.post(
-        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        "/api/portfolios/investment-studio/transactions/csv/preview",
         json={"csv_text": csv_text},
     )
     assert repeated_preview.status_code == 200

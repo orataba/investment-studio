@@ -1,3 +1,4 @@
+import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import {
   startTransition,
   useDeferredValue,
@@ -50,7 +51,7 @@ import {
   getInstrumentMonitoring,
   getInstrumentRisk,
   getInstrumentSummary,
-  getPlatformInstrumentReferenceData,
+  getInstrumentReferenceData,
   getInstrumentStrategy,
   getSharedInstruments,
   resolveInstrumentDetail,
@@ -70,10 +71,11 @@ import {
   formatNumber,
   formatPercent,
 } from '../lib/format'
-import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import { fundDetailTabLabel } from '../lib/instrumentDetailArchitecture'
-import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import {
   beginDetailRequest,
   completeDetailRequest,
@@ -85,7 +87,6 @@ import {
   buildNavQuoteBasisSeries,
   filterNavQuoteRowsByCurrency,
   normalizeNavQuoteCurrency,
-  returnKindsAreComparable,
   type NavQuoteBasis,
 } from '../lib/navQuoteBasis'
 import {
@@ -322,7 +323,7 @@ type WatchlistRollingRiskSettings = {
   chartDisplayStyle: ChartDisplayStyle
 }
 
-const WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY = 'portfolio_ops.watchlist.instrument.risk.rolling.settings.v1'
+const WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY = 'investment_studio.watchlist.instrument.risk.rolling.settings.v1'
 const DEFAULT_ROLLING_RISK_SETTINGS: WatchlistRollingRiskSettings = {
   windowMonths: 1,
   chartDisplayStyle: 'mountain',
@@ -419,7 +420,7 @@ const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
   nav_with_dividend_series: 'Cumulative NAV Series',
   nav_series: 'Unit NAV Series',
   manual_nav_editor: 'Manual Editor',
-  shared: 'Shared Registry',
+  shared: 'Shared Asset Data',
   local: 'Local Facts',
 }
 
@@ -474,7 +475,7 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   notes: { en: 'Notes', zh: '备注' },
   noDocuments: { en: 'No documents yet.', zh: '暂无文档。' },
   noNavHistory: {
-    en: 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.',
+    en: 'No NAV history is available yet. Add shared market data in backend maintenance to materialize the quote curve.',
     zh: '暂无净值历史。请先在数据库面板补充共享行情数据，生成报价曲线。',
   },
   optionalNote: { en: 'Optional note', zh: '可选备注' },
@@ -2923,6 +2924,7 @@ export default function FundDetailPage({
   const [benchmarkFundId, setBenchmarkFundId] = useState(
     () => detailSearchParams.get('benchmark') || '',
   )
+  const benchmarkInputRef = useRef<HTMLInputElement>(null)
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
@@ -2940,7 +2942,7 @@ export default function FundDetailPage({
   const rollingRiskWindowMonths = rollingRiskSettings.windowMonths
   const rollingRiskChartDisplayStyle = rollingRiskSettings.chartDisplayStyle
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
-  const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
+  const [quoteActionNotice, setQuoteActionNotice] = useState<NoticeToastMessage | null>(null)
   const [chartStartDate, setChartStartDate] = useState(
     () => detailSearchParams.get('start') || '',
   )
@@ -3120,7 +3122,7 @@ export default function FundDetailPage({
           getInstrumentLibrary(),
           getInstrumentNavSeries(fundId),
           getInstrumentResearch(fundId),
-          getPlatformInstrumentReferenceData(fundId),
+          getInstrumentReferenceData(fundId),
         ] as const)
         const [
           summaryResult,
@@ -3552,7 +3554,7 @@ export default function FundDetailPage({
           setBenchmarkSearchError(
             searchError instanceof Error
               ? searchError.message
-              : 'Failed to search the Instrument Registry.',
+              : 'Failed to search the Asset data.',
           )
         }
       })
@@ -3562,18 +3564,19 @@ export default function FundDetailPage({
   }, [benchmarkSearchFocused, deferredBenchmarkSearch])
 
   useEffect(() => {
+    if (bundle?.summary.instrument_id !== fundId) return
     const savedBenchmarkId =
       bundle?.navSeries.compare_settings?.default_benchmark_instrument_id || ''
     const defaultKey = savedBenchmarkId ? `${fundId}:${savedBenchmarkId}` : ''
     if (
-      !detailSearchParams.get('benchmark') &&
       defaultKey &&
-      appliedDefaultBenchmarkKeyRef.current !== defaultKey &&
-      savedBenchmarkId !== fundId
+      appliedDefaultBenchmarkKeyRef.current !== defaultKey
     ) {
       appliedDefaultBenchmarkKeyRef.current = defaultKey
-      setBenchmarkFundId(savedBenchmarkId)
-      setBenchmarkSearch('')
+      if (!detailSearchParams.get('benchmark') && savedBenchmarkId !== fundId) {
+        setBenchmarkFundId(savedBenchmarkId)
+        setBenchmarkSearch('')
+      }
     }
   }, [bundle?.navSeries.compare_settings?.default_benchmark_instrument_id, detailSearchKey, fundId])
 
@@ -3740,7 +3743,7 @@ export default function FundDetailPage({
     setTimelineNoteViewAnchorDate(noteDate)
     setChartTimelineNoteContextMenu(null)
     setSectionError(null)
-    setQuoteActionNotice(`Research note anchored to ${formatDate(noteDate)}.`)
+    setQuoteActionNotice({ id: Date.now(), message: `研究记录日期已设为 ${formatDate(noteDate)}。` })
   }
 
   async function handleSaveFundSettings() {
@@ -3814,11 +3817,9 @@ export default function FundDetailPage({
             }
           : current,
       )
-      setQuoteActionNotice('Default benchmark saved and dependent analytics recalculated.')
+      setQuoteActionNotice({ id: Date.now(), message: '默认基准已保存。', tone: 'success' })
     } catch (saveError) {
-      setQuoteActionNotice(
-        saveError instanceof Error ? saveError.message : 'Failed to save the default benchmark.',
-      )
+      setQuoteActionNotice({ id: Date.now(), message: saveError instanceof Error ? saveError.message : '默认基准保存失败。', tone: 'error' })
     } finally {
       setSavingDefaultBenchmark(false)
     }
@@ -3892,7 +3893,6 @@ export default function FundDetailPage({
   const calculationFrequencyStatus = calculationFrequencyProfile.status_label
   // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
   const calculationBasisSeries = buildCalculationPointSeries(navSeries.calculation_series)
-  const selectedCalculationBasis = resolvePreferredQuoteBasis(navSeries.nav_basis_type)
   const zoomMaxIndex = Math.max(navBasisSeries.length - 1, 0)
   const rawZoomStartIndex = chartStartDate
     ? findLastPointIndexOnOrBefore(navBasisSeries, chartStartDate)
@@ -3927,24 +3927,19 @@ export default function FundDetailPage({
     effectiveCurrency,
   ) as FundNavSeriesResponse['rows']
   const benchmarkAvailableBases = getAvailableQuoteBases(benchmarkSourceRows)
-  const activeBenchmarkBasis = benchmarkAvailableBases.includes(activeQuoteBasis)
-    ? activeQuoteBasis
-    : null
-  const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
   const benchmarkSelectedCalculationBasis = resolvePreferredQuoteBasis(
     benchmarkNavSeries?.nav_basis_type,
   )
-  const calculationReturnKindsComparable = returnKindsAreComparable(
-    navSeries.return_kind,
-    benchmarkNavSeries?.return_kind,
-  )
+  // A price index has its own quote basis; it need not share a fund's NAV field.
+  const activeBenchmarkBasis = benchmarkAvailableBases.includes(activeQuoteBasis)
+    ? activeQuoteBasis
+    : benchmarkSelectedCalculationBasis
+  const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
   const benchmarkCalculationSeries =
-    selectedCalculationBasis &&
-    benchmarkSelectedCalculationBasis === selectedCalculationBasis &&
-    calculationReturnKindsComparable
+    benchmarkSelectedCalculationBasis
     ? buildBasisSeries(
         benchmarkSourceRows.filter((row) => row.calculation_included),
-        selectedCalculationBasis,
+        benchmarkSelectedCalculationBasis,
       )
     : []
   const hasBenchmarkSelection = Boolean(benchmarkFundId)
@@ -3960,16 +3955,14 @@ export default function FundDetailPage({
     !benchmarkLoadError &&
     benchmarkNavSeries !== null &&
     !benchmarkCurrencyUnavailable &&
-    activeBenchmarkBasis == null
+    benchmarkNavBasisSeries.length === 0
   const benchmarkCalculationUnavailable =
     hasBenchmarkSelection &&
     !benchmarkLoading &&
     !benchmarkLoadError &&
     benchmarkNavSeries !== null &&
     !benchmarkCurrencyUnavailable &&
-    (!calculationReturnKindsComparable ||
-      benchmarkSelectedCalculationBasis !== selectedCalculationBasis ||
-      benchmarkCalculationSeries.length === 0)
+    benchmarkCalculationSeries.length === 0
   const rawCompareDateWindow = hasBenchmarkSelection
     ? commonObservationDateWindow(navBasisSeries, benchmarkNavBasisSeries)
     : null
@@ -4077,6 +4070,24 @@ export default function FundDetailPage({
         : activeReturnKind === 'unit_nav_return'
           ? 'Cumulative Unit NAV Return'
           : 'Cumulative Return · Semantics Unconfirmed'
+  const benchmarkReturnKind = activeBenchmarkBasis === benchmarkSelectedCalculationBasis
+    ? benchmarkNavSeries?.return_kind
+    : activeBenchmarkBasis === 'nav_with_dividend' ? 'total_return' : 'unit_nav_return'
+  const returnKindLabels = { price_return: '价格收益', total_return: '总收益', unit_nav_return: '单位净值收益' }
+  const benchmarkSeriesBasisLabel = benchmarkReturnKind ? returnKindLabels[benchmarkReturnKind] : '收益口径待确认'
+  const benchmarkCalculationBasisLabel = benchmarkNavSeries?.return_kind
+    ? returnKindLabels[benchmarkNavSeries.return_kind] : '收益口径待确认'
+  const fundCalculationBasisLabel = navSeries.return_kind ? returnKindLabels[navSeries.return_kind] : '收益口径待确认'
+  const benchmarkRiskLabel = selectedBenchmark
+    ? `${selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name} · ${benchmarkCalculationBasisLabel}`
+    : null
+  const benchmarkStatusText = benchmarkLoading ? '正在加载基准数据…'
+    : benchmarkLoadError ? `基准加载失败：${benchmarkLoadError}。点击重试。`
+    : benchmarkCurrencyUnavailable ? `基准没有 ${effectiveCurrency || '当前币种'} 数据。`
+    : benchmarkBasisUnavailable ? '基准没有可用的价格或净值序列。'
+    : benchmarkCalculationUnavailable ? '基准没有可用的计算样本。'
+    : `标的：${fundCalculationBasisLabel}；基准：${benchmarkCalculationBasisLabel}。按共同观察区间计算收益和相对指标。${benchmarkNavSeries?.return_kind === 'price_return' ? '基准价格收益不含分红。' : ''}${navSeries.return_kind && navSeries.return_kind === benchmarkNavSeries?.return_kind ? '' : '分红及复权口径差异会反映在比较结果中。'}`
+  const benchmarkHasIssue = Boolean(benchmarkLoadError || benchmarkCurrencyUnavailable || benchmarkBasisUnavailable || benchmarkCalculationUnavailable)
   const latestReturnSegmentBreak =
     navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
   const hasUnconfirmedReturnSegmentBreak =
@@ -4913,7 +4924,7 @@ export default function FundDetailPage({
     },
     {
       label: 'Refresh Owner',
-      value: 'Database Dashboard',
+      value: 'backend maintenance',
       tone: 'status-attribute',
     },
     {
@@ -5486,12 +5497,15 @@ export default function FundDetailPage({
   const riskPathMetricsUnavailable = !fundPathRiskAvailable
   const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
     const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
+    const statusText = benchmarkStatusText + (activeTab === 'performance' && comparisonReferenceEndDate
+      ? ` 共同截至日期 ${formatDate(comparisonReferenceEndDate)}，双方使用该日或之前的共同有效观察区间。` : '')
     return (
       <div className={className}>
-        <label className="instrument-chart-compare-search">
+        <div className="instrument-chart-compare-search">
           <div className="instrument-chart-compare-search-box">
             <input
               type="search"
+              ref={benchmarkInputRef}
               aria-label={ariaLabel}
               placeholder="Compare benchmark..."
               value={benchmarkInputValue}
@@ -5531,6 +5545,26 @@ export default function FundDetailPage({
                 <span aria-hidden="true" />
               </button>
             )}
+            <button
+              type="button"
+              className="instrument-benchmark-default"
+              aria-label={savingDefaultBenchmark ? '正在保存默认基准' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
+              title={savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
+              aria-pressed={Boolean(selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId)}
+              disabled={!selectedBenchmark || savingDefaultBenchmark || benchmarkLoading || Boolean(benchmarkLoadError) || savedDefaultBenchmarkId === benchmarkFundId}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => void handleSetDefaultBenchmark()}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9Z" fill={selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" /></svg>
+            </button>
+            {hasBenchmarkSelection && (
+              <div className={`instrument-benchmark-status${benchmarkHasIssue ? ' instrument-benchmark-status-error' : ''}`}>
+                <button type="button" aria-label={statusText} onClick={() => { if (benchmarkLoadError) setBenchmarkLoadRetryToken((value) => value + 1) }}>
+                  {benchmarkLoading ? '…' : benchmarkHasIssue ? '!' : 'i'}
+                </button>
+                <span role="status">{statusText}</span>
+              </div>
+            )}
             {showBenchmarkResults ? (
               <div className="instrument-chart-compare-results">
                 {filteredBenchmarkOptions.length ? (
@@ -5539,40 +5573,29 @@ export default function FundDetailPage({
                       type="button"
                       key={item.instrument_id}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
+                      onClick={(event) => {
+                        if (event.detail > 0) benchmarkInputRef.current?.blur()
                         setBenchmarkFundId(item.instrument_id)
                         setBenchmarkSearch(benchmarkLibraryLabel(item))
                         setBenchmarkSearchFocused(false)
                         setBenchmarkNavSeries(null)
                       }}
                     >
-                      <strong>{item.instrument_name}</strong>
+                      <strong translate="no">{item.instrument_name}</strong>
                       <span>
                         {item.primary_identifier || item.instrument_id} · {formatLabel(item.instrument_type)}
                       </span>
                     </button>
                   ))
                 ) : benchmarkSearchError ? (
-                  <div className="instrument-chart-compare-empty">Registry search failed: {benchmarkSearchError}</div>
+                  <div className="instrument-chart-compare-empty">Asset search failed: {benchmarkSearchError}</div>
                 ) : (
-                  <div className="instrument-chart-compare-empty">No Instrument Registry match</div>
+                  <div className="instrument-chart-compare-empty">No Asset data match</div>
                 )}
               </div>
             ) : null}
           </div>
-        </label>
-        {selectedBenchmark && savedDefaultBenchmarkId !== benchmarkFundId ? (
-          <button
-            type="button"
-            className="button-primary"
-            disabled={savingDefaultBenchmark || Boolean(benchmarkLoadError)}
-            onClick={() => void handleSetDefaultBenchmark()}
-          >
-            {savingDefaultBenchmark ? 'Saving…' : 'Set default'}
-          </button>
-        ) : selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId ? (
-          <span className="instrument-chart-compare-empty">Default benchmark</span>
-        ) : null}
+        </div>
       </div>
     )
   }
@@ -5866,6 +5889,7 @@ export default function FundDetailPage({
 
   return (
     <div className="terminal-page instrument-detail-page">
+      <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
       <section className="panel instrument-detail-shell">
         {loadWarning ? (
           <div className="inline-notice" role="status">
@@ -5874,7 +5898,7 @@ export default function FundDetailPage({
         ) : null}
         <div className="instrument-detail-topbar">
           <div className="instrument-detail-breadcrumbs">
-            <a href={PLATFORM_HOME_URL} className="instrument-detail-backlink">
+            <a data-workspace-link href={HOME_URL} className="instrument-detail-backlink">
               Home
             </a>
             <span className="instrument-detail-breadcrumb-separator">/</span>
@@ -5896,6 +5920,7 @@ export default function FundDetailPage({
             <span className="instrument-detail-breadcrumb-current">{summary.ticker_or_isin}</span>
           </div>
           <div className="instrument-detail-actions">
+            <LanguageSelector />
             <button
               type="button"
               onClick={() => {
@@ -5913,28 +5938,28 @@ export default function FundDetailPage({
         <div className="instrument-detail-hero">
           <div className="instrument-detail-headline">
             <div className="instrument-detail-eyebrow">{detailPageLabel}</div>
-            <h1 className="instrument-detail-title">
+            <h1 className="instrument-detail-title" translate="no">
               {summary.instrument_name} <span>{summary.ticker_or_isin}</span>
             </h1>
             <div className="instrument-detail-badges">
               {detailClassificationLabel ? (
-                <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
+                <span className="context-chip" data-investment-studio-i18n-ignore="true">
                   {localize(language, SYSTEM_LABELS.peer)}: {detailClassificationLabel}
                 </span>
               ) : null}
-              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
+              <span className="context-chip" data-investment-studio-i18n-ignore="true">
                 {localize(language, SYSTEM_LABELS.basis)}: {navBasisLabel}
               </span>
-              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
+              <span className="context-chip">
                 Risk basis: {calculationFrequencyStatus}
               </span>
             </div>
           </div>
         </div>
 
-        <div className="instrument-detail-tabs-row" data-portfolio-ops-i18n-ignore="true">
+        <div className="instrument-detail-tabs-row" data-investment-studio-i18n-ignore="true">
           <div className="instrument-detail-tabs">
-            {availableTabs.map((tab) => (
+            {availableTabs.filter(value => ['overview', 'performance', 'research', 'risk'].includes(value)).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -5949,8 +5974,11 @@ export default function FundDetailPage({
                 )}
               </button>
             ))}
-          </div>
+          <button type="button" className={`instrument-detail-tab ${!['overview', 'performance', 'research', 'risk'].includes(activeTab) ? 'instrument-detail-tab-active' : ''}`} onClick={() => setActiveTab('price')}>{language === 'zh-Hans' ? '资料与明细' : 'Details'}</button>
+</div>
         </div>
+        {!['overview', 'performance', 'research', 'risk'].includes(activeTab) && <div className="instrument-detail-tabs">{availableTabs.filter(value => !['overview', 'performance', 'research', 'risk'].includes(value)).map(item => <button key={item} className={`instrument-detail-tab ${item === activeTab ? 'instrument-detail-tab-active' : ''}`} onClick={() => setActiveTab(item)}>{fundDetailTabLabel(fundType, item, language, localize(language, TAB_LABELS[item]))}</button>)}</div>}
+
 
         {sectionError ? <div className="inline-notice inline-notice-error">{sectionError}</div> : null}
         {sectionNotice ? <div className="inline-notice inline-notice-success">{sectionNotice}</div> : null}
@@ -6223,38 +6251,6 @@ export default function FundDetailPage({
                   </div>
                 </div>
 
-                {quoteActionNotice ? <div className="instrument-quote-action-notice">{quoteActionNotice}</div> : null}
-                {benchmarkLoadError ? (
-                  <div className="instrument-quote-action-notice" role="alert">
-                    Benchmark request failed: {benchmarkLoadError}{' '}
-                    <button
-                      type="button"
-                      onClick={() => setBenchmarkLoadRetryToken((value) => value + 1)}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : null}
-                {benchmarkLoading ? (
-                  <div className="instrument-quote-action-notice" role="status">
-                    Loading benchmark series…
-                  </div>
-                ) : null}
-                {benchmarkCurrencyUnavailable ? (
-                  <div className="instrument-quote-action-notice" role="status">
-                    Benchmark unavailable because its NAV series does not provide {effectiveCurrency || 'a usable currency'}.
-                  </div>
-                ) : null}
-                {benchmarkBasisUnavailable ? (
-                  <div className="instrument-quote-action-notice" role="status">
-                    Benchmark unavailable for {quoteBasisLabel}; select a basis present in both series.
-                  </div>
-                ) : null}
-                {benchmarkCalculationUnavailable && !benchmarkBasisUnavailable ? (
-                  <div className="instrument-quote-action-notice" role="status">
-                    Benchmark calculation unavailable because its return semantics are unconfirmed or do not match the selected calculation return basis.
-                  </div>
-                ) : null}
                 {hasUnconfirmedReturnSegmentBreak ? (
                   <div className="instrument-quote-action-notice" role="status">
                     Total-return history stops before an unconfirmed fund event
@@ -6279,8 +6275,8 @@ export default function FundDetailPage({
                         </div>
                         {selectedBenchmark ? (
                           <div className="instrument-series-label instrument-series-label-benchmark-row">
-                            <strong>{selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name}</strong>
-                            <span>{chartSeriesBasisLabel}</span>
+                            <strong translate="no">{selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name}</strong>
+                            <span>{benchmarkSeriesBasisLabel}</span>
                             <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkCumulativeReturn)}`}>
                               {formatPercent(chartBenchmarkCumulativeReturn)}
                             </em>
@@ -6683,8 +6679,8 @@ export default function FundDetailPage({
                                 <tr key={note.note_id}>
                                   <td>{formatDate(note.note_date)}</td>
                                   <td>{formatTimelineNoteImportance(note.importance)}</td>
-                                  <td>{note.title || 'Untitled'}</td>
-                                  <td>{note.summary || note.body || '—'}</td>
+                                  <td translate={note.title ? 'no' : undefined}>{note.title || 'Untitled'}</td>
+                                  <td translate={note.summary || note.body ? 'no' : undefined}>{note.summary || note.body || '—'}</td>
                                   <td className="instrument-table-row-action-cell">
                                     <div className="instrument-table-inline-actions instrument-table-inline-actions-compact">
                                       <button
@@ -6999,14 +6995,6 @@ export default function FundDetailPage({
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Metrics Matrix</div>
                   {renderBenchmarkSearch('Performance benchmark', 'instrument-performance-benchmark-select')}
-                  {selectedBenchmark && comparisonReferenceEndDate ? (
-                    <span
-                      className="context-chip"
-                      title="Fund and benchmark values in this matrix use their latest observations on or before the same common endpoint."
-                    >
-                      Common as of {formatDate(comparisonReferenceEndDate)}
-                    </span>
-                  ) : null}
                   {peerComparison?.status === 'limited_sample' ? (
                     <span
                       className="context-chip"
@@ -7145,6 +7133,7 @@ export default function FundDetailPage({
 
       {activeTab === 'risk' ? (
         <section className="panel instrument-risk-shell">
+          <InstrumentRiskPanel instrumentId={fundId} />
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
             <div className="instrument-risk-section-header instrument-risk-rolling-header">
@@ -7177,7 +7166,7 @@ export default function FundDetailPage({
                   title="Annualized Volatility"
                   points={rollingVolatilitySeries}
                   benchmarkPoints={benchmarkRollingVolatilitySeries}
-                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name : null}
+                  benchmarkLabel={benchmarkRiskLabel}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatPercent(value)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -7186,7 +7175,7 @@ export default function FundDetailPage({
                   title="Sharpe Ratio"
                   points={rollingSharpeSeries}
                   benchmarkPoints={benchmarkRollingSharpeSeries}
-                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name : null}
+                  benchmarkLabel={benchmarkRiskLabel}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatNumber(value, 2)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -7753,7 +7742,7 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'documents' ? (
-        <section className="instrument-documents-shell instrument-edit-surface" data-portfolio-ops-i18n-ignore="true">
+        <section className="instrument-documents-shell instrument-edit-surface" data-investment-studio-i18n-ignore="true">
           <div className="instrument-price-topline" />
 
           <section className="instrument-documents-section">

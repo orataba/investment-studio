@@ -35,7 +35,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Portfolio management backend with portfolio, account, risk, and research surfaces.",
+    description="Portfolio management backend.",
     lifespan=lifespan,
 )
 
@@ -48,6 +48,16 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+
+if settings.research_enabled:
+    from portfolio_app.api.routes import research
+
+    app.include_router(research.router, prefix="/api/portfolios", tags=["research"])
+
+
+@app.get("/api/capabilities")
+def capabilities() -> dict[str, bool]:
+    return {"research_enabled": settings.research_enabled}
 
 
 @app.get("/")

@@ -152,17 +152,21 @@ Idempotency-Key: screenshot-batch-20260821-001
 | `asset_type` | enum | 是 | `security`、`fcn`、`option`、`cash` |
 | `transaction_action` | enum | 是 | 必须使用第 5 节中该资产允许的动作 |
 | `trade_date` | date | 是 | `YYYY-MM-DD`；成交日或经济事实发生日 |
-| `trade_time` | string | 否 | `HH:MM`，使用后端配置的交易时区；省略时系统使用默认时间并标记为估算 |
+| `trade_time` | string | 否 | `HH:MM`，使用后端配置的交易时区；省略时系统使用默认时间并标记为估算；导出时估算时间留空，不能变成已知成交时间 |
 | `settlement_date` | date | 条件 | `YYYY-MM-DD`，不得早于 `trade_date`；省略时等于 `trade_date` |
 | `position_effective_date` | date | 条件 | 头寸开始发生变化的日期，不得早于 `trade_date`；仅头寸变化动作使用 |
 | `entitlement_date` | date | 条件 | 权益归属日，不得晚于 `trade_date`；仅 dividend、dividend reinvestment、coupon、资产 fee/tax 使用 |
-| `acquisition_date` | date | 条件 | 原始取得日；仅资产 `opening_balance` 使用，且不得晚于 `trade_date` |
+| `acquisition_date` | date | 条件 | 原始开仓日；资产 `opening_balance`、`opening_written`、`short_opening_balance` 使用，且不得晚于 `trade_date` |
 | `account_id` | string | 是 | 目标账户 ID，必须属于 URL 中的 Portfolio，类别和币种必须匹配 |
 | `counterparty_account_id` | string | 条件 | 内部转账的另一账户，或 FX conversion 的目标现金账户 |
 | `settlement_cash_account_id` | string | 条件 | 证券、FCN、Option 的结算现金账户；必须是同币种 Cash 账户 |
 | `instrument_id` | string | 条件 | Security 必填；必须来自 Portfolio instruments 接口 |
 | `derivative_contract_id` | string | 条件 | FCN/Option 必填；一个 Portfolio 内稳定且唯一 |
 | `derivative_contract` | object | 条件 | 仅首次创建 FCN/Option 合约时提供；后续交易必须省略 |
+| `record_reference` | string | 否 | 本文件/批次内唯一批次引用，供后续 lot_selections 使用；不是券商业务号 |
+| `lot_selections` | array | 否 | FIFO 处置的开仓记录引用及数量；期权实物行权时选择的是期权多头批次，不是股票批次 |
+| `asset_deliveries` | array | 条件 | FCN 实物兑付的接收账户、证券、数量、确认价值、币种与合约折算汇率 |
+| `option_delivery` | object | 条件 | physical_long / physical_written 必填；交付账户及股票腿的费用、费用分类、税费和 allow_stock_short |
 | `quantity` | decimal string | 条件 | 证券份额、基金份额、FCN 数量或期权张数；方向由动作决定，值本身不使用负号 |
 | `price` | decimal string | 条件 | 每单位成交价；Option 为每份标的单位的权利金，不是整张合约权利金 |
 | `gross_amount` | decimal string | 条件 | 未扣费用和税费的成交/现金事实金额；方向由动作决定，值本身不使用负号 |
@@ -188,6 +192,9 @@ JSON 中金额、价格、数量和比例字段必须发送十进制字符串，
 |---|---|
 | `buy` | 买入；公募/私募基金表示申购确认 |
 | `sell` | 卖出；公募/私募基金表示赎回确认 |
+| `short_sell` | 股票/ETF 实际卖空；先处置已有多头，差额开空 |
+| `buy_to_cover` | 股票/ETF 买回已有空头，不超出待买回数量 |
+| `short_opening_balance` | inception date 已存在的股票/ETF 空头，正数量及剩余净账面负债，不重复动现金 |
 | `dividend` | 现金分红 |
 | `dividend_reinvestment` | 分红再投资 |
 | `return_of_capital` | 资本返还 |
@@ -214,6 +221,7 @@ Security 持仓转账需要 `instrument_id`、`quantity` 和另一 Security 账�
 | `early_exit` | 到期前退出/卖出 FCN |
 | `coupon` | 票息收入 |
 | `knock_in_close` | 敲入结果关闭 |
+| `knock_in_observation` | 已确认敲入观察，零金额、不填数量、不关闭合约；note 保存依据 |
 | `knock_out_close` | 敲出结果关闭 |
 | `maturity_close` | 正常到期关闭 |
 | `fee` / `tax` | 合约相关独立费用或税费 |
@@ -221,7 +229,7 @@ Security 持仓转账需要 `instrument_id`、`quantity` 和另一 Security 账�
 
 所有 FCN 动作都需要 `derivative_contract_id`。首次 `entry` 或 `opening_balance` 还要提供完整 `derivative_contract`；后续动作只发送 ID。
 
-Portfolio 记录经确认的 FCN 事件，不自动判断障碍是否触发。敲入后收到证券时，必须额外发送一条独立的 Security `buy`，不能把两个经济事实合成一条记录。
+Portfolio 记录经确认的 FCN 事件，不自动判断障碍是否触发。最终实物兑付在 `knock_in_close` / `maturity_close` 的 `asset_deliveries` 中记录收到的证券；`gross_amount` 仅填实际现金尾差。系统建立证券成本及来源关联，不额外录一条现金买入，也不虚构现金兑付。
 
 ### Option
 
@@ -235,10 +243,12 @@ Portfolio 记录经确认的 FCN 事件，不自动判断障碍是否触发。�
 | `cash_settle_long` | 多头现金结算 |
 | `expire_written` | 空头到期作废，零现金 |
 | `cash_settle_written` | 空头现金结算 |
+| `physical_long` / `physical_written` | 多头实物行权 / 空头实物指派，option_delivery 必填，一行原子生成两腿 |
+| `opening_written` | inception date 的已有期权空头，gross_amount 为剩余账面权利金负债，不重复收取现金 |
 | `fee` / `tax` | 合约相关独立费用或税费 |
 | `opening_balance` | inception date 的已有期权多头 |
 
-所有 Option 动作都需要 `derivative_contract_id`。首次 `buy_to_open`、`sell_to_open` 或 `opening_balance` 还要提供完整 `derivative_contract`。
+所有 Option 动作都需要 `derivative_contract_id`。首次 `buy_to_open`、`sell_to_open`、`opening_balance` 或 `opening_written` 还要提供完整 `derivative_contract`。
 
 权利金交易满足：
 
@@ -248,7 +258,7 @@ gross_amount = contract quantity × price × contract_multiplier
 
 `expire_long` 和 `expire_written` 的 `gross_amount` 必须为 `"0"`，不得发送结算现金账户、费用或税费。现金结算需要正数 `gross_amount` 和结算现金账户。
 
-标准 Preview/Commit 批次只接受单行 Option 事实，不接受 `option_long_exercise` 或 `option_writer_assignment`，也不能用“现金结算 + 独立股票买卖”模拟实物交割。经人工确认的实物行权/指派必须使用下面的专用 outcome command。
+标准 Preview/Commit 使用 `physical_long` / `physical_written` 加 `option_delivery` 表达实物结果，一行原子生成期权与股票两腿；也可使用下面的专用 outcome command。不得提交内部事件名 `option_long_exercise` / `option_writer_assignment`，也不能用“现金结算 + 独立股票买卖”模拟实物交割。
 
 #### 期权结果命令
 
@@ -265,15 +275,31 @@ Content-Type: application/json
   "outcome": "physical",
   "quantity": "1",
   "event_date": "2026-12-18",
+  "trade_time": "16:00",
   "settlement_date": "2026-12-18",
   "stock_account_id": "security-usd",
   "settlement_cash_account_id": "cash-usd",
   "fees": "1.25",
+  "fee_category": "transaction_cost",
   "taxes": "0"
 }
 ```
 
-`outcome` 允许 `expired`、`cash_settled`、`physical`。到期作废的 `event_date` 必须等于合约 expiry，且不发送账户、金额、费用或税费；现金结算发送正数 `cash_settlement_amount` 和结算现金账户；实物结果发送股票账户与结算现金账户，金额、股票方向、交付数量和执行价由合约条款确定。long Call 买入股票、long Put 卖出股票、written Call 卖出股票、written Put 买入股票。期权腿以零现金关闭，费用和税费只进入股票腿，两条事实与 `option_delivery_link` 原子写入。合约币种与 underlying 报价币种不一致时拒绝实物结果，调用方应录入经核对的现金结算。
+`outcome` 允许 `expired`、`cash_settled`、`physical`，必须遵循已确认的合约交割条款。到期作废的 `event_date` 必须等于 expiry，不发送金额或费用；现金结算发送实际正数 `cash_settlement_amount`。实物结果的数量和执行价按 multiplier 与 strike 计算：long Call / written Put 买入股票，long Put / written Call 交付股票。期权零现金关闭，费用税费只进股票腿，两腿与 `option_delivery_link` 原子写入。权利金币种可以不同于股票币种；明确的 `strike_currency` 必须等于标的报价币种，股票腿在该币种现金账户结算。没有合约 FX 转换模型时，不接受 strike 与报价币种不同的产品，也不允许用虚构现金交割规避。
+
+交付前实际买入股票后再交割，或券商确认指派先形成股票空头、之后实际买回，都可以记录。后一种在 outcome / `option_delivery` 中显式发送 `allow_stock_short=true`；系统按已有多头数量先处置多头，差额形成空头。后续使用 `buy_to_cover`，不能改写成交时间。该字段不是融资融券许可或券商保证金测算。
+
+CSV/Excel 对应 `physical_long` / `physical_written`，通过 `option_delivery_json` 记录股票账户、现金账户和交付费用，一行生成原子双腿。不要再导入同笔股票交付。标准导出保留这一关系。所有新建交易、内部转仓、期权结果及批量提交都必须携带非空 `Idempotency-Key`；重试复用同 key，修改 payload 使用新 key。
+
+实物结果两腿共用 `trade_time`，先买股后交付按各自已知真实时间记录。专用 outcome 的 `fees`、`fee_category`、`taxes` 进入股票腿；文件/JSON 批次将这些字段放在 `option_delivery` 内，外层费用税费为零、分类为 unknown。`lot_selections` 属于期权多头关闭腿，数量单位是合约张数，留空沿用账户成本法。未知时间仍留空并标记为估算，不允许改造时间来绕过可用仓位。
+
+### FCN 实物兑付、指定批次和账户用途
+
+- FCN `knock_in_close` / `maturity_close` 可带 `asset_deliveries`（CSV/Excel 列 `asset_deliveries_json`）。每腿填写接收账户、Registry 标的、quantity、该腿原币总 fair_value、currency 和 fx_rate_to_contract。汇率含义为一单位证券币种折合多少合约币种；同币种必须为 1。`gross_amount` 只记录实际现金尾差，可为零。合约处置损益 = 确认收股折算价值 + 实际现金 − 费用 − 所处置合约账面成本；收到证券以本币确认价值建 lot，不制造现金买卖。
+- `short_sell` / `buy_to_cover` / `short_opening_balance` 只支持股票及 ETF。期初空头填正数量和剩余净账面负债，不重复收取现金。
+- FIFO 账户卖出、买回、兑付可传 `lot_selections=[{opening_transaction_id, quantity}]`，数量之和必须等于处置量；缺少可用批次拒绝整笔。移动平均账户不能选择单批成本。文件列 `lot_selections_json` 可引用本文件唯一 `record_reference`，导入和组合复制会重绑到新记录，不沿用旧组合 ID。
+- Cash 账户 `cash_purpose` 为 operating、margin、collateral 或 financing。融资借还、抵押释放用内部现金划转；抵押账户可保存 `collateral_reference` 确认依据。借款本金不是收益或外部入金。实际利息、借券费和空头股息补偿分别用 fee_category financing_interest、borrow_fee、payment_in_lieu。
+- 已有合约补充条款使用 `PATCH /api/portfolios/{portfolio_id}/derivative-contracts/{contract_id}`，提交 expected_row_version、完整 terms、reason 和 reviewed_by。保留前后版本并重放历史；不能把合约身份替换为另一个产品，不能使已存在的交割事实与条款冲突。
 
 同一个 Idempotency-Key 只能重放完全相同的 outcome payload。`GET .../options/unresolved-actions` 返回已过期但仍有 open long/written quantity 的事项；`delivery-links` 可按 `underlying_instrument_id` 过滤，`obligations` 可按 `as_of_date`、`derivative_contract_id` 或 `underlying_instrument_id` 过滤。
 
@@ -293,7 +319,7 @@ Cash 动作不得发送 `instrument_id`、`derivative_contract_id` 或 `settleme
 
 ## 6. 衍生品合约对象
 
-衍生品合约属于一个 Portfolio 和一个 FCN/Option 账户，创建后条款不可修改。发现条款识别错误时，应撤销错误交易并使用新的合约 ID 重新创建，不能覆盖历史条款。
+衍生品合约属于一个 Portfolio 和一个 FCN/Option 账户。后续交易只引用原合约 ID，不能通过交易请求覆盖条款。存量条款补充或纠错使用第 5 节的审计修订接口，保留前后版本、确认人和依据；不得替换产品身份或使已记录交割与条款冲突。
 
 ### Option 合约
 
@@ -313,7 +339,7 @@ Cash 动作不得发送 `instrument_id`、`derivative_contract_id` 或 `settleme
 }
 ```
 
-`option_type` 只允许 `call` 或 `put`。`strike` 和 `contract_multiplier` 必须大于 0。`underlying_instrument_id` 必须是 Registry Security。
+`option_type` 只允许 `call` 或 `put`。`strike` 和 `contract_multiplier` 必须大于 0。`underlying_instrument_id` 必须是 Registry Security。经确认的 `settlement_type`、`exercise_style`、`strike_currency`、行权日期及 `terms_reference` 放在 terms 中；已知条款参与结果校验，未知不猜测。
 
 ### FCN 合约
 
@@ -358,14 +384,14 @@ Cash 动作不得发送 `instrument_id`、`derivative_contract_id` 或 `settleme
 - 所有输入金额均为非负数，现金方向由 `transaction_action` 决定；不得用负数表达卖出、提款、费用或空头。
 - `gross_amount` 不含本条交易的 `fees` 和 `taxes`，不能把券商显示的净扣款/净到账直接填入 `gross_amount`。
 - `fee` 或 `tax` 独立动作使用 `gross_amount` 表示该笔费用或税款，不能同时再填写嵌套 `fees` 或 `taxes`。
-- `fee_category` 允许：`unknown`、`transaction_cost`、`management_fee`、`custody_fee`、`administration_fee`、`performance_fee`、`other`。无法从截图证明分类时使用 `unknown`，不要猜测。
-- 持仓账户、证券或衍生品合约、结算现金账户及交易币种必须一致。
+- `fee_category` 允许：`unknown`、`transaction_cost`、`management_fee`、`custody_fee`、`administration_fee`、`performance_fee`、`financing_interest`、`borrow_fee`、`payment_in_lieu`、`other`。无法从截图证明分类时使用 `unknown`，不要猜测。
+- 普通交易的持仓账户、证券或衍生品合约、结算现金账户及交易币种一致。期权权利金币种可不同于股票币种，但实物股票腿必须使用明确 strike_currency 对应的股票报价及账户币种；FCN 跨币种交付腿使用显式 fx_rate_to_contract，不从行情猜测转换条款。
 - FX conversion 中，`currency` 是源现金账户币种；`counterparty_account_id` 指向目标现金账户，且 `counter_amount = gross_amount × fx_rate`。
 
 ## 8. 日期和期初边界
 
 - 任何交易都不得早于 Portfolio `inception_date`。
-- 所有 `opening_balance` 的 `trade_date` 和 `settlement_date` 必须等于 `inception_date`。
+- 所有 `opening_balance`、`opening_written`、`short_opening_balance` 的 `trade_date` 和 `settlement_date` 必须等于 `inception_date`。
 - 运行期间新增现金使用 `deposit`，新增持仓使用真实 `buy` 或 `transfer`，不得用 opening balance 绕过外部现金流。
 - Security 头寸一般从 `position_effective_date` 生效；现金从 `settlement_date` 生效。两者不是同一字段。
 - Dividend、coupon 等收益可使用 `entitlement_date`；不得为了改变 Performance 归属而改写 trade 或 settlement date。
@@ -408,7 +434,7 @@ Idempotency-Key: screenshot-batch-20260821-001
 
 ```json
 {
-  "portfolio_id": "portfolio-ops",
+  "portfolio_id": "investment-studio",
   "preview_digest": "64位十六进制摘要",
   "row_count": 1,
   "valid_count": 1,

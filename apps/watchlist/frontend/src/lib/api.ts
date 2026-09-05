@@ -1,4 +1,3 @@
-import { PLATFORM_API_URL } from './navigation'
 
 export type WatchlistRecord = {
   watchlist_id: string
@@ -86,28 +85,6 @@ export type SharedInstrumentRecord = {
   }>
   coverage_state?: string
   exchange_code?: string | null
-  catalog_provider?: 'fmp'
-  catalog_symbol?: string
-  source?: 'registry' | 'security_catalog'
-  existing_instrument_id?: string | null
-  currency_verified?: boolean
-}
-
-export type SecuritySearchResult = {
-  instrument_type: 'equity' | 'etf'
-  symbol: string
-  catalog_provider: 'fmp'
-  catalog_symbol: string
-  name: string
-  exchange_code: string
-  exchange_label: string
-  market: string
-  currency: string
-  country: string | null
-  sector: string | null
-  industry: string | null
-  existing_instrument_id: string | null
-  currency_verified: boolean
 }
 
 export type GroupByOption = {
@@ -227,7 +204,7 @@ export type InstrumentReferenceData = {
   instrument_type: 'public_fund' | 'private_fund' | 'etf' | 'equity' | 'index'
   provider: string
   provider_symbol: string | null
-  fetched_at: string
+  fetched_at: string | null
   source: {
     source_mode?: string | null
     source_location?: string | null
@@ -740,6 +717,7 @@ export type InstrumentDocumentUploadPayload = {
 }
 
 export type InstrumentResearchProfile = {
+  research_stage: string
   thesis: string
   current_view: string
   why_now: string
@@ -777,6 +755,7 @@ export type InstrumentResearchNoteType =
   | 'review'
 
 export type InstrumentResearchNote = {
+  completed_at?: string | null
   note_id: string
   note_date: string
   note_type: InstrumentResearchNoteType
@@ -842,6 +821,7 @@ export type InstrumentResearchNoteUpdatePayload = {
 export function emptyInstrumentResearchResponse(): InstrumentResearchResponse {
   return {
     profile: {
+      research_stage: 'watching',
       thesis: '',
       current_view: '',
       why_now: '',
@@ -974,7 +954,7 @@ export type ManualProfileUpdatePayload = {
   updated_by?: string
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const referenceGetCache = new Map<
   string,
   { expiresAt: number; promise: Promise<unknown> }
@@ -1010,7 +990,7 @@ async function responseErrorMessage(response: Response): Promise<string> {
   return body
 }
 
-async function fetchJson<T>(
+export async function fetchJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
@@ -1026,20 +1006,6 @@ async function fetchJson<T>(
     throw new Error(await responseErrorMessage(response))
   }
 
-  return (await response.json()) as T
-}
-
-async function fetchPlatformJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${PLATFORM_API_URL}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-    ...init,
-  })
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response))
-  }
   return (await response.json()) as T
 }
 
@@ -1214,8 +1180,8 @@ export function resolveInstrumentDetail(instrumentId: string) {
   )
 }
 
-export function getPlatformInstrumentReferenceData(instrumentId: string) {
-  return fetchPlatformJson<InstrumentReferenceData>(
+export function getInstrumentReferenceData(instrumentId: string) {
+  return fetchJson<InstrumentReferenceData>(
     `/api/instruments/${encodeURIComponent(instrumentId)}/reference-data`,
   )
 }
@@ -1257,60 +1223,6 @@ export function getSharedInstruments(options?: {
   }
   const query = params.toString()
   return fetchJson<SharedInstrumentRecord[]>(`/api/instruments${query ? `?${query}` : ''}`)
-}
-
-export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
-  const normalizedQuery = query.trim()
-  if (!normalizedQuery) {
-    return { results: [] as SharedInstrumentRecord[], catalogErrors: {} as Record<string, string> }
-  }
-  const params = new URLSearchParams({ q: normalizedQuery, limit: String(limit) })
-  const payload = await fetchPlatformJson<{
-    results: SecuritySearchResult[]
-    catalog_errors: Partial<Record<'equity' | 'etf', string>>
-  }>(
-    `/api/securities/search?${params.toString()}`,
-  )
-  return {
-    results: payload.results.map<SharedInstrumentRecord>((item) => ({
-      instrument_id:
-        item.existing_instrument_id || `${item.catalog_provider}:${item.instrument_type}:${item.catalog_symbol}`,
-      instrument_name: item.name,
-      instrument_type: item.instrument_type,
-      currency: item.currency,
-      exchange_code: item.exchange_code,
-      catalog_provider: item.catalog_provider,
-      catalog_symbol: item.catalog_symbol,
-      source: 'security_catalog',
-      existing_instrument_id: item.existing_instrument_id,
-      currency_verified: item.currency_verified,
-      coverage_state: item.existing_instrument_id ? 'registry' : `${item.catalog_provider.toUpperCase()} catalog`,
-      identifiers: [
-        {
-          identifier_type: 'exchange_ticker',
-          identifier_value: item.symbol,
-          is_primary: true,
-        },
-      ],
-    })),
-    catalogErrors: payload.catalog_errors,
-  }
-}
-
-export async function materializePlatformSecurity(
-  instrumentType: 'equity' | 'etf',
-  catalogProvider: 'fmp',
-  catalogSymbol: string,
-) {
-  return fetchPlatformJson<SharedInstrumentRecord>('/api/securities/materialize', {
-    method: 'POST',
-    body: JSON.stringify({
-      instrument_type: instrumentType,
-      catalog_provider: catalogProvider,
-      catalog_symbol: catalogSymbol,
-      refresh_eod: true,
-    }),
-  })
 }
 
 export function resolveSharedInstrument(

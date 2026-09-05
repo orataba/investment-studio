@@ -9,10 +9,11 @@ from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import brentq, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.analytics_scope import (
+    resolve_instrument_analytics_scopes,
     taxonomy_configuration_as_of,
     taxonomy_configuration_revisions_through,
 )
@@ -21,8 +22,9 @@ from portfolio_app.services.calculation_frequency import (
     calculation_frequency_profile,
 )
 from portfolio_app.services import holdings_market_profile, valuation_fx
+from portfolio_app.services.daily_snapshots import list_materialized_daily_snapshots
 from portfolio_app.services.instrument_registry import (
-    get_platform_fx_rates,
+    get_shared_fx_rates,
     get_registry_instrument_detail,
     get_registry_instrument_details,
 )
@@ -44,6 +46,7 @@ from portfolio_app.services.research_eligibility import (
     RESEARCH_EXECUTION_TARGET_EPSILON,
     enrich_instrument_research_state,
 )
+from portfolio_app.services.transaction_dates import transaction_performance_effective_date
 
 ROOT_SCOPE_MEMBER_ID = "__portfolio_root__"
 ROOT_SCOPE_LABEL = "Top Level"
@@ -69,7 +72,7 @@ RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS: dict[CalculationFrequency, dict[str, o
         "vol_decay": 0.9945,
         "corr_min_observations": 45,
         "corr_shrinkage": 0.15,
-        "max_period_staleness_days": 0,
+        "max_period_staleness_days": 5,
     },
 }
 RESEARCH_MIN_OBSERVATION_COVERAGE_RATIO = 0.75
@@ -102,6 +105,9 @@ RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
     "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
     "Market observations are EOD period-end returns: holdings earn the return ending before an EOD execution, and newly executed targets start with the next observation.",
     "A scheduled execution is skipped rather than valued from stale NAV when any pre-trade holding lacks a complete EOD return observation; point-in-time coverage is marked partial.",
+    "FCN/options are no-trade positions outside covariance and Risk Budget. Their recorded carrying capital changes only on actual derivative lifecycle dates and earns no cash yield; coupon, payoff, issuer loss, FX risk, collateral, and lifecycle liquidity are not modeled. This is not a full-portfolio fair-value backtest.",
+    "Current no-trade taxonomy sleeves are not applied retroactively because the settings have no effective-dated restriction history; the historical simulation uses the effective taxonomy/targets without today's manual freeze state.",
+    "Taxonomy and targets are effective-dated; the selected risk-model and run settings are held fixed across the simulation. EOD source dates do not prove historical publication-time availability, especially for delayed fund NAVs.",
 )
 
 
@@ -183,6 +189,9 @@ class LocalRiskBudgetSolve:
     return_rows_after_policy: int | None = None
     missing_return_row_count: int | None = None
     missing_return_row_fraction: float | None = None
+    leading_incomplete_return_row_count: int | None = None
+    post_warmup_missing_return_row_count: int | None = None
+    post_warmup_missing_return_row_fraction: float | None = None
     dropped_return_rows: list[dict[str, object]] | None = None
     latest_complete_return_date: str | None = None
     trailing_complete_return_staleness_days: int | None = None
@@ -198,6 +207,9 @@ class ReturnCoveragePolicyResult:
     rows_after: int
     missing_row_count: int
     missing_row_fraction: float
+    leading_incomplete_row_count: int
+    post_warmup_missing_row_count: int
+    post_warmup_missing_row_fraction: float
     dropped_rows: list[dict[str, object]]
     latest_complete_date: date | None
     trailing_staleness_days: int | None
@@ -226,6 +238,7 @@ class TaxonomyResearchState:
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
     configuration_version: int | None = None
     configuration_effective_from: date | None = None
+    instrument_analytics_scopes: dict[str, dict[str, object]] = field(default_factory=dict)
     # A current-target solve walks the taxonomy recursively.  Current holdings
     # and account values are portfolio-level inputs, so rebuilding both ledgers
     # once per scope is redundant and can make deep taxonomies disproportionately
@@ -410,7 +423,8 @@ def _build_instrument_nav_series(
         raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
 
     series = pd.Series({point_date: base_value for point_date, base_value in rows}, dtype="float64").sort_index()
-    visible = series.loc[(series.index >= start_date) & (series.index <= end_date)]
+    anchor = series.loc[series.index <= start_date].tail(1)
+    visible = pd.concat([anchor, series.loc[(series.index > start_date) & (series.index <= end_date)]])
     if visible.empty:
         visible = series.loc[series.index <= end_date]
     if visible.empty:
@@ -458,12 +472,36 @@ def _member_is_frozen(
     *,
     scope_node_id: str | None,
     member: ScopeMemberRecord,
+    inherited_no_trade: bool = False,
 ) -> bool:
     if _member_is_fixed_capital(member):
         return False
-    if _scope_is_frozen(state, scope_node_id):
+    if inherited_no_trade or _scope_is_frozen(state, scope_node_id):
         return True
     return member.member_type == TARGET_MEMBER_NODE and member.member_id in state.frozen_taxonomy_node_ids
+
+
+def _member_has_no_trade_constraint(
+    state: TaxonomyResearchState,
+    *,
+    scope_node_id: str | None,
+    member: ScopeMemberRecord,
+    inherited_no_trade: bool = False,
+) -> bool:
+    return member.member_type == TARGET_MEMBER_DERIVATIVE or _member_is_frozen(
+        state,
+        scope_node_id=scope_node_id,
+        member=member,
+        inherited_no_trade=inherited_no_trade,
+    )
+
+
+def _member_risk_model_status(member: ScopeMemberRecord) -> str:
+    return (
+        "excluded"
+        if member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}
+        else "modeled"
+    )
 
 
 def _annualized_portfolio_volatility(
@@ -513,21 +551,34 @@ def _allocate_fixed_capital_weights(
 ) -> pd.Series:
     if not member_index:
         return pd.Series(dtype="float64")
-    clipped_total = float(total_weight)
+    resolved_total = float(total_weight)
     preferred = preferred_weights.reindex(member_index, fill_value=0.0).astype("float64")
-    preferred_total = float(preferred.sum())
-    if abs(clipped_total) <= 1e-12:
-        return pd.Series(0.0, index=member_index, dtype="float64")
-    if preferred_total > 1e-12:
-        return preferred / preferred_total * clipped_total
+    if not np.isfinite(preferred.to_numpy(dtype="float64")).all() or not np.isfinite(resolved_total):
+        raise ValueError("Fixed-capital allocation requires finite weights.")
     cash_key = f"{TARGET_MEMBER_CASH}::{SYSTEM_CASH_TARGET_MEMBER_ID}"
+    derivative_key = f"{TARGET_MEMBER_DERIVATIVE}::{SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
+    invalid_negative_keys = [
+        key
+        for key, value in preferred.items()
+        if key != derivative_key and float(value) < -1e-12
+    ]
+    if invalid_negative_keys:
+        raise ValueError("Configured cash and fixed-capital target weights cannot be negative.")
+    preferred_total = float(preferred.sum())
     if cash_key not in member_index:
-        raise ValueError(
-            "Fixed-capital residual requires the system cash member when no fixed-capital target is configured."
-        )
-    fallback = pd.Series(0.0, index=member_index, dtype="float64")
-    fallback.loc[cash_key] = clipped_total
-    return fallback
+        if abs(resolved_total - preferred_total) <= 1e-12:
+            return preferred
+        raise ValueError("Fixed-capital residual requires the system cash member.")
+
+    # The derivative weight supplied here is the signed carrying capital fixed
+    # by the actual position (or by its point-in-time lifecycle replay), never
+    # a tradable policy target.  A volatility or gross-exposure overlay may
+    # resize risky securities, but it must not create, resize, or erase FCN /
+    # option capital.  All surplus capital and financing therefore flow
+    # through the system cash member.
+    allocated = preferred.copy()
+    allocated.loc[cash_key] = float(allocated.loc[cash_key]) + resolved_total - preferred_total
+    return allocated
 
 
 def _research_covariance_parameters(calculation_frequency: CalculationFrequency) -> dict[str, object]:
@@ -738,6 +789,7 @@ def _apply_missing_return_policy(
     missing_return_policy: str,
     calculation_frequency: CalculationFrequency,
     as_of_date: date | None,
+    max_trailing_staleness_days: int | None = None,
 ) -> ReturnCoveragePolicyResult:
     policy = _normalize_missing_return_policy(missing_return_policy)
     required = max(int(min_observations), 2)
@@ -748,6 +800,17 @@ def _apply_missing_return_policy(
     missing_count = int(missing_mask.sum())
     missing_fraction = float(missing_count / max(len(returns), 1))
     dropped_rows = _render_missing_return_rows(returns)
+    complete_mask = ~missing_mask
+    if bool(complete_mask.any()):
+        first_complete_position = int(np.flatnonzero(complete_mask.to_numpy(dtype=bool))[0])
+    else:
+        first_complete_position = len(returns)
+    leading_incomplete_count = int(missing_mask.iloc[:first_complete_position].sum())
+    post_warmup_mask = missing_mask.iloc[first_complete_position:]
+    post_warmup_missing_count = int(post_warmup_mask.sum())
+    post_warmup_missing_fraction = float(
+        post_warmup_missing_count / max(len(post_warmup_mask), 1)
+    )
 
     if policy == MISSING_RETURN_POLICY_STRICT:
         _validate_complete_return_coverage(
@@ -758,12 +821,22 @@ def _apply_missing_return_policy(
         complete = returns.copy()
     else:
         complete = returns.loc[~missing_mask].copy()
-        if missing_count and missing_fraction > RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION + 1e-12:
+        # A contiguous incomplete prefix is the causal common-history boundary,
+        # not an intermittent data-quality gap. Complete-case mode may begin at
+        # the first aligned return when the remaining common sample is large
+        # enough. Missing rows after that boundary still face the quality limit,
+        # and trailing freshness is checked below.
+        if (
+            post_warmup_missing_count
+            and post_warmup_missing_fraction > RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION + 1e-12
+        ):
             raise ValueError(
-                f"{label} complete-case drop would remove {missing_count} of {len(returns)} return rows "
-                f"({missing_fraction:.2%}), exceeding the "
+                f"{label} complete-case drop would remove {post_warmup_missing_count} of "
+                f"{len(post_warmup_mask)} post-warmup return rows "
+                f"({post_warmup_missing_fraction:.2%}), exceeding the "
                 f"{RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION:.2%} limit. "
-                f"Missing return period ends: {_format_index_sample(returns.loc[missing_mask].index)}. "
+                f"Missing return period ends: "
+                f"{_format_index_sample(post_warmup_mask.loc[post_warmup_mask].index)}. "
                 "A NAV or price on a period end alone is insufficient without "
                 "an aligned period start."
             )
@@ -775,7 +848,13 @@ def _apply_missing_return_policy(
     if as_of_date is not None and len(complete):
         latest_date = pd.Timestamp(max(complete.index)).date()
         staleness_days = int((as_of_date - latest_date).days)
-        max_staleness_days = _max_complete_case_drop_staleness_days(calculation_frequency)
+        max_staleness_days = (
+            _max_complete_case_drop_staleness_days(calculation_frequency)
+            if max_trailing_staleness_days is None
+            else int(max_trailing_staleness_days)
+        )
+        if max_staleness_days < 0:
+            raise ValueError("Maximum trailing return staleness cannot be negative.")
         if staleness_days > max_staleness_days:
             policy_label = "complete-case drop" if policy == MISSING_RETURN_POLICY_COMPLETE_CASE_DROP else "strict"
             raise ValueError(
@@ -799,6 +878,9 @@ def _apply_missing_return_policy(
         rows_after=int(len(complete)),
         missing_row_count=missing_count,
         missing_row_fraction=missing_fraction,
+        leading_incomplete_row_count=leading_incomplete_count,
+        post_warmup_missing_row_count=post_warmup_missing_count,
+        post_warmup_missing_row_fraction=post_warmup_missing_fraction,
         dropped_rows=dropped_rows,
         latest_complete_date=latest_complete_date,
         trailing_staleness_days=trailing_staleness_days,
@@ -814,6 +896,7 @@ def _prepare_return_window_for_covariance(
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
+    max_trailing_staleness_days: int | None = None,
 ) -> ReturnCoveragePolicyResult:
     window = _return_window_for_lookback(
         returns,
@@ -827,6 +910,7 @@ def _prepare_return_window_for_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        max_trailing_staleness_days=max_trailing_staleness_days,
     )
 
 
@@ -839,6 +923,7 @@ def prepare_return_window_for_covariance(
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
+    max_trailing_staleness_days: int | None = None,
 ) -> ReturnCoveragePolicyResult:
     return _prepare_return_window_for_covariance(
         returns,
@@ -848,6 +933,7 @@ def prepare_return_window_for_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        max_trailing_staleness_days=max_trailing_staleness_days,
     )
 
 
@@ -980,6 +1066,12 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        max_trailing_staleness_days=int(
+            parameters.get(
+                "max_period_staleness_days",
+                _max_complete_case_drop_staleness_days(calculation_frequency),
+            )
+        ),
     )
     vol_window = vol_coverage.returns
     vol_decay = float(parameters.get("vol_decay", parameters.get("decay", 0.97)))
@@ -1000,6 +1092,12 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        max_trailing_staleness_days=int(
+            parameters.get(
+                "max_period_staleness_days",
+                _max_complete_case_drop_staleness_days(calculation_frequency),
+            )
+        ),
     )
     corr_window = corr_coverage.returns
     _validate_complete_return_coverage(
@@ -1043,6 +1141,12 @@ def _estimate_covariance(
             missing_return_policy=missing_return_policy,
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
+            max_trailing_staleness_days=int(
+                parameters.get(
+                    "max_period_staleness_days",
+                    _max_complete_case_drop_staleness_days(calculation_frequency),
+                )
+            ),
         )
         window = coverage.returns
     if model_id in {"sample_covariance", "simple_covariance"}:
@@ -1099,7 +1203,10 @@ def estimate_covariance(
 
 
 def _normalize_positive_vector(values: np.ndarray) -> np.ndarray:
-    vector = np.clip(np.asarray(values, dtype="float64"), 0.0, None)
+    vector = np.asarray(values, dtype="float64")
+    if not np.isfinite(vector).all():
+        raise ValueError("Target vector must contain only finite values.")
+    vector = np.clip(vector, 0.0, None)
     total = float(vector.sum())
     if total <= 1e-12:
         raise ValueError("Target vector must contain at least one positive value.")
@@ -1181,10 +1288,116 @@ def _validate_risk_budget_problem(problem: RiskBudgetProblem) -> None:
         raise ValueError("Risk budget bounds shape is invalid.")
     if problem.reference_weights.shape != (count,):
         raise ValueError("Risk budget reference weights shape is invalid.")
+    if len(set(problem.bucket_ids)) != count:
+        raise ValueError("Risk budget bucket identifiers must be unique.")
+    arrays = {
+        "covariance": problem.covariance,
+        "target shares": problem.target_risk_shares,
+        "lower bounds": problem.lower_bounds,
+        "upper bounds": problem.upper_bounds,
+        "reference weights": problem.reference_weights,
+    }
+    for label, values in arrays.items():
+        if not np.isfinite(values).all():
+            raise ValueError(f"Risk budget {label} must contain only finite values.")
+    if not np.allclose(problem.covariance, problem.covariance.T, rtol=1e-10, atol=1e-12):
+        raise ValueError("Risk budget covariance must be symmetric.")
+    eigenvalues = np.linalg.eigvalsh(0.5 * (problem.covariance + problem.covariance.T))
+    covariance_scale = max(float(np.max(np.abs(eigenvalues))), 1.0)
+    if float(eigenvalues.min()) < -RESEARCH_COVARIANCE_PSD_TOLERANCE * covariance_scale:
+        raise ValueError("Risk budget covariance must be positive semidefinite.")
+    if np.any(problem.target_risk_shares < -1e-12):
+        raise ValueError("Risk budget target shares cannot be negative.")
+    if np.any(problem.lower_bounds < -1e-12) or np.any(problem.upper_bounds > 1.0 + 1e-12):
+        raise ValueError("Risk budget bounds must be between 0 and 1.")
     if np.any(problem.upper_bounds < problem.lower_bounds):
         raise ValueError("Risk budget upper bounds cannot be smaller than lower bounds.")
+    if float(problem.lower_bounds.sum()) > 1.0 + 1e-10:
+        raise ValueError("Risk budget lower bounds are infeasible: their sum exceeds 1.")
+    if float(problem.upper_bounds.sum()) < 1.0 - 1e-10:
+        raise ValueError("Risk budget upper bounds are infeasible: their sum is below 1.")
     if abs(float(problem.target_risk_shares.sum()) - 1.0) > 1e-8:
         raise ValueError("Risk budget target shares must sum to 1.")
+
+
+def _solve_convex_risk_budget(
+    problem: RiskBudgetProblem,
+    *,
+    max_iterations: int,
+) -> RiskBudgetSolution | None:
+    """Solve the canonical unconstrained risk-budget problem.
+
+    For positive budgets and a PSD covariance matrix, minimizing
+    ``0.5 * y'Σy - Σ b_i log(y_i)`` over positive ``y`` is convex. Its
+    first-order condition gives ``y_i(Σy)_i=b_i``; normalizing ``y`` then
+    produces positive signed risk contributions in the requested proportions.
+    The same solution therefore also satisfies absolute-contribution budgets,
+    while avoiding their non-convex extra branches. Box/frozen constraints use
+    the explicit minimax formulation below because their best feasible target
+    miss must remain observable.
+    """
+
+    if problem.contribution_mode not in {"signed", "abs"} or _risk_budget_problem_has_binding_bounds(problem):
+        return None
+    if np.any(problem.target_risk_shares <= 0.0):
+        return None
+
+    diagonal_volatility = np.sqrt(np.maximum(np.diag(problem.covariance), 1e-12))
+    initial = problem.target_risk_shares / diagonal_volatility
+    initial_variance = float(initial @ problem.covariance @ initial)
+    if initial_variance > 1e-12:
+        initial = initial / sqrt(initial_variance)
+    initial = np.maximum(initial, 1e-10)
+
+    def objective(scale_weights: np.ndarray) -> float:
+        return float(
+            0.5 * scale_weights @ problem.covariance @ scale_weights
+            - problem.target_risk_shares @ np.log(scale_weights)
+        )
+
+    def gradient(scale_weights: np.ndarray) -> np.ndarray:
+        return problem.covariance @ scale_weights - problem.target_risk_shares / scale_weights
+
+    result = minimize(
+        objective,
+        x0=initial,
+        jac=gradient,
+        method="L-BFGS-B",
+        bounds=[(1e-12, None)] * len(problem.bucket_ids),
+        options={"ftol": 1e-15, "gtol": 1e-10, "maxiter": max(max_iterations, 500)},
+    )
+    if (
+        not np.isfinite(result.x).all()
+        or not np.isfinite(float(result.fun))
+        or np.any(np.asarray(result.x, dtype="float64") <= 0.0)
+    ):
+        return None
+    weights = np.asarray(result.x, dtype="float64")
+    weights = weights / float(weights.sum())
+    shares = _risk_contribution_shares(
+        problem.covariance,
+        weights,
+        contribution_mode=problem.contribution_mode,
+    )
+    gap = shares - problem.target_risk_shares
+    return RiskBudgetSolution(
+        bucket_ids=problem.bucket_ids,
+        weights=weights,
+        achieved_risk_shares=shares,
+        objective_value=_normalized_share_gap_l2(problem, shares),
+        max_abs_share_gap=float(np.max(np.abs(gap))),
+        iterations=int(getattr(result, "nit", 0)),
+        message=(
+            f"{result.message} (convex log-barrier risk-budget solve"
+            + (
+                ")"
+                if result.success
+                else "; non-success termination candidate remains subject to independent risk-budget checks)"
+            )
+        ),
+        solver_kind="convex_log_barrier",
+        contribution_mode=problem.contribution_mode,
+    )
 
 
 def _build_risk_budget_initial_guesses(
@@ -1535,9 +1748,13 @@ def _solve_minimax_risk_budget_slsqp(
     refined = _refine_balanced_risk_budget_solution(
         problem,
         reference_weights=reference_weights,
-        initial_guesses=[*initial_guesses, solution.weights],
+        # The primary minimax solution is already feasible at the optimal
+        # maximum-gap ceiling.  Re-running the secondary tie-break from every
+        # exploratory seed adds substantial pathological SLSQP work without
+        # improving the primary objective.
+        initial_guesses=[solution.weights],
         max_normalized_gap_ceiling=max_normalized_share_gap,
-        max_iterations=max_iterations,
+        max_iterations=min(max_iterations, 500),
     )
     if refined is not None and _is_better_risk_budget_solution(problem, refined, solution):
         return refined
@@ -1653,7 +1870,91 @@ def _solve_risk_budget_problem(
         problem.upper_bounds,
     )
     initial_guesses = _build_risk_budget_initial_guesses(problem, reference_weights)
-    if _risk_budget_problem_has_binding_bounds(problem):
+    has_binding_bounds = _risk_budget_problem_has_binding_bounds(problem)
+    all_weights_fixed = bool(
+        has_binding_bounds
+        and np.all(np.abs(problem.upper_bounds - problem.lower_bounds) <= 1e-12)
+    )
+    convex_seed_problem = (
+        replace(
+            problem,
+            lower_bounds=np.zeros(len(problem.bucket_ids), dtype="float64"),
+            upper_bounds=np.ones(len(problem.bucket_ids), dtype="float64"),
+        )
+        if has_binding_bounds
+        else problem
+    )
+    convex_solution = _solve_convex_risk_budget(
+        convex_seed_problem,
+        max_iterations=max_iterations,
+    )
+    if convex_solution is not None:
+        convex_seed = _project_to_bounded_simplex(
+            convex_solution.weights,
+            problem.lower_bounds,
+            problem.upper_bounds,
+        )
+        initial_guesses = [convex_seed, *initial_guesses]
+    else:
+        convex_seed = None
+    if all_weights_fixed:
+        fixed_weights = _project_to_bounded_simplex(
+            problem.lower_bounds,
+            problem.lower_bounds,
+            problem.upper_bounds,
+        )
+        fixed_shares = _risk_contribution_shares(
+            problem.covariance,
+            fixed_weights,
+            contribution_mode=problem.contribution_mode,
+        )
+        fixed_gap = fixed_shares - problem.target_risk_shares
+        best = RiskBudgetSolution(
+            bucket_ids=problem.bucket_ids,
+            weights=fixed_weights,
+            achieved_risk_shares=fixed_shares,
+            objective_value=_normalized_share_gap_l2(problem, fixed_shares),
+            max_abs_share_gap=float(np.max(np.abs(fixed_gap))),
+            iterations=0,
+            message="All risk-sleeve weights are fixed; evaluated the unique feasible allocation.",
+            solver_kind="fixed_bounds_evaluation",
+            contribution_mode=problem.contribution_mode,
+        )
+    elif has_binding_bounds and convex_seed is not None:
+        convex_seed_shares = _risk_contribution_shares(
+            problem.covariance,
+            convex_seed,
+            contribution_mode=problem.contribution_mode,
+        )
+        convex_seed_gap = convex_seed_shares - problem.target_risk_shares
+        if (
+            float(np.max(np.abs(convex_seed_gap))) <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
+            and (
+                problem.contribution_mode != "signed"
+                or float(convex_seed_shares.min()) >= -1e-12
+            )
+        ):
+            best = RiskBudgetSolution(
+                bucket_ids=problem.bucket_ids,
+                weights=convex_seed,
+                achieved_risk_shares=convex_seed_shares,
+                objective_value=_normalized_share_gap_l2(problem, convex_seed_shares),
+                max_abs_share_gap=float(np.max(np.abs(convex_seed_gap))),
+                iterations=convex_solution.iterations,
+                message=(
+                    "The canonical convex risk-budget solution satisfies the configured bounds."
+                ),
+                solver_kind="convex_log_barrier_bounded_feasible",
+                contribution_mode=problem.contribution_mode,
+            )
+        else:
+            best = None
+    else:
+        best = None
+
+    if has_binding_bounds and best is not None:
+        pass
+    elif has_binding_bounds and not all_weights_fixed:
         minimax = _solve_minimax_risk_budget_slsqp(
             problem,
             reference_weights=reference_weights,
@@ -1661,8 +1962,67 @@ def _solve_risk_budget_problem(
             max_iterations=max(max_iterations * 4, 1500),
         )
         if minimax is None:
-            raise ValueError("Risk budget bounded minimax solver failed.")
+            try:
+                minimax = _solve_regularized_risk_budget_slsqp(
+                    problem,
+                    reference_weights=reference_weights,
+                    initial_guesses=initial_guesses,
+                    max_iterations=max_iterations,
+                )
+                minimax = replace(
+                    minimax,
+                    message=(
+                        f"{minimax.message}; bounded minimax did not converge, so this is the "
+                        "best regularized feasible candidate and remains subject to the target-gap check."
+                    ),
+                    solver_kind="slsqp_bounded_feasible_fallback",
+                )
+            except ValueError:
+                feasible_candidates: list[RiskBudgetSolution] = []
+                for candidate_weights in initial_guesses:
+                    try:
+                        candidate_shares = _risk_contribution_shares(
+                            problem.covariance,
+                            candidate_weights,
+                            contribution_mode=problem.contribution_mode,
+                        )
+                    except ValueError:
+                        continue
+                    candidate_gap = candidate_shares - problem.target_risk_shares
+                    feasible_candidates.append(
+                        RiskBudgetSolution(
+                            bucket_ids=problem.bucket_ids,
+                            weights=candidate_weights,
+                            achieved_risk_shares=candidate_shares,
+                            objective_value=_normalized_share_gap_l2(problem, candidate_shares),
+                            max_abs_share_gap=float(np.max(np.abs(candidate_gap))),
+                            iterations=0,
+                            message=(
+                                "Bounded numerical optimizers did not converge; returned the best "
+                                "deterministic feasible seed, subject to the target-gap check."
+                            ),
+                            solver_kind="deterministic_bounded_feasible_fallback",
+                            contribution_mode=problem.contribution_mode,
+                        )
+                    )
+                if not feasible_candidates:
+                    raise ValueError(
+                        "Risk budget constraints are feasible, but no positive-variance feasible candidate could be evaluated."
+                    )
+                minimax = min(
+                    feasible_candidates,
+                    key=lambda item: (
+                        _solution_max_normalized_share_gap(problem, item),
+                        _normalized_share_gap_l2(problem, item.achieved_risk_shares),
+                    ),
+                )
         best = minimax
+    elif not has_binding_bounds and (
+        convex_solution is not None
+        and convex_solution.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
+        and float(convex_solution.achieved_risk_shares.min()) >= -1e-12
+    ):
+        best = convex_solution
     else:
         primary = _solve_regularized_risk_budget_slsqp(
             problem,
@@ -1704,6 +2064,24 @@ def _solve_risk_budget_problem(
         if negative_signed_share:
             reasons.append(f"minimum signed risk share is {float(achieved.min()):.2%}")
         constrained = _risk_budget_problem_has_binding_bounds(problem)
+        verified_constrained_optimum = bool(
+            constrained
+            and target_gap_missed
+            and not negative_signed_share
+            and "fallback" not in best.solver_kind
+        )
+        if verified_constrained_optimum:
+            return replace(
+                best,
+                target_status="constrained_optimum",
+                execution_ready=True,
+                message=(
+                    f"{best.message}; verified hard-constraint optimum is execution-ready, "
+                    "but it cannot exactly match the requested risk shares: "
+                    + "; ".join(reasons)
+                    + "."
+                ),
+            )
         return replace(
             best,
             target_status="constrained_target_miss" if constrained else "target_miss",
@@ -1730,18 +2108,36 @@ def _solve_risk_budget_weights(
     lower_bounds: np.ndarray | None = None,
     upper_bounds: np.ndarray | None = None,
 ) -> LocalRiskBudgetSolve:
-    count = len(target_shares)
+    raw_target = np.asarray(target_shares, dtype="float64")
+    if raw_target.ndim != 1:
+        raise ValueError("Risk budget target shares must be a one-dimensional vector.")
+    count = len(raw_target)
+    if count == 0:
+        raise ValueError("Risk budget target shares cannot be empty.")
+    target = _normalize_positive_vector(raw_target)
     normalized_missing_return_policy = _normalize_missing_return_policy(missing_return_policy)
+    if lower_bounds is not None and len(lower_bounds) != count:
+        raise ValueError("Risk budget lower-bound dimension does not match target shares.")
+    if upper_bounds is not None and len(upper_bounds) != count:
+        raise ValueError("Risk budget upper-bound dimension does not match target shares.")
     resolved_lower_bounds = (
         np.asarray(lower_bounds, dtype="float64")
-        if lower_bounds is not None and len(lower_bounds) == count
+        if lower_bounds is not None
         else np.zeros(count, dtype="float64")
     )
     resolved_upper_bounds = (
         np.asarray(upper_bounds, dtype="float64")
-        if upper_bounds is not None and len(upper_bounds) == count
+        if upper_bounds is not None
         else np.ones(count, dtype="float64")
     )
+    if not np.isfinite(resolved_lower_bounds).all() or not np.isfinite(resolved_upper_bounds).all():
+        raise ValueError("Risk budget bounds must contain only finite values.")
+    if np.any(resolved_lower_bounds < -1e-12) or np.any(resolved_upper_bounds > 1.0 + 1e-12):
+        raise ValueError("Risk budget bounds must be between 0 and 1.")
+    if np.any(resolved_upper_bounds < resolved_lower_bounds - 1e-12):
+        raise ValueError("Risk budget upper bounds cannot be smaller than lower bounds.")
+    if float(resolved_lower_bounds.sum()) > 1.0 + 1e-10 or float(resolved_upper_bounds.sum()) < 1.0 - 1e-10:
+        raise ValueError("Risk budget bounds do not contain a fully invested solution.")
     has_binding_bounds = bool(
         np.any(resolved_lower_bounds > 1e-12) or np.any(resolved_upper_bounds < 1.0 - 1e-12)
     )
@@ -1777,10 +2173,15 @@ def _solve_risk_budget_weights(
         missing_return_policy=normalized_missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        max_trailing_staleness_days=int(
+            covariance_parameters.get(
+                "max_period_staleness_days",
+                _max_complete_case_drop_staleness_days(calculation_frequency),
+            )
+        ),
     )
     covariance_window = coverage.returns
 
-    target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
     reference = (
         np.asarray(reference_weights, dtype="float64")
         if reference_weights is not None and len(reference_weights) == count
@@ -1825,6 +2226,9 @@ def _solve_risk_budget_weights(
         return_rows_after_policy=coverage.rows_after,
         missing_return_row_count=coverage.missing_row_count,
         missing_return_row_fraction=coverage.missing_row_fraction,
+        leading_incomplete_return_row_count=coverage.leading_incomplete_row_count,
+        post_warmup_missing_return_row_count=coverage.post_warmup_missing_row_count,
+        post_warmup_missing_return_row_fraction=coverage.post_warmup_missing_row_fraction,
         dropped_return_rows=coverage.dropped_rows,
         latest_complete_return_date=coverage.latest_complete_date.isoformat() if coverage.latest_complete_date else None,
         trailing_complete_return_staleness_days=coverage.trailing_staleness_days,
@@ -1848,7 +2252,68 @@ def _resolve_volatility_overlay_gross_exposure(
     if capital_mode == CAPITAL_MODE_VOLATILITY_CAP:
         return min(target_gross, 1.0)
     max_gross = 1.0 if max_gross_exposure is None else float(max_gross_exposure)
-    return min(target_gross, max_gross)
+    if target_gross > max_gross + 1e-12:
+        raise ValueError(
+            f"Target volatility requires {target_gross:.6f} gross exposure, "
+            f"above the configured maximum {max_gross:.6f}."
+        )
+    return target_gross
+
+
+def _validate_research_solve_configuration(
+    *,
+    calculation_frequency: str,
+    target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+) -> None:
+    if str(calculation_frequency).strip().lower() != "daily":
+        raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.")
+    if target_dimension not in {
+        TARGET_DIMENSION_SCOPE_DEFAULT,
+        TARGET_DIMENSION_WEIGHT,
+        TARGET_DIMENSION_RISK_BUDGET,
+    }:
+        raise ValueError(f"Unsupported Research target dimension: {target_dimension}.")
+    if capital_mode not in {
+        CAPITAL_MODE_UNIT_NOTIONAL,
+        CAPITAL_MODE_FIXED_GROSS,
+        CAPITAL_MODE_TARGET_VOLATILITY,
+        CAPITAL_MODE_VOLATILITY_CAP,
+    }:
+        raise ValueError(f"Unsupported Research capital mode: {capital_mode}.")
+
+    values = {
+        "gross_exposure": gross_exposure,
+        "target_volatility": target_volatility,
+        "max_gross_exposure": max_gross_exposure,
+    }
+    for label, value in values.items():
+        if value is not None and (not np.isfinite(float(value)) or float(value) <= 0.0):
+            raise ValueError(f"Research {label} must be finite and positive when provided.")
+
+    if capital_mode == CAPITAL_MODE_UNIT_NOTIONAL:
+        if any(value is not None for value in values.values()):
+            raise ValueError(
+                "unit_notional capital mode must not set gross_exposure, target_volatility, or max_gross_exposure."
+            )
+    elif capital_mode == CAPITAL_MODE_FIXED_GROSS:
+        if gross_exposure is None:
+            raise ValueError("fixed_gross capital mode requires gross_exposure.")
+        if target_volatility is not None or max_gross_exposure is not None:
+            raise ValueError("fixed_gross capital mode must not set target_volatility or max_gross_exposure.")
+    elif capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
+        if target_volatility is None:
+            raise ValueError("target_volatility capital mode requires target_volatility.")
+        if gross_exposure is not None:
+            raise ValueError("target_volatility capital mode must not set gross_exposure.")
+    elif capital_mode == CAPITAL_MODE_VOLATILITY_CAP:
+        if target_volatility is None:
+            raise ValueError("volatility_cap capital mode requires target_volatility.")
+        if gross_exposure is not None or max_gross_exposure is not None:
+            raise ValueError("volatility_cap capital mode must not set gross_exposure or max_gross_exposure.")
 
 
 def _periodic_nav_series(
@@ -1860,7 +2325,8 @@ def _periodic_nav_series(
 ) -> pd.Series:
     if series.empty:
         return pd.Series(dtype="float64")
-    visible = series.loc[(series.index >= start_date) & (series.index <= end_date)].sort_index()
+    anchor = series.loc[series.index <= start_date].tail(1)
+    visible = pd.concat([anchor, series.loc[(series.index > start_date) & (series.index <= end_date)]]).sort_index()
     if visible.empty:
         return pd.Series(dtype="float64")
     del calculation_frequency
@@ -1896,15 +2362,13 @@ def _aligned_calendar(
     first_dates = []
     calendar_points: set[date] = set()
     for series in series_list:
-        visible = series.loc[(series.index >= start_date) & (series.index <= end_date)]
-        if visible.empty:
-            visible = series.loc[series.index <= end_date]
+        visible = series.loc[series.index <= end_date]
         if visible.empty:
             raise ValueError("Selected scope contains a member without usable history in the requested window.")
         first_dates.append(visible.index[0])
         calendar_points.update(visible.index.tolist())
     effective_start = max([start_date, *first_dates])
-    calendar = sorted(item for item in calendar_points if effective_start <= item <= end_date)
+    calendar = sorted({effective_start, *(item for item in calendar_points if effective_start < item <= end_date)})
     if len(calendar) < 2:
         raise ValueError("Research solve requires at least two aligned observations.")
     return calendar, effective_start
@@ -1946,6 +2410,9 @@ def _align_member_series(
                 .ffill()
                 .reindex(calendar)
             )
+            # Mark-to-last bridges publication calendars, not an indefinitely
+            # stale trailing series. Keep missing tails visible to the policy.
+            aligned.loc[aligned.index > periodic_series.index[-1]] = np.nan
         first_valid_index = aligned.first_valid_index()
         if first_valid_index is None:
             raise ValueError(f"{member.label} does not have enough history for aligned research dates.")
@@ -2320,7 +2787,12 @@ def _series_to_nav(return_series: pd.Series, *, as_of_date: date) -> pd.Series:
     gross_returns = 1.0 + cleaned
     if len(gross_returns) and pd.isna(gross_returns.iloc[0]):
         gross_returns.iloc[0] = 1.0
-    return gross_returns.cumprod(skipna=False)
+    # Keep the missing NAV at the broken period, but resume the cumulative
+    # level once a later return is available. The parent-level pct_change then
+    # also leaves the first observation after the gap missing and resumes only
+    # after two consecutive valid NAV levels. This preserves period identity
+    # without allowing one finite child gap to poison every later parent period.
+    return gross_returns.cumprod(skipna=True)
 
 
 def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Series) -> pd.Series:
@@ -2543,6 +3015,8 @@ def _solve_current_scope(
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
     resolve_frozen_actuals: bool = False,
+    fixed_derivative_weight_override: float | None = None,
+    inherited_no_trade: bool = False,
 ) -> ScopeTargetSolveResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
@@ -2575,6 +3049,7 @@ def _solve_current_scope(
             state,
             scope_node_id=scope_node_id,
             member=member_by_key[key],
+            inherited_no_trade=inherited_no_trade,
         )
     ]
     target_dimension_used = str(resolved_rows[0]["selected_dimension"]) if resolved_rows else TARGET_DIMENSION_WEIGHT
@@ -2598,6 +3073,7 @@ def _solve_current_scope(
             state,
             scope_node_id=scope_node_id,
             member=member_by_key[f"{row['member_type']}::{row['member_id']}"],
+            inherited_no_trade=inherited_no_trade,
         )
         and float(
             _safe_float(
@@ -2623,23 +3099,34 @@ def _solve_current_scope(
                 nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
                 current_nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
                 continue
-            child_result = _solve_current_scope(
-                state,
-                scope_node_id=member.member_id,
-                as_of_date=as_of_date,
-                lookback_days=lookback_days,
-                calculation_frequency=calculation_frequency,
-                target_dimension=TARGET_DIMENSION_SCOPE_DEFAULT,
-                capital_mode=capital_mode,
-                gross_exposure=gross_exposure,
-                target_volatility=target_volatility,
-                max_gross_exposure=max_gross_exposure,
-                missing_return_policy=missing_return_policy,
-                apply_capital_overlay=False,
-                risk_model_config=risk_model_config,
-                include_actuals=include_actuals,
-                resolve_frozen_actuals=resolve_frozen_actuals,
-            )
+            child_path = state.node_path_by_id.get(member.member_id, member.label)
+            try:
+                child_result = _solve_current_scope(
+                    state,
+                    scope_node_id=member.member_id,
+                    as_of_date=as_of_date,
+                    lookback_days=lookback_days,
+                    calculation_frequency=calculation_frequency,
+                    target_dimension=TARGET_DIMENSION_SCOPE_DEFAULT,
+                    capital_mode=capital_mode,
+                    gross_exposure=gross_exposure,
+                    target_volatility=target_volatility,
+                    max_gross_exposure=max_gross_exposure,
+                    missing_return_policy=missing_return_policy,
+                    apply_capital_overlay=False,
+                    risk_model_config=risk_model_config,
+                    include_actuals=include_actuals,
+                    resolve_frozen_actuals=resolve_frozen_actuals,
+                    fixed_derivative_weight_override=fixed_derivative_weight_override,
+                    inherited_no_trade=_member_has_no_trade_constraint(
+                        state,
+                        scope_node_id=scope_node_id,
+                        member=member,
+                        inherited_no_trade=inherited_no_trade,
+                    ),
+                )
+            except ValueError as error:
+                raise ValueError(f"{child_path} solve failed: {error}") from error
             child_results_by_key[member_key] = child_result
             child_scope_solve_events.extend(child_result.scope_solve_events)
             nav_series_by_member[(member.member_type, member.member_id)] = _series_to_nav(
@@ -2659,6 +3146,15 @@ def _solve_current_scope(
             nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
             current_nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
         else:
+            analytics_scope = state.instrument_analytics_scopes.get(member.member_id)
+            if analytics_scope is not None and not (
+                analytics_scope.get("risk_eligible")
+                and analytics_scope.get("risk_budget_eligible")
+            ) and member_key not in zero_target_keys:
+                raise ValueError(
+                    f"{member.label} is not eligible for Research risk allocation under its effective analytics policy: "
+                    f"{analytics_scope.get('exclusion_reason') or 'risk/risk-budget eligibility is disabled'}."
+                )
             try:
                 instrument_nav, instrument_warnings = _build_instrument_nav_series(
                     state,
@@ -2716,21 +3212,26 @@ def _solve_current_scope(
         },
         dtype="float64",
     ).reindex(member_keys, fill_value=0.0)
-    configured_weight_by_key = {
-        f"{row['member_type']}::{row['member_id']}": _safe_float(row.get("target_weight"))
-        for row in resolved_rows
-    }
     fixed_capital_keys = [
         key for key in member_keys if _member_is_fixed_capital(member_by_key[key])
     ]
     risk_bearing_keys = [key for key in member_keys if key not in fixed_capital_keys]
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not risk_bearing_keys:
         raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
+    missing_frozen_actual_keys = [
+        key for key in frozen_keys if key not in current_actual_weight_by_key
+    ]
+    if missing_frozen_actual_keys:
+        missing_labels = ", ".join(
+            member_by_key[key].label for key in missing_frozen_actual_keys
+        )
+        raise ValueError(
+            f"{scope_label} cannot apply a no-trade constraint without as-of holdings: "
+            f"{missing_labels}."
+        )
     fixed_weight_targets = pd.Series(
         {
             key: current_actual_weight_by_key[key]
-            if key in current_actual_weight_by_key
-            else float(configured_weight_by_key.get(key) or 0.0)
             for key in frozen_keys
         },
         dtype="float64",
@@ -2740,6 +3241,11 @@ def _solve_current_scope(
         for key in member_keys
         if key not in fixed_capital_keys and key not in frozen_keys and key not in zero_target_keys
     ]
+    solver_risk_keys = [
+        key
+        for key in member_keys
+        if key not in fixed_capital_keys and key not in zero_target_keys
+    ]
     preferred_fixed_capital_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
@@ -2748,6 +3254,29 @@ def _solve_current_scope(
         },
         dtype="float64",
     ).reindex(fixed_capital_keys, fill_value=0.0)
+    derivative_key = (
+        f"{TARGET_MEMBER_DERIVATIVE}::{SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
+    )
+    if derivative_key in fixed_capital_keys:
+        configured_derivative_weight = float(
+            preferred_fixed_capital_weights.get(derivative_key, 0.0)
+        )
+        if fixed_derivative_weight_override is not None:
+            frozen_derivative_weight = float(fixed_derivative_weight_override)
+        elif include_actuals:
+            frozen_derivative_weight = float(
+                current_actual_weight_by_key.get(derivative_key, 0.0)
+            )
+        else:
+            frozen_derivative_weight = 0.0
+        if not np.isfinite(frozen_derivative_weight):
+            raise ValueError("Derivative no-trade weight must be finite.")
+        preferred_fixed_capital_weights.loc[derivative_key] = frozen_derivative_weight
+        if abs(configured_derivative_weight - frozen_derivative_weight) > 1e-10:
+            warnings.append(
+                f"{scope_label} treats the configured Derivatives weight as informational only: "
+                "FCN/options are no-trade, so actual signed carrying capital was preserved."
+            )
     fixed_total = max(float(fixed_weight_targets.sum()), 0.0)
     overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
         CAPITAL_MODE_FIXED_GROSS,
@@ -2780,75 +3309,85 @@ def _solve_current_scope(
             bounds_by_key=top_sleeve_bounds_by_key,
             member_by_key=member_by_key,
         )
-        active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
-            scope_label=scope_label,
-            active_keys=risk_keys,
-            active_budget=max(available_risk_bearing_total - fixed_total, 0.0),
-            bounds_by_key=top_sleeve_bounds_by_key,
-            member_by_key=member_by_key,
-            allow_upper_shortfall=not fixed_gross_overlay,
-        )
+        requested_active_budget = max(available_risk_bearing_total - fixed_total, 0.0)
         if risk_keys:
-            if len(risk_keys) > 1:
-                solver_members = [member_by_key[key] for key in risk_keys]
-                return_window = _solver_return_window(
-                    members=solver_members,
-                    nav_series_by_member=nav_series_by_member,
-                    as_of_date=as_of_date,
-                    lookback_days=lookback_days,
-                    calculation_frequency=calculation_frequency,
+            active_budget, active_lower_bounds, active_upper_bounds = _resolve_active_top_sleeve_bound_vectors(
+                scope_label=scope_label,
+                active_keys=risk_keys,
+                active_budget=requested_active_budget,
+                bounds_by_key=top_sleeve_bounds_by_key,
+                member_by_key=member_by_key,
+                allow_upper_shortfall=not fixed_gross_overlay,
+            )
+        else:
+            if fixed_gross_overlay and requested_active_budget > 1e-12:
+                raise ValueError(
+                    f"{scope_label} fixed gross requires {available_risk_bearing_total:.2%} risky exposure, "
+                    f"but frozen sleeves supply only {fixed_total:.2%} and no sleeve is adjustable."
                 )
-            else:
-                return_window = pd.DataFrame()
-            risk_solve = _solve_risk_budget_weights(
-                target_shares=target_values.reindex(risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
-                return_window=return_window,
-                reference_weights=None,
+            active_budget = 0.0
+            active_lower_bounds = None
+            active_upper_bounds = None
+
+        solver_risk_total = fixed_total + active_budget
+        if solver_risk_total <= 1e-12 or not solver_risk_keys:
+            raise ValueError(f"{scope_label} risk budget is unavailable: no positive risk-bearing allocation.")
+
+        lower_bounds = np.zeros(len(solver_risk_keys), dtype="float64")
+        upper_bounds = np.ones(len(solver_risk_keys), dtype="float64")
+        for index, key in enumerate(solver_risk_keys):
+            if key in frozen_keys:
+                fixed_local_weight = float(fixed_weight_targets.get(key, 0.0)) / solver_risk_total
+                lower_bounds[index] = fixed_local_weight
+                upper_bounds[index] = fixed_local_weight
+                continue
+            if active_lower_bounds is not None and active_upper_bounds is not None:
+                active_index = risk_keys.index(key)
+                lower_bounds[index] = float(active_lower_bounds[active_index]) * active_budget / solver_risk_total
+                upper_bounds[index] = float(active_upper_bounds[active_index]) * active_budget / solver_risk_total
+
+        if len(solver_risk_keys) > 1:
+            solver_members = [member_by_key[key] for key in solver_risk_keys]
+            return_window = _solver_return_window(
+                members=solver_members,
+                nav_series_by_member=nav_series_by_member,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
-                missing_return_policy=missing_return_policy,
-                risk_model_config=risk_model_config,
-                lower_bounds=lower_bounds,
-                upper_bounds=upper_bounds,
-            )
-            if not risk_solve.execution_ready:
-                warnings.append(
-                    f"{scope_label} risk-budget target was not achieved under the configured constraints; "
-                    "the constrained result is for research comparison only and is not execution-ready."
-                )
-            solved_weights = risk_solve.weights
-            risk_gap = risk_solve.max_abs_share_gap
-            solver_kind = risk_solve.solver_kind
-            implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
-            implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-            implementation_weights.loc[risk_keys] = solved_weights * active_budget
-            implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
-                member_index=fixed_capital_keys,
-                preferred_weights=preferred_fixed_capital_weights,
-                total_weight=1.0
-                - float(implementation_weights.loc[risk_keys].sum())
-                - float(implementation_weights.loc[frozen_keys].sum()),
             )
         else:
-            risk_solve = LocalRiskBudgetSolve(
-                weights=np.asarray([], dtype="float64"),
-                max_abs_share_gap=0.0,
-                solver_kind="fixed-members" if frozen_keys else "single-member",
-                solver_detail=None,
-                covariance_model=None,
-                covariance_observations=0,
-                risk_contribution_mode=None,
+            return_window = pd.DataFrame()
+        risk_solve = _solve_risk_budget_weights(
+            target_shares=target_values.reindex(solver_risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
+            return_window=return_window,
+            reference_weights=None,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+            missing_return_policy=missing_return_policy,
+            risk_model_config=risk_model_config,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+        )
+        if not risk_solve.execution_ready:
+            warnings.append(
+                f"{scope_label} risk-budget target was not achieved under the configured constraints; "
+                "the constrained result is for research comparison only and is not execution-ready."
             )
-            implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
-            implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-            implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
-                member_index=fixed_capital_keys,
-                preferred_weights=preferred_fixed_capital_weights,
-                total_weight=1.0 - float(implementation_weights.loc[frozen_keys].sum()),
+        elif risk_solve.target_status == "constrained_optimum":
+            warnings.append(
+                f"{scope_label} uses the verified optimum under hard no-trade/weight constraints; "
+                f"the requested risk budget remains off by up to {float(risk_solve.max_abs_share_gap or 0.0):.2%}."
             )
-            risk_gap = 0.0
-            solver_kind = "fixed-members" if frozen_keys else "single-member"
+        risk_gap = risk_solve.max_abs_share_gap
+        solver_kind = risk_solve.solver_kind
+        implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
+        implementation_weights.loc[solver_risk_keys] = risk_solve.weights * solver_risk_total
+        implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
+            member_index=fixed_capital_keys,
+            preferred_weights=preferred_fixed_capital_weights,
+            total_weight=1.0 - float(implementation_weights.loc[solver_risk_keys].sum()),
+        )
     else:
         risk_solve = LocalRiskBudgetSolve(
             weights=np.asarray([], dtype="float64"),
@@ -2888,6 +3427,12 @@ def _solve_current_scope(
             bounds_by_key=top_sleeve_bounds_by_key,
             member_by_key=member_by_key,
         )
+        if fixed_gross_overlay and not active_weight_keys and requested_active_budget > 1e-12:
+            raise ValueError(
+                f"{scope_label} fixed gross requires {available_risk_bearing_total:.2%} risky exposure, "
+                f"but frozen sleeves supply only {float(implementation_weights.loc[frozen_keys].sum()):.2%} "
+                "and no sleeve is adjustable."
+            )
         active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
             scope_label=scope_label,
             active_keys=active_weight_keys,
@@ -2923,7 +3468,12 @@ def _solve_current_scope(
         risk_gap = None
         solver_kind = "weight-fixed-members" if frozen_keys else "weight"
 
-    if overlay_applies_to_risk_sleeves and not fixed_gross_overlay and risk_bearing_keys:
+    if (
+        overlay_applies_to_risk_sleeves
+        and capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
+        and risk_bearing_keys
+        and not frozen_keys
+    ):
         risk_bearing_total = float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
         if risk_bearing_total <= 1e-12:
             raise ValueError(
@@ -2946,7 +3496,7 @@ def _solve_current_scope(
             active_risky_weights = risky_weights.loc[risky_weights.abs() > 1e-12]
             if active_risky_weights.empty:
                 raise ValueError(
-                    f"{scope_label} volatility overlay requires at least one non-zero risky-sleeve weight."
+                    f"{scope_label} capital overlay is unavailable: no positive risky target weight."
                 )
             solver_members = [member_by_key[key] for key in active_risky_weights.index]
             return_window = _solver_return_window(
@@ -2966,19 +3516,82 @@ def _solve_current_scope(
                 risk_model_config=risk_model_config,
             )
             try:
-                effective_gross_exposure = _resolve_volatility_overlay_gross_exposure(
-                    capital_mode=capital_mode,
-                    estimated_volatility=estimated_risk_sleeve_volatility,
-                    target_volatility=target_volatility,
-                    max_gross_exposure=max_gross_exposure,
-                )
+                if frozen_keys:
+                    covariance = _estimate_covariance(
+                        return_window,
+                        model_id=_risk_model_covariance_model_id(risk_model_config),
+                        lookback_days=lookback_days,
+                        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
+                        missing_return_policy=missing_return_policy,
+                        calculation_frequency=calculation_frequency,
+                        as_of_date=as_of_date,
+                    )
+                    frozen = active_risky_weights.reindex(covariance.index, fill_value=0.0)
+                    frozen.loc[~frozen.index.isin(frozen_keys)] = 0.0
+                    adjustable = active_risky_weights.reindex(covariance.index, fill_value=0.0) - frozen
+                    matrix = covariance.to_numpy(dtype="float64")
+                    fixed_vector = frozen.to_numpy(dtype="float64")
+                    adjustable_vector = adjustable.to_numpy(dtype="float64")
+                    gross_limit = (
+                        float(risky_weights.sum())
+                        if capital_mode == CAPITAL_MODE_VOLATILITY_CAP
+                        else float(max_gross_exposure if max_gross_exposure is not None else 1.0)
+                    )
+                    adjustable_total = float(adjustable.sum())
+                    if float(frozen.sum()) > gross_limit + 1e-12:
+                        raise ValueError("Frozen sleeve weights exceed the permitted gross exposure.")
+                    scale = max(gross_limit - float(frozen.sum()), 0.0) / adjustable_total if adjustable_total > 1e-12 else 0.0
+                    a = float(adjustable_vector @ matrix @ adjustable_vector)
+                    b = float(2.0 * fixed_vector @ matrix @ adjustable_vector)
+                    c = float(fixed_vector @ matrix @ fixed_vector) - float(target_volatility or 0.0) ** 2
+                    if a * scale * scale + b * scale + c > 1e-12:
+                        discriminant = b * b - 4.0 * a * c
+                        if a <= 1e-12 or discriminant < 0.0:
+                            raise ValueError("Frozen sleeve weights make the volatility constraint infeasible.")
+                        scale = min(scale, (-b + sqrt(discriminant)) / (2.0 * a))
+                    if scale < 0.0 or a * scale * scale + b * scale + c > 1e-12:
+                        raise ValueError("Frozen sleeve weights make the volatility constraint infeasible.")
+                    achieved_variance = max(
+                        a * scale * scale
+                        + b * scale
+                        + c
+                        + float(target_volatility or 0.0) ** 2,
+                        0.0,
+                    )
+                    achieved_volatility = sqrt(achieved_variance)
+                    target_volatility_tolerance = max(
+                        1e-10,
+                        float(target_volatility or 0.0) * 1e-8,
+                    )
+                    if (
+                        capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
+                        and abs(achieved_volatility - float(target_volatility or 0.0))
+                        > target_volatility_tolerance
+                    ):
+                        raise ValueError(
+                            "Target volatility cannot be reached with the frozen sleeve weights "
+                            "and configured maximum gross exposure."
+                        )
+                    implementation_weights.loc[risk_bearing_keys] = (
+                        frozen + adjustable * scale
+                    ).reindex(risk_bearing_keys, fill_value=0.0)
+                    effective_gross_exposure = float(implementation_weights.loc[risk_bearing_keys].sum())
+                    risky_allocation_scaling_factor = scale
+                else:
+                    exposure_scale = _resolve_volatility_overlay_gross_exposure(
+                        capital_mode=capital_mode,
+                        estimated_volatility=estimated_risk_sleeve_volatility,
+                        target_volatility=target_volatility,
+                        max_gross_exposure=max_gross_exposure,
+                    )
+                    implementation_weights.loc[risk_bearing_keys] = risky_weights * exposure_scale
+                    effective_gross_exposure = float(implementation_weights.loc[risk_bearing_keys].sum())
+                    risky_allocation_scaling_factor = exposure_scale
             except ValueError as error:
                 raise ValueError(
                     f"{scope_label} {str(error).removeprefix('Volatility overlay ')}"
                 ) from error
         if effective_gross_exposure is not None and not fixed_gross_overlay:
-            risky_allocation_scaling_factor = float(effective_gross_exposure)
-            implementation_weights.loc[risk_bearing_keys] = risky_weights * risky_allocation_scaling_factor
             if fixed_capital_keys:
                 implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
                     member_index=fixed_capital_keys,
@@ -3026,7 +3639,7 @@ def _solve_current_scope(
             lookback_days=lookback_days,
             calculation_frequency=calculation_frequency,
             missing_return_policy=missing_return_policy,
-            contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
+            contribution_mode=_risk_model_contribution_mode(risk_model_config),
             risk_model_config=risk_model_config,
         )
         warnings.extend(current_risk_share_warnings)
@@ -3056,6 +3669,9 @@ def _solve_current_scope(
         "return_rows_after_policy": risk_solve.return_rows_after_policy,
         "missing_return_row_count": risk_solve.missing_return_row_count,
         "missing_return_row_fraction": risk_solve.missing_return_row_fraction,
+        "leading_incomplete_return_row_count": risk_solve.leading_incomplete_return_row_count,
+        "post_warmup_missing_return_row_count": risk_solve.post_warmup_missing_return_row_count,
+        "post_warmup_missing_return_row_fraction": risk_solve.post_warmup_missing_return_row_fraction,
         "dropped_return_rows": deepcopy(risk_solve.dropped_return_rows or []),
         "latest_complete_return_date": risk_solve.latest_complete_return_date,
         "trailing_complete_return_staleness_days": risk_solve.trailing_complete_return_staleness_days,
@@ -3070,6 +3686,21 @@ def _solve_current_scope(
         "gross_exposure": effective_gross_exposure,
         "risky_allocation_scaling_factor": risky_allocation_scaling_factor,
         "member_count": len(members),
+        "no_trade_member_count": sum(
+            1
+            for member in members
+            if _member_has_no_trade_constraint(
+                state,
+                scope_node_id=scope_node_id,
+                member=member,
+                inherited_no_trade=inherited_no_trade,
+            )
+        ),
+        "risk_model_excluded_member_count": sum(
+            1
+            for member in members
+            if _member_risk_model_status(member) == "excluded"
+        ),
         "scope_solve_count": len(child_scope_solve_events) + 1,
     }
 
@@ -3108,6 +3739,17 @@ def _solve_current_scope(
                 "configured_weight": _safe_float(resolved_target.get("target_weight")) if resolved_target else None,
                 "configured_risk_share": _safe_float(resolved_target.get("target_risk_share")) if resolved_target else None,
                 "selected_target_value": _safe_float(resolved_target.get("selected_value")) if resolved_target else None,
+                "trade_constraint": (
+                    "no_trade"
+                    if _member_has_no_trade_constraint(
+                        state,
+                        scope_node_id=scope_node_id,
+                        member=member,
+                        inherited_no_trade=inherited_no_trade,
+                    )
+                    else "adjustable"
+                ),
+                "risk_model_status": _member_risk_model_status(member),
             }
         )
         child_result = child_results_by_key.get(member_key)
@@ -3149,6 +3791,8 @@ def _solve_current_scope(
                         "configured_weight": child_leaf.get("configured_weight"),
                         "configured_risk_share": child_risk_target,
                         "selected_target_value": child_leaf.get("selected_target_value"),
+                        "trade_constraint": child_leaf.get("trade_constraint"),
+                        "risk_model_status": child_leaf.get("risk_model_status"),
                     }
                 )
             continue
@@ -3175,6 +3819,17 @@ def _solve_current_scope(
                 "configured_weight": _safe_float(resolved_target.get("target_weight")) if resolved_target else None,
                 "configured_risk_share": _safe_float(resolved_target.get("target_risk_share")) if resolved_target else None,
                 "selected_target_value": _safe_float(resolved_target.get("selected_value")) if resolved_target else None,
+                "trade_constraint": (
+                    "no_trade"
+                    if _member_has_no_trade_constraint(
+                        state,
+                        scope_node_id=scope_node_id,
+                        member=member,
+                        inherited_no_trade=inherited_no_trade,
+                    )
+                    else "adjustable"
+                ),
+                "risk_model_status": _member_risk_model_status(member),
             }
         )
 
@@ -3452,7 +4107,20 @@ def _build_leaf_target_weight_gaps(
         action = "Review"
         execution_status = "ready"
         execution_note = None
-        if (
+        trade_constraint = str(row.get("trade_constraint") or "adjustable")
+        risk_model_status = str(row.get("risk_model_status") or "modeled")
+        if trade_constraint == "no_trade":
+            action = "No trade"
+            execution_status = "no_trade"
+            if current_value_base is not None:
+                target_value_base = current_value_base
+            execution_note = (
+                "FCN/options are fixed at their actual carrying capital and excluded from covariance/Risk Budget; "
+                "only recorded lifecycle events may change the position."
+                if member_type == TARGET_MEMBER_DERIVATIVE
+                else "This position is frozen at its as-of holding. It remains in the risk model, but Research cannot trade it."
+            )
+        elif (
             member_type == TARGET_MEMBER_INSTRUMENT
             and research_state is not None
             and research_state["research_lifecycle"] == "former"
@@ -3491,6 +4159,8 @@ def _build_leaf_target_weight_gaps(
             "target_value_base": target_value_base,
             "base_currency": base_currency,
             "action": action,
+            "trade_constraint": trade_constraint,
+            "risk_model_status": risk_model_status,
             "execution_status": execution_status,
             "execution_note": execution_note,
         }
@@ -3654,7 +4324,7 @@ def _build_taxonomy_state(
         direct_fx_instruments=(
             direct_fx_instruments
             if direct_fx_instruments is not None
-            else valuation_fx.fx_direct_instrument_map(get_platform_fx_rates())
+            else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
         ),
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
@@ -3667,6 +4337,16 @@ def _build_taxonomy_state(
         ),
         configuration_effective_from=_parse_iso_date(
             configuration.get("effective_from")
+        ),
+        instrument_analytics_scopes=resolve_instrument_analytics_scopes(
+            portfolio_id,
+            taxonomy_id=planning_taxonomy_id,
+            as_of_date=as_of_date,
+            instrument_ids=[
+                str(item.get("target_entity_id") or "")
+                for item in assignments
+                if item.get("target_scope") == TARGET_MEMBER_INSTRUMENT
+            ],
         ),
     )
 
@@ -3983,6 +4663,8 @@ def _build_solved_result_groups(
                 "min_weight": _safe_float((group_bounds or {}).get("min_weight")),
                 "max_weight": _safe_float((group_bounds or {}).get("max_weight")),
                 "bound_status": None,
+                "trade_constraint": "adjustable",
+                "risk_model_status": "modeled",
                 "rows": [],
             },
         )
@@ -4007,6 +4689,12 @@ def _build_solved_result_groups(
             "target_value_base": target_value_base,
             "target_risk_share": _selected_target_risk_share(leaf),
             "forward_risk_contribution": forward_rc,
+            "trade_constraint": str(
+                leaf.get("trade_constraint") or "adjustable"
+            ),
+            "risk_model_status": str(
+                leaf.get("risk_model_status") or "modeled"
+            ),
         }
         group["rows"].append(row)
         group["current_weight"] = float(group["current_weight"] or 0.0) + float(current_weight or 0.0)
@@ -4022,6 +4710,22 @@ def _build_solved_result_groups(
         rows = list(group.get("rows") or [])
         rows.sort(key=lambda item: abs(_safe_float(item.get("solved_weight")) or 0.0), reverse=True)
         group["rows"] = rows
+        trade_constraints = {
+            str(item.get("trade_constraint") or "adjustable") for item in rows
+        }
+        risk_model_statuses = {
+            str(item.get("risk_model_status") or "modeled") for item in rows
+        }
+        group["trade_constraint"] = (
+            next(iter(trade_constraints))
+            if len(trade_constraints) == 1
+            else "mixed"
+        )
+        group["risk_model_status"] = (
+            next(iter(risk_model_statuses))
+            if len(risk_model_statuses) == 1
+            else "mixed"
+        )
         if abs(float(group.get("forward_risk_contribution") or 0.0)) <= 1e-12:
             group["forward_risk_contribution"] = None
         bound_status_weight = _safe_float(
@@ -4057,13 +4761,13 @@ def _rebalance_schedule(*, start_date: date, end_date: date, frequency: str) -> 
     first_month = date(start_date.year, start_date.month, 1)
     if first_month < start_date:
         first_month = (pd.Timestamp(first_month) + pd.DateOffset(months=1)).date()
-    dates: list[date] = []
+    # Initialize at policy inception even if the first regular month boundary
+    # is later. Extending the cutoff must not remove an existing first month.
+    dates: list[date] = [start_date] if start_date <= end_date and first_month > start_date else []
     current = first_month
     while current <= end_date:
         dates.append(current)
         current = (pd.Timestamp(current) + pd.DateOffset(months=month_step)).date()
-    if not dates and start_date <= end_date:
-        return [start_date]
     return dates
 
 
@@ -4071,7 +4775,7 @@ def _nav_returns(series: pd.Series) -> pd.Series:
     if series.empty:
         return pd.Series(dtype="float64")
     cleaned = series.sort_index().astype("float64")
-    return cleaned.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+    return cleaned.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).dropna()
 
 
 def _compound_return(values: list[float]) -> float | None:
@@ -4230,6 +4934,7 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
         "requires at least" in message
         or "return observations" in message
         or "complete aligned return observations" in message
+        or "complete-case drop would remove" in message
         or "has no active complete" in message
         or "does not have usable market history" in message
     )
@@ -4537,6 +5242,7 @@ def _backtest_sleeve_point(
     top_lookup: dict[str, tuple[str | None, str]],
     *,
     cash_weight: float,
+    derivative_weight: float = 0.0,
 ) -> dict[str, object]:
     sleeve_by_key: dict[str, dict[str, object]] = {}
     for instrument_id, weight in weights_by_instrument.items():
@@ -4558,6 +5264,12 @@ def _backtest_sleeve_point(
             "top_sleeve_id": SYSTEM_CASH_TARGET_MEMBER_ID,
             "top_sleeve_label": SYSTEM_CASH_TARGET_LABEL,
             "value": cash_weight,
+        }
+    if abs(derivative_weight) > 1e-12:
+        sleeve_by_key[SYSTEM_DERIVATIVE_TARGET_MEMBER_ID] = {
+            "top_sleeve_id": SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+            "top_sleeve_label": SYSTEM_DERIVATIVE_TARGET_LABEL,
+            "value": derivative_weight,
         }
     return {
         "date": point_date.isoformat(),
@@ -4583,6 +5295,201 @@ def _validate_backtest_assumptions(
         raise ValueError("Backtest commission, tax, and slippage assumptions cannot be negative.")
     if implementation_delay_days < 0:
         raise ValueError("Backtest implementation delay cannot be negative.")
+
+
+def _is_derivative_capital_activity(transaction: dict[str, object]) -> bool:
+    if not (
+        str(transaction.get("derivative_contract_id") or "").strip()
+        or holdings_market_profile.is_derivative_contract(
+            transaction.get("derivative_contract")
+        )
+    ):
+        return False
+    transaction_type = str(transaction.get("transaction_type") or "").strip()
+    lifecycle_event_type = str(
+        transaction.get("lifecycle_event_type") or ""
+    ).strip()
+    option_action = str(transaction.get("option_action") or "").strip()
+    if option_action or lifecycle_event_type.startswith(("fcn_", "option_")):
+        return True
+    return transaction_type not in {"coupon", "dividend", "interest"}
+
+
+def _derivative_carrying_value_from_statement(
+    statement: dict[str, object],
+) -> float:
+    total = 0.0
+    for position in list(statement.get("positions") or []):
+        if not isinstance(position, dict) or not holdings_market_profile.is_derivative_contract(
+            position.get("derivative_contract")
+        ):
+            continue
+        value = _safe_float(position.get("market_value_base"))
+        if value is None:
+            raise ValueError(
+                "Historical derivative carrying value is incomplete; refresh price/FX coverage before backtesting."
+            )
+        total += value
+    return float(total)
+
+
+def _build_derivative_backtest_context(
+    portfolio_id: str,
+    *,
+    start_date: date,
+    end_date: date,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+) -> dict[str, object]:
+    transactions = list_transactions(portfolio_id)
+    derivative_transactions = [
+        transaction
+        for transaction in transactions
+        if _is_derivative_capital_activity(transaction)
+        and (transaction_performance_effective_date(transaction) or date.max)
+        <= end_date
+    ]
+    if not derivative_transactions:
+        return {
+            "base_nav": None,
+            "events": [],
+            "nav_points": [],
+            "warnings": [],
+        }
+
+    snapshots = list_materialized_daily_snapshots(
+        portfolio_id,
+        start_date=None,
+        end_date=end_date,
+        ensure_current=True,
+    )
+    nav_points = sorted(
+        [
+            (snapshot_date, float(nav))
+            for snapshot in snapshots
+            if (snapshot_date := _parse_iso_date(snapshot.get("as_of_date")))
+            is not None
+            and (nav := _safe_float(snapshot.get("nav"))) is not None
+            and nav > 1e-12
+        ],
+        key=lambda item: item[0],
+    )
+    if not nav_points:
+        raise ValueError(
+            "Derivative capital backtest requires a positive, materialized portfolio NAV history."
+        )
+    base_candidates = [item for item in nav_points if item[0] <= start_date]
+    base_date, base_nav = (
+        base_candidates[-1]
+        if base_candidates
+        else next((item for item in nav_points if item[0] >= start_date), nav_points[0])
+    )
+    if base_nav <= 1e-12:
+        raise ValueError("Derivative capital backtest requires positive starting NAV.")
+
+    available_dates = [item[0] for item in nav_points]
+
+    def first_snapshot_on_or_after(point_date: date) -> date | None:
+        return next((item for item in available_dates if item >= point_date), None)
+
+    event_dates = {base_date}
+    for transaction in derivative_transactions:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is None:
+            continue
+        snapshot_date = first_snapshot_on_or_after(max(effective_date, base_date))
+        if snapshot_date is not None and snapshot_date <= end_date:
+            event_dates.add(snapshot_date)
+
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise ValueError("Portfolio not found.")
+    accounts = list_accounts(portfolio_id)
+    nav_by_date = dict(nav_points)
+    events: list[dict[str, object]] = []
+    previous_target_value: float | None = None
+    for event_date in sorted(event_dates):
+        statement = build_holdings_report(
+            portfolio,
+            accounts,
+            transactions,
+            as_of_date=event_date,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        actual_value_base = _derivative_carrying_value_from_statement(statement)
+        target_value = actual_value_base / base_nav
+        if previous_target_value is None and abs(target_value) <= 1e-12:
+            # Zero is the replay default.  Do not present a synthetic backtest
+            # anchor as though it were an FCN/option lifecycle event.
+            previous_target_value = 0.0
+            continue
+        if (
+            previous_target_value is not None
+            and abs(target_value - previous_target_value) <= 1e-12
+        ):
+            continue
+        reference_nav = nav_by_date.get(event_date)
+        if reference_nav is None or reference_nav <= 1e-12:
+            raise ValueError(
+                f"{event_date.isoformat()} derivative capital event lacks a positive portfolio NAV."
+            )
+        events.append(
+            {
+                "effective_date": event_date.isoformat(),
+                "actual_value_base": actual_value_base,
+                "target_value": target_value,
+                "reference_weight": actual_value_base / reference_nav,
+                "source": "actual_derivative_ledger",
+            }
+        )
+        previous_target_value = target_value
+
+    return {
+        "base_nav": base_nav,
+        "base_date": base_date.isoformat(),
+        "events": events,
+        "nav_points": [
+            {"date": point_date.isoformat(), "nav": nav}
+            for point_date, nav in nav_points
+        ],
+        "warnings": [
+            "Derivative capital is replayed from actual position-changing FCN/option ledger dates in starting-NAV units. "
+            "Ordinary security rebalances cannot change it; changes in coupon/payoff value beyond carrying capital remain unmodeled."
+        ],
+    }
+
+
+def _derivative_backtest_state_on(
+    context: dict[str, object],
+    *,
+    point_date: date,
+) -> tuple[float, float]:
+    events = [
+        item
+        for item in list(context.get("events") or [])
+        if isinstance(item, dict)
+        and (_parse_iso_date(item.get("effective_date")) or date.max) <= point_date
+    ]
+    if not events:
+        return 0.0, 0.0
+    latest_event = events[-1]
+    target_value = float(_safe_float(latest_event.get("target_value")) or 0.0)
+    actual_value_base = float(
+        _safe_float(latest_event.get("actual_value_base")) or 0.0
+    )
+    nav_points = [
+        (parsed_date, float(nav))
+        for item in list(context.get("nav_points") or [])
+        if isinstance(item, dict)
+        and (parsed_date := _parse_iso_date(item.get("date"))) is not None
+        and parsed_date <= point_date
+        and (nav := _safe_float(item.get("nav"))) is not None
+        and nav > 1e-12
+    ]
+    if not nav_points:
+        raise ValueError(
+            f"{point_date.isoformat()} derivative capital reference lacks positive actual NAV."
+        )
+    return target_value, actual_value_base / nav_points[-1][1]
 
 
 def _first_common_return_date_on_or_after(
@@ -4619,6 +5526,8 @@ def _replay_backtest_decisions(
     tax_bps: float,
     slippage_bps: float,
     implementation_delay_days: int,
+    derivative_capital_events: list[dict[str, object]] | None = None,
+    cash_borrowing_allowed: bool = False,
 ) -> dict[str, object]:
     _validate_backtest_assumptions(
         cash_yield_annual=cash_yield_annual,
@@ -4635,6 +5544,7 @@ def _replay_backtest_decisions(
             "top_sleeve_contribution_points": [],
             "contribution_reconciliation_points": [],
             "execution_records": [],
+            "derivative_capital_events": [],
             "skipped_executions": [],
             "total_turnover": 0.0,
             "total_cost": 0.0,
@@ -4644,11 +5554,43 @@ def _replay_backtest_decisions(
     resolved_decisions: list[dict[str, object]] = []
     replay_warnings: list[str] = []
     skipped_executions: list[dict[str, str]] = []
+    pending_executions: list[dict[str, str]] = []
+    normalized_derivative_events: list[dict[str, object]] = []
+    for raw_event in derivative_capital_events or []:
+        if not isinstance(raw_event, dict):
+            continue
+        effective_date = _parse_iso_date(raw_event.get("effective_date"))
+        target_value = _safe_float(raw_event.get("target_value"))
+        if effective_date is None or effective_date > as_of_date or target_value is None:
+            continue
+        if not np.isfinite(target_value):
+            raise ValueError("Derivative capital events require finite target values.")
+        normalized_derivative_events.append(
+            {
+                **deepcopy(raw_event),
+                "effective_date": effective_date.isoformat(),
+                "target_value": float(target_value),
+            }
+        )
+    normalized_derivative_events.sort(key=lambda item: str(item["effective_date"]))
     for decision in decisions:
         decision_date = _parse_iso_date(decision.get("decision_date"))
         if decision_date is None:
             raise ValueError("Backtest decision is missing a valid decision date.")
-        scheduled_date = decision_date + timedelta(days=implementation_delay_days)
+        decision_delay_days = int(
+            decision.get("implementation_delay_days")
+            if decision.get("implementation_delay_days") is not None
+            else implementation_delay_days
+        )
+        if decision_delay_days < 0:
+            raise ValueError("Backtest decision implementation delay cannot be negative.")
+        scheduled_date = decision_date + timedelta(days=decision_delay_days)
+        if scheduled_date > as_of_date:
+            pending_executions.append({
+                "date": decision_date.isoformat(),
+                "reason": f"Scheduled execution {scheduled_date.isoformat()} is after the backtest cutoff {as_of_date.isoformat()}.",
+            })
+            continue
         target_weights = {
             str(item.get("instrument_id") or ""): float(
                 _safe_float(item.get("target_weight")) or 0.0
@@ -4675,11 +5617,41 @@ def _replay_backtest_decisions(
         resolved_decisions.append(
             {
                 **deepcopy(decision),
+                "implementation_delay_days": decision_delay_days,
                 "scheduled_execution_date": scheduled_date.isoformat(),
                 "actual_execution_date": actual_date.isoformat(),
                 "target_weight_map": target_weights,
             }
         )
+
+    retained_decisions: list[dict[str, object]] = []
+    for decision in resolved_decisions:
+        superseding = next(
+            (
+                later for later in decisions
+                if str(later.get("decision_date") or "") > str(decision["decision_date"])
+                and date.fromisoformat(str(later["decision_date"]))
+                + timedelta(
+                    days=int(
+                        later.get("implementation_delay_days")
+                        if later.get("implementation_delay_days") is not None
+                        else implementation_delay_days
+                    )
+                )
+                <= date.fromisoformat(str(decision["actual_execution_date"]))
+            ),
+            None,
+        )
+        if superseding is not None:
+            reason = (
+                f"{decision['decision_date']} pending target was superseded by the "
+                f"{superseding['decision_date']} decision before it could execute."
+            )
+            skipped_executions.append({"date": str(decision["decision_date"]), "reason": reason})
+            replay_warnings.append(reason)
+        else:
+            retained_decisions.append(decision)
+    resolved_decisions = retained_decisions
 
     if not resolved_decisions:
         return {
@@ -4689,7 +5661,9 @@ def _replay_backtest_decisions(
             "top_sleeve_contribution_points": [],
             "contribution_reconciliation_points": [],
             "execution_records": [],
+            "derivative_capital_events": [],
             "skipped_executions": skipped_executions,
+            "pending_executions": pending_executions,
             "total_turnover": 0.0,
             "total_cost": 0.0,
             "warnings": replay_warnings,
@@ -4706,6 +5680,11 @@ def _replay_backtest_decisions(
         execution_date = _parse_iso_date(decision.get("actual_execution_date"))
         if execution_date is not None:
             executions_by_date[execution_date].append(decision)
+    derivative_events_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
+    for event in normalized_derivative_events:
+        effective_date = _parse_iso_date(event.get("effective_date"))
+        if effective_date is not None:
+            derivative_events_by_date[effective_date].append(event)
 
     all_return_dates = {
         item
@@ -4713,7 +5692,12 @@ def _replay_backtest_decisions(
         for item in series.index
         if isinstance(item, date) and item <= as_of_date
     }
-    event_dates = sorted(all_return_dates.union(executions_by_date).union({as_of_date}))
+    event_dates = sorted(
+        all_return_dates
+        .union(executions_by_date)
+        .union(derivative_events_by_date)
+        .union({as_of_date})
+    )
     first_execution_date = min(executions_by_date)
     first_decision_date = min(
         _parse_iso_date(item.get("decision_date")) or first_execution_date
@@ -4728,7 +5712,17 @@ def _replay_backtest_decisions(
 
     risky_values: dict[str, float] = {}
     top_lookup: dict[str, tuple[str | None, str]] = {}
-    cash_value = 1.0
+    initial_derivative_events = [
+        event
+        for event in normalized_derivative_events
+        if (_parse_iso_date(event.get("effective_date")) or date.max) <= anchor_date
+    ]
+    derivative_value = (
+        float(initial_derivative_events[-1]["target_value"])
+        if initial_derivative_events
+        else 0.0
+    )
+    cash_value = 1.0 - derivative_value
     nav_value = 1.0
     previous_event_date = anchor_date
     points: list[dict[str, object]] = [{"date": anchor_date.isoformat(), "value": nav_value}]
@@ -4738,7 +5732,8 @@ def _replay_backtest_decisions(
             anchor_date,
             {},
             {},
-            cash_weight=1.0,
+            cash_weight=cash_value,
+            derivative_weight=derivative_value,
         )
     ]
     cumulative_contribution: dict[str, dict[str, object]] = {
@@ -4756,14 +5751,59 @@ def _replay_backtest_decisions(
     contribution_points: list[dict[str, object]] = []
     reconciliation_points: list[dict[str, object]] = []
     execution_records: list[dict[str, object]] = []
+    applied_derivative_events: list[dict[str, object]] = [
+        {
+            **deepcopy(event),
+            "previous_value": 0.0 if index == 0 else float(initial_derivative_events[index - 1]["target_value"]),
+            "capital_change": float(event["target_value"])
+            - (0.0 if index == 0 else float(initial_derivative_events[index - 1]["target_value"])),
+        }
+        for index, event in enumerate(initial_derivative_events)
+    ]
     total_turnover = 0.0
     total_cost = 0.0
     first_processed_event = True
+    previous_return_boundary_date = anchor_date
 
     for event_date in event_dates:
-        if event_date < first_execution_date:
+        if event_date <= anchor_date:
             continue
         due_executions = executions_by_date.get(event_date, [])
+        due_derivative_events = derivative_events_by_date.get(event_date, [])
+        if due_executions:
+            valid_executions: list[dict[str, object]] = []
+            for decision in due_executions:
+                decision_date = _parse_iso_date(decision.get("decision_date"))
+                intervening_derivative_events = [
+                    item
+                    for item in normalized_derivative_events
+                    if decision_date is not None
+                    and decision_date
+                    < (_parse_iso_date(item.get("effective_date")) or date.min)
+                    <= event_date
+                ]
+                if not intervening_derivative_events:
+                    valid_executions.append(decision)
+                    continue
+                changed_dates = ", ".join(
+                    dict.fromkeys(
+                        str(item.get("effective_date"))
+                        for item in intervening_derivative_events
+                    )
+                )
+                decision_date_label = str(
+                    decision.get("decision_date") or event_date.isoformat()
+                )
+                reason = (
+                    f"{decision_date_label} target invalidated before execution because "
+                    f"frozen derivative capital changed on {changed_dates}; the security "
+                    "rebalance was not executed from a stale capital budget."
+                )
+                skipped_executions.append(
+                    {"date": decision_date_label, "reason": reason}
+                )
+                replay_warnings.append(reason)
+            due_executions = valid_executions
         active_before = [
             instrument_id
             for instrument_id, value in risky_values.items()
@@ -4773,7 +5813,7 @@ def _replay_backtest_decisions(
             event_date in returns_by_instrument[instrument_id].index
             for instrument_id in active_before
         )
-        if not due_executions and not complete_return_date:
+        if not due_executions and not due_derivative_events and not complete_return_date:
             if not active_before and event_date == as_of_date:
                 complete_return_date = True
             else:
@@ -4794,10 +5834,12 @@ def _replay_backtest_decisions(
                 )
                 skipped_executions.append({"date": decision_date, "reason": reason})
                 replay_warnings.append(reason)
-            # A stale pre-trade NAV is not an executable valuation.  Keep the
-            # existing holdings and wait for their next complete observation;
-            # the skipped target is disclosed through point-in-time coverage.
-            continue
+            # A stale pre-trade NAV is not an executable valuation. Keep the
+            # existing holdings; a separately recorded derivative lifecycle
+            # event may still update its own carrying-capital ledger.
+            due_executions = []
+            if not due_derivative_events:
+                continue
 
         prior_nav = nav_value
         elapsed_days = max((event_date - previous_event_date).days, 0)
@@ -4821,13 +5863,17 @@ def _replay_backtest_decisions(
         # close-to-close return that ended at the execution observation.
         if complete_return_date:
             for instrument_id in active_before:
-                instrument_return = _safe_float(
-                    returns_by_instrument[instrument_id].get(event_date)
-                )
-                if instrument_return is None:
+                series = returns_by_instrument[instrument_id]
+                interval_returns = series.loc[
+                    (series.index > previous_return_boundary_date) & (series.index <= event_date)
+                ]
+                if interval_returns.empty or not np.isfinite(interval_returns.to_numpy(dtype="float64")).all():
                     raise ValueError(
                         f"{event_date.isoformat()} has an invalid return for {instrument_id}."
                     )
+                # A shared valuation date may span several observations of a
+                # faster-publishing member. None of those returns may be lost.
+                instrument_return = float((1.0 + interval_returns).prod() - 1.0)
                 instrument_profit = risky_values[instrument_id] * instrument_return
                 risky_values[instrument_id] += instrument_profit
                 top_id, top_label = top_lookup.get(
@@ -4843,19 +5889,62 @@ def _replay_backtest_decisions(
                     },
                 )
                 sleeve["value"] = float(sleeve["value"] or 0.0) + instrument_profit
+            previous_return_boundary_date = event_date
+
+        for derivative_event in due_derivative_events:
+            target_derivative_value = float(derivative_event["target_value"])
+            previous_derivative_value = derivative_value
+            derivative_change = target_derivative_value - previous_derivative_value
+            cash_value -= derivative_change
+            derivative_value = target_derivative_value
+            applied_derivative_events.append(
+                {
+                    **deepcopy(derivative_event),
+                    "previous_value": previous_derivative_value,
+                    "capital_change": derivative_change,
+                }
+            )
 
         for decision in due_executions:
-            nav_before_trade = cash_value + sum(risky_values.values())
+            nav_before_trade = cash_value + derivative_value + sum(risky_values.values())
             if nav_before_trade <= 0.0:
                 raise ValueError(
                     f"{event_date.isoformat()} backtest NAV became non-positive before execution."
                 )
             target_weight_map = dict(decision.get("target_weight_map") or {})
+            derivative_reference_weight = float(
+                decision.get("derivative_reference_weight")
+                if decision.get("derivative_reference_weight") is not None
+                else decision.get("derivative_target_weight")
+                or 0.0
+            )
+            all_instruments = set(risky_values).union(target_weight_map)
+
+            def cost_at_nav(target_nav: float) -> float:
+                amounts = [
+                    float(target_weight_map.get(instrument_id, 0.0)) * target_nav
+                    - risky_values.get(instrument_id, 0.0)
+                    for instrument_id in all_instruments
+                ]
+                return (
+                    sum(abs(amount) for amount in amounts) * (commission_bps + slippage_bps)
+                    + sum(max(-amount, 0.0) for amount in amounts) * tax_bps
+                ) / 10_000.0
+
+            # Targets are weights of post-cost NAV. Funding costs out of an
+            # already fully invested pre-cost target would create hidden debt.
+            if cost_at_nav(0.0) >= nav_before_trade:
+                raise ValueError(f"{event_date.isoformat()} execution costs exhaust backtest NAV.")
+            investable_nav = brentq(
+                lambda value: value + cost_at_nav(value) - nav_before_trade,
+                0.0,
+                nav_before_trade,
+                xtol=1e-14,
+            )
             target_values = {
-                instrument_id: float(weight) * nav_before_trade
+                instrument_id: float(weight) * investable_nav
                 for instrument_id, weight in target_weight_map.items()
             }
-            all_instruments = set(risky_values).union(target_values)
             trades = {
                 instrument_id: target_values.get(instrument_id, 0.0)
                 - risky_values.get(instrument_id, 0.0)
@@ -4863,12 +5952,21 @@ def _replay_backtest_decisions(
             }
             buy_amount = sum(max(amount, 0.0) for amount in trades.values())
             sell_amount = sum(max(-amount, 0.0) for amount in trades.values())
-            current_cash_weight = cash_value / nav_before_trade
-            target_cash_weight = 1.0 - sum(target_weight_map.values())
-            cash_leg = abs(target_cash_weight - current_cash_weight)
+            derivative_target_value = derivative_value
+            derivative_target_weight = (
+                derivative_target_value / investable_nav
+                if abs(investable_nav) > 1e-12
+                else 0.0
+            )
+            target_cash_value = (
+                investable_nav - sum(target_values.values()) - derivative_target_value
+            )
+            target_cash_weight = target_cash_value / investable_nav
+            derivative_leg = 0.0
+            cash_leg = abs(target_cash_value - cash_value) / nav_before_trade
             buy_turnover = buy_amount / nav_before_trade
             sell_turnover = sell_amount / nav_before_trade
-            one_way_turnover = 0.5 * (buy_turnover + sell_turnover + cash_leg)
+            one_way_turnover = 0.5 * (buy_turnover + sell_turnover + cash_leg + derivative_leg)
             commission_cost = (buy_amount + sell_amount) * commission_bps / 10_000.0
             tax_cost = sell_amount * tax_bps / 10_000.0
             slippage_cost = (buy_amount + sell_amount) * slippage_bps / 10_000.0
@@ -4879,8 +5977,8 @@ def _replay_backtest_decisions(
                 for instrument_id, value in target_values.items()
                 if abs(value) > 1e-12
             }
-            cash_value -= sum(trades.values()) + execution_cost
-            nav_after_trade = cash_value + sum(risky_values.values())
+            cash_value = target_cash_value
+            nav_after_trade = cash_value + derivative_value + sum(risky_values.values())
             if nav_after_trade <= 0.0:
                 raise ValueError(
                     f"{event_date.isoformat()} backtest NAV became non-positive after execution costs."
@@ -4915,9 +6013,14 @@ def _replay_backtest_decisions(
                     ),
                     "target_weights": deepcopy(decision.get("target_weights") or []),
                     "cash_target_weight": target_cash_weight,
+                    "derivative_target_weight": derivative_target_weight,
+                    "derivative_reference_weight": derivative_reference_weight,
+                    "derivative_target_value": derivative_target_value,
+                    "derivative_no_trade": True,
                     "risky_buy_turnover": buy_turnover,
                     "risky_sell_turnover": sell_turnover,
                     "cash_leg_turnover": cash_leg,
+                    "derivative_leg_turnover": derivative_leg,
                     "one_way_turnover": one_way_turnover,
                     "commission_cost": commission_cost,
                     "tax_cost": tax_cost,
@@ -4927,8 +6030,26 @@ def _replay_backtest_decisions(
                     "nav_after_execution": nav_after_trade,
                 }
             )
+        if cash_value < -1e-10 and not cash_borrowing_allowed:
+            event_label = ", ".join(
+                str(item.get("effective_date") or event_date.isoformat())
+                for item in due_derivative_events
+            )
+            raise ValueError(
+                f"{event_date.isoformat()} backtest requires implicit cash borrowing after "
+                + (
+                    f"the frozen derivative capital change on {event_label}"
+                    if due_derivative_events
+                    else "the target execution"
+                )
+                + "; record or model an executable funding rebalance instead."
+            )
+        if due_executions:
+            # Newly executed holdings start after this EOD boundary and must
+            # not consume returns that ended on the execution date.
+            previous_return_boundary_date = event_date
 
-        nav_value = cash_value + sum(risky_values.values())
+        nav_value = cash_value + derivative_value + sum(risky_values.values())
         if nav_value <= 0.0:
             raise ValueError(
                 f"{event_date.isoformat()} backtest portfolio NAV became non-positive."
@@ -4947,6 +6068,7 @@ def _replay_backtest_decisions(
                 weights_by_instrument,
                 top_lookup,
                 cash_weight=cash_value / nav_value,
+                derivative_weight=derivative_value / nav_value,
             )
         )
         sleeves = [
@@ -4984,7 +6106,9 @@ def _replay_backtest_decisions(
         "top_sleeve_contribution_points": contribution_points,
         "contribution_reconciliation_points": reconciliation_points,
         "execution_records": execution_records,
+        "derivative_capital_events": applied_derivative_events,
         "skipped_executions": skipped_executions,
+        "pending_executions": pending_executions,
         "total_turnover": total_turnover,
         "total_cost": total_cost,
         "warnings": replay_warnings,
@@ -5001,7 +6125,7 @@ def _normalized_window_points(
     anchor_candidates = [
         item
         for item in normalized
-        if (_parse_iso_date(item.get("date")) or date.max) <= start_date
+        if (_parse_iso_date(item.get("date")) or date.max) < start_date
     ]
     if not anchor_candidates:
         return []
@@ -5013,7 +6137,7 @@ def _normalized_window_points(
     selected.extend(
         item
         for item in normalized
-        if start_date < (_parse_iso_date(item.get("date")) or date.min) <= end_date
+        if start_date <= (_parse_iso_date(item.get("date")) or date.min) <= end_date
     )
     return [
         {"date": item["date"], "value": float(item["value"]) / anchor_value}
@@ -5139,9 +6263,14 @@ def _build_walk_forward_validation(
     oos_nav = 1.0
     if aggregate_oos_returns:
         first_oos_date = min(date.fromisoformat(item) for item in aggregate_oos_returns)
+        oos_anchor = max(
+            date.fromisoformat(str(item["date"]))
+            for item in normalized
+            if date.fromisoformat(str(item["date"])) < first_oos_date
+        )
         oos_points.append(
             {
-                "date": (first_oos_date - timedelta(days=1)).isoformat(),
+                "date": oos_anchor.isoformat(),
                 "value": oos_nav,
             }
         )
@@ -5186,6 +6315,7 @@ def _empty_point_in_time_backtest(
         "top_sleeve_contribution_points": [],
         "contribution_reconciliation_points": [],
         "execution_records": [],
+        "derivative_capital_events": [],
         "total_turnover": 0.0,
         "total_cost": 0.0,
         "methodology": methodology,
@@ -5245,6 +6375,14 @@ def build_current_target_backtest(
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
+    _validate_research_solve_configuration(
+        calculation_frequency=calculation_frequency,
+        target_dimension=target_dimension,
+        capital_mode=capital_mode,
+        gross_exposure=gross_exposure,
+        target_volatility=target_volatility,
+        max_gross_exposure=max_gross_exposure,
+    )
     frequency = _normalize_backtest_rebalance_frequency(rebalance_frequency)
     _validate_backtest_assumptions(
         cash_yield_annual=cash_yield_annual,
@@ -5259,8 +6397,9 @@ def build_current_target_backtest(
         "point_in_time_universe": True,
         "point_in_time_taxonomy": True,
         "decision_rule": (
-            "Each scheduled rebalance solves weights from only the taxonomy configuration, "
-            "targets, and market observations available on that decision date."
+            "Each scheduled rebalance, plus each recorded derivative-capital lifecycle date, "
+            "solves weights from only the taxonomy configuration, targets, and market observations "
+            "available on that decision date."
         ),
         "execution_rule": (
             "Targets execute at the EOD boundary after the configured calendar-day delay "
@@ -5268,10 +6407,26 @@ def build_current_target_backtest(
             "ending on that observation belongs to the pre-execution holdings, so new targets "
             "start accruing from the next observation. If a pre-trade holding lacks a complete "
             "observation at the boundary, the execution is skipped and disclosed as partial "
-            "point-in-time coverage rather than using a stale NAV."
+            "point-in-time coverage rather than using a stale NAV. A derivative-capital "
+            "lifecycle change after the decision also invalidates that security rebalance "
+            "rather than spending an obsolete capital budget. The replacement funding solve "
+            "on the lifecycle date executes at that EOD boundary so fixed capital does not create "
+            "implicit cash borrowing."
         ),
-        "cash_return_rule": "Cash compounds from the configured annual yield using actual calendar days / 365.25.",
-        "cost_rule": "Commission and slippage apply to risky buys and sells; tax applies to risky sells.",
+        "cash_return_rule": (
+            "Only cash compounds from the configured annual yield using actual calendar days / 365.25. "
+            "Derivative capital remains a separate zero-return proxy, without modeled coupon, option payoff or FX risk."
+        ),
+        "derivative_rule": (
+            "FCN/options are no-trade. Their signed carrying capital is normalized by actual starting NAV and changes "
+            "only on recorded derivative lifecycle dates; ordinary policy rebalances cannot target or resize them. "
+            "A lifecycle change triggers a same-day solve of the adjustable book; unless the selected capital mode "
+            "explicitly permits gross exposure above 100%, the replay fails if funding cannot preserve non-negative cash."
+        ),
+        "cost_rule": (
+            "Commission and slippage apply to risky buys and sells; tax applies to risky sells. "
+            "Target amounts use post-cost NAV so an unlevered allocation does not borrow to fund its fees."
+        ),
         "contribution_linking": (
             "Daily component profit is accumulated in starting-NAV units; cash and execution costs "
             "are explicit components and the residual reconciles to ending NAV minus one."
@@ -5282,6 +6437,15 @@ def build_current_target_backtest(
             "tax_bps": tax_bps,
             "slippage_bps": slippage_bps,
             "implementation_delay_days": implementation_delay_days,
+            "derivative_event_funding_delay_days": 0,
+            "cash_borrowing_allowed": (
+                capital_mode == CAPITAL_MODE_FIXED_GROSS
+                and float(gross_exposure or 0.0) > 1.0 + 1e-12
+            )
+            or (
+                capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
+                and float(max_gross_exposure or 1.0) > 1.0 + 1e-12
+            ),
         },
     }
 
@@ -5334,7 +6498,7 @@ def build_current_target_backtest(
     shared_fx_instruments = (
         _direct_fx_instruments
         if _direct_fx_instruments is not None
-        else valuation_fx.fx_direct_instrument_map(get_platform_fx_rates())
+        else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
     )
     final_state = _build_taxonomy_state(
         portfolio_id,
@@ -5393,10 +6557,9 @@ def build_current_target_backtest(
         _parse_iso_date(item.get("effective_from")) or as_of_date
         for item in revisions
     )
-    earliest_start_date = (
-        pd.Timestamp(earliest_revision_date)
-        + pd.DateOffset(months=int(_research_window_months(lookback_days)))
-    ).date()
+    # Assignment/policy inception does not erase already available market
+    # history. Each decision independently validates its trailing risk window.
+    earliest_start_date = max(earliest_revision_date, min(portfolio_first_dates))
     if earliest_start_date > as_of_date:
         empty_backtest = _empty_point_in_time_backtest(
             rebalance_frequency=frequency,
@@ -5404,7 +6567,7 @@ def build_current_target_backtest(
             lookback_days=lookback_days,
             warnings=warnings,
             unavailable_reason=(
-                "Backtest revision history is shorter than the selected risk lookback window."
+                "Backtest has no effective configuration and market history by the analysis date."
             ),
             methodology=methodology,
         )
@@ -5413,27 +6576,64 @@ def build_current_target_backtest(
             "backtest_benchmark": None,
             "backtest_relative_metrics": None,
         }
+    if frozen_taxonomy_node_ids:
+        warnings.append(
+            "Manual no-trade sleeves are current constraints only and were not backcast into history; "
+            "an effective-dated restriction history is required before they can be replayed."
+        )
+    derivative_context = (
+        _build_derivative_backtest_context(
+            portfolio_id,
+            start_date=earliest_start_date,
+            end_date=as_of_date,
+            instrument_detail_cache=shared_detail_cache,
+        )
+        if comparator_taxonomy_node_id is None
+        else {"events": [], "nav_points": [], "warnings": []}
+    )
+    warnings.extend(list(derivative_context.get("warnings") or []))
     returns_by_instrument = {
         instrument_id: _nav_returns(nav)
         for instrument_id, nav in sampled_nav_by_instrument.items()
     }
-    rebal_dates = _backtest_rebalance_dates(
+    scheduled_rebal_dates = _backtest_rebalance_dates(
         start_date=earliest_start_date,
         end_date=as_of_date,
         frequency=frequency,
     )
+    derivative_trigger_dates = {
+        event_date
+        for item in list(derivative_context.get("events") or [])
+        if isinstance(item, dict)
+        and (event_date := _parse_iso_date(item.get("effective_date"))) is not None
+        and earliest_start_date <= event_date <= as_of_date
+    }
+    rebal_dates = sorted(set(scheduled_rebal_dates).union(derivative_trigger_dates))
     if not rebal_dates:
         rebal_dates = [earliest_start_date]
+    if derivative_trigger_dates:
+        warnings.append(
+            "Recorded FCN/option capital changes trigger same-day funding solves of the adjustable book; "
+            "this prevents the frozen capital leg from implying an unconfigured cash borrowing position."
+        )
 
     decisions: list[dict[str, object]] = []
     skipped_rebalance_dates: list[dict[str, str]] = []
     for rebalance_date in rebal_dates:
         try:
+            derivative_target_value, derivative_reference_weight = (
+                _derivative_backtest_state_on(
+                    derivative_context,
+                    point_date=rebalance_date,
+                )
+                if comparator_taxonomy_node_id is None
+                else (0.0, 0.0)
+            )
             decision_state = _build_taxonomy_state(
                 portfolio_id,
                 planning_taxonomy_id=planning_taxonomy_id,
                 as_of_date=rebalance_date,
-                frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+                frozen_taxonomy_node_ids=[],
                 top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 instrument_detail_cache=shared_detail_cache,
                 direct_fx_instruments=shared_fx_instruments,
@@ -5451,11 +6651,12 @@ def build_current_target_backtest(
                 target_volatility=target_volatility,
                 max_gross_exposure=max_gross_exposure,
                 missing_return_policy=missing_return_policy,
-                frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+                frozen_taxonomy_node_ids=[],
                 top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 risk_model_config=risk_model_config,
                 include_actuals=False,
-                _resolve_frozen_actuals=True,
+                _resolve_frozen_actuals=False,
+                _fixed_derivative_weight_override=derivative_reference_weight,
                 _instrument_detail_cache=shared_detail_cache,
                 _direct_fx_instruments=shared_fx_instruments,
             )
@@ -5468,6 +6669,28 @@ def build_current_target_backtest(
             warnings.append(
                 f"{rebalance_date.isoformat()} rebalance skipped during point-in-time warm-up: {error}"
             )
+            continue
+
+        non_execution_ready_events = [
+            event
+            for event in list(period_solution.get("scope_solve_events") or [])
+            if isinstance(event, dict) and event.get("execution_ready") is False
+        ]
+        if non_execution_ready_events:
+            affected_scopes = ", ".join(
+                dict.fromkeys(
+                    f"{event.get('scope_label') or 'scope'} ({event.get('target_status') or 'target miss'})"
+                    for event in non_execution_ready_events
+                )
+            )
+            reason = (
+                "Risk-budget constraints did not produce an execution-ready target"
+                + (f": {affected_scopes}." if affected_scopes else ".")
+            )
+            skipped_rebalance_dates.append(
+                {"date": rebalance_date.isoformat(), "reason": reason}
+            )
+            warnings.append(f"{rebalance_date.isoformat()} rebalance skipped: {reason}")
             continue
 
         target_weight_map = _backtest_target_weights(period_solution)
@@ -5503,6 +6726,11 @@ def build_current_target_backtest(
         decisions.append(
             {
                 "decision_date": rebalance_date.isoformat(),
+                **(
+                    {"implementation_delay_days": 0}
+                    if rebalance_date in derivative_trigger_dates
+                    else {}
+                ),
                 "taxonomy_configuration_version": period_solution.get(
                     "taxonomy_configuration_version"
                 ),
@@ -5510,7 +6738,13 @@ def build_current_target_backtest(
                     "taxonomy_configuration_effective_from"
                 ),
                 "target_weights": target_weights,
-                "cash_target_weight": 1.0 - sum(target_weight_map.values()),
+                "derivative_target_value": derivative_target_value,
+                "derivative_reference_weight": derivative_reference_weight,
+                "derivative_target_weight": sum(
+                    float(row.get("target_weight") or 0.0)
+                    for row in period_solution.get("leaf_targets", [])
+                    if row.get("member_type") == TARGET_MEMBER_DERIVATIVE
+                ),
             }
         )
 
@@ -5521,7 +6755,8 @@ def build_current_target_backtest(
             lookback_days=lookback_days,
             warnings=warnings,
             unavailable_reason=(
-                "No scheduled rebalance had sufficient point-in-time taxonomy and market history to solve."
+                "No scheduled rebalance produced an execution-ready target with sufficient "
+                "point-in-time taxonomy and market history."
             ),
             methodology=methodology,
         )
@@ -5543,6 +6778,10 @@ def build_current_target_backtest(
         tax_bps=tax_bps,
         slippage_bps=slippage_bps,
         implementation_delay_days=implementation_delay_days,
+        derivative_capital_events=list(derivative_context.get("events") or []),
+        cash_borrowing_allowed=bool(
+            methodology["assumptions"]["cash_borrowing_allowed"]
+        ),
     )
     warnings.extend(list(base_replay.get("warnings") or []))
     skipped_rebalance_dates.extend(
@@ -5588,6 +6827,10 @@ def build_current_target_backtest(
             decisions,
             returns_by_instrument=returns_by_instrument,
             as_of_date=as_of_date,
+            derivative_capital_events=list(derivative_context.get("events") or []),
+            cash_borrowing_allowed=bool(
+                methodology["assumptions"]["cash_borrowing_allowed"]
+            ),
             **scenario_inputs,
         )
         scenario_points = list(scenario_replay.get("points") or [])
@@ -5653,11 +6896,14 @@ def build_current_target_backtest(
             base_replay.get("contribution_reconciliation_points") or []
         ),
         "execution_records": list(base_replay.get("execution_records") or []),
+        "derivative_capital_events": list(
+            base_replay.get("derivative_capital_events") or []
+        ),
         "total_turnover": _safe_float(base_replay.get("total_turnover")) or 0.0,
         "total_cost": _safe_float(base_replay.get("total_cost")) or 0.0,
         "methodology": methodology,
         "point_in_time_coverage": {
-            "status": "complete" if not skipped_rebalance_dates else "partial",
+            "status": "unavailable" if not points else ("complete" if not skipped_rebalance_dates else "partial"),
             "decision_count": len(decisions),
             "first_decision_date": decisions[0]["decision_date"],
             "last_decision_date": decisions[-1]["decision_date"],
@@ -5671,7 +6917,8 @@ def build_current_target_backtest(
             "historical_instrument_count": len(historical_instrument_ids),
             "first_usable_observation_by_instrument": first_observation_by_instrument,
             "skipped_rebalances": skipped_rebalance_dates,
-            "unavailable_reason": None,
+            "pending_rebalances": list(base_replay.get("pending_executions") or []),
+            "unavailable_reason": None if points else "No target decision could execute by the backtest cutoff.",
         },
         "robustness_results": robustness_results,
         "walk_forward": walk_forward,
@@ -5703,9 +6950,18 @@ def solve_current_target_weights(
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
     _resolve_frozen_actuals: bool = False,
+    _fixed_derivative_weight_override: float | None = None,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
+    _validate_research_solve_configuration(
+        calculation_frequency=calculation_frequency,
+        target_dimension=target_dimension,
+        capital_mode=capital_mode,
+        gross_exposure=gross_exposure,
+        target_volatility=target_volatility,
+        max_gross_exposure=max_gross_exposure,
+    )
     state = _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
@@ -5745,6 +7001,7 @@ def solve_current_target_weights(
         risk_model_config=risk_model_config,
         include_actuals=include_actuals,
         resolve_frozen_actuals=_resolve_frozen_actuals,
+        fixed_derivative_weight_override=_fixed_derivative_weight_override,
     )
     if include_actuals:
         actual_rows, actual_warnings = _current_scope_actuals(

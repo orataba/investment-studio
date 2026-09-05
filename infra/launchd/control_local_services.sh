@@ -8,14 +8,14 @@ fi
 
 ACTION="$1"
 STATE_FILE="$2"
-LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
+LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.investment-studio}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 domain="gui/$UID"
 services=(
-  platform-api
+  home-api
   watchlist-api
   portfolio-api
-  platform-web
+  home-web
   watchlist-web
   portfolio-web
   market-data-refresh
@@ -49,7 +49,7 @@ stop_services() {
   local service label plist state_dir temporary_state
   state_dir="$(dirname "$STATE_FILE")"
   mkdir -p "$state_dir"
-  temporary_state="$(mktemp "$state_dir/.portfolio-ops-service-state.XXXXXX")"
+  temporary_state="$(mktemp "$state_dir/.investment-studio-service-state.XXXXXX")"
   chmod 600 "$temporary_state"
 
   # Build and validate the complete restart set privately. Publishing it with

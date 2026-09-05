@@ -226,6 +226,28 @@ describe('Overview rendered page contract', () => {
     expect(screen.queryByText('Unassigned')).not.toBeInTheDocument()
   })
 
+  it('separates taxonomy coverage from classified sleeve allocation', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [holdingFixture({ allocation: 0.8, market_value_base: 800 })],
+      }),
+    )
+
+    renderPortfolioPage(
+      <OverviewPage />,
+      '/portfolios/3/overview',
+      '/portfolios/:portfolioId/overview',
+    )
+
+    const sleeveTitle = await screen.findByText('Strategy Sleeves')
+    const sleeveSection = sleeveTitle.closest('section')
+    expect(sleeveSection).not.toBeNull()
+    expect(within(sleeveSection!).getByText('No classified sleeves.')).toBeInTheDocument()
+    expect(within(sleeveSection!).getByText('Unassigned')).toBeInTheDocument()
+    expect(within(sleeveSection!).getByText('80.00%')).toBeInTheDocument()
+    expect(within(sleeveSection!).queryByText('Allocated')).not.toBeInTheDocument()
+  })
+
   it('summarizes signed asset mix on the full portfolio denominator', async () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
@@ -484,7 +506,7 @@ describe('Overview rendered page contract', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('labels a fully covered price-only benchmark as exploratory instead of formal excess performance', async () => {
+  it('discloses a benchmark with unconfirmed distribution treatment while displaying its metrics', async () => {
     const user = userEvent.setup()
     apiMocks.getPortfolioInstruments.mockResolvedValue({
       portfolio_id: '3',
@@ -542,7 +564,7 @@ describe('Overview rendered page contract', () => {
     })
     expect(benchmarkHint).toHaveAttribute(
       'title',
-      expect.stringContaining('Portfolio-relative differences and relative statistics are withheld'),
+      expect.stringContaining('Distribution treatment is unconfirmed'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
     expect(within(metricPanel).getAllByText(/Exploratory BM/).length).toBeGreaterThan(0)
@@ -608,7 +630,7 @@ describe('Overview rendered page contract', () => {
     })
     expect(benchmarkHint).toHaveAttribute(
       'title',
-      expect.stringMatching(/Benchmark uses close with confirmed price-return semantics.*benchmark and relative metrics are shown/),
+      expect.stringContaining('Comparison uses the selected price-return series'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
     expect(within(metricPanel).getAllByText(/Price BM/).length).toBeGreaterThan(0)

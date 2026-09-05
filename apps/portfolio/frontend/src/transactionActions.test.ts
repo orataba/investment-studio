@@ -19,6 +19,8 @@ describe('asset-first transaction actions', () => {
     expect(actionsFor('security', 'equity')).toEqual([
       'buy',
       'sell',
+      'short_sell',
+      'buy_to_cover',
       'dividend',
       'dividend_reinvestment',
       'return_of_capital',
@@ -27,11 +29,13 @@ describe('asset-first transaction actions', () => {
       'transfer_out',
       'transfer_in',
       'opening_balance',
+      'short_opening_balance',
     ])
     expect(actionsFor('derivative', 'fcn')).toEqual([
       'entry',
       'early_exit',
       'coupon',
+      'knock_in_observation',
       'knock_in_close',
       'knock_out_close',
       'maturity_close',
@@ -53,6 +57,7 @@ describe('asset-first transaction actions', () => {
       'fee',
       'tax',
       'opening_balance',
+      'opening_written',
     ])
     expect(actionsFor('cash')).toEqual([
       'deposit',
@@ -113,6 +118,7 @@ describe('asset-first transaction actions', () => {
       'Buy to Open Put',
       'Sell to Open Put',
       'Long Option Opening Balance',
+      'Written Option Opening Balance',
     ])
     expect(actions.map((item) => item.label)).not.toContain('Buy to Close Put')
   })

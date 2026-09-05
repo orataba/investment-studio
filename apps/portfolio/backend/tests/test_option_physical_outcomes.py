@@ -11,7 +11,7 @@ from portfolio_app.services.portfolio_store import (
 
 def _create_option_account(client, account_name: str) -> str:
     response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": account_name,
             "account_category": "option",
@@ -39,7 +39,7 @@ def _open_option(
     quantity: int = 1,
 ) -> dict[str, object]:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": transaction_type,
             "trade_date": "2026-05-01",
@@ -91,7 +91,7 @@ def _physical_outcome_payload(
 
 def _buy_underlying_stock(client) -> None:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-01",
@@ -118,7 +118,7 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload("option-long-physical", side="long"),
         headers={"Idempotency-Key": "long-call-physical-1"},
     )
@@ -139,21 +139,21 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
     assert stock_fact["gross_amount"] == 20_000
     assert stock_fact["net_cash_effect"] == -20_003
     assert body["option_delivery_link"] == {
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "option_transaction_id": option_fact["transaction_id"],
         "stock_transaction_id": stock_fact["transaction_id"],
         "underlying_instrument_id": "equity-us-abbv",
         "created_at": body["option_delivery_link"]["created_at"],
     }
     delivery_links = client.get(
-        "/api/portfolios/portfolio-ops/options/delivery-links",
+        "/api/portfolios/investment-studio/options/delivery-links",
         params={"underlying_instrument_id": "equity-us-abbv"},
     )
     assert delivery_links.status_code == 200, delivery_links.json()
     assert delivery_links.json()["links"] == [body["option_delivery_link"]]
 
     replay = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload("option-long-physical", side="long"),
         headers={"Idempotency-Key": "long-call-physical-1"},
     )
@@ -164,7 +164,7 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
     ]
 
     workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={"transaction_id": option_fact["transaction_id"]},
     )
     assert workspace.status_code == 200, workspace.json()
@@ -182,7 +182,7 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
     }
 
     stock_filtered_workspace = client.get(
-        "/api/portfolios/portfolio-ops/transactions/workspace",
+        "/api/portfolios/investment-studio/transactions/workspace",
         params={
             "account_id": "broker-us-core",
             "transaction_id": stock_fact["transaction_id"],
@@ -202,7 +202,7 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
     )
 
     update = client.put(
-        f"/api/portfolios/portfolio-ops/transactions/{stock_fact['transaction_id']}",
+        f"/api/portfolios/investment-studio/transactions/{stock_fact['transaction_id']}",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-06-01",
@@ -224,12 +224,12 @@ def test_long_call_exercise_creates_linked_stock_delivery_atomically(client) -> 
 
     deleted = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{option_fact['transaction_id']}",
+        f"/api/portfolios/investment-studio/transactions/{option_fact['transaction_id']}",
         json={"expected_row_versions": delete_scope},
     )
     assert deleted.status_code == 200, deleted.json()
     assert deleted.json()["deleted_count"] == 2
-    assert list_option_delivery_links("portfolio-ops") == []
+    assert list_option_delivery_links("investment-studio") == []
 
 
 def test_writer_call_assignment_releases_obligation_and_sells_stock(client) -> None:
@@ -242,7 +242,7 @@ def test_writer_call_assignment_releases_obligation_and_sells_stock(client) -> N
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload(
             "option-writer-assignment",
             side="written",
@@ -254,9 +254,9 @@ def test_writer_call_assignment_releases_obligation_and_sells_stock(client) -> N
     assert option_fact["lifecycle_event_type"] == "option_writer_assignment"
     assert stock_fact["transaction_type"] == "sell"
     assert stock_fact["quantity"] == 100
-    assert open_option_obligations(list_transactions("portfolio-ops")) == []
+    assert open_option_obligations(list_transactions("investment-studio")) == []
     obligations = client.get(
-        "/api/portfolios/portfolio-ops/options/obligations",
+        "/api/portfolios/investment-studio/options/obligations",
         params={
             "derivative_contract_id": "option-writer-assignment",
             "as_of_date": "2026-06-03",
@@ -295,7 +295,7 @@ def test_put_physical_outcome_uses_the_contractual_stock_direction(
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload(contract_id, side=side),
     )
 
@@ -320,11 +320,11 @@ def test_uncovered_writer_assignment_rolls_back_both_delivery_facts(client) -> N
     )
     before_ids = {
         str(item["transaction_id"])
-        for item in list_transactions("portfolio-ops")
+        for item in list_transactions("investment-studio")
     }
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload(
             "option-uncovered-assignment",
             side="written",
@@ -335,9 +335,9 @@ def test_uncovered_writer_assignment_rolls_back_both_delivery_facts(client) -> N
     assert "exceeds account position" in response.json()["detail"]
     assert {
         str(item["transaction_id"])
-        for item in list_transactions("portfolio-ops")
+        for item in list_transactions("investment-studio")
     } == before_ids
-    assert list_option_delivery_links("portfolio-ops") == []
+    assert list_option_delivery_links("investment-studio") == []
 
 
 def test_physical_outcome_rejects_cross_currency_underlying(client) -> None:
@@ -351,12 +351,12 @@ def test_physical_outcome_rejects_cross_currency_underlying(client) -> None:
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json=_physical_outcome_payload("option-cross-currency", side="long"),
     )
 
     assert response.status_code == 400
-    assert "differs from the underlying quote currency" in response.json()["detail"]
+    assert "Cross-currency physical exercise" in response.json()["detail"]
 
 
 def test_expired_open_long_and_written_options_are_returned_as_actions(client) -> None:
@@ -378,7 +378,7 @@ def test_expired_open_long_and_written_options_are_returned_as_actions(client) -
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/options/unresolved-actions"
+        "/api/portfolios/investment-studio/options/unresolved-actions"
     )
 
     assert response.status_code == 200, response.json()
@@ -391,6 +391,35 @@ def test_expired_open_long_and_written_options_are_returned_as_actions(client) -
     assert all(item["days_past_expiry"] >= 1 for item in actions.values())
 
 
+def test_expiry_day_open_options_are_already_actionable(client, monkeypatch) -> None:
+    from datetime import date
+
+    monkeypatch.setattr(
+        "portfolio_app.api.routes.transactions.portfolio_valuation_today",
+        lambda _timezone: date(2026, 9, 4),
+    )
+    option_account_id = _create_option_account(client, "Expiry Day Option Account")
+    _open_option(
+        client,
+        account_id=option_account_id,
+        contract_id="option-expiry-day",
+        transaction_type="buy",
+        expiry_date="2026-09-04",
+    )
+
+    response = client.get(
+        "/api/portfolios/investment-studio/options/unresolved-actions"
+    )
+
+    assert response.status_code == 200, response.json()
+    action = next(
+        item
+        for item in response.json()["actions"]
+        if item["derivative_contract_id"] == "option-expiry-day"
+    )
+    assert action["days_past_expiry"] == 0
+
+
 def test_generic_transaction_endpoint_rejects_unpaired_physical_outcome(client) -> None:
     option_account_id = _create_option_account(client, "Generic Outcome Guard")
     _open_option(
@@ -401,7 +430,7 @@ def test_generic_transaction_endpoint_rejects_unpaired_physical_outcome(client) 
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "maturity_redemption",
             "lifecycle_event_type": "option_long_exercise",
@@ -444,7 +473,7 @@ def test_cash_outcome_closes_the_selected_side_without_a_delivery_link(
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json={
             "derivative_contract_id": contract_id,
             "side": side,
@@ -467,7 +496,7 @@ def test_cash_outcome_closes_the_selected_side_without_a_delivery_link(
     assert transaction["gross_amount"] == 1000
     assert transaction["net_cash_effect"] == expected_net_cash
     assert body["option_delivery_link"] is None
-    assert list_option_delivery_links("portfolio-ops") == []
+    assert list_option_delivery_links("investment-studio") == []
 
 
 @pytest.mark.parametrize(
@@ -494,7 +523,7 @@ def test_expiry_outcome_closes_the_selected_side_at_zero_cash(
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json={
             "derivative_contract_id": contract_id,
             "side": side,
@@ -513,7 +542,7 @@ def test_expiry_outcome_closes_the_selected_side_at_zero_cash(
     assert transaction["gross_amount"] == 0
     assert transaction["net_cash_effect"] == 0
     assert body["option_delivery_link"] is None
-    assert list_option_delivery_links("portfolio-ops") == []
+    assert list_option_delivery_links("investment-studio") == []
 
 
 def test_expiry_outcome_uses_the_contract_expiry_date(client) -> None:
@@ -527,7 +556,7 @@ def test_expiry_outcome_uses_the_contract_expiry_date(client) -> None:
     )
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/options/outcomes",
+        "/api/portfolios/investment-studio/options/outcomes",
         json={
             "derivative_contract_id": "option-expiry-date-guard",
             "side": "long",

@@ -24,7 +24,7 @@ def _alembic_config() -> Config:
 
 def test_transaction_source_amount_and_quantity_survive_without_display_rounding(client) -> None:
     deposit = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",
@@ -39,7 +39,7 @@ def test_transaction_source_amount_and_quantity_survive_without_display_rounding
     assert deposit_payload["gross_amount"] == pytest.approx(123.12345678)
 
     transfer = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        "/api/portfolios/investment-studio/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-16",
             "transfer_object_type": "position",

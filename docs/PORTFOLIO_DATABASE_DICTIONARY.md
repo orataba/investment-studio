@@ -15,9 +15,9 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 | Screenshot evidence and agent drafts | `transaction_capture_record`, `transaction_capture_batch`, `transaction_capture_batch_item`, `transaction_capture_analysis_revision` | Portfolio transaction-capture API and analysis worker |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
 | Planning/research | taxonomy, targets, effective-dated analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
-| Registry identity/market facts | `instrument_registry.*` | Registry API and ingestion jobs |
+| Shared asset identity/market facts | `instrument_data.*` | Data maintenance CLI and ingestion jobs |
 
-The `instrument_id` values stored in Portfolio are logical references to reusable market assets in the shared Registry. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Registry market assets.
+The `instrument_id` values stored in Portfolio are logical references to reusable market assets in shared Instrument Data. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Instrument Data market assets.
 
 ## Portfolio schema
 
@@ -35,13 +35,15 @@ Cash and holding accounts owned by a portfolio. `account_category` is the canoni
 
 | Columns |
 |---|
-| **PK** `account_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `account_name VARCHAR`; `account_type VARCHAR`; `account_category VARCHAR`; `currency VARCHAR`; `institution VARCHAR?`; `default_settlement_cash_account_id VARCHAR?`; `cost_basis_method VARCHAR?`; `opened_at DATE?`; `closed_at DATE?`; `status VARCHAR` |
+| **PK** `account_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `account_name VARCHAR`; `account_type VARCHAR`; `account_category VARCHAR`; `currency VARCHAR`; `institution VARCHAR?`; `default_settlement_cash_account_id VARCHAR?`; `cost_basis_method VARCHAR?`; `cash_purpose VARCHAR?`; `collateral_reference VARCHAR?`; `opened_at DATE?`; `closed_at DATE?`; `status VARCHAR` |
 
 `cash` requires the internal `deposit_account` type and carries neither a settlement mapping nor a cost method. `security`, `fcn`, and `option` require the internal `securities_account` type, one cost method, and a default Cash account in the same Portfolio and currency. A holding account cannot mix the three holding categories. Security transactions, FCN contracts/events, and option contracts/events must each use their matching category; the removed mixed-account and instrument-scope models are not runtime compatibility paths.
 
+`cash_purpose` is operating, margin, collateral or financing (cash accounts only). Financing balances are liabilities, collateral is not freely available trading cash, and collateral_reference stores the confirmation basis. The default cost method is frozen after holding history exists.
+
 ### `portfolio.transaction_record`
 
-Canonical transaction fact. Long positions, cash movements, FCN lifecycle events, and short-option positions originate here. The API derives every row's `asset_domain` as `security`, `derivative`, or `cash` from its canonical reference; this is a read model, not a second persisted classification.
+Canonical transaction fact. Long positions, stock/ETF shorts, cash movements, FCN lifecycle events, and written-option obligations originate here. The API derives every row's `asset_domain` as `security`, `derivative`, or `cash` from its canonical reference; this is a read model, not a second persisted classification.
 
 | Field group | Columns |
 |---|---|
@@ -49,7 +51,7 @@ Canonical transaction fact. Long positions, cash movements, FCN lifecycle events
 | Event time | `trade_date DATE`; `trade_time VARCHAR`; `trade_at VARCHAR`; `trade_timezone VARCHAR`; `trade_time_is_estimated BOOLEAN`; `settlement_date DATE`; `position_effective_date DATE?`; `entitlement_date DATE?`; `acquisition_date DATE?`; `created_at VARCHAR?` |
 | Accounts/references | `account_id VARCHAR`; `settlement_cash_account_id VARCHAR?`; `counterparty_account_id VARCHAR?`; `instrument_id VARCHAR?`; `instrument_ref_json JSON?`; `derivative_contract_id VARCHAR?`; composite **FK** `(portfolio_id, derivative_contract_id) → derivative_contract_record` |
 | Quantities/amounts | `quantity FLOAT?`; `source_quantity NUMERIC(28,12)?`; `price FLOAT?`; `source_price NUMERIC(28,12)?`; `gross_amount FLOAT`; `source_gross_amount NUMERIC(28,8)?`; `counter_amount FLOAT?`; `source_counter_amount NUMERIC(28,8)?`; `fx_rate FLOAT?`; `source_fx_rate NUMERIC(28,12)?`; `fees FLOAT`; `source_fees NUMERIC(28,8)?`; `fee_category VARCHAR`; `taxes FLOAT`; `source_taxes NUMERIC(28,8)?`; `currency VARCHAR` |
-| Linking/source | `transfer_scope VARCHAR?`; `transfer_object_type VARCHAR?`; `transfer_group_id VARCHAR?`; `source_system VARCHAR(100)?`; `external_reference VARCHAR(200)?`; `note VARCHAR?` |
+| Linking/source | `transfer_scope VARCHAR?`; `transfer_object_type VARCHAR?`; `transfer_group_id VARCHAR?`; `source_system VARCHAR(100)?`; `external_reference VARCHAR(200)?`; `note VARCHAR?`; `asset_deliveries_json JSON?`; `lot_selections_json JSON?` |
 
 Important constraints:
 
@@ -58,7 +60,7 @@ Important constraints:
 - No transaction may predate its Portfolio `inception_date`; opening balances must use that date for both trade and settlement.
 - A paired internal transfer stores command-level source identity on `transfer_out` only, so the unique source fact survives collapsed export without duplicating the key on `transfer_in`.
 - A transaction may reference a Registry instrument or a Portfolio-local derivative contract, never both. Cash-only facts may reference neither.
-- Derivative facts do not carry generic relation or event-group fields; `transfer_group_id` is reserved for paired internal transfers. Confirmed option physical delivery uses the dedicated `option_delivery_link` relation described below. FCN events and any delivered stock remain independent.
+- Derivative facts do not carry generic relation or event-group fields; `transfer_group_id` is reserved for paired internal transfers. Confirmed option physical delivery uses the dedicated `option_delivery_link` relation described below. FCN final physical redemptions store asset_deliveries_json on the source fact; receiving security lots carry the same source reference and confirmed local fair value, without fabricated cash purchases.
 - Option lifecycle facts include long/writer expiry, cash settlement, and physical exercise/assignment. Expiry and the option leg of physical delivery have zero cash; cash settlement has a positive gross amount whose direction is derived from long versus writer. Physical delivery is created only by the dedicated atomic command, which also creates the ordinary-security trade at strike.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
@@ -66,13 +68,13 @@ Important constraints:
 
 ### `portfolio.derivative_contract_record`
 
-Immutable Portfolio-local FCN and option terms. A contract is created atomically with its first transaction and is reused by later event rows inside the same Portfolio; it is not a Registry instrument.
+Versioned Portfolio-local FCN and option terms. A contract is created atomically with its first transaction and is reused by later event rows inside the same Portfolio; it is not a Registry instrument.
 
 | Columns |
 |---|
-| **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `created_at VARCHAR` |
+| **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `row_version INTEGER`; `amendments_json JSON?`; `created_at VARCHAR` |
 
-Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry, cash settlement, or physical exercise/assignment when the outcome is known. FCN master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. Each FCN underlying is a separate term object with Registry `instrument_id`, optional initial reference price, strike/knock-in/knock-out levels expressed in percentage points, and a deliverable flag. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
+Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Confirmed settlement_type, exercise_style, strike_currency, exercise dates and terms_reference are contract terms; absent terms stay unconfirmed. Recorded outcomes must comply with known terms. Audited amendments preserve before/after terms, reason, reviewer and version, and cannot replace contract identity or invalidate existing outcomes. FCN master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. Each FCN underlying is a separate term object with Registry `instrument_id`, optional initial reference price, strike/knock-in/knock-out levels expressed in percentage points, and a deliverable flag. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
 
 ### `portfolio.option_delivery_link`
 
@@ -82,7 +84,7 @@ Canonical one-to-one relationship for a confirmed option physical-delivery outco
 |---|
 | **PK/FK** `option_transaction_id → transaction_record.transaction_id`; unique **FK** `stock_transaction_id → transaction_record.transaction_id`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `underlying_instrument_id VARCHAR`; `created_at VARCHAR` |
 
-The option transaction must be a zero-cash `option_long_exercise` or `option_writer_assignment`; the stock transaction must reference the contract underlying, use `quantity = contract quantity × multiplier`, and trade at strike in the direction implied by Call/Put and long/written side. A link cannot point to the same row twice. Linked transactions cannot be updated separately and are deleted as one scope. Cross-currency contracts are not normalized into a physical pair because the system has no contractual FX leg to infer.
+The option transaction must be a zero-cash `option_long_exercise` or `option_writer_assignment`; the stock transaction must reference the contract underlying, use `quantity = contract quantity × multiplier`, and trade at strike in the direction implied by Call/Put and long/written side. A link cannot point to the same row twice. Linked transactions cannot be updated separately and are deleted as one scope. Premium currency may differ from the underlying currency. The stock leg uses explicit strike_currency, which must match the underlying quote and both delivery accounts; contractual strike-to-underlying FX conversion is not inferred. Both legs preserve the outcome trade_time. Attached fee_category belongs to the stock leg, while lot_selections selects long option disposal lots.
 
 ### `portfolio.transaction_change_log`
 
@@ -296,7 +298,7 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 
 ## Instrument Registry tables read by Portfolio
 
-### `instrument_registry.instrument`
+### `instrument_data.instrument`
 
 Canonical reusable market-asset identity. `instrument_type` supports `public_fund`, `private_fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Equity and ETF rows require a canonical MIC `exchange_code`; non-listed rows must leave it empty. Current listing MICs cover US, Hong Kong, mainland China, London, Xetra, Paris, Amsterdam, Milan, and SIX. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
 
@@ -306,13 +308,13 @@ Canonical reusable market-asset identity. `instrument_type` supports `public_fun
 
 Registry owns identity, quote selection, market data, and corporate actions for assets reusable across portfolios. Portfolio owns the contract-specific FCN/option terms and event history. Boundary migrations do not guess or silently backfill removed bond or derivative records; they require those rows to be resolved before migration.
 
-### `instrument_registry.instrument_identifier`
+### `instrument_data.instrument_identifier`
 
 | Columns |
 |---|
 | **PK** `instrument_identifier_id INTEGER`; **FK** `instrument_id → instrument.instrument_id`; `identifier_type VARCHAR`; `identifier_value VARCHAR`; `is_primary BOOLEAN` |
 
-### `instrument_registry.instrument_broker_identifier`
+### `instrument_data.instrument_broker_identifier`
 
 Broker-facing reconciliation identity. Each represented broker has exactly one primary identifier at the API/model boundary; `(broker, identifier_type, identifier_value)` is globally unique in the Registry.
 
@@ -320,7 +322,7 @@ Broker-facing reconciliation identity. Each represented broker has exactly one p
 |---|
 | **PK** `instrument_broker_identifier_id INTEGER`; **FK** `instrument_id → instrument.instrument_id`; `broker VARCHAR`; `identifier_type VARCHAR`; `identifier_value VARCHAR`; `is_primary BOOLEAN` |
 
-### `instrument_registry.instrument_market_data`
+### `instrument_data.instrument_market_data`
 
 Canonical point observations used for valuation/return roles of Registry market assets. Portfolio-local FCN/options have no rows here under the event-accounting policy.
 
@@ -328,7 +330,7 @@ Canonical point observations used for valuation/return roles of Registry market 
 |---|
 | **PK** `instrument_market_data_id INTEGER`; **FK** `instrument_id → instrument.instrument_id`; `metric_family VARCHAR`; `quote_basis VARCHAR`; `as_of_date DATE`; `value TEXT`; `currency VARCHAR`; `price_unit VARCHAR`; `price_scale NUMERIC(28,12)`; `provider VARCHAR?`; `status VARCHAR`; `nav_lineage_kind VARCHAR?`; `nav_derivation_method_version VARCHAR?`; `nav_derivation_anchor_date DATE?`; `nav_lineage_evidence_json JSON?`; **FK** `fund_nav_adjustment_factor_id → fund_nav_adjustment_factor.fund_nav_adjustment_factor_id` |
 
-### `instrument_registry.fund_nav_event`
+### `instrument_data.fund_nav_event`
 
 Immutable fund distribution/split revision facts consumed by Portfolio's instrument-event review flow.
 
@@ -336,43 +338,43 @@ Immutable fund distribution/split revision facts consumed by Portfolio's instrum
 |---|
 | **PK** `fund_nav_event_id VARCHAR`; `fund_nav_action_id VARCHAR`; `revision_number INTEGER`; `revision_kind VARCHAR`; self-**FK** `supersedes_fund_nav_event_id`; **FK** `instrument_id → instrument.instrument_id`; `event_type VARCHAR`; `announcement_date DATE?`; `record_date DATE?`; `effective_date DATE`; `payable_date DATE?`; `sequence_order INTEGER?`; `cash_per_unit NUMERIC?`; `unit_ratio NUMERIC?`; `evidence_kind VARCHAR`; `source VARCHAR`; `external_event_id VARCHAR?`; `provenance_json JSON`; `recorded_by VARCHAR`; `revision_reason VARCHAR`; `created_at VARCHAR`; `updated_at VARCHAR` |
 
-### `instrument_registry.fund_nav_reinvestment_evidence`
+### `instrument_data.fund_nav_reinvestment_evidence`
 
 | Columns |
 |---|
 | **PK** `fund_nav_reinvestment_evidence_id VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_event_id → fund_nav_event.fund_nav_event_id`; `revision_number INTEGER`; `revision_kind VARCHAR`; self-**FK** `supersedes_fund_nav_reinvestment_evidence_id`; `reinvestment_nav NUMERIC`; `evidence_kind VARCHAR`; `source VARCHAR`; `external_evidence_id VARCHAR?`; `provenance_json JSON`; `recorded_by VARCHAR`; `revision_reason VARCHAR`; `created_at VARCHAR`; `updated_at VARCHAR` |
 
-### `instrument_registry.fund_nav_projection_run`
+### `instrument_data.fund_nav_projection_run`
 
 | Columns |
 |---|
 | **PK** `fund_nav_projection_run_id VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; `input_fingerprint VARCHAR(64)`; `source_observation_fingerprint VARCHAR(64)`; `projection_kind VARCHAR`; `projection_status VARCHAR`; `method_version VARCHAR`; `anchor_date DATE?`; `source_provider VARCHAR`; `evidence_json JSON`; `created_by VARCHAR`; `created_at VARCHAR` |
 
-### `instrument_registry.fund_nav_projection_run_event`
+### `instrument_data.fund_nav_projection_run_event`
 
 | Columns |
 |---|
 | composite **PK/FK** `fund_nav_projection_run_id → fund_nav_projection_run`; composite **PK/FK** `fund_nav_event_id → fund_nav_event` |
 
-### `instrument_registry.fund_nav_projection_run_reinvestment_evidence`
+### `instrument_data.fund_nav_projection_run_reinvestment_evidence`
 
 | Columns |
 |---|
 | composite **PK/FK** `fund_nav_projection_run_id → fund_nav_projection_run`; composite **PK/FK** `fund_nav_reinvestment_evidence_id → fund_nav_reinvestment_evidence` |
 
-### `instrument_registry.fund_nav_current_projection`
+### `instrument_data.fund_nav_current_projection`
 
 | Columns |
 |---|
 | **PK/FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_projection_run_id → fund_nav_projection_run.fund_nav_projection_run_id`; `updated_at VARCHAR`; `updated_by VARCHAR` |
 
-### `instrument_registry.fund_nav_adjustment_factor`
+### `instrument_data.fund_nav_adjustment_factor`
 
 | Columns |
 |---|
 | **PK** `fund_nav_adjustment_factor_id VARCHAR`; `factor_logical_key VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_projection_run_id → fund_nav_projection_run.fund_nav_projection_run_id`; `as_of_date DATE`; `factor_level NUMERIC`; `factor_kind VARCHAR`; **FK** `fund_nav_event_id → fund_nav_event.fund_nav_event_id`?; **FK** `fund_nav_reinvestment_evidence_id → fund_nav_reinvestment_evidence.fund_nav_reinvestment_evidence_id`?; self-**FK** `previous_fund_nav_adjustment_factor_id`?; `evidence_kind VARCHAR`; `method_version VARCHAR`; `anchor_date DATE`; `source_provider VARCHAR`; `evidence_json JSON`; `created_at VARCHAR`; `updated_at VARCHAR` |
 
-### `instrument_registry.corporate_action_event`
+### `instrument_data.corporate_action_event`
 
 | Columns |
 |---|

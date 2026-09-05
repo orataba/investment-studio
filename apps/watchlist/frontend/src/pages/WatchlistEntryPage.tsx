@@ -1,3 +1,4 @@
+import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
@@ -9,7 +10,7 @@ import {
   reorderWatchlists,
   type WatchlistRecord,
 } from '../lib/api'
-import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
@@ -202,11 +203,12 @@ export default function WatchlistEntryPage() {
     <section className="terminal-page">
       <header className="watchlist-entry-shell">
         <div className="watchlist-breadcrumbs">
-          <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
+          <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
             Home
           </a>
           <span className="watchlist-breadcrumb-separator">/</span>
           <span className="watchlist-breadcrumb-current">Watchlist</span>
+          <LanguageSelector />
         </div>
         <div className="watchlist-entry-hero">
           <h1 className="watchlist-entry-title">All Watchlists</h1>
@@ -342,7 +344,7 @@ export default function WatchlistEntryPage() {
               </div>
               <Link className="watchlist-entry-card-main" to={buildWatchlistPath(watchlist.watchlist_id)}>
                 <div className="watchlist-entry-card-title-stack">
-                  <strong className="watchlist-entry-name">{watchlist.name}</strong>
+                  <strong translate={systemWatchlist ? undefined : "no"} className="watchlist-entry-name">{watchlist.name}</strong>
                   <span className="watchlist-entry-meta">
                     {systemWatchlist ? 'System List' : 'Watchlist'}
                   </span>

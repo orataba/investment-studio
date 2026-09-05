@@ -256,6 +256,7 @@
 - 在 IRR / MWROR 中，若测量窗口从导入起点开始，`opening_balance` 视为期初初始投入；若测量窗口开始于其后日期，则它落在窗口外，不再重复记为现金流。
 - `opening_balance + position` 必须进一步 materialize 成 opening lots；`gross_amount` 解释为 imported remaining cost basis，而不是 bootstrap 日市值。
 - `opening_balance` 的 `trade_date` / `settlement_date` 表示导入边界；历史 lot 的 acquisition date 必须落在 opening lots 上，而不是伪造到 bootstrap transaction 的成交日期里。
+- `option_opening_balance`（导入动作 `opening_written`）建立期初空头剩余数量和账面权利金负债，不产生现金收入或当期收益；原开仓日使用 `acquisition_date`。例如现金 10,000、期初负债 1,000，期初 NAV 为 9,000。它与普通期初余额一样只允许在 inception boundary 建立。
 - 若导入源提供历史 lots，则必须逐 lot 保留 `acquisition_date` 与 remaining cost basis；若只能提供聚合头寸，则只能生成单个 `synthetic_opening` lot，并明确其后的 FIFO / realized P&L 解释从该 synthetic lot 起算。
 
 ### 2.5 权重口径
@@ -298,7 +299,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 组合计算频率只有 `daily`，不是用户设置项。Registry `source_settings.expected_frequency` 只保留 `daily` 与 `event_driven`，不能把组合降级成周频或月频。
 - 对齐规则：在所有成员有效观测日期的并集上，未发布新值的成员沿用最近有效 mark；来源更新日一次性确认自上次发布以来的变化。所有来源均无新观测的日期不进入风险样本。
 - 节假日规则：共同非交易日不生成样本；预期应更新却缺失的数据必须由 `risk_basis` 标记 incomplete，不能用 carry-forward 掩盖数据缺口。
-- Missing-return policy：默认 `strict`。共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解。`strict` 与 `complete_case_drop` 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、missing rows、latest complete date 与 trailing staleness。
+- Missing-return policy：默认 `strict`。`strict` 下共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解；显式 `complete_case_drop` 可以从第一条完整共同收益开始，但只有这一段连续前缀属于 warm-up boundary，之后的缺口仍受比例限制。两种 policy 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、全部 missing rows、前置非完整行数、起点后缺失比例、latest complete date 与 trailing staleness。
 - 日频 instrument 配置 `market_calendar` 时，以该日历校验 holiday vs missing：共同非交易日不生成样本；任何日历交易日缺价都进入 coverage / missing 诊断。未配置或日历无法解析时使用保守的日历日 gap threshold，不隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖元数据，不是一个风险指标。它必须能覆盖全部 eligible members，并且 `resolved_frequency` 恒为 `daily`；缺失、非法或来源更新不完整时，Risk 页面和 Holdings Forward RC 都进入 basis unavailable / incomplete。
 - Holdings `Forward RC` 和 Risk 页 Current Drift 使用 total-NAV 当前权重：eligible exposure 按 `signed market_value_base / total NAV` 形成权重，衍生品和 base-currency cash 不进入 covariance，但作为 0-return capital 留在分母中。Forward covariance 必须先在全部 eligible leaf instruments 上估计一次；taxonomy / sleeve 的 current risk share 只能把这些 leaf contribution 按同一个 total-portfolio variance 分母相加，禁止先合成 sleeve return、再对 sleeve 重新做 shrinkage covariance。输出同时披露 modeled/excluded exposure、cash 与 coverage。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
@@ -453,8 +454,8 @@ Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 positi
 - event-valued purchase 的 fees / taxes 在交易日确认为 expense，不进入 carrying basis；
 - Call / Put 的 sell-to-open 同时增加 settlement cash 和等额 premium-basis liability；short-option row 使用 `holding_kind=option_obligation`、`valuation_basis=premium_liability`、负的 NAV amount，并披露 open contract count、`contract count × multiplier` 的标的数量、remaining premium basis 和 carrying liability。风险读模型可汇总同一组合的现有标的股票或同币种 settled cash，显示 portfolio-level backing ratio/shortfall；该指标不分配具体担保物，也不声明券商保证金或质押状态；
 - partial/full buy-to-close、writer expiry、writer cash settlement 和 assignment 按关闭的合约数量比例释放 premium basis。释放 basis 减去 close cost 与 charges 形成 realized option P&L；
-- FCN close 独立记录正常到期、敲入或敲出结果，按关闭金额释放 carrying basis。若敲入后接收股票，人工另录一笔普通股票 `buy`；FCN 和股票记录不绑定，也不自动转移成本；
-- option contract 不预设结算方式。long/writer 到期作废使用零现金 expiry；有现金结果使用 cash settlement。经人工确认的实物行权或指派由专用命令原子生成两条事实：期权腿以零现金关闭并释放 remaining premium/cost basis，股票腿严格按合约 strike、multiplier 和 Call/Put 方向买入或卖出；费用和税费只记在股票腿。`option_delivery_link` 保存严格一对一关系，任一腿不能单独修改或删除。期权 premium P&L 与股票自身 cost/realized P&L 保持分开，详情页再按 underlying 汇总展示；不同币种的合约与 underlying 不推断实物交割，只能录入经核对的现金结算。FCN 交付仍不建立关联。
+- FCN 敲入观察只记录已确认的障碍事件，不改变数量、账面本金或现金；敲入后的最终兑付不能早于最终观察日。FCN close 按关闭数量释放 carrying basis，现金金额使用实际回单。实物收股在同一记录的 asset_deliveries 保存数量、接收账户、本币总确认价值及 fx_rate_to_contract；合约处置损益 = 确认收股折算价值 + 实际现金尾差 − 费用税费 − 所处置合约成本。收到证券按本币确认价值建 lot，不能虚构现金兑付再独立买股；
+- Option 的结算方式、行权风格、行权币种及条款依据按合约保存，不从证券名称推测。已知现金交割合约不能实物交付，已知实物交割合约不能用现金关闭代替；欧式及百慕大式结果须符合合约行权日期。long/writer 到期作废使用零现金 expiry。经人工确认的实物行权或指派由专用命令原子生成两条事实：期权腿以零现金关闭并释放 remaining premium/cost basis，股票腿严格按合约 strike、multiplier 和 Call/Put 方向买入或卖出；费用和税费只记在股票腿。`option_delivery_link` 保存严格一对一关系，任一腿不能单独修改或删除。期权 premium P&L 与股票自身 book cost/realized P&L 保持分开，属于组合账面绩效口径，不承诺等于券商税务成本。权利金币种可不同于股票币种；股票腿的明确 strike_currency 必须与标的报价及交付账户币种一致，不推断合约 FX 转换。非股票/ETF 或非标准篮子仍不支持，不能因此改记现金交割。期权和股票腿共用实际 trade_time；实物行权的 lot_selections 只指定期权多头批次，股票腿遵循其账户成本法。
 
 只要期间内存在 material event-valued asset、writer liability 或 derivative lifecycle activity，账本仍完整发布用于 NAV reconciliation 的 flow-neutral operational/carrying-basis daily return，并明确标记为 `Total Portfolio Operational Return`；它不是完整 fair-value 或 GIPS-informed return。所有波动率、downside volatility、Sharpe、Sortino、Calmar、风险 drawdown、benchmark risk compare 和 realized risk attribution 统一消费独立的 `Market Risk Return`，不得消费 operational return。FCN、长期权和 writer obligation 是 system-level derivative tracking scope：Taxonomy assignment 不能把它们重新纳入 Research universe、target solve、covariance、Risk Budget 或 point-in-time backtest；它们未分配 planning taxonomy 时也不得阻断普通证券 Research。
 
@@ -474,7 +475,7 @@ $$
 
 - 普通 `dividend / coupon` 在 entitlement date 确认为已实现 `Income`，税费进入独立 expense/tax bucket；它不释放或冲减 open-position cost basis，也不进入 Holdings `Unrealized P&L`；
 - `dividend_reinvestment` 同时确认原持仓的已实现 `Income`，并按 reinvested gross amount 形成新的 open lot cost；不得把新份额零成本入账，也不得把同一分红再记现金；
-- 只有明确的 `return_of_capital` 才冲减当前 open lots 的 remaining cost basis。它不是 dividend income；超过剩余成本的事实在支持超额资本返还收益分类前必须失败关闭；
+- 只有明确的 `return_of_capital` 才冲减当前 open lots 的 remaining cost basis。它不是 dividend income；同一持仓各批按剩余份额分配（不是按成本比例），每批成本最低为零，超过该批剩余成本的部分计入零处置数量的已实现收益，不伪造卖出。移动平均按合并成本单元处理。现金、成本释放与超额收益必须对平；具体税务分类仍以适用规则和券商确认材料为准。关于逐股减计至零及超额收益的美国税务示例，参见 [IRS Topic 404](https://www.irs.gov/taxtopics/tc404) 与 [Form 8949 Instructions](https://www.irs.gov/instructions/i8949)，不是对其他司法辖区的申报结论；
 - 除息后的 valuation price / NAV 下降会降低持仓未实现资本利得，已确认的分红则在 `Income` 中抵补经济收益。二者可以共同解释总 P&L，但不得相互改写分类。
 
 Holdings 的 monetary 部分按结算现金账户子账拆分：
@@ -1380,9 +1381,9 @@ Instrument-scope planning taxonomy 的根 scope 固定包含两个不可分类�
 
 - `derivative_bucket:__derivatives__` 汇总全部 FCN 与 option carrying/liability amount；
 - `cash_bucket:__cash__` 汇总全部现金与待交收金额；
-- 两者都可以在 SAA 或 TAA 中设置 `target_weight`，用于资本配置和 Weight Target Gap；
+- 两者都可以在 SAA 或 TAA 中显示 `target_weight`；Cash 的目标用于预留基础现金资本，Derivatives 的目标仅作 planning reference / Weight Target Gap，不得覆盖实际持仓或形成下单目标；
 - 两者都不进入 `risk_budget` target，`target_risk_share` 必须为 `NULL`，也不进入 risk-budget completeness、协方差或 Risk Target Gap；
-- 当前产品口径把两者作为 fixed-capital members：只参与资金权重分配，不产生 return series，也不进入风险求解；Taxonomy / Research 的 Risk / RC 显示 `N/A`；
+- 当前产品口径把两者放在风险模型外资本层：Cash 是可调整的残余融资账户，可以先预留配置目标；Derivatives 是按实际 signed carrying capital 冻结的 no-trade 资本。两者都不产生市场 return series，也不进入协方差或风险预算求解；Taxonomy / Research 的 Risk / RC 显示 `N/A`；
 - UI 必须解释“capital share != risk share”。
 
 ### 10.7 Research target solve
@@ -1394,29 +1395,36 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - 若当前选中 scope 显式指定 `weight` 或 `risk_budget`，该 override 只作用于选中 scope；子 sleeve 仍按自己的 scope default 求解；
 - 多成员 scope 必须有 active complete `SAA` 或 `TAA` target set。`TAA` 优先于 `SAA`；两者都缺失、启用维度不完整或目标值加总不正确时，该 scope 求解失败，不生成等权或目标权重替代结果；
 - `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；已启用的 `weight` 维度必须逐成员显式给出且合计为 `100%`；
-- `risk_budget` scope 只使用承担风险的证券 direct members 的 `target_risk_share` 求本地目标权重；Cash 与 Derivatives 的目标资金权重只用于确定 fixed-capital allocation，不进入风险份额向量；证券风险份额加总为 `100%`；
-- 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
-- risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败，`complete_case_drop` 只能在显式选择且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束后使用，不能把 target risk share 当作 target weight；
+- `risk_budget` scope 只使用承担风险的证券 direct members 的 `target_risk_share` 求本地目标权重；Cash 可按目标先预留资本，Derivatives 则按 as-of 实际 signed carrying capital 冻结，配置目标只作信息展示；二者都不进入风险份额向量，证券风险份额加总为 `100%`；
+- `frozen` 的唯一语义是 no-trade：冻结 as-of 实际资本/持仓，不冻结比例。手工冻结的证券仍留在 covariance / RC / Risk Budget 方程中，但上下限固定为该日实际权重；FCN/Option 默认 no-trade 且在风险模型外。缺少 as-of actual holding 时不得用配置 `target_weight` 伪造冻结头寸，求解必须显式 unavailable；
+- risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败。`complete_case_drop` 显式选择后，可以把第一条完整共同收益之前连续的非完整前缀识别为共同历史起点，而不是数据质量缺口；起点之后的缺失行仍必须通过 `10%` 比例限制，并与 latest complete row 新鲜度、最小完整观测数一起校验。输出同时披露全部丢弃行、前置非完整行数及起点后的缺失比例，不能把 target risk share 当作 target weight；
 - risk-budget solve、current risk-share estimate 与 target-volatility overlay 必须使用组合级 `Production Risk Model` 的 covariance model、lookback、frequency、missing-return policy 和 contribution mode；
-- risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
+- 没有生效硬约束的 risk-budget solve，其 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值时该 scope 不可执行。存在 frozen / box bounds 时，该阈值用于区分“精确命中”与“硬约束下不可达”，经过验证的约束最优解按下一条规则处理；任何负 signed risk share 都不可执行，不切换到 `abs` mode，也不返回旧求解器状态；
+- 对正风险预算、PSD covariance 且没有生效上下限的 scope，标准求解目标为凸问题 `min_y 0.5*y'Σy - Σ_i b_i*log(y_i)`，其中 `y_i>0`；用解析梯度的 L-BFGS-B 求解后把 `y` 归一化为资金权重。若有 frozen 或 box bounds，则先用该凸解生成可行起点，再以 SLSQP epigraph 直接最小化归一化风险份额最大偏差，并在不恶化最大偏差的条件下最小化整体偏差和相对当前权重的微小二级距离。所有权重完全固定时直接评估唯一可行解。优化器状态本身不是成功标准：最终仍独立复算 PSD、边界、权重和、signed RC 及风险份额误差。经过数值求解验证、满足全部硬约束且没有负 signed RC 的最优解，即使因硬约束不能精确命中预算，也返回 `constrained_optimum / execution_ready=true` 并披露 gap；数值 fallback 或负 signed RC 仍返回 `constrained_target_miss / execution_ready=false`，历史回放不得成交；
 - Research `Solved Result` 的 `Look-through RC` 使用最终 leaf 权重在全组合 leaf covariance 上重新计算。父 scope 的风险预算求解误差仍以该父 scope 的本地 covariance 为准；当 covariance model 在每层重新做 correlation shrinkage 时，look-through RC 可以与父层本地 achieved risk share 有差异，UI 和报告必须明确区分两种口径；
 - 单成员风险证券 scope 只允许输出数学上唯一确定的本地风险权重；只有 Cash / Derivatives 而没有风险证券的 scope 进入 `no risky members / unavailable`，不生成风险预算；
-- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对风险证券权重整体放缩；剩余 capital 按已配置的 Cash / Derivatives 目标权重比例分配给两个 fixed-capital system members。两者都没有正的显式资金目标时，残余全部进入系统 Cash，Derivatives 保持 `0`，不得因系统桶存在而自动生成衍生品目标。root top sleeve bounds 只约束 root 的风险证券 sleeve；违反上下限、目标波动率不可解或与 frozen/fixed gross 不可行时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
+- 正的证券目标必须满足该决策日生效的 `risk_eligible` 和 `risk_budget_eligible`；被明确排除的证券不得在 Research 中绕过分析范围设置。
+- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才调整风险证券权重。`volatility_cap` 只允许缩减原有风险资本，不得先把证券归一到 100% 而消耗冻结资本。手工 frozen 证券与 FCN/Option 的实际 signed carrying capital 在 overlay 中都保持 no-trade；约束不可行时显式失败。已配置的 Derivatives `target_weight` 只作信息展示，不是下单目标；当前求解使用 as-of 实际 carrying capital，历史回放使用实际生命周期账本，二者都不得因降风险或加杠杆而机械买卖衍生品。所有未使用风险资本及融资残余只进入系统 Cash。没有实际衍生品头寸时 Derivatives 为 `0`。root top sleeve bounds 只约束 root 的风险证券 sleeve；违反上下限、目标波动率不可解或与 frozen/fixed gross 不可行时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
 
 Research 的历史模拟合同是 `Point-in-time target-policy simulation`，不是用今天 taxonomy/targets 回放历史的 current-policy replay：
 
 `PUT /api/portfolios/{portfolio_id}/research/settings` 的 core run-setup 字段使用全量 PUT 语义，调用方应提交完整 core settings；`frozen_taxonomy_node_ids` 和 `top_sleeve_weight_bounds` 省略时保留、空列表时清空。`backtest_*` control 省略时保留当前值；nullable benchmark 显式 `null` 时清空，robustness scenarios 显式 `null` 时恢复系统默认 scenarios。API 不得把省略的 backtest control 静默重置为 schema default。
 
 - universe 来自截至 run as-of date 的 taxonomy configuration revision 历史中所有曾经 active 的 instrument assignments；不能只用当前成员，也不能让当前已清退成员从历史样本消失；
-- 每个计划 rebalance date 都按该日生效的 taxonomy configuration、assignment、TargetSet、frozen sleeves、top sleeve bounds 和 capital overlay 重新执行同一 Production Risk Model / target solve，只读取决策日及以前的市场观察；输出每次决策使用的 `taxonomy_configuration_version`、effective date、point-in-time coverage 和 skipped rebalance reason；
-- 支持 `1w`、`1m` 与 `3m` rebalance。组合成员共同历史不足完整 risk window 时返回空 points 或跳过该次决策并给出 warning，不生成晚于 as-of 的日期，不以更短风险窗口替代；benchmark 历史只影响 benchmark 曲线和相对指标，不得推迟或阻断组合自身模拟起点；
-- target 在配置的 calendar-day implementation delay 后，于全部目标资产第一条共同 return observation 的 EOD boundary 执行。该 observation 代表前一 EOD 到当前 EOD 的 close-to-close return，归属于执行前持仓；新 target 从下一条 observation 开始计收益。若执行边界上任一执行前持仓缺少完整 EOD return observation，必须跳过该次执行并在 point-in-time coverage 中标记 partial，不得用陈旧 NAV 成交。现金按实际日历天数和 annual cash yield 复合；commission 与 slippage 作用于 risky buys/sells，tax 只作用于 risky sells；execution record 必须披露 buy/sell/cash-leg turnover、各项成本、scheduled/actual execution date 和成本前后 NAV；
+- 每个计划 rebalance date 以及每个已记录的 FCN/Option capital lifecycle date，都按该日生效的 taxonomy configuration、assignment、TargetSet 和 analytics scope 重新求解，只读取决策日及以前的市场观察；输出每次决策使用的 `taxonomy_configuration_version`、effective date、point-in-time coverage 和 skipped rebalance reason。Production Risk Model、top sleeve bounds 和 capital overlay 使用本次 run 的固定设置，并非这些设置自身的历史版本。当前手工 frozen sleeve 没有 effective-dated 限制历史，因此不得倒灌到历史回测；FCN/Option 则按真实 derivative ledger 的生效日回放 signed carrying capital。数据按 observation date 截断，尚未建模私募净值的实际公布时间与申赎可成交时间，不能声称完全消除了信息可得性偏差；
+- 支持 `1w`、`1m` 与 `3m` rebalance。策略生效日可以使用该日以前已经存在的完整风险历史，不需在生效后再等待一个 lookback。窗口保留起点之前最近的收盘锚点，不把末端缺失净值无限前填成零收益。组合成员共同历史不足完整 risk window 时返回空 points 或跳过该次决策并给出 warning，不生成晚于 as-of 的日期，不以更短风险窗口替代；benchmark 历史只影响 benchmark 曲线和相对指标，不得推迟或阻断组合自身模拟起点；
+- target 在配置的 calendar-day implementation delay 后，于全部目标资产第一条共同 return observation 的 EOD boundary 执行。各证券自上次组合估值以来的全部中间收益需累计，不得仅取共同日期当天收益；它们归属于执行前持仓，新 target 从执行后开始计收益。若执行边界上任一执行前持仓缺少完整 EOD return observation，必须跳过该次执行并在 point-in-time coverage 中标记 partial，不得用陈旧 NAV 成交。尚未执行的旧决策被已到执行期的新决策替代后不得反向覆盖新目标；执行计划晚于回测截止日的决策单列 `pending_rebalances`，不冒充缺失历史或已成交。
+- 目标权重以扣费后 NAV 为基准同时解出交易金额与费用，满仓目标不得因扣费形成隐性负现金。若 FCN/Option carrying capital 在 decision date 之后、scheduled/actual execution boundary 之前发生生命周期变化，原证券目标使用的可投资资本已经失效，该次证券再平衡必须跳过并披露原因；不得照用旧目标制造负现金，也不得静默缩放后冒充原决策。该 lifecycle date 必须基于当日可见信息触发一次同日 EOD funding solve，只调整可交易证券与 Cash，不改变被冻结的衍生品资本；若当日没有共同可执行价格，或在 `unit_notional / volatility_cap / gross <= 100%` 等未授权融资的模式下重配后 Cash 仍为负，回测必须显式失败。只有 `fixed_gross > 100%` 或带 `max_gross_exposure > 100%` 的 `target_volatility` 才可显式产生融资现金；不得由实现自行猜测借款。现金按实际日历天数和 annual cash yield 复合；commission 与 slippage 作用于 risky buys/sells，tax 只作用于 risky sells；execution record 必须披露 buy/sell/cash/derivative-leg turnover、现金和衍生品目标权重、各项成本、scheduled/actual execution date 和成本前后 NAV。
+- Derivatives 在本模型中是独立的零收益、no-trade 固定资本代理，不是计息现金；不进入证券协方差、RC 或风险预算。当前求解冻结 as-of 实际 signed carrying capital；回测按真实 FCN/Option position-changing lifecycle date 将 carrying capital 以起始 NAV 归一化，只在该类账本事件发生时从 Cash 转入或转回，并同步执行前述 funding solve，普通计划再平衡的 derivative turnover 恒为 `0`。回测不重放 FCN 票息、敲入敲出、违约、Option payoff/行权/保证金或该代理的外汇波动。真实账务仍按实际合同和现金流处理；零建模波动不代表这些资产无经济风险，也不能把 carrying/liability 净额视为所需抵押资金。包含衍生品的执行清单必须提示人工复核条款、担保与流动性。
+- 首次目标建仓在策略生效日尝试；之后周度按 7 天、月度按月初、`3m` 按首个完整月月初起每三个月生成决策（不是固定自然季度）。延长回测截止日不得使已存在的首次建仓消失。
 - top-sleeve contribution 使用 starting-NAV unit 的累计 arithmetic linking，cash 和 execution costs 是显式 component；每个点返回 `linked_contribution`、`nav_change` 与 reconciliation residual。它不是把 sleeve 百分比收益几何相加；
 - robustness scenarios 用同一组 point-in-time decisions 在替代 cash yield、commission、tax、slippage 和 delay 假设下重放，输出 scenario metrics、相对 base period-return delta、turnover 和 total cost；
-- OOS 稳健性使用连续 training/test calendar-month 的 rolling temporal holdout，只发布各 test window 开始后的 OOS observations，并给出逐窗口与聚合 OOS metrics。当前窗口不会在 training window 内重新拟合或选择参数，因此这是固定 point-in-time policy 的时间外推诊断，不是 walk-forward optimization；历史不足时必须明确 unavailable，不能把 in-sample 点冒充 OOS；
+- OOS 稳健性使用连续 training/test calendar-month 的 rolling temporal holdout，以 test window 之前最近的 EOD 为归一锚点，保留 test window 首日及之后的 OOS observations，并给出逐窗口与聚合 OOS metrics。当前窗口不会在 training window 内重新拟合或选择参数，因此这是固定 point-in-time policy 的时间外推诊断，不是 walk-forward optimization；历史不足时必须明确 unavailable，不能把 in-sample 点冒充 OOS；
 - 当前 execution model 假设目标在首个共同 observation 完整成交，尚未模拟 order rejection、partial fills、成交量/流动性约束或 market impact。文档、UI 和报告不得声称这些摩擦已经覆盖。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
+
+固定日期（pinned）运行的时效性与分类指纹按选定分析日比较，不因组合后来出现新日期或该日以后的交易就自动失效；最新可用模式仍与最新组合日期比较。当前设置、有效分类和分析范围政策发生变化仍会使旧结果标记 stale。
 
 每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
 

@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
 import {
+  formatNumber,
   formatPercent,
   formatSignedCurrency,
   formatUnitPrice,
@@ -20,14 +22,8 @@ const RANGE_OPTIONS: { key: PortfolioInstrumentChartRangeKey; label: string }[] 
   { key: 'all', label: 'ALL' },
 ]
 
-const AXIS_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-})
-
 function formatChartDate(value: string) {
-  const parsed = new Date(`${value}T00:00:00`)
-  return Number.isNaN(parsed.getTime()) ? value : AXIS_DATE_FORMATTER.format(parsed)
+  return value
 }
 
 type InstrumentPriceChartProps = {
@@ -59,15 +55,26 @@ export default function InstrumentPriceChart({
   variant = 'default',
   referenceLines = [],
 }: InstrumentPriceChartProps) {
+  const { t } = useLanguage()
+  const gradientId = useId()
+  const chartRef = useRef<HTMLElement>(null)
+  const [containerWidth, setContainerWidth] = useState(900)
+  useEffect(() => {
+    if (variant !== 'instrument' || !chartRef.current) return
+    const observer = new ResizeObserver(([entry]) => setContainerWidth(Math.round(entry.contentRect.width)))
+    observer.observe(chartRef.current)
+    return () => observer.disconnect()
+  }, [variant])
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const points = chart?.points ?? []
   const firstPoint = points[0] ?? null
-  const activePoint = points[hoverIndex ?? points.length - 1] ?? null
+  const activeIndex = hoverIndex == null ? points.length - 1 : Math.min(hoverIndex, points.length - 1)
+  const activePoint = points[activeIndex] ?? null
   const currency = chart?.currency ?? chart?.instrument_core.currency ?? 'USD'
-  const width = variant === 'instrument' ? 900 : 760
-  const height = variant === 'instrument' ? 340 : 240
-  const paddingLeft = variant === 'instrument' ? 58 : 10
-  const paddingRight = variant === 'instrument' ? 18 : 10
+  const width = variant === 'instrument' ? Math.max(containerWidth, 300) : 760
+  const height = variant === 'instrument' && width >= 520 ? 340 : 240
+  const paddingLeft = 10
+  const paddingRight = variant === 'instrument' ? 76 : 10
   const paddingTop = variant === 'instrument' ? 24 : 18
   const paddingBottom = variant === 'instrument' ? 40 : 26
 
@@ -78,15 +85,20 @@ export default function InstrumentPriceChart({
 
     const values = [
       ...points.map((point) => point.value),
-      ...referenceLines.map((line) => line.value).filter(Number.isFinite),
+      ...referenceLines.map((line) => Number(line.value)).filter(Number.isFinite),
     ]
-    const minValue = Math.min(...values)
-    const maxValue = Math.max(...values)
-    const span = maxValue - minValue || Math.max(Math.abs(maxValue) * 0.02, 1)
+    const low = Math.min(...values)
+    const high = Math.max(...values)
+    const breathingRoom = (high - low || Math.max(Math.abs(high) * 0.02, 1)) * 0.08
+    const minValue = low - breathingRoom
+    const maxValue = high + breathingRoom
+    const span = maxValue - minValue
     const innerWidth = width - paddingLeft - paddingRight
     const innerHeight = height - paddingTop - paddingBottom
-    const projectedPoints = points.map((point, index) => {
-      const x = paddingLeft + (index / Math.max(points.length - 1, 1)) * innerWidth
+    const startTime = Date.parse(points[0].date)
+    const timeSpan = Date.parse(points[points.length - 1].date) - startTime
+    const projectedPoints = points.map((point) => {
+      const x = paddingLeft + (timeSpan > 0 ? (Date.parse(point.date) - startTime) / timeSpan : 0.5) * innerWidth
       const normalized = (point.value - minValue) / span
       const y = height - paddingBottom - normalized * innerHeight
       return {
@@ -100,7 +112,7 @@ export default function InstrumentPriceChart({
       .join(' ')
     const areaPath = `${linePath} L ${projectedPoints[projectedPoints.length - 1].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} L ${projectedPoints[0].x.toFixed(1)} ${(height - paddingBottom).toFixed(1)} Z`
     const gridValues = [0, 0.5, 1].map((fraction) => ({
-      label: formatUnitPrice(maxValue - span * fraction, currency),
+      label: formatNumber(maxValue - span * fraction, 4),
       y: paddingTop + innerHeight * fraction,
     }))
     const bands = [0, 1, 2, 3].map((index) => ({
@@ -109,7 +121,7 @@ export default function InstrumentPriceChart({
       width: innerWidth / 4,
       height: innerHeight,
     }))
-    const projectedReferenceLines = referenceLines
+    const projectedReferenceLines = referenceLines.map((line) => ({ ...line, value: Number(line.value) }))
       .filter((line) => Number.isFinite(line.value))
       .map((line) => ({
         ...line,
@@ -127,7 +139,7 @@ export default function InstrumentPriceChart({
 
   const activeProjectedPoint =
     chartGeometry && activePoint
-      ? chartGeometry.projectedPoints[Math.max(0, hoverIndex ?? chartGeometry.projectedPoints.length - 1)]
+      ? chartGeometry.projectedPoints[activeIndex]
       : null
   const activeChangeValue =
     firstPoint && activePoint
@@ -137,9 +149,20 @@ export default function InstrumentPriceChart({
     firstPoint && activePoint && Math.abs(firstPoint.value) > 1e-9
       ? (activePoint.value - firstPoint.value) / firstPoint.value
       : null
+  const periodDrawdown = useMemo(() => {
+    if (points.length < 2 || points.some((point) => point.value <= 0)) return null
+    let peak = points[0].value
+    let drawdown = 0
+    for (const point of points) {
+      peak = Math.max(peak, point.value)
+      drawdown = Math.min(drawdown, point.value / peak - 1)
+    }
+    return drawdown
+  }, [points])
 
   return (
     <section
+      ref={chartRef}
       className={`instrument-price-chart ${variant === 'instrument' ? 'instrument-price-chart-instrument' : ''}`}
       aria-busy={loading}
     >
@@ -149,20 +172,12 @@ export default function InstrumentPriceChart({
             <strong>{chart.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.instrument_core.instrument_id}</strong>
             <span>
               {chartSeriesLabel(chart)}
-              {chart.series_role !== 'price_level' && chart.metric_family
-                ? ` · ${performanceSeriesLabel(chart.metric_family)} family`
-                : ''}
             </span>
-            <em>
-              {activeChangeValue != null
-                ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`
-                : '—'}
-            </em>
           </div>
         ) : null}
         <div className="price-chart-readout">
           <strong>{activePoint ? formatUnitPrice(activePoint.value, currency) : loading ? 'Loading' : '—'}</strong>
-          <span>
+          <span title={t('Change in the instrument series, not your portfolio P/L.')}>
             {activePoint
               ? formatChartDate(activePoint.date)
               : loading
@@ -177,13 +192,14 @@ export default function InstrumentPriceChart({
               : '—'}
           </span>
         </div>
-        <div className="price-chart-range-strip" role="tablist" aria-label="Chart range">
+        <div className="price-chart-range-strip" role="group" aria-label={t('Chart range')}>
           {RANGE_OPTIONS.map((option) => {
             const isActive = option.key === rangeKey
             return (
               <button
                 key={option.key}
                 type="button"
+                aria-pressed={isActive}
                 className={`price-chart-range-button ${isActive ? 'price-chart-range-button-active' : ''}`}
                 onClick={() => onRangeChange(option.key)}
               >
@@ -208,15 +224,17 @@ export default function InstrumentPriceChart({
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}
             role="img"
-            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} ${chartSeriesLabel(chart)} series`}
+            aria-label={`${chart?.instrument_core.instrument_name ?? t('Instrument')} · ${t(chartSeriesLabel(chart))}`}
             onMouseLeave={() => setHoverIndex(null)}
             onMouseMove={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect()
-              const relativeX = Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width)
-              const nextIndex = Math.round((relativeX / bounds.width) * (points.length - 1))
+              const x = ((event.clientX - bounds.left) / bounds.width) * width
+              const nextIndex = chartGeometry.projectedPoints.reduce((nearest, point, index, projected) =>
+                Math.abs(point.x - x) < Math.abs(projected[nearest].x - x) ? index : nearest, 0)
               setHoverIndex(nextIndex)
             }}
           >
+            <defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#287c8e" stopOpacity="0.18" /><stop offset="100%" stopColor="#287c8e" stopOpacity="0.01" /></linearGradient></defs>
             {chartGeometry.bands.map((band, index) => (
               <rect
                 key={`band-${index}`}
@@ -236,12 +254,12 @@ export default function InstrumentPriceChart({
                   y2={gridValue.y}
                   className="price-chart-grid-line"
                 />
-                <text x={width - paddingRight} y={gridValue.y - 6} textAnchor="end" className="price-chart-axis-label">
+                <text x={width - 8} y={gridValue.y - 6} textAnchor="end" className="price-chart-axis-label">
                   {gridValue.label}
                 </text>
               </g>
             ))}
-            <path d={chartGeometry.areaPath} className="price-chart-area" />
+            <path d={chartGeometry.areaPath} className="price-chart-area" style={{ fill: `url(#${gradientId})` }} />
             {chartGeometry.projectedReferenceLines.map((line) => (
               <g key={`${line.label}-${line.value}`}>
                 <line
@@ -256,7 +274,7 @@ export default function InstrumentPriceChart({
                   y={line.y - 6}
                   className="price-chart-reference-label"
                 >
-                  {line.label} {formatUnitPrice(line.value, currency)}
+                  {t(line.label)} {formatUnitPrice(line.value, currency)}
                 </text>
               </g>
             ))}
@@ -282,10 +300,15 @@ export default function InstrumentPriceChart({
           <div className="price-chart-footer">
             <span>{points[0] ? formatChartDate(points[0].date) : '—'}</span>
             <span>
-              {chart ? `Series: ${chartSeriesLabel(chart)}` : 'Series: —'}
+              {t('Instrument series · not portfolio P/L')}
             </span>
             <span>{points[points.length - 1] ? formatChartDate(points[points.length - 1].date) : '—'}</span>
           </div>
+          {variant === 'instrument' && chart?.series_role !== 'price_level' && <dl className="holding-chart-statistics">
+            <div><dt>{t('Selected-period high')}</dt><dd>{formatUnitPrice(chart?.summary.high, currency)}</dd></div>
+            <div><dt>{t('Selected-period low')}</dt><dd>{formatUnitPrice(chart?.summary.low, currency)}</dd></div>
+            <div><dt>{t('Observed max drawdown')}</dt><dd>{formatPercent(periodDrawdown)}</dd></div>
+          </dl>}
         </div>
       ) : null}
     </section>

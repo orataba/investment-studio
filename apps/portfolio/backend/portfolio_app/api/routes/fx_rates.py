@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from portfolio_app.api.contracts import SharedFxRateRecord, SharedFxRatesResponse
-from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_platform_fx_rates
+from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_shared_fx_rates as load_shared_fx_rates
 from portfolio_app.services.portfolio_store import get_portfolio
 
 
@@ -16,7 +16,7 @@ def get_shared_fx_rates(portfolio_id: str) -> SharedFxRatesResponse:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        payload = get_platform_fx_rates()
+        payload = load_shared_fx_rates()
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

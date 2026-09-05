@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "investment-studio-instrument-core"
+version = "0.1.0"
+description = "Shared instrument data contracts for Investment Studio"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.10,<3.0",
+  "sqlalchemy>=2.0,<3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["investment_studio_instrument_core*"]

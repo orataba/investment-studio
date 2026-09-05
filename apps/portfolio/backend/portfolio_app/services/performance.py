@@ -1,5 +1,11 @@
 from __future__ import annotations
+from portfolio_app.services.lot_selection import selected_quantities
 
+from portfolio_app.services.asset_deliveries import expand_asset_deliveries
+from portfolio_app.services.short_positions import SHORT_TRANSACTION_TYPES, partition_security_sides
+from portfolio_app.services.ledger import _rounded_split_quantity
+
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
@@ -9,7 +15,7 @@ from threading import RLock
 from time import monotonic
 from typing import cast
 
-from portfolio_ops_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
+from investment_studio_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
 
 from portfolio_app.services import (
     attribution,
@@ -23,7 +29,7 @@ from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_registry import (
-    get_platform_fx_rates,
+    get_shared_fx_rates,
     get_registry_instrument_detail,
     get_registry_instrument_details,
     list_registry_corporate_actions,
@@ -50,9 +56,11 @@ from portfolio_app.services.market_data import (
     previous_quote_point,
     quote_policy_bases,
     resolve_quote_point,
+    resolve_quote_series,
 )
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.transaction_dates import (
+    transaction_cash_activity_date,
     transaction_external_flow_date,
     transaction_ledger_activity_date,
     transaction_performance_effective_date,
@@ -71,7 +79,7 @@ EARNINGS_TRANSACTION_TYPES = {
     "interest",
     "dividend_reinvestment",
 }
-REALIZED_GAIN_TRANSACTION_TYPES = {"sell", "maturity_redemption"}
+REALIZED_GAIN_TRANSACTION_TYPES = {"sell", "maturity_redemption", "return_of_capital", "buy_to_cover"}
 NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "dividend",
     "coupon",
@@ -97,7 +105,7 @@ def _has_derivative_lifecycle_activity(
             transaction.get("derivative_contract")
         )
         and str(transaction.get("transaction_type") or "")
-        in {"buy", "sell", "opening_balance", "maturity_redemption"}
+        in {"buy", "sell", "opening_balance", "option_opening_balance", "maturity_redemption"}
     )
 
 
@@ -285,6 +293,7 @@ def _corporate_actions_for_transactions(
     *,
     effective_on_or_before: date | None = None,
 ) -> list[dict[str, object]]:
+    transactions = expand_asset_deliveries(transactions)
     instrument_ids = {
         str(transaction.get("instrument_id") or "").strip()
         for transaction in transactions
@@ -363,11 +372,99 @@ def _resolve_portfolio_valuation_cutoff_policy(portfolio: dict[str, object]) -> 
     return str(portfolio.get("valuation_cutoff_policy") or DEFAULT_VALUATION_CUTOFF_POLICY)
 
 
+class _MarketPointLookup:
+    """Validate each clean quote series once, then use causal binary lookups.
+
+    A failed full-window validation falls back to the canonical point resolver.
+    That preserves its historical behavior around an invalid observation while
+    avoiding repeated full-series scans for the normal, fully valid case.
+    """
+
+    def __init__(self, *, end_date: date) -> None:
+        self.end_date = end_date
+        self._series: dict[
+            tuple[int, str],
+            tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None,
+        ] = {}
+
+    def _validated_series(
+        self,
+        detail: dict[str, object],
+        quote_basis: str,
+    ) -> tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None:
+        key = (id(detail), quote_basis)
+        if key not in self._series:
+            resolution = resolve_quote_series(
+                detail,
+                candidate_bases=[quote_basis],
+                end_date=self.end_date,
+            )
+            if not resolution.available:
+                self._series[key] = None
+            else:
+                points = tuple(dict(point) for point in resolution.points)
+                dates = tuple(
+                    point["as_of_date"]
+                    for point in points
+                    if isinstance(point.get("as_of_date"), date)
+                )
+                self._series[key] = (dates, points) if len(dates) == len(points) else None
+        return self._series[key]
+
+    def point(
+        self,
+        detail: dict[str, object],
+        *,
+        candidate_bases: list[str],
+        as_of_date: date,
+    ) -> dict[str, object] | None:
+        for quote_basis in candidate_bases:
+            series = self._validated_series(detail, quote_basis)
+            if series is None:
+                return resolve_quote_point(
+                    detail,
+                    candidate_bases=candidate_bases,
+                    as_of_date=as_of_date,
+                ).point
+            dates, points = series
+            index = bisect_right(dates, as_of_date) - 1
+            if index < 0:
+                continue
+            point = dict(points[index])
+            point["stale"] = dates[index] < as_of_date
+            return point
+        return None
+
+    def previous(
+        self,
+        detail: dict[str, object],
+        *,
+        selected_point: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if not isinstance(selected_point, dict):
+            return None
+        quote_basis = str(selected_point.get("quote_basis") or "").strip().lower()
+        selected_date = _parse_iso_date(selected_point.get("as_of_date"))
+        if not quote_basis or selected_date is None:
+            return None
+        series = self._validated_series(detail, quote_basis)
+        if series is None:
+            return previous_quote_point(detail, selected_point=selected_point).point
+        dates, points = series
+        index = bisect_left(dates, selected_date) - 1
+        if index < 0:
+            return None
+        point = dict(points[index])
+        point["stale"] = False
+        return point
+
+
 def _select_market_point_as_of(
     *,
     detail: dict[str, object],
     role: str,
     as_of_date: date,
+    lookup: _MarketPointLookup | None = None,
 ) -> dict[str, object] | None:
     candidate_bases = quote_policy_bases(detail, role)
     if role == "valuation" and any(
@@ -375,18 +472,23 @@ def _select_market_point_as_of(
         for quote_basis in candidate_bases
     ):
         return None
-    return resolve_quote_point(
-        detail,
-        candidate_bases=candidate_bases,
-        as_of_date=as_of_date,
-    ).point
+    if lookup is not None:
+        return lookup.point(
+            detail,
+            candidate_bases=candidate_bases,
+            as_of_date=as_of_date,
+        )
+    return resolve_quote_point(detail, candidate_bases=candidate_bases, as_of_date=as_of_date).point
 
 
 def _previous_market_point_for_selected_point(
     *,
     detail: dict[str, object],
     selected_point: dict[str, object] | None,
+    lookup: _MarketPointLookup | None = None,
 ) -> dict[str, object] | None:
+    if lookup is not None:
+        return lookup.previous(detail, selected_point=selected_point)
     return previous_quote_point(detail, selected_point=selected_point).point
 
 
@@ -495,7 +597,7 @@ def _build_period_start_boundary_transactions(
         if effective_date_iso < start_iso:
             boundary_transactions.append(transaction)
             continue
-        if effective_date_iso == start_iso and str(transaction.get("transaction_type") or "") == "opening_balance":
+        if effective_date_iso == start_iso and str(transaction.get("transaction_type") or "") in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
             boundary_transactions.append(transaction)
     return boundary_transactions
 
@@ -583,7 +685,7 @@ def _starts_on_imported_valuation_anchor(
     return any(
         effective_date == resolved_start_date
         and str(transaction.get("transaction_type") or "")
-        == "opening_balance"
+        in {"opening_balance", "option_opening_balance", "short_opening_balance"}
         for effective_date, transaction in effective_transactions
     )
 
@@ -1119,16 +1221,25 @@ def _consume_period_lots(
     account_id: str,
     position_reference_id: str,
     quantity: float,
+    lot_selections: list[dict[str, object]] | None = None,
+    cost_basis_method: str = "fifo",
 ) -> list[dict[str, object]]:
     remaining_quantity = quantity
     consumed_slices: list[dict[str, object]] = []
-    for lot in lots_by_key.get((account_id, position_reference_id), []):
+    lots = lots_by_key.get((account_id, position_reference_id), [])
+    selections = selected_quantities(lots, lot_selections, quantity_key="quantity") if lot_selections else None
+    total_quantity = sum(float(lot.get("quantity") or 0) for lot in lots)
+    for index, lot in enumerate(lots):
         if remaining_quantity <= 1e-9:
             break
         lot_quantity = _safe_float(lot.get("quantity")) or 0.0
         if lot_quantity <= 1e-9:
             continue
-        take_quantity = min(lot_quantity, remaining_quantity)
+        take_quantity = selections[index] if selections is not None else (
+            min(lot_quantity, quantity * lot_quantity / total_quantity) if cost_basis_method == "moving_average" and total_quantity > 0 else min(lot_quantity, remaining_quantity)
+        )
+        if take_quantity <= 1e-9:
+            continue
         lot_cost_local = _safe_float(lot.get("cost_local")) or 0.0
         released_cost_local = lot_cost_local * (take_quantity / lot_quantity)
         lot["quantity"] = lot_quantity - take_quantity
@@ -1155,6 +1266,7 @@ def _append_period_lot(
     currency: str,
     quantity: float,
     cost_local: float,
+    opened_by_transaction_id: str | None = None,
 ) -> None:
     if quantity <= 1e-9:
         return
@@ -1169,6 +1281,7 @@ def _append_period_lot(
             "currency": currency,
             "quantity": quantity,
             "cost_local": max(cost_local, 0.0),
+            "opened_by_transaction_id": opened_by_transaction_id,
         }
     )
 
@@ -1314,6 +1427,23 @@ def _period_unrealized_capital_gains_by_group(
     instrument_detail_cache: dict[str, dict[str, object] | None],
     start_is_close_boundary: bool = False,
 ) -> dict[str, object]:
+    transactions = expand_asset_deliveries(transactions)
+    if any(tx.get("transaction_type") in SHORT_TRANSACTION_TYPES for tx in transactions):
+        actions = _corporate_actions_for_transactions(transactions, effective_on_or_before=end_date)
+        long_facts, short_facts = partition_security_sides(transactions, corporate_actions=actions, split_quantity=_rounded_split_quantity)
+        kwargs = dict(start_date=start_date, end_date=end_date, axis=axis, taxonomy_id=taxonomy_id,
+                      taxonomies=taxonomies, taxonomy_nodes=taxonomy_nodes, taxonomy_assignments=taxonomy_assignments,
+                      base_currency=base_currency, direct_fx_instruments=direct_fx_instruments,
+                      instrument_detail_cache=instrument_detail_cache, start_is_close_boundary=start_is_close_boundary)
+        result = _period_unrealized_capital_gains_by_group(portfolio, accounts, long_facts, **kwargs)
+        short = _period_unrealized_capital_gains_by_group(portfolio, accounts, short_facts, **kwargs)
+        for key, amount in short["values"].items():
+            result["values"][key] = result["values"].get(key, 0.0) - amount
+        result["coverage_complete"] = result["coverage_complete"] and short["coverage_complete"]
+        result["stale_fx_flag"] = result["stale_fx_flag"] or short["stale_fx_flag"]
+        for key in ("open_group_keys", "disposed_group_keys", "foreign_group_keys"):
+            result[key] = sorted(set(result[key]) | set(short[key]))
+        return result
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
     start_boundary_date = (
@@ -1332,7 +1462,7 @@ def _period_unrealized_capital_gains_by_group(
         if not start_is_close_boundary
         if transaction_performance_effective_date(transaction) == start_date
         and str(transaction.get("transaction_type") or "")
-        == "opening_balance"
+        in {"opening_balance", "option_opening_balance"}
     ]
     opening_boundary_transaction_ids = {
         str(transaction.get("transaction_id") or "")
@@ -1364,6 +1494,7 @@ def _period_unrealized_capital_gains_by_group(
             if quantity <= 1e-9:
                 continue
             lot = {
+                "opened_by_transaction_id": position_lot.get("opened_by_transaction_id"),
                 "account_id": str(position_lot.get("account_id") or ""),
                 "position_reference_id": str(
                     position_lot.get("position_reference_id") or ""
@@ -1541,7 +1672,7 @@ def _period_unrealized_capital_gains_by_group(
         )
         position_reference_id = derivative_contract_id or instrument_id or ""
         quantity = _safe_float(transaction.get("quantity")) or 0.0
-        if not account_id or not position_reference_id or quantity <= 1e-9:
+        if not account_id or not position_reference_id or (quantity <= 1e-9 and transaction_type != "return_of_capital"):
             continue
         currency = valuation_fx.required_currency(
             transaction.get("currency"), field_name="transaction currency"
@@ -1551,6 +1682,7 @@ def _period_unrealized_capital_gains_by_group(
         if transaction_type in {"opening_balance", "buy", "dividend_reinvestment"}:
             _append_period_lot(
                 lots_by_key,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                 account_id=account_id,
                 position_reference_id=position_reference_id,
                 instrument_id=instrument_id,
@@ -1567,6 +1699,8 @@ def _period_unrealized_capital_gains_by_group(
             disposed_period_lots.extend(
                 _consume_period_lots(
                     lots_by_key,
+                    lot_selections=transaction.get("lot_selections") or [],
+                    cost_basis_method=_account_cost_methods(accounts).get(account_id, "fifo"),
                     account_id=account_id,
                     position_reference_id=position_reference_id,
                     quantity=quantity,
@@ -1586,6 +1720,8 @@ def _period_unrealized_capital_gains_by_group(
         if transaction_type == "transfer_out" and transaction.get("transfer_object_type") == "position":
             consumed_slices = _consume_period_lots(
                 lots_by_key,
+                lot_selections=transaction.get("lot_selections") or [],
+                cost_basis_method=_account_cost_methods(accounts).get(account_id, "fifo"),
                 account_id=account_id,
                 position_reference_id=position_reference_id,
                 quantity=quantity,
@@ -1602,6 +1738,7 @@ def _period_unrealized_capital_gains_by_group(
                 for incoming_slice in incoming_slices:
                     _append_period_lot(
                         lots_by_key,
+                        opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                         account_id=account_id,
                         position_reference_id=position_reference_id,
                         instrument_id=instrument_id,
@@ -1628,6 +1765,7 @@ def _period_unrealized_capital_gains_by_group(
                 continue
             _append_period_lot(
                 lots_by_key,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                 account_id=account_id,
                 position_reference_id=position_reference_id,
                 instrument_id=instrument_id,
@@ -1971,9 +2109,10 @@ def build_daily_portfolio_snapshots(
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
 
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    market_point_lookup = _MarketPointLookup(end_date=resolved_end_date)
     holding_fx_rate_cache: valuation_fx.FxRateResolutionCache = {}
     resolve_holding_fx_rate_on = partial(
         valuation_fx.resolve_fx_rate_on_cached,
@@ -1988,6 +2127,7 @@ def build_daily_portfolio_snapshots(
                 for candidate in (
                     transaction_performance_effective_date(transaction),
                     transaction_position_cash_transfer_date(transaction),
+                    transaction_cash_activity_date(transaction),
                 )
                 if candidate is not None
             }
@@ -2050,6 +2190,8 @@ def build_daily_portfolio_snapshots(
             transactions_as_of,
             as_of_date=as_of_date,
             corporate_actions=corporate_actions,
+            # Snapshot valuation below prices these quantities already.
+            resolve_pricing=False,
         )
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
@@ -2332,6 +2474,7 @@ def build_daily_portfolio_snapshots(
                     detail=detail,
                     role="valuation",
                     as_of_date=as_of_date,
+                    lookup=market_point_lookup,
                 )
                 if price_point is None:
                     position_valuation_complete = False
@@ -2972,9 +3115,13 @@ def build_daily_portfolio_snapshots(
                         valuation_fx.instrument_detail_cache_get,
                         instrument_detail_loader=get_registry_instrument_detail,
                     ),
-                    select_market_point_as_of=_select_market_point_as_of,
-                    previous_market_point_for_selected_point=(
-                        _previous_market_point_for_selected_point
+                    select_market_point_as_of=partial(
+                        _select_market_point_as_of,
+                        lookup=market_point_lookup,
+                    ),
+                    previous_market_point_for_selected_point=partial(
+                        _previous_market_point_for_selected_point,
+                        lookup=market_point_lookup,
                     ),
                     position_market_value=valuation_fx.position_market_value,
                     holding_day_change=(
@@ -2990,6 +3137,7 @@ def build_daily_portfolio_snapshots(
                     ),
                     build_cash_rows=partial(
                         holdings_market_profile.build_cash_holding_rows,
+                        account_lookup={str(account["account_id"]): account for account in accounts},
                         cash_day_change=partial(
                             holdings_market_profile.cash_day_change_metrics,
                             resolve_fx_rate_on=resolve_holding_fx_rate_on,
@@ -3023,6 +3171,7 @@ def build_daily_portfolio_snapshots(
                     account_name_map=account_name_map,
                     direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
+                    market_point_lookup=market_point_lookup,
                 )
                 current_events = _build_contribution_daily_events(
                     axis=contribution_axis,
@@ -3032,6 +3181,7 @@ def build_daily_portfolio_snapshots(
                     transactions_as_of=transactions_as_of,
                     base_currency=base_currency,
                     account_name_map=account_name_map,
+                    account_currency_map=account_currency_map,
                     direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
@@ -4101,7 +4251,7 @@ def build_period_calculation_report(
     )
     end_instrument_currency_gains = _safe_float(end_snapshot.get("instrument_currency_gains"))
 
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     calculation_instrument_ids = _instrument_ids_for_calculation_risk_basis(
         portfolio,
@@ -4620,6 +4770,23 @@ def _build_boundary_holding_records(
         else:
             total_market_value_base += converted_market_value
 
+        option_exposure = holdings_market_profile.option_contract_exposure_fields(
+            derivative_contract=derivative_contract,
+            quantity=quantity,
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            convert_amount_on=partial(
+                valuation_fx.convert_amount_on,
+                instrument_detail_loader=get_registry_instrument_detail,
+            ),
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_cache_get=partial(
+                valuation_fx.instrument_detail_cache_get,
+                instrument_detail_loader=get_registry_instrument_detail,
+            ),
+        )
+
         position_reference_id = str(bucket.get("position_reference_id") or "")
         instrument_id = str(bucket.get("instrument_id") or "") or None
         derivative_contract_id = (
@@ -4695,6 +4862,7 @@ def _build_boundary_holding_records(
                 "risk_eligible": not event_valued,
                 "day_change_value": day_change_value,
                 **translated_day_change,
+                **option_exposure,
                 "currency": currency,
                 "portfolio_weight": None,
                 "account_ids": list(bucket.get("account_ids") or []),
@@ -4716,6 +4884,10 @@ def _build_boundary_holding_records(
         as_of_date=as_of_date,
         base_currency=base_currency,
         nav=boundary_nav,
+        instrument_detail_cache_get=partial(
+            valuation_fx.instrument_detail_cache_get,
+            instrument_detail_loader=get_registry_instrument_detail,
+        ),
         convert_amount_on=partial(
             valuation_fx.convert_amount_on,
             direct_fx_instruments=direct_fx_instruments,
@@ -4847,7 +5019,7 @@ def build_holdings_report(
         )
     )
 
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
@@ -4908,6 +5080,7 @@ def build_holdings_report(
         positions = [
             *positions,
             *holdings_market_profile.build_cash_holding_rows(
+                account_lookup={str(account["account_id"]): account for account in accounts},
                 cash_balances=list(cash_components.get("cash_balances") or []),
                 as_of_date=as_of_date,
                 previous_as_of_date=as_of_date - timedelta(days=1),
@@ -5158,7 +5331,7 @@ def build_period_boundary_holdings_report(
         end_date=resolved_end_date,
     )
 
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     start_snapshot = _build_single_date_snapshot(
@@ -5805,6 +5978,7 @@ def _build_contribution_group_end_states(
     account_name_map: dict[str, str],
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
+    market_point_lookup: _MarketPointLookup | None = None,
 ) -> dict[str, dict[str, object]]:
     states: dict[str, dict[str, object]] = {}
     resolved_position_lots = (
@@ -5950,6 +6124,7 @@ def _build_contribution_group_end_states(
                 detail=detail,
                 role="valuation",
                 as_of_date=as_of_date,
+                lookup=market_point_lookup,
             )
             if isinstance(detail, dict)
             else None
@@ -6153,9 +6328,11 @@ def _build_contribution_daily_events(
     transactions_as_of: list[dict[str, object]] | None = None,
     base_currency: str,
     account_name_map: dict[str, str],
+    account_currency_map: dict[str, str],
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, dict[str, object]]:
+    transactions_on_date = expand_asset_deliveries(transactions_on_date)
     events: dict[str, dict[str, object]] = {}
     as_of_iso = as_of_date.isoformat()
 
@@ -6294,6 +6471,102 @@ def _build_contribution_daily_events(
                 currency=currency,
             )
 
+    def mark_transfer_flow_unavailable(
+        *,
+        source_group_key: str,
+        source_group_label: str,
+        target_group_key: str,
+        target_group_label: str,
+        eod: bool = False,
+    ) -> None:
+        if (
+            not source_group_key
+            or not target_group_key
+            or source_group_key == target_group_key
+        ):
+            return
+        source_event = ensure_event(source_group_key, source_group_label)
+        target_event = ensure_event(target_group_key, target_group_label)
+        source_event[attribution.GROUP_CAPITAL_FLOW_OUT_FIELD] = None
+        target_event[attribution.GROUP_CAPITAL_FLOW_IN_FIELD] = None
+        if eod:
+            source_event[attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD] = None
+            target_event[attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD] = None
+
+    def transferred_position_market_value(
+        transaction: dict[str, object],
+    ) -> float | None:
+        position_reference_id, _label, _position_type = (
+            attribution.position_reference_from_mapping(transaction)
+        )
+        transferred_quantity = _safe_float(transaction.get("quantity"))
+        if not position_reference_id or transferred_quantity is None:
+            return None
+        instrument_ref = (
+            transaction.get("instrument_ref")
+            if isinstance(transaction.get("instrument_ref"), dict)
+            else None
+        )
+        derivative_contract = (
+            transaction.get("derivative_contract")
+            if isinstance(transaction.get("derivative_contract"), dict)
+            else None
+        )
+        if instrument_ref is not None:
+            detail = valuation_fx.instrument_detail_cache_get(
+                str(transaction.get("instrument_id") or ""),
+                instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            price_point = (
+                _select_market_point_as_of(
+                    detail=detail,
+                    role="valuation",
+                    as_of_date=as_of_date,
+                )
+                if isinstance(detail, dict)
+                else None
+            )
+            _last_price, resolved_market_value, _event_valued = (
+                holdings_market_profile.resolve_position_valuation(
+                    quantity=transferred_quantity,
+                    cost_basis=_safe_float(transaction.get("gross_amount")) or 0.0,
+                    instrument_ref=instrument_ref,
+                    derivative_contract=derivative_contract,
+                    quoted_price=_safe_float((price_point or {}).get("value")),
+                    quoted_price_scale=_safe_float(
+                        (price_point or {}).get("price_scale")
+                    ),
+                )
+            )
+            if resolved_market_value is not None:
+                return resolved_market_value
+        matched_quantity = 0.0
+        matched_market_value = 0.0
+        for position_lot in position_lots:
+            if (
+                str(position_lot.get("position_reference_id") or "")
+                != position_reference_id
+            ):
+                continue
+            remaining_quantity = _safe_float(
+                position_lot.get("remaining_quantity")
+            )
+            current_market_value = _safe_float(
+                position_lot.get("current_market_value")
+            )
+            if (
+                remaining_quantity is None
+                or remaining_quantity <= 1e-9
+                or current_market_value is None
+            ):
+                continue
+            matched_quantity += remaining_quantity
+            matched_market_value += current_market_value
+        if matched_quantity <= 1e-9:
+            return None
+        return transferred_quantity * matched_market_value / matched_quantity
+
     for position_lot in position_lots:
         group_key, group_label = attribution.position_group_for_axis(
             axis=axis,
@@ -6376,6 +6649,93 @@ def _build_contribution_daily_events(
             == "option_writer_cash_settlement"
         )
 
+        if (
+            transaction_type == "fx_conversion"
+            and is_performance_effective_date
+        ):
+            target_account_id = str(
+                transaction.get("counterparty_account_id") or ""
+            ).strip()
+            target_currency = account_currency_map.get(target_account_id, "")
+            source_group_key, source_group_label = cash_group(account_id, currency)
+            target_group_key, target_group_label = cash_group(
+                target_account_id,
+                target_currency,
+            )
+            add_transfer_flow(
+                source_group_key=source_group_key,
+                source_group_label=source_group_label,
+                target_group_key=target_group_key,
+                target_group_label=target_group_label,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+                eod=True,
+            )
+        elif (
+            transaction_type == "transfer_out"
+            and str(transaction.get("transfer_object_type") or "") == "cash"
+            and is_performance_effective_date
+        ):
+            target_account_id = str(
+                transaction.get("counterparty_account_id") or ""
+            ).strip()
+            source_group_key, source_group_label = cash_group(account_id, currency)
+            target_group_key, target_group_label = cash_group(
+                target_account_id,
+                account_currency_map.get(target_account_id, currency),
+            )
+            add_transfer_flow(
+                source_group_key=source_group_key,
+                source_group_label=source_group_label,
+                target_group_key=target_group_key,
+                target_group_label=target_group_label,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+                eod=True,
+            )
+        elif (
+            transaction_type == "transfer_out"
+            and str(transaction.get("transfer_object_type") or "") == "position"
+            and is_performance_effective_date
+        ):
+            target_transaction = {
+                **transaction,
+                "account_id": transaction.get("counterparty_account_id"),
+                "attribution_account_id": transaction.get(
+                    "counterparty_account_id"
+                ),
+            }
+            target_group_key, target_group_label = (
+                attribution.transaction_group_for_axis(
+                    axis=axis,
+                    transaction=target_transaction,
+                    account_name_map=account_name_map,
+                    base_currency=base_currency,
+                )
+            )
+            transfer_market_value = transferred_position_market_value(transaction)
+            if transfer_market_value is None:
+                mark_transfer_flow_unavailable(
+                    source_group_key=group_key,
+                    source_group_label=group_label,
+                    target_group_key=target_group_key,
+                    target_group_label=target_group_label,
+                    eod=True,
+                )
+            else:
+                add_transfer_flow(
+                    source_group_key=group_key,
+                    source_group_label=group_label,
+                    target_group_key=target_group_key,
+                    target_group_label=target_group_label,
+                    amount=transfer_market_value,
+                    trade_date=as_of_date,
+                    currency=currency,
+                    eod=True,
+                )
+
         transaction_risk_exclusion = _transaction_market_risk_excluded_pnl(
             transaction
         )
@@ -6423,7 +6783,16 @@ def _build_contribution_daily_events(
                 currency=currency,
             )
 
-        if transaction_type == "opening_balance" and is_performance_effective_date:
+        if transaction_type in {"option_opening_balance", "short_opening_balance"} and is_performance_effective_date:
+            add_flow(
+                group_key=group_key,
+                group_label=group_label,
+                field_name=attribution.GROUP_CAPITAL_FLOW_OUT_FIELD,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type == "opening_balance" and is_performance_effective_date:
             add_flow(
                 group_key=group_key,
                 group_label=group_label,
@@ -6450,7 +6819,20 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif transaction_type == "buy" and is_position_cash_transfer_date:
+        elif transaction.get("noncash_delivery") and is_position_cash_transfer_date:
+            source_group_key, source_group_label = attribution.transaction_group_for_axis(
+                axis=axis,
+                transaction={**transaction, "account_id": transaction["delivery_source_account_id"],
+                             "instrument_id": None, "instrument_ref": None,
+                             "derivative_contract_id": transaction["delivery_source_contract_id"],
+                             "derivative_contract": transaction["delivery_source_contract"]},
+                account_name_map=account_name_map,
+                base_currency=base_currency,
+            )
+            add_transfer_flow(source_group_key=source_group_key, source_group_label=source_group_label,
+                              target_group_key=group_key, target_group_label=group_label,
+                              amount=gross_amount, trade_date=as_of_date, currency=currency)
+        elif transaction_type in {"buy", "buy_to_cover"} and is_position_cash_transfer_date:
             source_group_key, source_group_label = cash_group(settlement_cash_account_id, currency)
             add_transfer_flow(
                 source_group_key=source_group_key,
@@ -6468,7 +6850,7 @@ def _build_contribution_daily_events(
                 ),
             )
         elif (
-            transaction_type in {"sell", "maturity_redemption"}
+            transaction_type in {"sell", "maturity_redemption", "short_sell"}
             and is_position_cash_transfer_date
         ):
             target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
@@ -7434,6 +7816,7 @@ def build_contribution_report(
             for candidate in (
                 transaction_performance_effective_date(transaction),
                 transaction_position_cash_transfer_date(transaction),
+                transaction_cash_activity_date(transaction),
             )
             if candidate is not None
         }
@@ -7444,7 +7827,7 @@ def build_contribution_report(
     account_cost_methods = _account_cost_methods(accounts)
     account_currency_map = _account_currency_map(accounts)
     account_name_map = attribution.account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
 
@@ -7488,6 +7871,7 @@ def build_contribution_report(
             transactions_as_of=transactions_as_of,
             base_currency=base_currency,
             account_name_map=account_name_map,
+            account_currency_map=account_currency_map,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
@@ -8861,7 +9245,7 @@ def build_period_calculation_groups_report(
         if risk_basis_complete
         else attribution.risk_metric_defaults(risk_calculation_frequency)
     )
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     raw_start_snapshot = (
         _raw_period_start_snapshot(
@@ -9230,7 +9614,7 @@ def build_period_calculation_groups_calendar_report(
         if isinstance(contribution_calendar_report.get("summary"), dict)
         else {}
     )
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     unrealized_capital_cache: dict[tuple[date, date], dict[str, object]] = {}
@@ -9819,7 +10203,7 @@ def build_contribution_entries_report(
     )
 
     account_name_map = attribution.account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     taxonomy_context = None
@@ -10332,7 +10716,7 @@ def build_period_calculation_entries_report(
     )
 
     account_name_map = attribution.account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
+    fx_payload = get_shared_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     taxonomy_context = None

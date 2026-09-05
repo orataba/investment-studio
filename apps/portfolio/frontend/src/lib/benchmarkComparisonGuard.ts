@@ -8,7 +8,7 @@ export type BenchmarkComparisonMode = 'canonical' | 'exploratory' | 'unavailable
 export type BenchmarkComparisonGuardReason =
   | 'benchmark_total_return_comparable'
   | 'benchmark_price_return_comparable'
-  | 'benchmark_price_only_exploratory'
+  | 'benchmark_basis_unconfirmed_comparable'
   | 'benchmark_basis_unavailable'
   | 'benchmark_currency_unavailable'
   | 'benchmark_currency_mismatch'
@@ -78,7 +78,6 @@ export function assessBenchmarkComparisonGuard({
   eligiblePortfolioDates,
 }: BenchmarkComparisonGuardInput): BenchmarkComparisonGuard {
   const basisAssessment = assessPerformanceBenchmarkBasis(chartBasis, returnSemantics)
-  const normalizedReturnSemantics = String(returnSemantics ?? '').trim().toLowerCase()
   const benchmarkCurrency = normalizeBenchmarkCurrency(rawBenchmarkCurrency)
   const portfolioCurrency = normalizeBenchmarkCurrency(rawPortfolioCurrency)
 
@@ -146,43 +145,20 @@ export function assessBenchmarkComparisonGuard({
     )
   }
 
-  if (!basisAssessment.comparisonEligible) {
-    return {
-      mode: 'exploratory',
-      reason: 'benchmark_price_only_exploratory',
-      canonicalComparisonEligible: false,
-      relativeComparisonEligible: false,
-      basisAssessment,
-      benchmarkCurrency,
-      portfolioCurrency,
-      missingEligibleDates: [],
-      warning: basisAssessment.warning,
-    }
-  }
-
-  if (normalizedReturnSemantics === 'price_return') {
-    return {
-      mode: 'exploratory',
-      reason: 'benchmark_price_return_comparable',
-      canonicalComparisonEligible: false,
-      relativeComparisonEligible: true,
-      basisAssessment,
-      benchmarkCurrency,
-      portfolioCurrency,
-      missingEligibleDates: [],
-      warning: basisAssessment.warning,
-    }
-  }
-
+  const totalReturn = basisAssessment.returnSemantics === 'total_return'
   return {
-    mode: 'canonical',
-    reason: 'benchmark_total_return_comparable',
-    canonicalComparisonEligible: true,
+    mode: totalReturn ? 'canonical' : 'exploratory',
+    reason: totalReturn
+      ? 'benchmark_total_return_comparable'
+      : basisAssessment.returnSemantics === 'price_return'
+        ? 'benchmark_price_return_comparable'
+        : 'benchmark_basis_unconfirmed_comparable',
+    canonicalComparisonEligible: totalReturn,
     relativeComparisonEligible: true,
     basisAssessment,
     benchmarkCurrency,
     portfolioCurrency,
     missingEligibleDates: [],
-    warning: null,
+    warning: basisAssessment.warning,
   }
 }

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from portfolio_app.services.lot_selection import resolve_import_lot_references
 
 import hashlib
 import json
@@ -6,15 +7,17 @@ import re
 from copy import deepcopy
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from math import isfinite
 from typing import Any
+from types import SimpleNamespace
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Integer, and_, cast, delete, func, inspect, or_, select, update
+from sqlalchemy import Integer, String, and_, cast, delete, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from portfolio_ops_instrument_core import SUPPORTED_FX_CURRENCIES
-from portfolio_ops_instrument_core.db_models import InstrumentMarketData
+from investment_studio_instrument_core import SUPPORTED_FX_CURRENCIES
+from investment_studio_instrument_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
@@ -594,6 +597,8 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "institution": item.institution,
                 "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
                 "cost_basis_method": item.cost_basis_method,
+                "cash_purpose": item.cash_purpose,
+                "collateral_reference": item.collateral_reference,
                 "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
                 "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
                 "status": item.status,
@@ -630,6 +635,8 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "settlement_cash_account_id": item.settlement_cash_account_id,
                 "instrument_id": item.instrument_id,
                 "instrument_ref": deepcopy(item.instrument_ref_json),
+                "asset_deliveries": deepcopy(item.asset_deliveries_json or []),
+                "lot_selections": deepcopy(item.lot_selections_json or []),
                 "derivative_contract_id": item.derivative_contract_id,
                 "derivative_contract": (
                     _serialize_derivative_contract_row(item.derivative_contract)
@@ -763,7 +770,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 f"Transaction '{transaction.get('transaction_id')}' must not predate "
                 f"portfolio inception_date {inception_date}."
             )
-        if transaction.get("transaction_type") != "opening_balance":
+        if transaction.get("transaction_type") not in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
             continue
         if trade_date != inception_date or settlement_date != inception_date:
             raise ValueError(
@@ -847,6 +854,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 account_id=str(raw_account.get("account_id") or "").strip(),
                 portfolio_id=str(raw_account.get("portfolio_id") or "").strip(),
                 account_name=str(raw_account.get("account_name") or "").strip(),
+                cash_purpose=raw_account.get("cash_purpose"),
+                collateral_reference=raw_account.get("collateral_reference"),
                 account_type=str(raw_account.get("account_type") or "").strip(),
                 account_category=str(raw_account.get("account_category") or "").strip(),
                 currency=str(raw_account.get("currency") or "USD").strip().upper() or "USD",
@@ -887,6 +896,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     str(raw_contract.get("external_reference") or "").strip() or None
                 ),
                 terms_json=deepcopy(terms),
+                row_version=int(raw_contract.get("row_version") or 1),
+                amendments_json=deepcopy(raw_contract.get("amendments") or []),
                 created_at=str(
                     raw_contract.get("created_at") or _current_utc_timestamp()
                 ).strip(),
@@ -1173,6 +1184,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 fees=float(source_fees),
                 source_fees=source_fees,
                 fee_category=str(raw_transaction.get("fee_category") or "unknown"),
+                asset_deliveries_json=deepcopy(raw_transaction.get("asset_deliveries") or []),
+                lot_selections_json=deepcopy(raw_transaction.get("lot_selections") or []),
                 taxes=float(source_taxes),
                 source_taxes=source_taxes,
                 currency=str(raw_transaction.get("currency") or "USD").strip().upper() or "USD",
@@ -1526,6 +1539,8 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
         "institution": item.institution,
         "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
         "cost_basis_method": item.cost_basis_method,
+        "cash_purpose": item.cash_purpose,
+        "collateral_reference": item.collateral_reference,
         "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
         "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
         "status": item.status,
@@ -1536,6 +1551,8 @@ def _serialize_derivative_contract_row(
     item: DerivativeContractRecordModel,
 ) -> dict[str, object]:
     return {
+        "row_version": item.row_version,
+        "amendments": deepcopy(item.amendments_json or []),
         "derivative_contract_id": item.derivative_contract_id,
         "portfolio_id": item.portfolio_id,
         "account_id": item.account_id,
@@ -1562,6 +1579,8 @@ def _serialize_option_delivery_link(
 
 def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object]:
     return {
+        "asset_deliveries": deepcopy(item.asset_deliveries_json or []),
+        "lot_selections": deepcopy(item.lot_selections_json or []),
         "transaction_id": item.transaction_id,
         "transaction_sequence": item.transaction_sequence,
         "portfolio_id": item.portfolio_id,
@@ -1754,9 +1773,9 @@ def _transaction_position_quantity_delta(record: TransactionRecordModel) -> floa
     if quantity <= 0:
         return 0.0
     transaction_type = str(record.transaction_type or "")
-    if transaction_type in {"opening_balance", "buy", "dividend_reinvestment"}:
+    if transaction_type in {"opening_balance", "buy", "dividend_reinvestment", "buy_to_cover"}:
         return quantity
-    if transaction_type in {"sell", "maturity_redemption"}:
+    if transaction_type in {"sell", "maturity_redemption", "short_sell", "short_opening_balance"}:
         return -quantity
     if transaction_type == "transfer_in" and record.transfer_object_type == "position":
         return quantity
@@ -1830,6 +1849,25 @@ def _refresh_portfolio_instrument_universe_records(
             continue
         transactions_by_key.setdefault((transaction.portfolio_id, instrument_id), []).append(transaction)
 
+    delivery_statement = select(TransactionRecordModel).where(TransactionRecordModel.derivative_contract_id.is_not(None))
+    if normalized_portfolio_id:
+        delivery_statement = delivery_statement.where(TransactionRecordModel.portfolio_id == normalized_portfolio_id)
+    for transaction in session.scalars(delivery_statement):
+        for leg in transaction.asset_deliveries_json or []:
+            instrument_id = str(leg["instrument_id"])
+            if normalized_instrument_ids and instrument_id not in normalized_instrument_ids:
+                continue
+            delivered = SimpleNamespace(
+                portfolio_id=transaction.portfolio_id, instrument_id=instrument_id,
+                instrument_ref_json=leg["instrument_ref"], transaction_type="buy",
+                quantity=float(leg["quantity"]), transfer_object_type=None,
+                trade_date=transaction.trade_date, trade_at=transaction.trade_at,
+                created_at=transaction.created_at, transaction_sequence=transaction.transaction_sequence,
+                transaction_id=transaction.transaction_id,
+                settlement_date=transaction.settlement_date,
+            )
+            transactions_by_key.setdefault((transaction.portfolio_id, instrument_id), []).append(delivered)
+
     assignment_statement = (
         select(TaxonomyRecordModel.portfolio_id, TaxonomyAssignmentRecordModel.target_entity_id)
         .join(TaxonomyRecordModel, TaxonomyRecordModel.taxonomy_id == TaxonomyAssignmentRecordModel.taxonomy_id)
@@ -1875,7 +1913,7 @@ def _refresh_portfolio_instrument_universe_records(
                 session.add(existing)
             existing.instrument_ref_json = deepcopy(latest.instrument_ref_json) if isinstance(latest.instrument_ref_json, dict) else None
             existing.source = "transaction"
-            existing.holding_state = "held" if quantity > 1e-9 else "not_held"
+            existing.holding_state = "held" if abs(quantity) > 1e-9 else "not_held"
             existing.first_transaction_date = first_transaction_date
             existing.last_transaction_date = last_transaction_date
             existing.transaction_count = len(rows)
@@ -2484,8 +2522,8 @@ def _validate_target_set_lines(
             if target_weight is None:
                 raise ValueError("Every scope member needs a target_weight when weight is enabled.")
             resolved_weight = float(target_weight)
-            if resolved_weight < 0:
-                raise ValueError("target_weight must be zero or greater.")
+            if not isfinite(resolved_weight) or resolved_weight < 0:
+                raise ValueError("target_weight must be finite and zero or greater.")
             weight_total += resolved_weight
         elif target_weight is not None:
             raise ValueError("target_weight must be empty when weight is disabled.")
@@ -2501,8 +2539,8 @@ def _validate_target_set_lines(
                 raise ValueError("Every scope member needs a target_risk_share when risk_budget is enabled.")
             else:
                 resolved_risk_share = float(target_risk_share)
-                if resolved_risk_share < 0:
-                    raise ValueError("target_risk_share must be zero or greater.")
+                if not isfinite(resolved_risk_share) or resolved_risk_share < 0:
+                    raise ValueError("target_risk_share must be finite and zero or greater.")
                 risk_share_total += resolved_risk_share
         elif target_risk_share is not None:
             raise ValueError("target_risk_share must be empty when risk_budget is disabled.")
@@ -4138,6 +4176,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         else None
                     ),
                     cost_basis_method=account.cost_basis_method,
+                    cash_purpose=account.cash_purpose,
+                    collateral_reference=account.collateral_reference,
                     opened_at=account.opened_at,
                     closed_at=account.closed_at,
                     status=account.status,
@@ -4163,6 +4203,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     currency=contract.currency,
                     external_reference=contract.external_reference,
                     terms_json=deepcopy(contract.terms_json),
+                    row_version=contract.row_version,
+                    amendments_json=deepcopy(contract.amendments_json),
                     created_at=contract.created_at,
                 )
             )
@@ -4309,7 +4351,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             session,
             len(source_transactions),
         )
-        transaction_id_map: dict[str, str] = {}
+        transaction_id_map = {str(tx["transaction_id"]): identity[0] for tx, identity in zip(source_transactions, copied_transaction_identities, strict=True)}
         for transaction, (copied_transaction_id, copied_transaction_sequence) in zip(
             source_transactions,
             copied_transaction_identities,
@@ -4320,6 +4362,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             copied_transaction["transaction_id"] = copied_transaction_id
             copied_transaction["transaction_sequence"] = copied_transaction_sequence
             copied_transaction["portfolio_id"] = candidate
+            for selection in copied_transaction.get("lot_selections") or []:
+                selection["opening_transaction_id"] = transaction_id_map[selection["opening_transaction_id"]]
             if isinstance(copied_transaction.get("account_id"), str):
                 copied_transaction["account_id"] = account_id_map.get(
                     str(copied_transaction["account_id"]),
@@ -4335,6 +4379,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     str(copied_transaction["counterparty_account_id"]),
                     copied_transaction["counterparty_account_id"],
                 )
+            for delivery in copied_transaction.get("asset_deliveries") or []:
+                delivery["account_id"] = account_id_map[delivery["account_id"]]
             source_quantity = _transaction_source_from_mapping(
                 copied_transaction,
                 source_key="source_quantity",
@@ -4443,6 +4489,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     fees=float(source_fees),
                     source_fees=source_fees,
                     fee_category=str(copied_transaction.get("fee_category") or "unknown"),
+                    asset_deliveries_json=deepcopy(copied_transaction.get("asset_deliveries") or []),
+                    lot_selections_json=deepcopy(copied_transaction.get("lot_selections") or []),
                     taxes=float(source_taxes),
                     source_taxes=source_taxes,
                     currency=str(copied_transaction.get("currency") or "USD"),
@@ -4628,6 +4676,52 @@ def list_derivative_contracts(portfolio_id: str) -> list[dict[str, object]]:
         return [_serialize_derivative_contract_row(record) for record in records]
 
 
+def amend_derivative_contract(portfolio_id: str, contract_id: str, *, expected_row_version: int,
+                              terms: dict[str, object], reason: str, reviewed_by: str) -> dict[str, object]:
+    from portfolio_app.api.contracts import DerivativeContractCreate
+
+    with get_session_factory()() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            raise ValueError("Portfolio not found.")
+        record = session.get(DerivativeContractRecordModel, (portfolio_id, contract_id))
+        if record is None:
+            raise ValueError("Derivative contract not found.")
+        if record.row_version != expected_row_version:
+            raise TransactionRowVersionConflictError("Contract changed; reload before amending.")
+        validated = DerivativeContractCreate.model_validate({
+            "derivative_contract_id": contract_id, "contract_name": record.contract_name,
+            "contract_type": record.contract_type, "external_reference": record.external_reference, "terms": terms,
+        })
+        before = DerivativeContractCreate.model_validate({
+            "derivative_contract_id": contract_id, "contract_name": record.contract_name,
+            "contract_type": record.contract_type, "terms": record.terms_json,
+        }).terms.model_dump(mode="json")
+        next_terms = validated.terms.model_dump(mode="json")
+        # Contract identity is not a correction of descriptive/settlement terms.
+        # Creating another product must use another contract id.
+        identity_fields = {"underlying_instrument_id", "option_type", "strike", "contract_multiplier"} if record.contract_type == "option" else {"notional"}
+        if any(before.get(key) != next_terms.get(key) for key in identity_fields):
+            raise ValueError("Contract identity cannot be amended; create a separate contract for a different payoff.")
+        if record.contract_type == "fcn" and {item["instrument_id"] for item in before["underlyings"]} != {item["instrument_id"] for item in next_terms["underlyings"]}:
+            raise ValueError("Contract underlying identities cannot be amended.")
+        record.terms_json = next_terms
+        record.row_version += 1
+        record.amendments_json = [*(record.amendments_json or []), {
+            "row_version": record.row_version, "before": before, "after": next_terms,
+            "reason": reason, "reviewed_by": reviewed_by, "changed_at": _current_utc_timestamp(),
+        }]
+        session.flush()
+        _validate_portfolio_transaction_history(session, portfolio_id)
+        transaction_dates = session.scalars(select(TransactionRecordModel.trade_date).where(
+            TransactionRecordModel.portfolio_id == portfolio_id,
+            TransactionRecordModel.derivative_contract_id == contract_id,
+        )).all()
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=min(transaction_dates, default=None), session=session)
+        result = _serialize_derivative_contract_row(record)
+        session.commit()
+        return result
+
+
 def get_derivative_contract(
     portfolio_id: str,
     derivative_contract_id: str,
@@ -4804,6 +4898,15 @@ def _validate_account_storage_contract(
     return account_category
 
 
+def _validate_cash_purpose(category, purpose, reference):
+    if category != "cash" and (purpose is not None or reference is not None):
+        raise ValueError("Cash purpose and collateral reference belong to cash accounts only.")
+    if purpose not in {None, "operating", "margin", "collateral", "financing"}:
+        raise ValueError("Unknown cash purpose.")
+    if reference and purpose != "collateral":
+        raise ValueError("Collateral reference requires a collateral cash account.")
+
+
 def create_account(
     portfolio_id: str,
     *,
@@ -4817,7 +4920,10 @@ def create_account(
     opened_at: date | None,
     closed_at: date | None,
     status: str,
+    cash_purpose: str | None = None,
+    collateral_reference: str | None = None,
 ) -> dict[str, object]:
+    _validate_cash_purpose(account_category, cash_purpose, collateral_reference)
     session_factory = get_session_factory()
     with session_factory() as session:
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
@@ -4842,6 +4948,8 @@ def create_account(
             account_id=_next_account_id(list(existing_account_ids), account_name, account_type),
             portfolio_id=portfolio_id,
             account_name=account_name.strip(),
+            cash_purpose=cash_purpose,
+            collateral_reference=collateral_reference,
             account_type=account_type,
             account_category=normalized_account_category,
             currency=currency.upper(),
@@ -4874,7 +4982,10 @@ def update_account(
     opened_at: date | None,
     closed_at: date | None,
     status: str,
+    cash_purpose: str | None = None,
+    collateral_reference: str | None = None,
 ) -> dict[str, object] | None:
+    _validate_cash_purpose(account_category, cash_purpose, collateral_reference)
     session_factory = get_session_factory()
     with session_factory() as session:
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
@@ -4889,6 +5000,14 @@ def update_account(
             return None
 
         previous_account_category = record.account_category
+        delivery_history = [tx for tx in session.scalars(select(TransactionRecordModel).where(
+            TransactionRecordModel.portfolio_id == portfolio_id,
+            TransactionRecordModel.derivative_contract_id.is_not(None),
+        )) if any(leg["account_id"] == account_id for leg in tx.asset_deliveries_json or [])]
+        if delivery_history and (account_category != record.account_category or cost_basis_method != record.cost_basis_method):
+            raise ValueError("Account category and cost method cannot change after asset delivery history exists.")
+        if any((opened_at and tx.trade_date < opened_at) or (closed_at and tx.settlement_date > closed_at) for tx in delivery_history):
+            raise ValueError("Account dates must include its asset delivery history.")
         next_account_category = _validate_account_storage_contract(
             session,
             portfolio_id=portfolio_id,
@@ -4921,10 +5040,9 @@ def update_account(
 
         previous_opened_at = record.opened_at
         previous_cost_basis_method = record.cost_basis_method
-        first_instrument_transaction_date = None
         if cost_basis_method != previous_cost_basis_method:
-            first_instrument_transaction_date = session.scalar(
-                select(func.min(TransactionRecordModel.trade_date)).where(
+            has_asset_history = session.scalar(
+                select(TransactionRecordModel.transaction_id).where(
                     TransactionRecordModel.portfolio_id == portfolio_id,
                     or_(
                         TransactionRecordModel.account_id == account_id,
@@ -4932,12 +5050,20 @@ def update_account(
                     ),
                     or_(
                         TransactionRecordModel.instrument_id.is_not(None),
+                        TransactionRecordModel.derivative_contract_id.is_not(None),
                         TransactionRecordModel.transfer_object_type == "position",
                     ),
-                )
+                ).limit(1)
             )
+            if has_asset_history is not None:
+                raise ValueError(
+                    "Cost basis method cannot change after asset transaction history exists. "
+                    "Use a new account for a different method; historical results must not be silently restated."
+                )
 
         record.account_name = account_name.strip()
+        record.cash_purpose = cash_purpose
+        record.collateral_reference = collateral_reference
         record.account_category = next_account_category
         record.institution = (institution or "").strip() or None
         record.default_settlement_cash_account_id = default_settlement_cash_account_id
@@ -4948,7 +5074,7 @@ def update_account(
         dirty_from = min(
             (
                 candidate
-                for candidate in (first_instrument_transaction_date, previous_opened_at, opened_at)
+                for candidate in (previous_opened_at, opened_at)
                 if candidate is not None
             ),
             default=None,
@@ -4975,6 +5101,7 @@ def list_transactions(
 ) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        has_deliveries = cast(TransactionRecordModel.asset_deliveries_json, String).not_in(["[]", "null"])
         statement = select(TransactionRecordModel).where(
             TransactionRecordModel.portfolio_id == portfolio_id
         )
@@ -4982,6 +5109,8 @@ def list_transactions(
             statement = statement.where(
                 or_(
                     TransactionRecordModel.account_id == account_id,
+                    TransactionRecordModel.settlement_cash_account_id == account_id,
+                    has_deliveries,
                     and_(
                         TransactionRecordModel.transaction_type == "fx_conversion",
                         TransactionRecordModel.counterparty_account_id == account_id,
@@ -4989,7 +5118,7 @@ def list_transactions(
                 )
             )
         if asset_domain == "security":
-            statement = statement.where(TransactionRecordModel.instrument_id.is_not(None))
+            statement = statement.where(or_(TransactionRecordModel.instrument_id.is_not(None), has_deliveries))
         elif asset_domain == "derivative":
             statement = statement.where(
                 TransactionRecordModel.derivative_contract_id.is_not(None)
@@ -5013,6 +5142,7 @@ def list_transactions(
                     TransactionRecordModel.instrument_id == position_reference_id,
                     TransactionRecordModel.derivative_contract_id
                     == position_reference_id,
+                    has_deliveries,
                 )
             )
         if start_date is not None:
@@ -5029,7 +5159,14 @@ def list_transactions(
                 TransactionRecordModel.settlement_date.desc(),
             )
         ).all()
-        return [_serialize_transaction_row(item) for item in records]
+        return [_serialize_transaction_row(item) for item in records if (
+            not account_id or item.account_id == account_id or item.settlement_cash_account_id == account_id
+            or (item.transaction_type == "fx_conversion" and item.counterparty_account_id == account_id)
+            or any(leg["account_id"] == account_id for leg in item.asset_deliveries_json or [])
+        ) and (
+            not position_reference_id or position_reference_id in {item.instrument_id, item.derivative_contract_id}
+            or any(leg["instrument_id"] == position_reference_id for leg in item.asset_deliveries_json or [])
+        )]
 
 
 def _mark_daily_snapshots_stale(
@@ -5187,11 +5324,15 @@ def create_transaction(
     idempotency_key: str | None = None,
     idempotency_payload: dict[str, Any] | None = None,
     idempotency_operation: str = "create",
+    asset_deliveries: list[dict[str, object]] | None = None,
+    lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     records = create_transactions(
         portfolio_id=portfolio_id,
         records=[
             {
+                "asset_deliveries": asset_deliveries or [],
+                "lot_selections": lot_selections or [],
                 "transaction_type": transaction_type,
                 "lifecycle_event_type": lifecycle_event_type,
                 "trade_date": trade_date,
@@ -5310,6 +5451,7 @@ def create_transactions(
                     f"Transfer group '{existing_transfer_group_id}' already exists."
                 )
         transaction_identities = _allocate_transaction_identities(session, len(records))
+        records = resolve_import_lot_references(records, [identity[0] for identity in transaction_identities])
         created: list[TransactionRecordModel] = []
         for values, (transaction_id, transaction_sequence) in zip(
             records,
@@ -5340,6 +5482,8 @@ def create_transactions(
             )
             _apply_transaction_record(
                 record,
+                asset_deliveries=values.get("asset_deliveries") or [],
+                lot_selections=values.get("lot_selections") or [],
                 transaction_type=str(values["transaction_type"]),
                 lifecycle_event_type=(
                     str(values["lifecycle_event_type"])
@@ -5404,8 +5548,10 @@ def create_transactions(
             session.add(record)
             session.flush()
             created.append(record)
+        delivery_pairs = [(index, index + 1, str(values["_option_delivery_underlying_id"])) for index, values in enumerate(records) if values.get("_option_delivery_underlying_id")]
         if option_delivery_pair is not None:
-            option_index, stock_index, underlying_instrument_id = option_delivery_pair
+            delivery_pairs.append(option_delivery_pair)
+        for option_index, stock_index, underlying_instrument_id in delivery_pairs:
             if (
                 option_index == stock_index
                 or option_index < 0
@@ -5447,7 +5593,7 @@ def create_transactions(
             }.get((lifecycle_event_type, option_type))
             if (
                 expected_stock_type is None
-                or stock_record.transaction_type != expected_stock_type
+                or stock_record.transaction_type not in ({"sell", "short_sell"} if expected_stock_type == "sell" else {expected_stock_type})
                 or str(stock_record.instrument_id or "") != normalized_underlying_id
             ):
                 raise ValueError("Linked stock delivery direction does not match the option outcome.")
@@ -5519,6 +5665,7 @@ def create_transactions(
             for record in created
             if str(record.instrument_id or "").strip()
         }
+        affected_instrument_ids.update(str(leg["instrument_id"]) for record in created for leg in record.asset_deliveries_json or [])
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         _mark_daily_snapshots_stale(
             portfolio_id,
@@ -5565,6 +5712,8 @@ def update_transaction(
     created_at: str | None = None,
     position_effective_date: date | None = None,
     expected_row_version: int | None = None,
+    asset_deliveries: list[dict[str, object]] | None = None,
+    lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -5599,6 +5748,8 @@ def update_transaction(
         )
         _apply_transaction_record(
             record,
+            asset_deliveries=asset_deliveries or [],
+            lot_selections=lot_selections or [],
             transaction_type=transaction_type,
             lifecycle_event_type=lifecycle_event_type,
             trade_date=trade_date,
@@ -5640,6 +5791,7 @@ def update_transaction(
             for instrument_id in {previous_instrument_id, str(record.instrument_id or "").strip()}
             if instrument_id
         }
+        affected_instrument_ids.update(str(leg["instrument_id"]) for leg in [*(before.get("asset_deliveries") or []), *(record.asset_deliveries_json or [])])
         session.flush()
         _validate_portfolio_transaction_history(session, portfolio_id)
         after = _serialize_transaction_row(record)
@@ -5737,6 +5889,7 @@ def delete_transactions(
             for record in records
             if str(record.instrument_id or "").strip()
         }
+        affected_instrument_ids.update(str(leg["instrument_id"]) for record in records for leg in record.asset_deliveries_json or [])
         for link in delivery_links:
             session.delete(link)
         for record in records:
@@ -5804,6 +5957,8 @@ def _apply_transaction_record(
     external_reference: str | None,
     note: str | None,
     created_at: str,
+    asset_deliveries: list[dict[str, object]] | None = None,
+    lot_selections: list[dict[str, object]] | None = None,
 ) -> None:
     if instrument_id and derivative_contract_id:
         raise ValueError(
@@ -5859,6 +6014,8 @@ def _apply_transaction_record(
 
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
     record.transaction_type = transaction_type
+    record.asset_deliveries_json = deepcopy(asset_deliveries or [])
+    record.lot_selections_json = deepcopy(lot_selections or [])
     record.lifecycle_event_type = lifecycle_event_type
     record.trade_date = trade_date
     record.trade_time = str(resolved_timing["trade_time"])

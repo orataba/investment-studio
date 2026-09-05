@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 import sys
 from urllib.parse import unquote
@@ -53,14 +54,15 @@ def _target_path(document: Path, raw_target: str) -> Path | None:
 def main(arguments: list[str]) -> int:
     repository_root = Path(arguments[0] if arguments else ".").resolve()
     failures: list[str] = []
-    documents = [
-        document
-        for document in sorted(repository_root.rglob("*.md"))
-        if not any(
-            part in IGNORED_PARTS
-            for part in document.relative_to(repository_root).parts
-        )
-    ]
+    documents = []
+    for directory, children, files in os.walk(repository_root):
+        parent = Path(directory)
+        children[:] = [
+            name for name in children
+            if name not in IGNORED_PARTS and not (parent / name / ".git").exists()
+        ]
+        documents.extend(parent / name for name in files if name.endswith(".md"))
+    documents.sort()
     document_set = {document.resolve() for document in documents}
     inbound_links: dict[Path, set[Path]] = {
         document.resolve(): set() for document in documents

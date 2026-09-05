@@ -6,7 +6,7 @@ import type {
   PortfolioPerformanceResponse,
   PortfolioWorkspaceSummary,
 } from '../lib/api'
-import type { InstrumentCore } from '../../../../../packages/instrument-core/ts/src'
+import type { InstrumentCore } from '../../../../../shared-data/instruments/ts/src'
 
 type FcnDerivativeContractRecord = Extract<
   PortfolioDerivativeContractRecord,

@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from threading import Barrier
 
 import pytest
-from portfolio_ops_instrument_core.db_models import Instrument
+from investment_studio_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
@@ -15,7 +15,7 @@ from portfolio_app.services import daily_snapshots, ledger, portfolio_store
 
 def _create_deposit(note: str) -> dict[str, object]:
     return portfolio_store.create_transaction(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         transaction_type="deposit",
         trade_date=date(2026, 4, 16),
         trade_time=None,
@@ -43,10 +43,10 @@ def _create_deposit(note: str) -> dict[str, object]:
 
 
 def _create_abbv_sale(quantity: float, note: str) -> dict[str, object]:
-    source = portfolio_store.get_transaction("portfolio-ops", "txn-0003")
+    source = portfolio_store.get_transaction("investment-studio", "txn-0003")
     assert source is not None
     return portfolio_store.create_transaction(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         transaction_type="sell",
         trade_date=date(2026, 4, 16),
         trade_time=None,
@@ -88,7 +88,7 @@ def test_live_portfolio_nav_is_unavailable_when_an_account_cannot_be_valued(monk
         },
     )
 
-    portfolio = portfolio_store.get_portfolio_live_summary("portfolio-ops")
+    portfolio = portfolio_store.get_portfolio_live_summary("investment-studio")
 
     assert portfolio is not None
     assert portfolio["nav"] is None
@@ -130,7 +130,7 @@ def test_concurrent_transaction_ids_are_unique() -> None:
 def test_transaction_and_snapshot_invalidation_roll_back_together(monkeypatch) -> None:
     before_ids = {
         str(record["transaction_id"])
-        for record in portfolio_store.list_transactions("portfolio-ops")
+        for record in portfolio_store.list_transactions("investment-studio")
     }
 
     def fail_invalidation(*args, **kwargs) -> None:
@@ -148,7 +148,7 @@ def test_transaction_and_snapshot_invalidation_roll_back_together(monkeypatch) -
 
     after_ids = {
         str(record["transaction_id"])
-        for record in portfolio_store.list_transactions("portfolio-ops")
+        for record in portfolio_store.list_transactions("investment-studio")
     }
     assert after_ids == before_ids
 
@@ -156,21 +156,21 @@ def test_transaction_and_snapshot_invalidation_roll_back_together(monkeypatch) -
 def test_deleting_a_position_source_fact_cannot_invalidate_later_sales() -> None:
     with pytest.raises(ValueError, match="exceeds account position"):
         portfolio_store.delete_transactions(
-            "portfolio-ops",
+            "investment-studio",
             transaction_ids=["txn-0003"],
             expected_row_versions={"txn-0003": 1},
         )
 
-    assert portfolio_store.get_transaction("portfolio-ops", "txn-0003") is not None
+    assert portfolio_store.get_transaction("investment-studio", "txn-0003") is not None
 
 
 def test_expired_daily_snapshot_refresh_lease_is_recovered() -> None:
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         if state is None:
             state = PortfolioCalculationStateModel(
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 daily_snapshot_status="running",
             )
             session.add(state)
@@ -182,12 +182,12 @@ def test_expired_daily_snapshot_refresh_lease_is_recovered() -> None:
         session.commit()
 
     result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
 
     assert result is not None
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.refresh_request_id is None
@@ -196,11 +196,11 @@ def test_expired_daily_snapshot_refresh_lease_is_recovered() -> None:
 
 def test_market_data_watermark_self_invalidates_without_notification() -> None:
     daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         previous_watermark = state.source_market_data_updated_at
         instrument = session.get(Instrument, "equity-us-abbv")
@@ -208,10 +208,10 @@ def test_market_data_watermark_self_invalidates_without_notification() -> None:
         instrument.market_data_updated_at = "2099-01-01T00:00:00.000000Z"
         session.commit()
 
-    daily_snapshots.ensure_portfolio_daily_snapshots("portfolio-ops")
+    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
 
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.source_market_data_updated_at == "2099-01-01T00:00:00.000000Z"

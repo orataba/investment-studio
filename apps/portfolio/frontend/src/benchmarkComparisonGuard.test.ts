@@ -36,20 +36,20 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.reason).toBe('benchmark_price_return_comparable')
     expect(assessment.canonicalComparisonEligible).toBe(false)
     expect(assessment.relativeComparisonEligible).toBe(true)
-    expect(assessment.warning).toContain('benchmark and relative metrics are shown')
+    expect(assessment.warning).toContain('relative results include that difference')
   })
 
-  it('withholds relative metrics when close has no verified return semantics', () => {
+  it('allows price changes even when close has no distribution metadata', () => {
     const assessment = assessBenchmarkComparisonGuard({
       ...comparableInput,
       chartBasis: 'close',
     })
 
     expect(assessment.mode).toBe('exploratory')
-    expect(assessment.reason).toBe('benchmark_price_only_exploratory')
+    expect(assessment.reason).toBe('benchmark_basis_unconfirmed_comparable')
     expect(assessment.canonicalComparisonEligible).toBe(false)
-    expect(assessment.relativeComparisonEligible).toBe(false)
-    expect(assessment.warning).toContain('Portfolio-relative differences and relative statistics are withheld')
+    expect(assessment.relativeComparisonEligible).toBe(true)
+    expect(assessment.warning).toContain('Distribution treatment is unconfirmed')
   })
 
   it('admits an index close series when its return semantics are explicitly total return', () => {

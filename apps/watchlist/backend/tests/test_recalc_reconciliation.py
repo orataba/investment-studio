@@ -24,7 +24,8 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
             text(
                 "CREATE TABLE instrument_chart_read_model ("
                 "instrument_id TEXT PRIMARY KEY, source_cutoff_at DATETIME, "
-                "materialization_version TEXT NOT NULL)"
+                "materialization_version TEXT NOT NULL, "
+                "data_freshness_status TEXT NOT NULL)"
             )
         )
         connection.execute(
@@ -45,10 +46,11 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
         connection.execute(
             text(
                 "INSERT INTO instrument_chart_read_model "
-                "(instrument_id, source_cutoff_at, materialization_version) VALUES "
-                "('fund-a', '2026-07-15 09:00:00', 'watchlist-materialization/v3'), "
-                "('fund-b', '2026-07-15 09:00:00', 'watchlist-materialization/v3'), "
-                "('fund-c', '2026-07-15 10:00:00', 'watchlist-materialization/v3')"
+                "(instrument_id, source_cutoff_at, materialization_version, "
+                "data_freshness_status) VALUES "
+                "('fund-a', '2026-07-15 09:00:00', 'watchlist-materialization/v3', 'fresh'), "
+                "('fund-b', '2026-07-15 09:00:00', 'watchlist-materialization/v3', 'partial'), "
+                "('fund-c', '2026-07-15 10:00:00', 'watchlist-materialization/v3', 'stale')"
             )
         )
         connection.execute(
@@ -100,6 +102,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
     assert first_targets[0]["local_materialization_version"] == (
         "watchlist-materialization/v3"
     )
+    assert first_targets[0]["local_data_freshness_status"] == "fresh"
     assert first_targets[1]["local_source_cutoff_at"] is None
     assert first_targets[1]["local_materialization_version"] is None
     assert first_cursor == "fund-b"
@@ -115,6 +118,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
     assert second_targets[0]["local_materialization_version"] == (
         "watchlist-materialization/v3"
     )
+    assert second_targets[0]["local_data_freshness_status"] == "stale"
     assert second_cursor is None
     assert second_completed is True
 
@@ -203,6 +207,71 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
         local_materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
         trigger_ref_type="detail_read",
     ) is False
+
+
+def test_materialized_fresh_status_ages_to_stale_without_new_source_revision(
+    monkeypatch,
+) -> None:
+    from watchlist_app.services import read_model_freshness
+    from watchlist_app.services.materialization_policy import (
+        WATCHLIST_MATERIALIZATION_VERSION,
+    )
+
+    shared = {
+        "instrument_id": "listed-equity",
+        "instrument_name": "Listed Equity",
+        "instrument_type": "equity",
+        "identifiers": [],
+        "market_data_updated_at": "2026-07-15T09:30:00Z",
+        "latest_market_data": [{"as_of_date": "2026-07-15"}],
+        "source_settings": {
+            "expected_frequency": "daily",
+            "market_calendar": "XNYS",
+            "release_lag_days": 0,
+        },
+    }
+    queued: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        read_model_freshness,
+        "get_shared_instrument",
+        lambda _instrument_id: shared,
+    )
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_local_instrument_metadata_drift",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_utc_today",
+        lambda: date(2026, 7, 21),
+    )
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_enqueue_stale_recalc_job",
+        lambda **kwargs: queued.append(kwargs) or True,
+    )
+
+    assert read_model_freshness.schedule_instrument_refresh_if_stale(
+        instrument_id="listed-equity",
+        local_latest_date=date(2026, 7, 15),
+        local_source_cutoff_at=datetime(2026, 7, 15, 9, 30, tzinfo=UTC),
+        local_materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
+        local_data_freshness_status="fresh",
+        trigger_ref_type="detail_read",
+    ) is True
+    assert len(queued) == 1
+
+    queued.clear()
+    assert read_model_freshness.schedule_instrument_refresh_if_stale(
+        instrument_id="listed-equity",
+        local_latest_date=date(2026, 7, 15),
+        local_source_cutoff_at=datetime(2026, 7, 15, 9, 30, tzinfo=UTC),
+        local_materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
+        local_data_freshness_status="stale",
+        trigger_ref_type="detail_read",
+    ) is False
+    assert queued == []
 
 
 def test_stale_generation_creates_one_durable_per_instrument_job(
@@ -468,6 +537,9 @@ def test_worker_advances_reconciliation_cursor_and_never_zero_waits(
     )
     monkeypatch.setattr(recalc_worker, "process_next_recalc_job", lambda: False)
     monkeypatch.setattr(recalc_worker.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "watchlist_app.services.risk_workbench.refresh_risk_cases", lambda _session: None
+    )
 
     recalc_worker.run_recalc_worker_loop(
         stop_event=stop_event,

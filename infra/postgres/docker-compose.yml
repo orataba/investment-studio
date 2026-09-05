@@ -1,17 +1,17 @@
 services:
   postgres:
     image: postgres:17
-    container_name: portfolio-ops-postgres
+    container_name: investment-studio-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: portfolio_ops
-      POSTGRES_USER: portfolio_ops
-      POSTGRES_PASSWORD: portfolio_ops
+      POSTGRES_DB: investment_studio
+      POSTGRES_USER: investment_studio
+      POSTGRES_PASSWORD: investment_studio
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - portfolio-ops-postgres-data:/var/lib/postgresql/data
+      - investment-studio-postgres-data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d:ro
 
 volumes:
-  portfolio-ops-postgres-data:
+  investment-studio-postgres-data:

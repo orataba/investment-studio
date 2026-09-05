@@ -4,11 +4,12 @@
 # the four project-owned PostgreSQL schemas. Callers remain responsible for
 # stopping writers before invoking either function.
 
-PORTFOLIO_OPS_PROJECT_SCHEMAS=(instrument_registry platform portfolio watchlist)
+# Include the former schema for pre-0008 backups and exact migration rollback.
+INVESTMENT_STUDIO_PROJECT_SCHEMAS=(instrument_data instrument_registry data_ingestion platform portfolio watchlist)
 
-portfolio_ops_find_postgres_binary() {
+investment_studio_find_postgres_binary() {
   if [[ $# -ne 1 ]]; then
-    echo "Usage: portfolio_ops_find_postgres_binary <binary>" >&2
+    echo "Usage: investment_studio_find_postgres_binary <binary>" >&2
     return 64
   fi
 
@@ -30,9 +31,9 @@ portfolio_ops_find_postgres_binary() {
   return 1
 }
 
-portfolio_ops_prepare_libpq_connection() {
+investment_studio_prepare_libpq_connection() {
   if [[ $# -ne 2 ]]; then
-    echo "Usage: portfolio_ops_prepare_libpq_connection <database-url> <private-work-dir>" >&2
+    echo "Usage: investment_studio_prepare_libpq_connection <database-url> <private-work-dir>" >&2
     return 64
   fi
 
@@ -46,8 +47,8 @@ portfolio_ops_prepare_libpq_connection() {
 
   mkdir -p "$connection_dir"
   chmod 700 "$connection_dir"
-  if ! PORTFOLIO_OPS_PRIVATE_DATABASE_URL="$database_url" \
-    PORTFOLIO_OPS_PRIVATE_CONNECTION_DIR="$connection_dir" \
+  if ! INVESTMENT_STUDIO_PRIVATE_DATABASE_URL="$database_url" \
+    INVESTMENT_STUDIO_PRIVATE_CONNECTION_DIR="$connection_dir" \
     "$python_bin" - <<'PY'
 from __future__ import annotations
 
@@ -60,8 +61,8 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-raw_url = os.environ.pop("PORTFOLIO_OPS_PRIVATE_DATABASE_URL", "")
-output_dir = Path(os.environ["PORTFOLIO_OPS_PRIVATE_CONNECTION_DIR"])
+raw_url = os.environ.pop("INVESTMENT_STUDIO_PRIVATE_DATABASE_URL", "")
+output_dir = Path(os.environ["INVESTMENT_STUDIO_PRIVATE_CONNECTION_DIR"])
 if not raw_url or "\n" in raw_url or "\r" in raw_url:
     fail("Database URL must be a non-empty single-line value.")
 
@@ -160,21 +161,21 @@ PY
     return 1
   fi
 
-  PORTFOLIO_OPS_LIBPQ_DATABASE_URL="$(< "$connection_dir/database-url")"
-  PORTFOLIO_OPS_LIBPQ_DATABASE_NAME="$(< "$connection_dir/database-name")"
-  PORTFOLIO_OPS_LIBPQ_DATABASE_USER="$(< "$connection_dir/database-user")"
-  PORTFOLIO_OPS_LIBPQ_DATABASE_HOST="$(< "$connection_dir/database-host")"
-  PORTFOLIO_OPS_LIBPQ_DATABASE_PORT="$(< "$connection_dir/database-port")"
+  INVESTMENT_STUDIO_LIBPQ_DATABASE_URL="$(< "$connection_dir/database-url")"
+  INVESTMENT_STUDIO_LIBPQ_DATABASE_NAME="$(< "$connection_dir/database-name")"
+  INVESTMENT_STUDIO_LIBPQ_DATABASE_USER="$(< "$connection_dir/database-user")"
+  INVESTMENT_STUDIO_LIBPQ_DATABASE_HOST="$(< "$connection_dir/database-host")"
+  INVESTMENT_STUDIO_LIBPQ_DATABASE_PORT="$(< "$connection_dir/database-port")"
   if [[ -f "$connection_dir/pgpass" ]]; then
-    PORTFOLIO_OPS_LIBPQ_PASSFILE="$connection_dir/pgpass"
+    INVESTMENT_STUDIO_LIBPQ_PASSFILE="$connection_dir/pgpass"
   else
-    PORTFOLIO_OPS_LIBPQ_PASSFILE=""
+    INVESTMENT_STUDIO_LIBPQ_PASSFILE=""
   fi
 }
 
-portfolio_ops_run_libpq_command() {
+investment_studio_run_libpq_command() {
   if [[ $# -lt 2 ]]; then
-    echo "Usage: portfolio_ops_run_libpq_command <generated-passfile-or-empty> <command> [args...]" >&2
+    echo "Usage: investment_studio_run_libpq_command <generated-passfile-or-empty> <command> [args...]" >&2
     return 64
   fi
 
@@ -187,7 +188,7 @@ portfolio_ops_run_libpq_command() {
   fi
 }
 
-portfolio_ops_sha256() {
+investment_studio_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{ print $1 }'
   else
@@ -195,7 +196,7 @@ portfolio_ops_sha256() {
   fi
 }
 
-portfolio_ops_validate_schema_manifest() {
+investment_studio_validate_schema_manifest() {
   if [[ $# -ne 1 || ! -f "$1" ]]; then
     echo "Project-schema manifest is missing." >&2
     return 1
@@ -207,7 +208,7 @@ portfolio_ops_validate_schema_manifest() {
   while IFS= read -r schema || [[ -n "$schema" ]]; do
     [[ -n "$schema" && "$schema" != \#* ]] || continue
     known="false"
-    for candidate in "${PORTFOLIO_OPS_PROJECT_SCHEMAS[@]}"; do
+    for candidate in "${INVESTMENT_STUDIO_PROJECT_SCHEMAS[@]}"; do
       if [[ "$schema" == "$candidate" ]]; then
         known="true"
         break
@@ -221,9 +222,9 @@ portfolio_ops_validate_schema_manifest() {
   done < "$manifest_path"
 }
 
-portfolio_ops_archive_contains_manifest_schemas() {
+investment_studio_archive_contains_manifest_schemas() {
   if [[ $# -ne 3 ]]; then
-    echo "Usage: portfolio_ops_archive_contains_manifest_schemas <pg_restore> <archive> <manifest>" >&2
+    echo "Usage: investment_studio_archive_contains_manifest_schemas <pg_restore> <archive> <manifest>" >&2
     return 64
   fi
 
@@ -231,7 +232,7 @@ portfolio_ops_archive_contains_manifest_schemas() {
   local archive_path="$2"
   local manifest_path="$3"
   local archive_list schema
-  archive_list="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-backup-list.XXXXXX")"
+  archive_list="$(mktemp "${TMPDIR:-/tmp}/investment-studio-backup-list.XXXXXX")"
   if ! "$pg_restore_bin" --list "$archive_path" > "$archive_list"; then
     rm -f "$archive_list"
     return 1
@@ -247,9 +248,9 @@ portfolio_ops_archive_contains_manifest_schemas() {
   rm -f "$archive_list"
 }
 
-portfolio_ops_create_project_schema_backup() {
+investment_studio_create_project_schema_backup() {
   if [[ $# -ne 3 ]]; then
-    echo "Usage: portfolio_ops_create_project_schema_backup <database-url> <backup-root> <label>" >&2
+    echo "Usage: investment_studio_create_project_schema_backup <database-url> <backup-root> <label>" >&2
     return 64
   fi
 
@@ -262,9 +263,9 @@ portfolio_ops_create_project_schema_backup() {
   fi
 
   local libpq_url passfile psql_bin pg_dump_bin pg_restore_bin work_dir schemas_path
-  psql_bin="$(portfolio_ops_find_postgres_binary psql || true)"
-  pg_dump_bin="$(portfolio_ops_find_postgres_binary pg_dump || true)"
-  pg_restore_bin="$(portfolio_ops_find_postgres_binary pg_restore || true)"
+  psql_bin="$(investment_studio_find_postgres_binary psql || true)"
+  pg_dump_bin="$(investment_studio_find_postgres_binary pg_dump || true)"
+  pg_restore_bin="$(investment_studio_find_postgres_binary pg_restore || true)"
   if [[ -z "$psql_bin" || -z "$pg_dump_bin" || -z "$pg_restore_bin" ]]; then
     echo "PostgreSQL psql, pg_dump, and pg_restore are required for schema backup." >&2
     return 1
@@ -272,16 +273,16 @@ portfolio_ops_create_project_schema_backup() {
 
   mkdir -p "$backup_root"
   chmod 700 "$backup_root"
-  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-project-backup.XXXXXX")"
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-project-backup.XXXXXX")"
   chmod 700 "$work_dir"
-  if ! portfolio_ops_prepare_libpq_connection "$database_url" "$work_dir/connection"; then
+  if ! investment_studio_prepare_libpq_connection "$database_url" "$work_dir/connection"; then
     rm -rf "$work_dir"
     return 1
   fi
-  libpq_url="$PORTFOLIO_OPS_LIBPQ_DATABASE_URL"
-  passfile="$PORTFOLIO_OPS_LIBPQ_PASSFILE"
+  libpq_url="$INVESTMENT_STUDIO_LIBPQ_DATABASE_URL"
+  passfile="$INVESTMENT_STUDIO_LIBPQ_PASSFILE"
   schemas_path="$work_dir/existing-schemas"
-  if ! portfolio_ops_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
+  if ! investment_studio_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
     --no-password \
     --set ON_ERROR_STOP=1 \
     --tuples-only \
@@ -289,7 +290,7 @@ portfolio_ops_create_project_schema_backup() {
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')
+      WHERE nspname IN ('instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist')
       ORDER BY nspname;
     " > "$schemas_path"; then
     rm -rf "$work_dir"
@@ -309,7 +310,7 @@ portfolio_ops_create_project_schema_backup() {
   while IFS= read -r schema || [[ -n "$schema" ]]; do
     [[ -n "$schema" ]] || continue
     case "$schema" in
-      instrument_registry|platform|portfolio|watchlist) ;;
+      instrument_data|instrument_registry|data_ingestion|platform|portfolio|watchlist) ;;
       *)
         echo "Database returned an unexpected project schema name: $schema" >&2
         rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
@@ -320,13 +321,13 @@ portfolio_ops_create_project_schema_backup() {
     schema_args+=("--schema=$schema")
   done < "$schemas_path"
 
-  if ! portfolio_ops_validate_schema_manifest "$manifest_path"; then
+  if ! investment_studio_validate_schema_manifest "$manifest_path"; then
     rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
     return 1
   fi
 
   if [[ ${#schema_args[@]} -gt 0 ]]; then
-    if ! portfolio_ops_run_libpq_command "$passfile" "$pg_dump_bin" \
+    if ! investment_studio_run_libpq_command "$passfile" "$pg_dump_bin" \
       --dbname "$libpq_url" \
       --format=custom \
       --no-owner \
@@ -337,19 +338,19 @@ portfolio_ops_create_project_schema_backup() {
       return 1
     fi
     chmod 600 "$backup_path"
-    if ! portfolio_ops_archive_contains_manifest_schemas \
+    if ! investment_studio_archive_contains_manifest_schemas \
       "$pg_restore_bin" "$backup_path" "$manifest_path"; then
       rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
       return 1
     fi
     local checksum
-    checksum="$(portfolio_ops_sha256 "$backup_path")" || {
+    checksum="$(investment_studio_sha256 "$backup_path")" || {
       rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
       return 1
     }
     printf '%s  %s\n' "$checksum" "$(basename "$backup_path")" > "$checksum_path"
     chmod 600 "$checksum_path"
-    if [[ "$(portfolio_ops_sha256 "$backup_path")" != "$checksum" ]]; then
+    if [[ "$(investment_studio_sha256 "$backup_path")" != "$checksum" ]]; then
       echo "Project-schema backup checksum verification failed." >&2
       rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
       return 1
@@ -361,30 +362,30 @@ portfolio_ops_create_project_schema_backup() {
   fi
 
   local manifest_checksum
-  manifest_checksum="$(portfolio_ops_sha256 "$manifest_path")" || {
+  manifest_checksum="$(investment_studio_sha256 "$manifest_path")" || {
     rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
     return 1
   }
   printf '%s  %s\n' "$manifest_checksum" "$(basename "$manifest_path")" \
     > "$manifest_checksum_path"
   chmod 600 "$manifest_checksum_path"
-  if [[ "$(portfolio_ops_sha256 "$manifest_path")" != "$manifest_checksum" ]]; then
+  if [[ "$(investment_studio_sha256 "$manifest_path")" != "$manifest_checksum" ]]; then
     echo "Project-schema manifest checksum verification failed." >&2
     rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
     return 1
   fi
 
   rm -rf "$work_dir"
-  PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH="$backup_path"
-  PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH="$manifest_path"
-  PORTFOLIO_OPS_PROJECT_SCHEMA_CHECKSUM_PATH="$checksum_path"
-  PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_CHECKSUM_PATH="$manifest_checksum_path"
+  INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH="$backup_path"
+  INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH="$manifest_path"
+  INVESTMENT_STUDIO_PROJECT_SCHEMA_CHECKSUM_PATH="$checksum_path"
+  INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_CHECKSUM_PATH="$manifest_checksum_path"
   echo "Verified pre-migration project-schema backup: ${backup_path:-$manifest_path}"
 }
 
-portfolio_ops_restore_project_schema_backup() (
+investment_studio_restore_project_schema_backup() (
   if [[ $# -ne 3 ]]; then
-    echo "Usage: portfolio_ops_restore_project_schema_backup <database-url> <archive-or-empty> <manifest>" >&2
+    echo "Usage: investment_studio_restore_project_schema_backup <database-url> <archive-or-empty> <manifest>" >&2
     return 64
   fi
 
@@ -392,34 +393,34 @@ portfolio_ops_restore_project_schema_backup() (
   local backup_path="$2"
   local manifest_path="$3"
   local libpq_url passfile psql_bin pg_restore_bin work_dir
-  psql_bin="$(portfolio_ops_find_postgres_binary psql || true)"
-  pg_restore_bin="$(portfolio_ops_find_postgres_binary pg_restore || true)"
+  psql_bin="$(investment_studio_find_postgres_binary psql || true)"
+  pg_restore_bin="$(investment_studio_find_postgres_binary pg_restore || true)"
   if [[ -z "$psql_bin" || -z "$pg_restore_bin" ]]; then
     echo "PostgreSQL psql and pg_restore are required for schema rollback." >&2
     return 1
   fi
-  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-project-rollback.XXXXXX")"
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-project-rollback.XXXXXX")"
   chmod 700 "$work_dir"
   trap 'rm -rf "$work_dir"' EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  portfolio_ops_prepare_libpq_connection "$database_url" "$work_dir/connection" || return
-  libpq_url="$PORTFOLIO_OPS_LIBPQ_DATABASE_URL"
-  passfile="$PORTFOLIO_OPS_LIBPQ_PASSFILE"
+  investment_studio_prepare_libpq_connection "$database_url" "$work_dir/connection" || return
+  libpq_url="$INVESTMENT_STUDIO_LIBPQ_DATABASE_URL"
+  passfile="$INVESTMENT_STUDIO_LIBPQ_PASSFILE"
   if [[ ! -f "$manifest_path.sha256" ]]; then
     echo "Project-schema manifest checksum is missing." >&2
     return 1
   fi
   local expected_manifest_checksum actual_manifest_checksum
   expected_manifest_checksum="$(awk 'NF { print $1; exit }' "$manifest_path.sha256")"
-  actual_manifest_checksum="$(portfolio_ops_sha256 "$manifest_path")" || return
+  actual_manifest_checksum="$(investment_studio_sha256 "$manifest_path")" || return
   if [[ ! "$expected_manifest_checksum" =~ ^[0-9A-Fa-f]{64}$ \
     || "$actual_manifest_checksum" != "$expected_manifest_checksum" ]]; then
     echo "Project-schema manifest checksum verification failed." >&2
     return 1
   fi
-  portfolio_ops_validate_schema_manifest "$manifest_path" || return
+  investment_studio_validate_schema_manifest "$manifest_path" || return
 
   local manifest_has_schemas="false"
   local schema expected_checksum actual_checksum checksum_path
@@ -439,13 +440,13 @@ portfolio_ops_restore_project_schema_backup() (
       return 1
     fi
     expected_checksum="$(awk 'NF { print $1; exit }' "$checksum_path")"
-    actual_checksum="$(portfolio_ops_sha256 "$backup_path")" || return
+    actual_checksum="$(investment_studio_sha256 "$backup_path")" || return
     if [[ ! "$expected_checksum" =~ ^[0-9A-Fa-f]{64}$ \
       || "$actual_checksum" != "$expected_checksum" ]]; then
       echo "Project-schema backup checksum verification failed." >&2
       return 1
     fi
-    portfolio_ops_archive_contains_manifest_schemas \
+    investment_studio_archive_contains_manifest_schemas \
       "$pg_restore_bin" "$backup_path" "$manifest_path" || return
   elif [[ -n "$backup_path" ]]; then
     echo "Backup archive was provided for an empty project-schema manifest." >&2
@@ -456,7 +457,9 @@ portfolio_ops_restore_project_schema_backup() (
     printf '%s\n' '
         DROP SCHEMA IF EXISTS watchlist CASCADE;
         DROP SCHEMA IF EXISTS portfolio CASCADE;
+        DROP SCHEMA IF EXISTS data_ingestion CASCADE;
         DROP SCHEMA IF EXISTS platform CASCADE;
+        DROP SCHEMA IF EXISTS instrument_data CASCADE;
         DROP SCHEMA IF EXISTS instrument_registry CASCADE;
       '
     if [[ "$manifest_has_schemas" == "true" ]]; then
@@ -467,7 +470,7 @@ portfolio_ops_restore_project_schema_backup() (
         "$backup_path"
     fi
     exit 0
-  ) | portfolio_ops_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
+  ) | investment_studio_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
     --no-password \
     --set ON_ERROR_STOP=1 \
     --single-transaction; then
@@ -476,8 +479,8 @@ portfolio_ops_restore_project_schema_backup() (
   fi
 
   local restored_schemas actual_schema_list expected_schema_list
-  restored_schemas="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-restored-schemas.XXXXXX")"
-  if ! portfolio_ops_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
+  restored_schemas="$(mktemp "${TMPDIR:-/tmp}/investment-studio-restored-schemas.XXXXXX")"
+  if ! investment_studio_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
     --no-password \
     --set ON_ERROR_STOP=1 \
     --tuples-only \
@@ -485,7 +488,7 @@ portfolio_ops_restore_project_schema_backup() (
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')
+      WHERE nspname IN ('instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist')
       ORDER BY nspname;
     " > "$restored_schemas"; then
     rm -f "$restored_schemas"

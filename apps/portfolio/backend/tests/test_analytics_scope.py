@@ -17,7 +17,7 @@ from portfolio_app.services.analytics_scope import (
 )
 
 
-PORTFOLIO_ID = "portfolio-ops"
+PORTFOLIO_ID = "investment-studio"
 JAN_1 = "2026-01-01"
 
 

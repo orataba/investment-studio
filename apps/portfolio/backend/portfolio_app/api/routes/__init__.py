@@ -1,2 +1,2 @@
-"""Route modules for Portfolio Operations Portfolio."""
+"""Route modules for Investment Studio Portfolio."""
 

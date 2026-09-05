@@ -12,7 +12,6 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioResearchRun: vi.fn(),
   getPortfolioResearchWorkbench: vi.fn(),
-  updatePortfolioResearchInstrumentEligibility: vi.fn(),
   updatePortfolioResearchSettings: vi.fn(),
 }))
 
@@ -58,6 +57,23 @@ const completedRun = {
   artifact_count: 0,
   artifacts: [],
   detail: {
+    solve_event: {
+      as_of_date: '2026-07-15',
+      scope_node_id: null,
+      scope_label: 'Top Level',
+      target_dimension: 'risk_budget',
+      solver_kind: 'risk-budget',
+      solver_detail: 'convex_log_barrier',
+      target_status: 'satisfied',
+      execution_ready: true,
+      covariance_model: 'sample_covariance',
+      covariance_observations: 12,
+      gap_turnover: 0.1,
+      max_risk_share_gap: 0.001,
+      estimated_risk_sleeve_volatility: 0.08,
+      member_count: 1,
+    },
+    scope_solve_events: [],
     solved_result_groups: [
       {
         top_sleeve_id: 'risk-assets',
@@ -212,6 +228,32 @@ const workbenchFixture = {
     notes: 'Keep this research note.',
   },
   current_context: {
+    portfolio_id: '3',
+    portfolio_name: 'Long-Term Portfolio',
+    base_currency: 'USD',
+    as_of_date: '2026-07-15',
+    lookback_start: '2026-07-01',
+    lookback_end: '2026-07-15',
+    nav: 1024,
+    holdings_count: 1,
+    planning_group_count: 1,
+    chart_label: 'Portfolio NAV',
+    chart_note: 'Canonical portfolio NAV.',
+    chart_currency: 'USD',
+    summary: {
+      period_return: 0.024,
+      annualized_volatility: null,
+      current_drawdown: 0,
+      max_drawdown: 0,
+      start_nav: 100,
+      end_nav: 102.4,
+    },
+    chart_points: [
+      { date: '2026-07-01', value: 100 },
+      { date: '2026-07-15', value: 102.4 },
+    ],
+    top_holdings: [],
+    planning_groups: [],
     quality_warnings: [],
   },
   detail_level: 'compact',
@@ -289,47 +331,33 @@ describe('Research rendered page contract', () => {
       contribution_mode: 'signed',
     })
     apiMocks.updatePortfolioResearchSettings.mockResolvedValue(workbenchFixture.settings)
-    apiMocks.updatePortfolioResearchInstrumentEligibility.mockResolvedValue({
-      ...workbenchFixture.instrument_universe[2],
-      research_eligibility: 'eligible',
-      research_pm_approved: true,
-      research_pm_approved_at: '2026-07-15T08:30:00Z',
-    })
   })
 
-  it('surfaces manual review and renders unavailable short-history metrics as unavailable values', async () => {
+  it('keeps governance controls off the research page and renders short-history metrics honestly', async () => {
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
       '/portfolios/:portfolioId/research',
     )
 
-    await screen.findByText('Research Eligibility')
+    await screen.findByText('Solved Result')
+    expect(screen.queryByText('Research Eligibility')).not.toBeInTheDocument()
+    expect(screen.queryByText('PM Approval')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve for research' })).not.toBeInTheDocument()
+    expect(screen.getByText(/FCN and options are no-trade, zero-return capital/)).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Frozen Derivative' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Cash Target' })).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader', { name: 'Cash Yield (%)' })).toHaveLength(2)
     expect(screen.queryByText('Manual PM decision required.')).not.toBeInTheDocument()
-
-    expect(screen.getByRole('row', { name: /Current Holding Fund Held Eligible Not required/ })).toBeInTheDocument()
-    expect(screen.getByRole('row', { name: /Observed Fund Observed Eligible Not required/ })).toBeInTheDocument()
-    const formerRow = screen.getByRole('row', {
-      name: /Former Holding Fund Former PM review required Approve for research/,
-    })
-    fireEvent.click(within(formerRow).getByRole('button', { name: 'Approve for research' }))
-    await waitFor(() => {
-      expect(apiMocks.updatePortfolioResearchInstrumentEligibility).toHaveBeenCalledWith(
-        '3',
-        'former-asset',
-        { pm_approved: true },
-      )
-    })
-    expect(await screen.findByRole('row', {
-      name: /Former Holding Fund Former Eligible Revoke approval/,
-    })).toBeInTheDocument()
 
     const annualReturnRow = screen.getByRole('row', { name: /Annual Return/ })
     const calmarRow = screen.getByRole('row', { name: /Calmar/ })
     expect(within(annualReturnRow).getAllByText('-')).toHaveLength(3)
     expect(within(calmarRow).getAllByText('-')).toHaveLength(3)
 
-    const periodReturnRow = screen.getByRole('row', { name: /Period Return/ })
+    const backtestMetricsSection = screen.getByText('Backtest Metrics').closest('.portfolio-section-block')
+    expect(backtestMetricsSection).not.toBeNull()
+    const periodReturnRow = within(backtestMetricsSection as HTMLElement).getByRole('row', { name: /Period Return/ })
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
     expect(apiMocks.getPortfolioResearchWorkbench).toHaveBeenCalledWith('3')
     expect(apiMocks.getPortfolioResearchRun).toHaveBeenCalledWith('3', 'research-1')
@@ -440,6 +468,9 @@ describe('Research rendered page contract', () => {
             skipped_rebalances: [
               { date: '2026-07-01', reason: 'No eligible revision was available.' },
             ],
+            pending_rebalances: [
+              { date: '2026-07-15', reason: 'Scheduled execution is after the cutoff.' },
+            ],
             configuration_versions_used: [],
             first_decision_date: null,
             last_decision_date: null,
@@ -471,6 +502,8 @@ describe('Research rendered page contract', () => {
       '2026-07-01: No eligible revision was available.',
     )
     expect(within(coverageSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
+    const pendingStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Pending Decisions 1/ })
+    expect(within(pendingStatus).getByText('1')).toHaveAttribute('title', 'Scheduled execution is after the cutoff.')
 
     const oosHeading = screen.getByText('Rolling OOS Holdout')
     expect(oosHeading).toHaveAttribute('title', methodologyNote)
@@ -480,28 +513,24 @@ describe('Research rendered page contract', () => {
     expect(within(oosSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
   })
 
-  it('renders current-to-solved rebalance gaps and execution readiness', async () => {
+  it('keeps instrument-level rebalance evidence in one expandable solution table', async () => {
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
       '/portfolios/:portfolioId/research',
     )
 
-    const gapSection = (await screen.findByText('Rebalance Gaps')).closest('section')
-    expect(gapSection).not.toBeNull()
+    const instrumentDisclosure = (await screen.findByText('Instrument-level Solution')).closest('details')
+    expect(instrumentDisclosure).not.toBeNull()
     expect(
-      within(gapSection as HTMLElement).getByRole('row', {
-        name: /Alpha Fund 20\.00% 30\.00% 10\.00% Increase Ready/,
+      within(instrumentDisclosure as HTMLElement).getByRole('row', {
+        name: /Alpha Fund Risk Assets 20\.00% 80\.00% 60\.00% \$200 \$800 100\.00% 100\.00% Increase/,
       }),
     ).toBeInTheDocument()
-    expect(
-      within(gapSection as HTMLElement).getByRole('row', {
-        name: /Former Holding Fund 0\.00% 5\.00% 5\.00% Review PM review/,
-      }),
-    ).toBeInTheDocument()
+    expect(within(instrumentDisclosure as HTMLElement).queryByText(/PM review/i)).not.toBeInTheDocument()
   })
 
-  it('renders solved weights and capital as current-to-target transitions', async () => {
+  it('renders sleeve-level solved results first and keeps capital in instrument detail', async () => {
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
@@ -510,12 +539,30 @@ describe('Research rendered page contract', () => {
 
     const solvedSection = (await screen.findByText('Solved Result')).closest('section')
     expect(solvedSection).not.toBeNull()
-    expect(within(solvedSection as HTMLElement).getByText('Current → Solved Weight')).toBeInTheDocument()
-    expect(within(solvedSection as HTMLElement).getByText('Current MV → Target Capital')).toBeInTheDocument()
+    const sleeveTable = solvedSection?.querySelector('.research-solved-table') as HTMLElement
+    expect(within(sleeveTable).getByText('Actual Weight')).toBeInTheDocument()
+    expect(within(sleeveTable).getByText('Solved Weight')).toBeInTheDocument()
     expect(
       within(solvedSection as HTMLElement).getByRole('row', {
-        name: /Alpha Fund 20\.00% → 80\.00% \$200 → \$800 100\.00% 100\.00% - -/,
+        name: /Risk Assets 20\.00% 80\.00% 60\.00% 100\.00% 100\.00% 60\.00% \/ 90\.00% Within/,
       }),
     ).toBeInTheDocument()
+    expect(within(solvedSection as HTMLElement).getByRole('columnheader', { name: 'Target Capital' })).toBeInTheDocument()
+  })
+
+  it('compares actual NAV with the backtest on common eligible dates', async () => {
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const comparisonSection = (await screen.findByText('Comparable Metrics')).closest('.portfolio-section-block')
+    expect(comparisonSection).not.toBeNull()
+    expect(within(comparisonSection as HTMLElement).getByText(/2026-07-01 to 2026-07-15 · 2 observations/)).toBeInTheDocument()
+    const periodReturnRow = within(comparisonSection as HTMLElement).getByRole('row', { name: /Period Return/ })
+    expect(within(periodReturnRow).getByText('2.40%')).toBeInTheDocument()
+    expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
+    expect(within(periodReturnRow).getByText('0.60%')).toBeInTheDocument()
   })
 })

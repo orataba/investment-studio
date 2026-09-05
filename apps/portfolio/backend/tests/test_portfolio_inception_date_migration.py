@@ -29,7 +29,7 @@ def test_migration_backfills_portfolio_inception_from_first_transaction() -> Non
         inception_date = connection.scalar(
             sa.text(
                 "SELECT inception_date FROM portfolio_record "
-                "WHERE portfolio_id = 'portfolio-ops'"
+                "WHERE portfolio_id = 'investment-studio'"
             )
         )
         columns = {

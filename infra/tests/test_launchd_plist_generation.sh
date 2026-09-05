@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-launchd-plist-test.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-launchd-plist-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 PROJECT_ROOT="$TEST_ROOT/project with spaces"
@@ -12,12 +12,12 @@ ENV_ROOT="$TEST_ROOT/secure env"
 mkdir -p "$PROJECT_ROOT" "$PLIST_ROOT" "$LOG_ROOT" "$ENV_ROOT"
 chmod 700 "$ENV_ROOT"
 
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://local@127.0.0.1:5432/test" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://local@127.0.0.1:5432/test" \
   python3 "$REPOSITORY_ROOT/infra/launchd/generate_local_service_plists.py" \
   --project-root "$PROJECT_ROOT" \
   --python-bin "/runtime/python with spaces" \
   --node-bin "/runtime/node with spaces" \
-  --label-prefix "test.portfolio-ops" \
+  --label-prefix "test.investment-studio" \
   --launch-agents-dir "$PLIST_ROOT" \
   --log-dir "$LOG_ROOT" \
   --env-root "$ENV_ROOT" \
@@ -37,36 +37,39 @@ project_root = str(Path(os.environ["PROJECT_ROOT"]).resolve())
 log_root = str(Path(os.environ["LOG_ROOT"]).resolve())
 env_root = str(Path(os.environ["ENV_ROOT"]).resolve())
 expected_services = {
-    "platform-api",
+    "home-api",
     "watchlist-api",
     "portfolio-api",
-    "platform-web",
+    "home-web",
     "watchlist-web",
     "portfolio-web",
     "market-data-refresh",
 }
 generated_services = {
-    path.name.removeprefix("test.portfolio-ops.").removesuffix(".plist")
-    for path in plist_root.glob("test.portfolio-ops.*.plist")
+    path.name.removeprefix("test.investment-studio.").removesuffix(".plist")
+    for path in plist_root.glob("test.investment-studio.*.plist")
 }
 assert generated_services == expected_services
 
-with (plist_root / "test.portfolio-ops.platform-api.plist").open("rb") as source:
+with (plist_root / "test.investment-studio.home-api.plist").open("rb") as source:
     api = plistlib.load(source)
 assert api["KeepAlive"] is True
 assert api["RunAtLoad"] is True
 assert api["Umask"] == 0o077
 assert api["ProgramArguments"][2] == project_root
 assert api["ProgramArguments"][5] == env_root
-assert api["EnvironmentVariables"] == {
-    "PORTFOLIO_OPS_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test"
+assert "EnvironmentVariables" not in api
+with (plist_root / "test.investment-studio.watchlist-api.plist").open("rb") as source:
+    watchlist_api = plistlib.load(source)
+assert watchlist_api["EnvironmentVariables"] == {
+    "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test"
 }
 
-with (plist_root / "test.portfolio-ops.platform-web.plist").open("rb") as source:
+with (plist_root / "test.investment-studio.home-web.plist").open("rb") as source:
     web = plistlib.load(source)
 assert "EnvironmentVariables" not in web
 
-refresh_path = plist_root / "test.portfolio-ops.market-data-refresh.plist"
+refresh_path = plist_root / "test.investment-studio.market-data-refresh.plist"
 with refresh_path.open("rb") as source:
     refresh = plistlib.load(source)
 assert refresh["KeepAlive"] is False
@@ -82,17 +85,17 @@ assert refresh["ProgramArguments"] == [
     f"{project_root}/infra/launchd/run_market_data_refresh.sh",
     project_root,
     "/runtime/python with spaces",
-    f"{project_root}/var/market-data-refresh.lock",
+    str(Path.home() / ".local/state/investment-studio/market-data-refresh.lock"),
     env_root,
 ]
 assert refresh["StandardOutPath"] == f"{log_root}/market-data-refresh.log"
 assert refresh["StandardErrorPath"] == f"{log_root}/market-data-refresh.error.log"
 assert refresh["EnvironmentVariables"] == {
-    "PORTFOLIO_OPS_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test",
-    "PORTFOLIO_OPS_LOCAL_REFRESH_HOUR": "21",
-    "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE": "0",
-    "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR": "23",
-    "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE": "0",
+    "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test",
+    "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR": "21",
+    "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": "0",
+    "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR": "23",
+    "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE": "0",
 }
 assert refresh_path.stat().st_mode & 0o777 == 0o600
 PY

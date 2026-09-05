@@ -26,7 +26,7 @@ vi.mock('../lib/api', async (importOriginal) => ({
   getInstrumentMonitoring: apiMocks.getInstrumentMonitoring,
   getInstrumentPerformance: apiMocks.getInstrumentPerformance,
   getInstrumentPriceBars: apiMocks.getInstrumentPriceBars,
-  getPlatformInstrumentReferenceData: apiMocks.getInstrumentReferenceData,
+  getInstrumentReferenceData: apiMocks.getInstrumentReferenceData,
   getInstrumentResearch: apiMocks.getInstrumentResearch,
   getInstrumentRisk: apiMocks.getInstrumentRisk,
   getInstrumentSummary: apiMocks.getInstrumentSummary,
@@ -200,6 +200,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect(screen.queryAllByText('108.00').length).toBeGreaterThan(0)
     expect(screen.queryByText('999.00')).toBeNull()
 
+    fireEvent.click(screen.getByRole('button', { name: /Details|资料与明细/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Monitoring' }))
     await waitFor(() => expect(screen.queryByText('Market Data Status')).not.toBeNull())
 

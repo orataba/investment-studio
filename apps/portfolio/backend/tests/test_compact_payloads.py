@@ -9,7 +9,7 @@ from portfolio_app.db.session import get_session_factory
 def test_holdings_default_rows_are_compact_and_details_are_explicit(client) -> None:
     compact_response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops"},
+        params={"portfolio_id": "investment-studio"},
     )
 
     assert compact_response.status_code == 200, compact_response.json()
@@ -29,7 +29,7 @@ def test_holdings_default_rows_are_compact_and_details_are_explicit(client) -> N
 
     detailed_response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "include_details": True},
+        params={"portfolio_id": "investment-studio", "include_details": True},
     )
 
     assert detailed_response.status_code == 200, detailed_response.json()
@@ -73,7 +73,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
         session.add(
             ResearchRunRecordModel(
                 research_run_id=run_id,
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 job_type="target_weight_solve",
                 status="completed",
                 requested_at="2026-07-15T10:00:00Z",
@@ -89,7 +89,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
                     {
                         "artifact_id": "summary",
                         "label": "Summary JSON",
-                        "path": "portfolio-ops/research-compact-payload/summary.json",
+                        "path": "investment-studio/research-compact-payload/summary.json",
                         "media_type": "application/json",
                         "preview_kind": "text",
                     }
@@ -100,7 +100,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
         )
         session.commit()
 
-    compact_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    compact_response = client.get("/api/portfolios/investment-studio/research/workbench")
 
     assert compact_response.status_code == 200, compact_response.json()
     compact = compact_response.json()
@@ -113,7 +113,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
     assert all(run["artifacts"] == [] for run in compact["runs"])
 
     selected_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": run_id},
     )
 
@@ -125,7 +125,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
     assert len(compact_response.content) < len(selected_response.content)
 
     explicit_full_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"include_details": True},
     )
     assert explicit_full_response.status_code == 200

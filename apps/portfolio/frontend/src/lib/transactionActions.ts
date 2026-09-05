@@ -48,6 +48,7 @@ export function transactionActionGroups(
         actions: [
           action('buy', fund ? 'Subscription' : 'Buy', 'buy'),
           action('sell', fund ? 'Redemption' : 'Sell', 'sell'),
+          ...(['equity', 'etf'].includes(assetSubtype ?? '') ? [action('short_sell', 'Short Sell', 'short_sell'), action('buy_to_cover', 'Buy to Cover', 'buy_to_cover')] : []),
         ],
       },
       {
@@ -75,6 +76,7 @@ export function transactionActionGroups(
           action('transfer_out', 'Transfer Out', 'transfer_out', null, 'position'),
           action('transfer_in', 'Transfer In', 'transfer_in', null, 'position'),
           action('opening_balance', 'Opening Balance', 'opening_balance'),
+          ...(['equity', 'etf'].includes(assetSubtype ?? '') ? [action('short_opening_balance', 'Short Stock Opening Balance', 'short_opening_balance')] : []),
         ],
       },
     ]
@@ -128,6 +130,7 @@ export function transactionActionGroups(
           action('entry', 'FCN Entry', 'buy'),
           action('early_exit', 'FCN Early Exit', 'sell'),
           action('coupon', 'FCN Coupon', 'coupon'),
+          action('knock_in_observation', 'FCN Knock-In Observation', 'lifecycle_event', 'fcn_knock_in'),
         ],
       },
       {
@@ -158,6 +161,7 @@ export function transactionActionGroups(
           action('buy_to_open', `Buy to Open ${name}`, 'buy'),
           action('sell_to_open', `Sell to Open ${name}`, 'option_write'),
           action('opening_balance', 'Long Option Opening Balance', 'opening_balance'),
+          action('opening_written', 'Written Option Opening Balance', 'option_opening_balance'),
         ],
       },
     ]
@@ -224,6 +228,7 @@ export function transactionActionGroups(
         action('fee', 'Option Fee', 'fee'),
         action('tax', 'Option Tax', 'tax'),
         action('opening_balance', 'Long Option Opening Balance', 'opening_balance'),
+        action('opening_written', 'Written Option Opening Balance', 'option_opening_balance'),
       ],
     },
   ]

@@ -29,3 +29,6 @@ api_router.include_router(field_registry.router, prefix="/field-registry", tags=
 api_router.include_router(screener.router, prefix="/screener", tags=["screener"])
 api_router.include_router(recalc.router, prefix="/recalc", tags=["recalc"])
 api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
+
+from watchlist_app.api.routes import workbench
+api_router.include_router(workbench.router, tags=["research-workbench"])

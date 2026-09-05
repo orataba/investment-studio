@@ -4,13 +4,14 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from 'react'
+import { systemMessages, systemSourceAliases } from './systemMessages'
+import { withLanguage } from './navigation'
 
-export const LANGUAGE_STORAGE_KEY = 'portfolio_ops.language'
-export const LANGUAGE_COOKIE_NAME = 'portfolio_ops_language'
+export const LANGUAGE_STORAGE_KEY = 'investment_studio.language'
+export const LANGUAGE_COOKIE_NAME = 'investment_studio_language'
 
 export const supportedLanguages = [
   { value: 'en', label: 'English', shortLabel: 'EN', htmlLang: 'en' },
@@ -51,20 +52,26 @@ const baseMessages: LanguageMessages = {
     Home: '首页',
     Watchlist: '关注列表',
     Portfolio: '组合',
-    'Portfolio Operations': '投资组合运营',
-    Workbench: '工作台',
+    'Investment Studio': 'Investment Studio',
+    Regime: '市场状态',
+    'Sign out': '退出',
     Workspace: '工作区',
     'Choose where to work.': '选择工作区。',
-    'Open an investment workspace or maintain the shared instrument database.':
-      '进入投资工作区，或维护共享标的数据库。',
+    'Research markets, monitor assets, and manage your portfolios.':
+      '研究市场、跟踪资产、管理投资组合。',
     'Research and monitoring': '研究与监控',
     'Review funds, indexes, watchlists, and instrument research.':
       '查看基金、指数、关注列表和标的研究。',
     'Manage holdings, transactions, performance, risk, and research.':
       '管理持仓、交易、绩效、风险和组合研究。',
     'Shared instruments and market data': '共享标的与市场数据',
-    Platform: '平台',
-    'Database Dashboard': '数据库面板',
+    'Market regime': '市场状态',
+    'Review current market regimes, signals, and release evidence.': '查看当前市场状态、信号与发布依据。',
+    'Registered Assets': '已登记资产',
+    'Searching registered assets…': '正在搜索已登记资产…',
+    'Shared Asset Data': '共享资产数据',
+    'Select an existing asset to add to this watchlist. New assets and market-data sources are maintained through the backend CLI. Classification and research remain in Watchlist.':
+      '选择已有资产加入关注列表。新增资产及数据来源通过后台命令行维护，分类与研究仍在关注列表中进行。',
     API: 'API',
     Open: '打开',
     Search: '搜索',
@@ -96,7 +103,7 @@ const baseMessages: LanguageMessages = {
     Rate: '汇率',
     Pair: '货币对',
     Family: '类别',
-    Basis: '基准',
+    Basis: '口径',
     Role: '角色',
     Identifier: '标识',
     Lifecycle: '生命周期',
@@ -187,11 +194,6 @@ const baseMessages: LanguageMessages = {
     'frontend env fallback': '前端环境兜底',
     'backend unavailable': '后端不可用',
     'platform backend': '平台后端',
-    'Platform is the entry. Database Dashboard owns shared data operations.':
-      '平台是入口。数据库面板负责共享数据运营。',
-    'Platform currently exposes three entry points: Database Dashboard, Watchlist, and Portfolio. Shared instruments, FX, email refresh rules, and NAV imports belong to Database Dashboard so the app workflows stay decoupled.':
-      '平台目前提供三个入口：数据库面板、关注列表和组合。共享标的、汇率、邮件刷新规则和净值导入归数据库面板管理，从而让各业务应用保持解耦。',
-    'Registry source:': '注册表来源：',
     'Complete Coverage': '完整覆盖',
     'Use Case': '使用场景',
     'Shared instrument / FX / NAV ops': '共享标的 / 汇率 / 净值运营',
@@ -202,7 +204,6 @@ const baseMessages: LanguageMessages = {
     'Portfolio, account, transaction, performance, risk, and research workflows built on top of the shared instrument core.':
       '基于共享资产核心构建的组合、账户、交易、绩效、风险和研究工作流。',
     'Shared Data Operations': '共享数据运营',
-    'Registry Overview': '注册表总览',
     Total: '总计',
     Funds: '基金',
     'Funds With NAV': '有净值基金',
@@ -347,7 +348,6 @@ const baseMessages: LanguageMessages = {
     'Share Splits': '拆股',
     'Index Profile': '指数概况',
     'Index Source Contract': '指数数据源约定',
-    'Latest Constituents · Top 100': '最新成分权重 · 前 100',
     'Methodology Coverage': '方法论覆盖',
     'Reference Data Coverage': '参考数据覆盖',
     Stock: '股票',
@@ -355,13 +355,19 @@ const baseMessages: LanguageMessages = {
     Detail: '详情',
     'Instrument Settings': '标的设置',
     'Investment Status': '投资状态',
+    'Research Stage': '研究阶段',
+    'Risk Attention': '风险关注',
+    'No Trigger': '暂无触发',
+    'Watching': '观察中',
+    'Researching': '研究中',
+    'Candidate': '候选',
+    'Limited': '监测受限',
     'Set this specific instrument to Watch, Proposed, Invested, Paused, or Exited.':
       '为这个具体标的设置观察、拟投、在投、暂停或退出状态。',
     'Taxonomy Settings': '分类设置',
     'Classification Path': '分类路径',
     'Current Path': '当前路径',
     'Current path': '当前路径',
-    Regime: '体系',
     Unclassify: '取消分类',
     Unclassified: '未分类',
     'Stop here': '停在此级',
@@ -386,7 +392,6 @@ const baseMessages: LanguageMessages = {
     Code: '代码',
     'Spot Rate': '即期汇率',
     'Save FX Rate': '保存汇率',
-    'Instrument Registry': '标的注册表',
     Include: '包含',
     'Include Archived': '包含归档',
     'Show Active Only': '仅显示启用',
@@ -416,7 +421,6 @@ const baseMessages: LanguageMessages = {
     'No market data': '无市场数据',
     Missing: '缺失',
     'Shared market data': '共享市场数据',
-    'Platform search default': '平台默认搜索',
     Fresh: '新鲜',
     'Raw OHLCV retained': '已保留原始行情',
     'OHLCV QFQ available': '可使用前复权行情',
@@ -454,7 +458,7 @@ const baseMessages: LanguageMessages = {
     'History Start': '历史起点',
     'Latest Observation': '最新观测日',
     'Source Refresh': '来源刷新',
-    'Registry Updated': '注册表更新时间',
+    'Asset Data Updated': '资产数据更新时间',
     'Since inception': '成立以来',
     'Ann. Volatility': '年化波动率',
     'Metrics Matrix': '指标矩阵',
@@ -514,7 +518,6 @@ const baseMessages: LanguageMessages = {
 const basePatterns: LanguagePatternMessages = {
   'zh-Hans': [
     { match: /^Open (.+)$/, replace: (name) => `打开 ${name}` },
-    { match: /^Registry source: (.+)$/, replace: (source) => `注册表来源：${source}` },
     { match: /^(.+) Watchlists · (.+) Securities$/, replace: (watchlists, securities) => `${watchlists} 个关注列表 · ${securities} 只证券` },
     { match: /^Created watchlist "(.+)"\.$/, replace: (name) => `已创建关注列表“${name}”。` },
     { match: /^Copied watchlist "(.+)"\.$/, replace: (name) => `已复制关注列表“${name}”。` },
@@ -528,8 +531,8 @@ const basePatterns: LanguagePatternMessages = {
     { match: /^(.+) selected quotes?$/, replace: (count) => `${count} 个选中报价` },
     { match: /^Latest NAV (.+)$/, replace: (date) => `最新净值 ${date}` },
     { match: /^Latest Quote (.+)$/, replace: (date) => `最新报价 ${date}` },
-    { match: /^(.+) High$/, replace: (range) => `${range} 区间最高` },
-    { match: /^(.+) Low$/, replace: (range) => `${range} 区间最低` },
+    { match: /^(.+) High$/, replace: (range) => `${periodLabel(range)}区间最高` },
+    { match: /^(.+) Low$/, replace: (range) => `${periodLabel(range)}区间最低` },
     { match: /^Standardized · as of (.+)$/, replace: (date) => `标准化口径 · 截至 ${date}` },
     { match: /^Cumulative return from (.+)$/, replace: (basis) => `基于${basis}的累计收益` },
     { match: /^Total (.+)$/, replace: (count) => `总计 ${count}` },
@@ -558,15 +561,110 @@ const basePatterns: LanguagePatternMessages = {
 
 const LanguageContext = createContext<LanguageContextValue | null>(null)
 
+const systemLabelLookup = Object.fromEntries(
+  Object.entries({ ...systemMessages, ...baseMessages['zh-Hans'] }).map(([key, value]) => [key.toLowerCase(), value]),
+)
+const systemEnglishLabels = Object.fromEntries(
+  Object.entries({ ...systemMessages, ...baseMessages['zh-Hans'] }).map(([en, zh]) => [zh, en]),
+)
+const systemLabel = (value: string): string => resolveTranslation(
+  value, 'zh-Hans', { 'zh-Hans': systemLabelLookup },
+  { 'zh-Hans': [...systemPatterns, ...(basePatterns['zh-Hans'] || [])] },
+)
+const periodLabel = (value: string): string => {
+  const period = value.toUpperCase().match(/^(\d+)([DWMY])$/)
+  if (!period) return systemLabel(value)
+  const unit = period[2] === 'D' ? '天' : period[2] === 'W' ? '周' : period[2] === 'M' ? '个月' : '年'
+  return `${period[1]} ${unit}`
+}
+
+// System-field search accepts both display languages while leaving field keys unchanged.
+export function matchesSystemLabel(label: string, query: string) {
+  const search = query.trim().toLowerCase()
+  return [label, systemSourceAliases[label] || '', systemEnglishLabels[label] || '', systemLabel(label)]
+    .some((value) => value.toLowerCase().includes(search))
+}
+
+const systemPatterns: LanguagePattern[] = [
+  { match: /^View\s*:\s*(.+)$/, replace: (name) => `视图：${systemLabel(name)}` },
+  { match: /^(\d+) Portfolios(?: · (.+))?$/, replace: (count, rest) => `${count} 个组合${rest ? ` · ${systemLabel(rest)}` : ''}` },
+  { match: /^([\d,]+) (accounts?|cash accounts?|holdings accounts?|open option obligations|open lots?|holdings?|securities|instruments?|instruments\/cash|transactions?|rows?|items?|issues?|contracts?|notes?|peers|days|calendar days|snapshots|groups|activities|external flows|(?:complete |paired |risk |return )?observations)\.?$/i, replace: (count, unit) => `${count} ${unit.toLowerCase() === 'observations' ? '个观测值' : systemLabel(unit)}` },
+  { match: /^(Postings|Lots|Position Lots|History|Positions|Transactions|Ledger|Held|Observed|Former) (\d+)$/, replace: (label, count) => `${systemLabel(label)} ${count}` },
+  { match: /^(.+) actions$/, replace: (name) => `${systemLabel(name)}操作` },
+  { match: /^Move (.+) (up|down)$/, replace: (name, direction) => `${direction === 'up' ? '上移' : '下移'} ${name}` },
+  { match: /^Sort by (.+)$/i, replace: (label) => `按${systemLabel(label)}排序` },
+  { match: /^Sort (.+?):? (ascending|descending|no sorting)$/, replace: (label, direction) => `${systemLabel(label)}：${systemLabel(direction)}` },
+  { match: /^(.+\.) (Sort .+: (?:ascending|descending|no sorting))$/, replace: (description, sort) => `${systemLabel(description)} ${systemLabel(sort)}` },
+  { match: /^Resize (.+) column$/, replace: (label) => `调整${systemLabel(label)}列宽` },
+  { match: /^Select (.+)$/, replace: (name) => `选择 ${name}` },
+  { match: /^(.+) trend$/, replace: (label) => `${systemLabel(label)}趋势` },
+  { match: /^Interactive (.+) chart$/, replace: (label) => `交互式${systemLabel(label)}图` },
+  { match: /^(\d+[DWMY]|MTD|YTD) (Total Return|Return|Vol(?:atility)?|Sharpe|Max(?:imum)? Drawdown|Max DD)$/i, replace: (period, metric) => `${periodLabel(period)}${systemLabel(metric)}` },
+  { match: /^(Return|Vol(?:atility)?|Sharpe|Max(?:imum)? Drawdown|Max DD) (\d+[DWMY]|MTD|YTD)$/i, replace: (metric, period) => `${periodLabel(period)}${systemLabel(metric)}` },
+  { match: /^(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}|latest)$/, replace: (start, end) => `${start} 至 ${end === 'latest' ? '最新' : end}` },
+  { match: /^Showing (\d+) of (\d+) (matched )?rows$/, replace: (shown, total, matched) => `显示 ${shown} / ${total} 行${matched ? '匹配结果' : ''}` },
+  { match: /^Per-instrument metric as-of (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})$/, replace: (start, end) => `各标的指标截至日期：${start} 至 ${end}` },
+  { match: /^Metrics as of (.+)$/, replace: (date) => `指标截至 ${date}` },
+  { match: /^Latest observation is (\d+) calendar days old; the (daily|weekly|monthly) freshness allowance is (\d+) days\.$/, replace: (age, frequency, allowance) => `最近观测距今 ${age} 个自然日；${frequency === 'daily' ? '日度' : frequency === 'weekly' ? '周度' : '月度'}数据允许延迟 ${allowance} 天。` },
+  { match: /^Latest observation (\d{4}-\d{2}-\d{2}) is older than expected completed session (\d{4}-\d{2}-\d{2})\.$/, replace: (latest, expected) => `最近观测日期 ${latest} 早于应已完成的交易日 ${expected}。` },
+  { match: /^(\d+) unavailable$/, replace: (count) => `${count} 个不可用` },
+  { match: /^(.+) availability: (.+)$/, replace: (metric, reason) => `${systemLabel(metric)}可用性：${systemLabel(reason)}` },
+  { match: /^Risk basis partial - (\d+) instrument\(s\) have observation gaps$/, replace: (count) => `风险计算依据不完整：${count} 个标的存在观测缺口` },
+  { match: /^(Daily|Weekly|Monthly) risk basis - aligned observations$/, replace: (frequency) => `${frequency === 'Daily' ? '日度' : frequency === 'Weekly' ? '周度' : '月度'}风险口径：观测数据已对齐` },
+  { match: /^(\d+[MY]) (EWMA(?: \+ Shrinkage)?|Sample Covariance)$/, replace: (period, model) => `${periodLabel(period)} ${systemLabel(model)}` },
+  { match: /^([\d,]+\/[\d,]+) complete observations$/, replace: (count) => `${count} 个完整观测值` },
+  { match: /^([\d,]+\/[\d,]+) complete return rows in ([^;]+)$/, replace: (count, interval) => `${count} 行完整收益记录，区间 ${interval.replace(/EOD/g, '日终')}` },
+  { match: /^([\d.]+%) missing$/, replace: (percent) => `缺失 ${percent}` },
+  { match: /^latest (\d{4}-\d{2}-\d{2}|—)$/, replace: (date) => `最新 ${date}` },
+  { match: /^(Policy|configuration|selection) (.+)$/, replace: (label, versions) => `${systemLabel(label)} ${systemLabel(versions)}` },
+  { match: /^Current rolling risk requires one period identity for the return ending (\d{4}-\d{2}-\d{2}); (.+)\.$/, replace: (date, starts) => `当前滚动风险计算要求截至 ${date} 的收益区间起点一致；各标的起点：${starts}。` },
+  { match: /^Current rolling risk requires identical return dates after all active holdings have history; missing (\d+) date\(s\), beginning (.+)\.$/, replace: (count, dates) => `当前滚动风险计算要求所有在持标的历史开始后的收益日期一致；缺少 ${count} 个日期，最早为 ${dates}。` },
+  { match: /^All (\d+) scope members must share one complete aligned return window; no members or dates were dropped\.?$/, replace: (count) => `范围内全部 ${count} 个成员必须具有完整且一致的收益区间；未剔除任何成员或日期。` },
+  { match: /^Return ending (\d{4}-\d{2}-\d{2}) starts at (.+?); scope members do not share one period identity\.?$/, replace: (end, start) => `截至 ${end} 的收益区间始于 ${systemLabel(start)}；范围内成员的收益区间起点不一致。` },
+  { match: /^Missing dates \((\d+) total\): (.+)\.?$/, replace: (count, dates) => `缺失日期（共 ${count} 个）：${dates.replace(/\.$/, '')}。` },
+  { match: /^(SAA|TAA)( gap)? (-?[\d.]+%)$/, replace: (label, gap, value) => `${systemLabel(label)}${gap ? '缺口' : ''} ${value}` },
+  { match: /^Net (.+)$/, replace: (value) => `净额 ${value}` },
+  { match: /^latest trade (.+)$/, replace: (date) => `最近交易 ${date}` },
+  { match: /^Settle via (.+)$/, replace: (name) => `通过 ${name} 结算` },
+  { match: /^Position EOD (.+)$/, replace: (date) => `持仓日终确认 ${date}` },
+  { match: /^Economic (\d{4}-\d{2}-\d{2})$/, replace: (date) => `经济生效 ${date}` },
+  { match: /^Settled cash basis (.+), FX (.+); pending basis (.+), FX (.+)\.(?: (.+))?$/, replace: (cash, cashFx, pending, pendingFx, detail) => `已结算现金成本 ${cash}，汇兑损益 ${cashFx}；待结算成本 ${pending}，汇兑损益 ${pendingFx}。${detail ? systemLabel(detail) : ''}` },
+  { match: /^Scenario (\d+) (.+)$/, replace: (count, label) => `情景 ${count} ${systemLabel(label)}` },
+  { match: /^Underlying (\d+)$/, replace: (count) => `挂钩标的 ${count}` },
+  { match: /^Updated (\d+) market-data points for (.+): raw close for valuation\/trading and (\d+) qfq adjusted closes for charts and total return; (\d+) raw OHLCV bars; (\d+) confirmed and (\d+) review-required share-adjustment event\(s\)\.$/, replace: (count, symbol, adjusted, bars, confirmed, review) => `已更新 ${symbol} 的 ${count} 个行情数据点：原始收盘价用于估值和交易，${adjusted} 个前复权收盘价用于图表和总回报；${bars} 条原始开高低收量行情；份额调整事件中 ${confirmed} 个已确认、${review} 个待复核。` },
+  { match: /^Run analysis date (\d{4}-\d{2}-\d{2}) does not match the latest portfolio date (\d{4}-\d{2}-\d{2})\.?$/, replace: (run, latest) => `运行分析日期 ${run} 与组合最新日期 ${latest} 不一致。` },
+  { match: /^(.+) Series$/, replace: (label) => `${systemLabel(label)}序列` },
+  { match: /^(.+) (Adjusted Close|Close|Unit NAV|Dividend-Reinvested Total Return NAV|Spot) series$/, replace: (name, basis) => `${name} ${systemLabel(basis)}序列` },
+  { match: /^Market value uses (.+)\. Return analysis uses (.+); the performance series does not replace the valuation quote\.$/, replace: (valuation, performance) => `市值采用${systemLabel(valuation)}。收益分析采用${systemLabel(performance)}；业绩序列不替代估值报价。` },
+  { match: /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d+)(?:, (\d{4}))?$/, replace: (month, day, year) => `${year ? `${year}年` : ''}${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(month) + 1}月${day}日` },
+  { match: /^Missing required fields: (.+)$/, replace: (fields) => `缺少必填字段：${fields.split(' / ').map(systemLabel).join(' / ')}` },
+  { match: /^Eligible-sleeve normalized HHI (.+)$/, replace: (value) => `纳入计算资产归一化集中度 ${value}` },
+  { match: /^Asset mix by signed portfolio weight: (.+)$/, replace: (mix) => `按有符号组合权重划分的资产构成：${mix.split(', ').map(systemLabel).join('，')}` },
+  { match: /^(Securities|FCN|Options|Cash & Settlement) (-?[\d.]+%)$/, replace: (label, weight) => `${systemLabel(label)} ${weight}` },
+  { match: /^(\d+) (?:more notes|more)$/, replace: (count) => `另有 ${count} 条` },
+  { match: /^(.+) through (.+); each Watchlist row uses that instrument's own latest calculation date\.$/, replace: (label, date) => `${systemLabel(label)}截至 ${date}；各行使用该标的最近的计算日期。` },
+  { match: /^(.+) pct$/, replace: (value) => `${value} 分位` },
+  { match: /^Copied (\d+) instruments to "(.+)"\.(?: (\d+) already existed there\.)?$/, replace: (count, name, existing) => `已将 ${count} 个标的复制到“${name}”。${existing ? `其中 ${existing} 个已存在。` : ''}` },
+  { match: /^Moved (\d+) instruments to "(.+)"\.(?: (\d+) already existed there\.)?$/, replace: (count, name, existing) => `已将 ${count} 个标的移动到“${name}”。${existing ? `其中 ${existing} 个已存在。` : ''}` },
+  { match: /^Watchlist "(.+)" created\.$/, replace: (name) => `已创建关注列表“${name}”。` },
+  { match: /^View saved as "(.+)"\.$/, replace: (name) => `视图已保存为“${name}”。` },
+  { match: /^Created taxonomy "(.+)"\.$/, replace: (name) => `已创建分类体系“${name}”。` },
+  { match: /^Deleted taxonomy "(.+)"\.$/, replace: (name) => `已删除分类体系“${name}”。` },
+  { match: /^Default taxonomy set to "(.+)"\.$/, replace: (name) => `默认分类体系已设为“${name}”。` },
+  { match: /^Added (.+) to unassigned instruments\.$/, replace: (name) => `已将 ${name} 添加到未归类标的。` },
+  { match: /^Remove (.+)$/, replace: (name) => `移除 ${name}` },
+  { match: /^Period (\d+[DWMY])$/, replace: (period) => periodLabel(period) },
+]
+
 const textNodeOriginals = new WeakMap<Text, string>()
 const elementAttributeOriginals = new WeakMap<Element, Map<string, string>>()
 
 function mergeMessages(messages?: LanguageMessages): LanguageMessages {
+  const chinese = { ...systemMessages, ...baseMessages['zh-Hans'], ...messages?.['zh-Hans'] }
+  const english = Object.fromEntries(Object.entries(chinese).map(([en, zh]) => [zh, en]))
   return supportedLanguages.reduce<LanguageMessages>((merged, language) => {
-    merged[language.value] = {
-      ...(baseMessages[language.value] || {}),
-      ...(messages?.[language.value] || {}),
-    }
+    const dictionary = language.value === 'en' ? { ...english, ...messages?.en } : chinese
+    merged[language.value] = { ...Object.fromEntries(Object.entries(dictionary).map(([key, value]) => [key.toLowerCase(), value])), ...dictionary }
     return merged
   }, {})
 }
@@ -574,6 +672,11 @@ function mergeMessages(messages?: LanguageMessages): LanguageMessages {
 function mergePatterns(patterns?: LanguagePatternMessages): LanguagePatternMessages {
   return supportedLanguages.reduce<LanguagePatternMessages>((merged, language) => {
     merged[language.value] = [
+      ...(language.value === 'zh-Hans' ? systemPatterns : [
+        { match: /^分类层级 (\d+)$/, replace: 'Taxonomy Level $1' },
+        { match: /^View\s*:\s*分类$/, replace: 'View: Classification' },
+        { match: /^(.+) actions$/, replace: (name: string) => `${systemSourceAliases[name] || name} actions` },
+      ]),
       ...(basePatterns[language.value] || []),
       ...(patterns?.[language.value] || []),
     ]
@@ -665,12 +768,10 @@ function resolveTranslation(
   language: SupportedLanguage,
   messages: LanguageMessages,
   patterns: LanguagePatternMessages,
-) {
-  if (language === 'en') {
-    return source
-  }
-
-  const direct = messages[language]?.[source]
+): string {
+  source = systemSourceAliases[source] || source
+  const direct = messages[language]?.[source] || messages[language]?.[source.toLowerCase()]
+    || (language === 'zh-Hans' ? messages[language]?.[`${source}.`] || messages[language]?.[`${source.toLowerCase()}.`] : undefined)
   if (direct) {
     return direct
   }
@@ -684,6 +785,37 @@ function resolveTranslation(
       return source.replace(pattern.match, pattern.replace)
     }
     return pattern.replace(...match.slice(1))
+  }
+
+  // Translate fixed UI fragments while retaining the values between them.
+  const fragment = source.match(/^([;|·]\s*)?(.+?)(\s*[:：(·])?$/)
+  if (fragment && (fragment[1] || fragment[3])) {
+    const inner = resolveTranslation(fragment[2], language, messages, patterns)
+    if (inner !== fragment[2]) return `${fragment[1] || ''}${inner}${fragment[3] || ''}`
+  }
+  for (const separator of [' · ', '. ', ': ', '; ', ' / ']) {
+    if (separator === ': ') {
+      const labeledValue = source.match(/^(.+?): (.+)$/)
+      if (labeledValue) {
+        const label = resolveTranslation(labeledValue[1], language, messages, patterns)
+        const value = resolveTranslation(labeledValue[2], language, messages, patterns)
+        if (label !== labeledValue[1] || value !== labeledValue[2]) return `${label}${language === 'en' ? ': ' : '：'}${value}`
+      }
+      continue
+    }
+    if (source.includes(separator)) {
+      const parts = source.split(separator)
+      const translated = parts.map((part) => resolveTranslation(part, language, messages, patterns))
+      if (parts.some((part, index) => part !== translated[index])) {
+        const joiner = language === 'zh-Hans' && separator === '; ' ? '；'
+          : language === 'zh-Hans' && separator === '. ' ? '。' : separator
+        return translated.map((part) => separator === '. ' ? part.replace(/[。.]$/, '') : part).join(joiner)
+      }
+    }
+  }
+  if (source.endsWith('.')) {
+    const sentence = resolveTranslation(source.slice(0, -1), language, messages, patterns)
+    if (sentence !== source.slice(0, -1)) return `${sentence}${language === 'en' ? '.' : '。'}`
   }
 
   return source
@@ -715,6 +847,12 @@ function isKnownRenderedTranslation(
 }
 
 function contextualDomText(node: Text, original: string) {
+  if (/^\d+[DWMY]$/.test(original.trim()) && node.parentElement?.closest('button, option, th')) {
+    return `Period ${original.trim()}`
+  }
+  if (node.parentElement?.closest('.investment-research-importance') && /^(High|Low)$/i.test(original.trim())) {
+    return `${original.trim()} importance`
+  }
   if (original.trim() !== 'Close' || !node.parentElement?.closest('button')) {
     return original
   }
@@ -733,9 +871,7 @@ function isKnownRenderedTextTranslation(
   const contextualOriginal = contextualDomText(node, original)
   return supportedLanguages.some((language) =>
     value === (
-      language.value === 'en'
-        ? original
-        : translateText(contextualOriginal, language.value, messages, patterns)
+      translateText(language.value === 'en' ? original : contextualOriginal, language.value, messages, patterns)
     ),
   )
 }
@@ -746,7 +882,7 @@ function shouldIgnoreElement(element: Element | null) {
   }
   return Boolean(
     element.closest(
-      'script, style, code, pre, textarea, [contenteditable="true"], [data-portfolio-ops-i18n-ignore="true"]',
+      'script, style, code, pre, textarea, [contenteditable="true"], [translate="no"], [data-investment-studio-i18n-ignore="true"]',
     ),
   )
 }
@@ -770,9 +906,7 @@ function translateTextNode(
     textNodeOriginals.set(node, original)
   }
 
-  const next = language === 'en'
-    ? original
-    : translateText(contextualDomText(node, original), language, messages, patterns)
+  const next = translateText(language === 'en' ? original : contextualDomText(node, original), language, messages, patterns)
   if (node.data !== next) {
     node.data = next
   }
@@ -784,6 +918,10 @@ function translateElementAttributes(
   messages: LanguageMessages,
   patterns: LanguagePatternMessages,
 ) {
+  if (element instanceof HTMLAnchorElement && element.hasAttribute('data-workspace-link')) {
+    const nextHref = withLanguage(element.getAttribute('href') || '/', language)
+    if (element.getAttribute('href') !== nextHref) element.setAttribute('href', nextHref)
+  }
   if (shouldIgnoreElement(element)) {
     return
   }
@@ -807,7 +945,7 @@ function translateElementAttributes(
       original = currentValue
       originals.set(attribute, original)
     }
-    const next = language === 'en' ? original : translateText(original, language, messages, patterns)
+    const next = translateText(original, language, messages, patterns)
     if (currentValue !== next) {
       element.setAttribute(attribute, next)
     }
@@ -845,9 +983,14 @@ export function LanguageProvider({
   const [language, setLanguageState] = useState<SupportedLanguage>(() => detectInitialLanguage())
   const mergedMessages = useMemo(() => mergeMessages(messages), [messages])
   const mergedPatterns = useMemo(() => mergePatterns(patterns), [patterns])
-  const translatingRef = useRef(false)
 
   const setLanguage = useCallback((nextLanguage: SupportedLanguage) => {
+    const url = new URL(window.location.href)
+    if (!url.searchParams.has('next') && (url.searchParams.has('lang') || url.searchParams.has('language'))) {
+      url.searchParams.delete('language')
+      url.searchParams.set('lang', nextLanguage)
+      window.history.replaceState(window.history.state, '', url)
+    }
     setLanguageState(nextLanguage)
   }, [])
 
@@ -874,20 +1017,20 @@ export function LanguageProvider({
       return undefined
     }
 
-    const applyTranslation = (root: ParentNode = document.body) => {
-      translatingRef.current = true
-      translateDomTree(root, language, mergedMessages, mergedPatterns)
-      window.setTimeout(() => {
-        translatingRef.current = false
-      }, 0)
+    translateDomTree(document.body, language, mergedMessages, mergedPatterns)
+    const title = document.querySelector('title')
+    if (title) translateDomTree(title, language, mergedMessages, mergedPatterns)
+
+    const options = {
+      attributes: true,
+      attributeFilter: ['aria-label', 'aria-description', 'placeholder', 'title', 'href'],
+      characterData: true,
+      childList: true,
+      subtree: true,
     }
 
-    applyTranslation()
-
     const observer = new MutationObserver((mutations) => {
-      if (translatingRef.current) {
-        return
-      }
+      observer.disconnect()
       for (const mutation of mutations) {
         if (mutation.type === 'characterData' && mutation.target.nodeType === Node.TEXT_NODE) {
           translateTextNode(mutation.target as Text, language, mergedMessages, mergedPatterns)
@@ -904,15 +1047,10 @@ export function LanguageProvider({
           }
         })
       }
+      observer.observe(document.body, options)
     })
 
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ['aria-label', 'aria-description', 'placeholder', 'title'],
-      characterData: true,
-      childList: true,
-      subtree: true,
-    })
+    observer.observe(document.body, options)
 
     return () => observer.disconnect()
   }, [enableDomTranslation, language, mergedMessages, mergedPatterns])
@@ -941,7 +1079,7 @@ export function LanguageSelector() {
   const { language, setLanguage, t } = useLanguage()
 
   return (
-    <label className="language-switcher" data-portfolio-ops-i18n-ignore="true">
+    <label className="language-switcher" data-investment-studio-i18n-ignore="true">
       <span>{t('Language')}</span>
       <select
         value={language}

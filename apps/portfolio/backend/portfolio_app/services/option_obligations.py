@@ -123,7 +123,8 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
     required_underlying_quantity = quantity * _float(contract.get("contract_multiplier"))
     gross = _float(transaction.get("gross_amount"))
     opened_at = _date(
-        transaction_performance_effective_date(transaction)
+        transaction.get("acquisition_date")
+        or transaction_performance_effective_date(transaction)
         or transaction.get("trade_date")
     )
     expiry_date = _date(contract.get("expiry_date"))
@@ -256,12 +257,13 @@ def derive_option_obligation_events(
         action = resolve_option_action(transaction)
         lifecycle = str(transaction.get("lifecycle_event_type") or "")
         quantity = _float(transaction.get("quantity"))
-        if action == "sell_to_open":
+        opening_balance = transaction.get("transaction_type") == "option_opening_balance"
+        if action == "sell_to_open" or opening_balance:
             if quantity <= EPSILON:
                 raise ValueError("Short option open requires positive contract quantity.")
             key = _key(transaction)
             identity = _validate_short_option_contract(transaction)
-            opened_at = effective_date or _date(transaction.get("trade_date"))
+            opened_at = (_date(transaction.get("acquisition_date")) if opening_balance else None) or effective_date
             expiry_date = _date(identity.get("expiry_date"))
             if (
                 opened_at is not None
@@ -411,7 +413,14 @@ def estimate_option_obligation_quantity_at_entitlement(
             effective_date := transaction_performance_effective_date(transaction)
         )
         is not None
-        and effective_date < entitlement_date
+        and (
+            effective_date < entitlement_date
+            or (
+                effective_date == entitlement_date
+                and transaction.get("transaction_type") == "option_opening_balance"
+                and (_date(transaction.get("acquisition_date")) or entitlement_date) < entitlement_date
+            )
+        )
     ]
 
     return sum(

@@ -1,3 +1,4 @@
+import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from 'react-router'
 
@@ -5,7 +6,7 @@ import LoadingOverlay from '../components/LoadingOverlay'
 import InvestmentResearchWorkspace from '../components/InvestmentResearchWorkspace'
 import InstrumentResearchAttributes from '../components/InstrumentResearchAttributes'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
-import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   emptyInstrumentResearchResponse,
   getInstrumentAttributes,
@@ -17,7 +18,7 @@ import {
   getInstrumentSummary,
   getInstrumentChart,
   getInstrumentTaxonomyTree,
-  getPlatformInstrumentReferenceData,
+  getInstrumentReferenceData,
   updateInstrumentSettings,
   type InstrumentChartResponse,
   type InstrumentPerformanceResponse,
@@ -41,7 +42,7 @@ import {
   type PriceAdjustmentMode,
   type PriceRange,
 } from '../lib/priceBars'
-import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import {
   listedDetailTabs,
   type ListedDetailTab,
@@ -233,11 +234,11 @@ function CandlestickChart({ bars }: { bars: DisplayPriceBar[] }) {
     <div className="listed-chart-shell">
       <div className="listed-chart-legend">
         <strong>{formatDate(activeBar.date)}</strong>
-        <span>O {formatNumber(activeBar.open, 3)}</span>
-        <span>H {formatNumber(activeBar.high, 3)}</span>
-        <span>L {formatNumber(activeBar.low, 3)}</span>
-        <span>C {formatNumber(activeBar.close, 3)}</span>
-        <span>Vol {compactValue(activeBar.volume, 1)}</span>
+        <span>Open Price {formatNumber(activeBar.open, 3)}</span>
+        <span>High {formatNumber(activeBar.high, 3)}</span>
+        <span>Low {formatNumber(activeBar.low, 3)}</span>
+        <span>Close {formatNumber(activeBar.close, 3)}</span>
+        <span>Volume {compactValue(activeBar.volume, 1)}</span>
       </div>
       <svg
         className="listed-candlestick-chart"
@@ -681,12 +682,6 @@ const SPLIT_COLUMNS = [
   { key: 'denominator' },
 ] as const
 
-const INDEX_CONSTITUENT_COLUMNS = [
-  { key: 'trade_date', label: 'As Of', format: 'date' },
-  { key: 'con_code', label: 'Constituent' },
-  { key: 'weight', label: 'Weight', format: 'percent_points' },
-] as const
-
 export default function ListedInstrumentDetailPage({ instrument, watchlistContext }: Props) {
   const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
@@ -809,7 +804,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
     async function loadReference() {
       try {
-        const nextReference = await getPlatformInstrumentReferenceData(instrumentId)
+        const nextReference = await getInstrumentReferenceData(instrumentId)
         if (!cancelled) setReference(nextReference)
       } catch (loadError) {
         if (!cancelled) {
@@ -1190,7 +1185,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     <div className="instrument-detail-page listed-detail-page">
       <div className="instrument-detail-topbar">
         <div className="instrument-detail-breadcrumbs">
-          <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">Home</a>
+          <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">Home</a>
           <span className="watchlist-breadcrumb-separator">/</span>
           <Link to="/watchlists" className="watchlist-breadcrumb-link">Watchlist</Link>
           {watchlistContext ? (
@@ -1200,9 +1195,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             </>
           ) : null}
           <span className="watchlist-breadcrumb-separator">/</span>
-          <span className="watchlist-breadcrumb-current">{instrument.instrument_name}</span>
+          <span className="watchlist-breadcrumb-current" translate="no">{instrument.instrument_name}</span>
         </div>
         <div className="instrument-detail-actions">
+            <LanguageSelector />
           <button type="button" onClick={() => setSettingsOpen(true)}>Settings</button>
         </div>
       </div>
@@ -1210,7 +1206,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       <section className="panel listed-detail-hero">
         <div>
           <div className="instrument-detail-eyebrow">{`${instrumentTypeLabel(instrument.instrument_type)} Detail`}</div>
-          <h1 className="instrument-detail-title">{instrument.instrument_name}</h1>
+          <h1 className="instrument-detail-title" translate="no">{instrument.instrument_name}</h1>
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
             <span className="context-chip">{barsResponse?.currency || latest?.currency || '—'}</span>
@@ -1345,18 +1341,21 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       <div className="instrument-detail-tabs-row">
         <div className="instrument-detail-tabs">
-          {tabs.map((item) => (
+          {tabs.filter(value => ['overview', 'performance', 'research', 'risk'].includes(value)).map((item) => (
             <button
               type="button"
               key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}
             >
-              {formatLabel(item)}
+              {item === 'portfolio' ? 'Holdings' : formatLabel(item)}
             </button>
           ))}
-        </div>
+        <button type="button" className={`instrument-detail-tab ${!['overview', 'performance', 'research', 'risk'].includes(tab) ? 'instrument-detail-tab-active' : ''}`} onClick={() => setTab('price')}>{language === 'zh-Hans' ? '资料与明细' : 'Details'}</button>
+</div>
       </div>
+        {!['overview', 'performance', 'research', 'risk'].includes(tab) && <div className="instrument-detail-tabs">{tabs.filter(value => !['overview', 'performance', 'research', 'risk'].includes(value)).map(item => <button key={item} className={`instrument-detail-tab ${item === tab ? 'instrument-detail-tab-active' : ''}`} onClick={() => setTab(item)}>{formatLabel(item)}</button>)}</div>}
+
 
       {tab === 'overview' ? (
         <div className="listed-tab-stack">
@@ -1379,8 +1378,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                 <MetricCard label="Daily Change" value={percentValue(displayReturns.dailyChange)} tone={signedValueClass(displayReturns.dailyChange)} />
                 <MetricCard label={`${range} High`} value={visibleHigh === null ? '—' : formatNumber(visibleHigh, visibleHigh < 10 ? 4 : 2)} />
                 <MetricCard label={`${range} Low`} value={visibleLow === null ? '—' : formatNumber(visibleLow, visibleLow < 10 ? 4 : 2)} />
-                <MetricCard label="Volume" value={compactValue(latestPriceBar?.volume ?? null, 2)} note={latestPriceBar?.volumeUnit || undefined} />
-                <MetricCard label="Turnover" value={compactValue(latestPriceBar?.turnover ?? null, 2)} note={latestPriceBar?.turnoverUnit || undefined} />
+                <MetricCard label="Volume" value={compactValue(latestPriceBar?.volume ?? null, 2)} note={latestPriceBar?.volumeUnit === 'lot' ? 'Trading lots' : latestPriceBar?.volumeUnit === 'shares' ? 'Shares traded' : latestPriceBar?.volumeUnit || undefined} />
+                <MetricCard label="Turnover" value={compactValue(latestPriceBar?.turnover ?? null, 2)} note={latestPriceBar?.turnoverUnit === 'thousand_cny' ? 'Thousands of CNY' : latestPriceBar?.turnoverUnit || undefined} />
               </section>
               {chartPanel}
               <section className="listed-metric-grid listed-return-strip">
@@ -1535,6 +1534,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'risk' ? (
         <div className="listed-tab-stack">
+          <InstrumentRiskPanel instrumentId={instrumentId} />
           <section className="listed-metric-grid">
             <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note={riskAsOfNote} />
             <MetricCard label="Maximum Drawdown" value={percentValue(displayRiskStats.maximumDrawdown)} tone={signedValueClass(displayRiskStats.maximumDrawdown)} note={riskAsOfNote} />
@@ -1612,20 +1612,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       ) : null}
 
-      {tab === 'methodology' ? (
+      {tab === 'profile' ? (
         <div className="listed-tab-stack">
           <ReferenceFacts title="Index Profile" record={referenceIndexInfo} fields={INDEX_INFO_FIELDS} />
-          <DataTable
-            title="Latest Constituents · Top 100"
-            rows={referenceRows(referenceSections.constituents)}
-            columns={INDEX_CONSTITUENT_COLUMNS}
-          />
-          <section className="panel listed-data-panel">
-            <div className="panel-header"><div className="panel-title">Methodology Coverage</div></div>
-            <div className="listed-source-note">
-              Constituent weights are shown only when the configured primary source publishes them. Rebalance rules and methodology documents remain unavailable until an official document source is configured; the page does not infer them from price history.
-            </div>
-          </section>
         </div>
       ) : null}
 
@@ -1743,7 +1732,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               <div><span>Latest Observation</span><strong>{formatDate(latest?.date)}</strong></div>
               <div><span>Observations</span><strong>{formatNumber(calculationSeries.length, 0)}</strong></div>
               <div><span>Source Refresh</span><strong>{formatLabel(barsResponse?.source_refresh_status || 'unknown')}</strong></div>
-              <div><span>Registry Updated</span><strong>{formatDateTime(summary?.freshness.last_fact_update_at)}</strong></div>
+              <div><span>Asset Data Updated</span><strong>{formatDateTime(summary?.freshness.last_fact_update_at)}</strong></div>
               <div><span>Provider</span><strong>{reference?.provider || '—'}</strong></div>
               <div><span>Provider Symbol</span><strong>{reference?.provider_symbol || '—'}</strong></div>
               <div><span>Source</span><strong>{reference?.source.source_location || '—'}</strong></div>

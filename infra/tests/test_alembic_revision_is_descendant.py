@@ -12,12 +12,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 HELPER_PATH = (
     REPOSITORY_ROOT / "infra" / "scripts" / "alembic_revision_is_descendant.py"
 )
-REGISTRY_MIGRATION_ROOT = REPOSITORY_ROOT / "infra" / "instrument_registry"
+REGISTRY_MIGRATION_ROOT = REPOSITORY_ROOT / "shared-data" / "instruments"
 
 
 @pytest.fixture()
 def helper_module() -> ModuleType:
-    module_name = "portfolio_ops_test_alembic_revision_is_descendant"
+    module_name = "investment_studio_test_alembic_revision_is_descendant"
     spec = importlib.util.spec_from_file_location(module_name, HELPER_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

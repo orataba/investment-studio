@@ -8,14 +8,15 @@ import sys
 from types import ModuleType
 
 import pytest
+from alembic.script import ScriptDirectory
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_SCRIPT = REPOSITORY_ROOT / "infra" / "scripts" / "audit_live_data.py"
 FLAT_TABLE_RELATIONS = {
-    ("instrument_registry", "instrument_market_data"),
-    ("instrument_registry", "instrument"),
-    ("instrument_registry", "corporate_action_event"),
+    ("instrument_data", "instrument_market_data"),
+    ("instrument_data", "instrument"),
+    ("instrument_data", "corporate_action_event"),
     ("watchlist", "instrument_chart_read_model"),
     ("portfolio", "transaction_record"),
     ("portfolio", "portfolio_daily_snapshot"),
@@ -31,7 +32,7 @@ FLAT_TABLE_RELATIONS = {
 
 @pytest.fixture()
 def audit_module() -> ModuleType:
-    module_name = "portfolio_ops_test_audit_live_data"
+    module_name = "investment_studio_test_audit_live_data"
     spec = importlib.util.spec_from_file_location(module_name, AUDIT_SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -45,10 +46,10 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_registry": "20260902_0029",
-        "platform": "20260823_0007",
-        "portfolio": "20260902_0058",
-        "watchlist": "20260901_0052",
+        "instrument_data": "20260904_0032",
+        "data_ingestion": "20260904_0009",
+        "portfolio": "20260905_0059",
+        "watchlist": "20260905_0054",
     }
     monkeypatch.setattr(
         audit_module,
@@ -77,6 +78,18 @@ def test_flat_table_profile_accepts_only_final_heads(
     assert not hasattr(audit_module, "SUPPORTED_FLAT_TABLE_HEAD_PAIRS")
     assert not hasattr(audit_module, "OVERHAUL_HEADS")
     assert not hasattr(audit_module, "_run_overhaul_audit")
+
+
+def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
+    migration_roots = {
+        "instrument_data": "shared-data/instruments/alembic",
+        "data_ingestion": "shared-data/alembic",
+        "portfolio": "apps/portfolio/backend/alembic",
+        "watchlist": "apps/watchlist/backend/alembic",
+    }
+    for component, path in migration_roots.items():
+        migrations = ScriptDirectory(str(REPOSITORY_ROOT / path))
+        assert migrations.get_heads() == [audit_module.FINAL_FLAT_TABLE_HEADS[component]]
 
 
 def test_audit_contract_names_cover_registry_0019(
@@ -163,8 +176,8 @@ def test_migration_source_heads_are_unsupported_after_cutover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     versions = {
-        "instrument_registry": "20260712_0007",
-        "platform": "20260716_0002",
+        "instrument_data": "20260712_0007",
+        "data_ingestion": "20260716_0002",
         "portfolio": "20260711_0032",
         "watchlist": "20260728_0030",
     }
@@ -196,8 +209,8 @@ def test_failed_overhaul_head_and_shape_are_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     failed_heads = {
-        "instrument_registry": "20260714_0014",
-        "platform": "20260716_0002",
+        "instrument_data": "20260714_0014",
+        "data_ingestion": "20260716_0002",
         "portfolio": "20260714_0045",
         "watchlist": "20260728_0030",
     }
@@ -216,7 +229,7 @@ def test_failed_overhaul_head_and_shape_are_unsupported(
         lambda _cursor, schema, relation: (
             "r"
             if (schema, relation) in FLAT_TABLE_RELATIONS
-            or (schema, relation) == ("instrument_registry", "quote_series")
+            or (schema, relation) == ("instrument_data", "quote_series")
             else None
         ),
     )
@@ -366,7 +379,7 @@ def test_twr_audit_cte_projects_daily_twr(
     fund_nav_projection_query = next(
         query
         for query in queries
-        if "instrument_registry.fund_nav_current_projection" in query
+        if "instrument_data.fund_nav_current_projection" in query
     )
     assert "fund_nav_reinvestment_projection/v7" in fund_nav_projection_query
     assert "lifecycle_state_json" in fund_nav_projection_query
@@ -421,7 +434,7 @@ def test_twr_audit_cte_projects_daily_twr(
     etf_catalog_query = next(
         query
         for query in queries
-        if "platform.fmp_etf_catalog catalog" in query
+        if "data_ingestion.fmp_etf_catalog catalog" in query
         and "required_exchange" in query
     )
     assert "catalog.exchange_code IN ('XASE', 'ARCX')" in etf_catalog_query
@@ -445,8 +458,8 @@ def test_cli_requires_explicit_database_configuration(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.delenv("PORTFOLIO_OPS_LOCAL_DATABASE_URL", raising=False)
-    monkeypatch.delenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", raising=False)
+    monkeypatch.delenv("INVESTMENT_STUDIO_LOCAL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("INVESTMENT_STUDIO_DATA_DATABASE_URL", raising=False)
 
     with pytest.raises(SystemExit) as error:
         audit_module.main([])
@@ -461,11 +474,11 @@ def test_environment_database_url_requires_canonical_local_target(
 ) -> None:
     platform_url = "postgresql+psycopg://platform/database"
     local_url = "postgresql+psycopg://local/database"
-    monkeypatch.delenv("PORTFOLIO_OPS_LOCAL_DATABASE_URL", raising=False)
-    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", platform_url)
+    monkeypatch.delenv("INVESTMENT_STUDIO_LOCAL_DATABASE_URL", raising=False)
+    monkeypatch.setenv("INVESTMENT_STUDIO_DATA_DATABASE_URL", platform_url)
     assert audit_module._environment_database_url() is None
 
-    monkeypatch.setenv("PORTFOLIO_OPS_LOCAL_DATABASE_URL", local_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_LOCAL_DATABASE_URL", local_url)
     assert audit_module._environment_database_url() == local_url
 
 
@@ -500,7 +513,7 @@ def test_cli_normalizes_sqlalchemy_url_and_reports_database_name(
 
     monkeypatch.setattr(audit_module, "run_audit_report", fake_run_audit_report)
     database_url = "postgresql+psycopg://" + "user:" + "secret" + "@localhost/audit_fixture"
-    monkeypatch.setenv("PORTFOLIO_OPS_LOCAL_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_LOCAL_DATABASE_URL", database_url)
     arguments = []
     if as_json:
         arguments.append("--json")

@@ -11,40 +11,41 @@ PROJECT_ROOT="$(cd "$1" && pwd)"
 PYTHON_BIN="$2"
 LOCK_FILE="$3"
 EXTERNAL_ENV_ROOT="$4"
-SUMMARY_FILE="$PROJECT_ROOT/var/market-data-refresh-summary.json"
-RUN_STATE_FILE="$PROJECT_ROOT/var/market-data-refresh-run-state.json"
-BACKEND_ROOT="$PROJECT_ROOT/apps/platform/backend"
+STATE_DIR="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}"
+SUMMARY_FILE="$STATE_DIR/market-data-refresh-summary.json"
+RUN_STATE_FILE="$STATE_DIR/market-data-refresh-run-state.json"
+BACKEND_ROOT="$PROJECT_ROOT/shared-data"
 REFRESH_SCRIPT="$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py"
 AUDIT_SCRIPT="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
-CHANNEL="${PORTFOLIO_OPS_LOCAL_REFRESH_CHANNEL:-all}"
-RETRY_FAILED_ATTEMPTS="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_FAILED_ATTEMPTS:-2}"
-FAIL_ON_ITEM_FAILURE="${PORTFOLIO_OPS_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE:-true}"
-PRIMARY_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_HOUR:-21}"
-PRIMARY_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE:-0}"
-RETRY_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR:-23}"
-RETRY_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE:-0}"
-RUN_KIND="${PORTFOLIO_OPS_LOCAL_REFRESH_RUN_KIND:-auto}"
-NOW_OVERRIDE="${PORTFOLIO_OPS_LOCAL_REFRESH_NOW:-}"
+CHANNEL="${INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL:-all}"
+RETRY_FAILED_ATTEMPTS="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_FAILED_ATTEMPTS:-2}"
+FAIL_ON_ITEM_FAILURE="${INVESTMENT_STUDIO_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE:-true}"
+PRIMARY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR:-21}"
+PRIMARY_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE:-0}"
+RETRY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR:-23}"
+RETRY_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE:-0}"
+RUN_KIND="${INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND:-auto}"
+NOW_OVERRIDE="${INVESTMENT_STUDIO_LOCAL_REFRESH_NOW:-}"
 
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
-portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
-ENV_FILE="$(portfolio_ops_runtime_env_file platform "$EXTERNAL_ENV_ROOT")"
-portfolio_ops_load_env_file "$ENV_FILE" PORTFOLIO_OPS_PLATFORM_
+investment_studio_reject_repository_env_files "$PROJECT_ROOT"
+ENV_FILE="$(investment_studio_runtime_env_file data "$EXTERNAL_ENV_ROOT")"
+investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_DATA_
 
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
 if [[ -z "$DATABASE_URL" ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL is required for scheduled refresh." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL is required for scheduled refresh." >&2
   exit 64
 fi
 case "$DATABASE_URL" in
   postgresql://*|postgresql+psycopg://*) ;;
   *)
-    echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+    echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
     exit 64
     ;;
 esac
-portfolio_ops_require_password_free_database_url "$DATABASE_URL"
-DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
+investment_studio_require_password_free_database_url "$DATABASE_URL"
+DATABASE_URL="$(investment_studio_sqlalchemy_database_url "$DATABASE_URL")"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python executable is missing: $PYTHON_BIN" >&2
@@ -101,7 +102,7 @@ esac
 case "$FAIL_ON_ITEM_FAILURE" in
   true|false) ;;
   *)
-    echo "PORTFOLIO_OPS_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE must be true or false." >&2
+    echo "INVESTMENT_STUDIO_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE must be true or false." >&2
     exit 64
     ;;
 esac
@@ -110,16 +111,13 @@ mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$RUN_STATE_FILE")"
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="$BACKEND_ROOT:$PROJECT_ROOT/packages/instrument-core/python"
-export PORTFOLIO_OPS_PLATFORM_ENVIRONMENT=local
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
-export PORTFOLIO_OPS_PLATFORM_FRONTEND_URL=http://127.0.0.1:5172
-export PORTFOLIO_OPS_PLATFORM_WATCHLIST_URL=http://127.0.0.1:5173
-export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=http://127.0.0.1:5174
-export PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL=http://127.0.0.1:8000
-export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL=http://127.0.0.1:8001
+export PYTHONPATH="$BACKEND_ROOT:$PROJECT_ROOT/shared-data/instruments/python"
+export INVESTMENT_STUDIO_DATA_ENVIRONMENT=local
+export INVESTMENT_STUDIO_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
+export INVESTMENT_STUDIO_DATA_WATCHLIST_API_URL=http://127.0.0.1:8000
+export INVESTMENT_STUDIO_DATA_PORTFOLIO_API_URL=http://127.0.0.1:8001
 
 clock_fields="$(
   "$PYTHON_BIN" - "$NOW_OVERRIDE" <<'PY'
@@ -133,9 +131,9 @@ override = sys.argv[1].strip()
 try:
     current = datetime.fromisoformat(override) if override else datetime.now().astimezone()
 except ValueError as error:
-    raise SystemExit(f"Invalid PORTFOLIO_OPS_LOCAL_REFRESH_NOW: {error}") from error
+    raise SystemExit(f"Invalid INVESTMENT_STUDIO_LOCAL_REFRESH_NOW: {error}") from error
 if current.tzinfo is None:
-    raise SystemExit("PORTFOLIO_OPS_LOCAL_REFRESH_NOW must include a UTC offset")
+    raise SystemExit("INVESTMENT_STUDIO_LOCAL_REFRESH_NOW must include a UTC offset")
 print(
     current.date().isoformat(),
     (current.date() - timedelta(days=1)).isoformat(),

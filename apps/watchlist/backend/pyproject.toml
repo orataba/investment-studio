@@ -3,11 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "portfolio-ops-watchlist-backend"
+name = "investment-studio-watchlist-backend"
 version = "0.1.0"
-description = "Portfolio Operations Watchlist backend"
+description = "Investment Studio Watchlist backend"
 requires-python = ">=3.12"
 dependencies = [
+  "mcp>=2.0,<3.0",
+  "pypdf>=5,<7",
   "alembic>=1.16,<2.0",
   "exchange-calendars>=4.13,<5.0",
   "fastapi>=0.115,<1.0",

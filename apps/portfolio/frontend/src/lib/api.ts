@@ -5,11 +5,10 @@ import type {
   PriceUnit,
   QuoteBasis,
   QuoteSelectionPolicy,
-} from '../../../../../packages/instrument-core/ts/src'
+} from '../../../../../shared-data/instruments/ts/src'
 
-import { PLATFORM_API_URL } from './navigation'
 
-export type { InstrumentCore, InstrumentIdentifier } from '../../../../../packages/instrument-core/ts/src'
+export type { InstrumentCore, InstrumentIdentifier } from '../../../../../shared-data/instruments/ts/src'
 
 export type PortfolioOptionContractTerms = {
   underlying_instrument_id: string
@@ -17,6 +16,12 @@ export type PortfolioOptionContractTerms = {
   expiry_date: string
   strike: number
   contract_multiplier: number
+  settlement_type?: 'physical' | 'cash' | null
+  exercise_style?: 'american' | 'european' | 'bermudan' | null
+  exercise_dates?: string[] | null
+  strike_currency?: string | null
+  settlement_formula?: string | null
+  terms_reference?: string | null
 }
 
 export type PortfolioFcnUnderlyingTerms = {
@@ -37,6 +42,13 @@ export type PortfolioFcnContractTerms = {
   issuer: string
   counterparty: string
   underlyings: PortfolioFcnUnderlyingTerms[]
+  knock_in_observation?: 'daily_close' | 'continuous' | 'final_close' | null
+  knock_out_observation_dates?: string[] | null
+  coupon_payment_dates?: string[] | null
+  coupon_day_count?: string | null
+  settlement_type?: 'cash' | 'physical' | 'conditional' | null
+  payoff_description?: string | null
+  terms_reference?: string | null
 }
 
 export type PortfolioDerivativeContractCreate =
@@ -56,6 +68,8 @@ export type PortfolioDerivativeContractCreate =
     }
 
 export type PortfolioDerivativeContractRecord = PortfolioDerivativeContractCreate & {
+  row_version?: number
+  amendments?: Array<{ row_version: number; reviewed_by: string; reason: string; changed_at: string; before: unknown; after: unknown }>
   portfolio_id: string
   account_id: string
   currency: string
@@ -71,6 +85,10 @@ export type WorkspaceSection = {
   label: string
   href: string
   status: string
+}
+
+export type PortfolioCapabilities = {
+  research_enabled: boolean
 }
 
 export type TaxonomyAssignmentScope = 'instrument'
@@ -747,6 +765,9 @@ export type PortfolioHoldingRow = {
     | 'position_recognition_adjustment'
     | string
   available_for_trading?: boolean
+  cash_purpose?: PortfolioCashPurpose
+  collateral_reference?: string | null
+  financing_liability?: number
   economic_instrument_id?: string | null
   economic_instrument_ref?: InstrumentCore | null
   position_reference_id?: string | null
@@ -865,6 +886,7 @@ export type PortfolioHoldingRow = {
   expiry_date?: string | null
   days_to_expiry?: number | null
   strike?: number | null
+  strike_currency?: string | null
   option_type?: 'call' | 'put' | string | null
   contract_multiplier?: number | null
   strike_notional?: number | null
@@ -1054,33 +1076,7 @@ export type SharedInstrumentRecord = InstrumentCore & {
   coverage_state: DataStatus
 }
 
-export type PlatformSecuritySearchResult = {
-  instrument_type: 'equity' | 'etf'
-  symbol: string
-  catalog_provider: 'fmp'
-  catalog_symbol: string
-  name: string
-  exchange_code: string
-  exchange_label: string
-  market: string
-  currency: string
-  country: string | null
-  sector: string | null
-  industry: string | null
-  existing_instrument_id: string | null
-  currency_verified: boolean
-}
-
-export type PlatformSecuritySearchCandidate = Omit<InstrumentCore, 'instrument_type'> & {
-  instrument_type: 'equity' | 'etf'
-  catalog_provider: 'fmp'
-  catalog_symbol: string
-  source: 'security_catalog'
-  existing_instrument_id: string | null
-  currency_verified: boolean
-}
-
-export type SecuritySearchOption = SharedInstrumentRecord | PlatformSecuritySearchCandidate
+export type SecuritySearchOption = SharedInstrumentRecord
 
 export type PortfolioSharedInstrumentsResponse = {
   portfolio_id: string
@@ -1505,6 +1501,8 @@ export type PortfolioResearchMemberTargetRecord = {
   configured_weight?: number | null
   configured_risk_share?: number | null
   selected_target_value?: number | null
+  trade_constraint?: 'adjustable' | 'no_trade'
+  risk_model_status?: 'modeled' | 'excluded'
 }
 
 export type PortfolioResearchSolvedResultRowRecord = {
@@ -1519,6 +1517,8 @@ export type PortfolioResearchSolvedResultRowRecord = {
   target_value_base?: number | null
   target_risk_share?: number | null
   forward_risk_contribution?: number | null
+  trade_constraint?: 'adjustable' | 'no_trade'
+  risk_model_status?: 'modeled' | 'excluded'
 }
 
 export type PortfolioResearchSolvedResultGroupRecord = {
@@ -1533,6 +1533,8 @@ export type PortfolioResearchSolvedResultGroupRecord = {
   min_weight?: number | null
   max_weight?: number | null
   bound_status?: string | null
+  trade_constraint?: 'adjustable' | 'no_trade' | 'mixed'
+  risk_model_status?: 'modeled' | 'excluded' | 'mixed'
   rows: PortfolioResearchSolvedResultRowRecord[]
 }
 
@@ -1558,6 +1560,9 @@ export type PortfolioResearchSolveEventRecord = {
   return_rows_after_policy?: number | null
   missing_return_row_count?: number | null
   missing_return_row_fraction?: number | null
+  leading_incomplete_return_row_count?: number | null
+  post_warmup_missing_return_row_count?: number | null
+  post_warmup_missing_return_row_fraction?: number | null
   dropped_return_rows?: Array<{ date: string; missing_members: string[] }> | null
   latest_complete_return_date?: string | null
   trailing_complete_return_staleness_days?: number | null
@@ -1572,6 +1577,8 @@ export type PortfolioResearchSolveEventRecord = {
   gross_exposure?: number | null
   risky_allocation_scaling_factor?: number | null
   member_count: number
+  no_trade_member_count?: number | null
+  risk_model_excluded_member_count?: number | null
   scope_solve_count?: number | null
 }
 
@@ -1586,10 +1593,12 @@ export type PortfolioResearchTargetWeightGapRecord = {
   target_value_base?: number | null
   base_currency: string
   action: string
+  trade_constraint?: 'adjustable' | 'no_trade'
+  risk_model_status?: 'modeled' | 'excluded'
   research_lifecycle?: 'held' | 'observed' | 'former' | null
   research_eligibility?: 'eligible' | 'pm_review_required' | null
   research_pm_approved?: boolean | null
-  execution_status: 'ready' | 'manual_review_required'
+  execution_status: 'ready' | 'manual_review_required' | 'no_trade'
   execution_note?: string | null
 }
 
@@ -1610,10 +1619,12 @@ export type PortfolioResearchTargetRowRecord = {
   implementation_weight?: number | null
   gap_to_implementation?: number | null
   action?: string | null
+  trade_constraint?: 'adjustable' | 'no_trade'
+  risk_model_status?: 'modeled' | 'excluded'
   research_lifecycle?: 'held' | 'observed' | 'former' | null
   research_eligibility?: 'eligible' | 'pm_review_required' | null
   research_pm_approved?: boolean | null
-  execution_status: 'ready' | 'manual_review_required'
+  execution_status: 'ready' | 'manual_review_required' | 'no_trade'
   execution_note?: string | null
 }
 
@@ -1650,9 +1661,14 @@ export type PortfolioResearchBacktestExecutionRecord = {
   taxonomy_configuration_effective_from?: string | null
   target_weights: PortfolioResearchBacktestTargetWeightRecord[]
   cash_target_weight: number
+  derivative_target_weight: number
+  derivative_reference_weight?: number | null
+  derivative_target_value?: number | null
+  derivative_no_trade?: boolean | null
   risky_buy_turnover: number
   risky_sell_turnover: number
   cash_leg_turnover: number
+  derivative_leg_turnover: number
   one_way_turnover: number
   commission_cost: number
   tax_cost: number
@@ -1677,9 +1693,20 @@ export type PortfolioResearchBacktestMethodologyRecord = {
   decision_rule: string
   execution_rule: string
   cash_return_rule: string
+  derivative_rule?: string | null
   cost_rule: string
   contribution_linking: string
   assumptions: Record<string, number>
+}
+
+export type PortfolioResearchDerivativeCapitalEventRecord = {
+  effective_date: string
+  actual_value_base?: number | null
+  target_value: number
+  reference_weight?: number | null
+  previous_value: number
+  capital_change: number
+  source: string
 }
 
 export type PortfolioResearchBacktestPointInTimeCoverageRecord = {
@@ -1691,6 +1718,7 @@ export type PortfolioResearchBacktestPointInTimeCoverageRecord = {
   historical_instrument_count: number
   first_usable_observation_by_instrument: Record<string, string>
   skipped_rebalances: Array<{ date: string; reason: string }>
+  pending_rebalances?: Array<{ date: string; reason: string }>
   unavailable_reason?: string | null
 }
 
@@ -1762,6 +1790,7 @@ export type PortfolioResearchBacktestRecord = {
   top_sleeve_contribution_points: PortfolioResearchBacktestSleevePointRecord[]
   contribution_reconciliation_points: PortfolioResearchBacktestContributionReconciliationRecord[]
   execution_records: PortfolioResearchBacktestExecutionRecord[]
+  derivative_capital_events?: PortfolioResearchDerivativeCapitalEventRecord[]
   total_turnover: number
   total_cost: number
   methodology?: PortfolioResearchBacktestMethodologyRecord | null
@@ -1976,8 +2005,11 @@ export type PortfolioAnalyticsScopePolicyUpsertPayload = {
 }
 
 export type PortfolioAccountCategory = 'cash' | 'security' | 'fcn' | 'option'
+export type PortfolioCashPurpose = 'operating' | 'margin' | 'collateral' | 'financing'
 
 export type PortfolioAccountRecord = {
+  cash_purpose?: PortfolioCashPurpose | null
+  collateral_reference?: string | null
   account_id: string
   portfolio_id: string
   account_name: string
@@ -1998,6 +2030,8 @@ export type PortfolioAccountsResponse = {
 }
 
 export type PortfolioAccountCreatePayload = {
+  cash_purpose?: PortfolioCashPurpose | null
+  collateral_reference?: string | null
   account_name: string
   account_category: PortfolioAccountCategory
   currency: string
@@ -2010,6 +2044,8 @@ export type PortfolioAccountCreatePayload = {
 }
 
 export type PortfolioAccountUpdatePayload = {
+  cash_purpose?: PortfolioCashPurpose | null
+  collateral_reference?: string | null
   account_name?: string | null
   account_category?: PortfolioAccountCategory | null
   institution?: string | null
@@ -2175,7 +2211,18 @@ export type PortfolioLedgerPostingListResponse = {
   ledger_postings: PortfolioLedgerPostingRecord[]
 }
 
+export type PortfolioAssetDelivery = {
+  account_id: string
+  instrument_id: string
+  quantity: string | number
+  fair_value: string | number
+  currency: string
+  fx_rate_to_contract: string | number
+}
+
 export type PortfolioTransactionRecord = {
+  lot_selections?: { opening_transaction_id: string; quantity: number | string }[]
+  asset_deliveries?: PortfolioAssetDelivery[]
   transaction_id: string
   transaction_sequence: number
   portfolio_id: string
@@ -2251,16 +2298,20 @@ export type PortfolioOptionObligationsResponse = {
 }
 
 export type PortfolioOptionOutcomePayload = {
+  allow_stock_short?: boolean
   derivative_contract_id: string
   side: 'long' | 'written'
   outcome: 'expired' | 'cash_settled' | 'physical'
   quantity: number
   event_date: string
+  trade_time?: string | null
   settlement_date: string
+  lot_selections?: PortfolioTransactionCreatePayload['lot_selections']
   stock_account_id?: string | null
   settlement_cash_account_id?: string | null
   cash_settlement_amount?: number | null
   fees?: number
+  fee_category?: PortfolioFeeCategory
   taxes?: number
   note?: string | null
 }
@@ -2309,6 +2360,9 @@ export type PortfolioTransactionChangeLogRecord = {
 }
 
 export type PortfolioFeeCategory =
+  | 'financing_interest'
+  | 'borrow_fee'
+  | 'payment_in_lieu'
   | 'unknown'
   | 'transaction_cost'
   | 'management_fee'
@@ -2341,6 +2395,7 @@ export type PortfolioTransactionListResponse = {
 
 export type PortfolioTransactionWorkspaceResponse = {
   portfolio_id: string
+  base_currency: string
   portfolio_inception_date: string
   summary: PortfolioTransactionListResponse['summary']
   derivation_boundary: PortfolioTransactionListResponse['derivation_boundary']
@@ -2362,6 +2417,19 @@ export type PortfolioTransactionWorkspaceResponse = {
     settlement_monetary_cost_basis_base: number | null
     fx_coverage_status: 'complete' | 'stale' | 'unavailable'
   } | null
+  cash_fx_impacts: Array<{
+    transaction_id: string
+    posting_role: string
+    account_id: string
+    currency: string
+    recognition_date: string | null
+    recognition_fx_rate_to_base: number | null
+    local_exposure_released: number
+    historical_cost_basis_base: number | null
+    fair_value_base: number | null
+    realized_cash_fx_pnl_base: number | null
+    fx_coverage_status: 'complete' | 'stale' | 'unavailable'
+  }>
   delete_scope_row_versions: Record<string, number>
   ledger_summary: PortfolioLedgerPostingListResponse['summary']
   ledger_postings: PortfolioLedgerPostingRecord[]
@@ -2596,6 +2664,9 @@ export type PortfolioTransactionFilters = {
 }
 
 export type PortfolioTransactionCreatePayload = {
+  option_delivery?: { stock_account_id: string; settlement_cash_account_id: string; fees?: number | string; fee_category?: PortfolioFeeCategory; taxes?: number | string; allow_stock_short?: boolean; stock_record_reference?: string | null }
+  lot_selections?: { opening_transaction_id: string; quantity: number | string }[]
+  asset_deliveries?: PortfolioAssetDelivery[]
   transaction_type: string
   lifecycle_event_type?: string | null
   trade_date: string
@@ -2684,6 +2755,11 @@ export type PortfolioTransactionFileImportResponse = {
 export type PortfolioTransactionImportAssetType = 'security' | 'fcn' | 'option' | 'cash'
 
 export type PortfolioTransactionImportAction =
+  | 'short_sell'
+  | 'buy_to_cover'
+  | 'short_opening_balance'
+  | 'physical_long'
+  | 'physical_written'
   | 'buy'
   | 'sell'
   | 'dividend'
@@ -2692,10 +2768,12 @@ export type PortfolioTransactionImportAction =
   | 'transfer_out'
   | 'transfer_in'
   | 'opening_balance'
+  | 'opening_written'
   | 'entry'
   | 'early_exit'
   | 'coupon'
   | 'knock_in_close'
+  | 'knock_in_observation'
   | 'knock_out_close'
   | 'maturity_close'
   | 'buy_to_open'
@@ -2730,7 +2808,7 @@ export type PortfolioTransactionImportDerivativeContract =
       contract_name: string
       contract_type: 'option'
       external_reference?: string | null
-      terms: {
+      terms: Omit<PortfolioOptionContractTerms, 'strike' | 'contract_multiplier'> & {
         underlying_instrument_id: string
         option_type: 'call' | 'put'
         expiry_date: string
@@ -2743,7 +2821,7 @@ export type PortfolioTransactionImportDerivativeContract =
       contract_name: string
       contract_type: 'fcn'
       external_reference?: string | null
-      terms: {
+      terms: Omit<PortfolioFcnContractTerms, 'notional' | 'annual_coupon_rate_pct' | 'underlyings'> & {
         notional: PortfolioTransactionImportNumeric
         annual_coupon_rate_pct?: PortfolioTransactionImportNumeric | null
         issue_date: string
@@ -2756,6 +2834,10 @@ export type PortfolioTransactionImportDerivativeContract =
     }
 
 export type PortfolioTransactionImportCommand = {
+  asset_deliveries?: PortfolioAssetDelivery[]
+  option_delivery?: PortfolioTransactionCreatePayload['option_delivery']
+  lot_selections?: PortfolioTransactionCreatePayload['lot_selections']
+  record_reference?: string | null
   external_reference: string
   asset_type: PortfolioTransactionImportAssetType
   transaction_action: PortfolioTransactionImportAction
@@ -3054,6 +3136,10 @@ function buildQuery(filters: Record<string, string | undefined>) {
   })
   const queryString = searchParams.toString()
   return queryString ? `?${queryString}` : ''
+}
+
+export function getPortfolioCapabilities() {
+  return fetchJson<PortfolioCapabilities>(API_BASE_URL, '/api/capabilities')
 }
 
 export function getWorkspaceSummary() {
@@ -3716,6 +3802,12 @@ export function replacePortfolioAnalyticsScopePolicy(
   )
 }
 
+export function amendPortfolioDerivativeContract(portfolioId: string, contract: PortfolioDerivativeContractRecord, terms: PortfolioDerivativeContractCreate['terms'], reason: string, reviewedBy: string) {
+  return fetchJson<PortfolioDerivativeContractRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/derivative-contracts/${encodeURIComponent(contract.derivative_contract_id)}`, {
+    method: 'PATCH', body: JSON.stringify({ expected_row_version: contract.row_version ?? 1, terms, reason, reviewed_by: reviewedBy }),
+  })
+}
+
 export function createPortfolioTransaction(
   portfolioId: string,
   payload: PortfolioTransactionCreatePayload,
@@ -3909,7 +4001,19 @@ export function getPortfolioInstrumentEventTasks(
   const query = attentionOnly ? '?attention_only=true' : ''
   return fetchJson<PortfolioInstrumentEventTaskListResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/instrument-event-tasks${query}`,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/instrument-event-tasks${query}`,
+  )
+}
+
+export function reconcilePortfolioInstrumentEventTasks(
+  portfolioId: string,
+  attentionOnly = false,
+) {
+  const query = attentionOnly ? '?attention_only=true' : ''
+  return fetchJson<PortfolioInstrumentEventTaskListResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/instrument-event-tasks/reconcile${query}`,
+    { method: 'POST' },
   )
 }
 
@@ -3920,7 +4024,7 @@ export function reviewPortfolioInstrumentEventTask(
 ) {
   return fetchJson<PortfolioInstrumentEventTaskRecord>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/instrument-event-tasks/${instrumentEventTaskId}/reviews`,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/instrument-event-tasks/${encodeURIComponent(instrumentEventTaskId)}/reviews`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -3990,61 +4094,6 @@ export function getPortfolioInstruments(portfolioId: string) {
   )
 }
 
-export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
-  const normalizedQuery = query.trim()
-  if (!normalizedQuery) {
-    return { results: [] as PlatformSecuritySearchCandidate[], catalogErrors: {} as Record<string, string> }
-  }
-  const params = new URLSearchParams({ q: normalizedQuery, limit: String(limit) })
-  const payload = await fetchJson<{
-    results: PlatformSecuritySearchResult[]
-    catalog_errors: Partial<Record<'equity' | 'etf', string>>
-  }>(
-    PLATFORM_API_URL,
-    `/api/securities/search?${params.toString()}`,
-  )
-  return {
-    results: payload.results.map<PlatformSecuritySearchCandidate>((item) => ({
-      instrument_id:
-        item.existing_instrument_id || `${item.catalog_provider}:${item.instrument_type}:${item.catalog_symbol}`,
-      instrument_name: item.name,
-      instrument_type: item.instrument_type,
-      currency: item.currency,
-      exchange_code: item.exchange_code,
-      identifiers: [
-        {
-          identifier_type: 'exchange_ticker',
-          identifier_value: item.symbol,
-          is_primary: true,
-        },
-      ],
-      broker_identifiers: [],
-      catalog_provider: item.catalog_provider,
-      catalog_symbol: item.catalog_symbol,
-      source: 'security_catalog',
-      existing_instrument_id: item.existing_instrument_id,
-      currency_verified: item.currency_verified,
-    })),
-    catalogErrors: payload.catalog_errors,
-  }
-}
-
-export function materializePlatformSecurity(
-  instrumentType: 'equity' | 'etf',
-  catalogProvider: 'fmp',
-  catalogSymbol: string,
-) {
-  return fetchJson<SharedInstrumentRecord>(PLATFORM_API_URL, '/api/securities/materialize', {
-    method: 'POST',
-    body: JSON.stringify({
-      instrument_type: instrumentType,
-      catalog_provider: catalogProvider,
-      catalog_symbol: catalogSymbol,
-      refresh_eod: true,
-    }),
-  })
-}
-
 export function getPortfolioDerivativeContracts(portfolioId: string) {
   return fetchJson<PortfolioDerivativeContractsResponse>(
     API_BASE_URL,
@@ -4076,4 +4125,8 @@ export function getPortfolioOptionObligations(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/options/obligations${query}`,
   )
+}
+
+export function requestInstrumentRisk<T>(path: string, init?: RequestInit) {
+  return fetchJson<T>(API_BASE_URL, `/api/instrument-risk${path.slice('/risk'.length)}`, init)
 }

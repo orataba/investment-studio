@@ -27,7 +27,7 @@ from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
-from portfolio_app.services.analytics_scope import taxonomy_configuration_as_of_in_session
+from portfolio_app.services.analytics_scope import analytics_policy_version, taxonomy_configuration_as_of_in_session
 from portfolio_app.services.research_solver import (
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -618,6 +618,7 @@ def _planning_state_fingerprint(
         "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
         "as_of_date": as_of_date.isoformat(),
         "taxonomy_configuration": taxonomy_configuration,
+        "analytics_policy_version": analytics_policy_version(portfolio_id, session=session),
         "research_instrument_eligibility": sorted(
             [
                 {
@@ -651,14 +652,17 @@ def _research_run_reliability(
 
     reasons: list[str] = []
     run_as_of_date = _date_value(row.as_of_date)
+    pinned = settings_payload.get("as_of_mode") == RESEARCH_AS_OF_MODE_PINNED
+    expected_as_of_date = _date_value(settings_payload.get("as_of_date")) if pinned else latest_portfolio_as_of_date
     if run_as_of_date is None:
         reasons.append("Run does not record an analysis date.")
-    elif run_as_of_date != latest_portfolio_as_of_date:
+    elif run_as_of_date != expected_as_of_date:
+        date_label = "selected pinned date" if pinned else "latest portfolio date"
         reasons.append(
-            f"Run analysis date {run_as_of_date.isoformat()} does not match the latest portfolio date "
-            f"{latest_portfolio_as_of_date.isoformat()}."
+            f"Run analysis date {run_as_of_date.isoformat()} does not match the {date_label} "
+            f"{_iso_date(expected_as_of_date)}."
         )
-    if run_as_of_date is not None and latest_transaction_date is not None and latest_transaction_date > run_as_of_date:
+    if not pinned and run_as_of_date is not None and latest_transaction_date is not None and latest_transaction_date > run_as_of_date:
         reasons.append(
             f"Portfolio transactions exist through {latest_transaction_date.isoformat()}, after this run's "
             f"{run_as_of_date.isoformat()} analysis date."
@@ -1420,6 +1424,12 @@ def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
                 "implementation_weight": implementation_weight,
                 "gap_to_implementation": gap_to_implementation,
                 "action": str((target_gap or {}).get("action") or "").strip() or None,
+                "trade_constraint": str(
+                    (target_gap or {}).get("trade_constraint") or "adjustable"
+                ),
+                "risk_model_status": str(
+                    (target_gap or {}).get("risk_model_status") or "modeled"
+                ),
                 "research_lifecycle": (target_gap or {}).get("research_lifecycle"),
                 "research_eligibility": (target_gap or {}).get("research_eligibility"),
                 "research_pm_approved": (target_gap or {}).get("research_pm_approved"),
@@ -1709,7 +1719,7 @@ def get_research_workbench(
             session,
             portfolio_id=portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
-            as_of_date=latest_portfolio_as_of_date,
+            as_of_date=_date_value(settings_payload.get("as_of_date")) or latest_portfolio_as_of_date,
         )
         run_rows = session.scalars(
             select(ResearchRunRecordModel)

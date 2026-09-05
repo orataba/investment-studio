@@ -43,7 +43,7 @@ def _option_contract(
 ) -> dict[str, object]:
     return {
         "derivative_contract_id": derivative_contract_id,
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "account_id": account_id,
         "contract_name": "ABBV Dec 2026 Covered Call",
         "contract_type": "option",
@@ -78,7 +78,7 @@ def _transaction(
     return {
         "transaction_id": transaction_id,
         "transaction_sequence": int(transaction_id.rsplit("-", 1)[-1]),
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "transaction_type": transaction_type,
         "lifecycle_event_type": None,
         "trade_date": trade_date,
@@ -127,7 +127,7 @@ def _transaction(
 def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    portfolio_id = "portfolio-ops"
+    portfolio_id = "investment-studio"
     underlying_id = "equity-us-abbv"
     session_factory = get_session_factory()
     option_id = "option-abbv-20261218-c-220"
@@ -169,7 +169,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "rates": []},
     )
 
@@ -306,6 +306,16 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
         )
         assert materialized_row["valuation_basis"] == dynamic_row["valuation_basis"]
         assert materialized_row["risk_eligible"] is dynamic_row["risk_eligible"]
+        for field_name in (
+            "open_contract_quantity", "required_underlying_quantity", "expiry_date",
+            "days_to_expiry", "strike", "strike_currency", "option_type",
+            "contract_multiplier", "strike_notional", "strike_notional_base",
+        ):
+            assert materialized_row[field_name] == dynamic_row[field_name]
+        assert materialized_row["required_underlying_quantity"] == 100.0
+        assert materialized_row["strike_currency"] == "USD"
+        assert materialized_row["unrealized_return"] is None
+        assert materialized_row["unrealized_return_base"] is None
         if dynamic_row["holding_kind"] == "option_obligation":
             for field_name in (
                 "open_contract_quantity",
@@ -357,6 +367,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
         "contract_multiplier",
         "strike_notional",
         "strike_notional_base",
+        "strike_currency",
         "premium_basis_remaining",
         "liability_value",
         "liability_value_base",
@@ -413,7 +424,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
 def test_foreign_option_liability_fx_is_attributed_as_signed_instrument_exposure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    portfolio_id = "portfolio-ops"
+    portfolio_id = "investment-studio"
     option_id = "option-hkd-covered-call"
     option_account_id = "broker-hk-options"
     option_contract = _option_contract(
@@ -455,7 +466,7 @@ def test_foreign_option_liability_fx_is_attributed_as_signed_instrument_exposure
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {
             "supported_currencies": ["USD", "HKD"],
             "maintained_pairs": ["USD/HKD"],

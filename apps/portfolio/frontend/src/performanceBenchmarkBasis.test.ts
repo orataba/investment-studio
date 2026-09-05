@@ -8,7 +8,7 @@ describe('performance benchmark basis reliability', () => {
     'accepts %s as a confirmed total-return basis',
     (basis) => {
       const assessment = assessPerformanceBenchmarkBasis(basis)
-      expect(assessment.comparisonEligible).toBe(true)
+      expect(assessment.returnSemantics).toBe('total_return')
       expect(assessment.basis).toBe(basis)
       expect(assessment.warning).toBeNull()
       expect(assessment.label).toContain('confirmed total-return basis')
@@ -16,40 +16,39 @@ describe('performance benchmark basis reliability', () => {
   )
 
   it.each(['close', 'official_nav', 'last', 'spot'])(
-    'treats %s as a price or valuation fallback and withholds relative comparison',
+    'discloses unconfirmed distribution treatment for %s without declaring it total return',
     (basis) => {
       const assessment = assessPerformanceBenchmarkBasis(basis)
-      expect(assessment.comparisonEligible).toBe(false)
+      expect(assessment.returnSemantics).toBe('unknown')
       expect(assessment.basis).toBe(basis)
-      expect(assessment.warning).toContain('Portfolio-relative differences and relative statistics are withheld')
-      expect(assessment.warning).toContain(basis)
+      expect(assessment.warning).toContain('Comparison uses the selected price or NAV series')
+      expect(assessment.warning).toContain('unconfirmed')
     },
   )
 
   it('accepts close when the selected index series explicitly declares total-return semantics', () => {
     const assessment = assessPerformanceBenchmarkBasis('close', 'total_return')
 
-    expect(assessment.comparisonEligible).toBe(true)
+    expect(assessment.returnSemantics).toBe('total_return')
     expect(assessment.basis).toBe('close')
     expect(assessment.label).toContain('confirmed total-return basis')
     expect(assessment.warning).toBeNull()
   })
 
-  it('keeps explicitly price-return close exploratory while disclosing standalone metrics', () => {
+  it('discloses distributions excluded from a price-return comparison', () => {
     const assessment = assessPerformanceBenchmarkBasis('close', 'price_return')
 
-    expect(assessment.comparisonEligible).toBe(true)
+    expect(assessment.returnSemantics).toBe('price_return')
     expect(assessment.label).toContain('confirmed price-return basis')
-    expect(assessment.warning).toContain('series is rebased')
-    expect(assessment.warning).toContain('benchmark and relative metrics are shown')
-    expect(assessment.warning).toContain('include that basis difference')
+    expect(assessment.warning).toContain('Distributions are excluded')
+    expect(assessment.warning).toContain('relative results include that difference')
   })
 
   it('fails closed when the chart does not identify its basis', () => {
     const assessment = assessPerformanceBenchmarkBasis(null)
-    expect(assessment.comparisonEligible).toBe(false)
+    expect(assessment.basis).toBeNull()
     expect(assessment.label).toBe('Unavailable')
-    expect(assessment.warning).toContain('total-return comparability cannot be verified')
+    expect(assessment.warning).toContain('no available price or NAV basis')
   })
 
   it('wires basis disclosure and fail-closed comparison into Performance', () => {

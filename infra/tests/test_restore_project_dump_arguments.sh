@@ -3,9 +3,9 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RESTORE_SCRIPT="$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-restore-arguments.XXXXXX")"
-DATABASE_URL="postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops"
-DATABASE_URL="${DATABASE_URL/portfolio_ops@/portfolio_ops:sensitive-password@}"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-restore-arguments.XXXXXX")"
+DATABASE_URL="postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio"
+DATABASE_URL="${DATABASE_URL/investment_studio@/investment_studio:sensitive-password@}"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 set +e
@@ -32,8 +32,8 @@ grep -q 'Restore dump path must be absolute' "$TEST_ROOT/relative.out"
 NO_TARGET_DUMP="$TEST_ROOT/no-target.pgdump"
 : > "$NO_TARGET_DUMP"
 set +e
-CONFIRM_RESTORE=portfolio_ops \
-  env -u PORTFOLIO_OPS_LOCAL_DATABASE_URL \
+CONFIRM_RESTORE=investment_studio \
+  env -u INVESTMENT_STUDIO_LOCAL_DATABASE_URL \
   "$RESTORE_SCRIPT" "$NO_TARGET_DUMP" \
   > "$TEST_ROOT/no-target.out" 2>&1
 no_target_status=$?
@@ -42,15 +42,15 @@ if [[ $no_target_status -ne 64 ]]; then
   echo "Restore did not reject a missing explicit database URL." >&2
   exit 1
 fi
-grep -q 'PORTFOLIO_OPS_LOCAL_DATABASE_URL must explicitly identify' \
+grep -q 'INVESTMENT_STUDIO_LOCAL_DATABASE_URL must explicitly identify' \
   "$TEST_ROOT/no-target.out"
 
 UNVERIFIED_DUMP="$TEST_ROOT/unverified.pgdump"
 : > "$UNVERIFIED_DUMP"
 set +e
-CONFIRM_RESTORE=portfolio_ops \
+CONFIRM_RESTORE=investment_studio \
 ALLOW_UNVERIFIED_RESTORE=true \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$RESTORE_SCRIPT" "$UNVERIFIED_DUMP" \
   > "$TEST_ROOT/unverified.out" 2>&1
 unverified_status=$?
@@ -82,7 +82,7 @@ printf '%s\n' \
   'if [[ "$*" == *sensitive-password* ]]; then printf "credential-in-argv\n" >> "$EVENT_LOG"; fi' \
   'printf "psql\n" >> "$EVENT_LOG"' \
   'if [[ "$*" == *"current_user"* ]]; then' \
-  '  printf "%s\n" "portfolio_ops|portfolio_ops"' \
+  '  printf "%s\n" "investment_studio|investment_studio"' \
   'elif [[ "$*" == *"SELECT count("* ]]; then' \
   '  printf "%s\n" 1' \
   'fi' \
@@ -101,11 +101,11 @@ export EVENT_LOG
 
 set +e
 PATH="$MOCK_BIN:$PATH" \
-CONFIRM_RESTORE=portfolio_ops \
+CONFIRM_RESTORE=investment_studio \
 ALLOW_ACTIVE_CONNECTIONS=true \
 PYTHON_BIN="$(command -v python3)" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
-PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER=none \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER=none \
   "$RESTORE_SCRIPT" "$ACTIVE_DUMP" \
   > "$TEST_ROOT/active-connections.out" 2>&1
 active_connections_status=$?

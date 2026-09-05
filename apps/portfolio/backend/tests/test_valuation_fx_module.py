@@ -197,7 +197,7 @@ def test_current_ledger_rejects_non_complete_fx_rates(
             },
         ],
     }
-    monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: payload)
+    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: payload)
 
     rate_map = ledger.resolve_fx_rate_map()
 
@@ -259,7 +259,7 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
     )
     expected_map = {("USD", "CNY"): fx_instrument_id}
 
-    monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: payload)
+    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: payload)
     monkeypatch.setattr(
         ledger,
         "get_registry_instrument_detail",
@@ -317,7 +317,7 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
         },
     )
     monkeypatch.setattr(research_solver, "list_accounts", lambda _portfolio_id: [])
-    monkeypatch.setattr(research_solver, "get_platform_fx_rates", lambda: payload)
+    monkeypatch.setattr(research_solver, "get_shared_fx_rates", lambda: payload)
     research_state = research_solver._build_taxonomy_state(
         "portfolio-fx-topology",
         planning_taxonomy_id="taxonomy-fx-topology",

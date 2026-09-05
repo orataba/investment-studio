@@ -1,4 +1,8 @@
 from __future__ import annotations
+from portfolio_app.services.lot_selection import selected_quantities
+
+from portfolio_app.services.asset_deliveries import expand_asset_deliveries
+from portfolio_app.services.short_positions import SHORT_TRANSACTION_TYPES, partition_security_sides, reflect_short_lot
 
 from collections import defaultdict
 from copy import deepcopy
@@ -7,11 +11,11 @@ from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from functools import partial
 from typing import Callable
 
-from portfolio_ops_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
+from investment_studio_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
 
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
-    get_platform_fx_rates,
+    get_shared_fx_rates,
     get_registry_instrument_details,
     get_registry_instrument_detail,
     list_registry_corporate_actions,
@@ -134,13 +138,27 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
             "option_writer_cash_settlement",
             "option_writer_assignment",
         }
-        if option_action is None and not option_lifecycle_event:
+        if option_action is None and not option_lifecycle_event and transaction_type != "option_opening_balance":
             return
 
         identity = option_contract_identity(transaction)
         expiry_date = _parse_iso_date(identity.get("expiry_date"))
         if expiry_date is None or event_date is None:
             raise ValueError("Option event and contract expiry dates are required.")
+        physical_event = lifecycle_event_type in {"option_long_exercise", "option_writer_assignment"}
+        cash_event = lifecycle_event_type in {"option_long_cash_settlement", "option_writer_cash_settlement"}
+        settlement_type = identity.get("settlement_type")
+        if physical_event and settlement_type == "cash":
+            raise ValueError("Cash-settled option contracts cannot have physical delivery.")
+        if cash_event and settlement_type == "physical":
+            raise ValueError("Physically settled option contracts cannot be recorded as cash settlement; record the actual delivery and any closing trades.")
+        if physical_event or cash_event:
+            if identity.get("exercise_style") == "european" and event_date != expiry_date:
+                raise ValueError("European option exercise or settlement must use the expiry date.")
+            if identity.get("exercise_style") == "bermudan" and event_date.isoformat() not in {
+                str(value) for value in identity.get("exercise_dates") or []
+            }:
+                raise ValueError("Bermudan option outcome must use a contractual exercise date.")
         if option_action is not None and event_date > expiry_date:
             raise ValueError("Option transaction date must not follow contract expiry.")
         if (
@@ -211,6 +229,34 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
     )
     if issue_date is None or maturity_date is None or event_date is None:
         raise ValueError("FCN event, issue, and maturity dates are required.")
+    delivered = bool(transaction.get("asset_deliveries") or transaction.get("delivered_value") is not None)
+    if transaction_type == "maturity_redemption" and isinstance(terms, dict):
+        if terms.get("settlement_type") == "physical" and not delivered:
+            raise ValueError("Physical FCN settlement requires the actual asset deliveries.")
+        if delivered and terms.get("settlement_type") == "cash":
+            raise ValueError("Cash-only FCN contracts cannot deliver securities.")
+        if delivered:
+            underlying_ids = {str(item.get("instrument_id") or "") for item in terms.get("underlyings") or [] if item.get("deliverable") is not False}
+            if any(str(item.get("instrument_id") or "") not in underlying_ids for item in transaction.get("asset_deliveries") or []):
+                raise ValueError("Delivered securities must belong to the FCN contractual underlyings.")
+    if lifecycle_event_type in {"fcn_knock_in", "fcn_knock_out"} and not issue_date <= event_date <= maturity_date:
+        raise ValueError("FCN transaction date must fall between contract issue and maturity.")
+    if lifecycle_event_type == "fcn_knock_out" and isinstance(terms, dict):
+        observation_dates = terms.get("knock_out_observation_dates")
+        if observation_dates is not None and event_date.isoformat() not in {
+            str(value) for value in observation_dates
+        }:
+            raise ValueError("FCN knock-out must use a contractual observation date.")
+    if transaction_type == "maturity_redemption" and lifecycle_event_type == "fcn_knock_in":
+        final_observation_date = _parse_iso_date(
+            terms.get("final_observation_date") if isinstance(terms, dict) else None
+        ) or maturity_date
+        if event_date < final_observation_date:
+            raise ValueError("A knock-in observation does not redeem the FCN. Record the observation, then record redemption at or after final observation.")
+    if transaction_type == "lifecycle_event" and lifecycle_event_type == "fcn_knock_in" and isinstance(terms, dict):
+        final_observation_date = _parse_iso_date(terms.get("final_observation_date")) or maturity_date
+        if terms.get("knock_in_observation") == "final_close" and event_date != final_observation_date:
+            raise ValueError("Final-close knock-in can only be confirmed on the final observation date.")
 
     if (
         transaction_type == "maturity_redemption"
@@ -296,7 +342,7 @@ def _resolve_pricing_quote_map(
 
 def resolve_fx_rate_map() -> dict[tuple[str, str], float]:
     try:
-        payload = get_platform_fx_rates()
+        payload = get_shared_fx_rates()
     except InstrumentRegistryError:
         return {}
 
@@ -421,7 +467,7 @@ def _corporate_action_sort_key(event: dict[str, object]) -> tuple[str, int, str,
 
 def _transaction_timeline_sort_key(
     transaction: dict[str, object],
-) -> tuple[str, int, str, str, str, str]:
+) -> tuple[str, int, str, str, int, str]:
     trade_date = str(transaction.get("trade_date") or "")
     effective_date = transaction_performance_effective_date(transaction)
     acquisition_date = str(transaction.get("acquisition_date") or "")
@@ -430,13 +476,14 @@ def _transaction_timeline_sort_key(
         and acquisition_date
         and acquisition_date < trade_date
     )
+    canonical_key = transaction_sort_key(transaction)
     return (
         effective_date.isoformat() if effective_date is not None else trade_date,
         -1 if is_prior_opening_balance else 1,
-        str(transaction.get("trade_at") or ""),
-        str(transaction.get("created_at") or ""),
-        str(transaction.get("transaction_id") or ""),
-        str(transaction.get("settlement_date") or ""),
+        canonical_key[1],
+        canonical_key[2],
+        canonical_key[3],
+        canonical_key[4],
     )
 
 
@@ -783,22 +830,27 @@ def _monetary_acquisition_fx_rate(
     return acquisition_fx_rate, bool((resolved_fx or {}).get("stale"))
 
 
-def settled_monetary_balances_from_postings(
+def _replay_settled_monetary_postings(
     *,
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
-    resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
-) -> list[dict[str, object]]:
-    """Replay settled cash with account/currency historical base basis."""
+    resolve_fx_rate_on: Callable[..., dict[str, object] | None],
+    impact_transaction_ids: set[str] | None = None,
+) -> tuple[
+    dict[tuple[str, str], dict[str, object]],
+    list[dict[str, object]],
+]:
+    """Replay settled monetary balances and explain selected FX realizations."""
 
-    resolved_fx_rate_on = resolve_fx_rate_on or partial(
-        valuation_fx.resolve_fx_rate_on,
-        instrument_detail_loader=get_registry_instrument_detail,
+    normalized_base = valuation_fx.required_currency(
+        base_currency,
+        field_name="portfolio base currency",
     )
     states: dict[tuple[str, str], dict[str, object]] = {}
+    impacts: list[dict[str, object]] = []
     transferred_basis_by_group: dict[str, tuple[float | None, bool]] = {}
     conversion_legs = _fx_conversion_legs(postings)
     as_of_iso = as_of_date.isoformat()
@@ -845,6 +897,12 @@ def settled_monetary_balances_from_postings(
             },
         )
         balance_before = _safe_float(state.get("amount")) or 0.0
+        historical_basis_before = _safe_float(
+            state.get("historical_cost_basis_base")
+        )
+        historical_basis_complete_before = bool(
+            state.get("cost_basis_complete", True)
+        )
         historical_fx_stale_before = bool(state.get("historical_fx_stale"))
         transaction_ids = state.get("transaction_ids")
         transaction_id = str(posting.get("transaction_id") or "").strip()
@@ -875,15 +933,86 @@ def settled_monetary_balances_from_postings(
                 _monetary_acquisition_fx_rate(
                     posting,
                     amount_delta=amount_delta,
-                    base_currency=base_currency,
+                    base_currency=normalized_base,
                     direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                     fx_conversion_legs=conversion_legs,
-                    resolve_fx_rate_on=resolved_fx_rate_on,
+                    resolve_fx_rate_on=resolve_fx_rate_on,
                 )
             )
 
-        released_basis = apply_monetary_cost_basis_delta(
+        reduces_existing_exposure = balance_before * amount_delta < 0
+        if (
+            impact_transaction_ids is not None
+            and transaction_id in impact_transaction_ids
+            and transaction_type not in {"transfer_in", "transfer_out"}
+            and currency != normalized_base
+            and reduces_existing_exposure
+        ):
+            released_local_amount = (
+                (1.0 if balance_before > 0 else -1.0)
+                * min(abs(balance_before), abs(amount_delta))
+            )
+            released_basis = (
+                historical_basis_before
+                * abs(released_local_amount)
+                / abs(balance_before)
+                if historical_basis_complete_before
+                and historical_basis_before is not None
+                and abs(balance_before) > 1e-12
+                else None
+            )
+            recognition_date = _parse_iso_date(effective_date_iso)
+            recognition_fx = (
+                resolve_fx_rate_on(
+                    as_of_date=recognition_date,
+                    base_currency=currency,
+                    quote_currency=normalized_base,
+                    direct_instruments=direct_fx_instruments,
+                    instrument_detail_cache=instrument_detail_cache,
+                )
+                if recognition_date is not None
+                else None
+            )
+            recognition_fx_rate = _safe_float((recognition_fx or {}).get("rate"))
+            fair_value_base = (
+                released_local_amount * recognition_fx_rate
+                if recognition_fx_rate is not None
+                else None
+            )
+            realized_fx_pnl_base = (
+                fair_value_base - released_basis
+                if fair_value_base is not None and released_basis is not None
+                else None
+            )
+            impacts.append(
+                {
+                    "transaction_id": transaction_id,
+                    "posting_role": str(posting.get("posting_role") or ""),
+                    "account_id": account_id,
+                    "currency": currency,
+                    "recognition_date": (
+                        recognition_date.isoformat()
+                        if recognition_date is not None
+                        else None
+                    ),
+                    "recognition_fx_rate_to_base": recognition_fx_rate,
+                    "local_exposure_released": released_local_amount,
+                    "historical_cost_basis_base": released_basis,
+                    "fair_value_base": fair_value_base,
+                    "realized_cash_fx_pnl_base": realized_fx_pnl_base,
+                    "fx_coverage_status": (
+                        "unavailable"
+                        if realized_fx_pnl_base is None
+                        else "stale"
+                        if historical_fx_stale_before
+                        or bool((recognition_fx or {}).get("stale"))
+                        else "complete"
+                    ),
+                }
+            )
+
+        transferred_or_released_basis = apply_monetary_cost_basis_delta(
             state,
             amount_delta=amount_delta,
             acquisition_fx_rate=acquisition_fx_rate,
@@ -893,7 +1022,7 @@ def settled_monetary_balances_from_postings(
         adds_basis = abs(balance_before) <= 1e-9 or balance_before * amount_delta > 0
         if transaction_type == "transfer_out" and transfer_group_id:
             transferred_basis_by_group[transfer_group_id] = (
-                released_basis,
+                transferred_or_released_basis,
                 historical_fx_stale_before
                 or (acquisition_fx_stale and (crosses_zero or adds_basis)),
             )
@@ -907,6 +1036,33 @@ def settled_monetary_balances_from_postings(
             )
         else:
             state["historical_fx_stale"] = historical_fx_stale_before
+
+    return states, impacts
+
+
+def settled_monetary_balances_from_postings(
+    *,
+    postings: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
+) -> list[dict[str, object]]:
+    """Replay settled cash with account/currency historical base basis."""
+
+    resolved_fx_rate_on = resolve_fx_rate_on or partial(
+        valuation_fx.resolve_fx_rate_on,
+        instrument_detail_loader=get_registry_instrument_detail,
+    )
+    states, _impacts = _replay_settled_monetary_postings(
+        postings=postings,
+        as_of_date=as_of_date,
+        base_currency=base_currency,
+        direct_fx_instruments=direct_fx_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+        resolve_fx_rate_on=resolved_fx_rate_on,
+    )
 
     rendered: list[dict[str, object]] = []
     for (account_id, currency), state in sorted(states.items()):
@@ -964,6 +1120,44 @@ def settled_monetary_balances_from_postings(
             }
         )
     return rendered
+
+
+def build_transaction_cash_fx_impacts(
+    *,
+    transaction_ids: set[str],
+    postings: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
+) -> list[dict[str, object]]:
+    """Return realized cash FX for selected settled monetary postings."""
+
+    resolved_direct_instruments = (
+        direct_fx_instruments
+        if direct_fx_instruments is not None
+        else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
+    )
+    resolved_instrument_cache = (
+        instrument_detail_cache
+        if instrument_detail_cache is not None
+        else {}
+    )
+    resolved_fx_rate_on = resolve_fx_rate_on or partial(
+        valuation_fx.resolve_fx_rate_on,
+        instrument_detail_loader=get_registry_instrument_detail,
+    )
+    _states, impacts = _replay_settled_monetary_postings(
+        postings=postings,
+        as_of_date=as_of_date,
+        base_currency=base_currency,
+        direct_fx_instruments=resolved_direct_instruments,
+        instrument_detail_cache=resolved_instrument_cache,
+        resolve_fx_rate_on=resolved_fx_rate_on,
+        impact_transaction_ids=transaction_ids,
+    )
+    return impacts
 
 
 def pending_monetary_balances_from_postings(
@@ -1317,6 +1511,7 @@ def _normalize_position_bucket(bucket: dict[str, object], cost_basis_method: str
             cost_basis = 0.0
         cleaned_lots.append(
             {
+                **raw_lot,
                 "quantity": quantity,
                 "cost_basis": cost_basis,
             }
@@ -1403,6 +1598,7 @@ def _add_position_state(
     cost_basis: float,
     cost_basis_method: str,
     incoming_lots: list[dict[str, float]] | None = None,
+    opened_by_transaction_id: str | None = None,
 ) -> None:
     if quantity <= 0 and cost_basis <= 0:
         return
@@ -1417,6 +1613,7 @@ def _add_position_state(
     bucket.setdefault("lots", [])
     bucket["lots"].extend(
         {
+            "opened_by_transaction_id": opened_by_transaction_id or lot.get("opened_by_transaction_id"),
             "quantity": _safe_float(lot.get("quantity")) or 0.0,
             "cost_basis": _safe_float(lot.get("cost_basis")) or 0.0,
         }
@@ -1434,6 +1631,7 @@ def _consume_position_state(
     quantity: float,
     cost_basis_method: str,
     error_message: str | None = None,
+    lot_selections: list[dict[str, object]] | None = None,
 ) -> tuple[float, list[dict[str, float]]]:
     bucket = _ensure_position_bucket(
         position_state,
@@ -1442,6 +1640,8 @@ def _consume_position_state(
     )
     if quantity <= 0:
         return 0.0, []
+    if lot_selections and cost_basis_method != "fifo":
+        raise ValueError("Explicit lots require FIFO accounting; pooled moving-average cost cannot select individual costs.")
 
     current_quantity = _safe_float(bucket.get("quantity")) or 0.0
     current_cost_basis = _safe_float(bucket.get("cost_basis")) or 0.0
@@ -1452,22 +1652,21 @@ def _consume_position_state(
         remaining = min(quantity, current_quantity)
         moved_lots: list[dict[str, float]] = []
         lots = list(bucket.get("lots", []))
-        while remaining > 1e-9 and lots:
-            lot = lots[0]
+        selections = selected_quantities(lots, lot_selections, quantity_key="quantity") if lot_selections else None
+        for index, lot in enumerate(lots):
+            if remaining <= 1e-9:
+                break
             lot_quantity = _safe_float(lot.get("quantity")) or 0.0
             lot_cost_basis = _safe_float(lot.get("cost_basis")) or 0.0
             if lot_quantity <= 1e-9:
-                lots.pop(0)
                 continue
-            take_quantity = min(remaining, lot_quantity)
-            if take_quantity >= lot_quantity:
-                take_cost_basis = lot_cost_basis
-                lots.pop(0)
-            else:
-                take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity)
-                lot["quantity"] = lot_quantity - take_quantity
-                lot["cost_basis"] = lot_cost_basis - take_cost_basis
-            moved_lots.append({"quantity": take_quantity, "cost_basis": take_cost_basis})
+            take_quantity = selections[index] if selections is not None else min(remaining, lot_quantity)
+            if take_quantity <= 1e-9:
+                continue
+            take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity)
+            lot["quantity"] = lot_quantity - take_quantity
+            lot["cost_basis"] = lot_cost_basis - take_cost_basis
+            moved_lots.append({**lot, "quantity": take_quantity, "cost_basis": take_cost_basis})
             remaining -= take_quantity
         consumed_quantity = sum(lot["quantity"] for lot in moved_lots)
         consumed_cost_basis = sum(lot["cost_basis"] for lot in moved_lots)
@@ -1520,6 +1719,8 @@ def _apply_return_of_capital(
         account_id,
         position_reference_id,
     )
+    if (_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
+        raise ValueError("Return of capital requires an open account position as of trade_date.")
     current_cost_basis = _safe_float(bucket.get("cost_basis")) or 0.0
     reduction = min(amount, current_cost_basis)
     if reduction <= 0:
@@ -1527,20 +1728,16 @@ def _apply_return_of_capital(
 
     lots = list(bucket.get("lots", []))
     if lots:
-        original_total_cost = sum((_safe_float(lot.get("cost_basis")) or 0.0) for lot in lots)
-        remaining_reduction = reduction
+        allocations = _proportional_allocations(amount, [(_safe_float(lot.get("quantity")) or 0.0) for lot in lots])
+        actual_reduction = 0.0
         for index, lot in enumerate(lots):
             lot_cost_basis = _safe_float(lot.get("cost_basis")) or 0.0
-            if index == len(lots) - 1:
-                lot_reduction = min(remaining_reduction, lot_cost_basis)
-            else:
-                prorated_reduction = reduction * (lot_cost_basis / original_total_cost) if original_total_cost > 0 else 0.0
-                lot_reduction = min(prorated_reduction, lot_cost_basis)
+            lot_reduction = min(allocations[index], lot_cost_basis)
             lot["cost_basis"] = lot_cost_basis - lot_reduction
-            remaining_reduction -= lot_reduction
+            actual_reduction += lot_reduction
         bucket["lots"] = lots
         _normalize_position_bucket(bucket, cost_basis_method)
-        return reduction - max(remaining_reduction, 0.0)
+        return actual_reduction
 
     bucket["cost_basis"] = current_cost_basis - reduction
     _normalize_position_bucket(bucket, cost_basis_method)
@@ -1554,6 +1751,18 @@ def _build_position_state(
     corporate_actions: list[dict[str, object]] | None = None,
     as_of_date: date | None = None,
 ) -> dict[tuple[str, str], dict[str, object]]:
+    transactions = expand_asset_deliveries(transactions)
+    if any(tx.get("transaction_type") in SHORT_TRANSACTION_TYPES for tx in transactions):
+        actions = _resolved_corporate_actions(transactions, corporate_actions=corporate_actions, as_of_date=as_of_date)
+        long_facts, short_facts = partition_security_sides(transactions, corporate_actions=actions, split_quantity=_rounded_split_quantity)
+        state = _build_position_state(long_facts, account_cost_methods=account_cost_methods, corporate_actions=actions, as_of_date=as_of_date)
+        short_state = _build_position_state(short_facts, account_cost_methods=account_cost_methods, corporate_actions=actions, as_of_date=as_of_date)
+        for key, short in short_state.items():
+            bucket = state.setdefault(key, {"quantity": 0.0, "cost_basis": 0.0, "lots": []})
+            bucket["quantity"] -= short["quantity"]
+            bucket["cost_basis"] -= short["cost_basis"]
+            bucket["lots"].extend({"quantity": -lot["quantity"], "cost_basis": -lot["cost_basis"]} for lot in short["lots"])
+        return state
     position_state: dict[tuple[str, str], dict[str, object]] = {}
     position_transfer_lots_by_group: dict[str, list[dict[str, float]]] = {}
 
@@ -1609,6 +1818,7 @@ def _build_position_state(
                 quantity=quantity or 0.0,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
             )
             continue
 
@@ -1625,6 +1835,7 @@ def _build_position_state(
                 quantity=quantity or 0.0,
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
             )
             continue
 
@@ -1635,6 +1846,7 @@ def _build_position_state(
                 position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             continue
@@ -1657,6 +1869,7 @@ def _build_position_state(
                 quantity=quantity or 0.0,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
             )
             continue
 
@@ -1667,6 +1880,7 @@ def _build_position_state(
                 position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Position transfer requires source lots as of trade_date.",
             )
             if transferred_cost_basis < -1e-9 or not transferred_lots:
@@ -1691,6 +1905,7 @@ def _build_position_state(
                 quantity=quantity or 0.0,
                 cost_basis=received_cost_basis,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                 incoming_lots=incoming_lots,
             )
 
@@ -1706,6 +1921,21 @@ def derive_ledger_postings(
     corporate_actions: list[dict[str, object]] | None = None,
     as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
+    transactions = expand_asset_deliveries(transactions)
+    if any(tx.get("transaction_type") in SHORT_TRANSACTION_TYPES for tx in transactions):
+        actions = _resolved_corporate_actions(transactions, corporate_actions=corporate_actions, as_of_date=as_of_date)
+        long_facts, short_facts = partition_security_sides(transactions, corporate_actions=actions, split_quantity=_rounded_split_quantity)
+        kwargs = dict(account_cost_methods=account_cost_methods, account_currency_map=account_currency_map, corporate_actions=actions, as_of_date=as_of_date)
+        postings = derive_ledger_postings(portfolio_id, long_facts, **kwargs)
+        source_types = {tx["transaction_id"]: tx["transaction_type"] for tx in transactions}
+        for posting in derive_ledger_postings(portfolio_id, short_facts, **kwargs):
+            posting["posting_id"] += "-short"
+            posting["source_transaction_type"] = source_types.get(posting["transaction_id"], posting["source_transaction_type"])
+            for field in ("quantity_delta", "cost_basis_delta", "cash_amount_delta", "pending_amount_delta", "realized_pnl_delta"):
+                if posting.get(field) is not None:
+                    posting[field] = -posting[field]
+            postings.append(posting)
+        return postings
     postings: list[dict[str, object]] = []
     position_state: dict[tuple[str, str], dict[str, object]] = {}
     position_transfer_lots_by_group: dict[str, list[dict[str, float]]] = {}
@@ -1930,6 +2160,7 @@ def derive_ledger_postings(
                     quantity=opening_quantity,
                     cost_basis=gross_amount,
                     cost_basis_method=cost_basis_method,
+                    opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                 )
             else:
                 append_posting(
@@ -2003,6 +2234,7 @@ def derive_ledger_postings(
                 quantity=bought_quantity,
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
             )
             if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
                 append_posting(
@@ -2022,6 +2254,7 @@ def derive_ledger_postings(
                 position_reference_id,
                 quantity=sold_quantity,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             append_posting(
@@ -2054,7 +2287,7 @@ def derive_ledger_postings(
             continue
 
         option_action = resolve_option_action(transaction)
-        if option_action == "sell_to_open":
+        if option_action == "sell_to_open" or transaction_type == "option_opening_balance":
             if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
                 append_posting(
                     transaction,
@@ -2132,6 +2365,7 @@ def derive_ledger_postings(
                 account_id=account_id,
                 quantity_delta=None,
                 cost_basis_delta=-returned_cost_basis,
+                realized_pnl_delta=max(gross_amount - returned_cost_basis, 0.0),
                 currency=currency,
             )
             continue
@@ -2153,6 +2387,7 @@ def derive_ledger_postings(
                 quantity=reinvested_quantity,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
+                opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
             )
             continue
 
@@ -2164,6 +2399,7 @@ def derive_ledger_postings(
                 position_reference_id,
                 quantity=redeemed_quantity,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             append_posting(
@@ -2248,6 +2484,7 @@ def derive_ledger_postings(
                     position_reference_id,
                     quantity=transferred_quantity,
                     cost_basis_method=cost_basis_method,
+                    lot_selections=transaction.get("lot_selections") or [],
                     error_message="Position transfer requires source lots as of trade_date.",
                 )
                 if transferred_cost_basis < -1e-9 or not transferred_lots:
@@ -2298,6 +2535,7 @@ def derive_ledger_postings(
                     quantity=received_quantity,
                     cost_basis=received_cost_basis,
                     cost_basis_method=cost_basis_method,
+                    opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
                     incoming_lots=incoming_lots,
                 )
             continue
@@ -2430,6 +2668,22 @@ def validate_transaction_position_history(
     for transaction in ordered_transactions:
         transaction_type = str(transaction.get("transaction_type") or "")
         position_reference_id = _position_reference_id(transaction)
+        if transaction_type == "lifecycle_event" and transaction.get("lifecycle_event_type") == "fcn_knock_in":
+            prior_transactions = [
+                candidate for candidate in ordered_transactions
+                if transaction_sort_key(candidate) < transaction_sort_key(transaction)
+            ]
+            available_quantity = estimate_position_quantity(
+                portfolio_id,
+                prior_transactions,
+                account_id=str(transaction.get("account_id") or ""),
+                position_reference_id=position_reference_id,
+                account_cost_methods=account_cost_methods,
+                as_of_date=transaction_performance_effective_date(transaction),
+            )
+            if available_quantity <= 1e-9:
+                raise ValueError("FCN knock-in observation requires an open position at the observation time.")
+            continue
         if (
             position_reference_id
             and transaction_type == "transfer_out"
@@ -2500,6 +2754,8 @@ def validate_transaction_position_history(
                 entitlement_date=entitlement_date,
                 exclude_transaction_id=transaction_id,
             )
+        if transaction_type in {"fee", "tax"}:
+            available_quantity = abs(available_quantity)
         if available_quantity <= 1e-9:
             raise ValueError(
                 "Asset-linked income and expense requires an account position or "
@@ -2763,6 +3019,7 @@ def _consume_position_lots(
     quantity: float,
     cost_basis_method: str,
     error_message: str | None = None,
+    lot_selections: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     active_lots = _active_position_lots(
         position_lots_by_key,
@@ -2771,6 +3028,8 @@ def _consume_position_lots(
     )
     if quantity <= 0:
         return []
+    if lot_selections and cost_basis_method != "fifo":
+        raise ValueError("Explicit lots require FIFO accounting; pooled moving-average cost cannot select individual costs.")
 
     total_open_quantity = sum((_safe_float(lot.get("remaining_quantity")) or 0.0) for lot in active_lots)
     if total_open_quantity <= 1e-9 or quantity > total_open_quantity + 1e-9:
@@ -2785,14 +3044,17 @@ def _consume_position_lots(
     slices: list[dict[str, object]] = []
     if cost_basis_method == "fifo":
         remaining = target_quantity
-        for position_lot in active_lots:
+        selections = selected_quantities(active_lots, lot_selections, quantity_key="remaining_quantity") if lot_selections else None
+        for index, position_lot in enumerate(active_lots):
             if remaining <= 1e-9:
                 break
             lot_quantity = _safe_float(position_lot.get("remaining_quantity")) or 0.0
             lot_cost_basis = _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
             if lot_quantity <= 1e-9:
                 continue
-            take_quantity = min(remaining, lot_quantity)
+            take_quantity = selections[index] if selections is not None else min(remaining, lot_quantity)
+            if take_quantity <= 1e-9:
+                continue
             take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity) if lot_quantity > 0 else 0.0
             released_origins = _take_position_lot_cost_basis_origins(
                 position_lot,
@@ -2910,6 +3172,7 @@ def _apply_position_lot_return_of_capital(
     position_reference_id: str,
     amount: float,
     transaction_id: str,
+    trade_date: str,
     error_message: str,
 ) -> None:
     if amount <= 0:
@@ -2921,8 +3184,8 @@ def _apply_position_lot_return_of_capital(
         error_message=error_message,
     )
 
-    cost_basis_weights = [(_safe_float(position_lot.get("remaining_cost_basis")) or 0.0) for position_lot in active_lots]
-    allocations = _proportional_allocations(amount, cost_basis_weights)
+    quantity_weights = [(_safe_float(position_lot.get("remaining_quantity")) or 0.0) for position_lot in active_lots]
+    allocations = _proportional_allocations(amount, quantity_weights)
     for index, position_lot in enumerate(active_lots):
         allocation = allocations[index]
         if allocation <= 1e-9:
@@ -2934,6 +3197,21 @@ def _apply_position_lot_return_of_capital(
         position_lot["return_of_capital_amount"] = (
             (_safe_float(position_lot.get("return_of_capital_amount")) or 0.0) + reduced_amount
         )
+        excess = allocation - reduced_amount
+        if excess > 1e-9:
+            for field in ("realized_gross_proceeds", "realized_proceeds", "realized_pnl"):
+                position_lot[field] = (_safe_float(position_lot.get(field)) or 0.0) + excess
+            realizations = position_lot.setdefault("realizations", [])
+            realizations.append({
+                "realization_id": f"{position_lot['position_lot_id']}-r{len(realizations) + 1}",
+                "transaction_id": transaction_id, "transaction_type": "return_of_capital",
+                "trade_date": trade_date, "position_effective_date": trade_date,
+                "quantity": 0.0, "gross_proceeds": excess, "proceeds": excess,
+                "cost_basis_released": 0.0, "cost_basis_origins": [], "realized_pnl": excess,
+                "price": None, "remaining_quantity_after": position_lot["remaining_quantity"],
+                "remaining_cost_basis_after": position_lot["remaining_cost_basis"],
+                "status_after": position_lot["status"], "note": "Return of capital exceeding this lot's remaining book basis.",
+            })
         _touch_position_lot(position_lot, transaction_id)
 
 
@@ -2951,6 +3229,15 @@ def build_position_lots(
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     resolve_pricing: bool = True,
 ) -> list[dict[str, object]]:
+    transactions = expand_asset_deliveries(transactions)
+    if any(tx.get("transaction_type") in SHORT_TRANSACTION_TYPES for tx in transactions):
+        actions = _resolved_corporate_actions(transactions, corporate_actions=corporate_actions, as_of_date=as_of_date)
+        long_facts, short_facts = partition_security_sides(transactions, corporate_actions=actions, split_quantity=_rounded_split_quantity)
+        kwargs = dict(account_id=account_id, position_reference_id=position_reference_id, status=status, as_of_date=as_of_date,
+                      corporate_actions=actions, pricing_map=pricing_map, instrument_detail_cache=instrument_detail_cache, resolve_pricing=resolve_pricing)
+        lots = build_position_lots(portfolio_id, accounts, long_facts, **kwargs)
+        lots.extend(reflect_short_lot(lot) for lot in build_position_lots(portfolio_id, accounts, short_facts, **kwargs))
+        return sorted(lots, key=lambda lot: (str(lot["opened_at"]), str(lot["position_lot_id"])), reverse=True)
     account_cost_methods = {
         str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
         for account in accounts
@@ -3150,7 +3437,7 @@ def build_position_lots(
         transaction_id: str,
         error_message: str,
     ) -> None:
-        if amount <= 0:
+        if abs(amount) <= 1e-9:
             return
         entitled_lots = entitled_position_lot_snapshots(
             transaction_index=transaction_index,
@@ -3160,10 +3447,10 @@ def build_position_lots(
             error_message=error_message,
         )
         weights = [(_safe_float(position_lot.get(weight_field)) or 0.0) for position_lot in entitled_lots]
-        allocations = _proportional_allocations(amount, weights)
+        allocations = [(1 if amount >= 0 else -1) * value for value in _proportional_allocations(abs(amount), weights)]
         for index, snapshot_lot in enumerate(entitled_lots):
             allocation = allocations[index]
-            if allocation <= 1e-9:
+            if abs(allocation) <= 1e-9:
                 continue
             target_position_lot = position_lot_by_id.get(str(snapshot_lot.get("position_lot_id") or ""))
             if target_position_lot is None:
@@ -3426,8 +3713,10 @@ def build_position_lots(
                 position_reference_id=resolved_position_reference_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
+            gross_amount += _safe_float(transaction.get("delivered_value")) or 0.0
             net_proceeds = gross_amount - fees - taxes
             quantity_weights = [(_safe_float(slice_item.get("quantity")) or 0.0) for slice_item in disposal_slices]
             gross_proceeds_allocations = _proportional_allocations(
@@ -3529,6 +3818,7 @@ def build_position_lots(
                 amount=gross_amount,
                 transaction_id=transaction_id,
                 error_message="Return of capital requires open position lots as of trade_date.",
+                trade_date=str(transaction.get("trade_date") or ""),
             )
             if fees > 0 or taxes > 0:
                 _allocate_lot_cash_flow_by_quantity(
@@ -3580,6 +3870,7 @@ def build_position_lots(
                 position_reference_id=resolved_position_reference_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
+                lot_selections=transaction.get("lot_selections") or [],
                 error_message="Position transfer requires source position lots as of trade_date.",
             )
             if not disposal_slices:
@@ -3763,7 +4054,7 @@ def build_position_lots(
         holding_period_days = None
         if acquisition_date_value is not None and closed_at_value is not None:
             holding_period_days = max((closed_at_value - acquisition_date_value).days, 0)
-        instrument_price, current_market_value, _ = resolve_position_valuation(
+        instrument_price, current_market_value, event_valued = resolve_position_valuation(
             quantity=remaining_quantity,
             cost_basis=remaining_cost_basis,
             instrument_ref=instrument_ref,
@@ -3844,7 +4135,9 @@ def build_position_lots(
                 ),
                 "current_market_value": current_market_value,
                 "unrealized_pnl": (
-                    current_market_value - remaining_cost_basis if current_market_value is not None else None
+                    current_market_value - remaining_cost_basis
+                    if current_market_value is not None and not event_valued
+                    else None
                 ),
                 "holding_period_days": holding_period_days,
                 "linked_transaction_count": len(raw_position_lot.get("_linked_transaction_ids", set())),
@@ -3912,7 +4205,7 @@ def build_transaction_accounting_impact(
     resolved_direct_instruments = (
         direct_fx_instruments
         if direct_fx_instruments is not None
-        else valuation_fx.fx_direct_instrument_map(get_platform_fx_rates())
+        else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
     )
     resolved_instrument_cache = (
         instrument_detail_cache
@@ -4397,7 +4690,7 @@ def build_account_workspace(
         as_of_date=as_of_date,
     )
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(
-        get_platform_fx_rates()
+        get_shared_fx_rates()
     )
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}

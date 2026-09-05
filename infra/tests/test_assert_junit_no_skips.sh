@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$REPOSITORY_ROOT/.venv/bin/python}"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-junit-gate.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-junit-gate.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 cat > "$TEST_ROOT/passed.xml" <<'XML'

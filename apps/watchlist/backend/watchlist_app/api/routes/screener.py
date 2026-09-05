@@ -81,6 +81,9 @@ def _validate_query_contract(
         for row in rows
         if str(row.instrument_type or "").strip()
     }
+    type_filter = filters.get("instrument_type") if isinstance(filters, dict) else None
+    if isinstance(type_filter, list) and type_filter:
+        active_instrument_types.intersection_update(str(value) for value in type_filter)
     unavailable_fields = sorted(
         field_key
         for field_key in _requested_query_fields(payload_data, view)
@@ -300,6 +303,10 @@ def run_screener_query(
                 "local_materialization_version": local_materialization_version(
                     getattr(chart_record, "materialization_version", None),
                     getattr(row_record, "materialization_version", None),
+                ),
+                "local_data_freshness_status": (
+                    getattr(chart_record, "data_freshness_status", None)
+                    or getattr(row_record, "data_freshness_status", None)
                 ),
             }
         )

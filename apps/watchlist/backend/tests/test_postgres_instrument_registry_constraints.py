@@ -22,7 +22,7 @@ if BACKEND_ROOT_STR in sys.path:
 sys.path.insert(0, BACKEND_ROOT_STR)
 
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "shared-data" / "instruments" / "python"
 INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
 if INSTRUMENT_CORE_PYTHON_STR in sys.path:
     sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
@@ -30,18 +30,18 @@ sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.watchlists import Watchlist, WatchlistItem
-from portfolio_ops_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core import instrument_store as shared_store
 
 
 pytestmark = pytest.mark.postgresql_integration
 
-def _run_instrument_registry_upgrade() -> None:
-    config = Config(str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini"))
+def _instrument_registry_config() -> Config:
+    config = Config(str(WORKSPACE_ROOT / "shared-data" / "instruments" / "alembic.ini"))
     config.set_main_option(
         "script_location",
-        str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
+        str(WORKSPACE_ROOT / "shared-data" / "instruments" / "alembic"),
     )
-    command.upgrade(config, "head")
+    return config
 
 
 def _run_watchlist_upgrade(database_url: str, revision: str = "head") -> None:
@@ -145,10 +145,10 @@ def _admin_database_url(database_url: str) -> str:
 
 @pytest.fixture
 def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL")
+    base_database_url = os.getenv("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
     if not base_database_url:
-        pytest.skip("PORTFOLIO_OPS_TEST_POSTGRES_URL is not explicitly configured.")
-    database_name = f"portfolio_ops_watchlist_fk_{uuid4().hex[:8]}"
+        pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured.")
+    database_name = f"investment_studio_watchlist_fk_{uuid4().hex[:8]}"
     database_url = make_url(base_database_url).set(database=database_name).render_as_string(hide_password=False)
     admin_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
     try:
@@ -160,11 +160,11 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "watchlist")
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA", "instrument_data")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "watchlist")
 
     from watchlist_app.core import settings as settings_module
     from watchlist_app.db import session as session_module
@@ -173,8 +173,9 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_instrument_registry_upgrade()
+    command.upgrade(_instrument_registry_config(), "20260902_0029")
     _seed_instrument_ids_required_by_watchlist_baseline(database_url)
+    command.upgrade(_instrument_registry_config(), "head")
 
     session_factory = session_module.get_session_factory()
     identifier_value = f"WATCHFK{uuid4().hex[:8].upper()}"
@@ -294,10 +295,10 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
 
     by_name = {item["constraint_name"]: item for item in constraints}
     assert by_name["fk_watchlist_item_instrument_id_instrument"]["table_name"] == "watchlist_item"
-    assert by_name["fk_watchlist_item_instrument_id_instrument"]["referred_schema"] == "instrument_registry"
+    assert by_name["fk_watchlist_item_instrument_id_instrument"]["referred_schema"] == "instrument_data"
     assert by_name["fk_watchlist_item_instrument_id_instrument"]["referred_table"] == "instrument"
     assert by_name["fk_instrument_detail_instrument_id_instrument"]["table_name"] == "instrument_detail"
-    assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_schema"] == "instrument_registry"
+    assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_schema"] == "instrument_data"
     assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_table"] == "instrument"
     assert "uq_watchlist_item_watchlist_instrument" in membership_constraints
     assert "uq_watchlist_item_watchlist_asset" not in membership_constraints
@@ -374,6 +375,8 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
 def test_postgres_primary_display_field_reconciles_upgraded_database(
     postgres_watchlist_env: dict[str, str],
 ) -> None:
+    # Replay the historical Watchlist migration against its contemporary schema.
+    command.downgrade(_instrument_registry_config(), "20260902_0029")
     engine = create_engine(postgres_watchlist_env["database_url"])
     try:
         with engine.begin() as connection:

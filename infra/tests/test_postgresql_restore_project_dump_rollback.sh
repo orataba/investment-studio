@@ -3,13 +3,13 @@ set -euo pipefail
 
 # This is a real PostgreSQL integration test, not a command-mocking shell test.
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-restore-rollback-test.XXXXXX")"
-DATABASE_HOST="${PORTFOLIO_OPS_TEST_DB_HOST:-127.0.0.1}"
-DATABASE_PORT="${PORTFOLIO_OPS_TEST_DB_PORT:-5432}"
-DATABASE_USER="${PORTFOLIO_OPS_TEST_DB_USER:-$(id -un)}"
-DATABASE_PASSWORD="${PORTFOLIO_OPS_TEST_DB_PASSWORD:-}"
-TARGET_DATABASE="portfolio_ops_restore_target_$$"
-SOURCE_DATABASE="portfolio_ops_restore_source_$$"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-restore-rollback-test.XXXXXX")"
+DATABASE_HOST="${INVESTMENT_STUDIO_TEST_DB_HOST:-127.0.0.1}"
+DATABASE_PORT="${INVESTMENT_STUDIO_TEST_DB_PORT:-5432}"
+DATABASE_USER="${INVESTMENT_STUDIO_TEST_DB_USER:-$(id -un)}"
+DATABASE_PASSWORD="${INVESTMENT_STUDIO_TEST_DB_PASSWORD:-}"
+TARGET_DATABASE="investment_studio_restore_target_$$"
+SOURCE_DATABASE="investment_studio_restore_source_$$"
 TARGET_DATABASE_URL="postgresql+psycopg://$DATABASE_USER@$DATABASE_HOST:$DATABASE_PORT/$TARGET_DATABASE"
 escaped_database_password="${DATABASE_PASSWORD//\\/\\\\}"
 escaped_database_password="${escaped_database_password//:/\\:}"
@@ -67,7 +67,7 @@ MOCK_BIN="$TEST_ROOT/bin"
 LAUNCH_AGENTS_DIR="$TEST_ROOT/LaunchAgents"
 EVENT_LOG="$TEST_ROOT/restore-events"
 mkdir -p "$MOCK_BIN" "$LAUNCH_AGENTS_DIR"
-touch "$LAUNCH_AGENTS_DIR/test.portfolio-ops.platform-api.plist"
+touch "$LAUNCH_AGENTS_DIR/test.investment-studio.home-api.plist"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" Darwin' > "$MOCK_BIN/uname"
 printf '%s\n' \
@@ -75,7 +75,7 @@ printf '%s\n' \
   'set -euo pipefail' \
   'printf "launchctl:%s\n" "$*" >> "$EVENT_LOG"' \
   'if [[ "$1" == "print" ]]; then' \
-  '  [[ "$2" == *.platform-api ]]' \
+  '  [[ "$2" == *.home-api ]]' \
   '  exit' \
   'fi' \
   'exit 0' \
@@ -110,12 +110,12 @@ chmod +x "$FAILING_MIGRATION_RUNNER"
 set +e
 PATH="$MOCK_BIN:$PATH" \
 CONFIRM_RESTORE="$TARGET_DATABASE" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
 PYTHON_BIN="$(command -v python3)" \
-PORTFOLIO_OPS_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
-PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER="$FAILING_MIGRATION_RUNNER" \
-PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER=launchd \
-LABEL_PREFIX=test.portfolio-ops \
+INVESTMENT_STUDIO_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
+INVESTMENT_STUDIO_RESTORE_MIGRATION_RUNNER="$FAILING_MIGRATION_RUNNER" \
+INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER=launchd \
+LABEL_PREFIX=test.investment-studio \
 LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   "$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh" "$INCOMING_DUMP" \
   > "$TEST_ROOT/failing-restore.out" 2>&1
@@ -144,7 +144,7 @@ test -n "$(find "$TEST_ROOT/backups" -name '*.pgdump.sha256' -type f -print -qui
 test -n "$(find "$TEST_ROOT/backups" -name '*.schemas.sha256' -type f -print -quit)"
 
 rollback_line="$(grep -n 'pg_restore:.*-pre-restore-' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
-restart_line="$(grep -n 'launchctl:bootstrap .*test.portfolio-ops.platform-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
+restart_line="$(grep -n 'launchctl:bootstrap .*test.investment-studio.home-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
 if [[ -z "$rollback_line" || -z "$restart_line" || "$rollback_line" -ge "$restart_line" ]]; then
   echo "The previous service set restarted before helper-based database rollback completed." >&2
   exit 1
@@ -156,21 +156,22 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'platform_alembic_status=missing' \
-  'if [[ -n "${PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL:-}" && "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" == "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
-  'printf "%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" > "$MIGRATION_ENV"' \
+  'if [[ -n "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" && "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" == "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
+  'printf "%s|%s\n" "$platform_alembic_status" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" > "$MIGRATION_ENV"' \
+  'psql "${INVESTMENT_STUDIO_DATA_DATABASE_URL/+psycopg/}" --no-password --set ON_ERROR_STOP=1 --command "ALTER SCHEMA platform RENAME TO data_ingestion"' \
   > "$SUCCESSFUL_MIGRATION_RUNNER"
 chmod +x "$SUCCESSFUL_MIGRATION_RUNNER"
 export MIGRATION_ENV
 
 CONFIRM_RESTORE="$TARGET_DATABASE" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
 PYTHON_BIN="$(command -v python3)" \
-PORTFOLIO_OPS_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
-PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER="$SUCCESSFUL_MIGRATION_RUNNER" \
-PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER=none \
+INVESTMENT_STUDIO_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
+INVESTMENT_STUDIO_RESTORE_MIGRATION_RUNNER="$SUCCESSFUL_MIGRATION_RUNNER" \
+INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER=none \
   "$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh" "$INCOMING_DUMP"
 
-[[ "$(cat "$MIGRATION_ENV")" == "match|platform" ]]
+[[ "$(cat "$MIGRATION_ENV")" == "match|data_ingestion" ]]
 
 incoming_value="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
@@ -189,12 +190,12 @@ set +e
 PATH="$MOCK_BIN:$PATH" \
 FAIL_HELPER_ROLLBACK=true \
 CONFIRM_RESTORE="$TARGET_DATABASE" \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
 PYTHON_BIN="$(command -v python3)" \
-PORTFOLIO_OPS_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
-PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER="$FAILING_MIGRATION_RUNNER" \
-PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER=launchd \
-LABEL_PREFIX=test.portfolio-ops \
+INVESTMENT_STUDIO_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
+INVESTMENT_STUDIO_RESTORE_MIGRATION_RUNNER="$FAILING_MIGRATION_RUNNER" \
+INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER=launchd \
+LABEL_PREFIX=test.investment-studio \
 LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   "$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh" "$INCOMING_DUMP" \
   > "$TEST_ROOT/rollback-failure.out" 2>&1
@@ -217,7 +218,7 @@ preserved_value="$(
 )"
 preserved_schema_count="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
-    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')"
+    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'data_ingestion', 'portfolio', 'watchlist')"
 )"
 [[ "$preserved_value" == "incoming-data" ]]
 [[ "$preserved_schema_count" == "4" ]]

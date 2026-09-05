@@ -7,7 +7,7 @@ from watchlist_app.core.settings import Settings
 
 
 def test_settings_require_an_explicit_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", raising=False)
+    monkeypatch.delenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", raising=False)
 
     with pytest.raises(ValidationError, match="database_url"):
         Settings()

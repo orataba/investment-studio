@@ -8,7 +8,7 @@ from math import sqrt
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.services.execution_quotes import execution_quote_bases
-from portfolio_ops_instrument_core import resolve_quote_return_semantics
+from investment_studio_instrument_core import resolve_quote_return_semantics
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,

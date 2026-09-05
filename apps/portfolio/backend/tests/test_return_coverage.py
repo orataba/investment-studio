@@ -170,7 +170,7 @@ def test_fair_value_nav_and_twr_do_not_depend_on_book_pnl_coverage(monkeypatch) 
     portfolio_id = "coverage-split-test"
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     monkeypatch.setattr(
@@ -263,7 +263,7 @@ def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(mo
     )
     monkeypatch.setattr(
         performance,
-        "get_platform_fx_rates",
+        "get_shared_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     transactions = [

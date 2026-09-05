@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only integrity audit for the local Portfolio Operations database."""
+"""Read-only integrity audit for the local Investment Studio database."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from psycopg.conninfo import conninfo_to_dict
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-INSTRUMENT_CORE_PYTHON = REPOSITORY_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON = REPOSITORY_ROOT / "shared-data" / "instruments" / "python"
 if str(INSTRUMENT_CORE_PYTHON) not in sys.path:
     sys.path.insert(0, str(INSTRUMENT_CORE_PYTHON))
 
-from portfolio_ops_instrument_core import (  # noqa: E402
+from investment_studio_instrument_core import (  # noqa: E402
     FX_INSTRUMENT_IDENTITIES,
     QUOTE_BASIS_METRIC_FAMILY,
     QuoteSelectionPolicy,
@@ -30,14 +30,14 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260902_0029",
-    "platform": "20260823_0007",
-    "portfolio": "20260902_0058",
-    "watchlist": "20260901_0052",
+    "instrument_data": "20260904_0032",
+    "data_ingestion": "20260904_0009",
+    "portfolio": "20260905_0059",
+    "watchlist": "20260905_0054",
 }
 VERSION_TABLES = {
-    "instrument_registry": "alembic_version",
-    "platform": "platform_alembic_version",
+    "instrument_data": "alembic_version",
+    "data_ingestion": "platform_alembic_version",
     "portfolio": "alembic_version",
     "watchlist": "alembic_version",
 }
@@ -46,19 +46,19 @@ FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 SCHEMA_IDENTIFIER_RENAMES = (
     (
         "constraint",
-        "instrument_registry",
+        "instrument_data",
         "fk_instrument_identifier_asset_id_instrument",
         "fk_instrument_identifier_instrument_id_instrument",
     ),
     (
         "constraint",
-        "instrument_registry",
+        "instrument_data",
         "fk_instrument_market_data_asset_id_instrument",
         "fk_instrument_market_data_instrument_id_instrument",
     ),
     (
         "constraint",
-        "instrument_registry",
+        "instrument_data",
         "uq_instrument_market_data_asset_metric_basis_date_currency",
         "uq_instrument_market_data_instrument_metric_basis_date_currency",
     ),
@@ -408,16 +408,16 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         for component in FINAL_FLAT_TABLE_HEADS
     }
     relation_specs = {
-        "market_data": ("instrument_registry", "instrument_market_data"),
+        "market_data": ("instrument_data", "instrument_market_data"),
         "transaction": ("portfolio", "transaction_record"),
         "snapshot": ("portfolio", "portfolio_daily_snapshot"),
         "holding": ("portfolio", "portfolio_daily_holding_snapshot"),
         "derivative_contract": ("portfolio", "derivative_contract_record"),
         "option_delivery_link": ("portfolio", "option_delivery_link"),
-        "unsupported_quote_series": ("instrument_registry", "quote_series"),
-        "unsupported_quote_observation": ("instrument_registry", "quote_observation"),
+        "unsupported_quote_series": ("instrument_data", "quote_series"),
+        "unsupported_quote_observation": ("instrument_data", "quote_observation"),
         "unsupported_quote_revision": (
-            "instrument_registry",
+            "instrument_data",
             "quote_observation_revision",
         ),
         "unsupported_transaction_current": ("portfolio", "transaction_current"),
@@ -442,9 +442,9 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
             "calculation_registry",
             "calculation_publication",
         ),
-        "instrument": ("instrument_registry", "instrument"),
+        "instrument": ("instrument_data", "instrument"),
         "corporate_action": (
-            "instrument_registry",
+            "instrument_data",
             "corporate_action_event",
         ),
         "watchlist_chart": ("watchlist", "instrument_chart_read_model"),
@@ -546,7 +546,7 @@ def _unsupported_checks(profile: SchemaProfile) -> list[AuditCheck]:
 
 
 def _environment_database_url() -> str | None:
-    return os.getenv("PORTFOLIO_OPS_LOCAL_DATABASE_URL")
+    return os.getenv("INVESTMENT_STUDIO_LOCAL_DATABASE_URL")
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -658,7 +658,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="instrument_type_listed_security_identity_contract",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument instrument
+                        FROM instrument_data.instrument instrument
                         WHERE instrument.instrument_type NOT IN (
                                 'public_fund', 'private_fund', 'etf', 'index',
                                 'equity', 'cash', 'fx', 'other'
@@ -680,13 +680,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                     ) <> 'fmp'
                                     OR NOT EXISTS (
                                         SELECT 1
-                                        FROM instrument_registry.instrument_identifier identifier
+                                        FROM instrument_data.instrument_identifier identifier
                                         WHERE identifier.instrument_id = instrument.instrument_id
                                           AND identifier.identifier_type = 'exchange_ticker'
                                     )
                                     OR NOT EXISTS (
                                         SELECT 1
-                                        FROM instrument_registry.instrument_identifier identifier
+                                        FROM instrument_data.instrument_identifier identifier
                                         WHERE identifier.instrument_id = instrument.instrument_id
                                           AND identifier.identifier_type = 'provider_symbol'
                                           AND identifier.identifier_value LIKE 'fmp:%'
@@ -730,13 +730,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             )
                                             OR NOT EXISTS (
                                                 SELECT 1
-                                                FROM instrument_registry.instrument_identifier identifier
+                                                FROM instrument_data.instrument_identifier identifier
                                                 WHERE identifier.instrument_id = instrument.instrument_id
                                                   AND identifier.identifier_type = 'exchange_ticker'
                                             )
                                             OR NOT EXISTS (
                                                 SELECT 1
-                                                FROM instrument_registry.instrument_identifier identifier
+                                                FROM instrument_data.instrument_identifier identifier
                                                 WHERE identifier.instrument_id = instrument.instrument_id
                                                   AND identifier.identifier_type = 'provider_symbol'
                                                   AND identifier.identifier_value LIKE 'fmp:%'
@@ -777,21 +777,21 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 FROM required_exchange required
                                 WHERE NOT EXISTS (
                                     SELECT 1
-                                    FROM platform.fmp_etf_catalog catalog
+                                    FROM data_ingestion.fmp_etf_catalog catalog
                                     WHERE catalog.exchange_code = required.exchange_code
                                 )
                             )
                             + CASE
                                 WHEN NOT EXISTS (
                                     SELECT 1
-                                    FROM platform.fmp_etf_catalog catalog
+                                    FROM data_ingestion.fmp_etf_catalog catalog
                                     WHERE catalog.exchange_code IN ('XASE', 'ARCX')
                                 ) THEN 1
                                 ELSE 0
                               END
                             + (
                                 SELECT count(*)
-                                FROM platform.fmp_etf_catalog catalog
+                                FROM data_ingestion.fmp_etf_catalog catalog
                                 WHERE trim(catalog.fmp_symbol) = ''
                                    OR trim(catalog.exchange_ticker) = ''
                                    OR trim(catalog.company_name) = ''
@@ -828,13 +828,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 FROM required_exchange required
                                 WHERE NOT EXISTS (
                                     SELECT 1
-                                    FROM platform.fmp_equity_catalog catalog
+                                    FROM data_ingestion.fmp_equity_catalog catalog
                                     WHERE catalog.exchange_code = required.exchange_code
                                 )
                             )
                             + (
                                 SELECT count(*)
-                                FROM platform.fmp_equity_catalog catalog
+                                FROM data_ingestion.fmp_equity_catalog catalog
                                 WHERE trim(catalog.fmp_symbol) = ''
                                    OR trim(catalog.exchange_ticker) = ''
                                    OR trim(catalog.company_name) = ''
@@ -901,7 +901,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT item.watchlist_id, item.instrument_id
                             FROM watchlist.watchlist_item item
                             JOIN specs ON specs.watchlist_id = item.watchlist_id
-                            LEFT JOIN instrument_registry.instrument instrument
+                            LEFT JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = item.instrument_id
                             WHERE instrument.instrument_id IS NULL
                                OR instrument.instrument_type <> specs.instrument_type
@@ -1235,7 +1235,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                           AND (
                             state.source_market_data_updated_at IS DISTINCT FROM (
                                 SELECT max(instrument.market_data_updated_at)
-                                FROM instrument_registry.instrument instrument
+                                FROM instrument_data.instrument instrument
                                 WHERE instrument.market_data_updated_at IS NOT NULL
                                   AND (
                                     instrument.instrument_type = 'fx'
@@ -1249,7 +1249,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             )
                             OR state.source_calculation_inputs_updated_at IS DISTINCT FROM (
                                 SELECT max(instrument.calculation_inputs_updated_at)
-                                FROM instrument_registry.instrument instrument
+                                FROM instrument_data.instrument instrument
                                 WHERE instrument.calculation_inputs_updated_at IS NOT NULL
                                   AND (
                                     instrument.instrument_type = 'fx'
@@ -1432,7 +1432,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         WITH transaction_issue AS (
                             SELECT transaction.transaction_id::text AS record_id
                             FROM portfolio.transaction_record transaction
-                            JOIN instrument_registry.instrument instrument
+                            JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = transaction.instrument_id
                             WHERE json_typeof(transaction.instrument_ref_json)
                                   IS DISTINCT FROM 'object'
@@ -1453,7 +1453,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT universe.portfolio_id || ':' || universe.instrument_id
                                    AS record_id
                             FROM portfolio.portfolio_instrument_universe_record universe
-                            JOIN instrument_registry.instrument instrument
+                            JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = universe.instrument_id
                             WHERE json_typeof(universe.instrument_ref_json)
                                   IS DISTINCT FROM 'object'
@@ -1474,7 +1474,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT holding.portfolio_id || ':'
                                    || holding.position_reference_id AS record_id
                             FROM portfolio.portfolio_daily_holding_snapshot holding
-                            JOIN instrument_registry.instrument instrument
+                            JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = holding.instrument_id
                             WHERE json_typeof(
                                       holding.holding_json -> 'instrument_ref'
@@ -1520,13 +1520,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         SELECT
                             (
                                 SELECT count(*)
-                                FROM instrument_registry.instrument
+                                FROM instrument_data.instrument
                                 WHERE instrument_type IN ('bond', 'fcn', 'option')
                             )
                             +
                             (
                                 SELECT count(*)
-                                FROM instrument_registry.instrument_broker_identifier
+                                FROM instrument_data.instrument_broker_identifier
                                 WHERE identifier_type = 'contract_id'
                             )
                     """,
@@ -1934,7 +1934,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT reference.portfolio_id,
                                    reference.derivative_contract_id
                             FROM contract_instrument_reference reference
-                            LEFT JOIN instrument_registry.instrument instrument
+                            LEFT JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = reference.instrument_id
                             WHERE trim(coalesce(reference.instrument_id, '')) = ''
                                OR instrument.instrument_id IS NULL
@@ -2245,7 +2245,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="market_data_invalid_values",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument_market_data
+                        FROM instrument_data.instrument_market_data
                         WHERE status NOT IN ('complete', 'partial', 'unavailable')
                            OR trim(value) !~
                               '^[+]?(?:[0-9]+(?:[.][0-9]*)?|[.][0-9]+)(?:[eE][+-]?[0-9]+)?$'
@@ -2270,8 +2270,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="market_data_currency_mismatch",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument_market_data md
-                        JOIN instrument_registry.instrument i USING (instrument_id)
+                        FROM instrument_data.instrument_market_data md
+                        JOIN instrument_data.instrument i USING (instrument_id)
                         WHERE md.currency <> i.currency
                     """,
                     detail="Every observation must use its instrument's canonical currency.",
@@ -2283,7 +2283,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="instrument_quote_policy_contract",
                     query=f"""
                         SELECT count(*)
-                        FROM instrument_registry.instrument instrument
+                        FROM instrument_data.instrument instrument
                         WHERE json_typeof(instrument.quote_selection_policy_json)
                                   IS DISTINCT FROM 'object'
                            OR (
@@ -2390,8 +2390,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="market_data_price_contract",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument_market_data md
-                        JOIN instrument_registry.instrument i USING (instrument_id)
+                        FROM instrument_data.instrument_market_data md
+                        JOIN instrument_data.instrument i USING (instrument_id)
                         WHERE NOT (
                                   (md.metric_family = 'price' AND md.quote_basis IN (
                                       'last', 'close', 'adjusted_close', 'par'
@@ -2424,7 +2424,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             VALUES {MAINTAINED_FX_IDENTITIES_SQL}
                         ), violations AS (
                             SELECT 'instrument:' || i.instrument_id AS violation_id
-                            FROM instrument_registry.instrument i
+                            FROM instrument_data.instrument i
                             LEFT JOIN maintained_fx maintained
                               ON maintained.instrument_id = i.instrument_id
                             WHERE (i.instrument_type = 'fx' AND (
@@ -2434,8 +2434,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                OR (i.instrument_type <> 'fx' AND maintained.instrument_id IS NOT NULL)
                             UNION ALL
                             SELECT 'market-data:' || md.instrument_market_data_id::text
-                            FROM instrument_registry.instrument_market_data md
-                            JOIN instrument_registry.instrument i USING (instrument_id)
+                            FROM instrument_data.instrument_market_data md
+                            JOIN instrument_data.instrument i USING (instrument_id)
                             LEFT JOIN maintained_fx maintained
                               ON maintained.instrument_id = md.instrument_id
                             WHERE (
@@ -2470,7 +2470,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         ), violations AS (
                             SELECT 'instrument:' || maintained.instrument_id AS violation_id
                             FROM maintained_fx maintained
-                            LEFT JOIN instrument_registry.instrument i
+                            LEFT JOIN instrument_data.instrument i
                               ON i.instrument_id = maintained.instrument_id
                             WHERE i.instrument_id IS NULL
                                OR i.source_settings_json ->> 'source_mode' <> 'api'
@@ -2479,7 +2479,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                OR i.source_settings_json ->> 'expected_frequency' <> 'daily'
                             UNION ALL
                             SELECT 'market-data:' || md.instrument_market_data_id::text
-                            FROM instrument_registry.instrument_market_data md
+                            FROM instrument_data.instrument_market_data md
                             JOIN maintained_fx maintained USING (instrument_id)
                             WHERE md.provider IS DISTINCT FROM 'fmp:historical-price-eod:full'
                         )
@@ -2508,7 +2508,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         ), latest AS (
                             SELECT maintained.instrument_id, max(md.as_of_date) AS latest_date
                             FROM maintained_fx maintained
-                            LEFT JOIN instrument_registry.instrument_market_data md
+                            LEFT JOIN instrument_data.instrument_market_data md
                               ON md.instrument_id = maintained.instrument_id
                              AND md.metric_family = 'fx'
                              AND md.quote_basis = 'spot'
@@ -2534,7 +2534,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         SELECT count(*)
                         FROM (
                             SELECT instrument_id, metric_family, quote_basis, as_of_date
-                            FROM instrument_registry.instrument_market_data
+                            FROM instrument_data.instrument_market_data
                             GROUP BY instrument_id, metric_family, quote_basis, as_of_date
                             HAVING count(*) > 1
                         ) duplicates
@@ -2548,7 +2548,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="valuation_policy_total_return_basis",
                     query=f"""
                         SELECT count(*)
-                        FROM instrument_registry.instrument instrument
+                        FROM instrument_data.instrument instrument
                         WHERE coalesce(instrument.lifecycle_state_json ->> 'status', 'active') = 'active'
                           AND EXISTS (
                               SELECT 1
@@ -2585,7 +2585,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                         ->> 'return_semantics',
                                     ''
                                 ))) AS configured_return_kind
-                            FROM instrument_registry.instrument instrument
+                            FROM instrument_data.instrument instrument
                             WHERE instrument.instrument_type = 'index'
                               AND coalesce(
                                     instrument.lifecycle_state_json::jsonb ->> 'status',
@@ -2652,11 +2652,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="fund_nav_current_projection_contract",
                     query=f"""
                         SELECT count(*)
-                        FROM instrument_registry.fund_nav_current_projection current
-                        JOIN instrument_registry.fund_nav_projection_run run
+                        FROM instrument_data.fund_nav_current_projection current
+                        JOIN instrument_data.fund_nav_projection_run run
                           ON run.fund_nav_projection_run_id =
                              current.fund_nav_projection_run_id
-                        JOIN instrument_registry.instrument instrument
+                        JOIN instrument_data.instrument instrument
                           ON instrument.instrument_id=current.instrument_id
                         WHERE coalesce(
                                 instrument.lifecycle_state_json ->> 'status',
@@ -2671,7 +2671,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 AND run.projection_status IN ('complete', 'partial')
                                 AND (
                                     SELECT count(*)
-                                    FROM instrument_registry.fund_nav_adjustment_factor anchor
+                                    FROM instrument_data.fund_nav_adjustment_factor anchor
                                     WHERE anchor.fund_nav_projection_run_id =
                                           run.fund_nav_projection_run_id
                                       AND anchor.evidence_kind IN (
@@ -2713,7 +2713,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             JOIN latest_portfolio_dates latest
                               ON latest.portfolio_id = holding.portfolio_id
                              AND latest.as_of_date = holding.as_of_date
-                            JOIN instrument_registry.instrument instrument
+                            JOIN instrument_data.instrument instrument
                               ON instrument.instrument_id = holding.instrument_id
                              AND instrument.instrument_type IN ('public_fund', 'private_fund')
                             WHERE holding.quantity <> 0
@@ -2738,7 +2738,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       AND quote.status = 'complete'
                                 ) AS latest_total_return_date
                             FROM held_funds held
-                            LEFT JOIN instrument_registry.instrument_market_data quote
+                            LEFT JOIN instrument_data.instrument_market_data quote
                               ON quote.instrument_id = held.instrument_id
                              AND quote.metric_family = 'nav'
                              AND quote.as_of_date BETWEEN
@@ -2973,7 +2973,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     FROM holdings
                     LEFT JOIN LATERAL (
                         SELECT value::double precision AS expected_price
-                        FROM instrument_registry.instrument_market_data quote
+                        FROM instrument_data.instrument_market_data quote
                         WHERE quote.instrument_id = holdings.instrument_id
                           AND quote.quote_basis = holdings.quote_basis
                           AND quote.as_of_date <= holdings.as_of_date
@@ -3304,10 +3304,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="price_bar_contract",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument_price_bar bar
-                        JOIN instrument_registry.instrument instrument
+                        FROM instrument_data.instrument_price_bar bar
+                        JOIN instrument_data.instrument instrument
                           ON instrument.instrument_id = bar.instrument_id
-                        LEFT JOIN instrument_registry.instrument_market_data close_quote
+                        LEFT JOIN instrument_data.instrument_market_data close_quote
                           ON close_quote.instrument_id = bar.instrument_id
                          AND close_quote.metric_family = 'price'
                          AND close_quote.quote_basis = 'close'
@@ -3333,7 +3333,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="corporate_action_event_integrity",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.corporate_action_event event
+                        FROM instrument_data.corporate_action_event event
                         WHERE event.action_type <> 'share_split'
                            OR event.status NOT IN ('detected', 'confirmed', 'cancelled')
                            OR event.new_units !~ '^[0-9]+([.][0-9]+)?$'
@@ -3357,7 +3357,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 WITH first_trade AS (
                     SELECT transaction.instrument_id, min(transaction.trade_date) AS first_trade_date
                     FROM portfolio.transaction_record transaction
-                    JOIN instrument_registry.instrument instrument
+                    JOIN instrument_data.instrument instrument
                       ON instrument.instrument_id = transaction.instrument_id
                     WHERE instrument.instrument_type IN ('etf', 'equity')
                     GROUP BY transaction.instrument_id
@@ -3367,8 +3367,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         close_quote.as_of_date,
                         close_quote.value::numeric AS close_value,
                         adjusted_quote.value::numeric AS adjusted_value
-                    FROM instrument_registry.instrument_market_data close_quote
-                    JOIN instrument_registry.instrument_market_data adjusted_quote
+                    FROM instrument_data.instrument_market_data close_quote
+                    JOIN instrument_data.instrument_market_data adjusted_quote
                       ON adjusted_quote.instrument_id = close_quote.instrument_id
                      AND adjusted_quote.as_of_date = close_quote.as_of_date
                      AND adjusted_quote.currency = close_quote.currency
@@ -3417,7 +3417,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         FROM candidates candidate
                         WHERE EXISTS (
                             SELECT 1
-                            FROM instrument_registry.corporate_action_event event
+                            FROM instrument_data.corporate_action_event event
                             WHERE event.instrument_id = candidate.instrument_id
                               AND event.effective_date = candidate.as_of_date
                               AND event.action_type = 'share_split'
@@ -3449,7 +3449,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         FROM candidates candidate
                         WHERE NOT EXISTS (
                             SELECT 1
-                            FROM instrument_registry.corporate_action_event event
+                            FROM instrument_data.corporate_action_event event
                             WHERE event.instrument_id = candidate.instrument_id
                               AND event.effective_date = candidate.as_of_date
                               AND event.action_type = 'share_split'
@@ -3472,19 +3472,19 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="listed_total_return_coverage",
                     query="""
                         SELECT count(*)
-                        FROM instrument_registry.instrument instrument
+                        FROM instrument_data.instrument instrument
                         WHERE instrument.instrument_type IN ('etf', 'equity')
                           AND (instrument.lifecycle_state_json ->> 'status') = 'active'
                           AND EXISTS (
                               SELECT 1
-                              FROM instrument_registry.instrument_market_data close_quote
+                              FROM instrument_data.instrument_market_data close_quote
                               WHERE close_quote.instrument_id = instrument.instrument_id
                                 AND close_quote.metric_family = 'price'
                                 AND close_quote.quote_basis = 'close'
                                 AND close_quote.status = 'complete'
                                 AND NOT EXISTS (
                                     SELECT 1
-                                    FROM instrument_registry.instrument_market_data adjusted_quote
+                                    FROM instrument_data.instrument_market_data adjusted_quote
                                     WHERE adjusted_quote.instrument_id = close_quote.instrument_id
                                       AND adjusted_quote.metric_family = 'price'
                                       AND adjusted_quote.quote_basis = 'adjusted_close'
@@ -3538,7 +3538,7 @@ def main(argv: list[str] | None = None) -> int:
     configured_database_url = _environment_database_url()
     if not configured_database_url:
         parser.error(
-            "a database URL is required via PORTFOLIO_OPS_LOCAL_DATABASE_URL"
+            "a database URL is required via INVESTMENT_STUDIO_LOCAL_DATABASE_URL"
         )
     try:
         database_url = _normalize_database_url(configured_database_url)

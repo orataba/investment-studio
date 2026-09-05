@@ -25,6 +25,7 @@ const INCOME_ASSET_TYPES: Record<string, Set<string>> = {
   return_of_capital: new Set(['public_fund', 'private_fund', 'etf', 'equity']),
   maturity_redemption: new Set(['fcn', 'option']),
   option_write: new Set(['option']),
+  option_opening_balance: new Set(['option']),
   option_buy_to_close: new Set(['option']),
 }
 
@@ -35,7 +36,7 @@ export function requiredDerivativeContractType(
   if (lifecycleEventType) {
     return LIFECYCLE_EVENT_ASSET_TYPES[lifecycleEventType] ?? null
   }
-  if (transactionType === 'option_write' || transactionType === 'option_buy_to_close') {
+  if (transactionType === 'option_write' || transactionType === 'option_buy_to_close' || transactionType === 'option_opening_balance') {
     return 'option'
   }
   if (transactionType === 'coupon') {
@@ -52,6 +53,9 @@ export function supportsTransactionAssetType(
   const normalizedAssetType = assetType.trim().toLowerCase()
   if (!normalizedAssetType) {
     return false
+  }
+  if (['short_sell', 'buy_to_cover', 'short_opening_balance'].includes(transactionType)) {
+    return normalizedAssetType === 'equity' || normalizedAssetType === 'etf'
   }
 
   const requiredContractType = requiredDerivativeContractType(

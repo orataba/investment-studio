@@ -18,6 +18,7 @@ from portfolio_app.api.contracts import (
 ASSET_TYPE_VALUES = ("security", "fcn", "option", "cash")
 TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
     "security": (
+        "short_sell", "buy_to_cover", "short_opening_balance",
         "buy",
         "sell",
         "dividend",
@@ -34,6 +35,7 @@ TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
         "early_exit",
         "coupon",
         "knock_in_close",
+        "knock_in_observation",
         "knock_out_close",
         "maturity_close",
         "fee",
@@ -41,6 +43,7 @@ TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
         "opening_balance",
     ),
     "option": (
+        "physical_long", "physical_written",
         "buy_to_open",
         "sell_to_close",
         "sell_to_open",
@@ -49,6 +52,7 @@ TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
         "cash_settle_long",
         "expire_written",
         "cash_settle_written",
+        "opening_written",
         "fee",
         "tax",
         "opening_balance",
@@ -66,6 +70,11 @@ TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
     ),
 }
 TRANSACTION_ACTION_MAP: dict[tuple[str, str], tuple[str, str | None]] = {
+    ("option", "physical_long"): ("maturity_redemption", "option_long_exercise"),
+    ("option", "physical_written"): ("lifecycle_event", "option_writer_assignment"),
+    ("security", "short_sell"): ("short_sell", None),
+    ("security", "buy_to_cover"): ("buy_to_cover", None),
+    ("security", "short_opening_balance"): ("short_opening_balance", None),
     ("security", "buy"): ("buy", None),
     ("security", "sell"): ("sell", None),
     ("security", "dividend"): ("dividend", None),
@@ -78,6 +87,7 @@ TRANSACTION_ACTION_MAP: dict[tuple[str, str], tuple[str, str | None]] = {
     ("fcn", "early_exit"): ("sell", None),
     ("fcn", "coupon"): ("coupon", None),
     ("fcn", "knock_in_close"): ("maturity_redemption", "fcn_knock_in"),
+    ("fcn", "knock_in_observation"): ("lifecycle_event", "fcn_knock_in"),
     ("fcn", "knock_out_close"): ("maturity_redemption", "fcn_knock_out"),
     ("fcn", "maturity_close"): ("maturity_redemption", "fcn_maturity"),
     ("fcn", "fee"): ("fee", None),
@@ -100,6 +110,7 @@ TRANSACTION_ACTION_MAP: dict[tuple[str, str], tuple[str, str | None]] = {
     ("option", "fee"): ("fee", None),
     ("option", "tax"): ("tax", None),
     ("option", "opening_balance"): ("opening_balance", None),
+    ("option", "opening_written"): ("option_opening_balance", None),
     ("cash", "deposit"): ("deposit", None),
     ("cash", "withdrawal"): ("withdrawal", None),
     ("cash", "interest"): ("interest", None),
@@ -118,7 +129,7 @@ TRANSFER_ACTIONS = frozenset(
 )
 DERIVATIVE_DEFINITION_ACTIONS: dict[str, frozenset[str]] = {
     "fcn": frozenset({"entry", "opening_balance"}),
-    "option": frozenset({"buy_to_open", "sell_to_open", "opening_balance"}),
+    "option": frozenset({"buy_to_open", "sell_to_open", "opening_balance", "opening_written"}),
 }
 TRANSFER_FORBIDDEN_FIELDS = frozenset(
     {

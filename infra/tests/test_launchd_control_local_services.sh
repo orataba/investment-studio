@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-launchd-control-test.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-launchd-control-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 MOCK_BIN="$TEST_ROOT/bin"
@@ -18,7 +18,7 @@ printf '%s\n' \
   'printf "%s\n" "$*" >> "$CALL_LOG"' \
   'if [[ "$1" == "print" ]]; then' \
   '  case "$2" in' \
-  '    *.platform-api|*.portfolio-web|*.market-data-refresh) exit 0 ;;' \
+  '    *.home-api|*.portfolio-web|*.market-data-refresh) exit 0 ;;' \
   '    *) exit 1 ;;' \
   '  esac' \
   'fi' \
@@ -26,32 +26,32 @@ printf '%s\n' \
   > "$MOCK_BIN/launchctl"
 chmod +x "$MOCK_BIN/uname" "$MOCK_BIN/launchctl"
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
-  touch "$PLIST_ROOT/test.portfolio-ops.$service.plist"
+for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web market-data-refresh; do
+  touch "$PLIST_ROOT/test.investment-studio.$service.plist"
 done
 
 export CALL_LOG
 PATH="$MOCK_BIN:$PATH" \
-LABEL_PREFIX=test.portfolio-ops \
+LABEL_PREFIX=test.investment-studio \
 LAUNCH_AGENTS_DIR="$PLIST_ROOT" \
   "$REPOSITORY_ROOT/infra/launchd/control_local_services.sh" stop "$STATE_FILE"
 
-expected_state="$(printf '%s\n' platform-api portfolio-web market-data-refresh)"
+expected_state="$(printf '%s\n' home-api portfolio-web market-data-refresh)"
 [[ "$(cat "$STATE_FILE")" == "$expected_state" ]]
-grep -q 'bootout .*test.portfolio-ops.platform-api' "$CALL_LOG"
-grep -q 'bootout .*test.portfolio-ops.portfolio-web' "$CALL_LOG"
-grep -q 'bootout .*test.portfolio-ops.market-data-refresh' "$CALL_LOG"
+grep -q 'bootout .*test.investment-studio.home-api' "$CALL_LOG"
+grep -q 'bootout .*test.investment-studio.portfolio-web' "$CALL_LOG"
+grep -q 'bootout .*test.investment-studio.market-data-refresh' "$CALL_LOG"
 
 PATH="$MOCK_BIN:$PATH" \
-LABEL_PREFIX=test.portfolio-ops \
+LABEL_PREFIX=test.investment-studio \
 LAUNCH_AGENTS_DIR="$PLIST_ROOT" \
   "$REPOSITORY_ROOT/infra/launchd/control_local_services.sh" start "$STATE_FILE"
 
-grep -q 'bootstrap .*test.portfolio-ops.platform-api.plist' "$CALL_LOG"
-grep -q 'kickstart -k .*test.portfolio-ops.platform-api' "$CALL_LOG"
-grep -q 'bootstrap .*test.portfolio-ops.portfolio-web.plist' "$CALL_LOG"
-grep -q 'bootstrap .*test.portfolio-ops.market-data-refresh.plist' "$CALL_LOG"
-if grep -q 'kickstart .*test.portfolio-ops.market-data-refresh' "$CALL_LOG"; then
+grep -q 'bootstrap .*test.investment-studio.home-api.plist' "$CALL_LOG"
+grep -q 'kickstart -k .*test.investment-studio.home-api' "$CALL_LOG"
+grep -q 'bootstrap .*test.investment-studio.portfolio-web.plist' "$CALL_LOG"
+grep -q 'bootstrap .*test.investment-studio.market-data-refresh.plist' "$CALL_LOG"
+if grep -q 'kickstart .*test.investment-studio.market-data-refresh' "$CALL_LOG"; then
   echo "Scheduled refresh was incorrectly kickstarted while restoring services." >&2
   exit 1
 fi

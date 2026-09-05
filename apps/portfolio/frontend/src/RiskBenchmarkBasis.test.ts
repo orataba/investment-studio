@@ -30,13 +30,21 @@ function chart(
 }
 
 describe('Risk benchmark basis guard', () => {
-  it('blocks unknown return semantics', () => {
+  it('uses adjusted close even without a separate return-semantics label', () => {
     expect(
       benchmarkRiskBasisAssessment(chart({ return_semantics: 'unknown' }), 'CNY'),
     ).toEqual({
-      blocking: true,
-      message: 'Benchmark risk comparison requires confirmed price-return or total-return semantics.',
+      blocking: false,
+      message: null,
     })
+  })
+
+  it('allows split-adjusted price comparisons and discloses unconfirmed distribution treatment', () => {
+    const assessment = benchmarkRiskBasisAssessment(
+      chart({ chart_basis: 'close', return_semantics: 'unknown', split_adjusted: true }), 'CNY',
+    )
+    expect(assessment.blocking).toBe(false)
+    expect(assessment.message).toContain('Distribution treatment is unconfirmed')
   })
 
   it('blocks raw-currency comparisons', () => {
@@ -48,11 +56,11 @@ describe('Risk benchmark basis guard', () => {
 
   it('allows a confirmed price-return series with a comparability warning', () => {
     expect(
-      benchmarkRiskBasisAssessment(chart({ return_semantics: 'price_return' }), 'CNY'),
+      benchmarkRiskBasisAssessment(chart({ chart_basis: 'close', return_semantics: 'price_return' }), 'CNY'),
     ).toEqual({
       blocking: false,
       message:
-        'Benchmark uses price returns; volatility and Sharpe exclude distributions and are not fully comparable with portfolio total returns.',
+        'Comparison uses the selected price-return series. Distributions are excluded from this benchmark, so relative results include that difference.',
     })
   })
 })

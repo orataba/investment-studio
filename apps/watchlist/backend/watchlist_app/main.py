@@ -15,6 +15,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
+    from watchlist_app.services.research_runner import interrupt_incomplete_runs
+    interrupt_incomplete_runs()
     worker_thread = None
     worker_stop_event: Event | None = None
     if settings.recalc_worker_enabled:
@@ -30,7 +32,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Portfolio Operations Watchlist backend with shared instruments, read models, and persistence scaffolding.",
+    description="Investment Studio Watchlist backend with shared instruments, read models, and persistence scaffolding.",
     lifespan=lifespan,
 )
 

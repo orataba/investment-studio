@@ -31,6 +31,12 @@ describe('derivative contract form mapping', () => {
         expiry_date: '2026-08-28',
         strike: 125.5,
         contract_multiplier: 100,
+        settlement_type: null,
+        exercise_style: null,
+        exercise_dates: null,
+        strike_currency: null,
+        settlement_formula: null,
+        terms_reference: null,
       },
     })
   })

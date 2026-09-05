@@ -1,1 +1,1 @@
-"""Core settings for the Portfolio Operations Portfolio backend."""
+"""Core settings for the Investment Studio Portfolio backend."""

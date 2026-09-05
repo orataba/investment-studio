@@ -114,7 +114,7 @@ describe('Performance rendered page contract', () => {
       views: [],
     })
     window.localStorage.setItem(
-      'portfolio_ops.portfolio.performance.calculation.views.v1',
+      'investment_studio.portfolio.performance.calculation.views.v1',
       legacyStore,
     )
 
@@ -137,7 +137,7 @@ describe('Performance rendered page contract', () => {
     expect(calculationToolbar?.querySelector('.holdings-filter-actions')).toBeNull()
     expect(screen.getByRole('columnheader', { name: /Begin Weight/ })).toBeInTheDocument()
     expect(
-      window.localStorage.getItem('portfolio_ops.portfolio.performance.calculation.views.v1'),
+      window.localStorage.getItem('investment_studio.portfolio.performance.calculation.views.v1'),
     ).toBe(legacyStore)
     expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
   })
@@ -328,7 +328,7 @@ describe('Performance rendered page contract', () => {
     })
   })
 
-  it('shows benchmark differences and relative statistics for a confirmed price index', async () => {
+  it.each(['price_return', 'unknown'] as const)('shows benchmark differences and relative statistics for a %s price series', async (returnSemantics) => {
     const user = userEvent.setup()
     apiMocks.getPortfolioInstruments.mockResolvedValue({
       portfolio_id: '3',
@@ -356,7 +356,7 @@ describe('Performance rendered page contract', () => {
       as_of_date: '2026-07-15',
       range_key: 'all',
       chart_basis: 'close',
-      return_semantics: 'price_return',
+      return_semantics: returnSemantics,
       metric_family: 'price',
       currency: 'USD',
       points: Array.from({ length: 11 }, (_, index) => ({
@@ -383,11 +383,11 @@ describe('Performance rendered page contract', () => {
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
     const benchmarkHint = await screen.findByRole('note', {
-      name: /Benchmark comparison: Price-return comparator/,
+      name: /Benchmark comparison:/,
     })
     expect(benchmarkHint).toHaveAttribute(
       'title',
-      expect.stringMatching(/Benchmark uses close with confirmed price-return semantics.*benchmark and relative metrics are shown/),
+      expect.stringContaining('Comparison uses the selected price'),
     )
     const periodReturnCells = within(screen.getByRole('row', { name: /Total Portfolio Return/ })).getAllByRole('cell')
     expect(periodReturnCells).toHaveLength(3)
@@ -589,7 +589,7 @@ describe('Performance rendered page contract', () => {
       }),
     )
     expect(screen.getByLabelText('Start Date')).toHaveValue('2026-06-15')
-    expect(window.localStorage.getItem('portfolio_ops.portfolio.performance.window.v1')).toBe('{}')
+    expect(window.localStorage.getItem('investment_studio.portfolio.performance.window.v1')).toBe('{}')
   })
 
   it('renders fail-closed XIRR and insufficient-risk-sample reasons', async () => {

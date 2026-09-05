@@ -89,14 +89,14 @@ def test_execution_quote_endpoint_prefers_raw_close_over_adjusted_close(client, 
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        "/api/portfolios/investment-studio/transactions/execution-quote",
         params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload == {
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "instrument_id": "159516-sz",
         "requested_as_of_date": "2026-03-27",
         "selection_role": "trading",
@@ -131,7 +131,7 @@ def test_execution_quote_endpoint_marks_prior_unadjusted_quote_stale(client, mon
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        "/api/portfolios/investment-studio/transactions/execution-quote",
         params={"instrument_id": "159516-sz", "as_of_date": "2026-03-30"},
     )
 
@@ -163,7 +163,7 @@ def test_execution_quote_endpoint_returns_unavailable_instead_of_adjusted_fallba
     )
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        "/api/portfolios/investment-studio/transactions/execution-quote",
         params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
     )
 
@@ -185,7 +185,7 @@ def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(clien
     monkeypatch.setattr(execution_quotes, "get_registry_instrument_detail", lambda _instrument_id: None)
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        "/api/portfolios/investment-studio/transactions/execution-quote",
         params={"instrument_id": "missing", "as_of_date": "2026-03-27"},
     )
 
@@ -195,7 +195,7 @@ def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(clien
 
 def test_execution_quote_response_rejects_incomplete_available_contract() -> None:
     complete_payload = {
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "instrument_id": "159516-sz",
         "requested_as_of_date": "2026-03-27",
         "selection_role": "trading",

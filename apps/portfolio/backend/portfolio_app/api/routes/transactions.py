@@ -1,8 +1,12 @@
 from __future__ import annotations
+from portfolio_app.services.lot_selection import resolve_import_lot_references
+
+from portfolio_app.api.contracts import DerivativeContractAmendRequest
+from portfolio_app.services.portfolio_store import amend_derivative_contract
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import (
@@ -22,6 +26,7 @@ from portfolio_app.api.assemblers import (
     summarize_transactions,
 )
 from portfolio_app.api.contracts import (
+    AMOUNT_SOURCE_QUANTUM,
     _amount_contract_matches_display_price,
     DerivativeContractCreate,
     DerivativeContractListResponse,
@@ -69,10 +74,10 @@ from portfolio_app.api.contracts import (
 )
 from portfolio_app.services.ledger import (
     build_position_lots,
+    build_transaction_cash_fx_impacts,
     build_transaction_accounting_impact,
     estimate_position_cost_basis,
     estimate_position_quantity,
-    estimate_position_remaining_cost_basis,
     list_ledger_postings,
     summarize_ledger_postings,
     summarize_position_lots,
@@ -249,12 +254,13 @@ def _load_derivative_contract_ref(
                 "external_reference": existing.get("external_reference"),
                 "terms": existing["terms"],
             }
+            persisted = DerivativeContractCreate.model_validate(persisted).model_dump(mode="json")
             if supplied != persisted:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "Derivative contract terms are immutable; select the existing "
-                        "contract or create a new contract identity."
+                        "Transaction entry cannot overwrite contract terms; use the audited amendment workflow "
+                        "or create a new identity for a different product."
                     ),
                 )
         return existing
@@ -273,7 +279,16 @@ def _load_derivative_contract_ref(
             for item in terms["underlyings"]
         ]
     for registry_instrument_id in dict.fromkeys(registry_instrument_ids):
-        _load_instrument_ref(registry_instrument_id)
+        underlying_ref = _load_instrument_ref(registry_instrument_id)
+        if (
+            inline_contract.contract_type == "option"
+            and terms.get("strike_currency")
+            and str(terms["strike_currency"]).upper() != str(underlying_ref.get("currency") or "").upper()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="A strike currency different from the underlying quote currency requires a contractual FX conversion model, which is not supported. Premium currency is a separate field.",
+            )
     return {
         **inline_contract.model_dump(mode="json"),
         "portfolio_id": portfolio_id,
@@ -338,6 +353,8 @@ def _requires_settlement_cash(
     account_type: str,
 ) -> bool:
     transaction_type = payload.transaction_type
+    if payload.asset_deliveries and payload.gross_amount == 0 and payload.fees == 0 and payload.taxes == 0:
+        return False
     lifecycle_event_type = payload.lifecycle_event_type
     if transaction_type == "lifecycle_event":
         return lifecycle_event_type == "option_writer_cash_settlement"
@@ -351,6 +368,7 @@ def _requires_settlement_cash(
         in {
             "buy",
             "sell",
+            "short_sell", "buy_to_cover",
             "option_write",
             "option_buy_to_close",
             "dividend",
@@ -402,7 +420,7 @@ def _validate_portfolio_fact_boundary(
         portfolio=portfolio,
         trade_date=payload.trade_date,
     )
-    if payload.transaction_type != "opening_balance":
+    if payload.transaction_type not in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
         return
     settlement_date = payload.settlement_date or payload.trade_date
     if payload.trade_date != inception_date or settlement_date != inception_date:
@@ -426,12 +444,14 @@ def _validate_asset_amount_contract(
     if payload.price is None:
         return
     if payload.transaction_type not in {
+        "short_sell", "buy_to_cover", "short_opening_balance",
         "buy",
         "sell",
         "option_write",
         "option_buy_to_close",
         "dividend_reinvestment",
         "opening_balance",
+        "option_opening_balance",
     }:
         return
     price_scale = transaction_price_scale(
@@ -705,6 +725,10 @@ def _validate_asset_transaction_compatibility(
     )
     if asset_type is None:
         return
+    if transaction_type in {"short_sell", "buy_to_cover", "short_opening_balance"}:
+        if derivative_contract is not None or asset_type not in {"equity", "etf"}:
+            raise HTTPException(status_code=400, detail="Stock short transactions support equity and ETF only.")
+        return
 
     if lifecycle_event_type is not None:
         allowed_types = LIFECYCLE_EVENT_INSTRUMENT_TYPES.get(lifecycle_event_type)
@@ -721,6 +745,10 @@ def _validate_asset_transaction_compatibility(
                 status_code=400,
                 detail="Derivative lifecycle events require a Portfolio contract.",
             )
+    if transaction_type == "option_opening_balance":
+        if derivative_contract is None or asset_type != "option":
+            raise HTTPException(status_code=400, detail="Written option opening balance requires an option contract.")
+        return
     if transaction_type in {"buy", "sell", "opening_balance", "lifecycle_event"}:
         if derivative_contract is None and asset_type not in POSITION_INSTRUMENT_TYPES:
             raise HTTPException(
@@ -853,16 +881,47 @@ def _validate_fx_conversion(
     if payload.currency.upper() != source_currency:
         raise HTTPException(status_code=400, detail="FX conversion transaction currency must match source account.")
 
-    source_amount = float(payload.gross_amount or 0.0)
-    target_amount = float(payload.counter_amount or 0.0)
-    fx_rate = float(payload.fx_rate or 0.0)
+    source_amount = payload.gross_amount
+    target_amount = payload.counter_amount
+    fx_rate = payload.fx_rate
     if source_amount <= 0:
         raise HTTPException(status_code=400, detail="FX conversion requires positive source amount.")
-    implied_rate = target_amount / source_amount if source_amount > 0 else 0.0
-    if abs(implied_rate - fx_rate) > 1e-4:
-        raise HTTPException(status_code=400, detail="counter_amount must match gross_amount multiplied by fx_rate.")
+    if target_amount is None or target_amount <= 0:
+        raise HTTPException(status_code=400, detail="FX conversion requires positive counter amount.")
+    if fx_rate is None:
+        raise HTTPException(status_code=400, detail="FX conversion requires fx_rate.")
+    expected_target_amount = (source_amount * fx_rate).quantize(
+        AMOUNT_SOURCE_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
+    if target_amount != expected_target_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "counter_amount must equal gross_amount multiplied by fx_rate "
+                "at transaction amount precision."
+            ),
+        )
 
     return counterparty_account
+
+
+def _prepare_asset_deliveries(portfolio_id: str, payload: TransactionCreateRequest) -> list[dict[str, object]]:
+    deliveries = []
+    for delivery in payload.asset_deliveries:
+        account = get_account(portfolio_id, delivery.account_id)
+        instrument = _load_instrument_ref(delivery.instrument_id)
+        if account is None or account.get("account_category") != "security":
+            raise HTTPException(status_code=400, detail="Asset delivery requires a security account.")
+        if instrument.get("instrument_type") not in {"equity", "etf"}:
+            raise HTTPException(status_code=400, detail="FCN deliverables must be confirmed equity or ETF shares.")
+        if delivery.currency != instrument.get("currency") or delivery.currency != account.get("currency"):
+            raise HTTPException(status_code=400, detail="Delivery currency must match the security and receiving account.")
+        if delivery.currency == payload.currency and delivery.fx_rate_to_contract != 1:
+            raise HTTPException(status_code=400, detail="Same-currency delivery requires FX rate 1.")
+        _validate_account_fact_window(account, event_dates=[payload.trade_date, payload.settlement_date or payload.trade_date], role_label="Delivery account")
+        deliveries.append({**delivery.model_dump(mode="json"), "instrument_ref": instrument})
+    return deliveries
 
 
 def _prepare_import_transaction_values(
@@ -918,6 +977,8 @@ def _prepare_import_transaction_values(
 
     deposit_only_types = {"deposit", "withdrawal", "interest", "fx_conversion"}
     securities_only_types = {
+        "short_sell", "buy_to_cover", "short_opening_balance",
+        "option_opening_balance",
         "buy",
         "sell",
         "option_write",
@@ -1107,6 +1168,9 @@ def _prepare_import_transaction_values(
     )
     return {
         "transaction_type": transaction_type,
+        "asset_deliveries": _prepare_asset_deliveries(portfolio_id, payload),
+        "lot_selections": [item.model_dump(mode="json") for item in payload.lot_selections],
+        "_record_reference": payload.record_reference,
         "lifecycle_event_type": lifecycle_event_type,
         "trade_date": payload.trade_date,
         "trade_time": payload.trade_time,
@@ -1487,6 +1551,7 @@ def _prepare_transaction_import_batch(
                 )
                 continue
             prepared_records.extend(transfer_values)
+            transfer_values[-1]["_record_reference"] = internal_transfer.record_reference
             valid_internal_transfers.append(internal_transfer)
             response_rows.append(
                 _TransactionBatchPreviewRow(
@@ -1504,8 +1569,24 @@ def _prepare_transaction_import_batch(
                 payload=parsed.transaction,
                 created_at=created_at,
                 batch_derivative_contracts=batch_derivative_contracts,
+                allow_physical_option_outcome=parsed.transaction.option_delivery is not None,
             )
-        except (HTTPException, InstrumentRegistryError) as error:
+            delivery_values = None
+            if parsed.transaction.option_delivery is not None:
+                details = parsed.transaction.option_delivery
+                outcome = OptionOutcomeCreateRequest(
+                    derivative_contract_id=parsed.transaction.derivative_contract_id,
+                    side="long" if parsed.transaction.lifecycle_event_type == "option_long_exercise" else "written",
+                    outcome="physical", quantity=parsed.transaction.quantity,
+                    event_date=parsed.transaction.trade_date,
+                    trade_time=parsed.transaction.trade_time,
+                    settlement_date=parsed.transaction.settlement_date or parsed.transaction.trade_date,
+                    note=parsed.transaction.note, **details.model_dump(exclude={"stock_record_reference"}),
+                )
+                delivery_values, underlying = _prepare_option_delivery_stock(portfolio_id, outcome, _validated_option_contract_ref(values["derivative_contract"]), created_at, str(values["currency"]))
+                values["_option_delivery_underlying_id"] = underlying
+                delivery_values["_record_reference"] = details.stock_record_reference
+        except (HTTPException, InstrumentRegistryError, ValueError) as error:
             detail = (
                 str(error.detail)
                 if isinstance(error, HTTPException)
@@ -1521,6 +1602,8 @@ def _prepare_transaction_import_batch(
             )
             continue
         prepared_records.append(values)
+        if delivery_values is not None:
+            prepared_records.append(delivery_values)
         valid_payloads.append(parsed.transaction)
         response_rows.append(
             _TransactionBatchPreviewRow(
@@ -1555,6 +1638,7 @@ def _prepare_transaction_import_batch(
                 }
             )
         try:
+            synthetic_records = resolve_import_lot_references(synthetic_records, [record["transaction_id"] for record in synthetic_records])
             validate_transaction_position_history(
                 portfolio_id,
                 [*existing_records, *synthetic_records],
@@ -1758,6 +1842,18 @@ def list_portfolio_derivative_contracts(
     )
 
 
+@router.patch("/{portfolio_id}/derivative-contracts/{contract_id}", response_model=DerivativeContractRecord)
+def amend_contract_terms(portfolio_id: str, contract_id: str, payload: DerivativeContractAmendRequest):
+    if isinstance(payload.terms, OptionContractTerms) and payload.terms.strike_currency:
+        underlying = _load_instrument_ref(payload.terms.underlying_instrument_id)
+        if payload.terms.strike_currency != underlying.get("currency"):
+            raise HTTPException(status_code=400, detail="Strike currency must match the underlying quote currency; no contractual FX conversion model is configured.")
+    try:
+        return amend_derivative_contract(portfolio_id, contract_id, **payload.model_dump(mode="json"))
+    except (ValueError, TransactionRowVersionConflictError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @router.get("/{portfolio_id}/transactions", response_model=TransactionListResponse)
 def list_transaction_records(
     portfolio_id: str,
@@ -1791,11 +1887,29 @@ def list_transaction_records(
     )
 
 
+def _export_transaction_records(portfolio_id: str) -> list[dict[str, object]]:
+    records = list_transactions(portfolio_id)
+    by_id = {record["transaction_id"]: record for record in records}
+    stock_ids = set()
+    for link in list_option_delivery_links(portfolio_id):
+        parent = by_id[link["option_transaction_id"]]
+        stock = by_id[link["stock_transaction_id"]]
+        parent["option_delivery"] = {
+            "stock_record_reference": stock["transaction_id"],
+            "stock_account_id": stock["account_id"], "settlement_cash_account_id": stock["settlement_cash_account_id"],
+            "fees": stock["source_fees"], "taxes": stock["source_taxes"],
+            "fee_category": stock["fee_category"],
+            "allow_stock_short": stock["transaction_type"] == "short_sell",
+        }
+        stock_ids.add(stock["transaction_id"])
+    return [record for record in records if record["transaction_id"] not in stock_ids]
+
+
 @router.get("/{portfolio_id}/transactions.csv")
 def download_transaction_csv(portfolio_id: str) -> Response:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    content = render_transaction_csv(list_transactions(portfolio_id))
+    content = render_transaction_csv(_export_transaction_records(portfolio_id))
     return Response(
         content=content,
         media_type="text/csv; charset=utf-8",
@@ -1827,7 +1941,7 @@ def download_transaction_xlsx(portfolio_id: str) -> Response:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return Response(
-        content=render_transaction_xlsx(list_transactions(portfolio_id)),
+        content=render_transaction_xlsx(_export_transaction_records(portfolio_id)),
         media_type=XLSX_MEDIA_TYPE,
         headers={
             "Content-Disposition": (
@@ -2287,15 +2401,16 @@ def get_transaction_workspace(
         if selected_delivery_link is not None
         else {selected_transaction_id or ""}
     )
+    all_ledger_postings = list_ledger_postings(
+        portfolio_id,
+        all_transactions,
+        account_cost_methods=account_cost_methods,
+        account_currency_map=account_currency_map,
+    )
     ledger_postings_raw = (
         [
             posting
-            for posting in list_ledger_postings(
-                portfolio_id,
-                all_transactions,
-                account_cost_methods=account_cost_methods,
-                account_currency_map=account_currency_map,
-            )
+            for posting in all_ledger_postings
             if str(posting.get("transaction_id") or "")
             in selected_ledger_transaction_ids
         ]
@@ -2377,9 +2492,24 @@ def get_transaction_workspace(
         related_position_lots_raw,
         base_currency=str(portfolio["base_currency"]),
     )
+    cash_fx_impacts = (
+        build_transaction_cash_fx_impacts(
+            transaction_ids={
+                transaction_id
+                for transaction_id in selected_ledger_transaction_ids
+                if transaction_id
+            },
+            postings=all_ledger_postings,
+            as_of_date=date.today(),
+            base_currency=str(portfolio["base_currency"]),
+        )
+        if selected_transaction_id
+        else []
+    )
 
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
+        base_currency=str(portfolio["base_currency"]),
         portfolio_inception_date=date.fromisoformat(
             str(portfolio["inception_date"])
         ),
@@ -2402,6 +2532,7 @@ def get_transaction_workspace(
         transactions=serialized_transactions,
         selected_transaction=selected_transaction,
         accounting_impact=accounting_impact,
+        cash_fx_impacts=cash_fx_impacts,
         delete_scope_row_versions=delete_scope_row_versions,
         ledger_summary=LedgerPostingListSummary.model_validate(summarize_ledger_postings(ledger_postings_raw)),
         ledger_postings=ledger_postings_raw,
@@ -2590,7 +2721,7 @@ def list_unresolved_option_actions(
             expiry_date = date.fromisoformat(str(terms.get("expiry_date") or ""))
         except ValueError:
             return
-        if expiry_date >= operational_date:
+        if expiry_date > operational_date:
             return
         actions.append(
             UnresolvedOptionActionRecord.model_validate(
@@ -2723,14 +2854,73 @@ def list_option_obligation_records(
     )
 
 
-@router.post(
-    "/{portfolio_id}/options/outcomes",
-    response_model=OptionOutcomeResponse,
-)
+def _prepare_option_delivery_stock(portfolio_id: str, payload: OptionOutcomeCreateRequest, terms: dict[str, object], created_at: str, contract_currency: str):
+    underlying_instrument_id = str(
+        terms.get("underlying_instrument_id") or ""
+    )
+    underlying_ref = _load_instrument_ref(underlying_instrument_id)
+    if str(underlying_ref.get("instrument_type") or "") not in {"equity", "etf"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Physical option delivery currently supports equity and ETF underlyings only. "
+                "Do not substitute cash settlement unless the contract or broker confirms it."
+            ),
+        )
+    underlying_currency = str(underlying_ref.get("currency") or "").upper()
+    strike_currency = str(terms.get("strike_currency") or contract_currency).upper()
+    if strike_currency != underlying_currency:
+        raise HTTPException(
+            status_code=400,
+            detail="Cross-currency physical exercise requires explicit FX and deliverable terms and is not supported by the stock-delivery command.",
+        )
+    option_type = str(terms.get("option_type") or "")
+    stock_transaction_type = {
+        ("long", "call"): "buy",
+        ("long", "put"): "sell",
+        ("written", "call"): "sell",
+        ("written", "put"): "buy",
+    }.get((payload.side, option_type))
+    if stock_transaction_type == "sell" and payload.allow_stock_short:
+        stock_transaction_type = "short_sell"
+    if stock_transaction_type is None:
+        raise HTTPException(status_code=400, detail="Option contract type is invalid.")
+    stock_quantity = payload.quantity * Decimal(str(terms["contract_multiplier"]))
+    strike = Decimal(str(terms["strike"]))
+    price_scale = Decimal(
+        str(
+            transaction_price_scale(
+                instrument_ref=underlying_ref,
+                derivative_contract=None,
+            )
+        )
+    )
+    stock_payload = TransactionCreateRequest(
+        transaction_type=stock_transaction_type,
+        trade_date=payload.event_date,
+        trade_time=payload.trade_time,
+        settlement_date=payload.settlement_date,
+        position_effective_date=payload.event_date,
+        account_id=str(payload.stock_account_id),
+        settlement_cash_account_id=payload.settlement_cash_account_id,
+        instrument_id=underlying_instrument_id,
+        quantity=stock_quantity,
+        price=strike,
+        gross_amount=stock_quantity * strike * price_scale,
+        fees=payload.fees,
+        fee_category=payload.fee_category,
+        taxes=payload.taxes,
+        currency=underlying_currency,
+        note=payload.note,
+    )
+    return _prepare_import_transaction_values(portfolio_id=portfolio_id, payload=stock_payload, created_at=created_at), underlying_instrument_id
+
+
+@router.post("/{portfolio_id}/options/outcomes", response_model=OptionOutcomeResponse)
 def create_option_outcome(
     portfolio_id: str,
     payload: OptionOutcomeCreateRequest,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, pattern=r".*\S.*"),
 ) -> OptionOutcomeResponse:
     request_payload = payload.model_dump(mode="json", exclude_none=False)
     replayed = _idempotency_replay_or_error(
@@ -2812,6 +3002,8 @@ def create_option_outcome(
         transaction_type=transaction_type,
         lifecycle_event_type=lifecycle_event_type,
         trade_date=payload.event_date,
+        trade_time=payload.trade_time,
+        lot_selections=payload.lot_selections,
         settlement_date=(
             payload.settlement_date
             if payload.outcome == "cash_settled"
@@ -2831,6 +3023,7 @@ def create_option_outcome(
             else Decimal("0")
         ),
         fees=payload.fees if payload.outcome == "cash_settled" else Decimal("0"),
+        fee_category=payload.fee_category if payload.outcome == "cash_settled" else "unknown",
         taxes=payload.taxes if payload.outcome == "cash_settled" else Decimal("0"),
         currency=contract_currency,
         note=payload.note,
@@ -2846,64 +3039,9 @@ def create_option_outcome(
     ]
     option_delivery_pair: tuple[int, int, str] | None = None
     if payload.outcome == "physical":
-        underlying_instrument_id = str(
-            terms.get("underlying_instrument_id") or ""
-        )
-        underlying_ref = _load_instrument_ref(underlying_instrument_id)
-        underlying_currency = str(underlying_ref.get("currency") or "").upper()
-        if underlying_currency != contract_currency:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Physical delivery is unavailable because the option settlement "
-                    "currency differs from the underlying quote currency. Record the "
-                    "reviewed cash settlement instead."
-                ),
-            )
-        option_type = str(terms.get("option_type") or "")
-        stock_transaction_type = {
-            ("long", "call"): "buy",
-            ("long", "put"): "sell",
-            ("written", "call"): "sell",
-            ("written", "put"): "buy",
-        }.get((payload.side, option_type))
-        if stock_transaction_type is None:
-            raise HTTPException(status_code=400, detail="Option contract type is invalid.")
-        stock_quantity = payload.quantity * Decimal(str(terms["contract_multiplier"]))
-        strike = Decimal(str(terms["strike"]))
-        price_scale = Decimal(
-            str(
-                transaction_price_scale(
-                    instrument_ref=underlying_ref,
-                    derivative_contract=None,
-                )
-            )
-        )
-        stock_payload = TransactionCreateRequest(
-            transaction_type=stock_transaction_type,
-            trade_date=payload.event_date,
-            settlement_date=payload.settlement_date,
-            position_effective_date=payload.event_date,
-            account_id=str(payload.stock_account_id),
-            settlement_cash_account_id=payload.settlement_cash_account_id,
-            instrument_id=underlying_instrument_id,
-            quantity=stock_quantity,
-            price=strike,
-            gross_amount=stock_quantity * strike * price_scale,
-            fees=payload.fees,
-            taxes=payload.taxes,
-            currency=underlying_currency,
-            note=payload.note,
-        )
-        records.append(
-            _prepare_import_transaction_values(
-                portfolio_id=portfolio_id,
-                payload=stock_payload,
-                created_at=created_at,
-            )
-        )
-        option_delivery_pair = (0, 1, underlying_instrument_id)
-
+        stock_record, underlying_id = _prepare_option_delivery_stock(portfolio_id, payload, terms, created_at, contract_currency)
+        records.append(stock_record)
+        option_delivery_pair = (0, 1, underlying_id)
     try:
         persisted_records = create_transactions(
             portfolio_id=portfolio_id,
@@ -3023,9 +3161,11 @@ def _persist_transaction_record(
     if transaction_type == "fx_conversion" and account_type != "deposit_account":
         raise HTTPException(status_code=400, detail="FX conversion requires deposit_account.")
     if transaction_type in {
+        "short_sell", "buy_to_cover", "short_opening_balance",
         "buy",
         "sell",
         "dividend",
+        "option_opening_balance",
         "dividend_reinvestment",
         "coupon",
         "return_of_capital",
@@ -3247,6 +3387,8 @@ def _persist_transaction_record(
                 derivative_contract_id=position_reference_id,
                 entitlement_date=entitlement_date,
             )
+        if transaction_type in {"fee", "tax"}:
+            available_quantity = abs(available_quantity)
         if available_quantity <= 1e-9:
             raise HTTPException(
                 status_code=400,
@@ -3254,29 +3396,6 @@ def _persist_transaction_record(
                     "Asset-linked income and expense requires an account position "
                     "or written-option obligation as of entitlement_date."
                 ),
-            )
-
-    if transaction_type == "return_of_capital" and instrument_id:
-        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
-            portfolio_id,
-            trade_date=payload.trade_date,
-            trade_at=str(resolved_trade_timing["trade_at"]),
-            created_at=pending_created_at,
-            settlement_date=settlement_date,
-            exclude_transaction_ids=excluded_transaction_ids,
-        )
-        available_cost_basis = estimate_position_remaining_cost_basis(
-            portfolio_id,
-            transactions_as_of_trade_date or [],
-            account_id=payload.account_id,
-            position_reference_id=instrument_id,
-            account_cost_methods=account_cost_methods,
-            as_of_date=payload.trade_date,
-        )
-        if float(payload.gross_amount or 0.0) > available_cost_basis + 1e-9:
-            raise HTTPException(
-                status_code=400,
-                detail="Return of capital exceeds account position cost basis as of trade_date.",
             )
 
     _validate_transaction_currency(
@@ -3297,6 +3416,8 @@ def _persist_transaction_record(
 
     transaction_values = {
         "transaction_type": transaction_type,
+        "asset_deliveries": _prepare_asset_deliveries(portfolio_id, payload),
+        "lot_selections": [item.model_dump(mode="json") for item in payload.lot_selections],
         "lifecycle_event_type": lifecycle_event_type,
         "trade_date": payload.trade_date,
         "trade_time": payload.trade_time,
@@ -3382,7 +3503,7 @@ def _persist_transaction_record(
 def create_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, pattern=r".*\S.*"),
 ) -> TransactionRecord:
     idempotency_payload = _request_payload_for_idempotency(payload)
     replayed = _idempotency_replay_or_error(
@@ -3492,7 +3613,7 @@ def delete_transaction_record(
 def create_internal_transfer_records(
     portfolio_id: str,
     payload: InternalTransferCreateRequest,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, pattern=r".*\S.*"),
 ) -> TransactionBatchResponse:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")

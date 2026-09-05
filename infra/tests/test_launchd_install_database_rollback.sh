@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALLER="$REPOSITORY_ROOT/infra/launchd/install_local_services.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-launchd-install-test.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-launchd-install-test.XXXXXX")"
 REAL_PYTHON="$(command -v python3)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -18,10 +18,10 @@ prepare_case() {
   mkdir -p \
     "$project_root/infra/scripts" \
     "$project_root/infra/postgres" \
-    "$project_root/apps/platform/frontend/dist" \
+    "$project_root/home/frontend/dist" \
     "$project_root/apps/watchlist/frontend/dist" \
     "$project_root/apps/portfolio/frontend/dist" \
-    "$project_root/apps/platform/backend/scripts" \
+    "$project_root/shared-data/scripts" \
     "$project_root/apps/portfolio/backend/scripts" \
     "$mock_bin" \
     "$plist_root" \
@@ -30,20 +30,22 @@ prepare_case() {
     "$case_root/backups" \
     "$case_root/tmp"
   chmod 700 "$env_root" "$case_root/backups" "$case_root/tmp"
-  : > "$env_root/platform.env"
-  chmod 600 "$env_root/platform.env"
+  : > "$env_root/home.env"
+  chmod 600 "$env_root/home.env"
+  : > "$env_root/data.env"
+  chmod 600 "$env_root/data.env"
   touch \
-    "$project_root/apps/platform/frontend/dist/index.html" \
+    "$project_root/home/frontend/dist/index.html" \
     "$project_root/apps/watchlist/frontend/dist/index.html" \
     "$project_root/apps/portfolio/frontend/dist/index.html"
   cp "$REPOSITORY_ROOT/infra/postgres/project_schema_backup.sh" \
     "$project_root/infra/postgres/project_schema_backup.sh"
 
   for service in \
-    platform-api watchlist-api portfolio-api \
-    platform-web watchlist-web portfolio-web market-data-refresh; do
-    printf 'old-%s\n' "$service" > "$plist_root/test.portfolio-ops.$service.plist"
-    chmod 600 "$plist_root/test.portfolio-ops.$service.plist"
+    home-api watchlist-api portfolio-api \
+    home-web watchlist-web portfolio-web market-data-refresh; do
+    printf 'old-%s\n' "$service" > "$plist_root/test.investment-studio.$service.plist"
+    chmod 600 "$plist_root/test.investment-studio.$service.plist"
   done
 
   printf '%s\n' \
@@ -51,8 +53,8 @@ prepare_case() {
     'set -euo pipefail' \
     'printf "migrate\n" >> "$EVENT_LOG"' \
     'platform_alembic_status=missing' \
-    'if [[ -n "${PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL:-}" && "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" == "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
-    'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
+    'if [[ -n "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" && "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" == "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
+    'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
     'if [[ "${MIGRATION_FAIL:-false}" == "true" ]]; then exit 9; fi' \
     > "$project_root/infra/scripts/migrate_all.sh"
   printf '%s\n' \
@@ -62,7 +64,7 @@ prepare_case() {
     'from pathlib import Path' \
     'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
     '    handle.write("market-refresh:" + " ".join(sys.argv[1:]) + "\n")' \
-    > "$project_root/apps/platform/backend/scripts/refresh_market_data_scheduled.py"
+    > "$project_root/shared-data/scripts/refresh_market_data_scheduled.py"
   printf '%s\n' \
     'from __future__ import annotations' \
     'import os' \
@@ -147,7 +149,7 @@ prepare_case() {
     'printf "launchctl:%s\n" "$*" >> "$EVENT_LOG"' \
     'if [[ "$1" == "print" ]]; then' \
     '  case "$2" in' \
-    '    *.platform-api|*.portfolio-web) exit 0 ;;' \
+    '    *.home-api|*.portfolio-web) exit 0 ;;' \
     '    *) exit 1 ;;' \
     '  esac' \
     'fi' \
@@ -172,17 +174,17 @@ run_installer() {
   local case_root="$1"
   local project_root="$case_root/project"
   local mock_bin="$case_root/bin"
-  local database_url="${2:-postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops}"
+  local database_url="${2:-postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio}"
 
   PATH="$mock_bin:$PATH" \
   PROJECT_ROOT="$project_root" \
-  LABEL_PREFIX=test.portfolio-ops \
+  LABEL_PREFIX=test.investment-studio \
   LAUNCH_AGENTS_DIR="$case_root/LaunchAgents" \
   LOG_DIR="$case_root/logs" \
-  PORTFOLIO_OPS_LOCAL_ENV_ROOT="$case_root/env" \
-  PORTFOLIO_OPS_INSTALL_BACKUP_DIR="$case_root/backups" \
-  PORTFOLIO_OPS_LOCAL_DATABASE_URL="$database_url" \
-  PORTFOLIO_OPS_INSTALL_HEALTH_ATTEMPTS=1 \
+  INVESTMENT_STUDIO_LOCAL_ENV_ROOT="$case_root/env" \
+  INVESTMENT_STUDIO_INSTALL_BACKUP_DIR="$case_root/backups" \
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$database_url" \
+  INVESTMENT_STUDIO_INSTALL_HEALTH_ATTEMPTS=1 \
   BUILD_FRONTENDS=false \
   PYTHON_BIN="$REAL_PYTHON" \
   NODE_BIN="$mock_bin/node" \
@@ -195,9 +197,9 @@ assert_old_plists_restored() {
   local case_root="$1"
   local service
   for service in \
-    platform-api watchlist-api portfolio-api \
-    platform-web watchlist-web portfolio-web market-data-refresh; do
-    [[ "$(cat "$case_root/LaunchAgents/test.portfolio-ops.$service.plist")" == "old-$service" ]]
+    home-api watchlist-api portfolio-api \
+    home-web watchlist-web portfolio-web market-data-refresh; do
+    [[ "$(cat "$case_root/LaunchAgents/test.investment-studio.$service.plist")" == "old-$service" ]]
   done
 }
 
@@ -207,7 +209,7 @@ export EVENT_LOG="$PASSWORD_URL_CASE/events"
 set +e
 run_installer \
   "$PASSWORD_URL_CASE" \
-  'postgresql+psycopg://portfolio_ops:sensitive-password@127.0.0.1:5432/portfolio_ops' \
+  'postgresql+psycopg://investment_studio:sensitive-password@127.0.0.1:5432/investment_studio' \
   > "$PASSWORD_URL_CASE/output" 2>&1
 password_url_status=$?
 set -e
@@ -221,7 +223,7 @@ fi
 
 EARLY_STOP_CASE="$TEST_ROOT/early-stop-failure"
 prepare_case "$EARLY_STOP_CASE"
-rm -f "$EARLY_STOP_CASE/LaunchAgents/test.portfolio-ops.portfolio-web.plist"
+rm -f "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.portfolio-web.plist"
 export EVENT_LOG="$EARLY_STOP_CASE/events"
 set +e
 MIGRATION_FAIL=false FAIL_ROLLBACK=false run_installer "$EARLY_STOP_CASE" \
@@ -229,13 +231,13 @@ MIGRATION_FAIL=false FAIL_ROLLBACK=false run_installer "$EARLY_STOP_CASE" \
 early_stop_status=$?
 set -e
 [[ $early_stop_status -ne 0 ]]
-grep -q 'Cannot safely stop test.portfolio-ops.portfolio-web' "$EARLY_STOP_CASE/output"
+grep -q 'Cannot safely stop test.investment-studio.portfolio-web' "$EARLY_STOP_CASE/output"
 if grep -q 'launchctl:bootout\|launchctl:bootstrap\|^backup$\|^migrate$' "$EVENT_LOG"; then
   echo "Installer mutated service or database state after stop preflight failed." >&2
   exit 1
 fi
-[[ "$(cat "$EARLY_STOP_CASE/LaunchAgents/test.portfolio-ops.platform-api.plist")" == "old-platform-api" ]]
-[[ ! -e "$EARLY_STOP_CASE/LaunchAgents/test.portfolio-ops.portfolio-web.plist" ]]
+[[ "$(cat "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.home-api.plist")" == "old-home-api" ]]
+[[ ! -e "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.portfolio-web.plist" ]]
 
 MIGRATION_CASE="$TEST_ROOT/migration-failure"
 prepare_case "$MIGRATION_CASE"
@@ -243,7 +245,7 @@ export EVENT_LOG="$MIGRATION_CASE/events"
 set +e
 MIGRATION_FAIL=true FAIL_ROLLBACK=false run_installer \
   "$MIGRATION_CASE" \
-  'postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  'postgresql://investment_studio@127.0.0.1:5432/investment_studio' \
   > "$MIGRATION_CASE/output" 2>&1
 migration_status=$?
 set -e
@@ -254,11 +256,11 @@ if grep -q '^audit$' "$EVENT_LOG"; then
   echo "Installer ran the data audit after a failed migration." >&2
   exit 1
 fi
-grep -q '^platform-migration-env:match|platform$' "$EVENT_LOG"
+grep -q '^platform-migration-env:match|data_ingestion$' "$EVENT_LOG"
 grep -q '^pg_dump:.*--schema=platform' "$EVENT_LOG"
 grep -q '^restore$' "$EVENT_LOG"
 restore_line="$(grep -n '^restore$' "$EVENT_LOG" | cut -d: -f1)"
-restart_line="$(grep -n 'launchctl:bootstrap .*test.portfolio-ops.platform-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
+restart_line="$(grep -n 'launchctl:bootstrap .*test.investment-studio.home-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
 [[ "$restore_line" -lt "$restart_line" ]]
 assert_old_plists_restored "$MIGRATION_CASE"
 test -n "$(find "$MIGRATION_CASE/backups" -name '*.pgdump' -type f -print -quit)"

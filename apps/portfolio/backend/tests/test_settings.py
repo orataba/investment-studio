@@ -9,7 +9,7 @@ from portfolio_app.core.settings import Settings
 
 
 def test_settings_require_an_explicit_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL", raising=False)
 
     with pytest.raises(ValidationError, match="database_url"):
         Settings()
@@ -24,11 +24,11 @@ def test_worker_and_copilot_defaults_match_the_environment_template(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(
-        "PORTFOLIO_OPS_PORTFOLIO_DAILY_SNAPSHOT_WORKER_POLL_SECONDS",
+        "INVESTMENT_STUDIO_PORTFOLIO_DAILY_SNAPSHOT_WORKER_POLL_SECONDS",
         raising=False,
     )
     monkeypatch.delenv(
-        "PORTFOLIO_OPS_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS",
+        "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS",
         raising=False,
     )
     settings = Settings(database_url="sqlite+pysqlite:///:memory:")
@@ -43,11 +43,11 @@ def test_worker_and_copilot_defaults_match_the_environment_template(
     assert settings.copilot_analysis_timeout_seconds == 900.0
     assert float(
         template_values[
-            "PORTFOLIO_OPS_PORTFOLIO_DAILY_SNAPSHOT_WORKER_POLL_SECONDS"
+            "INVESTMENT_STUDIO_PORTFOLIO_DAILY_SNAPSHOT_WORKER_POLL_SECONDS"
         ]
     ) == settings.daily_snapshot_worker_poll_seconds
     assert float(
         template_values[
-            "PORTFOLIO_OPS_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS"
+            "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS"
         ]
     ) == settings.copilot_analysis_timeout_seconds

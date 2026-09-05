@@ -29,8 +29,8 @@ def test_migration_removes_only_the_retired_holdings_total_view() -> None:
                 "INSERT INTO portfolio_table_view_store ("
                 "portfolio_id, view_scope, store_json, created_at, updated_at"
                 ") VALUES "
-                "('portfolio-ops', 'holdings_total', '{}', '2026-09-02', '2026-09-02'), "
-                "('portfolio-ops', 'holdings_fcn', '{}', '2026-09-02', '2026-09-02')"
+                "('investment-studio', 'holdings_total', '{}', '2026-09-02', '2026-09-02'), "
+                "('investment-studio', 'holdings_fcn', '{}', '2026-09-02', '2026-09-02')"
             )
         )
 
@@ -40,7 +40,7 @@ def test_migration_removes_only_the_retired_holdings_total_view() -> None:
         scopes = connection.scalars(
             sa.text(
                 "SELECT view_scope FROM portfolio_table_view_store "
-                "WHERE portfolio_id = 'portfolio-ops' ORDER BY view_scope"
+                "WHERE portfolio_id = 'investment-studio' ORDER BY view_scope"
             )
         ).all()
 

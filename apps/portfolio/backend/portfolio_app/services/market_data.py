@@ -5,7 +5,7 @@ from datetime import date
 from math import isfinite
 from typing import Iterable
 
-from portfolio_ops_instrument_core import (
+from investment_studio_instrument_core import (
     FUND_INSTRUMENT_TYPES,
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,

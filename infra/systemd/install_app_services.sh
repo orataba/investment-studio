@@ -3,14 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-UNIT_PREFIX="${UNIT_PREFIX:-portfolio-ops}"
+UNIT_PREFIX="${UNIT_PREFIX:-investment-studio}"
 HOST="${HOST:-127.0.0.1}"
 API_HOST="${API_HOST:-$HOST}"
 WEB_HOST="${WEB_HOST:-$HOST}"
-PLATFORM_API_PORT="${PLATFORM_API_PORT:-8102}"
+HOME_API_PORT="${HOME_API_PORT:-8102}"
 WATCHLIST_API_PORT="${WATCHLIST_API_PORT:-8100}"
 PORTFOLIO_API_PORT="${PORTFOLIO_API_PORT:-8101}"
-PLATFORM_WEB_PORT="${PLATFORM_WEB_PORT:-3100}"
+HOME_WEB_PORT="${HOME_WEB_PORT:-3100}"
 WATCHLIST_WEB_PORT="${WATCHLIST_WEB_PORT:-3101}"
 PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
 START_SERVICES="${START_SERVICES:-true}"
@@ -23,10 +23,10 @@ if [[ ! -f "$RUNTIME_ENV_HELPER" ]]; then
 fi
 source "$RUNTIME_ENV_HELPER"
 MANAGED_UNITS=(
-  "$UNIT_PREFIX-platform-api.service"
+  "$UNIT_PREFIX-home-api.service"
   "$UNIT_PREFIX-watchlist-api.service"
   "$UNIT_PREFIX-portfolio-api.service"
-  "$UNIT_PREFIX-platform-web.service"
+  "$UNIT_PREFIX-home-web.service"
   "$UNIT_PREFIX-watchlist-web.service"
   "$UNIT_PREFIX-portfolio-web.service"
 )
@@ -69,8 +69,8 @@ if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/portfolio/backend/
   echo "Cannot find Portfolio release snapshot refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
-if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py" ]]; then
-  echo "Cannot find Platform release catalog refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
+if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py" ]]; then
+  echo "Cannot find Data release catalog refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
 
@@ -78,43 +78,45 @@ if [[ -z "$ENV_ROOT" ]]; then
   echo "ENV_ROOT must explicitly name the external runtime environment directory." >&2
   exit 64
 fi
-portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
-ENV_ROOT="$(portfolio_ops_resolve_external_env_root "$PROJECT_ROOT" "$ENV_ROOT")"
-PLATFORM_ENV_FILE="$ENV_ROOT/platform.env"
+investment_studio_reject_repository_env_files "$PROJECT_ROOT"
+ENV_ROOT="$(investment_studio_resolve_external_env_root "$PROJECT_ROOT" "$ENV_ROOT")"
+HOME_ENV_FILE="$ENV_ROOT/home.env"
+DATA_ENV_FILE="$ENV_ROOT/data.env"
 WATCHLIST_ENV_FILE="$ENV_ROOT/watchlist.env"
 PORTFOLIO_ENV_FILE="$ENV_ROOT/portfolio.env"
-portfolio_ops_validate_env_file \
-  "$PLATFORM_ENV_FILE" \
-  PORTFOLIO_OPS_PLATFORM_ \
-  PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
-portfolio_ops_validate_env_file "$WATCHLIST_ENV_FILE" PORTFOLIO_OPS_WATCHLIST_
-portfolio_ops_validate_env_file "$PORTFOLIO_ENV_FILE" PORTFOLIO_OPS_PORTFOLIO_
+investment_studio_validate_env_file \
+  "$DATA_ENV_FILE" \
+  INVESTMENT_STUDIO_DATA_ \
+  INVESTMENT_STUDIO_INSTRUMENT_DATA_
+investment_studio_validate_env_file "$HOME_ENV_FILE" INVESTMENT_STUDIO_HOME_
+investment_studio_validate_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
+investment_studio_validate_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
 
 validate_database_contract() {
   unset \
-    PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
-    PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL \
-    PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA \
-    PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA \
-    PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
-    PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL \
-    PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
-    PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL \
-    PORTFOLIO_OPS_WATCHLIST_DATABASE_URL \
-    PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL
-  portfolio_ops_load_env_file \
-    "$PLATFORM_ENV_FILE" \
-    PORTFOLIO_OPS_PLATFORM_ \
-    PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
-  portfolio_ops_load_env_file "$WATCHLIST_ENV_FILE" PORTFOLIO_OPS_WATCHLIST_
-  portfolio_ops_load_env_file "$PORTFOLIO_ENV_FILE" PORTFOLIO_OPS_PORTFOLIO_
+    INVESTMENT_STUDIO_DATA_DATABASE_URL \
+    INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL \
+    INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA \
+    INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA \
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL \
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL \
+    INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
+    INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL \
+    INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL \
+    INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL
+  investment_studio_load_env_file \
+    "$DATA_ENV_FILE" \
+    INVESTMENT_STUDIO_DATA_ \
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_
+  investment_studio_load_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
+  investment_studio_load_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
 
   local required_variable required_value
   for required_variable in \
-    PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
-    PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
-    PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
-    PORTFOLIO_OPS_WATCHLIST_DATABASE_URL; do
+    INVESTMENT_STUDIO_DATA_DATABASE_URL \
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL \
+    INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
+    INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL; do
     required_value="${!required_variable-}"
     if [[ -z "$required_value" ]]; then
       echo "External runtime environment is missing $required_variable." >&2
@@ -122,14 +124,14 @@ validate_database_contract() {
     fi
   done
 
-  if [[ -n "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" \
-    && "$PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA" != "instrument_registry" ]]; then
-    echo "PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA must be instrument_registry." >&2
+  if [[ -n "${INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA:-}" \
+    && "$INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA" != "instrument_data" ]]; then
+    echo "INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA must be instrument_data." >&2
     return 1
   fi
-  if [[ -n "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" \
-    && "$PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA" != "platform" ]]; then
-    echo "PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA must be platform." >&2
+  if [[ -n "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" \
+    && "$INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA" != "data_ingestion" ]]; then
+    echo "INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA must be data_ingestion." >&2
     return 1
   fi
 
@@ -141,16 +143,16 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 REQUIRED_URLS = (
-    "PORTFOLIO_OPS_PLATFORM_DATABASE_URL",
-    "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL",
-    "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL",
-    "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL",
+    "INVESTMENT_STUDIO_DATA_DATABASE_URL",
+    "INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL",
+    "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL",
+    "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL",
 )
 OPTIONAL_URLS = (
-    "PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL",
-    "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL",
-    "PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL",
-    "PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL",
+    "INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL",
+    "INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL",
+    "INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL",
+    "INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL",
 )
 
 
@@ -202,11 +204,11 @@ PY
 }
 
 validate_database_contract
-DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
+DATABASE_URL="$INVESTMENT_STUDIO_DATA_DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
 
-INSTALL_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-systemd-install.XXXXXX")"
+INSTALL_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-systemd-install.XXXXXX")"
 chmod 700 "$INSTALL_WORK_DIR"
 UNIT_OUTPUT_DIR="$INSTALL_WORK_DIR/staged-units"
 UNIT_BACKUP_DIR="$INSTALL_WORK_DIR/previous-units"
@@ -241,17 +243,16 @@ write_api_service() {
   local backend_root="$PROJECT_ROOT/$backend_rel"
   local env_file="$ENV_ROOT/$app.env"
   local service_file="$UNIT_OUTPUT_DIR/$UNIT_PREFIX-$app-api.service"
-  local pythonpath_value="$backend_root:$PROJECT_ROOT/packages/instrument-core/python"
+  local pythonpath_value="$backend_root:$PROJECT_ROOT/shared-data/instruments/python"
   local escaped_env_file schema_environment_lines="" exec_start_prefix=""
   escaped_env_file="$(printf '%q' "$env_file")"
-  if [[ "$app" == "platform" ]]; then
-    schema_environment_lines=$'Environment=PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry\nEnvironment=PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform'
-    exec_start_prefix='/usr/bin/env PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform '
+  if [[ "$app" == "home" ]]; then
+    pythonpath_value="$backend_root"
   fi
 
   cat > "$service_file" <<EOF
 [Unit]
-Description=Portfolio Operations $app API
+Description=Investment Studio $app API
 After=network-online.target
 Wants=network-online.target
 
@@ -290,7 +291,7 @@ write_web_service() {
 
   cat > "$service_file" <<EOF
 [Unit]
-Description=Portfolio Operations $app Frontend
+Description=Investment Studio $app Frontend
 After=network-online.target $UNIT_PREFIX-$app-api.service
 Wants=network-online.target
 
@@ -447,7 +448,7 @@ recover_failed_install() {
       recovery_failed=true
     fi
     if [[ "$database_mutation_started" == "true" && "$backup_created" == "true" ]]; then
-      if [[ "$recovery_failed" == "false" ]] && ! portfolio_ops_restore_project_schema_backup \
+      if [[ "$recovery_failed" == "false" ]] && ! investment_studio_restore_project_schema_backup \
         "$DATABASE_URL" "$backup_path" "$manifest_path"; then
         recovery_failed=true
       fi
@@ -475,10 +476,10 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-write_api_service "platform" "apps/platform/backend" "platform_app.main:app" "$PLATFORM_API_PORT"
+write_api_service "home" "home/backend" "home_api.main:app" "$HOME_API_PORT"
 write_api_service "watchlist" "apps/watchlist/backend" "watchlist_app.main:app" "$WATCHLIST_API_PORT"
 write_api_service "portfolio" "apps/portfolio/backend" "portfolio_app.main:app" "$PORTFOLIO_API_PORT"
-write_web_service "platform" "apps/platform/frontend" "$PLATFORM_WEB_PORT" "$PLATFORM_API_PORT"
+write_web_service "home" "home/frontend" "$HOME_WEB_PORT" "$HOME_API_PORT"
 write_web_service "watchlist" "apps/watchlist/frontend" "$WATCHLIST_WEB_PORT" "$WATCHLIST_API_PORT"
 write_web_service "portfolio" "apps/portfolio/frontend" "$PORTFOLIO_WEB_PORT" "$PORTFOLIO_API_PORT"
 
@@ -493,25 +494,25 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
     exit 1
   fi
   source "$BACKUP_HELPER"
-  SYSTEMD_BACKUP_ROOT="${PORTFOLIO_OPS_SYSTEMD_BACKUP_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/portfolio-operations-workbench/postgres-backups}"
-  portfolio_ops_create_project_schema_backup \
-    "$DATABASE_URL" "$SYSTEMD_BACKUP_ROOT" "portfolio-ops-pre-systemd-install"
-  backup_path="$PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH"
-  manifest_path="$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH"
+  SYSTEMD_BACKUP_ROOT="${INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio/postgres-backups}"
+  investment_studio_create_project_schema_backup \
+    "$DATABASE_URL" "$SYSTEMD_BACKUP_ROOT" "investment-studio-pre-systemd-install"
+  backup_path="$INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH"
+  manifest_path="$INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH"
   backup_created=true
   database_mutation_started=true
   echo "Applying release migrations."
   PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="$ENV_ROOT" \
     "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
   echo "Refreshing release-required FMP security catalogs."
-  PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py"
+  PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
   echo "Refreshing release-invalidated Portfolio snapshots."
-  PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+  PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py" \
       --recover-interrupted
   echo "Running the read-only live-data integrity gate."
-  PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
     "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/audit_live_data.py" --fail-on-warning
 fi
 

@@ -75,7 +75,7 @@ A 股 ETF 固定使用 Tushare；港股、美股 ETF 固定使用 FMP。新建�
 | 私募 | Overview / Performance / Risk / Terms / Exposure / Organization / Strategy / Documents / Research / Monitoring | NAV 主图与证据、频率、锁定/申赎/闸门/业绩报酬、团队与运营、研究和监控 |
 | ETF | Overview / Research / Performance / Risk / Price / Portfolio / Monitoring | 投资论点、产品/指数/实施质量、折溢价与交易框架、管理人/做市治理、交易行情、配置、持仓与监控 |
 | 股票 | Overview / Research / Performance / Risk / Price / Fundamentals / Events / Monitoring | 投资论点、商业质量、估值、管理层与治理、证伪条件、公司 profile、财务、事件与监控 |
-| 指数 | Overview / Research / Performance / Risk / Price / Methodology / Monitoring | 投资论点、指数构建与治理判断、适用的组合角色、指数档案、成分、来源合同与监控 |
+| 指数 | Overview / Research / Performance / Risk / Price / Profile / Monitoring | 投资论点、指数构建与治理判断、适用的组合角色、指数档案、来源合同与监控 |
 
 Morningstar 可作为信息密度、同类比较和研究工作流的参考，但页面不复制其 rating 语义，也不展示当前数据源无法支持的模块。
 

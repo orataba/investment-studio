@@ -2,9 +2,28 @@ from __future__ import annotations
 
 from datetime import date
 
-from portfolio_ops_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core import instrument_store as shared_store
 
 from watchlist_app.db.session import get_session_factory
+from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
+
+
+def get_shared_reference_data(instrument_id: str) -> dict[str, object] | None:
+    instrument = get_shared_instrument(instrument_id)
+    if instrument is None:
+        return None
+    canonical_id = str(instrument["instrument_id"])
+    with get_session_factory()() as session:
+        snapshot = session.get(InstrumentReferenceSnapshot, canonical_id)
+        if snapshot is not None:
+            return dict(snapshot.value_json)
+    return {
+        "instrument_id": canonical_id,
+        "instrument_type": instrument["instrument_type"],
+        "provider": "unavailable", "provider_symbol": None, "fetched_at": None,
+        "source": {}, "sections": {},
+        "section_errors": {"reference": "Reference data has not been collected by backend maintenance."},
+    }
 
 
 class SharedInstrumentRegistryError(RuntimeError):

@@ -610,8 +610,33 @@ def resolve_taxonomy_group_for_date(
         raise ValueError(f"Taxonomy node {taxonomy_node_id} is not active.")
     return (
         taxonomy_node_id,
-        str(taxonomy_node.get("node_name") or taxonomy_node_id),
+        taxonomy_node_path_label(
+            taxonomy_node_id=taxonomy_node_id,
+            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+        ),
     )
+
+
+def taxonomy_node_path_label(
+    *,
+    taxonomy_node_id: str,
+    taxonomy_nodes_by_id: dict[str, dict[str, object]],
+) -> str:
+    """Return an unambiguous Portfolio taxonomy label from its node path."""
+
+    path: list[str] = []
+    current_id = taxonomy_node_id
+    visited: set[str] = set()
+    while current_id:
+        if current_id in visited:
+            raise ValueError(f"Portfolio taxonomy contains a cycle at {current_id}.")
+        visited.add(current_id)
+        node = taxonomy_nodes_by_id.get(current_id)
+        if node is None:
+            raise ValueError(f"Taxonomy node {taxonomy_node_id} references missing parent {current_id}.")
+        path.append(str(node.get("node_name") or current_id))
+        current_id = str(node.get("parent_taxonomy_node_id") or "").strip()
+    return " / ".join(reversed(path))
 
 
 def is_taxonomy_unassigned_group(group_key: str, taxonomy_id: str) -> bool:

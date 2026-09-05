@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
@@ -19,7 +19,6 @@ import {
   getPortfolioTaxonomyCatalog,
   getPortfolioResearchRun,
   getPortfolioResearchWorkbench,
-  updatePortfolioResearchInstrumentEligibility,
   updatePortfolioResearchSettings,
   type PortfolioResearchBacktestBenchmarkComparisonResponse,
   type PortfolioResearchBacktestBenchmarkRecord,
@@ -140,18 +139,6 @@ function formatTimestamp(value: string | null | undefined) {
   return value.replace('T', ' ').replace('Z', ' UTC')
 }
 
-function researchLifecycleLabel(value: 'held' | 'observed' | 'former') {
-  return {
-    held: 'Held',
-    observed: 'Observed',
-    former: 'Former',
-  }[value]
-}
-
-function researchEligibilityLabel(value: 'eligible' | 'pm_review_required') {
-  return value === 'eligible' ? 'Eligible' : 'PM review required'
-}
-
 function resolveStatusLabel(status: string) {
   if (status === 'completed') {
     return 'Completed'
@@ -203,6 +190,17 @@ function formatBoundStatus(value: string | null | undefined) {
     return 'Violated'
   }
   return formatLabel(value)
+}
+
+function formatResearchConstraint(
+  tradeConstraint: string | null | undefined,
+  riskModelStatus: string | null | undefined,
+  boundStatus: string | null | undefined,
+) {
+  if (tradeConstraint === 'no_trade') {
+    return riskModelStatus === 'excluded' ? 'No trade · Risk excluded' : 'No trade · Risk modeled'
+  }
+  return formatBoundStatus(boundStatus)
 }
 
 function isVolatilityCapitalMode(value: PortfolioResearchCapitalMode) {
@@ -374,6 +372,119 @@ function activeCurrentDrawdown(
   return currentDrawdown
 }
 
+type ResearchSeriesSummary = {
+  periodReturn: number | null
+  annualizedVolatility: number | null
+  maxDrawdown: number | null
+  currentDrawdown: number | null
+}
+
+type ResearchActualBacktestComparison = {
+  startDate: string
+  endDate: string
+  observationCount: number
+  actualPoints: PortfolioResearchBacktestPointRecord[]
+  backtestPoints: PortfolioResearchBacktestPointRecord[]
+  actual: ResearchSeriesSummary
+  backtest: ResearchSeriesSummary
+}
+
+function summarizeComparableSeries(points: PortfolioResearchBacktestPointRecord[]): ResearchSeriesSummary {
+  const visiblePoints = points.filter(
+    (point): point is PortfolioResearchBacktestPointRecord & { value: number } => (
+      point.value != null && Number.isFinite(point.value) && point.value > 0
+    ),
+  )
+  const values = visiblePoints.map((point) => point.value)
+  if (values.length < 2) {
+    return {
+      periodReturn: null,
+      annualizedVolatility: null,
+      maxDrawdown: null,
+      currentDrawdown: null,
+    }
+  }
+
+  const dailyReturns = values.slice(1).map((value, index) => value / values[index] - 1)
+  const meanReturn = dailyReturns.reduce((total, value) => total + value, 0) / dailyReturns.length
+  const variance = dailyReturns.length > 1
+    ? dailyReturns.reduce((total, value) => total + (value - meanReturn) ** 2, 0) / (dailyReturns.length - 1)
+    : null
+  const returnTimes = visiblePoints.slice(1)
+    .map((point) => new Date(`${point.date}T00:00:00Z`).getTime())
+    .filter(Number.isFinite)
+    .filter((time, index, allTimes) => index === 0 || time !== allTimes[index - 1])
+    .sort((left, right) => left - right)
+  const elapsedDays = returnTimes.length > 1
+    ? Math.round((returnTimes[returnTimes.length - 1] - returnTimes[0]) / 86_400_000)
+    : 0
+  const gaps = returnTimes.slice(1)
+    .map((time, index) => Math.round((time - returnTimes[index]) / 86_400_000))
+    .filter((gap) => gap > 0)
+    .sort((left, right) => left - right)
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
+  const observationSpanDays = elapsedDays + medianGap
+  const periodsPerYear = returnTimes.length > 1 && observationSpanDays > 0
+    ? (returnTimes.length / observationSpanDays) * 365.25
+    : 1
+  let highWaterMark = values[0]
+  let maxDrawdown = 0
+  values.forEach((value) => {
+    highWaterMark = Math.max(highWaterMark, value)
+    maxDrawdown = Math.min(maxDrawdown, value / highWaterMark - 1)
+  })
+
+  return {
+    periodReturn: values[values.length - 1] / values[0] - 1,
+    annualizedVolatility: variance == null ? null : Math.sqrt(Math.max(variance, 0)) * Math.sqrt(periodsPerYear),
+    maxDrawdown,
+    currentDrawdown: values[values.length - 1] / highWaterMark - 1,
+  }
+}
+
+function buildActualBacktestComparison(
+  actualPoints: PortfolioResearchBacktestPointRecord[],
+  backtestPoints: PortfolioResearchBacktestPointRecord[],
+): ResearchActualBacktestComparison | null {
+  const actualByDate = new Map(
+    actualPoints
+      .filter((point) => point.value != null && Number.isFinite(point.value) && point.value > 0)
+      .map((point) => [point.date, point.value as number]),
+  )
+  const backtestByDate = new Map(
+    backtestPoints
+      .filter((point) => point.value != null && Number.isFinite(point.value) && point.value > 0)
+      .map((point) => [point.date, point.value as number]),
+  )
+  const commonDates = [...actualByDate.keys()]
+    .filter((date) => backtestByDate.has(date))
+    .sort()
+  if (commonDates.length < 2) {
+    return null
+  }
+
+  const actualBase = actualByDate.get(commonDates[0]) ?? 1
+  const backtestBase = backtestByDate.get(commonDates[0]) ?? 1
+  const normalizedActual = commonDates.map((date) => ({
+    date,
+    value: (actualByDate.get(date) ?? actualBase) / actualBase,
+  }))
+  const normalizedBacktest = commonDates.map((date) => ({
+    date,
+    value: (backtestByDate.get(date) ?? backtestBase) / backtestBase,
+  }))
+
+  return {
+    startDate: commonDates[0],
+    endDate: commonDates[commonDates.length - 1],
+    observationCount: commonDates.length,
+    actualPoints: normalizedActual,
+    backtestPoints: normalizedBacktest,
+    actual: summarizeComparableSeries(normalizedActual),
+    backtest: summarizeComparableSeries(normalizedBacktest),
+  }
+}
+
 function dateTicks(minTime: number, maxTime: number, count = 4) {
   if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
     return []
@@ -417,19 +528,28 @@ function ResearchLineChart({
   points,
   benchmarkPoints = [],
   benchmarkLabel = null,
+  actualPoints = [],
+  primaryLabel = 'Solved',
+  actualLabel = 'Actual portfolio',
+  showDrawdown = true,
 }: {
   points: PortfolioResearchBacktestPointRecord[]
   benchmarkPoints?: PortfolioResearchBacktestPointRecord[]
   benchmarkLabel?: string | null
+  actualPoints?: PortfolioResearchBacktestPointRecord[]
+  primaryLabel?: string
+  actualLabel?: string
+  showDrawdown?: boolean
 }) {
   const visiblePoints = points.filter((point) => point.value != null)
   const visibleBenchmark = benchmarkPoints.filter((point) => point.value != null)
-  const allPoints = [...visiblePoints, ...visibleBenchmark]
+  const visibleActual = actualPoints.filter((point) => point.value != null)
+  const allPoints = [...visiblePoints, ...visibleBenchmark, ...visibleActual]
   if (visiblePoints.length < 2) {
     return <div className="empty-state">No backtest series.</div>
   }
   const width = 720
-  const height = 330
+  const height = showDrawdown ? 330 : 250
   const padding = 36
   const left = 44
   const right = width - 24
@@ -451,7 +571,7 @@ function ResearchLineChart({
     left,
     right,
     top: 24,
-    bottom: 180,
+    bottom: showDrawdown ? 180 : height - padding,
   }
   const drawdowns = drawdownPoints(visiblePoints)
   const drawdownMin = Math.min(...drawdowns.map((point) => point.value ?? 0), -0.01)
@@ -471,20 +591,28 @@ function ResearchLineChart({
   return (
     <div className="research-chart">
       <div className="research-chart-legend">
-        <span><i style={{ background: CHART_COLORS[0] }} />Solved</span>
+        <span><i style={{ background: CHART_COLORS[0] }} />{primaryLabel}</span>
+        {visibleActual.length > 1 ? <span><i style={{ background: CHART_COLORS[1] }} />{actualLabel}</span> : null}
         {visibleBenchmark.length > 1 ? <span><i style={{ background: CHART_COLORS[2] }} />{benchmarkLabel ?? 'Benchmark'}</span> : null}
-        <span><i style={{ background: '#64748b' }} />Drawdown</span>
+        {showDrawdown ? <span><i style={{ background: '#64748b' }} />Drawdown</span> : null}
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Backtest curve">
         <line x1={left} x2={right} y1={args.bottom} y2={args.bottom} className="research-chart-axis" />
         <path d={buildPath(visiblePoints, args)} className="research-chart-line" style={{ stroke: CHART_COLORS[0] }} />
+        {visibleActual.length > 1 ? (
+          <path d={buildPath(visibleActual, args)} className="research-chart-line" style={{ stroke: CHART_COLORS[1] }} />
+        ) : null}
         {visibleBenchmark.length > 1 ? (
           <path d={buildPath(visibleBenchmark, args)} className="research-chart-line research-chart-line-muted" style={{ stroke: CHART_COLORS[2] }} />
         ) : null}
-        <text x={left} y={208} className="research-chart-panel-label">Drawdown</text>
-        <line x1={left} x2={right} y1={drawdownArgs.top} y2={drawdownArgs.top} className="research-chart-axis research-chart-axis-muted" />
-        <path d={buildPath(drawdowns, drawdownArgs)} className="research-chart-line research-chart-line-drawdown" />
-        {renderTimeAxis(drawdownArgs)}
+        {showDrawdown ? (
+          <>
+            <text x={left} y={208} className="research-chart-panel-label">Drawdown</text>
+            <line x1={left} x2={right} y1={drawdownArgs.top} y2={drawdownArgs.top} className="research-chart-axis research-chart-axis-muted" />
+            <path d={buildPath(drawdowns, drawdownArgs)} className="research-chart-line research-chart-line-drawdown" />
+            {renderTimeAxis(drawdownArgs)}
+          </>
+        ) : renderTimeAxis(args)}
       </svg>
     </div>
   )
@@ -773,6 +901,78 @@ function MetricTable({
   )
 }
 
+function ActualBacktestMetricTable({
+  comparison,
+}: {
+  comparison: ResearchActualBacktestComparison | null
+}) {
+  if (!comparison) {
+    return (
+      <div className="empty-state">
+        Actual performance and the backtest do not yet share two eligible observation dates.
+      </div>
+    )
+  }
+
+  const rows: Array<{
+    label: string
+    actual: number | null
+    backtest: number | null
+  }> = [
+    {
+      label: 'Period Return',
+      actual: comparison.actual.periodReturn,
+      backtest: comparison.backtest.periodReturn,
+    },
+    {
+      label: 'Annualized Volatility',
+      actual: comparison.actual.annualizedVolatility,
+      backtest: comparison.backtest.annualizedVolatility,
+    },
+    {
+      label: 'Max Drawdown',
+      actual: comparison.actual.maxDrawdown,
+      backtest: comparison.backtest.maxDrawdown,
+    },
+    {
+      label: 'Current Drawdown',
+      actual: comparison.actual.currentDrawdown,
+      backtest: comparison.backtest.currentDrawdown,
+    },
+  ]
+
+  return (
+    <table className="performance-summary-table research-metric-table research-actual-comparison-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Actual</th>
+          <th>Backtest</th>
+          <th>Actual - Backtest</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr className="research-metric-period-row">
+          <th>Common Window</th>
+          <td colSpan={3}>
+            {comparison.startDate} to {comparison.endDate} · {comparison.observationCount} observations
+          </td>
+        </tr>
+        {rows.map((row) => (
+          <tr key={row.label}>
+            <th>{row.label}</th>
+            <td>{formatMaybePercent(row.actual)}</td>
+            <td>{formatMaybePercent(row.backtest)}</td>
+            <td>{formatMaybePercent(
+              row.actual == null || row.backtest == null ? null : row.actual - row.backtest,
+            )}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 export default function ResearchPage() {
   const { portfolioId = '' } = useParams()
   const [workbench, setWorkbench] = useState<PortfolioResearchWorkbenchResponse | null>(null)
@@ -783,7 +983,6 @@ export default function ResearchPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [actionPending, setActionPending] = useState<'run' | null>(null)
-  const [eligibilityPendingId, setEligibilityPendingId] = useState<string | null>(null)
   const [frozenMenuOpen, setFrozenMenuOpen] = useState(false)
   const [boundsMenuOpen, setBoundsMenuOpen] = useState(false)
   const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
@@ -899,7 +1098,6 @@ export default function ResearchPage() {
     setRunDetailError(null)
     setWorkspaceError(null)
     setActionPending(null)
-    setEligibilityPendingId(null)
     setActionError(null)
     setNotice(null)
     setFrozenMenuOpen(false)
@@ -1503,52 +1701,11 @@ export default function ResearchPage() {
     }
   }
 
-  async function handleResearchEligibilityApproval(instrumentId: string, pmApproved: boolean) {
-    const targetPortfolioId = portfolioId
-    if (!targetPortfolioId || eligibilityPendingId) {
-      return
-    }
-    setEligibilityPendingId(instrumentId)
-    setActionError(null)
-    try {
-      const updated = await updatePortfolioResearchInstrumentEligibility(
-        targetPortfolioId,
-        instrumentId,
-        { pm_approved: pmApproved },
-      )
-      if (currentPortfolioIdRef.current !== targetPortfolioId) {
-        return
-      }
-      setWorkbench((current) => (
-        current?.portfolio_id === targetPortfolioId
-          ? {
-              ...current,
-              instrument_universe: (current.instrument_universe ?? []).map((item) => (
-                item.instrument_id === updated.instrument_id ? updated : item
-              )),
-            }
-          : current
-      ))
-      setNotice(
-        pmApproved
-          ? 'PM approval saved. Run Research again to refresh execution readiness.'
-          : 'PM approval removed. Former-instrument targets require review again.',
-      )
-    } catch (error) {
-      if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setActionError(extractErrorMessage(error))
-      }
-    } finally {
-      if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setEligibilityPendingId(null)
-      }
-    }
-  }
-
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
   const pointInTimeCoverage = backtest?.point_in_time_coverage ?? null
   const skippedRebalances = pointInTimeCoverage?.skipped_rebalances ?? []
+  const pendingRebalances = pointInTimeCoverage?.pending_rebalances ?? []
   const configurationVersionsUsed = pointInTimeCoverage?.configuration_versions_used ?? []
   const executionRecords = backtest?.execution_records ?? []
   const robustnessResults = backtest?.robustness_results ?? []
@@ -1567,6 +1724,23 @@ export default function ResearchPage() {
   const rebalanceGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
     (row) => Math.abs(row.gap ?? 0) > 0.0001 || row.execution_status === 'manual_review_required',
   )
+  const rebalanceGapByMember = new Map(
+    (latestRun?.detail?.target_weight_gaps ?? []).map((row) => [`${row.member_type}:${row.member_id}`, row]),
+  )
+  const solvedInstrumentRows = solvedGroups.flatMap((group) => group.rows)
+  const portfolioSolveEvent = latestRun?.detail?.solve_event
+    ?? [...solveEvents].reverse().find((event) => event.scope_node_id == null)
+    ?? null
+  const actualBacktestComparison = buildActualBacktestComparison(
+    workbench?.current_context.chart_points ?? [],
+    backtest?.points ?? [],
+  )
+  const planningTaxonomyName = workbench?.planning_taxonomy_options.find(
+    (option) => option.taxonomy_id === planningTaxonomyId,
+  )?.name ?? workbench?.settings.planning_taxonomy_name ?? 'No planning taxonomy'
+  const capitalModeLabel = CAPITAL_MODE_OPTIONS.find((option) => option.value === capitalMode)?.label ?? formatLabel(capitalMode)
+  const rebalanceLabel = REBALANCE_OPTIONS.find((option) => option.value === backtestRebalanceFrequency)?.label
+    ?? backtestRebalanceFrequency.toUpperCase()
   const staleRunDetail = [
     'Run Research again before using these weights for allocation or orders.',
     ...(latestRun?.reliability_reasons ?? []),
@@ -1610,14 +1784,38 @@ export default function ResearchPage() {
 
       {workbench ? (
         <>
-          <section className="panel">
-            <form
-              className="transaction-form taxonomy-form-compact research-run-form"
-              aria-busy={actionPending === 'run'}
-              onSubmit={(event) => event.preventDefault()}
-            >
-              <fieldset className="research-settings-fieldset" disabled={actionPending === 'run'}>
-                <div className="research-settings-bar">
+          <section className="panel research-command-panel">
+            <div className="research-command-bar">
+              <div className="research-command-copy">
+                <div className="panel-title">Research Configuration</div>
+                <div className="research-command-meta">
+                  <span>{planningTaxonomyName}</span>
+                  <span>{asOfMode === 'dynamic' ? `Latest · ${workbench.as_of_date}` : `Pinned · ${asOfDate || '-'}`}</span>
+                  <span>{capitalModeLabel}</span>
+                  <span>{rebalanceLabel} rebalance</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="toolbar-link button-primary research-run-button"
+                onClick={() => void handleRunResearch()}
+                disabled={actionPending === 'run' || scopeActionBlocked}
+              >
+                {actionPending === 'run' ? 'Running...' : 'Run Research'}
+              </button>
+            </div>
+            <details className="research-settings-disclosure">
+              <summary>
+                <span>Research Settings</span>
+                <span>capital, constraints, benchmark, costs and validation windows</span>
+              </summary>
+              <form
+                className="transaction-form taxonomy-form-compact research-run-form"
+                aria-busy={actionPending === 'run'}
+                onSubmit={(event) => event.preventDefault()}
+              >
+                <fieldset className="research-settings-fieldset" disabled={actionPending === 'run'}>
+                  <div className="research-settings-bar">
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
                     <span>Date Mode</span>
@@ -1729,7 +1927,9 @@ export default function ResearchPage() {
                     </label>
                   ) : null}
                   <div className="research-freeze-field" ref={frozenMenuRef}>
-                    <span>Frozen Sleeves</span>
+                    <span title="No-trade fixes the current holding; modeled securities remain in covariance and risk contribution.">
+                      No-trade Sleeves
+                    </span>
                     <button
                       type="button"
                       className="research-freeze-trigger"
@@ -1936,16 +2136,6 @@ export default function ResearchPage() {
                     />
                   </div>
                 </div>
-                <div className="research-run-action-field">
-                  <button
-                    type="button"
-                    className="toolbar-link button-primary"
-                    onClick={() => void handleRunResearch()}
-                    disabled={actionPending === 'run' || scopeActionBlocked}
-                  >
-                    {actionPending === 'run' ? 'Running...' : 'Run'}
-                  </button>
-                </div>
                 </div>
                 <div className="research-robustness-editor">
                   <div className="research-robustness-header">
@@ -1966,7 +2156,7 @@ export default function ResearchPage() {
                         <tr>
                           <th>ID</th>
                           <th>Label</th>
-                          <th>Cash %</th>
+                          <th>Cash Yield (%)</th>
                           <th>Commission</th>
                           <th>Tax</th>
                           <th>Slippage</th>
@@ -2055,66 +2245,7 @@ export default function ResearchPage() {
                 {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               </fieldset>
             </form>
-          </section>
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <div className="panel-title">Research Universe</div>
-              </div>
-              <div className="portfolio-detail-meta">
-                Lifecycle is derived from holdings and transaction history.
-              </div>
-            </div>
-            <div className="table-shell">
-              <table className="transactions-table research-universe-table">
-                <thead>
-                  <tr>
-                    <th>Instrument</th>
-                    <th>Status</th>
-                    <th>Research Eligibility</th>
-                    <th>PM Approval</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!(workbench.instrument_universe ?? []).length ? (
-                    <TableStatusRow colSpan={4} label="No instruments are available for Research." />
-                  ) : (
-                    (workbench.instrument_universe ?? []).map((instrument) => {
-                      const isPending = eligibilityPendingId === instrument.instrument_id
-                      return (
-                        <tr key={instrument.instrument_id}>
-                          <td>{instrument.instrument_ref?.instrument_name ?? instrument.instrument_id}</td>
-                          <td>{researchLifecycleLabel(instrument.research_lifecycle)}</td>
-                          <td>{researchEligibilityLabel(instrument.research_eligibility)}</td>
-                          <td>
-                            {instrument.research_lifecycle !== 'former' ? (
-                              'Not required'
-                            ) : (
-                              <button
-                                type="button"
-                                className="toolbar-link"
-                                disabled={eligibilityPendingId != null}
-                                onClick={() => void handleResearchEligibilityApproval(
-                                  instrument.instrument_id,
-                                  !instrument.research_pm_approved,
-                                )}
-                              >
-                                {isPending
-                                  ? 'Saving...'
-                                  : instrument.research_pm_approved
-                                    ? 'Revoke approval'
-                                    : 'Approve for research'}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            </details>
           </section>
 
           {!latestRun ? (
@@ -2170,119 +2301,182 @@ export default function ResearchPage() {
                     {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
                   </div>
                 </div>
+                <div className="research-result-summary" aria-label="Solved result summary">
+                  <div>
+                    <span>Current NAV</span>
+                    <strong>{formatCurrency(workbench.current_context.nav, workbench.base_currency, 0)}</strong>
+                  </div>
+                  <div>
+                    <span>Solved Volatility</span>
+                    <strong>{formatMaybePercent(portfolioSolveEvent?.estimated_risk_sleeve_volatility)}</strong>
+                  </div>
+                  <div>
+                    <span>Risk Budget Gap</span>
+                    <strong>{formatMaybePercent(portfolioSolveEvent?.max_risk_share_gap, 4)}</strong>
+                  </div>
+                  <div>
+                    <span>Rebalance Turnover</span>
+                    <strong>{formatMaybePercent(portfolioSolveEvent?.gap_turnover)}</strong>
+                  </div>
+                  <div>
+                    <span>Material Gaps</span>
+                    <strong>{rebalanceGaps.length}</strong>
+                  </div>
+                  <div>
+                    <span>Backtest Return</span>
+                    <strong>{formatMaybePercent(backtest?.metrics?.period_return)}</strong>
+                  </div>
+                </div>
                 <div className="table-shell">
                   <table className="transactions-table research-solved-table">
                     <thead>
                       <tr>
-                        <th>Instrument</th>
-                        <th>Current → Solved Weight</th>
-                        <th>Current MV → Target Capital</th>
-                        <th title="Risk-budget share within the instrument's immediate taxonomy sleeve.">
-                          Local Target Risk
-                        </th>
+                        <th>Sleeve</th>
+                        <th>Actual Weight</th>
+                        <th>Solved Weight</th>
+                        <th>Change</th>
+                        <th>Target Risk</th>
                         <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
-                          Look-through RC
+                          Solved RC
                         </th>
                         <th>Bounds</th>
-                        <th>Bound</th>
+                        <th>Constraint</th>
                       </tr>
                     </thead>
                     <tbody>
                       {!solvedGroups.length ? (
-                        <TableStatusRow colSpan={7} label="No solved result was recorded for the latest run." />
+                        <TableStatusRow colSpan={8} label="No solved result was recorded for the latest run." />
                       ) : (
                         solvedGroups.map((group) => (
-                          <Fragment key={group.top_sleeve_id ?? group.top_sleeve_label}>
-                            <tr className="research-result-group-row">
-                              <td>{group.top_sleeve_label}</td>
-                              <td className="research-transition-cell">
-                                {formatMaybePercent(group.current_weight)} → {formatMaybePercent(group.solved_weight)}
-                              </td>
-                              <td className="research-transition-cell">
-                                {formatCurrency(group.current_value_base, workbench?.base_currency, 0)} →{' '}
-                                {formatCurrency(group.target_value_base, workbench?.base_currency, 0)}
-                              </td>
-                              <td>{formatMaybePercent(group.target_risk_share)}</td>
-                              <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
-                              <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
-                              <td>{formatBoundStatus(group.bound_status)}</td>
-                            </tr>
-                            {group.rows.map((row) => (
-                              <tr key={`${row.member_type}:${row.member_id}`}>
-                                <td className="research-result-member-cell">{row.label}</td>
-                                <td className="research-transition-cell">
-                                  {formatMaybePercent(row.current_weight)} → {formatMaybePercent(row.solved_weight)}
-                                </td>
-                                <td className="research-transition-cell">
-                                  {formatCurrency(row.current_value_base, workbench?.base_currency, 0)} →{' '}
-                                  {formatCurrency(row.target_value_base, workbench?.base_currency, 0)}
-                                </td>
-                                <td>{formatMaybePercent(row.target_risk_share)}</td>
-                                <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
-                                <td>-</td>
-                                <td>-</td>
-                              </tr>
-                            ))}
-                          </Fragment>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section className="panel">
-                <div className="panel-header">
-                  <div>
-                    <div className="panel-title">Rebalance Gaps</div>
-                    <div className="panel-subtitle">
-                      Current portfolio weight versus the solved weight; review liquidity, costs, and PM flags before trading.
-                    </div>
-                  </div>
-                </div>
-                <div className="table-shell">
-                  <table className="transactions-table research-rebalance-table">
-                    <thead>
-                      <tr>
-                        <th>Instrument</th>
-                        <th>Current Weight</th>
-                        <th>Solved Weight</th>
-                        <th>Gap</th>
-                        <th>Action</th>
-                        <th>Readiness</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {!rebalanceGaps.length ? (
-                        <TableStatusRow colSpan={6} label="No material rebalance gaps were recorded for the latest run." />
-                      ) : (
-                        rebalanceGaps.map((row) => (
-                          <tr key={`${row.member_type}:${row.member_id}`} title={row.execution_note ?? undefined}>
-                            <td>{row.label}</td>
-                            <td>{formatMaybePercent(row.current_weight)}</td>
-                            <td>{formatMaybePercent(row.target_weight)}</td>
-                            <td>{formatMaybePercent(row.gap)}</td>
-                            <td>{row.action}</td>
-                            <td>
-                              {row.execution_status === 'manual_review_required' ? 'PM review' : 'Ready'}
-                            </td>
+                          <tr className="research-result-group-row" key={group.top_sleeve_id ?? group.top_sleeve_label}>
+                            <td>{group.top_sleeve_label}</td>
+                            <td>{formatMaybePercent(group.current_weight)}</td>
+                            <td>{formatMaybePercent(group.solved_weight)}</td>
+                            <td>{formatMaybePercent(
+                              group.current_weight == null || group.solved_weight == null
+                                ? null
+                                : group.solved_weight - group.current_weight,
+                            )}</td>
+                            <td>{formatMaybePercent(group.target_risk_share)}</td>
+                            <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
+                            <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
+                            <td>{formatResearchConstraint(
+                              group.trade_constraint,
+                              group.risk_model_status,
+                              group.bound_status,
+                            )}</td>
                           </tr>
                         ))
                       )}
                     </tbody>
                   </table>
                 </div>
+                <details className="research-table-disclosure">
+                  <summary>
+                    <span>Instrument-level Solution</span>
+                    <span>{solvedInstrumentRows.length} rows · weights, capital, risk and rebalance direction</span>
+                  </summary>
+                  <div className="table-shell">
+                    <table className="transactions-table research-instrument-solution-table">
+                      <thead>
+                        <tr>
+                          <th>Instrument</th>
+                          <th>Sleeve</th>
+                          <th>Actual Weight</th>
+                          <th>Solved Weight</th>
+                          <th>Change</th>
+                          <th>Current MV</th>
+                          <th>Target Capital</th>
+                          <th>Target Risk</th>
+                          <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
+                            Look-through RC
+                          </th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!solvedInstrumentRows.length ? (
+                          <TableStatusRow colSpan={10} label="No instrument-level solution was recorded." />
+                        ) : solvedInstrumentRows.map((row) => {
+                          const gap = rebalanceGapByMember.get(`${row.member_type}:${row.member_id}`)
+                          return (
+                            <tr key={`${row.member_type}:${row.member_id}`}>
+                              <td>{row.label}</td>
+                              <td>{row.top_sleeve_label}</td>
+                              <td>{formatMaybePercent(row.current_weight)}</td>
+                              <td>{formatMaybePercent(row.solved_weight)}</td>
+                              <td>{formatMaybePercent(
+                                row.current_weight == null || row.solved_weight == null
+                                  ? null
+                                  : row.solved_weight - row.current_weight,
+                              )}</td>
+                              <td>{formatCurrency(row.current_value_base, workbench.base_currency, 0)}</td>
+                              <td>{formatCurrency(row.target_value_base, workbench.base_currency, 0)}</td>
+                              <td>{formatMaybePercent(row.target_risk_share)}</td>
+                              <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
+                              <td>{gap?.action ?? '-'}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              </section>
+
+              <section className="performance-block-grid research-backtest-grid research-actual-backtest-grid">
+                <div className="portfolio-section-block research-chart-panel">
+                  <div className="panel-header panel-header-inline">
+                    <div>
+                      <div className="panel-title">Actual vs Backtest</div>
+                      <div className="panel-subtitle">Same eligible close dates, rebased to 1.00</div>
+                    </div>
+                    <div className="portfolio-detail-meta">
+                      {actualBacktestComparison
+                        ? `${actualBacktestComparison.startDate} to ${actualBacktestComparison.endDate}`
+                        : 'No common window'}
+                    </div>
+                  </div>
+                  {actualBacktestComparison ? (
+                    <ResearchLineChart
+                      points={actualBacktestComparison.backtestPoints}
+                      actualPoints={actualBacktestComparison.actualPoints}
+                      primaryLabel="Backtest"
+                      actualLabel="Actual portfolio"
+                      showDrawdown={false}
+                    />
+                  ) : <div className="empty-state">No comparable actual and backtest series.</div>}
+                  <p className="section-caption research-comparison-note">
+                    Actual uses the canonical portfolio NAV. FCN and option lifecycle effects may be present in actual NAV,
+                    while the backtest holds their capital at zero return and does not simulate coupons or option payoffs.
+                  </p>
+                </div>
+                <div className="portfolio-section-block research-metrics-panel">
+                  <div className="panel-header panel-header-inline">
+                    <div>
+                      <div className="panel-title">Comparable Metrics</div>
+                      <div className="panel-subtitle">Actual minus backtest is shown as the final column</div>
+                    </div>
+                  </div>
+                  <ActualBacktestMetricTable comparison={actualBacktestComparison} />
+                </div>
               </section>
 
               <section className="performance-block-grid research-backtest-grid">
                 <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Backtest</div></div>
+                    <div>
+                      <div className="panel-title">Historical Backtest</div>
+                      <div className="panel-subtitle">
+                        {backtest?.start_date && backtest.end_date ? `${backtest.start_date} to ${backtest.end_date}` : 'No backtest window'}
+                      </div>
+                    </div>
                   </div>
                   <ResearchLineChart
                     points={backtest?.points ?? []}
                     benchmarkPoints={displayBenchmark?.points ?? []}
                     benchmarkLabel={displayBenchmark?.label}
+                    primaryLabel="Solved policy"
                   />
                   {benchmarkComparisonLoading ? (
                     <div className="research-comparison-status">Updating benchmark...</div>
@@ -2295,7 +2489,7 @@ export default function ResearchPage() {
                 </div>
                 <div className="portfolio-section-block research-metrics-panel">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Metrics</div></div>
+                    <div><div className="panel-title">Backtest Metrics</div></div>
                   </div>
                   <MetricTable
                     run={latestRun}
@@ -2305,11 +2499,59 @@ export default function ResearchPage() {
                 </div>
               </section>
 
+              <details className="panel research-evidence-disclosure">
+                <summary>
+                  <span>Model & Backtest Evidence</span>
+                  <span>solver diagnostics, point-in-time coverage, costs, robustness, OOS and sleeve paths</span>
+                </summary>
+                <div className="research-evidence-body">
+                  <section className="portfolio-section-block">
+                    <div className="panel-header panel-header-inline">
+                      <div><div className="panel-title">Solver Diagnostics</div></div>
+                    </div>
+                    <div className="table-shell">
+                      <table className="transactions-table research-solver-diagnostics-table">
+                        <thead>
+                          <tr>
+                            <th>Scope</th>
+                            <th>Target</th>
+                            <th>Solver</th>
+                            <th>Covariance</th>
+                            <th>Observations</th>
+                            <th>Risk Gap</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {!solveEvents.length ? (
+                            <TableStatusRow colSpan={7} label="No solver diagnostics were recorded." />
+                          ) : solveEvents.map((event, index) => (
+                            <tr key={`${event.scope_node_id ?? 'root'}:${index}`} title={event.solver_message ?? undefined}>
+                              <td>{event.scope_path ?? event.scope_label}</td>
+                              <td>{formatLabel(event.target_dimension ?? event.requested_target_dimension ?? 'N/A')}</td>
+                              <td>{[event.solver_kind, event.solver_detail].filter(Boolean).map((value) => formatLabel(value ?? '')).join(' · ') || 'N/A'}</td>
+                              <td>{event.covariance_model ? formatLabel(event.covariance_model) : 'N/A'}</td>
+                              <td>{event.covariance_observations ?? 'N/A'}</td>
+                              <td>{formatMaybePercent(event.max_risk_share_gap, 4)}</td>
+                              <td>{event.execution_ready === false ? 'Review needed' : formatLabel(event.target_status ?? 'complete')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
               <section className="performance-block-grid research-validation-grid">
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Point-in-Time Coverage</div></div>
                   </div>
+                  <p className="section-caption">
+                    FCN and options are no-trade, zero-return capital outside covariance and Risk Budget. Capital changes come only from recorded lifecycle dates; coupons, payoffs, credit risk, FX risk, collateral and liquidity remain unmodeled.
+                  </p>
+                  <p className="section-caption">
+                    Historical taxonomy and targets are effective-dated. Risk settings are fixed for this run; delayed NAV publication and fund dealing restrictions are not simulated.
+                  </p>
                   <div className="table-shell">
                     <table className="transactions-table research-validation-summary-table">
                       <tbody>
@@ -2331,12 +2573,22 @@ export default function ResearchPage() {
                           <td>{pointInTimeCoverage?.decision_count ?? 'N/A'}</td>
                         </tr>
                         <tr>
+                          <th>Derivative Capital Events</th>
+                          <td>{backtest ? backtest.derivative_capital_events?.length ?? 0 : 'N/A'}</td>
+                        </tr>
+                        <tr>
                           <th>Skipped Decisions</th>
                           <td
                             title={skippedRebalanceDetail || undefined}
                             tabIndex={skippedRebalanceDetail ? 0 : undefined}
                           >
                             {pointInTimeCoverage ? skippedRebalances.length : 'N/A'}
+                          </td>
+                        </tr>
+                        <tr>
+                          <th>Pending Decisions</th>
+                          <td title={pendingRebalances.map((item) => item.reason).join('\n') || undefined}>
+                            {pointInTimeCoverage ? pendingRebalances.length : 'N/A'}
                           </td>
                         </tr>
                         <tr>
@@ -2382,13 +2634,17 @@ export default function ResearchPage() {
                           <th>Config</th>
                           <th>Buy</th>
                           <th>Sell</th>
+                          <th title="Actual frozen derivative capital weight at execution; the policy rebalance does not trade this leg.">
+                            Frozen Derivative
+                          </th>
+                          <th>Cash Target</th>
                           <th>Turnover</th>
                           <th>Cost</th>
                         </tr>
                       </thead>
                       <tbody>
                         {!executionRecords.length ? (
-                          <TableStatusRow colSpan={7} label="N/A" />
+                          <TableStatusRow colSpan={9} label="N/A" />
                         ) : executionRecords.map((record, index) => (
                           <tr key={`${record.decision_date}:${record.actual_execution_date}:${index}`}>
                             <td>{record.decision_date}</td>
@@ -2396,6 +2652,8 @@ export default function ResearchPage() {
                             <td>{record.taxonomy_configuration_version ?? 'N/A'}</td>
                             <td>{formatMaybePercent(record.risky_buy_turnover)}</td>
                             <td>{formatMaybePercent(record.risky_sell_turnover)}</td>
+                            <td>{formatMaybePercent(record.derivative_target_weight)}</td>
+                            <td>{formatMaybePercent(record.cash_target_weight)}</td>
                             <td>{formatMaybePercent(record.one_way_turnover)}</td>
                             <td>{formatMaybePercent(record.total_cost)}</td>
                           </tr>
@@ -2416,7 +2674,7 @@ export default function ResearchPage() {
                       <thead>
                         <tr>
                           <th>Scenario</th>
-                          <th>Cash</th>
+                          <th>Cash Yield (%)</th>
                           <th>Commission</th>
                           <th>Tax</th>
                           <th>Slippage</th>
@@ -2517,6 +2775,8 @@ export default function ResearchPage() {
                   />
                 </div>
               </section>
+                </div>
+              </details>
             </>
           )}
         </>

@@ -57,6 +57,23 @@ def _current_task_records(
     return records
 
 
+def _task_list_response(
+    portfolio_id: str,
+    *,
+    attention_only: bool,
+) -> InstrumentEventTaskListResponse:
+    tasks = _current_task_records(
+        portfolio_id,
+        attention_only=attention_only,
+    )
+    return InstrumentEventTaskListResponse(
+        portfolio_id=portfolio_id,
+        accounting_policy="official_unit_nav_assume_no_unrecorded_distribution",
+        attention_count=sum(1 for task in tasks if task.attention_required),
+        tasks=tasks,
+    )
+
+
 @router.get(
     "/{portfolio_id}/instrument-event-tasks",
     response_model=InstrumentEventTaskListResponse,
@@ -67,19 +84,31 @@ def list_portfolio_instrument_event_tasks(
 ) -> InstrumentEventTaskListResponse:
     _require_portfolio(portfolio_id)
     try:
-        reconcile_instrument_event_tasks(portfolio_ids=[portfolio_id])
-        tasks = _current_task_records(
+        return _task_list_response(
             portfolio_id,
             attention_only=attention_only,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
-    return InstrumentEventTaskListResponse(
-        portfolio_id=portfolio_id,
-        accounting_policy="official_unit_nav_assume_no_unrecorded_distribution",
-        attention_count=sum(1 for task in tasks if task.attention_required),
-        tasks=tasks,
-    )
+
+
+@router.post(
+    "/{portfolio_id}/instrument-event-tasks/reconcile",
+    response_model=InstrumentEventTaskListResponse,
+)
+def reconcile_portfolio_instrument_event_tasks(
+    portfolio_id: str,
+    attention_only: bool = Query(default=False),
+) -> InstrumentEventTaskListResponse:
+    _require_portfolio(portfolio_id)
+    try:
+        reconcile_instrument_event_tasks(portfolio_ids=[portfolio_id])
+        return _task_list_response(
+            portfolio_id,
+            attention_only=attention_only,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @router.post(

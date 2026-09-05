@@ -87,26 +87,18 @@ def _local_detail_view_filters() -> dict[str, list[str]]:
 def _overview_view_columns(
     instrument_type_filter: str | None = None,
 ) -> list[dict[str, object]]:
-    columns = [
-        {"field_key": "instrument_name", "display_order": 1, "width": 320},
-        {"field_key": "attr.coverage_status", "display_order": 2, "width": 110},
-        {"field_key": "return_chart_1m", "display_order": 3, "width": 140},
-        {"field_key": "latest_quote", "display_order": 4, "width": 130},
-        {"field_key": "latest_quote_date", "display_order": 5, "width": 140},
-        {"field_key": "return_1w", "display_order": 6, "width": 150},
-        {"field_key": "return_mtd", "display_order": 7, "width": 120},
-        {"field_key": "return_ytd", "display_order": 8, "width": 150},
-        {"field_key": "attr.current_drawdown", "display_order": 9, "width": 120},
+    return [
+        {"field_key": "instrument_name", "display_order": 1, "width": 280},
+        {"field_key": "instrument_type", "display_order": 2, "width": 110},
+        {"field_key": "attr.instrument_taxonomy_path", "display_order": 3, "width": 210},
+        {"field_key": "attr.research_stage", "display_order": 4, "width": 100},
+        {"field_key": "return_chart_1m", "display_order": 5, "width": 120},
+        {"field_key": "return_ytd", "display_order": 6, "width": 115},
+        {"field_key": "attr.current_drawdown", "display_order": 7, "width": 115},
+        {"field_key": "attr.risk_attention", "display_order": 8, "width": 120},
+        {"field_key": "attr.research_updated_at", "display_order": 9, "width": 150},
+        {"field_key": "latest_quote_date", "display_order": 10, "width": 120},
     ]
-    if instrument_type_filter not in {"public_fund", "private_fund"}:
-        return columns
-    for column in columns:
-        if int(column["display_order"]) >= 5:
-            column["display_order"] = int(column["display_order"]) + 1
-    columns.append(
-        {"field_key": "latest_cumulative_nav", "display_order": 5, "width": 140}
-    )
-    return sorted(columns, key=lambda column: int(column["display_order"]))
 
 
 def _classification_view_columns() -> list[dict[str, object]]:

@@ -1,0 +1,431 @@
+.research-workbench {
+  padding: 16px 20px;
+  max-width: 1660px;
+  margin: auto;
+  color: var(--text-primary, #263547);
+}
+.research-workbench h1 {
+  font-size: 23px;
+  font-weight: 600;
+  margin: 0;
+}
+.research-workbench h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+.research-workbench h3 {
+  font-size: 14px;
+  margin: 8px 0;
+}
+.research-workbench p {
+  line-height: 1.65;
+}
+.research-workbench label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #566274;
+  margin: 10px 0;
+}
+.research-workbench input,
+.research-workbench textarea,
+.research-workbench select {
+  font: inherit;
+  color: #253448;
+  border: 1px solid #d6dfe7;
+  border-radius: 3px;
+  background: #fff;
+  padding: 8px;
+  min-width: 0;
+}
+.research-workbench input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.research-workbench button {
+  cursor: pointer;
+}
+.research-workbench button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.research-workbench small,
+.research-muted {
+  color: #738091;
+  font-size: 12px;
+}
+.research-workbench summary {
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 2.2;
+}
+.research-page-heading,
+.research-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+}
+.research-page-heading {
+  margin-bottom: 18px;
+}
+.research-page-heading p {
+  font-size: 13px;
+  color: #718092;
+  margin: 6px 0 0;
+}
+.research-section {
+  padding: 18px 0;
+  border-bottom: 1px solid #dfe5eb;
+}
+.research-scope {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.research-scope a {
+  color: #245984;
+}
+.research-table-scroll {
+  overflow: auto;
+  width: 100%;
+  margin: 12px 0;
+}
+.research-workbench table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.research-workbench th {
+  font-weight: 500;
+  color: #68778a;
+  background: #f7f9fb;
+}
+.research-workbench th,
+.research-workbench td {
+  padding: 11px 12px;
+  border-bottom: 1px solid #e3e8ee;
+  text-align: right;
+}
+.research-workbench th:first-child,
+.research-workbench td:first-child {
+  text-align: left;
+}
+.research-evidence-json {
+  max-height: 300px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  background: #f7f9fb;
+  padding: 12px;
+}
+/* Risk workbench: fixed scope, compact event groups and secondary readings. */
+.risk-workbench {
+  container-type: inline-size;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.risk-workbench .research-page-heading {
+  margin-bottom: 14px;
+}
+.risk-workbench .risk-scope-label {
+  color: #465b6c;
+  margin: 0;
+}
+.risk-workbench button {
+  border: 1px solid #d4dde3;
+  border-radius: 3px;
+  background: #fff;
+  color: #375565;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.risk-workbench button:hover {
+  background: #f4f7f8;
+}
+.risk-scope-note {
+  color: #70808b;
+  font-size: 12px;
+  margin-bottom: 14px;
+  line-height: 1.65;
+}
+.risk-scope-note p {
+  margin: 4px 0;
+}
+.risk-sections {
+  border-bottom: 1px solid #dce3e8;
+  margin-bottom: 18px;
+}
+.risk-sections > div {
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+}
+.risk-workbench .risk-sections button {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 0;
+  background: none;
+  color: #73818c;
+}
+.risk-workbench .risk-sections button[aria-pressed='true'] {
+  color: #245e5b;
+  border-bottom-color: #245e5b;
+}
+.risk-sections span {
+  font-variant-numeric: tabular-nums;
+  margin-left: 7px;
+}
+.risk-instrument-group {
+  margin-bottom: 22px;
+}
+.risk-instrument-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #dce3e8;
+}
+.risk-instrument-group > header a {
+  color: #273f50;
+  font-size: 14px;
+  font-weight: 600;
+}
+.risk-instrument-group > header small {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.risk-instrument-group > header > div > small {
+  margin-left: 10px;
+  color: #a87530;
+}
+.risk-instrument-focused > header {
+  border-bottom-color: #c9ad7e;
+}
+.risk-instrument-context {
+  font-size: 12px;
+  color: #6b7b88;
+  padding-top: 10px;
+}
+.risk-case {
+  border-bottom: 1px solid #e8edf0;
+  padding: 15px 0;
+}
+.risk-case h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 9px 0;
+}
+.risk-case p {
+  font-size: 13px;
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.risk-case strong {
+  font-weight: 500;
+}
+.risk-case-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: #7a8790;
+  font-size: 11px;
+}
+.risk-case-attention .risk-case-meta:first-child > span:first-child {
+  color: #a7752d;
+}
+.risk-case-attention .risk-case-meta .risk-priority-high {
+  color: #a55140 !important;
+}
+.risk-case-meta a,
+.risk-workbench .risk-text-button {
+  font-size: 12px;
+  color: #326c68;
+  white-space: nowrap;
+}
+.risk-workbench .risk-text-button {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.risk-next-step {
+  color: #536977;
+}
+.risk-follow-up {
+  margin-top: 8px;
+}
+.risk-follow-up summary {
+  color: #73838f;
+  font-size: 12px;
+}
+.risk-follow-up > label {
+  max-width: 650px;
+}
+.risk-follow-up input[type='date'] {
+  max-width: 180px;
+}
+.risk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.risk-history {
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: #7a8891;
+}
+.risk-source {
+  color: #647685;
+}
+.risk-due {
+  color: #a5612c;
+}
+.risk-event-form {
+  padding: 16px;
+  background: #f7f9fa;
+  border: 1px solid #e0e6e9;
+  margin: 16px 0 24px;
+}
+.risk-event-form input[type='date'] {
+  max-width: 180px;
+}
+.risk-empty {
+  padding: 22px 0 30px;
+  font-size: 13px;
+  color: #536c78;
+}
+.risk-empty small {
+  display: block;
+  margin-top: 8px;
+  line-height: 1.7;
+}
+.risk-readings {
+  padding-top: 12px;
+  border-top: 1px solid #e3e9ed;
+}
+.risk-reading-asset {
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0f3;
+}
+.risk-reading-asset > summary {
+  display: list-item;
+}
+.risk-reading-asset > summary small {
+  display: block;
+  padding-left: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.risk-reading-summary {
+  display: flex;
+  gap: 10px 24px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  color: #647886;
+  font-size: 12px;
+}
+.risk-period-evidence {
+  display: block;
+}
+.risk-period-table td:first-child small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+}
+.risk-period-table .risk-period-breached td {
+  color: #a56b2b;
+}
+.risk-price-settings {
+  border-top: 1px solid #e3e9ed;
+  margin-top: 12px;
+  padding-top: 8px;
+}
+.risk-price-settings > summary {
+  color: #326c68;
+}
+.risk-price-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+}
+.risk-price-inputs input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.risk-settings-save {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0;
+}
+.risk-settings-save span {
+  font-size: 12px;
+  color: #647886;
+}
+.risk-settings-save [role='alert'] {
+  color: #a55140;
+}
+.risk-initial-method,
+.risk-history-readings {
+  margin-top: 8px;
+  color: #73838f;
+}
+.risk-initial-method summary,
+.risk-history-readings summary {
+  font-size: 12px;
+}
+.risk-coverage-note {
+  padding-top: 12px;
+  color: #7b8892;
+}
+.risk-coverage-note summary {
+  font-size: 12px;
+}
+.risk-coverage-note p {
+  font-size: 12px;
+}
+@container (max-width: 520px) {
+  .risk-sections > div {
+    gap: 14px;
+  }
+  .risk-instrument-group > header {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .risk-case-meta {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+.instrument-research-section details > summary {
+  padding: 8px 0;
+  color: #66768a;
+  font-size: 13px;
+  cursor: pointer;
+}
+.research-history-row {
+  border-bottom: 1px solid #e2e7ed;
+  padding: 12px 0;
+  white-space: pre-wrap;
+}
+.research-history-row small {
+  color: #728092;
+}
+@media (max-width: 900px) {
+  .research-workbench {
+    padding: 12px;
+  }
+}

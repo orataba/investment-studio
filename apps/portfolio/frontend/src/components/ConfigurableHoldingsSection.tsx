@@ -7,6 +7,7 @@ import {
 } from 'react'
 
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   getPortfolioTableViewStore,
@@ -34,6 +35,7 @@ type HoldingsSectionTableView = PortfolioTableViewOption & {
 }
 
 type HoldingsSectionViewStore = {
+  systemViewSignature: string
   activeViewId: string
   views: HoldingsSectionTableView[]
 }
@@ -162,9 +164,10 @@ export default function ConfigurableHoldingsSection({
         })
       : []
     const storedViewById = new Map(storedViews.map((view) => [view.id, view]))
-    const systemViews = normalizedSystemViews.map((systemView) => {
+    const storedSystemViewsAreCurrent = record.systemViewSignature === systemViewSignature
+    const resolvedSystemViews = normalizedSystemViews.map((systemView) => {
       const storedView = storedViewById.get(systemView.id)
-      return storedView
+      return storedSystemViewsAreCurrent && storedView
         ? {
             ...systemView,
             state: storedView.state,
@@ -173,13 +176,13 @@ export default function ConfigurableHoldingsSection({
         : systemView
     })
     const customViews = storedViews.filter((view) => view.id.startsWith('custom:'))
-    const views = [...systemViews, ...customViews]
+    const views = [...resolvedSystemViews, ...customViews]
     const activeViewId =
       typeof record.activeViewId === 'string' &&
       views.some((view) => view.id === record.activeViewId)
         ? record.activeViewId
         : defaultView.id
-    return { activeViewId, views }
+    return { systemViewSignature, activeViewId, views }
   }
 
   const defaultStore = useMemo(
@@ -196,7 +199,11 @@ export default function ConfigurableHoldingsSection({
   const [columnSearch, setColumnSearch] = useState('')
   const [ready, setReady] = useState(false)
   const [viewError, setViewError] = useState<string | null>(null)
+  const [loadRetryToken, setLoadRetryToken] = useState(0)
+  const [saveRetryToken, setSaveRetryToken] = useState(0)
   const persistedStoreRef = useRef<{ portfolioId: string; serialized: string } | null>(null)
+  const currentPortfolioIdRef = useRef(portfolioId)
+  currentPortfolioIdRef.current = portfolioId
   const saveQueueRef = useRef(new SerialTaskQueue())
   const columnsDialogRef = useModalDialog(columnsOpen, () => setColumnsOpen(false))
 
@@ -208,7 +215,7 @@ export default function ConfigurableHoldingsSection({
   )
   const filteredColumns = columns.filter((column) => {
     const query = columnSearch.trim().toLowerCase()
-    return !query || column.label.toLowerCase().includes(query) || column.key.toLowerCase().includes(query)
+    return !query || matchesSystemLabel(column.label, query) || column.key.toLowerCase().includes(query)
   })
 
   useEffect(() => {
@@ -233,7 +240,9 @@ export default function ConfigurableHoldingsSection({
           nextStore.views.find((view) => view.id === nextStore.activeViewId) ?? defaultView
         persistedStoreRef.current = {
           portfolioId,
-          serialized: JSON.stringify(nextStore),
+          serialized: response.store
+            ? JSON.stringify(response.store)
+            : JSON.stringify(nextStore),
         }
         setViewStore(nextStore)
         setActiveViewId(nextActiveView.id)
@@ -252,7 +261,7 @@ export default function ConfigurableHoldingsSection({
     return () => {
       cancelled = true
     }
-  }, [portfolioId, viewScope, columnSignature, systemViewSignature])
+  }, [portfolioId, viewScope, columnSignature, systemViewSignature, loadRetryToken])
 
   useEffect(() => {
     if (!ready) {
@@ -265,24 +274,24 @@ export default function ConfigurableHoldingsSection({
     ) {
       return
     }
-    persistedStoreRef.current = { portfolioId, serialized }
     saveQueueRef.current
       .enqueue(() => savePortfolioTableViewStore(portfolioId, viewScope, viewStore))
       .then(
         () => {
-          if (persistedStoreRef.current?.portfolioId === portfolioId) {
+          if (currentPortfolioIdRef.current === portfolioId) {
+            persistedStoreRef.current = { portfolioId, serialized }
             setViewError(null)
           }
         },
         (requestError: unknown) => {
-          if (persistedStoreRef.current?.portfolioId === portfolioId) {
+          if (currentPortfolioIdRef.current === portfolioId) {
             setViewError(
               requestError instanceof Error ? requestError.message : 'Failed to save table views.',
             )
           }
         },
       )
-  }, [portfolioId, ready, viewScope, viewStore])
+  }, [portfolioId, ready, saveRetryToken, viewScope, viewStore])
 
   useEffect(() => {
     onVisibleColumnsChange?.(sectionKey, normalizedVisibleColumnKeys)
@@ -393,9 +402,16 @@ export default function ConfigurableHoldingsSection({
               onDelete={handleDeleteView}
             />
           ) : (
-            <span className="portfolio-table-view-status" title={viewError ?? undefined}>
-              {viewError ? 'Views unavailable' : 'Loading views'}
-            </span>
+            <div className="portfolio-table-view-recovery">
+              <span className="portfolio-table-view-status" title={viewError ?? undefined}>
+                {viewError ? 'Views unavailable' : 'Loading views'}
+              </span>
+              {viewError ? (
+                <button type="button" onClick={() => setLoadRetryToken((value) => value + 1)}>
+                  Retry
+                </button>
+              ) : null}
+            </div>
           )}
           <button
             type="button"
@@ -410,9 +426,14 @@ export default function ConfigurableHoldingsSection({
             Columns
           </button>
           {ready && viewError ? (
-            <span className="portfolio-table-view-status" role="status" title={viewError}>
-              View save failed
-            </span>
+            <div className="portfolio-table-view-recovery">
+              <span className="portfolio-table-view-status" role="status" title={viewError}>
+                View save failed
+              </span>
+              <button type="button" onClick={() => setSaveRetryToken((value) => value + 1)}>
+                Retry save
+              </button>
+            </div>
           ) : null}
         </div>
       </div>

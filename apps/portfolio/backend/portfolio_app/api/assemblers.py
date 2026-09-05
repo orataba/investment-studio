@@ -22,7 +22,7 @@ from portfolio_app.services.option_actions import resolve_option_action
 def resolve_transaction_flow_scope(transaction_type: str) -> str:
     if transaction_type in {"deposit", "withdrawal"}:
         return "external_cash_flow"
-    if transaction_type == "opening_balance":
+    if transaction_type in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
         return "bootstrap"
     return "internal_portfolio"
 
@@ -57,9 +57,9 @@ def resolve_transaction_net_cash_effect(
         return -(gross_amount + fees + taxes)
     if option_action in {"sell_to_close", "sell_to_open"}:
         return gross_amount - fees - taxes
-    if transaction_type == "buy":
+    if transaction_type in {"buy", "buy_to_cover"}:
         return -(gross_amount + fees + taxes)
-    if transaction_type == "sell":
+    if transaction_type in {"sell", "short_sell"}:
         return gross_amount - fees - taxes
     if transaction_type == "maturity_redemption":
         return gross_amount - fees - taxes
@@ -68,6 +68,8 @@ def resolve_transaction_net_cash_effect(
     if transaction_type == "interest":
         return gross_amount
     if transaction_type == "dividend_reinvestment":
+        return 0.0
+    if transaction_type in {"option_opening_balance", "short_opening_balance"}:
         return 0.0
     if transaction_type == "lifecycle_event":
         if record.get("lifecycle_event_type") == "option_writer_cash_settlement":
@@ -194,6 +196,11 @@ def serialize_transaction(
         source_system=(
             str(record.get("source_system")) if record.get("source_system") else None
         ),
+        asset_deliveries=[
+            {key: value for key, value in leg.items() if key != "instrument_ref"}
+            for leg in record.get("asset_deliveries") or []
+        ],
+        lot_selections=record.get("lot_selections") or [],
         external_reference=(
             str(record.get("external_reference"))
             if record.get("external_reference")
@@ -242,5 +249,5 @@ def summarize_transactions(records: list[dict[str, object]]) -> TransactionListS
             1 for item in records if resolve_transaction_asset_domain(item) == "cash"
         ),
         external_cash_flows=sum(1 for item in records if item.get("transaction_type") in {"deposit", "withdrawal"}),
-        opening_balance_records=sum(1 for item in records if item.get("transaction_type") == "opening_balance"),
+        opening_balance_records=sum(1 for item in records if item.get("transaction_type") in {"opening_balance", "option_opening_balance"}),
     )

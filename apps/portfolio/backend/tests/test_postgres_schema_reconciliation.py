@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
@@ -19,7 +20,6 @@ pytestmark = pytest.mark.postgresql_integration
 
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
-CURRENT_HEAD_REVISION = "20260902_0057"
 LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
 CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
 
@@ -37,21 +37,21 @@ def _portfolio_config(database_url: str) -> Config:
     return config
 
 
-def _run_registry_upgrade() -> None:
-    root = WORKSPACE_ROOT / "infra" / "instrument_registry"
+def _run_registry_upgrade(revision: str = "20260902_0029") -> None:
+    root = WORKSPACE_ROOT / "shared-data" / "instruments"
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
 
 
 @pytest.fixture
 def postgres_reconciliation_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> str:
-    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL")
+    base_database_url = os.getenv("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
     if not base_database_url:
-        pytest.skip("PORTFOLIO_OPS_TEST_POSTGRES_URL is not explicitly configured.")
-    database_name = f"portfolio_ops_reconcile_{uuid4().hex[:8]}"
+        pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured.")
+    database_name = f"investment_studio_reconcile_{uuid4().hex[:8]}"
     database_url = make_url(base_database_url).set(database=database_name).render_as_string(
         hide_password=False
     )
@@ -68,11 +68,11 @@ def postgres_reconciliation_database(
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA", "instrument_data")
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
 
     from portfolio_app.core import settings as settings_module
     from portfolio_app.db import session as session_module
@@ -423,6 +423,7 @@ def test_postgres_screenshot_evidence_cascades_with_portfolio_deletion(
 ) -> None:
     database_url = postgres_reconciliation_database
     command.upgrade(_portfolio_config(database_url), "head")
+    _run_registry_upgrade("head")
 
     from portfolio_app.services.portfolio_store import create_portfolio, delete_portfolio
     from portfolio_app.services.transaction_captures import (
@@ -686,7 +687,7 @@ def test_postgres_holding_kind_identity_rebuilds_read_model_and_reconciles_head(
     with engine.connect() as connection:
         assert connection.scalar(
             sa.text("SELECT version_num FROM portfolio.alembic_version")
-        ) == CURRENT_HEAD_REVISION
+        ) == ScriptDirectory.from_config(config).get_current_head()
         assert connection.scalar(
             sa.text(
                 "SELECT inception_date FROM portfolio.portfolio_record "

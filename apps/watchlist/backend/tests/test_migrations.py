@@ -51,8 +51,8 @@ def test_watchlist_migration_snapshots_do_not_import_runtime_modules() -> None:
 
 def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-migrations.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -135,8 +135,8 @@ def test_investment_research_migration_preserves_profile_rating_and_notes(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'research-migration.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -245,8 +245,8 @@ def test_cross_market_taxonomy_migration_rewrites_assignments_and_read_models(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'cross-market-taxonomy.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -431,8 +431,8 @@ def test_name_grouping_migration_updates_registry_and_saved_views(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'name-grouping.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -480,8 +480,8 @@ def test_multi_asset_watchlist_semantics_migration_cleans_saved_fund_fields(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'multi-asset-watchlist.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -774,8 +774,8 @@ def test_watchlist_view_contract_cleanup_rewrites_legacy_fields(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-view-contract.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -939,8 +939,8 @@ def test_holding_revision_migration_rejects_duplicate_input_hashes(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'duplicate-holdings.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 
@@ -1000,8 +1000,8 @@ def test_primary_display_field_migration_reconciles_upgraded_seed_data(
     monkeypatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'primary-display-field.db'}"
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
 
     from watchlist_app.core.settings import get_settings
 

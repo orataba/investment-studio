@@ -32,13 +32,11 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTransactionCaptureBatches: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
   importPortfolioTransactionFile: vi.fn(),
-  materializePlatformSecurity: vi.fn(),
   portfolioTransactionDownloadUrl: vi.fn((_portfolioId: string, format: string) => `/transactions.${format}`),
   portfolioTransactionCaptureImageUrl: vi.fn((_portfolioId: string, captureId: string) => `/captures/${captureId}/image`),
   portfolioTransactionTemplateUrl: vi.fn((_portfolioId: string, format: string) => `/transactions/${format}-template`),
   previewPortfolioTransactionFile: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
-  searchPlatformSecurityCatalog: vi.fn(),
   startPortfolioTransactionCaptureAnalysis: vi.fn(),
   uploadPortfolioTransactionCapture: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
@@ -196,26 +194,6 @@ const fundInstrument = {
   coverage_state: 'complete' as const,
 }
 
-const fmpEquityCandidate = {
-  instrument_id: 'fmp:AAPL',
-  instrument_name: 'Apple Inc.',
-  instrument_type: 'equity' as const,
-  currency: 'USD',
-  exchange_code: 'XNAS',
-  identifiers: [
-    {
-      identifier_type: 'exchange_ticker' as const,
-      identifier_value: 'AAPL',
-      is_primary: true,
-    },
-  ],
-  broker_identifiers: [],
-  catalog_provider: 'fmp' as const,
-  catalog_symbol: 'AAPL',
-  source: 'security_catalog' as const,
-  existing_instrument_id: null,
-}
-
 const materializedEquityInstrument = {
   ...instrumentFixture({
     instrument_id: 'equity-aapl',
@@ -233,26 +211,6 @@ const materializedEquityInstrument = {
   }),
   latest_market_data: [],
   coverage_state: 'complete' as const,
-}
-
-const fmpEtfCandidate = {
-  instrument_id: 'fmp:etf:MAGS',
-  instrument_name: 'Roundhill Magnificent Seven ETF',
-  instrument_type: 'etf' as const,
-  currency: 'USD',
-  exchange_code: null,
-  identifiers: [
-    {
-      identifier_type: 'exchange_ticker' as const,
-      identifier_value: 'MAGS',
-      is_primary: true,
-    },
-  ],
-  broker_identifiers: [],
-  catalog_provider: 'fmp' as const,
-  catalog_symbol: 'MAGS',
-  source: 'security_catalog' as const,
-  existing_instrument_id: null,
 }
 
 const materializedEtfInstrument = {
@@ -421,8 +379,6 @@ describe('Transactions rendered page contract', () => {
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
     apiMocks.getPortfolioOptionDeliveryLinks.mockResolvedValue({ portfolio_id: '3', links: [] })
     apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [] })
-    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({ results: [], catalogErrors: {} })
-    apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEquityInstrument)
     apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
       portfolio_id: '3',
       instrument_id: '',
@@ -460,6 +416,7 @@ describe('Transactions rendered page contract', () => {
     )
     apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({
       portfolio_id: '3',
+      base_currency: 'USD',
       portfolio_inception_date: '2026-01-02',
       summary: {
         total_transactions: 1,
@@ -483,6 +440,8 @@ describe('Transactions rendered page contract', () => {
       delete_scope_row_versions: { 'txn-1': 3 },
       transactions: [selectedTransaction],
       selected_transaction: selectedTransaction,
+      accounting_impact: null,
+      cash_fx_impacts: [],
       ledger_summary: {
         posting_count: 1,
         cash_posting_count: 1,
@@ -556,6 +515,42 @@ describe('Transactions rendered page contract', () => {
     expect(screen.getByRole('menuitem', { name: 'CSV' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Excel' })).toBeInTheDocument()
     expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.accept).toContain('.xlsx')
+  })
+
+  it('shows realized cash FX separately from position P&L for a foreign-cash release', async () => {
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({
+      ...workspace,
+      base_currency: 'CNY',
+      cash_fx_impacts: [
+        {
+          transaction_id: 'txn-1',
+          posting_role: 'security_settlement_cash',
+          account_id: cashAccount.account_id,
+          currency: 'USD',
+          recognition_date: '2026-07-15',
+          recognition_fx_rate_to_base: 7.5,
+          local_exposure_released: 251,
+          historical_cost_basis_base: 1757,
+          fair_value_base: 1882.5,
+          realized_cash_fx_pnl_base: 125.5,
+          fx_coverage_status: 'complete',
+        },
+      ],
+    })
+
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions?transaction_id=txn-1',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const inspector = await screen.findByRole('complementary', {
+      name: 'Selected transaction details',
+    })
+    expect(within(inspector).getByText('Realized cash FX · CNY')).toBeInTheDocument()
+    expect(within(inspector).getByText('+CN¥125.50')).toBeInTheDocument()
+    expect(within(inspector).getByText(/\$251.00 released/)).toBeInTheDocument()
   })
 
   it('groups multiple screenshots for one agent analysis without creating a transaction fact', async () => {
@@ -1298,6 +1293,7 @@ describe('Transactions rendered page contract', () => {
       created_count: 1,
       transactions: [selectedTransaction],
     })
+    apiMocks.importPortfolioTransactionFile.mockRejectedValueOnce(new Error('Response lost after import'))
     const file = new File(['xlsx-bytes'], 'clean.xlsx', {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
@@ -1319,6 +1315,10 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
 
     await user.click(confirm)
+    await within(dialog).findByText('Response lost after import')
+    await user.click(confirm)
+    await waitFor(() => expect(apiMocks.importPortfolioTransactionFile).toHaveBeenCalledTimes(2))
+    expect(apiMocks.importPortfolioTransactionFile.mock.calls[0][3]).toBe(apiMocks.importPortfolioTransactionFile.mock.calls[1][3])
     await waitFor(() =>
       expect(apiMocks.importPortfolioTransactionFile).toHaveBeenCalledWith(
         '3',
@@ -1417,7 +1417,7 @@ describe('Transactions rendered page contract', () => {
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     fireEvent.change(securitySearch, { target: { value: 'FUND1' } })
-    expect(await within(dialog).findByText('No matching security.')).toBeInTheDocument()
+    expect(await within(dialog).findByText('No registered asset matches. Add new assets through backend maintenance.')).toBeInTheDocument()
 
     fireEvent.change(securitySearch, { target: { value: 'GETF' } })
     expect(
@@ -1438,90 +1438,38 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByRole('textbox', { name: 'Note' })).toBeInTheDocument()
   })
 
-  it('searches the local FMP catalog and materializes a stock before selection', async () => {
-    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({
-      results: [fmpEquityCandidate],
-      catalogErrors: {},
-    })
-    apiMocks.getPortfolioInstruments
-      .mockResolvedValueOnce({
-        portfolio_id: '3',
-        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument],
-      })
-      .mockResolvedValueOnce({
-        portfolio_id: '3',
-        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument, materializedEquityInstrument],
-      })
-
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <TransactionsPage />,
-      '/portfolios/3/transactions',
-      '/portfolios/:portfolioId/transactions',
-    )
-
-    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
-    await user.type(securitySearch, 'AAPL')
-    await user.click(
-      await within(dialog).findByRole(
-        'button',
-        { name: /AAPL.*Apple Inc\..*USD/ },
-        { timeout: 3_000 },
-      ),
-    )
-
-    await waitFor(() =>
-      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('equity', 'fmp', 'AAPL'),
-    )
-    expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
+  it('does not steal focus after the user starts searching in a new ticket', async () => {
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    const recordButton = await screen.findByRole('button', { name: 'Record Transaction' })
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(recordButton)
+      const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+      const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+      act(() => search.focus())
+      fireEvent.change(search, { target: { value: 'GETF' } })
+      act(() => vi.runOnlyPendingTimers())
+      expect(search).toHaveFocus()
+      expect(search).toHaveValue('GETF')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('searches and materializes an ETF through the same transaction flow', async () => {
-    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({
-      results: [fmpEtfCandidate],
-      catalogErrors: {},
+  it.each([
+    ['AAPL', materializedEquityInstrument],
+    ['MAGS', materializedEtfInstrument],
+  ])('selects an already registered %s without data maintenance', async (symbol, instrument) => {
+    apiMocks.getPortfolioInstruments.mockResolvedValue({
+      portfolio_id: '3', instruments: [etfInstrument, fundInstrument, instrument],
     })
-    apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEtfInstrument)
-    apiMocks.getPortfolioInstruments
-      .mockResolvedValueOnce({
-        portfolio_id: '3',
-        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument],
-      })
-      .mockResolvedValueOnce({
-        portfolio_id: '3',
-        instruments: [
-          etfInstrument,
-          alternateEtfInstrument,
-          fundInstrument,
-          materializedEtfInstrument,
-        ],
-      })
-
     const user = userEvent.setup()
-    renderPortfolioPage(
-      <TransactionsPage />,
-      '/portfolios/3/transactions',
-      '/portfolios/:portfolioId/transactions',
-    )
-
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
     await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
-    await user.type(securitySearch, 'MAGS')
-    await user.click(
-      await within(dialog).findByRole(
-        'button',
-        { name: /MAGS.*Roundhill Magnificent Seven ETF.*USD/ },
-        { timeout: 3_000 },
-      ),
-    )
-
-    await waitFor(() =>
-      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('etf', 'fmp', 'MAGS'),
-    )
-    expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
+    await user.type(within(dialog).getByRole('searchbox', { name: 'Security' }), symbol)
+    await user.click(await within(dialog).findByRole('button', { name: new RegExp(symbol + '.*USD') }))
+    expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(1)
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {
@@ -1604,7 +1552,51 @@ describe('Transactions rendered page contract', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('records option exercise and stock delivery through the atomic outcome command', async () => {
+  it('records an existing written option at inception without a cash settlement leg', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [optionAccount, securitiesAccount, cashAccount] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [optionContract] })
+    apiMocks.createPortfolioTransaction.mockResolvedValue({ ...selectedTransaction, transaction_id: 'opening-written', transaction_type: 'option_opening_balance' })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Option Contract' }), optionContract.derivative_contract_id)
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'opening_written')
+    expect(within(dialog).getByLabelText('Trade Date')).toHaveValue('2026-01-02')
+    expect(within(dialog).getByLabelText('Trade Date')).toBeDisabled()
+    expect(within(dialog).queryByRole('combobox', { name: 'Settlement Cash Account' })).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Acquisition Date'), { target: { value: '2025-12-15' } })
+    await user.type(within(dialog).getByRole('spinbutton', { name: /^Contracts/ }), '2')
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Opening Premium Liability' }), '1000')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith('3', expect.objectContaining({
+      transaction_type: 'option_opening_balance', trade_date: '2026-01-02', settlement_date: '2026-01-02',
+      acquisition_date: '2025-12-15', derivative_contract_id: optionContract.derivative_contract_id,
+      quantity: 2, gross_amount: 1000, settlement_cash_account_id: null,
+    }), expect.any(String)))
+  })
+
+  it('limits known cash-settled contracts to compatible outcomes', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [optionAccount, securitiesAccount, cashAccount] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [
+      { ...optionContract, terms: { ...optionContract.terms, settlement_type: 'cash', exercise_style: 'european' } },
+    ] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    expect(within(dialog).getByRole('combobox', { name: 'Contract Settlement' })).toHaveValue('')
+    expect(within(dialog).getByRole('combobox', { name: 'Exercise Style' })).toHaveValue('')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Option Contract' }), optionContract.derivative_contract_id)
+    const actions = within(dialog).getByRole('combobox', { name: 'Action' })
+    expect(within(actions).queryByRole('option', { name: 'Exercise Long Call' })).not.toBeInTheDocument()
+    expect(within(actions).queryByRole('option', { name: 'Assign Written Call' })).not.toBeInTheDocument()
+    expect(within(actions).getByRole('option', { name: 'Cash-Settle Long Call' })).toBeInTheDocument()
+  })
+
+  it.each([false, true])('records an atomic option delivery with confirmed stock short = %s', async (allowShort) => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',
       accounts: [optionAccount, securitiesAccount, cashAccount],
@@ -1670,7 +1662,8 @@ describe('Transactions rendered page contract', () => {
     const action = within(dialog).getByRole('combobox', { name: 'Action' })
     expect(within(action).getByRole('option', { name: 'Exercise Long Call' })).toBeInTheDocument()
     expect(within(action).getByRole('option', { name: 'Assign Written Call' })).toBeInTheDocument()
-    await user.selectOptions(action, 'exercise_long')
+    await user.selectOptions(action, allowShort ? 'assign_written' : 'exercise_long')
+    if (allowShort) await user.click(within(dialog).getByRole('checkbox', { name: 'Broker confirmed a short stock position on delivery' }))
 
     expect(within(dialog).getByRole('combobox', { name: 'Security Account' })).toHaveValue(
       securitiesAccount.account_id,
@@ -1686,14 +1679,15 @@ describe('Transactions rendered page contract', () => {
     fireEvent.change(within(dialog).getByLabelText('Settlement Date'), {
       target: { value: '2026-09-17' },
     })
-    await user.click(within(dialog).getByRole('button', { name: 'Record Exercise' }))
+    await user.click(within(dialog).getByRole('button', { name: allowShort ? 'Record Assignment' : 'Record Exercise' }))
 
     await waitFor(() =>
       expect(apiMocks.createPortfolioOptionOutcome).toHaveBeenCalledWith(
         '3',
         expect.objectContaining({
           derivative_contract_id: optionContract.derivative_contract_id,
-          side: 'long',
+          side: allowShort ? 'written' : 'long',
+          ...(allowShort ? { allow_stock_short: true } : {}),
           outcome: 'physical',
           quantity: 1,
           event_date: '2026-09-15',
@@ -1705,6 +1699,113 @@ describe('Transactions rendered page contract', () => {
       ),
     )
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('retries the same unresolved cash submission with the same request identity', async () => {
+    apiMocks.createPortfolioTransaction.mockRejectedValue(new Error('Simulated response lost'))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Cash & Operations/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'deposit')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Amount' }), { target: { value: '1000' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await within(dialog).findByText('Simulated response lost')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledTimes(2))
+    const [first, second] = apiMocks.createPortfolioTransaction.mock.calls
+    expect(first[1]).toEqual(second[1])
+    expect(second[2]).toBe(first[2])
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Amount' }), { target: { value: '2000' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledTimes(3))
+    expect(apiMocks.createPortfolioTransaction.mock.calls[2][2]).not.toBe(first[2])
+  })
+
+  it('preserves selected lots and fee category entered for physical delivery', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [{ ...optionAccount, cost_basis_method: 'fifo' }, securitiesAccount, cashAccount] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [optionContract] })
+    apiMocks.createPortfolioOptionOutcome.mockRejectedValue(new Error('Stop after request inspection'))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^Option/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Option Contract' }), optionContract.derivative_contract_id)
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'exercise_long')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Contracts' }), { target: { value: '1' } })
+    fireEvent.change(within(dialog).getByLabelText('Exercise / Assignment Date'), { target: { value: '2026-09-15' } })
+    fireEvent.change(within(dialog).getByLabelText('Trade Time (optional)'), { target: { value: '16:00' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Fee' }), { target: { value: '3' } })
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Fee category' }), 'transaction_cost')
+    await user.click(within(dialog).getByText('Additional details'))
+    await user.click(within(dialog).getByRole('button', { name: '添加指定批次' }))
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Lot 1 opening transaction' }), { target: { value: 'txn-later-lot' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: '处置数量' }), { target: { value: '1' } })
+    await user.click(within(dialog).getByRole('button', { name: 'Record Exercise' }))
+    await waitFor(() => expect(apiMocks.createPortfolioOptionOutcome).toHaveBeenCalledTimes(1))
+    const payload = apiMocks.createPortfolioOptionOutcome.mock.calls[0][1]
+    expect(payload.trade_time).toBe('16:00')
+    expect({ lot_selections: payload.lot_selections, fee_category: payload.fee_category }).toEqual({
+      lot_selections: [{ opening_transaction_id: 'txn-later-lot', quantity: '1' }], fee_category: 'transaction_cost',
+    })
+  })
+
+  it.each([false, true])('exposes missing delivery fields in an AI physical outcome (already physical: %s)', async (initiallyPhysical) => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [optionAccount, securitiesAccount, cashAccount] })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({ portfolio_id: '3', derivative_contracts: [optionContract] })
+    const batch = screenshotBatchFixture({
+      batchId: 'audit-option-review', records: [{
+        external_reference: 'audit-option-review#1', asset_type: 'option', transaction_action: initiallyPhysical ? 'physical_long' : 'cash_settle_long',
+        trade_date: '2026-09-15', account_id: optionAccount.account_id, settlement_cash_account_id: cashAccount.account_id,
+        derivative_contract_id: optionContract.derivative_contract_id, quantity: '1', gross_amount: '300', currency: 'USD',
+      }], candidates: [],
+    })
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [batch] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
+    const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    await user.click(within(detail).getByRole('button', { name: 'Review draft' }))
+    const action = await screen.findByRole('combobox', { name: 'Record 1 action' })
+    if (!initiallyPhysical) await user.selectOptions(action, 'physical_long')
+    expect(screen.queryByText('交付证券账户')).not.toBeNull()
+  })
+
+  it('lets the reviewer correct FCN delivery accounts, instruments and selected lots before submission', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [fcnAccount, securitiesAccount, fundSecuritiesAccount, cashAccount] })
+    apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mockRejectedValue(new Error('Stop after reviewed request'))
+    const batch = screenshotBatchFixture({ batchId: 'review-fcn-delivery', candidates: [], records: [{
+      external_reference: 'review-fcn-delivery#1', asset_type: 'fcn', transaction_action: 'knock_in_close',
+      trade_date: '2026-09-01', account_id: fcnAccount.account_id, derivative_contract_id: 'fcn-review',
+      quantity: '1', gross_amount: '0', currency: 'CNY',
+      asset_deliveries: [{ account_id: fundSecuritiesAccount.account_id, instrument_id: etfInstrument.instrument_id, quantity: '100', fair_value: '7500', currency: 'USD', fx_rate_to_contract: '7' }],
+      lot_selections: [{ opening_transaction_id: 'wrong-lot', quantity: '1' }],
+    }] })
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [batch] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
+    await user.click(within(assistant).getByRole('button', { name: 'Review draft' }))
+    await user.selectOptions(await screen.findByLabelText('交付 1 接收账户'), securitiesAccount.account_id)
+    const instrument = screen.getByRole('searchbox', { name: '交付 1 证券' })
+    await user.clear(instrument)
+    await user.type(instrument, 'AETF')
+    await user.click(await screen.findByRole('button', { name: /AETF.*Alternate Equity ETF/ }))
+    fireEvent.change(screen.getByLabelText('批次 1 开仓记录'), { target: { value: 'reviewed-lot' } })
+    await user.click(screen.getByRole('button', { name: '添加交付证券' }))
+    expect(screen.getByLabelText('交付 2 接收账户')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '移除交付 2' }))
+    await user.click(within(assistant).getByRole('button', { name: 'Confirm & record' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransactionCaptureAnalysisRevision).toHaveBeenCalledTimes(1))
+    const record = apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mock.calls[0][2].transaction_import.records[0]
+    expect(record.asset_deliveries).toEqual([{ account_id: securitiesAccount.account_id, instrument_id: alternateEtfInstrument.instrument_id, quantity: '100', fair_value: '7500', currency: 'USD', fx_rate_to_contract: '7' }])
+    expect(record.lot_selections).toEqual([{ opening_transaction_id: 'reviewed-lot', quantity: '1' }])
   })
 
   it('shows a linked option outcome and stock delivery as one ledger activity', async () => {
@@ -1746,6 +1847,7 @@ describe('Transactions rendered page contract', () => {
     } satisfies PortfolioTransactionRecord
     apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({
       portfolio_id: '3',
+      base_currency: 'USD',
       portfolio_inception_date: '2026-01-02',
       summary: {
         total_transactions: 2,
@@ -1773,6 +1875,7 @@ describe('Transactions rendered page contract', () => {
       transactions: [optionExerciseTransaction, stockDeliveryTransaction],
       selected_transaction: optionExerciseTransaction,
       accounting_impact: null,
+      cash_fx_impacts: [],
       ledger_summary: { posting_count: 0, cash_posting_count: 0, position_posting_count: 0 },
       ledger_postings: [],
       related_position_lot_summary: {

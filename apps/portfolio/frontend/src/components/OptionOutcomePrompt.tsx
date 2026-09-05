@@ -32,12 +32,15 @@ export default function OptionOutcomePrompt({
   const [outcome, setOutcome] = useState<OptionOutcomeKind>('expired')
   const [quantity, setQuantity] = useState('')
   const [eventDate, setEventDate] = useState('')
+  const [tradeTime, setTradeTime] = useState('')
   const [settlementDate, setSettlementDate] = useState('')
   const [stockAccountId, setStockAccountId] = useState('')
+  const [allowStockShort, setAllowStockShort] = useState(false)
   const [cashAccountId, setCashAccountId] = useState('')
   const [cashAmount, setCashAmount] = useState('')
   const [fees, setFees] = useState('0')
   const [taxes, setTaxes] = useState('0')
+  const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const requestRef = useRef<{ signature: string; key: string } | null>(null)
@@ -50,7 +53,10 @@ export default function OptionOutcomePrompt({
     actions.find((item) => item.action_key === selectedActionKey) ??
     actions[0] ??
     null
-  const currency = selectedAction?.derivative_contract.currency ?? ''
+  const currency = (outcome === 'physical' && selectedAction?.derivative_contract.contract_type === 'option'
+    ? selectedAction.derivative_contract.terms.strike_currency : null) ?? selectedAction?.derivative_contract.currency ?? ''
+  const contractSettlement = selectedAction?.derivative_contract.contract_type === 'option'
+    ? selectedAction.derivative_contract.terms.settlement_type : null
   const cashAccounts = accounts.filter(
     (account) =>
       account.account_category === 'cash' &&
@@ -94,7 +100,7 @@ export default function OptionOutcomePrompt({
           .map((item) => `${item.action_key}:${item.open_contract_quantity}`)
           .sort()
           .join('|')
-        const storageKey = `portfolio_ops.option_actions.seen.${portfolioId}`
+        const storageKey = `investment_studio.option_actions.seen.${portfolioId}`
         let seenSignature: string | null = null
         try {
           seenSignature = window.sessionStorage.getItem(storageKey)
@@ -135,10 +141,13 @@ export default function OptionOutcomePrompt({
     )
     setOutcome('expired')
     setQuantity(String(selectedAction.open_contract_quantity))
+    setNote('')
     setEventDate(selectedAction.expiry_date)
+    setTradeTime('')
     setSettlementDate(selectedAction.expiry_date)
     setCashAccountId(cashAccount?.account_id ?? '')
     setStockAccountId(stockAccount?.account_id ?? '')
+    setAllowStockShort(false)
     setCashAmount('')
     setFees('0')
     setTaxes('0')
@@ -182,12 +191,15 @@ export default function OptionOutcomePrompt({
 
     const payload = {
       derivative_contract_id: selectedAction.derivative_contract_id,
+      note: note.trim() || null,
       side: selectedAction.side,
       outcome,
       quantity: parsedQuantity,
       event_date: resolvedEventDate,
+      trade_time: tradeTime || null,
       settlement_date: resolvedSettlementDate,
       stock_account_id: outcome === 'physical' ? stockAccountId : null,
+      ...(outcome === 'physical' && allowStockShort ? { allow_stock_short: true } : {}),
       settlement_cash_account_id:
         outcome === 'cash_settled' || outcome === 'physical' ? cashAccountId : null,
       cash_settlement_amount: outcome === 'cash_settled' ? parsedCashAmount : null,
@@ -307,7 +319,7 @@ export default function OptionOutcomePrompt({
                     className={action.action_key === selectedAction.action_key ? 'is-active' : ''}
                     onClick={() => setSelectedActionKey(action.action_key)}
                   >
-                    <strong>{action.derivative_contract.contract_name}</strong>
+                    <strong translate="no">{action.derivative_contract.contract_name}</strong>
                     <span>{action.side === 'written' ? 'Written' : 'Long'} · {formatQuantity(action.open_contract_quantity)}</span>
                   </button>
                 ))}
@@ -322,7 +334,7 @@ export default function OptionOutcomePrompt({
               }}
             >
               <div className="option-outcome-contract-card">
-                <div><span>Contract</span><strong>{selectedAction.derivative_contract.contract_name}</strong></div>
+                <div><span>Contract</span><strong translate="no">{selectedAction.derivative_contract.contract_name}</strong></div>
                 <div><span>Position</span><strong>{selectedAction.side === 'written' ? 'Written' : 'Long'} {formatQuantity(selectedAction.open_contract_quantity)}</strong></div>
                 <div><span>Underlying</span><strong>{selectedAction.underlying_instrument_id}</strong></div>
                 <div><span>Expiry</span><strong>{selectedAction.expiry_date}</strong></div>
@@ -338,7 +350,10 @@ export default function OptionOutcomePrompt({
                     selectedAction.side === 'written' ? 'Assigned' : 'Exercised',
                     'Record the option outcome and resulting stock delivery as one activity.',
                   ],
-                ] as Array<[OptionOutcomeKind, string, string]>).map(([value, label, description]) => (
+                ] as Array<[OptionOutcomeKind, string, string]>).filter(([value]) =>
+                  !(value === 'physical' && contractSettlement === 'cash') &&
+                  !(value === 'cash_settled' && contractSettlement === 'physical'),
+                ).map(([value, label, description]) => (
                   <label key={value} className={outcome === value ? 'is-active' : ''}>
                     <input
                       type="radio"
@@ -353,7 +368,7 @@ export default function OptionOutcomePrompt({
                         {value === 'physical' ? (
                           <InfoHint
                             label="Physical settlement"
-                            detail="Stock quantity and strike cash are derived from the contract; physical delivery must use accounts in the contract currency."
+                            detail="Stock quantity and strike cash are derived from the contract; physical delivery uses accounts in the strike currency."
                             tone="warning"
                           />
                         ) : null}
@@ -365,6 +380,11 @@ export default function OptionOutcomePrompt({
               </fieldset>
 
               <div className="option-outcome-fields">
+                <label>
+                  Settlement Evidence
+                  <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Broker exercise, assignment or settlement confirmation" />
+                </label>
+                {!contractSettlement && <p className="holding-detail-note">Settlement terms are unconfirmed. Use the broker's actual outcome; insufficient stock does not turn physical delivery into cash settlement.</p>}
                 <label>
                   Quantity
                   <input
@@ -396,7 +416,14 @@ export default function OptionOutcomePrompt({
                         onChange={(changeEvent) => setSettlementDate(changeEvent.target.value)}
                       />
                     </label>
+                    <label>
+                      Trade Time (optional)
+                      <input type="time" step={60} value={tradeTime} onChange={(event) => setTradeTime(event.target.value)} />
+                    </label>
                   </>
+                ) : null}
+                {outcome === 'physical' ? (
+                  <label><input type="checkbox" checked={allowStockShort} onChange={event => setAllowStockShort(event.target.checked)} />Broker confirmed a short stock position on delivery</label>
                 ) : null}
                 {outcome === 'physical' ? (
                   <label>

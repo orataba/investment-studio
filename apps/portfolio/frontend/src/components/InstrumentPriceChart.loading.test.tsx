@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import InstrumentPriceChart from './InstrumentPriceChart'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
 describe('Instrument price chart loading contract', () => {
   it('announces loading instead of presenting an empty-data result before the request settles', () => {
@@ -13,6 +14,7 @@ describe('Instrument price chart loading contract', () => {
         rangeKey="1y"
         onRangeChange={vi.fn()}
       />,
+      { wrapper: LanguageProvider },
     )
 
     expect(container.querySelector('.instrument-price-chart')).toHaveAttribute('aria-busy', 'true')

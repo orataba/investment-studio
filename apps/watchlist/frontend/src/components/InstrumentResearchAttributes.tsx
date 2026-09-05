@@ -6,6 +6,7 @@ import {
   updateInstrumentAttributes,
 } from '../lib/api'
 import { formatLabel } from '../lib/format'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
 type AttributeDomain = InstrumentAttributeDefinition['domain_code']
 
@@ -57,17 +58,17 @@ function valueList(values: Record<string, unknown>, key: string) {
   return text ? [text] : []
 }
 
-function displayValue(value: unknown) {
+function displayValue(value: unknown, t: (text: string) => string) {
   if (Array.isArray(value)) {
     const items = value.map((item) => String(item).trim()).filter(Boolean)
-    return items.length ? items.join(', ') : '—'
+    return items.length ? items.map(t).join(', ') : '—'
   }
   if (value == null) return '—'
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
-  return String(value).trim() || '—'
+  if (typeof value === 'boolean') return t(value ? 'Yes' : 'No')
+  return t(String(value).trim()) || '—'
 }
 
-function rubricText(definition: InstrumentAttributeDefinition) {
+function rubricText(definition: InstrumentAttributeDefinition, t: (text: string) => string) {
   const rubric = definition.rubric_json || {}
   return [
     definition.description,
@@ -76,6 +77,7 @@ function rubricText(definition: InstrumentAttributeDefinition) {
   ]
     .map((value) => String(value || '').trim())
     .filter(Boolean)
+    .map(t)
     .join(' ')
 }
 
@@ -100,6 +102,7 @@ export default function InstrumentResearchAttributes({
   onChange,
   onRetry,
 }: Props) {
+  const { t } = useLanguage()
   const pickerRef = useRef<HTMLDivElement | null>(null)
   const [openKey, setOpenKey] = useState<string | null>(null)
   const [savingKey, setSavingKey] = useState<string | null>(null)
@@ -228,7 +231,7 @@ export default function InstrumentResearchAttributes({
                           attributeValues.values,
                           definition.attribute_key,
                         )
-                        const help = rubricText(definition)
+                        const help = rubricText(definition, t)
                         return (
                           <tr key={definition.attribute_key}>
                             <td className="instrument-product-tags-table-label-cell">
@@ -266,7 +269,7 @@ export default function InstrumentResearchAttributes({
                                   <span>
                                     {savingKey === definition.attribute_key
                                       ? 'Saving…'
-                                      : displayValue(attributeValues.values[definition.attribute_key])}
+                                      : displayValue(attributeValues.values[definition.attribute_key], t)}
                                   </span>
                                 </button>
                                 {openKey === definition.attribute_key ? (

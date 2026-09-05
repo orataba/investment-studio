@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 
 import {
+  getInstrumentResearchHistory,
+  type InstrumentResearchHistoryResponse,
   createInstrumentResearchNote,
   deleteInstrumentResearchNote,
   updateInstrumentResearchProfile,
@@ -11,6 +13,8 @@ import {
   type InstrumentResearchProfileInput,
   type InstrumentResearchResponse,
 } from '../lib/api'
+import { Link } from 'react-router'
+import { stageLabels, readWorkbench, type Topic } from '../lib/workbenchApi'
 import { formatDate, formatDateTime, formatLabel } from '../lib/format'
 
 
@@ -101,7 +105,7 @@ function researchSections(
   language: Props['language'],
 ): Array<{ title: string; fields: ResearchField[] }> {
   const labels = typeSpecificLabels(instrumentType, language)
-  return [
+  const sections: Array<{ title: string; fields: ResearchField[] }> = [
     {
       title: t(language, 'Investment Case', '投资逻辑'),
       fields: [
@@ -190,7 +194,25 @@ function researchSections(
       ],
     },
   ]
+  const primaryKeys = ['thesis', 'current_view', 'key_risks', 'monitoring_plan']
+  const all = sections.flatMap(section => section.fields)
+  const primary = primaryKeys.map(key => all.find(field => field.key === key)!)
+  primary[0] = { ...primary[0], label: t(language, 'Why follow this investment?', '为什么关注它'), rows: 3 }
+  primary[1] = { ...primary[1], label: t(language, 'Current view and reason for change', '当前判断与变化原因') }
+  primary[2] = { ...primary[2], label: t(language, 'Risks and thesis breakers', '关键风险与失效条件') }
+  primary[3] = { ...primary[3], label: t(language, 'Next research steps', '下一步研究与复核') }
+  if (instrumentType === 'private_fund') {
+    primary[0].prompt = '收益由什么驱动？来自市场敞口、选股、交易还是承担流动性风险？在组合中希望补足什么？'
+    primary[2].prompt = '何种市场环境会失效？关注拥挤、杠杆、容量、净值平滑、开放与赎回约束。'
+    primary[3].prompt = '下次需要向管理人核查哪些敞口、风险事件或策略变化？'
+  } else if (instrumentType === 'public_fund') {
+    primary[0].prompt = '与哪个基准或同类产品比较？超额收益来自什么，是否依赖风格或规模？'
+    primary[2].prompt = '关注风格漂移、超额回撤、基金经理变化、费用及同类持仓重合。'
+  }
+
+  return [{ title: t(language, 'Investment questions', '投资问题'), fields: primary }, ...sections.map(section => ({ ...section, fields: section.fields.filter(field => !primaryKeys.includes(field.key)) }))]
 }
+
 
 function localIsoDate() {
   const now = new Date()
@@ -229,6 +251,7 @@ function noteDraftFromRecord(note: InstrumentResearchNote): NoteDraft {
     people: note.people,
     author: note.author,
     follow_up_date: note.follow_up_date,
+    completed_at: note.completed_at,
   }
 }
 
@@ -255,7 +278,6 @@ export default function InvestmentResearchWorkspace({
   research,
   onChange,
   language,
-  defaultNoteDate = '',
   requestedNoteDate = null,
   onRequestedNoteHandled,
   onOpenNote,
@@ -267,6 +289,11 @@ export default function InvestmentResearchWorkspace({
   const [tagsText, setTagsText] = useState('')
   const [saving, setSaving] = useState<'profile' | 'note' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [relatedTopics, setRelatedTopics] = useState<Topic[]>([])
+  useEffect(() => { readWorkbench<Topic[]>(`/research/topics?instrument_id=${encodeURIComponent(instrumentId)}`).then(setRelatedTopics).catch(error => setError(error.message)) }, [instrumentId])
+  const [history, setHistory] = useState<InstrumentResearchHistoryResponse | null>(null)
+  const [noteSearch, setNoteSearch] = useState('')
+  const [noteFilter, setNoteFilter] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
   const sections = researchSections(instrumentType, language)
   const isFund = instrumentType === 'public_fund' || instrumentType === 'private_fund'
@@ -322,7 +349,7 @@ export default function InvestmentResearchWorkspace({
   }
 
   function beginNewNote() {
-    setNoteDraft(emptyNoteDraft(defaultNoteDate, research.profile.primary_analyst))
+    setNoteDraft(emptyNoteDraft(localIsoDate(), research.profile.primary_analyst))
     setTagsText('')
     setError(null)
     setNotice(null)
@@ -413,6 +440,7 @@ export default function InvestmentResearchWorkspace({
           </div>
         </div>
 
+        <details><summary>{t(language, "Previous conviction rating", "历史信心评分")}</summary>
         <div className="investment-research-rating-row">
           <div>
             <span>{t(language, 'Conviction Rating', '投资信心评分')}</span>
@@ -440,6 +468,9 @@ export default function InvestmentResearchWorkspace({
             })}
           </div>
         </div>
+
+        </details>
+        <label className="investment-research-owner-field"><span>{t(language, 'Research stage', '研究阶段')}</span><select disabled={!editingProfile} value={profileDraft.research_stage || 'watching'} onChange={event => setProfileDraft(current => ({ ...current, research_stage: event.target.value }))}>{Object.entries(stageLabels).map(([value, label]) => <option key={value} value={value}>{language === 'zh-Hans' ? label : value}</option>)}</select></label>
 
         <div className="investment-research-owner-grid">
           {([
@@ -469,9 +500,9 @@ export default function InvestmentResearchWorkspace({
           </div>
         </div>
 
-        {sections.map((section) => (
-          <div key={section.title} className="investment-research-case-section">
-            <h3>{section.title}</h3>
+        {sections.map((section, index) => (
+          <details open={index === 0 ? true : undefined} key={section.title} className="investment-research-case-section">
+            <summary>{section.title}</summary>
             <div className="investment-research-case-grid">
               {section.fields.map((field) => (
                 <label key={field.key} className={`investment-research-case-field${field.rows && field.rows > 4 ? ' investment-research-case-field-wide' : ''}`}>
@@ -493,17 +524,17 @@ export default function InvestmentResearchWorkspace({
                 </label>
               ))}
             </div>
-          </div>
+          </details>
         ))}
 
         {isFund ? (
           <div className="investment-research-case-section">
-            <h3>{t(language, 'Fund Research Workflow', '基金研究流程')}</h3>
+            <details><summary>{t(language, 'Previous diligence labels', '历史尽调标签')}</summary>
             <div className="investment-research-owner-grid investment-research-fund-status-grid">
               {([
-                ['dd_status', 'DD'],
-                ['odd_status', 'ODD'],
-                ['ic_status', 'IC'],
+                ['dd_status', t(language, 'Investment diligence', '投资尽调')],
+                ['odd_status', t(language, 'Operational diligence', '运营尽调')],
+                ['ic_status', t(language, 'Investment review', '投资审核')],
               ] as const).map(([key, label]) => (
                 <label key={key} className="investment-research-owner-field">
                   <span>{label}</span>
@@ -514,12 +545,16 @@ export default function InvestmentResearchWorkspace({
                   )}
                 </label>
               ))}
-            </div>
+            </div></details>
           </div>
         ) : null}
       </section>
 
-      {children}
+      <details><summary>{t(language, 'Additional attributes and historical labels', '补充属性与历史标签')}</summary>{children}</details>
+      <div className="toolbar"><Link to={`/assistant?instruments=${encodeURIComponent(instrumentId)}`}>{t(language, 'Ask research assistant', '向助手提问')}</Link><button onClick={() => void getInstrumentResearchHistory(instrumentId).then(setHistory).catch(error => setError(error.message))}>{t(language, 'View revision history', '查看观点与记录历史')}</button></div>
+      <div className="research-scope">{relatedTopics.map(topic => <Link key={topic.topic_id} to={`/assistant?topic=${topic.topic_id}`}>{topic.title}</Link>)}</div>
+      {history && <details open><summary>{t(language, 'View history', '观点历史')}</summary>{history.profile_revisions.map(revision => <article className="research-history-row" key={revision.revision_number}><small>v{revision.revision_number} · {formatDateTime(revision.recorded_at)}</small><p>{revision.current_view || revision.thesis || '—'}</p><details><summary>{t(language, 'Full snapshot', '完整快照')}</summary><pre className="research-evidence-json">{JSON.stringify(revision, null, 2)}</pre></details></article>)}<details><summary>{t(language, 'Record changes', '记录修改历史（含删除）')}</summary><pre className="research-evidence-json">{JSON.stringify(history.note_revisions, null, 2)}</pre></details></details>}
+
 
       <section className="instrument-research-section investment-research-log">
         <div className="instrument-research-section-header">
@@ -544,24 +579,27 @@ export default function InvestmentResearchWorkspace({
               </div>
             </div>
             <div className="investment-research-note-form-grid">
+              <label className="investment-research-note-field-wide"><span>{t(language, 'Title', '标题')}</span><input value={noteDraft.title} onChange={(event) => setNoteDraft((current) => current ? { ...current, title: event.target.value } : current)} /></label>
+              <label className="investment-research-note-field-wide"><span>{t(language, 'Analysis', '分析内容')}</span><textarea rows={5} value={noteDraft.body} onChange={(event) => setNoteDraft((current) => current ? { ...current, body: event.target.value } : current)} /></label>
+            </div>
+            <details><summary>{t(language, "Date, sources and follow-up", "日期、来源与跟进（选填）")}</summary><div className="investment-research-note-form-grid">
               <label><span>{t(language, 'Date', '日期')}</span><input type="date" value={noteDraft.note_date} onChange={(event) => setNoteDraft((current) => current ? { ...current, note_date: event.target.value } : current)} /></label>
               <label><span>{t(language, 'Type', '类型')}</span><select value={noteDraft.note_type} onChange={(event) => setNoteDraft((current) => current ? { ...current, note_type: event.target.value as InstrumentResearchNoteType } : current)}>{NOTE_TYPES.map((type) => <option key={type} value={type}>{formatLabel(type)}</option>)}</select></label>
-              <label><span>{t(language, 'Importance', '重要性')}</span><select value={noteDraft.importance} onChange={(event) => setNoteDraft((current) => current ? { ...current, importance: event.target.value as NoteDraft['importance'] } : current)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+              <label><span>{t(language, 'Importance', '重要性')}</span><select value={noteDraft.importance} onChange={(event) => setNoteDraft((current) => current ? { ...current, importance: event.target.value as NoteDraft['importance'] } : current)}><option value="low">{t(language, "Low", "低")}</option><option value="medium">{t(language, "Medium", "中")}</option><option value="high">{t(language, "High", "高")}</option></select></label>
               <label><span>{t(language, 'Author / Analyst', '作者 / 分析人')}</span><input value={noteDraft.author} onChange={(event) => setNoteDraft((current) => current ? { ...current, author: event.target.value } : current)} /></label>
-              <label className="investment-research-note-field-wide"><span>{t(language, 'Title', '标题')}</span><input value={noteDraft.title} onChange={(event) => setNoteDraft((current) => current ? { ...current, title: event.target.value } : current)} /></label>
               <label className="investment-research-note-field-wide"><span>{t(language, 'Summary / Conclusion', '摘要 / 结论')}</span><textarea rows={2} value={noteDraft.summary} onChange={(event) => setNoteDraft((current) => current ? { ...current, summary: event.target.value } : current)} /></label>
-              <label className="investment-research-note-field-wide"><span>{t(language, 'Analysis', '分析内容')}</span><textarea rows={5} value={noteDraft.body} onChange={(event) => setNoteDraft((current) => current ? { ...current, body: event.target.value } : current)} /></label>
               <label><span>{t(language, 'People Discussed / Met', '涉及 / 访谈人物')}</span><input value={noteDraft.people} onChange={(event) => setNoteDraft((current) => current ? { ...current, people: event.target.value } : current)} /></label>
               <label><span>{t(language, 'Follow-up Date', '后续跟进日期')}</span><input type="date" value={noteDraft.follow_up_date || ''} onChange={(event) => setNoteDraft((current) => current ? { ...current, follow_up_date: event.target.value || null } : current)} /></label>
               <label className="investment-research-note-field-wide"><span>{t(language, 'Evidence / Source References', '证据 / 来源引用')}</span><textarea rows={2} value={noteDraft.source_refs} onChange={(event) => setNoteDraft((current) => current ? { ...current, source_refs: event.target.value } : current)} /></label>
               <label className="investment-research-note-field-wide"><span>{t(language, 'Tags', '标签')}</span><input value={tagsText} placeholder={t(language, 'Comma-separated', '使用逗号分隔')} onChange={(event) => setTagsText(event.target.value)} /></label>
-            </div>
+            </div></details>
           </div>
         ) : null}
 
+        <div className="toolbar"><input aria-label="搜索研究记录" placeholder={t(language, 'Search records', '搜索研究记录')} value={noteSearch} onChange={event => setNoteSearch(event.target.value)} /><select aria-label="记录类型" value={noteFilter} onChange={event => setNoteFilter(event.target.value)}><option value="">{t(language, 'All records', '全部记录')}</option>{NOTE_TYPES.map(type => <option key={type} value={type}>{formatLabel(type)}</option>)}</select></div>
         {research.notes.length ? (
           <div className="investment-research-note-list">
-            {research.notes.map((note) => (
+            {research.notes.filter(note => (!noteFilter || note.note_type === noteFilter) && `${note.title} ${note.body} ${note.summary}`.toLowerCase().includes(noteSearch.toLowerCase())).map((note) => (
               <article key={note.note_id} className="investment-research-note-card">
                 <div className="investment-research-note-card-header">
                   <div>
@@ -570,23 +608,25 @@ export default function InvestmentResearchWorkspace({
                       <span>{formatLabel(note.note_type)}</span>
                       <span className={`investment-research-importance investment-research-importance-${note.importance}`}>{formatLabel(note.importance)}</span>
                     </div>
-                    <h3>{note.title}</h3>
+                    <h3 translate="no">{note.title}</h3>
                   </div>
                   <div className="instrument-table-inline-actions instrument-table-inline-actions-compact">
+                    <button className="table-action" disabled={saving === 'profile'} onClick={() => { setProfileDraft({ ...profileInput(research), current_view: note.summary || note.body, decision_rationale: `${note.note_date} · ${note.title}` }); setEditingProfile(true); }}>{t(language, 'Use in current view', '整理为当前观点')}</button>
+                    {note.follow_up_date ? <button className="table-action" disabled={saving === 'note'} onClick={() => { setSaving('note'); const { note_id: _noteId, ...input } = noteDraftFromRecord(note); void updateInstrumentResearchNote(instrumentId, note.note_id, { note: { ...input, completed_at: note.completed_at ? null : new Date().toISOString() }, updated_by: 'terminal_ui' }).then(onChange).catch(error => setError(error.message)).finally(() => setSaving(null)); }}>{note.completed_at ? t(language, 'Reopen follow-up', '重新打开跟进') : t(language, 'Complete follow-up', '完成跟进')}</button> : null}
                     {onOpenNote ? <button type="button" className="table-action" onClick={() => onOpenNote(note.note_date)}>{t(language, 'Open in Chart', '在图表中打开')}</button> : null}
                     <button type="button" className="table-action" onClick={() => beginEditNote(note)}>{t(language, 'Edit', '编辑')}</button>
                     <button type="button" className="table-action" disabled={saving === 'note'} onClick={() => void deleteNote(note.note_id)}>{t(language, 'Delete', '删除')}</button>
                   </div>
                 </div>
-                {note.summary ? <p className="investment-research-note-summary">{note.summary}</p> : null}
-                {note.body ? <p className="investment-research-note-body">{note.body}</p> : null}
+                {note.summary ? <p className="investment-research-note-summary" translate="no">{note.summary}</p> : null}
+                {note.body ? <p className="investment-research-note-body" translate="no">{note.body}</p> : null}
                 <dl className="investment-research-note-details">
-                  {note.author ? <><dt>{t(language, 'Author', '作者')}</dt><dd>{note.author}</dd></> : null}
-                  {note.people ? <><dt>{t(language, 'People', '人物')}</dt><dd>{note.people}</dd></> : null}
-                  {note.source_refs ? <><dt>{t(language, 'Evidence', '证据')}</dt><dd>{note.source_refs}</dd></> : null}
-                  {note.follow_up_date ? <><dt>{t(language, 'Follow-up', '跟进')}</dt><dd>{formatDate(note.follow_up_date)}</dd></> : null}
+                  {note.author ? <><dt>{t(language, 'Author', '作者')}</dt><dd translate="no">{note.author}</dd></> : null}
+                  {note.people ? <><dt>{t(language, 'People', '人物')}</dt><dd translate="no">{note.people}</dd></> : null}
+                  {note.source_refs ? <><dt>{t(language, 'Evidence', '证据')}</dt><dd translate="no">{note.source_refs}</dd></> : null}
+                  {note.follow_up_date ? <><dt>{t(language, 'Follow-up', '跟进')}</dt><dd>{formatDate(note.follow_up_date)} {note.completed_at ? t(language, "Completed", "已完成") : t(language, "Pending", "待跟进")}</dd></> : null}
                 </dl>
-                {note.tags.length ? <div className="investment-research-note-tags">{note.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
+                {note.tags.length ? <div className="investment-research-note-tags" translate="no">{note.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
                 <div className="investment-research-note-audit">
                   {t(language, 'Saved', '保存于')} {formatDateTime(note.updated_at)} · v{note.revision_number}
                 </div>

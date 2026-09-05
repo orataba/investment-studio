@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from portfolio_ops_instrument_core.db_models import FundNavEvent
+from investment_studio_instrument_core.db_models import FundNavEvent
 
 from portfolio_app.db.models import PortfolioInstrumentUniverseRecordModel
 from portfolio_app.db.session import get_session_factory
@@ -52,9 +52,18 @@ def _insert_distribution_revision(
         session.commit()
 
 
+def _reconcile_tasks(client):
+    response = client.post(
+        "/api/portfolios/investment-studio/instrument-event-tasks/reconcile",
+        params={"attention_only": "true"},
+    )
+    assert response.status_code == 200
+    return response
+
+
 def test_no_confirmed_distribution_keeps_unit_nav_portfolio_return_available(client) -> None:
     task_response = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     )
     assert task_response.status_code == 200
     assert task_response.json()["accounting_policy"] == (
@@ -62,7 +71,7 @@ def test_no_confirmed_distribution_keeps_unit_nav_portfolio_return_available(cli
     )
     assert task_response.json()["tasks"] == []
 
-    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
+    performance_response = client.get("/api/portfolios/investment-studio/performance")
     assert performance_response.status_code == 200
     assert performance_response.json()["summary"]["cumulative_twr"] is not None
 
@@ -75,13 +84,17 @@ def test_confirmed_distribution_creates_pending_task_without_posting_transaction
         supersedes_event_id=None,
         cash_per_unit="0.1",
     )
-    before = client.get("/api/portfolios/portfolio-ops/transactions").json()[
+    before = client.get("/api/portfolios/investment-studio/transactions").json()[
         "summary"
     ]["total_transactions"]
 
-    response = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+    read_response = client.get(
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     )
+    assert read_response.status_code == 200
+    assert read_response.json()["tasks"] == []
+
+    response = _reconcile_tasks(client)
 
     assert response.status_code == 200
     payload = response.json()
@@ -95,7 +108,7 @@ def test_confirmed_distribution_creates_pending_task_without_posting_transaction
     assert task["account_id"] == "broker-us-core"
     assert Decimal(str(task["entitled_quantity"])) == Decimal("304.236000000000")
     assert Decimal(str(task["expected_gross_amount"])) == Decimal("30.4236000000000")
-    after = client.get("/api/portfolios/portfolio-ops/transactions").json()[
+    after = client.get("/api/portfolios/investment-studio/transactions").json()[
         "summary"
     ]["total_transactions"]
     assert after == before
@@ -106,7 +119,7 @@ def test_historical_transaction_universe_still_receives_distribution_task(client
     with session_factory() as session:
         universe_record = session.get(
             PortfolioInstrumentUniverseRecordModel,
-            ("portfolio-ops", "fund-us-agg"),
+            ("investment-studio", "fund-us-agg"),
         )
         assert universe_record is not None
         universe_record.status = "inactive"
@@ -122,10 +135,10 @@ def test_historical_transaction_universe_still_receives_distribution_task(client
     reconciliation = reconcile_instrument_event_tasks(
         instrument_ids=["fund-us-agg"]
     )
-    assert "portfolio-ops" in reconciliation
+    assert "investment-studio" in reconciliation
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     )
     assert response.status_code == 200
     assert len(response.json()["tasks"]) == 1
@@ -139,11 +152,9 @@ def test_human_transaction_resolves_task_and_registry_correction_reopens_it(clie
         supersedes_event_id=None,
         cash_per_unit="0.1",
     )
-    task = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
-    ).json()["tasks"][0]
+    task = _reconcile_tasks(client).json()["tasks"][0]
     transaction_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -162,7 +173,7 @@ def test_human_transaction_resolves_task_and_registry_correction_reopens_it(clie
     transaction_id = transaction_response.json()["transaction_id"]
 
     review_response = client.post(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks/"
+        "/api/portfolios/investment-studio/instrument-event-tasks/"
         f"{task['instrument_event_task_id']}/reviews",
         json={
             "decision": "processed",
@@ -178,7 +189,7 @@ def test_human_transaction_resolves_task_and_registry_correction_reopens_it(clie
         transaction_id
     )
     assert client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     ).json()["tasks"] == []
 
     _insert_distribution_revision(
@@ -188,8 +199,9 @@ def test_human_transaction_resolves_task_and_registry_correction_reopens_it(clie
         supersedes_event_id="fund-nav-event-1",
         cash_per_unit="0.11",
     )
+    _reconcile_tasks(client)
     reopened = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     ).json()["tasks"]
     assert len(reopened) == 1
     assert reopened[0]["status"] == "needs_review"
@@ -205,11 +217,9 @@ def test_cancellation_never_mutates_linked_transaction_and_requires_review(clien
         supersedes_event_id=None,
         cash_per_unit="0.1",
     )
-    task = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
-    ).json()["tasks"][0]
+    task = _reconcile_tasks(client).json()["tasks"][0]
     transaction = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -225,7 +235,7 @@ def test_cancellation_never_mutates_linked_transaction_and_requires_review(clien
     assert transaction.status_code == 200
     transaction_id = transaction.json()["transaction_id"]
     assert client.post(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks/"
+        "/api/portfolios/investment-studio/instrument-event-tasks/"
         f"{task['instrument_event_task_id']}/reviews",
         json={
             "decision": "processed",
@@ -243,14 +253,15 @@ def test_cancellation_never_mutates_linked_transaction_and_requires_review(clien
         supersedes_event_id="fund-nav-event-1",
         cash_per_unit="0.1",
     )
+    _reconcile_tasks(client)
     attention = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
+        "/api/portfolios/investment-studio/instrument-event-tasks?attention_only=true"
     ).json()["tasks"]
     assert len(attention) == 1
     assert attention[0]["status"] == "needs_review"
     assert attention[0]["source_event_state"] == "cancelled"
     persisted_transaction = client.get(
-        "/api/portfolios/portfolio-ops/transactions?instrument_id=fund-us-agg"
+        "/api/portfolios/investment-studio/transactions?instrument_id=fund-us-agg"
     ).json()["transactions"]
     assert any(item["transaction_id"] == transaction_id for item in persisted_transaction)
 
@@ -263,11 +274,9 @@ def test_processed_review_rejects_wrong_distribution_amount(client) -> None:
         supersedes_event_id=None,
         cash_per_unit="0.1",
     )
-    task = client.get(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks?attention_only=true"
-    ).json()["tasks"][0]
+    task = _reconcile_tasks(client).json()["tasks"][0]
     transaction = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -283,7 +292,7 @@ def test_processed_review_rejects_wrong_distribution_amount(client) -> None:
     assert transaction.status_code == 200
 
     response = client.post(
-        "/api/portfolios/portfolio-ops/instrument-event-tasks/"
+        "/api/portfolios/investment-studio/instrument-event-tasks/"
         f"{task['instrument_event_task_id']}/reviews",
         json={
             "decision": "processed",

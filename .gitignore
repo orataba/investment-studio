@@ -30,7 +30,9 @@ build/
 *.pfx
 apps/portfolio/backend/research_outputs/
 apps/watchlist/backups/
+apps/watchlist/var/
 ref/
 *:Zone.Identifier
 /var/
 /outputs/
+/deploy/regime-ui/

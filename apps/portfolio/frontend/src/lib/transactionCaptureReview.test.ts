@@ -6,8 +6,21 @@ import type {
 } from './api'
 import {
   buildHumanReviewedCaptureProposal,
+  changeTransactionCaptureAction,
   type TransactionCaptureReviewDraft,
 } from './transactionCaptureReview'
+
+it('moves delivery charges to the stock leg and removes delivery details when correcting the action back', () => {
+  const draft = { ...transactionImport.records[0], asset_type: 'option' as const,
+    transaction_action: 'cash_settle_long' as const, gross_amount: '500', fees: '3', fee_category: 'transaction_cost' as const,
+    settlement_cash_account_id: 'cash-1', taxes: '1' }
+  const physical = changeTransactionCaptureAction(draft, 'physical_long')
+  expect(physical).toMatchObject({ gross_amount: 0, fees: 0, fee_category: 'unknown', taxes: 0, settlement_cash_account_id: null,
+    option_delivery: { stock_account_id: '', settlement_cash_account_id: 'cash-1', fees: '3', fee_category: 'transaction_cost', taxes: '1' } })
+  const corrected = changeTransactionCaptureAction(physical, 'cash_settle_long')
+  expect(corrected.option_delivery).toBeUndefined()
+  expect(corrected).toMatchObject({ settlement_cash_account_id: 'cash-1', fees: '3', fee_category: 'transaction_cost', taxes: '1' })
+})
 
 
 const transactionImport: PortfolioTransactionImportRequest = {

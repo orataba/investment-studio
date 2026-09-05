@@ -28,7 +28,7 @@ def _config() -> Config:
 def _taxonomy_values(taxonomy_id: str, scope: str) -> dict[str, object]:
     return {
         "taxonomy_id": taxonomy_id,
-        "portfolio_id": "portfolio-ops",
+        "portfolio_id": "investment-studio",
         "name": taxonomy_id,
         "taxonomy_type": "custom",
         "purpose": None,

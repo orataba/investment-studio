@@ -26,6 +26,7 @@ instrument_repository = SQLAlchemyInstrumentRepository()
 research_repository = SQLAlchemyInstrumentResearchRepository()
 
 PROFILE_FIELDS = (
+    "research_stage",
     "thesis",
     "current_view",
     "why_now",
@@ -61,7 +62,7 @@ def _serialize_profile(record: InstrumentResearchProfile | None) -> dict[str, ob
     }
     for field in PROFILE_FIELDS:
         if field not in {"next_review_date", "manual_rating"} and profile[field] is None:
-            profile[field] = ""
+            profile[field] = "watching" if field == "research_stage" else ""
     profile.update(
         {
             "created_at": record.created_at if record is not None else None,
@@ -88,6 +89,7 @@ def _serialize_note(record: InstrumentResearchNote) -> dict[str, object]:
             "people": record.people,
             "author": record.author,
             "follow_up_date": record.follow_up_date,
+            "completed_at": record.completed_at,
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "updated_by": record.updated_by,
@@ -138,6 +140,7 @@ def _serialize_note_revision(
             "people": record.people,
             "author": record.author,
             "follow_up_date": record.follow_up_date,
+            "completed_at": record.completed_at,
             "recorded_at": record.recorded_at,
             "recorded_by": record.recorded_by,
         }
@@ -190,6 +193,8 @@ def upsert_instrument_research_profile(
         values=request.profile.model_dump(),
         updated_by=request.updated_by,
     )
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    refresh_risk_cases(session, [instrument_id])
     session.commit()
     return _research_response(session, instrument_id)
 
@@ -208,6 +213,8 @@ def create_instrument_research_note(
         values=request.note.model_dump(),
         updated_by=request.updated_by,
     )
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    refresh_risk_cases(session, [instrument_id])
     session.commit()
     return _research_response(session, instrument_id)
 
@@ -229,6 +236,8 @@ def update_instrument_research_note(
         values=request.note.model_dump(),
         updated_by=request.updated_by,
     )
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    refresh_risk_cases(session, [instrument_id])
     session.commit()
     return _research_response(session, instrument_id)
 
@@ -249,5 +258,7 @@ def delete_instrument_research_note(
         record,
         deleted_by=deleted_by,
     )
+    from watchlist_app.services.risk_workbench import refresh_risk_cases
+    refresh_risk_cases(session, [instrument_id])
     session.commit()
     return _research_response(session, instrument_id)

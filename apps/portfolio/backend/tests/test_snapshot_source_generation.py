@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from portfolio_ops_instrument_core.db_models import Instrument
+from investment_studio_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
@@ -17,7 +17,7 @@ def _published_snapshot_fingerprint() -> list[tuple[object, str, dict[str, objec
     with session_factory() as session:
         rows = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .order_by(PortfolioDailySnapshotModel.as_of_date)
             .all()
         )
@@ -38,7 +38,7 @@ def _advance_market_data_generation(value: str) -> None:
 
 def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
     result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
 
     assert result is not None
@@ -53,10 +53,10 @@ def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         rows = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .all()
         )
         assert state is not None
@@ -67,16 +67,16 @@ def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
 
 def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) -> None:
     result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
     assert result is not None
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         latest = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -102,16 +102,16 @@ def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) ->
         capture_rebuild_scope,
     )
 
-    daily_snapshots.ensure_portfolio_daily_snapshots("portfolio-ops")
+    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
 
     assert requested_start_dates == [None]
     with session_factory() as session:
         rows = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .all()
         )
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert rows
         assert state is not None
         assert state.daily_snapshot_status == "current"
@@ -124,14 +124,14 @@ def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) ->
 
 def test_release_refresh_rebuilds_stale_source_lineage() -> None:
     baseline = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
     assert baseline is not None
 
     session_factory = get_session_factory()
     with session_factory() as session:
         instrument = session.get(Instrument, "equity-us-abbv")
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert instrument is not None
         assert state is not None
         instrument.calculation_inputs_updated_at = "2099-01-01T00:00:00.000001Z"
@@ -141,7 +141,7 @@ def test_release_refresh_rebuilds_stale_source_lineage() -> None:
     assert refresh_release_snapshots.main() == 0
 
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert (
@@ -153,13 +153,13 @@ def test_release_refresh_rebuilds_stale_source_lineage() -> None:
 def test_release_refresh_only_recovers_running_job_when_explicit() -> None:
     assert (
         daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-            "portfolio-ops"
+            "investment-studio"
         )
         is not None
     )
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         state.daily_snapshot_status = "running"
         state.refresh_request_id = "interrupted-release-worker"
@@ -169,14 +169,14 @@ def test_release_refresh_only_recovers_running_job_when_explicit() -> None:
 
     with pytest.raises(
         RuntimeError,
-        match="portfolio-ops:running",
+        match="investment-studio:running",
     ):
         refresh_release_snapshots.main()
 
     assert refresh_release_snapshots.main(recover_interrupted=True) == 0
 
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.refresh_request_id is None
@@ -186,13 +186,13 @@ def test_release_refresh_only_recovers_running_job_when_explicit() -> None:
 def test_source_generation_change_discards_first_output_then_replays(monkeypatch) -> None:
     assert (
         daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-            "portfolio-ops"
+            "investment-studio"
         )
         is not None
     )
     published_before = _published_snapshot_fingerprint()
     assert published_before
-    daily_snapshots.mark_portfolio_daily_snapshots_stale("portfolio-ops")
+    daily_snapshots.mark_portfolio_daily_snapshots_stale("investment-studio")
 
     original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
     build_calls = {"count": 0}
@@ -216,7 +216,7 @@ def test_source_generation_change_discards_first_output_then_replays(monkeypatch
     )
 
     result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
 
     assert build_calls["count"] == 2
@@ -228,10 +228,10 @@ def test_source_generation_change_discards_first_output_then_replays(monkeypatch
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         rows = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "investment-studio")
             .all()
         )
         assert state is not None
@@ -252,7 +252,7 @@ def test_repeated_source_generation_change_returns_explicit_discard_status(
 ) -> None:
     assert (
         daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-            "portfolio-ops"
+            "investment-studio"
         )
         is not None
     )
@@ -274,10 +274,10 @@ def test_repeated_source_generation_change_returns_explicit_discard_status(
     )
 
     daily_snapshots.enqueue_selected_portfolio_daily_snapshot_recalculations(
-        ["portfolio-ops"]
+        ["investment-studio"]
     )
     payload = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
-        "portfolio-ops"
+        "investment-studio"
     )
 
     assert payload is not None
@@ -289,7 +289,7 @@ def test_repeated_source_generation_change_returns_explicit_discard_status(
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        state = session.get(PortfolioCalculationStateModel, "investment-studio")
         assert state is not None
         assert state.daily_snapshot_status == "stale"
         assert state.error_message == "source_generation_changed_during_calculation"

@@ -1,16 +1,18 @@
-# Portfolio Operations Workbench Watchlist
+# Investment Studio — Watchlist
 
-Watchlist 承载观察池、单资产研究、监控和本地物化 read model。当前主路径支持 `public_fund / private_fund / etf / equity / index`；其他 Registry 类型不会被塞入通用详情页。
+Watchlist 承载观察池、单资产研究、监控和本地物化 read model。当前主路径支持 `public_fund / private_fund / etf / equity / index`；其他 Instrument Data 类型不会被塞入通用详情页。
 
 ## 职责与边界
 
 - `Watchlists`：名单、view、筛选、排序、分组和导出；
 - `Instrument Detail`：按资产类型进入基金、ETF、股票或指数工作面；
 - `Investment Research`：taxonomy、research profile、逐条 note 和版本历史；
+- `Research`：持续研究对话、上传证据、共同样本比较和受限的 DeepSeek 助手；
+- 标的风险：复核线、自动观察、人工事项和持续跟进；Portfolio 复用同一套记录；
 - `Monitoring`：来源新鲜度、字段缺失、重算状态和复核到期；
-- `Recalculation`：从 Registry canonical facts 构建 Watchlist-local snapshots 和 rows。
+- `Recalculation`：从 Instrument Data canonical facts 构建 Watchlist-local snapshots 和 rows。
 
-Watchlist 只读取 `instrument_registry`，不修改 canonical identity、quote/NAV/FX 或 corporate actions。行情导入、修订和刷新属于 Platform Database Dashboard。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入 Registry 或 Portfolio。
+Watchlist 只读取 `instrument_data`，不修改 canonical identity、quote/NAV/FX 或 corporate actions。资产新增、行情导入、修订和刷新通过 `investment-studio data` CLI 维护。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入共享资产数据或 Portfolio。
 
 关键运行约束：
 
@@ -18,8 +20,9 @@ Watchlist 只读取 `instrument_registry`，不修改 canonical identity、quote
 - 每个 instrument 使用自己的 calculation-series as-of，名单不伪造共同计算日；
 - 混合资产名单只暴露对全部当前类型都有定义的字段；
 - Group By 只组织视图，不隐式修改 taxonomy 或研究事实；
-- canonical recalc 只消费 Registry 中符合 status、currency 和 quote policy 的观测；条件不足时结果为 unavailable；
-- Registry 通知用于降低延迟，不是正确性边界；durable worker 会主动对账 source generation；
+- 系统默认视图平铺资产，分类与研究阶段作为列；用户保存的分组视图保留；
+- canonical recalc 只消费 Instrument Data 中符合 status、currency 和 quote policy 的观测；条件不足时结果为 unavailable；
+- Instrument Data 通知用于降低延迟，不是正确性边界；durable worker 会主动对账 source generation；
 - 收益、风险和 benchmark 只在合同规定的端点、共同样本及 return semantics 下发布，不做静默回退。
 
 ## 文档
@@ -53,14 +56,14 @@ apps/watchlist/
 
 ```bash
 PROJECT_ROOT="$PWD"
-RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio"
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
-portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
-portfolio_ops_load_env_file \
-  "$(portfolio_ops_runtime_env_file watchlist "$RUNTIME_ENV_ROOT")" \
-  PORTFOLIO_OPS_WATCHLIST_
-: "${PORTFOLIO_OPS_WATCHLIST_DATABASE_URL:?watchlist.env must set the canonical database URL}"
-PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/instrument-core/python" \
+investment_studio_reject_repository_env_files "$PROJECT_ROOT"
+investment_studio_load_env_file \
+  "$(investment_studio_runtime_env_file watchlist "$RUNTIME_ENV_ROOT")" \
+  INVESTMENT_STUDIO_WATCHLIST_
+: "${INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL:?watchlist.env must set the canonical database URL}"
+PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/shared-data/instruments/python" \
   "$PROJECT_ROOT/.venv/bin/python" -m uvicorn watchlist_app.main:app \
   --host 127.0.0.1 --port 8000 --reload
 ```

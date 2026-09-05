@@ -7,6 +7,7 @@ ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES = frozenset({"dividend", "coupon"})
 EXTERNAL_FLOW_TRANSACTION_TYPES = frozenset({"deposit", "withdrawal"})
 POSITION_EFFECTIVE_TRANSACTION_TYPES = frozenset(
     {
+        "short_sell", "buy_to_cover", "short_opening_balance",
         "buy",
         "sell",
         "opening_balance",
@@ -15,7 +16,7 @@ POSITION_EFFECTIVE_TRANSACTION_TYPES = frozenset(
     }
 )
 POSITION_CASH_TRANSFER_TRANSACTION_TYPES = frozenset(
-    {"buy", "sell", "maturity_redemption"}
+    {"buy", "sell", "maturity_redemption", "short_sell", "buy_to_cover"}
 )
 
 
@@ -248,6 +249,14 @@ def transaction_cash_activity_date(
 ) -> date | None:
     """Return when the transaction's cash leg reaches its cash account."""
 
+    transaction_type = str(transaction.get("transaction_type") or "").strip()
+    if transaction_type == "fx_conversion" or (
+        transaction_type in {"transfer_in", "transfer_out"}
+        and str(transaction.get("transfer_object_type") or "").strip() == "cash"
+    ):
+        return _parse_date(transaction.get("settlement_date")) or _parse_date(
+            transaction.get("trade_date")
+        )
     if str(transaction.get("settlement_cash_account_id") or "").strip():
         settlement_date = _parse_date(transaction.get("settlement_date"))
         if settlement_date is not None:

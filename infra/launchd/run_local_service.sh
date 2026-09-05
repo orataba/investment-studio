@@ -14,16 +14,16 @@ EXTERNAL_ENV_ROOT="$5"
 DATABASE_URL=""
 
 case "$SERVICE" in
-  platform-api|watchlist-api|portfolio-api)
-    DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+  watchlist-api|portfolio-api)
+    DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
     if [[ -z "$DATABASE_URL" ]]; then
-      echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL is required for API services." >&2
+      echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL is required for API services." >&2
       exit 64
     fi
     case "$DATABASE_URL" in
       postgresql://*|postgresql+psycopg://*) ;;
       *)
-        echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+        echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
         exit 64
         ;;
     esac
@@ -35,77 +35,70 @@ esac
 # syntax contained in a value.
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 case "$SERVICE" in
-  platform-api|watchlist-api|portfolio-api)
-    portfolio_ops_require_password_free_database_url "$DATABASE_URL"
-    DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
-    portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+  watchlist-api|portfolio-api)
+    investment_studio_require_password_free_database_url "$DATABASE_URL"
+    DATABASE_URL="$(investment_studio_sqlalchemy_database_url "$DATABASE_URL")"
+    investment_studio_reject_repository_env_files "$PROJECT_ROOT"
     ;;
 esac
 case "$SERVICE" in
-  platform-api)
-    ENV_FILE="$(portfolio_ops_runtime_env_file platform "$EXTERNAL_ENV_ROOT")"
-    portfolio_ops_load_env_file "$ENV_FILE" PORTFOLIO_OPS_PLATFORM_
+  home-api)
+    investment_studio_reject_repository_env_files "$PROJECT_ROOT"
+    ENV_FILE="$(investment_studio_runtime_env_file home "$EXTERNAL_ENV_ROOT")"
+    investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_HOME_
     ;;
   watchlist-api)
-    ENV_FILE="$(portfolio_ops_runtime_env_file watchlist "$EXTERNAL_ENV_ROOT")"
+    ENV_FILE="$(investment_studio_runtime_env_file watchlist "$EXTERNAL_ENV_ROOT")"
     if [[ -f "$ENV_FILE" ]]; then
-      portfolio_ops_load_env_file "$ENV_FILE" PORTFOLIO_OPS_WATCHLIST_
+      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
     fi
     ;;
   portfolio-api)
-    ENV_FILE="$(portfolio_ops_runtime_env_file portfolio "$EXTERNAL_ENV_ROOT")"
+    ENV_FILE="$(investment_studio_runtime_env_file portfolio "$EXTERNAL_ENV_ROOT")"
     if [[ -f "$ENV_FILE" ]]; then
-      portfolio_ops_load_env_file "$ENV_FILE" PORTFOLIO_OPS_PORTFOLIO_
+      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
     fi
     ;;
 esac
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="$PROJECT_ROOT/packages/instrument-core/python"
+export PYTHONPATH="$PROJECT_ROOT/shared-data/instruments/python"
 
 case "$SERVICE" in
-  platform-api)
-    export PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PYTHONPATH"
-    export PORTFOLIO_OPS_PLATFORM_ENVIRONMENT=local
-    export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-    export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-    export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
-    export PORTFOLIO_OPS_PLATFORM_FRONTEND_URL=http://127.0.0.1:5172
-    export PORTFOLIO_OPS_PLATFORM_WATCHLIST_URL=http://127.0.0.1:5173
-    export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=http://127.0.0.1:5174
-    export PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL=http://127.0.0.1:8000
-    export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL=http://127.0.0.1:8001
-    export PORTFOLIO_OPS_PLATFORM_CORS_ORIGINS='["http://127.0.0.1:5172","http://localhost:5172","http://127.0.0.1:5173","http://localhost:5173","http://127.0.0.1:5174","http://localhost:5174"]'
-    cd "$PROJECT_ROOT/apps/platform/backend"
-    exec "$PYTHON_BIN" -m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002
+  home-api)
+    export PYTHONPATH="$PROJECT_ROOT/home/backend"
+    export INVESTMENT_STUDIO_HOME_ENVIRONMENT=local
+    export INVESTMENT_STUDIO_HOME_FRONTEND_URL=http://127.0.0.1:5172
+    cd "$PROJECT_ROOT/home/backend"
+    exec "$PYTHON_BIN" -m uvicorn home_api.main:app --host 127.0.0.1 --port 8002
     ;;
   watchlist-api)
     export PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PYTHONPATH"
-    export PORTFOLIO_OPS_WATCHLIST_ENVIRONMENT=local
-    export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
-    export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
-    export PORTFOLIO_OPS_WATCHLIST_FRONTEND_URL=http://127.0.0.1:5173
-    export PORTFOLIO_OPS_WATCHLIST_CORS_ORIGINS='["http://127.0.0.1:5173","http://localhost:5173"]'
-    export PORTFOLIO_OPS_WATCHLIST_DOCUMENT_STORAGE_ROOT="$PROJECT_ROOT/var/watchlist-documents"
+    export INVESTMENT_STUDIO_WATCHLIST_ENVIRONMENT=local
+    export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
+    export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
+    export INVESTMENT_STUDIO_WATCHLIST_FRONTEND_URL=http://127.0.0.1:5173
+    export INVESTMENT_STUDIO_WATCHLIST_CORS_ORIGINS='["http://127.0.0.1:5173","http://localhost:5173"]'
+    export INVESTMENT_STUDIO_WATCHLIST_DOCUMENT_STORAGE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/watchlist-documents"
     cd "$PROJECT_ROOT/apps/watchlist/backend"
     exec "$PYTHON_BIN" -m uvicorn watchlist_app.main:app --host 127.0.0.1 --port 8000
     ;;
   portfolio-api)
     export PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PYTHONPATH"
-    export PORTFOLIO_OPS_PORTFOLIO_ENVIRONMENT=local
-    export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
-    export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
-    export PORTFOLIO_OPS_PORTFOLIO_FRONTEND_URL=http://127.0.0.1:5174
-    export PORTFOLIO_OPS_PORTFOLIO_CORS_ORIGINS='["http://127.0.0.1:5174","http://localhost:5174"]'
-    export PORTFOLIO_OPS_PORTFOLIO_RESEARCH_OUTPUTS_ROOT="$PROJECT_ROOT/var/portfolio-research-outputs"
+    export INVESTMENT_STUDIO_PORTFOLIO_ENVIRONMENT=local
+    export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
+    export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
+    export INVESTMENT_STUDIO_PORTFOLIO_FRONTEND_URL=http://127.0.0.1:5174
+    export INVESTMENT_STUDIO_PORTFOLIO_CORS_ORIGINS='["http://127.0.0.1:5174","http://localhost:5174"]'
+    export INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_OUTPUTS_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/portfolio-research-outputs"
     cd "$PROJECT_ROOT/apps/portfolio/backend"
     exec "$PYTHON_BIN" -m uvicorn portfolio_app.main:app --host 127.0.0.1 --port 8001
     ;;
-  platform-web)
+  home-web)
     exec "$NODE_BIN" "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs" \
       --host 127.0.0.1 --port 5172 \
-      --dist "$PROJECT_ROOT/apps/platform/frontend/dist" \
+      --dist "$PROJECT_ROOT/home/frontend/dist" \
       --api-target http://127.0.0.1:8002
     ;;
   watchlist-web)

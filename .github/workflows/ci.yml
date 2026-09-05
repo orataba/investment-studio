@@ -65,17 +65,17 @@ jobs:
           node-version-file: .node-version
           cache: npm
           cache-dependency-path: |
-            apps/platform/frontend/package-lock.json
+            home/frontend/package-lock.json
             apps/portfolio/frontend/package-lock.json
             apps/watchlist/frontend/package-lock.json
-            packages/instrument-core/ts/package-lock.json
+            shared-data/instruments/ts/package-lock.json
 
       - name: Install locked frontend dependencies
         run: |
-          npm --prefix apps/platform/frontend ci
+          npm --prefix home/frontend ci
           npm --prefix apps/portfolio/frontend ci
           npm --prefix apps/watchlist/frontend ci
-          npm --prefix packages/instrument-core/ts ci
+          npm --prefix shared-data/instruments/ts ci
 
       - name: Run frontend suites and production builds
         run: infra/scripts/verify_repository.sh frontend all
@@ -100,8 +100,8 @@ jobs:
           --health-retries 20
     env:
       PYTHONUNBUFFERED: "1"
-      PGPASSFILE: /tmp/portfolio-ops.pgpass
-      PORTFOLIO_OPS_TEST_POSTGRES_URL: postgresql+psycopg://portfolio_ops_test@127.0.0.1:5432/portfolio_ops_test_admin
+      PGPASSFILE: /tmp/investment-studio.pgpass
+      INVESTMENT_STUDIO_TEST_POSTGRES_URL: postgresql+psycopg://investment_studio_test@127.0.0.1:5432/investment_studio_test_admin
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -151,40 +151,40 @@ jobs:
           PGPASSWORD: postgres
         run: |
           psql --host 127.0.0.1 --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE portfolio_ops
+          CREATE ROLE investment_studio
             LOGIN NOCREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS
-            PASSWORD 'portfolio_ops';
-          CREATE ROLE portfolio_ops_test
+            PASSWORD 'investment_studio';
+          CREATE ROLE investment_studio_test
             LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS
-            PASSWORD 'portfolio_ops_test';
+            PASSWORD 'investment_studio_test';
           SQL
           createdb --host 127.0.0.1 --username postgres \
-            --owner portfolio_ops portfolio_ops_ci
+            --owner investment_studio investment_studio_ci
           createdb --host 127.0.0.1 --username postgres \
-            --owner portfolio_ops_test portfolio_ops_test_admin
+            --owner investment_studio_test investment_studio_test_admin
           install -m 600 /dev/null "$PGPASSFILE"
           printf '%s\n' \
             '127.0.0.1:5432:*:postgres:postgres' \
-            '127.0.0.1:5432:*:portfolio_ops:portfolio_ops' \
-            '127.0.0.1:5432:*:portfolio_ops_test:portfolio_ops_test' \
+            '127.0.0.1:5432:*:investment_studio:investment_studio' \
+            '127.0.0.1:5432:*:investment_studio_test:investment_studio_test' \
             > "$PGPASSFILE"
 
       - name: Upgrade every migration chain to head
         env:
-          PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE: portfolio_ops_ci
-          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA: instrument_registry
-          PORTFOLIO_OPS_PLATFORM_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA: instrument_registry
-          PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA: platform
-          PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA: portfolio
-          PORTFOLIO_OPS_WATCHLIST_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA: watchlist
+          INVESTMENT_STUDIO_MIGRATION_EXPECTED_DATABASE: investment_studio_ci
+          INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA: instrument_data
+          INVESTMENT_STUDIO_DATA_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA: instrument_data
+          INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA: data_ingestion
+          INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA: portfolio
+          INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA: watchlist
         run: infra/scripts/verify_repository.sh migration-heads
 
       - name: Run PostgreSQL integration suites with zero skips
@@ -192,10 +192,10 @@ jobs:
 
       - name: Run PostgreSQL infrastructure suites
         env:
-          PORTFOLIO_OPS_TEST_DB_HOST: 127.0.0.1
-          PORTFOLIO_OPS_TEST_DB_PORT: "5432"
-          PORTFOLIO_OPS_TEST_DB_USER: postgres
-          PORTFOLIO_OPS_TEST_DB_PASSWORD: postgres
+          INVESTMENT_STUDIO_TEST_DB_HOST: 127.0.0.1
+          INVESTMENT_STUDIO_TEST_DB_PORT: "5432"
+          INVESTMENT_STUDIO_TEST_DB_USER: postgres
+          INVESTMENT_STUDIO_TEST_DB_PASSWORD: postgres
         run: infra/scripts/verify_repository.sh infra postgresql
 
   quality-gate:

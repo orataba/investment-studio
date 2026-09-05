@@ -80,6 +80,7 @@ def run_migrations_online() -> None:
             connection.commit()
             search_path_schema = (
                 settings.database_schema,
+                None if _is_schema_comparison() else "instrument_data",
                 None if _is_schema_comparison() else "instrument_registry",
             )
             connection.execute(

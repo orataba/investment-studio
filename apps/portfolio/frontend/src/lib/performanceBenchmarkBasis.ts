@@ -5,7 +5,7 @@ const CONFIRMED_TOTAL_RETURN_BASES = new Set([
 
 export type PerformanceBenchmarkBasisAssessment = {
   basis: string | null
-  comparisonEligible: boolean
+  returnSemantics: 'total_return' | 'price_return' | 'unknown'
   label: string
   warning: string | null
 }
@@ -23,17 +23,17 @@ export function assessPerformanceBenchmarkBasis(
   if (!basis) {
     return {
       basis: null,
-      comparisonEligible: false,
+      returnSemantics: 'unknown',
       label: 'Unavailable',
       warning:
-        'Benchmark basis is unavailable. Portfolio-relative metrics are withheld because total-return comparability cannot be verified.',
+        'Benchmark has no available price or NAV basis.',
     }
   }
 
   if (CONFIRMED_TOTAL_RETURN_BASES.has(basis) || semantics === 'total_return') {
     return {
       basis,
-      comparisonEligible: true,
+      returnSemantics: 'total_return',
       label: `${displayBasis(basis)} · confirmed total-return basis`,
       warning: null,
     }
@@ -42,16 +42,16 @@ export function assessPerformanceBenchmarkBasis(
   if (semantics === 'price_return') {
     return {
       basis,
-      comparisonEligible: true,
+      returnSemantics: 'price_return',
       label: `${displayBasis(basis)} · confirmed price-return basis`,
-      warning: `Benchmark uses ${basis} with confirmed price-return semantics. The series is rebased, and benchmark and relative metrics are shown. Portfolio TWR includes income while this index may not, so excess return and relative statistics include that basis difference.`,
+      warning: 'Comparison uses the selected price-return series. Distributions are excluded from this benchmark, so relative results include that difference.',
     }
   }
 
   return {
     basis,
-    comparisonEligible: false,
+    returnSemantics: 'unknown',
     label: `${displayBasis(basis)} · price / valuation basis`,
-    warning: `Benchmark uses ${basis}, not a confirmed total-return basis. The series is rebased and standalone benchmark metrics are shown. Portfolio-relative differences and relative statistics are withheld rather than comparing portfolio TWR with an unconfirmed price / valuation return.`,
+    warning: 'Comparison uses the selected price or NAV series. Distribution treatment is unconfirmed and may affect relative results.',
   }
 }

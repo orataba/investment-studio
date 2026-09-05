@@ -40,6 +40,7 @@ def _transactions_booked_to_account(
         transaction
         for transaction in transactions
         if str(transaction.get("account_id") or "") == account_id
+        or any(leg["account_id"] == account_id for leg in transaction.get("asset_deliveries") or [])
         or (
             str(transaction.get("transaction_type") or "") == "fx_conversion"
             and str(transaction.get("counterparty_account_id") or "") == account_id
@@ -96,6 +97,8 @@ def create_account_record(
         record = create_account(
             portfolio_id=portfolio_id,
             account_name=payload.account_name,
+            cash_purpose=payload.cash_purpose,
+            collateral_reference=payload.collateral_reference,
             account_type=account_type,
             account_category=payload.account_category,
             currency=payload.currency,
@@ -178,6 +181,8 @@ def update_account_record(
             portfolio_id=portfolio_id,
             account_id=account_id,
             account_name=account_name,
+            cash_purpose=payload.cash_purpose if "cash_purpose" in payload.model_fields_set else existing_account.get("cash_purpose"),
+            collateral_reference=payload.collateral_reference if "collateral_reference" in payload.model_fields_set else existing_account.get("collateral_reference"),
             account_category=account_category,
             institution=institution if isinstance(institution, str) else None,
             default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,

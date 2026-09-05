@@ -34,6 +34,11 @@ export function transactionActivityLabel(
   if (resolvedOptionAction) {
     return optionActionLabel(resolvedOptionAction)
   }
+  if (transactionType === 'option_opening_balance') return 'Written Option Opening Balance'
+  if (transactionType === 'short_sell') return 'Short Sell'
+  if (transactionType === 'buy_to_cover') return 'Buy to Cover'
+  if (transactionType === 'short_opening_balance') return 'Short Stock Opening Balance'
+  if (transactionType === 'lifecycle_event' && lifecycleEventType === 'fcn_knock_in') return 'FCN Knock-In Observation'
   const lifecycleLabels: Record<string, string> = {
     option_long_expiry: 'Long Option Expired',
     option_long_cash_settlement: 'Long Option Cash Settlement',

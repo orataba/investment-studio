@@ -9,11 +9,14 @@ describe('research result presentation', () => {
     expect(researchPageSource).not.toContain('<th>Forward RC</th>')
   })
 
-  it('does not present stale runs or manual-review targets as executable', () => {
+  it('keeps stale runs distinct and governance controls off the research page', () => {
     expect(researchPageSource).toContain('Historical result — not current or execution-ready.')
     expect(researchPageSource).not.toContain('Manual PM decision required.')
-    expect(researchPageSource).toContain('Research Eligibility')
-    expect(researchPageSource).toContain('PM review required')
+    expect(researchPageSource).not.toContain('Research Eligibility')
+    expect(researchPageSource).not.toContain('PM review required')
     expect(researchPageSource).toContain("row.execution_status === 'manual_review_required'")
+    expect(researchPageSource).toContain('Actual vs Backtest')
+    expect(researchPageSource).toContain('Model & Backtest Evidence')
+    expect(researchPageSource).toContain('research-evidence-disclosure')
   })
 })

@@ -9,18 +9,18 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
+LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.investment-studio}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
-LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}"
-ENV_ROOT="${PORTFOLIO_OPS_LOCAL_ENV_ROOT:-$HOME/.config/orataba/secrets/portfolio-operations-workbench}"
-BACKUP_ROOT="${PORTFOLIO_OPS_INSTALL_BACKUP_DIR:-$HOME/Library/Application Support/portfolio-operations-workbench/backups}"
+LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/investment-studio}"
+ENV_ROOT="${INVESTMENT_STUDIO_LOCAL_ENV_ROOT:-$HOME/.config/orataba/secrets/investment-studio}"
+BACKUP_ROOT="${INVESTMENT_STUDIO_INSTALL_BACKUP_DIR:-$HOME/Library/Application Support/investment-studio/backups}"
 BUILD_FRONTENDS="${BUILD_FRONTENDS:-true}"
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
-REFRESH_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_HOUR:-21}"
-REFRESH_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE:-0}"
-REFRESH_RETRY_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR:-23}"
-REFRESH_RETRY_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE:-0}"
-HEALTH_ATTEMPTS="${PORTFOLIO_OPS_INSTALL_HEALTH_ATTEMPTS:-30}"
+DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
+REFRESH_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR:-21}"
+REFRESH_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE:-0}"
+REFRESH_RETRY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR:-23}"
+REFRESH_RETRY_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE:-0}"
+HEALTH_ATTEMPTS="${INVESTMENT_STUDIO_INSTALL_HEALTH_ATTEMPTS:-30}"
 
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
@@ -28,16 +28,16 @@ NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SNAPSHOT_REFRESH_RUNNER="$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
-MARKET_DATA_REFRESH_RUNNER="$PROJECT_ROOT/apps/platform/backend/scripts/refresh_market_data_scheduled.py"
+MARKET_DATA_REFRESH_RUNNER="$PROJECT_ROOT/shared-data/scripts/refresh_market_data_scheduled.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
 
 services=(
-  platform-api
+  home-api
   watchlist-api
   portfolio-api
-  platform-web
+  home-web
   watchlist-web
   portfolio-web
   market-data-refresh
@@ -77,19 +77,19 @@ if [[ ! -x "$SCRIPT_DIR/run_market_data_refresh.sh" ]]; then
   exit 1
 fi
 if [[ ! "$REFRESH_HOUR" =~ ^[0-9]+$ || "$REFRESH_HOUR" -gt 23 ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_REFRESH_HOUR must be an integer between 0 and 23." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR must be an integer between 0 and 23." >&2
   exit 64
 fi
 if [[ ! "$REFRESH_MINUTE" =~ ^[0-9]+$ || "$REFRESH_MINUTE" -gt 59 ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE must be an integer between 0 and 59." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE must be an integer between 0 and 59." >&2
   exit 64
 fi
 if [[ ! "$REFRESH_RETRY_HOUR" =~ ^[0-9]+$ || "$REFRESH_RETRY_HOUR" -gt 23 ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR must be an integer between 0 and 23." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR must be an integer between 0 and 23." >&2
   exit 64
 fi
 if [[ ! "$REFRESH_RETRY_MINUTE" =~ ^[0-9]+$ || "$REFRESH_RETRY_MINUTE" -gt 59 ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE must be an integer between 0 and 59." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE must be an integer between 0 and 59." >&2
   exit 64
 fi
 if (( 10#$REFRESH_RETRY_HOUR * 60 + 10#$REFRESH_RETRY_MINUTE \
@@ -102,42 +102,45 @@ if [[ "$BUILD_FRONTENDS" != "true" && "$BUILD_FRONTENDS" != "false" ]]; then
   exit 64
 fi
 if [[ -z "$DATABASE_URL" ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must explicitly identify the existing local database." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must explicitly identify the existing local database." >&2
   exit 64
 fi
 case "$DATABASE_URL" in
   postgresql://*|postgresql+psycopg://*) ;;
   *)
-    echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+    echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
     exit 64
     ;;
 esac
 if [[ ! "$HEALTH_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "PORTFOLIO_OPS_INSTALL_HEALTH_ATTEMPTS must be a positive integer." >&2
+  echo "INVESTMENT_STUDIO_INSTALL_HEALTH_ATTEMPTS must be a positive integer." >&2
   exit 64
 fi
 
 source "$SCRIPT_DIR/load_runtime_env.sh"
 source "$BACKUP_HELPER"
-portfolio_ops_require_password_free_database_url "$DATABASE_URL"
-DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
-portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+investment_studio_require_password_free_database_url "$DATABASE_URL"
+DATABASE_URL="$(investment_studio_sqlalchemy_database_url "$DATABASE_URL")"
+investment_studio_reject_repository_env_files "$PROJECT_ROOT"
 for env_spec in \
-  platform:PORTFOLIO_OPS_PLATFORM_ \
-  watchlist:PORTFOLIO_OPS_WATCHLIST_ \
-  portfolio:PORTFOLIO_OPS_PORTFOLIO_; do
+  home:INVESTMENT_STUDIO_HOME_ \
+  data:INVESTMENT_STUDIO_DATA_ \
+  watchlist:INVESTMENT_STUDIO_WATCHLIST_ \
+  portfolio:INVESTMENT_STUDIO_PORTFOLIO_; do
   app="${env_spec%%:*}"
   prefix="${env_spec#*:}"
-  runtime_env_file="$(portfolio_ops_runtime_env_file "$app" "$ENV_ROOT")"
-  if [[ "$app" == "platform" || -f "$runtime_env_file" ]]; then
-    portfolio_ops_validate_env_file "$runtime_env_file" "$prefix"
+  runtime_env_file="$(investment_studio_runtime_env_file "$app" "$ENV_ROOT")"
+  if [[ "$app" == "home" || "$app" == "data" || -f "$runtime_env_file" ]]; then
+    investment_studio_validate_env_file "$runtime_env_file" "$prefix"
   fi
 done
 
-mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$PROJECT_ROOT/var/watchlist-documents" \
-  "$PROJECT_ROOT/var/portfolio-research-outputs"
+mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" \
+  "${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/watchlist-documents" \
+  "${XDG_DATA_HOME:-$HOME/.local/share}/investment-studio/portfolio-research-outputs" \
+  "${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio"
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-launchd-install.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-launchd-install.XXXXXX")"
 chmod 700 "$WORK_DIR"
 SERVICE_STATE_FILE="$WORK_DIR/service-state"
 PLIST_BACKUP_DIR="$WORK_DIR/plists"
@@ -203,10 +206,10 @@ cleanup_on_exit() {
 
     if [[ "$database_mutated" == "true" ]]; then
       if [[ "$backup_ready" != "true" ]] \
-        || ! portfolio_ops_restore_project_schema_backup \
+        || ! investment_studio_restore_project_schema_backup \
           "$DATABASE_URL" \
-          "${PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH:-}" \
-          "${PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH:-}"; then
+          "${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-}" \
+          "${INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH:-}"; then
         recovery_failed="true"
         echo "Automatic database rollback failed." >&2
       fi
@@ -255,58 +258,58 @@ restart_required="true"
 
 "$LOG_COMPACTOR" "$LOG_DIR"
 
-portfolio_ops_create_project_schema_backup \
+investment_studio_create_project_schema_backup \
   "$DATABASE_URL" \
   "$BACKUP_ROOT" \
-  "portfolio-ops-pre-launchd-install"
+  "investment-studio-pre-launchd-install"
 backup_ready="true"
 
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
 
 database_mutated="true"
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
-platform_env_file="$(portfolio_ops_runtime_env_file platform "$ENV_ROOT")"
-portfolio_ops_load_env_file "$platform_env_file" PORTFOLIO_OPS_PLATFORM_
-PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+data_env_file="$(investment_studio_runtime_env_file data "$ENV_ROOT")"
+investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_
+PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$MARKET_DATA_REFRESH_RUNNER" \
     --channel fmp \
     --updated-by launchd-install \
     --no-downstream-refresh \
     --fail-on-item-failure
-PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER" --recover-interrupted
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$PYTHON_BIN" "$AUDIT_RUNNER" --fail-on-warning
 
 if [[ "$BUILD_FRONTENDS" == "true" ]]; then
-  for app in platform watchlist portfolio; do
-    "$NPM_BIN" --prefix "$PROJECT_ROOT/apps/$app/frontend" ci
-    "$NPM_BIN" --prefix "$PROJECT_ROOT/apps/$app/frontend" run build
+  for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend"; do
+    "$NPM_BIN" --prefix "$frontend_root" ci
+    "$NPM_BIN" --prefix "$frontend_root" run build
   done
 fi
 
-for app in platform watchlist portfolio; do
-  if [[ ! -f "$PROJECT_ROOT/apps/$app/frontend/dist/index.html" ]]; then
-    echo "Missing frontend build: apps/$app/frontend/dist/index.html" >&2
+for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend"; do
+  if [[ ! -f "$frontend_root/dist/index.html" ]]; then
+    echo "Missing frontend build: $frontend_root/dist/index.html" >&2
     exit 1
   fi
 done
 
 definitions_touched="true"
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$PYTHON_BIN" "$SCRIPT_DIR/generate_local_service_plists.py" \
   --project-root "$PROJECT_ROOT" \
   --python-bin "$PYTHON_BIN" \
@@ -329,7 +332,7 @@ for service in "${services[@]}"; do
   launchctl enable "$domain/$label"
 done
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web; do
+for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web; do
   launchctl kickstart -k "$domain/$LABEL_PREFIX.$service"
 done
 
@@ -354,8 +357,8 @@ for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
     restart_required="false"
     rm -rf "$WORK_DIR"
     trap - EXIT HUP INT TERM
-    echo "Portfolio Operations Workbench is running at http://127.0.0.1:5172"
-    echo "Pre-migration backup retained at: ${PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH:-$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH}"
+    echo "Investment Studio is running at http://127.0.0.1:5172"
+    echo "Pre-migration backup retained at: ${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-$INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH}"
     exit 0
   fi
   [[ $attempt -eq $HEALTH_ATTEMPTS ]] || sleep 1

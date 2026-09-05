@@ -128,12 +128,16 @@ Transaction Import Proposal → Portfolio Preview
 - [run_portfolio_copilot_harness.sh](../apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh)
 
 package、版本和模型只在上述配置与启动脚本中固定；本文不复制易漂移的当前值。preset 关闭 shell、文件系统、Web、代码执行、skills、子 Agent 等无关能力，只插入 Portfolio MCP server。Harness 会话保存在仓库外的
-`~/.local/share/portfolio-operations-workbench/deepseek-harness`。
+`~/.local/share/investment-studio/deepseek-harness`。
+
+启动脚本从自身位置确定项目根目录，再传给 MCP preset 定位 Python 和后端目录；
+本地改名或云端发布路径变化不需要修改 preset。云端将
+`INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL` 设为其内部 Portfolio API 地址。
 
 DeepSeek key 保存在项目既有的仓库外 secret 目录：
 
 ```text
-~/.config/orataba/secrets/portfolio-operations-workbench/portfolio-copilot.env
+~/.config/orataba/secrets/investment-studio/portfolio-copilot.env
 ```
 
 文件权限为 `600`，变量名为 `DEEPSEEK_API_KEY`。项目启动器会拒绝仓库内真实
@@ -154,7 +158,7 @@ POST /api/portfolios/{portfolio_id}/transaction-capture-batches/{batch_id}/analy
 
 接口立即返回 queued，由后台运行 Harness；批次持久化 attempt、开始/完成时间、状态和
 安全错误摘要。默认 900 秒超时可通过
-`PORTFOLIO_OPS_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS` 调整。模型原始会话仍在
+`INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ANALYSIS_TIMEOUT_SECONDS` 调整。模型原始会话仍在
 Harness 的 append-only session 中，不复制到批次状态。
 
 Portfolio 后端运行在本机 `127.0.0.1:8001` 时，调试 MCP server 也必须显式绑定任务作用域和运行时模型身份：
@@ -162,9 +166,9 @@ Portfolio 后端运行在本机 `127.0.0.1:8001` 时，调试 MCP server 也必�
 ```bash
 PROJECT_ROOT="$PWD"
 cd "$PROJECT_ROOT/apps/portfolio/backend"
-PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID='<portfolio-id>' \
-PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID='<batch-id>' \
-PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME='<configured-vision-model>' \
+INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID='<portfolio-id>' \
+INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID='<batch-id>' \
+INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME='<configured-vision-model>' \
   "$PROJECT_ROOT/.venv/bin/python" \
   -m portfolio_app.assistant_mcp
 ```
@@ -182,10 +186,10 @@ DeepSeek Harness 的 MCP transport patch 可使用其官方 stdio 插件结构�
         args: ['-m', 'portfolio_app.assistant_mcp']
         cwd: <repository-root>/apps/portfolio/backend
         env:
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_API_BASE_URL: http://127.0.0.1:8001/api
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID: <portfolio-id>
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID: <batch-id>
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME: <configured-vision-model>
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL: http://127.0.0.1:8001/api
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID: <portfolio-id>
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID: <batch-id>
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME: <configured-vision-model>
         toolCallTimeoutMs: 60000
         failOnStartupError: true
 ```

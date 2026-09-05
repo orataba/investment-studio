@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from uuid import uuid4
 from copy import deepcopy
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault(
-    "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL",
+    "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL",
     "sqlite+pysqlite:///:memory:",
 )
 BACKEND_ROOT_STR = str(BACKEND_ROOT)
@@ -26,8 +27,8 @@ from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.api.routes import transactions as transaction_routes
 from portfolio_app.services import instrument_charts, ledger, performance, portfolio_store
-from portfolio_ops_instrument_core import instrument_store as shared_store
-from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
+from investment_studio_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core.db_models import InstrumentRegistryBase
 
 
 def _market_point(
@@ -303,13 +304,14 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     database_path = tmp_path / "portfolio.db"
     database_url = f"sqlite+pysqlite:///{database_path}"
     research_outputs_root = tmp_path / "research_outputs"
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "")
-    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED", "true")
     # Queue/worker tests start an explicit worker.  Keeping the application
     # lifespan worker off makes all other request tests deterministic.
     monkeypatch.setenv(
-        "PORTFOLIO_OPS_PORTFOLIO_DAILY_SNAPSHOT_WORKER_ENABLED",
+        "INVESTMENT_STUDIO_PORTFOLIO_DAILY_SNAPSHOT_WORKER_ENABLED",
         "false",
     )
 
@@ -360,6 +362,10 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 temporary_seed_columns.append(
                     ("account_record", "account_category")
                 )
+            for column_name in ("cash_purpose", "collateral_reference"):
+                if column_name not in account_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE account_record ADD COLUMN {column_name} VARCHAR")
+                    temporary_seed_columns.append(("account_record", column_name))
             transaction_columns = {
                 str(column["name"])
                 for column in sa.inspect(connection).get_columns("transaction_record")
@@ -373,6 +379,8 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                     ("transaction_record", "position_effective_date")
                 )
             additive_transaction_columns = {
+                "asset_deliveries_json": "JSON",
+                "lot_selections_json": "JSON",
                 "transaction_sequence": "INTEGER NOT NULL DEFAULT 1",
                 "lifecycle_event_type": "VARCHAR",
                 "source_system": "VARCHAR(100)",
@@ -427,6 +435,12 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                     "PRIMARY KEY (portfolio_id, derivative_contract_id))"
                 )
                 temporary_seed_tables.append("derivative_contract_record")
+            contract_columns = {column["name"] for column in sa.inspect(connection).get_columns("derivative_contract_record")}
+            for name, column_type in {"row_version": "INTEGER NOT NULL DEFAULT 1", "amendments_json": "JSON"}.items():
+                if name not in contract_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE derivative_contract_record ADD COLUMN {name} {column_type}")
+                    if "derivative_contract_record" not in temporary_seed_tables:
+                        temporary_seed_columns.append(("derivative_contract_record", name))
             if "option_delivery_link" not in sa.inspect(
                 connection
             ).get_table_names():
@@ -463,9 +477,9 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(ledger, "get_registry_instrument_details", _get_registry_instrument_details)
-    monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))
+    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: deepcopy(FX_PAYLOAD))
     monkeypatch.setattr(performance, "get_registry_instrument_detail", _get_registry_instrument_detail)
-    monkeypatch.setattr(performance, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))
+    monkeypatch.setattr(performance, "get_shared_fx_rates", lambda: deepcopy(FX_PAYLOAD))
 
     yield
 
@@ -479,5 +493,14 @@ def client():
     import portfolio_app.main as main_module
 
     main_module = importlib.reload(main_module)
-    with TestClient(main_module.app) as test_client:
+    class MutationClient(TestClient):
+        """Normal callers supply a unique mutation id; replay tests supply their own."""
+        def request(self, method, url, **kwargs):
+            if method.upper() == "POST" and str(url).endswith(("/transactions", "/options/outcomes", "/transactions/internal-transfer")):
+                headers = dict(kwargs.get("headers") or {})
+                if not any(key.lower() == "idempotency-key" for key in headers):
+                    headers["Idempotency-Key"] = str(uuid4())
+                kwargs["headers"] = headers
+            return super().request(method, url, **kwargs)
+    with MutationClient(main_module.app) as test_client:
         yield test_client

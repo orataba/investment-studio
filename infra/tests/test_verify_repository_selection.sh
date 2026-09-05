@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VERIFY="$REPOSITORY_ROOT/infra/scripts/verify_repository.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-verify-selection.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-verify-selection.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 assert_invalid_selection() {
@@ -12,7 +12,7 @@ assert_invalid_selection() {
   local status=0
 
   PYTHON_BIN=/usr/bin/true \
-  PORTFOLIO_OPS_TEST_POSTGRES_URL=postgresql+psycopg://invalid/invalid \
+  INVESTMENT_STUDIO_TEST_POSTGRES_URL=postgresql+psycopg://invalid/invalid \
     "$VERIFY" "$command_name" invalid-app >"$TEST_ROOT/$command_name.out" 2>"$output" || status=$?
 
   if [[ "$status" -ne 64 ]]; then

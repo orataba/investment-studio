@@ -1,11 +1,11 @@
-# Portfolio Operations Workbench Database Workflow
+# Investment Studio Database Workflow
 
 ## Default Topology
 
-- PostgreSQL database: `portfolio_ops`
+- PostgreSQL database: `investment_studio`
 - Schemas:
-  - `instrument_registry`
-  - `platform`
+  - `instrument_data`
+  - `data_ingestion`
   - `portfolio`
   - `watchlist`
 
@@ -18,7 +18,7 @@
 The compose port is bound to `127.0.0.1:5432` by default; opt into a broader
 network exposure only through an explicit, reviewed deployment override.
 
-Runtime secrets come only from `~/.config/orataba/secrets/portfolio-operations-workbench/` or explicitly exported process variables; backend directories must not contain `.env` files or links. Use a password-free URL together with a current-user `0600` `.pgpass`. Never place a password-bearing URL in shell commands, docs, issues, PR text, commits, or chat transcripts.
+Runtime secrets come only from `~/.config/orataba/secrets/investment-studio/` or explicitly exported process variables; backend directories must not contain `.env` files or links. Use a password-free URL together with a current-user `0600` `.pgpass`. Never place a password-bearing URL in shell commands, docs, issues, PR text, commits, or chat transcripts.
 
 - host: `127.0.0.1`
 - port: `5432`
@@ -33,30 +33,38 @@ the caller:
 
 ```bash
 PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
-  ENV_ROOT="$HOME/.config/portfolio-ops/env" \
+  ENV_ROOT="$HOME/.config/investment-studio/env" \
   infra/scripts/migrate_all.sh
 ```
 
-`ENV_ROOT` is optional. When it is set, it must contain `platform.env`,
+`ENV_ROOT` is optional. When it is set, it must contain `data.env`,
 `portfolio.env`, and `watchlist.env`. Without it, the script uses only the
 already-exported process environment and never reads repository-local `.env`.
-The Instrument Registry, Platform, Portfolio, and Watchlist migration targets
-are all required explicitly before any migration begins; the Registry target
-never falls back to the Platform runtime variable.
+The Instrument Data, Data Ingestion, Portfolio, and Watchlist migration targets
+are all required explicitly before any migration begins; the Instrument Data target
+never falls back to the ingestion runtime variable. Historical environment-variable
+prefixes remain unchanged.
 Already-exported process variables always take precedence over external env-file
 entries; this prevents a release or restore command from being silently redirected.
 Before Alembic runs, the entry point compares the host, port, and database name
 for all four runtime URLs and every explicit `*_ALEMBIC_DATABASE_URL`. Set
-`PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE` when the release environment also
+`INVESTMENT_STUDIO_MIGRATION_EXPECTED_DATABASE` when the release environment also
 needs an exact database-name assertion. A mismatch fails closed, and the
 diagnostic output never includes URL usernames or passwords.
 
-The runner owns the dependency order. It first brings Registry to the revision
-required by Platform's evidence schema, then migrates `platform`, advances Registry
-to its destructive canonical-NAV revision, and finally migrates Portfolio and
-Watchlist. Do not replace this with four independent `alembic upgrade head` calls:
-the Registry NAV cleanup must not run before Platform can preserve the original
-manual/API/email observations.
+The runner owns the dependency order. It first brings the historical
+`instrument_registry` schema to the revision required by the ingestion evidence
+schema, then builds the historical `platform` schema through `20260823_0007`
+and advances the shared asset facts through their canonical-NAV contract.
+Ingestion revision `20260904_0008` renames `platform` in place to `data_ingestion`,
+before Portfolio and Watchlist migrate. Finally, Instrument Data revisions
+`20260904_0030` and `20260904_0031` rename `instrument_registry` to
+`instrument_data` and add reference snapshots. Do not replace this with four
+independent `alembic upgrade head` calls: NAV cleanup must not run before
+ingestion can preserve the original manual/API/email observations.
+Revisions `20260904_0032` and `20260904_0009` also rebind the stored trigger
+function search paths. PostgreSQL does not rewrite those text settings during a
+schema rename; verify actual market-data and NAV writes after upgrading.
 
 For the managed local database, use `infra/launchd/install_local_services.sh`
 instead. It stops all managed writers, creates and retains a verified backup of
@@ -73,16 +81,16 @@ preflight, stops managed local services, retains a pre-restore schema backup,
 and automatically rolls back on restore, validation, or migration failure:
 
 ```bash
-PORTFOLIO_OPS_DUMP_CHECKSUM_PATH=/secure/path/portfolio-operations-workbench.sha256 \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
-CONFIRM_RESTORE=portfolio_ops \
+INVESTMENT_STUDIO_DUMP_CHECKSUM_PATH=/secure/path/investment-studio.sha256 \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
+CONFIRM_RESTORE=investment_studio \
   infra/postgres/restore_project_dump.sh \
-  /secure/path/portfolio-operations-workbench.pgdump
+  /secure/path/investment-studio.pgdump
 ```
 
 By default it accepts only loopback or Unix-socket database hosts. Safety
 backups live under
-`${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`.
+`${XDG_STATE_HOME:-~/.local/state}/investment-studio/postgres-backups/`.
 The incoming SHA-256 file is mandatory; there is no unverified-restore switch.
 After managed services are stopped, the wrapper terminates remaining client
 connections and fails closed if any connection remains. Pre-restore backup and
@@ -98,13 +106,13 @@ failure leaves managed services stopped and retains the recovery state path.
 如果本地数据库已经混入旧 schema、脏数据、半迁移状态，直接重建四套 schema：
 
 ```bash
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql://investment_studio@127.0.0.1:5432/investment_studio' \
   ./infra/postgres/rebuild_local_schemas.sh --confirm-destroy-project-schemas
 ```
 
 说明：
 
-- 这是破坏性命令，会删除 `instrument_registry / platform / portfolio / watchlist` 四个 schema 的全部数据，包括 Platform 的邮箱游标、原始证据与重试状态。
+- 这是破坏性命令，会删除 `instrument_data / data_ingestion / portfolio / watchlist` 四个 schema 的全部数据，包括数据接入的邮箱游标、原始证据与重试状态。
 - 必须同时显式提供 `postgresql://` 或 `postgresql+psycopg://` URL 和
   `--confirm-destroy-project-schemas`；脚本没有隐式目标或兼容性 fallback。
 - 同一个无密码显式目标会交给 `psql` 和四条 Alembic migration chain；密码只通过
@@ -118,20 +126,28 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
 
 ## Canonical Runtime Schemas
 
-- Platform backend uses `platform, instrument_registry, public` search-path order: operational state is private, canonical facts remain shared
+- Data maintenance uses `data_ingestion, instrument_data, public` search-path order: operational state is private, canonical facts remain shared
 - Portfolio backend connects to `portfolio`
 - Watchlist backend connects to `watchlist`
+- Home handles login and navigation only and does not connect to the database
 
-Platform pins `database_schema=instrument_registry` and
-`operations_database_schema=platform`; its migrations keep their Alembic version
-table in `platform`. Portfolio and Watchlist keep their own schema first. One
+Data maintenance pins `database_schema=instrument_data` and
+`operations_database_schema=data_ingestion`; its migrations keep their Alembic version
+table in `data_ingestion`. Portfolio and Watchlist keep their own schema first. One
 database instance can therefore host all four project schemas without treating
-Platform operational rows as shared market facts. These schema names are fixed
+ingestion operational rows as shared market facts. These schema names are fixed
 contracts rather than deployment customization points.
+
+`data_ingestion` was named `platform` before revision `20260904_0008`.
+The rename preserves rows, object identities, foreign keys and grants; it does
+not merge databases or move canonical facts. The existing
+`platform_alembic_version` table stays unchanged to preserve migration history. Old schema references belong
+only in historical migrations and backup/rollback support, not runtime settings.
 
 当前 backend 顶层包名已经拆开：
 
-- `platform_app`
+- `home_api`：登录和导航，无数据库依赖
+- `studio_data`：后台数据维护 CLI
 - `portfolio_app`
 - `watchlist_app`
 
@@ -144,11 +160,11 @@ PostgreSQL 专属的 migration、cross-schema FK、search path、constraint、�
 它不是只读源码检查，必须指向明确创建的可丢弃测试数据库：
 
 ```bash
-MIGRATION_TEST_URL='postgresql+psycopg://migration_test_role@127.0.0.1:5432/portfolio_ops_migration_test'
-PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$MIGRATION_TEST_URL" \
-PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$MIGRATION_TEST_URL" \
-PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$MIGRATION_TEST_URL" \
-PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$MIGRATION_TEST_URL" \
+MIGRATION_TEST_URL='postgresql+psycopg://migration_test_role@127.0.0.1:5432/investment_studio_migration_test'
+INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$MIGRATION_TEST_URL" \
+INVESTMENT_STUDIO_DATA_DATABASE_URL="$MIGRATION_TEST_URL" \
+INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$MIGRATION_TEST_URL" \
+INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$MIGRATION_TEST_URL" \
   infra/scripts/verify_repository.sh migration-heads
 ```
 
@@ -157,13 +173,12 @@ PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$MIGRATION_TEST_URL" \
 完整 PostgreSQL integration gate 使用另一项显式变量：
 
 ```bash
-PORTFOLIO_OPS_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/portfolio_ops_test_control' \
+INVESTMENT_STUDIO_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/investment_studio_test_control' \
   infra/scripts/verify_repository.sh postgres-integration all
 ```
 
 Portfolio / Watchlist suites 会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，因此测试角色需要
-`CREATE DATABASE / DROP DATABASE`；Platform suite 会在控制库内创建并清理隔离 schema，因此还需要该库的
-`CREATE` 权限。控制库必须由测试角色拥有且不含业务数据；backend 目录不读取或保存测试 `.env`。
+`CREATE DATABASE / DROP DATABASE`；Data suite 同样创建独立测试数据库。控制库必须由测试角色拥有且不含业务数据；源码目录不读取或保存测试 `.env`。
 
 ## Repository Hygiene
 

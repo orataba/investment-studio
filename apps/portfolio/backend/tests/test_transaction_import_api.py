@@ -14,7 +14,7 @@ from portfolio_app.services.transaction_import import TRANSACTION_ACTIONS
 
 def _create_derivative_account(client, *, category: str) -> str:
     response = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        "/api/portfolios/investment-studio/accounts",
         json={
             "account_name": f"JSON {category.upper()} Account",
             "account_category": category,
@@ -50,7 +50,7 @@ def _cash_deposit_payload(*, reference: str = "SCREENSHOT-001#1") -> dict[str, o
 def test_json_import_preview_commit_and_idempotent_replay(client) -> None:
     payload = _cash_deposit_payload()
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json=payload,
     )
     assert preview_response.status_code == 200, preview_response.text
@@ -68,7 +68,7 @@ def test_json_import_preview_commit_and_idempotent_replay(client) -> None:
 
     commit_payload = {**payload, "preview_digest": preview["preview_digest"]}
     first_commit = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "screenshot-batch-001"},
         json=commit_payload,
     )
@@ -79,7 +79,7 @@ def test_json_import_preview_commit_and_idempotent_replay(client) -> None:
     assert created["transactions"][0]["external_reference"] == "SCREENSHOT-001#1"
 
     replay = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "screenshot-batch-001"},
         json=commit_payload,
     )
@@ -93,14 +93,14 @@ def test_json_import_preview_commit_and_idempotent_replay(client) -> None:
 def test_json_import_requires_fresh_preview_and_unique_source_identity(client) -> None:
     payload = _cash_deposit_payload(reference="SCREENSHOT-002#1")
     preview = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json=payload,
     ).json()
 
     changed_payload = _cash_deposit_payload(reference="SCREENSHOT-002#1")
     changed_payload["records"][0]["gross_amount"] = "999.00"
     stale_commit = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "screenshot-batch-002"},
         json={**changed_payload, "preview_digest": preview["preview_digest"]},
     )
@@ -112,7 +112,7 @@ def test_json_import_requires_fresh_preview_and_unique_source_identity(client) -
         "records": [payload["records"][0], payload["records"][0]],
     }
     duplicate_preview = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json=duplicate_payload,
     )
     assert duplicate_preview.status_code == 200
@@ -125,7 +125,7 @@ def test_json_import_requires_fresh_preview_and_unique_source_identity(client) -
 
 def test_json_import_rejects_invalid_asset_action_pair_in_preview(client) -> None:
     response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json={
             "source_system": "trade_screenshot_parser",
             "records": [
@@ -249,7 +249,7 @@ def test_json_import_accepts_mixed_security_option_fcn_and_cash_batch(client) ->
     }
 
     preview_response = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json=payload,
     )
     assert preview_response.status_code == 200, preview_response.text
@@ -259,7 +259,7 @@ def test_json_import_accepts_mixed_security_option_fcn_and_cash_batch(client) ->
     assert preview["error_count"] == 0, preview
 
     commit = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "screenshot-mixed-batch"},
         json={**payload, "preview_digest": preview["preview_digest"]},
     )
@@ -291,13 +291,13 @@ def test_json_import_cash_transfer_creates_one_atomic_pair(client) -> None:
         ],
     }
     preview = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/preview",
+        "/api/portfolios/investment-studio/transaction-imports/preview",
         json=payload,
     ).json()
     assert preview["error_count"] == 0, preview
 
     commit = client.post(
-        "/api/portfolios/portfolio-ops/transaction-imports/commit",
+        "/api/portfolios/investment-studio/transaction-imports/commit",
         headers={"Idempotency-Key": "screenshot-transfer-batch"},
         json={**payload, "preview_digest": preview["preview_digest"]},
     )

@@ -89,13 +89,13 @@ def test_fixed_capital_residual_defaults_to_cash_without_configured_targets() ->
         ),
         total_weight=0.2,
     )
-    assert configured[derivative_key] == pytest.approx(0.05)
-    assert configured[cash_key] == pytest.approx(0.15)
+    assert configured[derivative_key] == pytest.approx(0.1)
+    assert configured[cash_key] == pytest.approx(0.1)
 
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
-        "/api/portfolios/portfolio-ops/taxonomies",
+        "/api/portfolios/investment-studio/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
             "name": "Research Planning Axis",
             "taxonomy_type": "custom",
@@ -115,7 +115,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         {"node_name": "Rates", "node_code": "RATES"},
     ]:
         node_response = client.post(
-            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+            f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
             json={"effective_from": EFFECTIVE_FROM, **payload},
         )
         assert node_response.status_code == 200
@@ -136,7 +136,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         },
     ]:
         node_response = client.post(
-            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+            f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
             json={"effective_from": EFFECTIVE_FROM, **payload},
         )
         assert node_response.status_code == 200
@@ -148,7 +148,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         ("instrument", "fund-us-agg", "Rates"),
     ]:
         assignment_response = client.post(
-            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+            f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
             json={"effective_from": EFFECTIVE_FROM,
                 "target_scope": assignment[0],
                 "target_entity_id": assignment[1],
@@ -158,7 +158,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         assert assignment_response.status_code == 200
 
     default_response = client.put(
-        "/api/portfolios/portfolio-ops/taxonomies/default-planning",
+        "/api/portfolios/investment-studio/taxonomies/default-planning",
         json={"effective_from": EFFECTIVE_FROM,"taxonomy_id": taxonomy_id},
     )
     assert default_response.status_code == 200
@@ -754,7 +754,7 @@ def test_taxonomy_state_reuses_seeded_market_data_caches(monkeypatch) -> None:
     )
     monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", lambda _portfolio_id: [])
     monkeypatch.setattr(
-        "portfolio_app.services.research_solver.get_platform_fx_rates",
+        "portfolio_app.services.research_solver.get_shared_fx_rates",
         lambda: pytest.fail("seeded FX map should avoid a platform reload"),
     )
 
@@ -1020,7 +1020,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
 
     assert payload["backtest"]["points"]
     assert period_solutions
-    assert frozen_actual_flags and all(frozen_actual_flags)
+    assert frozen_actual_flags and not any(frozen_actual_flags)
     assert not any(
         "research window is clipped" in warning
         for warning in payload["backtest"]["warnings"]
@@ -1323,11 +1323,12 @@ def test_backtest_replay_deducts_buy_and_sell_friction_and_reconciles_contributi
 
     executions = replay["execution_records"]
     assert len(executions) == 2
-    assert executions[0]["risky_buy_turnover"] == pytest.approx(1.0)
-    assert executions[0]["commission_cost"] == pytest.approx(0.0002)
+    invested = 1.0 / (1.0 + 0.0007)
+    assert executions[0]["risky_buy_turnover"] == pytest.approx(invested)
+    assert executions[0]["commission_cost"] == pytest.approx(invested * 0.0002)
     assert executions[0]["tax_cost"] == pytest.approx(0.0)
-    assert executions[0]["slippage_cost"] == pytest.approx(0.0005)
-    assert executions[1]["risky_sell_turnover"] > 1.0
+    assert executions[0]["slippage_cost"] == pytest.approx(invested * 0.0005)
+    assert executions[1]["risky_sell_turnover"] == pytest.approx(1.0)
     assert executions[1]["tax_cost"] > 0.0
     assert replay["total_cost"] == pytest.approx(
         sum(item["total_cost"] for item in executions)
@@ -1556,7 +1557,7 @@ def test_walk_forward_only_publishes_points_after_each_test_window_starts() -> N
             date.fromisoformat(item)
             for item in _backtest_return_map_from_points(window["points"])
         ]
-        assert all(item > test_start for item in published_return_dates)
+        assert all(item >= test_start for item in published_return_dates)
     assert validation["oos_metrics"]["period_return"] is not None
 
 
@@ -1725,18 +1726,18 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
         key=lambda item: item["effective_from"],
     ):
         target_set_response = client.post(
-            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+            f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
             json={"effective_from": EFFECTIVE_FROM, **payload},
         )
         assert target_set_response.status_code == 200, target_set_response.json()
 
 
 def test_research_workbench_returns_target_solve_defaults(client):
-    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["portfolio_id"] == "portfolio-ops"
+    assert payload["portfolio_id"] == "investment-studio"
     assert payload["settings"]["planning_taxonomy_id"] is None
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
@@ -1809,7 +1810,7 @@ def test_research_current_context_uses_canonical_portfolio_performance(client, m
         },
     )
 
-    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert response.status_code == 200
     context = response.json()["current_context"]
 
@@ -1848,7 +1849,7 @@ def test_database_rejects_unsupported_historical_research_window(client) -> None
         session.add(
             ResearchRunRecordModel(
                 research_run_id="unsupported-window-run",
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 job_type="target_weight_solve",
                 status="completed",
                 requested_at="2026-04-15T10:00:00Z",
@@ -1891,7 +1892,7 @@ def test_research_backtest_rebalance_schedule_rolls_from_first_valid_month() -> 
         start_date=date(2026, 5, 2),
         end_date=date(2026, 12, 15),
         frequency="3m",
-    ) == [date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1)]
+    ) == [date(2026, 5, 2), date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1)]
 
 
 def test_research_backtest_metrics_include_ytd_drawdown_duration_and_calmar() -> None:
@@ -2014,7 +2015,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     }
     for unsupported_frequency in ("auto", "weekly", "monthly"):
         unsupported_response = client.put(
-            "/api/portfolios/portfolio-ops/research/settings",
+            "/api/portfolios/investment-studio/research/settings",
             json={
                 **settings_payload,
                 "calculation_frequency": unsupported_frequency,
@@ -2023,7 +2024,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
         assert unsupported_response.status_code == 422
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             **settings_payload,
             "calculation_frequency": "daily",
@@ -2031,7 +2032,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     )
     assert settings_response.status_code == 200
 
-    risk_policy_response = client.get("/api/portfolios/portfolio-ops/risk-policy")
+    risk_policy_response = client.get("/api/portfolios/investment-studio/risk-policy")
     assert risk_policy_response.status_code == 200
     risk_policy = risk_policy_response.json()
     assert risk_policy["covariance_model_id"] == "sample_covariance"
@@ -2046,7 +2047,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     assert "weekly" not in risk_policy["parameters_by_frequency"]
     assert "monthly" not in risk_policy["parameters_by_frequency"]
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_policy = workbench_response.json()["risk_policy"]
     assert workbench_policy["covariance_model_id"] == "sample_covariance"
@@ -2058,7 +2059,7 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
 
 def test_research_settings_updates_backtest_controls(client):
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -2075,7 +2076,7 @@ def test_research_settings_updates_backtest_controls(client):
     assert settings_payload["backtest_rebalance_frequency"] == "1w"
     assert settings_payload["backtest_benchmark_instrument_id"] == "fund-us-agg"
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_settings = workbench_response.json()["settings"]
     assert workbench_settings["backtest_rebalance_frequency"] == "1w"
@@ -2084,7 +2085,7 @@ def test_research_settings_updates_backtest_controls(client):
 
 def test_research_settings_omitted_backtest_controls_preserve_existing_configuration(client):
     initial = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -2117,7 +2118,7 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
     assert initial.status_code == 200, initial.text
 
     partial = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
@@ -2143,7 +2144,7 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
 
 def test_research_settings_accepts_volatility_cap_mode(client):
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -2161,14 +2162,14 @@ def test_research_settings_accepts_volatility_cap_mode(client):
     assert settings_payload["gross_exposure"] is None
     assert settings_payload["max_gross_exposure"] is None
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     assert workbench_response.json()["settings"]["capital_mode"] == "volatility_cap"
 
 
 def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -2186,12 +2187,13 @@ def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
 
 
 def test_volatility_overlay_gross_exposure_separates_target_and_cap_modes() -> None:
-    assert _resolve_volatility_overlay_gross_exposure(
-        capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
-        estimated_volatility=0.05,
-        target_volatility=0.10,
-        max_gross_exposure=None,
-    ) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="above the configured maximum"):
+        _resolve_volatility_overlay_gross_exposure(
+            capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
+            estimated_volatility=0.05,
+            target_volatility=0.10,
+            max_gross_exposure=None,
+        )
     assert _resolve_volatility_overlay_gross_exposure(
         capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
         estimated_volatility=0.05,
@@ -2218,7 +2220,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
         session.add(
             ResearchRunRecordModel(
                 research_run_id="canonical-run",
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 job_type="target_weight_solve",
                 status="completed",
                 requested_at="2026-04-15T10:00:00Z",
@@ -2260,7 +2262,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
         )
         session.commit()
 
-    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert response.status_code == 200
     payload = response.json()
     assert payload["runs"][0]["detail"] is None
@@ -2268,7 +2270,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     assert payload["selected_run"]["detail"] is None
     assert payload["selected_run"]["artifacts"] == []
     selected_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": "canonical-run"},
     )
     assert selected_response.status_code == 200
@@ -2288,14 +2290,14 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
         for reason in selected_payload["selected_run"]["reliability_reasons"]
     )
 
-    run_response = client.get("/api/portfolios/portfolio-ops/research/runs/canonical-run")
+    run_response = client.get("/api/portfolios/investment-studio/research/runs/canonical-run")
     assert run_response.status_code == 200
     assert run_response.json()["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
     assert run_response.json()["detail"]["backtest"]["metrics"]["annualized_return"] is None
 
 
 def test_research_dynamic_as_of_tracks_latest_portfolio_date(client):
-    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert response.status_code == 200
     payload = response.json()
     assert payload["settings"]["as_of_mode"] == "dynamic"
@@ -2305,9 +2307,9 @@ def test_research_dynamic_as_of_tracks_latest_portfolio_date(client):
 
 
 def test_research_pinned_as_of_requires_explicit_mode(client):
-    settings = client.get("/api/portfolios/portfolio-ops/research/workbench").json()["settings"]
+    settings = client.get("/api/portfolios/investment-studio/research/workbench").json()["settings"]
     response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": settings["planning_taxonomy_id"],
             "comparator_taxonomy_node_id": settings["comparator_taxonomy_node_id"],
@@ -2327,7 +2329,7 @@ def test_research_pinned_as_of_requires_explicit_mode(client):
     assert payload["as_of_date"] == "2026-04-01"
     assert payload["pinned_as_of_date"] == "2026-04-01"
 
-    refreshed = client.get("/api/portfolios/portfolio-ops/research/workbench").json()
+    refreshed = client.get("/api/portfolios/investment-studio/research/workbench").json()
     assert refreshed["current_context"]["as_of_date"] == "2026-04-01"
 
 
@@ -2764,21 +2766,23 @@ def test_recursive_child_nav_preserves_first_valid_return_without_filling_intern
             date(2026, 1, 2): 0.10,
             date(2026, 1, 3): np.nan,
             date(2026, 1, 4): 0.20,
+            date(2026, 1, 5): 0.10,
         },
         dtype="float64",
     )
-    child_nav = _series_to_nav(child_returns, as_of_date=date(2026, 1, 4))
+    child_nav = _series_to_nav(child_returns, as_of_date=date(2026, 1, 5))
 
     assert child_nav.loc[date(2026, 1, 1)] == pytest.approx(1.0)
     assert child_nav.loc[date(2026, 1, 2)] == pytest.approx(1.1)
     assert pd.isna(child_nav.loc[date(2026, 1, 3)])
-    assert pd.isna(child_nav.loc[date(2026, 1, 4)])
+    assert child_nav.loc[date(2026, 1, 4)] == pytest.approx(1.32)
+    assert child_nav.loc[date(2026, 1, 5)] == pytest.approx(1.452)
 
     aligned_members, _calendar, _warnings = _align_member_series(
         [ScopeMemberRecord(member_type=TARGET_MEMBER_NODE, member_id="child", label="Child")],
         {(TARGET_MEMBER_NODE, "child"): child_nav},
         start_date=date(2026, 1, 1),
-        end_date=date(2026, 1, 4),
+        end_date=date(2026, 1, 5),
         calculation_frequency="daily",
     )
 
@@ -2786,6 +2790,7 @@ def test_recursive_child_nav_preserves_first_valid_return_without_filling_intern
     assert parent_returns.loc[date(2026, 1, 2)] == pytest.approx(0.1)
     assert pd.isna(parent_returns.loc[date(2026, 1, 3)])
     assert pd.isna(parent_returns.loc[date(2026, 1, 4)])
+    assert parent_returns.loc[date(2026, 1, 5)] == pytest.approx(0.1)
 
 
 def test_research_covariance_annualizes_complete_aligned_dates() -> None:
@@ -2859,6 +2864,34 @@ def test_research_covariance_complete_case_drop_uses_only_complete_rows() -> Non
     assert covariance.loc["instrument_a", "instrument_a"] == pytest.approx(
         expected_covariance.loc["instrument_a", "instrument_a"]
     )
+    assert covariance.loc["instrument_a", "instrument_b"] == pytest.approx(
+        expected_covariance.loc["instrument_a", "instrument_b"]
+    )
+
+
+def test_research_covariance_complete_case_drop_allows_a_leading_common_history_boundary() -> None:
+    dates = [date(2026, 1, day) for day in range(1, 23)]
+    returns = pd.DataFrame(
+        {
+            "instrument_a": [0.001 * day for day in range(1, 23)],
+            "instrument_b": [None, None, None] + [0.002 * day for day in range(4, 23)],
+        },
+        index=dates,
+        dtype="float64",
+    )
+
+    covariance = _estimate_covariance(
+        returns,
+        model_id="sample_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 15},
+        missing_return_policy="complete_case_drop",
+        calculation_frequency="daily",
+        as_of_date=date(2026, 1, 22),
+    )
+
+    complete = returns.iloc[3:]
+    expected_covariance = complete.cov(ddof=1) * _infer_periods_per_year(list(complete.index))
     assert covariance.loc["instrument_a", "instrument_b"] == pytest.approx(
         expected_covariance.loc["instrument_a", "instrument_b"]
     )
@@ -3079,6 +3112,8 @@ def test_current_holding_with_zero_solved_target_requires_manual_review() -> Non
             "target_value_base": pytest.approx(0.0),
             "base_currency": "CNY",
             "action": "Review",
+            "trade_constraint": "adjustable",
+            "risk_model_status": "modeled",
             "execution_status": "manual_review_required",
             "execution_note": (
                 "Current holdings with a 0% solved target require an explicit PM decision; "
@@ -3112,7 +3147,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -3129,7 +3164,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert settings_payload["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
     assert settings_payload["target_dimension"] == "scope_default"
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert len(workbench_payload["planning_taxonomy_options"]) == 1
@@ -3137,7 +3172,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert any(item["label"] == "Risk Assets" for item in workbench_payload["planning_scope_options"])
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 200, run_response.json()
@@ -3180,7 +3215,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert run_payload["detail"]["backtest_benchmark"] is None
     assert run_payload["detail"]["backtest_relative_metrics"] is None
     comparison_response = client.get(
-        f"/api/portfolios/portfolio-ops/research/runs/{run_payload['research_run_id']}/benchmark-comparison",
+        f"/api/portfolios/investment-studio/research/runs/{run_payload['research_run_id']}/benchmark-comparison",
         params={"benchmark_instrument_id": "fund-hk-2800"},
     )
     assert comparison_response.status_code == 200, comparison_response.json()
@@ -3246,7 +3281,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
 
     report_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "report")
     artifact_response = client.get(
-        "/api/portfolios/portfolio-ops/research/artifacts/content",
+        "/api/portfolios/investment-studio/research/artifacts/content",
         params={"path": report_artifact["path"]},
     )
     assert artifact_response.status_code == 200
@@ -3259,7 +3294,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "commission" in artifact_payload["content"]
 
     selected_workbench_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": run_payload["research_run_id"]},
     )
     assert selected_workbench_response.status_code == 200
@@ -3276,11 +3311,34 @@ def test_research_run_creates_current_target_weight_outputs(client):
         assert stored_run.request_payload_json["planning_state_fingerprint"].startswith("sha256:")
 
 
+def test_pinned_research_run_is_current_for_its_selected_date(client, monkeypatch) -> None:
+    from portfolio_app.services import research
+
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, node_ids)
+    response = client.put("/api/portfolios/investment-studio/research/settings", json={
+        "planning_taxonomy_id": taxonomy_id,
+        "comparator_taxonomy_node_id": node_ids["Risk Assets"],
+        "as_of_mode": "pinned", "as_of_date": "2026-04-15", "lookback_days": 30,
+        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+    })
+    assert response.status_code == 200, response.json()
+    result = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
+    assert result.status_code == 200, result.json()
+    assert result.json()["status"] == "completed"
+    portfolio = research.get_portfolio("investment-studio")
+    monkeypatch.setattr(research, "get_portfolio", lambda _: {**portfolio, "as_of_date": "2026-04-16"})
+    monkeypatch.setattr(research, "_latest_research_transaction_date", lambda _: date(2026, 4, 16))
+    workbench = client.get("/api/portfolios/investment-studio/research/workbench").json()
+    assert workbench["runs"][0]["reliability_state"] == "current"
+    assert workbench["runs"][0]["reliability_reasons"] == []
+
+
 def test_research_run_becomes_stale_after_target_line_change(client) -> None:
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -3292,13 +3350,13 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
     )
     assert settings_response.status_code == 200, settings_response.json()
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 200, run_response.json()
     run_id = run_response.json()["research_run_id"]
 
-    catalog_response = client.get("/api/portfolios/portfolio-ops/taxonomies")
+    catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
     assert catalog_response.status_code == 200, catalog_response.json()
     catalog = catalog_response.json()
     selected_taa = next(
@@ -3318,7 +3376,7 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
         node_ids["Hong Kong Beta"]: 0.49,
     }
     update_response = client.patch(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets/{selected_taa['target_set_id']}",
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets/{selected_taa['target_set_id']}",
         json={"effective_from": "2026-04-15",
             "lines": [
                 {
@@ -3335,7 +3393,7 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
     assert update_response.status_code == 200, update_response.json()
 
     workbench_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": run_id},
     )
     assert workbench_response.status_code == 200, workbench_response.json()
@@ -3354,7 +3412,7 @@ def test_research_workbench_marks_historical_run_stale_and_non_current(client) -
         session.add(
             ResearchRunRecordModel(
                 research_run_id="historical-stale-run",
-                portfolio_id="portfolio-ops",
+                portfolio_id="investment-studio",
                 job_type="target_weight_solve",
                 status="completed",
                 requested_at="2026-04-16T10:00:00Z",
@@ -3374,7 +3432,7 @@ def test_research_workbench_marks_historical_run_stale_and_non_current(client) -
         session.commit()
 
     response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": "historical-stale-run"},
     )
 
@@ -3546,7 +3604,7 @@ def test_research_run_replaces_previous_run(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -3558,21 +3616,21 @@ def test_research_run_replaces_previous_run(client):
     )
     assert settings_response.status_code == 200
 
-    first_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
+    first_response = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
     assert first_response.status_code == 200, first_response.json()
     first_run_id = first_response.json()["research_run_id"]
 
-    second_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
+    second_response = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
     assert second_response.status_code == 200, second_response.json()
     second_run_id = second_response.json()["research_run_id"]
     assert second_run_id != first_run_id
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="portfolio-ops").all()
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="investment-studio").all()
     assert [item.research_run_id for item in remaining_runs] == [second_run_id]
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert [item["research_run_id"] for item in workbench_payload["runs"]] == [second_run_id]
@@ -3584,7 +3642,7 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -3596,12 +3654,12 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     )
     assert settings_response.status_code == 200
 
-    first_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
+    first_response = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
     assert first_response.status_code == 200, first_response.json()
     first_run_id = first_response.json()["research_run_id"]
 
     assignment_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
         json={"effective_from": "2026-04-15",
             "target_scope": TARGET_MEMBER_INSTRUMENT,
             "target_entity_id": "fund-us-watch",
@@ -3610,20 +3668,20 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     )
     assert assignment_response.status_code == 200, assignment_response.json()
 
-    failed_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
+    failed_response = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
     assert failed_response.status_code == 400, failed_response.json()
     assert "Defensive Equity" in failed_response.json()["detail"]
     assert "weight target set" in failed_response.json()["detail"]
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="portfolio-ops").all()
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="investment-studio").all()
     run_by_id = {item.research_run_id: item for item in remaining_runs}
     assert run_by_id[first_run_id].status == "completed"
     assert any(item.status == "failed" for item in remaining_runs)
 
     workbench_response = client.get(
-        "/api/portfolios/portfolio-ops/research/workbench",
+        "/api/portfolios/investment-studio/research/workbench",
         params={"selected_run_id": first_run_id},
     )
     assert workbench_response.status_code == 200
@@ -3637,7 +3695,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -3652,7 +3710,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     assert settings_response.status_code == 200
 
     baseline_run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert baseline_run_response.status_code == 200, baseline_run_response.json()
@@ -3663,7 +3721,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     )
 
     buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        "/api/portfolios/investment-studio/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -3682,7 +3740,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     assert buy_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 200, run_response.json()
@@ -3700,7 +3758,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     _create_target_sets(client, taxonomy_id, node_ids)
 
     target_set_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
         json={"effective_from": "2026-04-15",
             "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
             "target_set_type": "taa",
@@ -3719,7 +3777,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert target_set_response.status_code == 200, target_set_response.json()
 
     assignment_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
         json={"effective_from": "2026-04-15",
             "target_scope": TARGET_MEMBER_INSTRUMENT,
             "target_entity_id": "fund-us-watch",
@@ -3729,7 +3787,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert assignment_response.status_code == 200, assignment_response.json()
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
@@ -3742,7 +3800,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -3755,7 +3813,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -3768,7 +3826,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     )
     assert settings_response.status_code == 200
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     top_level_scope = next(
         item for item in workbench_response.json()["planning_scope_options"] if item["taxonomy_node_id"] is None
@@ -3779,7 +3837,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
 def test_research_scope_default_requires_configured_dimension_target_set(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     target_set_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
         json={
             "target_set_type": "taa",
             "name": "Root Weight Only",
@@ -3807,7 +3865,7 @@ def test_research_scope_default_requires_configured_dimension_target_set(client)
     )
     assert target_set_response.status_code == 200
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -3820,7 +3878,7 @@ def test_research_scope_default_requires_configured_dimension_target_set(client)
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -3832,7 +3890,7 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -3844,10 +3902,10 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     )
     assert settings_response.status_code == 200
 
-    delete_response = client.delete(f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}", params={"effective_from": EFFECTIVE_FROM})
+    delete_response = client.delete(f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}", params={"effective_from": EFFECTIVE_FROM})
     assert delete_response.status_code == 200
 
-    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert workbench_payload["default_planning_taxonomy_id"] is None
@@ -3870,7 +3928,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
             {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
         ],
     }
-    initial_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=payload)
+    initial_response = client.put("/api/portfolios/investment-studio/research/settings", json=payload)
     assert initial_response.status_code == 200
     assert initial_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
     assert initial_response.json()["top_sleeve_weight_bounds"] == [
@@ -3882,7 +3940,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     omitted_payload.pop("frozen_taxonomy_node_ids")
     omitted_payload.pop("top_sleeve_weight_bounds")
     omitted_payload["notes"] = "Preserve frozen sleeves"
-    omitted_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=omitted_payload)
+    omitted_response = client.put("/api/portfolios/investment-studio/research/settings", json=omitted_payload)
     assert omitted_response.status_code == 200
     assert omitted_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
     assert omitted_response.json()["top_sleeve_weight_bounds"] == [
@@ -3892,7 +3950,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     clear_payload = dict(omitted_payload)
     clear_payload["frozen_taxonomy_node_ids"] = []
     clear_payload["top_sleeve_weight_bounds"] = []
-    clear_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=clear_payload)
+    clear_response = client.put("/api/portfolios/investment-studio/research/settings", json=clear_payload)
     assert clear_response.status_code == 200
     assert clear_response.json()["frozen_taxonomy_node_ids"] == []
     assert clear_response.json()["top_sleeve_weight_bounds"] == []
@@ -3901,7 +3959,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
 def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -3948,8 +4006,8 @@ def test_research_risk_budget_solver_accepts_binding_weight_bounds():
     assert bounded.solver_detail in {"slsqp_minimax", "slsqp_minimax_balanced"}
     assert bounded.max_abs_share_gap is not None
     assert bounded.max_abs_share_gap > 1e-4
-    assert bounded.target_status == "constrained_target_miss"
-    assert bounded.execution_ready is False
+    assert bounded.target_status == "constrained_optimum"
+    assert bounded.execution_ready is True
 
 
 def test_research_risk_budget_solver_returns_binding_signed_negative_constrained_solution():
@@ -3984,7 +4042,7 @@ def test_research_target_volatility_rejects_unaligned_risk_history(client):
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -4003,7 +4061,7 @@ def test_research_target_volatility_rejects_unaligned_risk_history(client):
     assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -4015,7 +4073,7 @@ def test_research_target_volatility_rejects_missing_child_sleeve_history(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -4030,7 +4088,7 @@ def test_research_target_volatility_rejects_missing_child_sleeve_history(client)
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -4042,7 +4100,7 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/portfolio-ops/research/settings",
+        "/api/portfolios/investment-studio/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -4055,7 +4113,7 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/portfolio-ops/research/runs",
+        "/api/portfolios/investment-studio/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()

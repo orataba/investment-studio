@@ -6,6 +6,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import PortfolioInstrumentRisk from '../components/PortfolioInstrumentRisk'
 import RollingRiskMetricChart, {
   type RiskChartDisplayStyle,
   type RollingRiskMetricPoint,
@@ -31,6 +32,7 @@ import {
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatNumber, formatPercent } from '../lib/format'
+import { assessPerformanceBenchmarkBasis } from '../lib/performanceBenchmarkBasis'
 import {
   alignReturnPointsToFrequency,
   alignReturnSeriesToFrequency,
@@ -62,7 +64,7 @@ const DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS = 30
 const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 const MATRIX_SCOPE_CURRENT_HOLDINGS = '__current_holdings__'
 const MATRIX_SCOPE_FULL_UNIVERSE = '__full_universe__'
-const RISK_PAGE_SETTINGS_STORAGE_KEY = 'portfolio_ops.portfolio.risk.settings.v1'
+const RISK_PAGE_SETTINGS_STORAGE_KEY = 'investment_studio.portfolio.risk.settings.v1'
 const SYSTEM_CASH_TARGET_MEMBER_ID = '__cash__'
 const SYSTEM_DERIVATIVE_TARGET_MEMBER_ID = '__derivatives__'
 
@@ -405,19 +407,8 @@ export function benchmarkRiskBasisAssessment(
       message: chart.selection_reason || 'Benchmark return history is unavailable.',
     }
   }
-  if (!chart.return_semantics || chart.return_semantics === 'unknown') {
-    return {
-      blocking: true,
-      message: 'Benchmark risk comparison requires confirmed price-return or total-return semantics.',
-    }
-  }
-  if (chart.return_semantics === 'price_return') {
-    return {
-      blocking: false,
-      message: 'Benchmark uses price returns; volatility and Sharpe exclude distributions and are not fully comparable with portfolio total returns.',
-    }
-  }
-  return { blocking: false, message: null as string | null }
+  const basis = assessPerformanceBenchmarkBasis(chart.chart_basis, chart.return_semantics)
+  return { blocking: !basis.basis, message: basis.warning }
 }
 
 function buildCurrentWeightedPortfolioReturnPoints(series: GroupReturnSeries[]) {
@@ -2076,20 +2067,13 @@ function RiskDateTimeline({
   }
   const selectedIndex = dates.includes(value) ? dates.indexOf(value) : dates.length - 1
   const selectedDate = dates[selectedIndex]
-  const selectedPosition = dates.length > 1 ? (selectedIndex / (dates.length - 1)) * 100 : 0
   return (
-    <div
-      className="risk-date-scrubber"
-      style={{ '--risk-date-scrubber-position': `${selectedPosition}%` } as CSSProperties}
-    >
+    <div className="risk-date-scrubber">
       <div className="risk-date-scrubber-summary">
         <span>{label}</span>
         <strong>{selectedDate}</strong>
       </div>
       <div className="risk-date-scrubber-control">
-        <div className="risk-date-scrubber-current" aria-hidden="true">
-          {selectedDate}
-        </div>
         <input
           type="range"
           min={0}
@@ -2855,7 +2839,7 @@ export default function RiskPage() {
     analyticsVersionLabel,
   ]
     .filter(Boolean)
-    .join(' ')
+    .join(' · ')
   const forwardRiskCoverageSummary = forwardRiskCoverage
     ? `${formatNumber(forwardRiskCoverage.rows_after, 0)}/${formatNumber(
         forwardRiskCoverage.rows_before,
@@ -2891,7 +2875,7 @@ export default function RiskPage() {
             : ''
         }`
       })
-      .join(' ')
+      .join(' · ')
     const coverageDetail = `All ${result.scopeMemberCount} scope members must share one complete aligned return window; no members or dates were dropped. ${issueDetails}`
     return (
       <div
@@ -3014,6 +2998,7 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
+            <PortfolioInstrumentRisk key={portfolioId} portfolioId={portfolioId} workspace={holdingsWorkspace} />
             <section className="portfolio-section-block" aria-label="Risk health">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
@@ -3132,7 +3117,7 @@ export default function RiskPage() {
                     <tbody>
                       {analyticsScope.excluded_rows.map((row) => (
                         <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_category}`}>
-                          <td>{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
+                          <td translate="no">{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
                           <td>{formatLabel(row.holding_category)}</td>
                           <td>{row.exclusion_reason ?? 'No exclusion reason recorded.'}</td>
                           <td className="performance-cell-number">

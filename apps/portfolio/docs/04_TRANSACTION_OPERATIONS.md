@@ -11,6 +11,7 @@ ledger posting 或 position lot。后四者均由交易事实、账户事实和�
 
 - `account_id` 是交易所属账户；
 - 证券交易的现金腿由 `settlement_cash_account_id` 指向结算现金账户；
+- 交易列表筛选现金账户时，同时包含该账户的直接现金活动、证券/衍生品结算，以及换汇入账；内部划转只展示该账户自己的腿，不把配对腿重复计入。
 - 内部转仓必须通过 internal-transfer command 一次生成成对事实，不能单独修改其中一腿；
 - 期权实物行权或指派必须通过 option-outcome command 一次生成期权关闭腿和股票交割腿，并保存严格一对一的 `option_delivery_link`；
 - note 只保存操作来源或必要说明，不承担日期、金额、份额等结构化事实。
@@ -26,7 +27,9 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 
 新建衍生品合约时，合约条款与本次交易事实分开填写。新 Option 只能买入开仓、卖出开仓
 或建立期初余额；新 FCN 只能记录进入或期初余额。平仓、利息和生命周期结果必须引用已经
-存在的 Portfolio contract。合约条款创建后作为不可变事实，后续交易只引用 contract ID。
+存在的 Portfolio contract。Option 条款必须用 `underlying_instrument_id` 引用
+Registry 股票，不能靠合约名称、ticker 文本或 note 推断。页面、AI 草稿、JSON、CSV 和 Excel
+共用这条合同。后续交易只引用 contract ID；补充或纠错使用审计修订入口，保存前后版本、确认人和依据，不通过交易覆盖条款或替换产品身份。
 
 ## 2. 日期和时间
 
@@ -43,6 +46,8 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 当日 EOD 持仓时，`position_effective_date = trade_date`。按当日收盘 NAV 申购、下一交易日
 确认份额时，保留真实 `trade_date`，并把确认日写入 `position_effective_date`。
 
+期权实物结果两腿共用 `trade_time`。先买股后交割须保存各自已知实际时刻，不能依录入先后或改造时间表示交易顺序；未确认的时间仍留空。
+
 ## 3. 金额、份额和价格
 
 所有输入均使用非负 magnitude，方向由所选资产的交易动作决定。
@@ -52,6 +57,7 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 - ETF / 股票：数量与实际 execution price 为常用锚点，gross amount 由 price-scale contract
   计算；若成交回单直接给出金额，可用金额反算价格。
 - FCN：合约进入、利息收入和关闭分别记录；关闭结果可选正常到期、敲入或敲出。
+- FCN 的 notional 是每张合约名义本金，quantity 是合约数量；成交金额可以因折价、溢价或二级交易而不同于名义本金。敲入观察单独使用 `knock_in_observation`，金额为零、不填数量，不关闭持仓；note 保存发行人确认依据。最终现金兑付、票息和实际结算日分别记录。
 - 期权：数量单位为合约张数，gross amount 使用本地合约 multiplier；普通开平仓与现金结果各自记录。经人工确认的实物行权/指派由专用命令把期权零现金关闭和按 strike 的股票买卖原子落账，费用与税费只进入股票腿。
 - fees、taxes 与 fee category 必须分开保存，不能揉进 gross amount。
 
@@ -71,15 +77,21 @@ position FX。historical cost 来自实际释放的 lot origins；随后形成�
 monetary basis，不能把结算后的 FX 再算进 position realized P&L。完整例子见
 [05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md](./05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md)。
 
+当 withdrawal、证券结算、费用、税费或换汇等交易减少非基准币 monetary exposure 时，Fact
+面板另列 `Realized cash FX`：按释放数量取得移动平均 historical monetary basis，并与该交易
+结算日的 base-currency fair value 比较。它与 realized position price / FX P&L 分开，避免把
+持仓处置与之后现金持有期的汇率变化重复计算。同币种内部现金转账只转移 basis，不确认 cash FX；
+剩余外币现金继续在 Holdings 显示 unrealized FX P&L。
+
 ## 5. 创建、修改和删除控制
 
-- create 与 internal transfer 请求必须携带 request-scoped `Idempotency-Key`；同 key 只能重放
-  同一 operation 与同一 payload；
+- 单笔创建、内部转仓、期权结果及文件批量导入均强制要求非空 `Idempotency-Key`。页面为每次操作生成 key，网络重试复用同 key；同 key 只能重放同一 operation 与同一 payload；
 - 页面在请求完成前锁定提交按钮，防止双击生成重复事实；
 - update 必须携带当前 `expected_row_version`，缺失返回 validation error，版本过期返回 conflict；
 - delete 必须携带完整 delete scope 的 row-version map；成对转仓与 option physical-delivery pair 都必须整组删除；已关联的交割腿不能单独修改；
 - create / update / delete 都追加 change log。Transactions inspector 的 History 标签显示版本、
   时间和变更字段，不能用直接改库替代正常修订流程。
+- 账户已有资产交易（包括 FCN / Option）后不能切换成本法来静默重算旧 lots 和已实现损益；空账户可选 FIFO 或移动平均。需要不同成本法时建立新账户，历史事实保持不变。
 
 ## 6. 操作后核对
 
@@ -111,7 +123,7 @@ history、解析后的时间戳或内部配对 ID。导入时仍会按目标 Por
 ### Excel 手工填写模板
 
 提供给其他人手工录入时，优先使用 `Blank Excel Template`。模板的 `Transactions` 工作表仍
-保留标准 CSV 的 40 个字段，第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
+保留标准 CSV 的 45 个字段（包含交付、批次引用及补充条款），第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
 模板另外提供以下工作表：
 
 - `Instructions`：填写流程、普通交易与内部转移的必填规则、金额方向和上传限制；
@@ -130,9 +142,9 @@ Import 预览的后端校验为准。
 | 范围 | 示例覆盖 |
 | --- | --- |
 | 现金与运营 | 入金、出金、利息、换汇、独立费用/税费、现金期初余额、现金内部转移 |
-| 股票、ETF、基金 | 买入、卖出/赎回、分红、红利再投资、返还资本、期初持仓、独立费用/税费、证券转仓；另有股票、ETF、公募基金和私募基金的明确示例 |
-| FCN | 新合约进入、多标的条款、期初持仓、提前退出、票息、费用、税费、正常到期、敲入和敲出；交付证券仍是独立记录 |
-| Option | Call/Put、多头/空头开仓和平仓、期初多头持仓、费用、税费，以及长短仓到期作废/现金结算；实物行权/指派不属于单行文件导入范围 |
+| 股票、ETF、基金 | 买入、卖出/赎回、分红、红利再投资、返还资本、期初持仓、独立费用/税费、证券转仓；股票/ETF 另支持卖空、买回和期初空头，基金不支持卖空 |
+| FCN | 新合约进入、多标的条款、期初持仓、提前退出、票息、费用、税费、到期、敲入观察/结果、敲出；实物收股通过原子多腿记录，可含碎股现金及显式 FX |
+| Option | Call/Put、长短仓开平仓、长短仓期初、费用税费、到期、现金结算及原子实物行权/指派；文件保留股票交付关系 |
 | 多币种 | USD、HKD、CNY、EUR、GBP、CHF；证券、持仓账户、合约、结算现金账户和交易币种必须满足同币种规则 |
 
 系统目前支持的交易币种为 `USD`、`HKD`、`CNY`、`EUR`、`GBP` 和 `CHF`。普通资产交易的 `currency` 必须与持仓账户、
@@ -140,16 +152,27 @@ Import 预览的后端校验为准。
 只能在同币种现金账户间进行。换汇行的 `currency` 是转出现金账户币种，
 `counter_amount = gross_amount × fx_rate`，目标币种由 `counterparty_account_id` 对应账户确定。
 
-FCN 在到期前退出选择 `early_exit`；敲入交付时，FCN 结束行与证券 `buy` 行仍是两个独立事实。Option 实物行权/指派不能拆成模板中的现金结算和独立股票交易：正常录入从 `Transactions → Option → Action` 选择 `Exercise Long` 或 `Assign Written`，已过期未处理的合约也可从组合页的到期事项入口确认；两者都调用同一个 option-outcome command，系统据合约类型、side、strike 和 multiplier 原子生成并绑定期权腿与股票腿。Activity 列表把两腿呈现为一项活动，底层仍保留可审计的两条资产事实。标准 CSV/Excel 只表达单行交易或内部转移命令，不提供手工 relationship ID。`opening_balance` 的 trade date 和 settlement date 必须等于 Portfolio inception date，可用于该边界已有的 Option 多头；已有空头应按实际开仓日期、数量和
-权利金补录 `sell_to_open`，不能用正数量期初余额代替。
+FCN 实物收股在最终兑付中填写 `asset_deliveries`：实际股票数量、本币确认总价值与合约折算汇率。gross_amount 只填现金尾差；不要另造现金兑付与买入。Option 的实物行权/指派由同一个 outcome command 原子生成股票腿；CSV/Excel 用 physical_long / physical_written + option_delivery_json，导出保留关系，不再导入股票腿。`opening_balance`、`opening_written`、`short_opening_balance` 的交易和结算日必须等于组合 inception；原开仓日填 acquisition_date，剩余负债或成本不重复影响期初现金。
+
+CSV/Excel 的 `derivative_additional_terms_json` 保留经确认的结算方式、行权风格、FCN 观察/付息日期及条款依据，导出后可原样回导；基础条款仍使用专用列。条款缺失时界面显示未确认，不自动补成美式、现金交割或实物交割。截图提取不能仅凭“购/沽”、日期或“卖空”猜测期权/权证身份或开平仓方向。
+
+裸卖 Call 后先实际买股再交割，或券商先确认股票空头再买回，都按实际先后记录。后一种明确勾选券商已形成证券空头；股票负仓采用 FIFO / 移动平均，买回按真实成交价和费用核算。普通卖出不会悄悄转成卖空。融资借还和抵押释放使用独立现金用途账户间的内部划转；已抵押现金不列为自由现金，融资负数计入净资产负债，实际利息、借券费和股息补偿记费用。本系统不是券商授信、购买力或自动强平引擎；强平只录实际成交，不模拟没有发生的交易。
+
+指定批次处置在 FIFO 账户填开仓记录及数量，移动平均不能选择个别批次成本。导出使用 record_reference 重绑批次；更新和删除会重放全历史，不能破坏之后的卖出/交割。已存合约修改通过审计修订入口保存前后条款、确认人和依据，而不是在交易提交时覆盖条款。
+
+合约修订不能替换资产身份或使已记录交割失效。没有明确转换模型的 quanto、行权币种与标的报价币种不同的合约，以及调整后包含非标准篮子的期权，不按普通期权处理。兼并换股、分拆、权利发行、证券空头或衍生品跨账户转移仍需专用事件语义，不能通过伪造买卖代替。指定开仓记录并非税务 lot-ID 系统；具体可重复情景见 [交易情景测试](../backend/tests/test_transaction_repair_scenarios.py)。
+
+实物行权的 `lot_selections` 选择期权多头批次，数量单位为合约张数；股票腿按证券账户成本法计算。专用结果接口中的 fees、fee_category、taxes 进入股票腿；文件和 AI 草稿将它们放在 option_delivery 内，外层费用税费为零、分类为 unknown。导出保留两腿的共同时间、股票腿费用分类和期权指定批次。AI 复核可补齐交付账户，编辑 FCN 的账户、标的、数量、价值、币种、汇率及批次；不会将缺失事实自动补成一笔已确认成交。
+
+页头的简洁期权结果入口默认使用账户成本法；需要指定多头开仓批次时，使用交易页的实物行权表单。估算时间在 CSV/Excel 导出中留空，回导后仍标记为估算；只有已知实际时间才导出具体时刻。
 
 `transfer_group_id` 只表示同一笔内部转账或转仓生成的 `transfer_out / transfer_in` 双腿，
 不用于绑定 Option、FCN、股票交割或其他经济上相关的交易，也不出现在 CSV。期权交割关系只由专用命令写入 `option_delivery_link`。导出时一组双腿
 折叠成一行 Security 或 Cash 的 `transfer_out` 动作，`account_id` 为转出账户、
 `counterparty_account_id` 为转入账户。手工文件也只填写一个方向；回导时系统重新原子生成双腿。Transfer 可填写 `source_system + external_reference`；系统把这组 command-level 来源身份保存在 `transfer_out` 腿，导出折叠后仍可原样回导并跨批次识别重复。
 
-Cash Fee / Tax 不关联资产，因此不填写 entitlement date；Security、FCN、Option 关联费用可填写 entitlement date，未填时按 trade date 校验当日的 long position 或 written-option obligation。Option 的独立 Fee / Tax 是合约级现金费用：进入现金、NAV 与 Performance，但不改写 long lot cost basis 或 writer obligation。Return of Capital 用 `trade_date` 表示 entitlement/record date，用 `settlement_date` 表示实际到账日，不再重复填写 `entitlement_date`。负的 settled cash 会在 Holdings 作为 critical operational alert 显示；应补录缺失的资金或融资事实，系统不会静默把它解释为融资。
+Cash Fee / Tax 不关联资产，因此不填写 entitlement date；Security、FCN、Option 关联费用可填写 entitlement date，未填时按 trade date 校验当日的证券多空头、FCN/Option 多头或 written-option obligation。Option 的独立 Fee / Tax 是合约级现金费用：进入现金、NAV 与 Performance，但不改写 long lot cost basis 或 writer obligation。Return of Capital 用 `trade_date` 表示 entitlement/record date，用 `settlement_date` 表示实际到账日，不再重复填写 `entitlement_date`。非 margin/financing 账户的负 settled cash 会提示需核对；已明确标记的保证金或融资账户负余额按融资负债显示，不误报成缺失入金。账户用途必须依据实际安排填写，不能仅为消除提示改为融资。
 
 批量导入证券时使用 Registry `instrument_id`；Option / FCN 使用 Portfolio-local
-`derivative_contract_id`。新衍生品合约的不可变条款写在首次交易行，后续行只保留 contract
+`derivative_contract_id`。新衍生品合约条款写在首次交易行，后续行只保留 contract
 ID。建议每行填写稳定的 `source_system + external_reference`，用于识别重复来源事实。

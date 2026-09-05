@@ -1,7 +1,45 @@
 import type {
   PortfolioTransactionCaptureAnalysisRevision,
+  PortfolioTransactionImportAction,
+  PortfolioTransactionImportCommand,
   PortfolioTransactionImportRequest,
 } from './api'
+
+export function changeTransactionCaptureAction(
+  record: PortfolioTransactionImportCommand,
+  action: PortfolioTransactionImportAction,
+): PortfolioTransactionImportCommand {
+  const { option_delivery: delivery, ...previous } = record
+  if (action === 'physical_long' || action === 'physical_written') {
+    return {
+      ...record,
+      transaction_action: action,
+      gross_amount: 0,
+      price: null,
+      fees: 0,
+      fee_category: 'unknown',
+      taxes: 0,
+      settlement_cash_account_id: null,
+      option_delivery: delivery ?? {
+        stock_account_id: '',
+        settlement_cash_account_id: record.settlement_cash_account_id ?? '',
+        fees: record.fees ?? 0,
+        fee_category: record.fee_category ?? 'unknown',
+        taxes: record.taxes ?? 0,
+      },
+    }
+  }
+  return {
+    ...previous,
+    transaction_action: action,
+    ...(delivery ? {
+      settlement_cash_account_id: delivery.settlement_cash_account_id,
+      fees: delivery.fees ?? 0,
+      fee_category: delivery.fee_category ?? 'unknown',
+      taxes: delivery.taxes ?? 0,
+    } : {}),
+  }
+}
 
 
 export type TransactionCaptureDuplicateAssessment =

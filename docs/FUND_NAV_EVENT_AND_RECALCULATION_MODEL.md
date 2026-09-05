@@ -24,19 +24,19 @@ revision. It has its own immutable revision chain. Correcting an action never
 silently carries forward evidence from the superseded action revision. The
 operator must submit new evidence explicitly.
 
-The admin API requires a client mutation ID, operator identity, revision
+The data CLI requires a client mutation ID, operator identity, revision
 reason, and optimistic predecessor ID. A byte-for-byte semantic replay is a
 no-op. Reusing a mutation ID for different facts, branching from an old head,
 or changing an already-recorded decision is rejected.
 
-Confirming a Platform-private action candidate is a durable saga across the
-Platform operations schema and the Registry schema. Platform first records an
+Confirming a private action candidate is a durable operation across the
+`data_ingestion` and `instrument_data` schemas. Data processing first records an
 exact request snapshot, fingerprint, mutation ID, operator, and candidate-bound
 event ID in `confirming` state. Registry publication then commits, and only
 afterward does the candidate become `resolved`. A crash at either boundary
 leaves the same request resumable; a concurrent rejection or a different
-confirmation conflicts. The review UI exposes `confirming` decisions and a
-resume action, so a pending decision is never hidden or converted into a
+confirmation conflicts. The CLI lists `confirming` decisions and provides a
+`nav candidate-resume` command, so a pending decision is never hidden or converted into a
 second Registry action.
 
 ## Projection versions and factors
@@ -83,7 +83,7 @@ source generation watermark, and returns:
 - `market_data_updated_at`
 - `published_projection_run_id`
 
-Platform sends downstream notifications only when `changed` is true. The HTTP
+Data processing sends downstream notifications only when `changed` is true. The HTTP
 notification is a low-latency hint, not a correctness boundary.
 
 Portfolio stores durable per-portfolio recalculation requests. Dirty dates are
@@ -153,7 +153,7 @@ fail closed. Unsupported, empty, or oversized attachments remain visible in
 the operations inventory; PDFs are not silently OCR-guessed into canonical
 NAV. A first cutover can run an explicit full-history scan, newest first, but
 both that scan and a fresh cursor are bounded by the configured inclusive
-`PORTFOLIO_OPS_PLATFORM_EMAIL_HISTORY_START_DATE`. The deployment value must
+`INVESTMENT_STUDIO_DATA_EMAIL_HISTORY_START_DATE`. The deployment value must
 preserve the prior year-end observation required for YTD reporting. IMAP applies `SINCE` before
 header transfer and the ingestion layer rejects older durable headers before
 body acquisition. NAV observations embedded in a newer attachment but dated

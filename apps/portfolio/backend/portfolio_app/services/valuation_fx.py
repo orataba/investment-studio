@@ -11,7 +11,7 @@ from datetime import date
 from math import isfinite
 from typing import Callable
 
-from portfolio_ops_instrument_core.fx_contract import fx_instrument_identity
+from investment_studio_instrument_core.fx_contract import fx_instrument_identity
 
 from portfolio_app.services.market_data import (
     market_data_status,

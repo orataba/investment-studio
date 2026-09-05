@@ -1,3 +1,4 @@
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
@@ -38,12 +39,14 @@ describe('Portfolios rendered page contract', () => {
   it('creates a portfolio through one accessible form with explicit inception', async () => {
     const user = userEvent.setup()
     render(
-      <MemoryRouter initialEntries={['/portfolios']}>
-        <Routes>
-          <Route path="/portfolios" element={<PortfoliosPage />} />
-          <Route path="/portfolios/:portfolioId/overview" element={<div>Portfolio overview</div>} />
-        </Routes>
-      </MemoryRouter>,
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/portfolios']}>
+          <Routes>
+            <Route path="/portfolios" element={<PortfoliosPage />} />
+            <Route path="/portfolios/:portfolioId/overview" element={<div>Portfolio overview</div>} />
+          </Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
     )
 
     await screen.findByText('No portfolios')
@@ -91,11 +94,13 @@ describe('Portfolios rendered page contract', () => {
 
     const user = userEvent.setup()
     render(
-      <MemoryRouter initialEntries={['/portfolios']}>
-        <Routes>
-          <Route path="/portfolios" element={<PortfoliosPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/portfolios']}>
+          <Routes>
+            <Route path="/portfolios" element={<PortfoliosPage />} />
+          </Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
     )
 
     await screen.findByText('Portfolio A')

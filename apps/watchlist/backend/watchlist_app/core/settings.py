@@ -5,11 +5,11 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-
-
 class Settings(BaseSettings):
-    app_name: str = "Portfolio Operations Watchlist API"
+    research_portfolio_api_url: str | None = None
+    research_regime_api_url: str | None = None
+
+    app_name: str = "Investment Studio Watchlist API"
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5173"
@@ -25,11 +25,11 @@ class Settings(BaseSettings):
     recalc_worker_heartbeat_interval_seconds: float = 30.0
     recalc_worker_reconcile_interval_seconds: float = 60.0
     recalc_worker_reconcile_batch_size: int = 500
-    document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
+    document_storage_root: Path = Path.home() / ".local/share/investment-studio/watchlist-documents"
     document_upload_max_bytes: int = 25 * 1024 * 1024
 
     model_config = SettingsConfigDict(
-        env_prefix="PORTFOLIO_OPS_WATCHLIST_",
+        env_prefix="INVESTMENT_STUDIO_WATCHLIST_",
         extra="ignore",
     )
 

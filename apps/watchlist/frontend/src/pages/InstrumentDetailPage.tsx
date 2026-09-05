@@ -1,3 +1,4 @@
+import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
@@ -11,7 +12,7 @@ import {
   type InstrumentResolveResponse,
   type WatchlistDetail,
 } from '../lib/api'
-import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 
 type WatchlistBreadcrumbContext = {
   watchlistId: string
@@ -129,7 +130,7 @@ export default function InstrumentDetailPage() {
   return (
     <section className="panel">
       <div className="instrument-detail-breadcrumbs">
-        <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
+        <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
           Home
         </a>
         <span className="watchlist-breadcrumb-separator">/</span>
@@ -145,18 +146,19 @@ export default function InstrumentDetailPage() {
           </>
         ) : null}
         <span className="watchlist-breadcrumb-separator">/</span>
-        <span className="watchlist-breadcrumb-current">{instrument.instrument_name}</span>
+        <span className="watchlist-breadcrumb-current" translate="no">{instrument.instrument_name}</span>
+        <LanguageSelector />
       </div>
       <div className="panel-header">
         <div>
           <div className="panel-title">Unsupported Detail</div>
-          <h1 className="page-title">{instrument.instrument_name}</h1>
+          <h1 className="page-title" translate="no">{instrument.instrument_name}</h1>
         </div>
       </div>
       <div className="instrument-detail-body">
         <p>
           Watchlist supports public fund, private fund, ETF, equity, and index detail workspaces.{' '}
-          <strong>{instrument.instrument_type}</strong> instruments can exist in the shared registry, but they do not
+          <strong>{instrument.instrument_type}</strong> instruments can exist in shared asset data, but they do not
           have a local watchlist detail workspace yet.
         </p>
         <p className="muted">

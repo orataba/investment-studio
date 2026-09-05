@@ -32,7 +32,7 @@ OBSERVED_INSTRUMENT_REF = {
 
 def _create_watch_trade(transaction_type: str, trade_date: date) -> None:
     portfolio_store.create_transaction(
-        portfolio_id="portfolio-ops",
+        portfolio_id="investment-studio",
         transaction_type=transaction_type,
         trade_date=trade_date,
         trade_time=None,
@@ -61,7 +61,7 @@ def _create_watch_trade(transaction_type: str, trade_date: date) -> None:
 
 def _seed_research_lifecycle_rows() -> dict[str, dict[str, object]]:
     portfolio_store.upsert_portfolio_instrument_universe_record(
-        "portfolio-ops",
+        "investment-studio",
         "manual-observed",
         instrument_ref=OBSERVED_INSTRUMENT_REF,
     )
@@ -69,7 +69,7 @@ def _seed_research_lifecycle_rows() -> dict[str, dict[str, object]]:
     _create_watch_trade("sell", date(2026, 4, 17))
     return {
         str(row["instrument_id"]): row
-        for row in portfolio_store.list_portfolio_instrument_universe("portfolio-ops")
+        for row in portfolio_store.list_portfolio_instrument_universe("investment-studio")
     }
 
 
@@ -85,7 +85,7 @@ def test_research_workbench_derives_held_observed_and_former_lifecycle(client) -
     assert rows["fund-us-watch"]["research_pm_approved"] is False
     assert rows["fund-us-watch"]["research_eligibility"] == "pm_review_required"
 
-    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    response = client.get("/api/portfolios/investment-studio/research/workbench")
 
     assert response.status_code == 200, response.json()
     workbench_rows = {
@@ -125,7 +125,7 @@ def test_former_positive_target_requires_pm_review_until_explicit_approval(clien
     )
 
     approval_response = client.put(
-        "/api/portfolios/portfolio-ops/research/instruments/fund-us-watch/eligibility",
+        "/api/portfolios/investment-studio/research/instruments/fund-us-watch/eligibility",
         json={"pm_approved": True},
     )
 

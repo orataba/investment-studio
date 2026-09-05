@@ -11,7 +11,7 @@ if [[ ! -f "$BACKUP_HELPER" ]]; then
 fi
 source "$BACKUP_HELPER"
 if [[ $# -ne 1 || -z "${1:-}" ]]; then
-  echo "Usage: PORTFOLIO_OPS_LOCAL_DATABASE_URL=postgresql://user@host/database $0 /absolute/path/to/portfolio-operations-workbench.pgdump" >&2
+  echo "Usage: INVESTMENT_STUDIO_LOCAL_DATABASE_URL=postgresql://user@host/database $0 /absolute/path/to/investment-studio.pgdump" >&2
   exit 2
 fi
 DUMP_PATH="$1"
@@ -19,20 +19,20 @@ if [[ "$DUMP_PATH" != /* ]]; then
   echo "Restore dump path must be absolute: $DUMP_PATH" >&2
   exit 2
 fi
-CHECKSUM_PATH="${PORTFOLIO_OPS_DUMP_CHECKSUM_PATH:-${DUMP_PATH%.pgdump}.sha256}"
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+CHECKSUM_PATH="${INVESTMENT_STUDIO_DUMP_CHECKSUM_PATH:-${DUMP_PATH%.pgdump}.sha256}"
+DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
-MIGRATION_RUNNER="${PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER:-$PROJECT_ROOT/infra/scripts/migrate_all.sh}"
-BACKUP_ROOT="${PORTFOLIO_OPS_RESTORE_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/portfolio-operations-workbench/postgres-backups}"
-SERVICE_MANAGER_REQUESTED="${PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER:-auto}"
+MIGRATION_RUNNER="${INVESTMENT_STUDIO_RESTORE_MIGRATION_RUNNER:-$PROJECT_ROOT/infra/scripts/migrate_all.sh}"
+BACKUP_ROOT="${INVESTMENT_STUDIO_RESTORE_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio/postgres-backups}"
+SERVICE_MANAGER_REQUESTED="${INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER:-auto}"
 ALLOW_REMOTE_RESTORE="${ALLOW_REMOTE_RESTORE:-false}"
 
-SYSTEMD_UNIT_PREFIX="${UNIT_PREFIX:-portfolio-ops}"
+SYSTEMD_UNIT_PREFIX="${UNIT_PREFIX:-investment-studio}"
 SYSTEMD_UNITS=(
-  "$SYSTEMD_UNIT_PREFIX-platform-api.service"
+  "$SYSTEMD_UNIT_PREFIX-home-api.service"
   "$SYSTEMD_UNIT_PREFIX-watchlist-api.service"
   "$SYSTEMD_UNIT_PREFIX-portfolio-api.service"
-  "$SYSTEMD_UNIT_PREFIX-platform-web.service"
+  "$SYSTEMD_UNIT_PREFIX-home-web.service"
   "$SYSTEMD_UNIT_PREFIX-watchlist-web.service"
   "$SYSTEMD_UNIT_PREFIX-portfolio-web.service"
   "$SYSTEMD_UNIT_PREFIX-market-data-refresh.timer"
@@ -89,7 +89,7 @@ resolve_service_manager() {
       fi
       ;;
     *)
-      echo "Invalid PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER: $SERVICE_MANAGER_REQUESTED" >&2
+      echo "Invalid INVESTMENT_STUDIO_RESTORE_SERVICE_MANAGER: $SERVICE_MANAGER_REQUESTED" >&2
       exit 64
       ;;
   esac
@@ -143,10 +143,10 @@ start_managed_services() {
       while IFS= read -r unit || [[ -n "$unit" ]]; do
         [[ -n "$unit" ]] || continue
         case "$unit" in
-          "$SYSTEMD_UNIT_PREFIX"-platform-api.service|\
+          "$SYSTEMD_UNIT_PREFIX"-home-api.service|\
           "$SYSTEMD_UNIT_PREFIX"-watchlist-api.service|\
           "$SYSTEMD_UNIT_PREFIX"-portfolio-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-platform-web.service|\
+          "$SYSTEMD_UNIT_PREFIX"-home-web.service|\
           "$SYSTEMD_UNIT_PREFIX"-watchlist-web.service|\
           "$SYSTEMD_UNIT_PREFIX"-portfolio-web.service|\
           "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.timer|\
@@ -174,10 +174,10 @@ stop_all_managed_services() {
       ;;
     launchd)
       for service in \
-        platform-api watchlist-api portfolio-api \
-        platform-web watchlist-web portfolio-web market-data-refresh; do
+        home-api watchlist-api portfolio-api \
+        home-web watchlist-web portfolio-web market-data-refresh; do
         launchctl bootout \
-          "gui/$UID/${LABEL_PREFIX:-com.orataba.portfolio-ops}.$service" \
+          "gui/$UID/${LABEL_PREFIX:-com.orataba.investment-studio}.$service" \
           >/dev/null 2>&1 || true
       done
       ;;
@@ -191,10 +191,10 @@ stop_all_managed_services() {
 
 rollback_database() {
   echo "Restore failed; rolling back the project schemas from $BACKUP_REFERENCE_PATH." >&2
-  if portfolio_ops_restore_project_schema_backup \
+  if investment_studio_restore_project_schema_backup \
     "$DATABASE_URL" \
-    "${PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH:-}" \
-    "${PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH:-}"; then
+    "${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-}" \
+    "${INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH:-}"; then
     return 0
   fi
   echo "Automatic rollback failed. Preserve this recovery artifact: $BACKUP_REFERENCE_PATH" >&2
@@ -246,13 +246,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if [[ -z "$DATABASE_URL" ]]; then
-  echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must explicitly identify the restore target." >&2
+  echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must explicitly identify the restore target." >&2
   exit 64
 fi
 case "$DATABASE_URL" in
   postgresql://*|postgresql+psycopg://*) ;;
   *)
-    echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+    echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
     exit 64
     ;;
 esac
@@ -270,7 +270,7 @@ if [[ ! "$expected_checksum" =~ ^[0-9A-Fa-f]{64}$ ]]; then
   echo "Invalid SHA-256 checksum file: $CHECKSUM_PATH" >&2
   exit 1
 fi
-actual_checksum="$(portfolio_ops_sha256 "$DUMP_PATH")"
+actual_checksum="$(investment_studio_sha256 "$DUMP_PATH")"
 if [[ "$actual_checksum" != "$expected_checksum" ]]; then
   echo "SHA-256 mismatch for dump: $DUMP_PATH" >&2
   exit 1
@@ -285,24 +285,24 @@ if [[ ! -x "$MIGRATION_RUNNER" ]]; then
   exit 1
 fi
 
-PSQL_BIN="$(portfolio_ops_find_postgres_binary psql || true)"
-PG_RESTORE_BIN="$(portfolio_ops_find_postgres_binary pg_restore || true)"
+PSQL_BIN="$(investment_studio_find_postgres_binary psql || true)"
+PG_RESTORE_BIN="$(investment_studio_find_postgres_binary pg_restore || true)"
 if [[ -z "$PSQL_BIN" || -z "$PG_RESTORE_BIN" ]]; then
   echo "PostgreSQL psql and pg_restore are required for safe restore." >&2
   exit 1
 fi
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-restore.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/investment-studio-restore.XXXXXX")"
 chmod 700 "$WORK_DIR"
 SERVICE_STATE_FILE="$WORK_DIR/service-state"
 DUMP_LIST_PATH="$WORK_DIR/incoming-dump.list"
-portfolio_ops_prepare_libpq_connection "$DATABASE_URL" "$WORK_DIR/connection"
-LIBPQ_DATABASE_URL="$PORTFOLIO_OPS_LIBPQ_DATABASE_URL"
-LIBPQ_PASSFILE="$PORTFOLIO_OPS_LIBPQ_PASSFILE"
-DATABASE_HOST="$PORTFOLIO_OPS_LIBPQ_DATABASE_HOST"
-DATABASE_PORT="$PORTFOLIO_OPS_LIBPQ_DATABASE_PORT"
-DATABASE_NAME="$PORTFOLIO_OPS_LIBPQ_DATABASE_NAME"
-DATABASE_USER="$PORTFOLIO_OPS_LIBPQ_DATABASE_USER"
+investment_studio_prepare_libpq_connection "$DATABASE_URL" "$WORK_DIR/connection"
+LIBPQ_DATABASE_URL="$INVESTMENT_STUDIO_LIBPQ_DATABASE_URL"
+LIBPQ_PASSFILE="$INVESTMENT_STUDIO_LIBPQ_PASSFILE"
+DATABASE_HOST="$INVESTMENT_STUDIO_LIBPQ_DATABASE_HOST"
+DATABASE_PORT="$INVESTMENT_STUDIO_LIBPQ_DATABASE_PORT"
+DATABASE_NAME="$INVESTMENT_STUDIO_LIBPQ_DATABASE_NAME"
+DATABASE_USER="$INVESTMENT_STUDIO_LIBPQ_DATABASE_USER"
 
 expected_confirmation="$DATABASE_NAME"
 if ! is_local_database_host; then
@@ -314,14 +314,45 @@ if ! is_local_database_host; then
   expected_confirmation="$DATABASE_NAME@$DATABASE_HOST:$DATABASE_PORT"
 fi
 if [[ "${CONFIRM_RESTORE:-}" != "$expected_confirmation" ]]; then
-  echo "Restore replaces the instrument_registry, platform, portfolio, and watchlist schemas." >&2
+  echo "Restore replaces instrument_registry, data_ingestion (formerly platform), portfolio, and watchlist." >&2
   echo "Verified target: $DATABASE_USER@$DATABASE_HOST:$DATABASE_PORT/$DATABASE_NAME" >&2
   echo "Re-run with CONFIRM_RESTORE=$expected_confirmation after confirming the target." >&2
   exit 64
 fi
 
 "$PG_RESTORE_BIN" --list "$DUMP_PATH" > "$DUMP_LIST_PATH"
-for schema in "${PORTFOLIO_OPS_PROJECT_SCHEMAS[@]}"; do
+incoming_schemas=(portfolio watchlist)
+incoming_asset_schema=""
+for schema in instrument_data instrument_registry; do
+  if grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$DUMP_LIST_PATH"; then
+    if [[ -n "$incoming_asset_schema" ]]; then
+      echo "Incoming dump contains both instrument_data and instrument_registry." >&2
+      exit 1
+    fi
+    incoming_asset_schema="$schema"
+  fi
+done
+if [[ -z "$incoming_asset_schema" ]]; then
+  echo "Incoming dump is missing instrument_data (or pre-0030 instrument_registry)." >&2
+  exit 1
+fi
+incoming_schemas+=("$incoming_asset_schema")
+incoming_ingestion_schema=""
+for schema in data_ingestion platform; do
+  if grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$DUMP_LIST_PATH"; then
+    if [[ -n "$incoming_ingestion_schema" ]]; then
+      echo "Incoming dump contains both platform and data_ingestion schemas." >&2
+      exit 1
+    fi
+    incoming_ingestion_schema="$schema"
+  fi
+done
+if [[ -z "$incoming_ingestion_schema" ]]; then
+  echo "Incoming dump is missing the data_ingestion schema (or pre-0008 platform schema)." >&2
+  exit 1
+fi
+incoming_schemas+=("$incoming_ingestion_schema")
+for schema in "${incoming_schemas[@]}"; do
   if ! grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$DUMP_LIST_PATH"; then
     echo "Incoming dump is missing required schema: $schema" >&2
     exit 1
@@ -333,7 +364,7 @@ PSQL_CONNECTION_ARGS=(
 )
 
 target_identity="$(
-  portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+  investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
     "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
     --no-password \
     --set ON_ERROR_STOP=1 \
@@ -351,7 +382,7 @@ resolve_service_manager
 services_may_need_restart="true"
 stop_managed_services
 
-portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
   --no-password \
   --set ON_ERROR_STOP=1 \
@@ -364,7 +395,7 @@ portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
   " >/dev/null
 
 remaining_connections="$(
-  portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+  investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
     "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
     --no-password \
     --set ON_ERROR_STOP=1 \
@@ -384,15 +415,15 @@ if [[ "$remaining_connections" != "0" ]]; then
 fi
 
 safe_database_name="$(printf '%s' "$DATABASE_NAME" | tr -c 'A-Za-z0-9_.-' '_')"
-portfolio_ops_create_project_schema_backup \
+investment_studio_create_project_schema_backup \
   "$DATABASE_URL" \
   "$BACKUP_ROOT" \
   "${safe_database_name}-pre-restore"
 backup_ready="true"
-BACKUP_REFERENCE_PATH="${PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH:-$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH}"
+BACKUP_REFERENCE_PATH="${INVESTMENT_STUDIO_PROJECT_SCHEMA_BACKUP_PATH:-$INVESTMENT_STUDIO_PROJECT_SCHEMA_MANIFEST_PATH}"
 
 restore_schema_args=()
-for schema in "${PORTFOLIO_OPS_PROJECT_SCHEMAS[@]}"; do
+for schema in "${incoming_schemas[@]}"; do
   restore_schema_args+=(--schema="$schema")
 done
 destructive_started="true"
@@ -400,44 +431,43 @@ destructive_started="true"
   printf '%s\n' '
     DROP SCHEMA IF EXISTS watchlist CASCADE;
     DROP SCHEMA IF EXISTS portfolio CASCADE;
+    DROP SCHEMA IF EXISTS data_ingestion CASCADE;
     DROP SCHEMA IF EXISTS platform CASCADE;
+    DROP SCHEMA IF EXISTS instrument_data CASCADE;
     DROP SCHEMA IF EXISTS instrument_registry CASCADE;
-    CREATE SCHEMA instrument_registry;
-    CREATE SCHEMA platform;
-    CREATE SCHEMA portfolio;
-    CREATE SCHEMA watchlist;
   '
+  printf 'CREATE SCHEMA %s;\n' "${incoming_schemas[@]}"
   exec "$PG_RESTORE_BIN" \
     --file - \
     --no-owner \
     --no-acl \
     "${restore_schema_args[@]}" \
     "$DUMP_PATH"
-) | portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+) | investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
     --no-password \
     --set ON_ERROR_STOP=1 \
     --single-transaction
 
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
+export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
 
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
 
 schema_count="$(
-  portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+  investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
     "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
     --no-password \
     --set ON_ERROR_STOP=1 \
@@ -446,7 +476,7 @@ schema_count="$(
     --command "
       SELECT count(*)
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist');
+      WHERE nspname IN ('instrument_data', 'data_ingestion', 'portfolio', 'watchlist');
     "
 )"
 if [[ "$schema_count" != "4" ]]; then

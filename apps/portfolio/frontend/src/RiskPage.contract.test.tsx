@@ -13,6 +13,7 @@ import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
   getHoldingsWorkspace: vi.fn(),
+  requestInstrumentRisk: vi.fn().mockResolvedValue({ instruments: [], cases: [] }),
   getPortfolioAccountsWorkspace: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioInstruments: vi.fn(),

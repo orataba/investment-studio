@@ -1,0 +1,4 @@
+[submodule "apps/regime"]
+	path = apps/regime
+	url = https://github.com/cloudxyun/regime-dashboard.git
+	branch = main

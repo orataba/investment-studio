@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from watchlist_app.db.models.workbench import RiskCase
 
 from watchlist_app.db.models.research import InstrumentResearchNote
 from watchlist_app.repositories.sqlalchemy.research import (
@@ -12,6 +14,8 @@ from watchlist_app.repositories.sqlalchemy.research import (
 
 RESEARCH_WATCHLIST_FIELD_KEYS = {
     "attr.research_current_view",
+    "attr.research_stage",
+    "attr.risk_attention",
     "attr.manual_rating",
     "attr.primary_analyst",
     "attr.research_next_review_date",
@@ -32,11 +36,12 @@ def build_research_watchlist_attribute_overrides(
 
     repository = SQLAlchemyInstrumentResearchRepository()
     overrides = {
-        instrument_id: {"research_note_count": 0}
+        instrument_id: {"research_note_count": 0, "research_stage": "watching", "risk_attention": "no_trigger"}
         for instrument_id in normalized_ids
     }
     for profile in repository.list_profiles(session, normalized_ids):
         values = overrides[profile.instrument_id]
+        values["research_stage"] = profile.research_stage
         if profile.current_view:
             values["research_current_view"] = profile.current_view
         if profile.manual_rating is not None:
@@ -53,9 +58,16 @@ def build_research_watchlist_attribute_overrides(
     for instrument_id, notes in notes_by_instrument.items():
         values = overrides[instrument_id]
         values["research_note_count"] = len(notes)
+        values["research_updated_at"] = max([note.updated_at for note in notes] + ([values["research_updated_at"]] if values.get("research_updated_at") else []))
         follow_up_dates = [
-            note.follow_up_date for note in notes if note.follow_up_date is not None
+            note.follow_up_date for note in notes if note.follow_up_date is not None and note.completed_at is None
         ]
         if follow_up_dates:
             values["research_next_follow_up_date"] = min(follow_up_dates)
+    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
+        values = overrides[case.instrument_id]
+        if case.severity == "attention":
+            values["risk_attention"] = "attention"
+        elif case.severity == "coverage" and values["risk_attention"] != "attention":
+            values["risk_attention"] = "limited"
     return overrides

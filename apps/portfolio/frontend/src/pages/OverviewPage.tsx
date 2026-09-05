@@ -667,13 +667,26 @@ function benchmarkNote(
 
 function StrategySleeveDonut({
   segments,
+  unassigned,
 }: {
   segments: Array<{ id: string; label: string; value: number; valueLabel: string; detail: string }>
+  unassigned?: { valueLabel: string; detail: string } | null
 }) {
   const visibleSegments = segments.filter((segment) => segment.value > 0)
   const total = visibleSegments.reduce((sum, segment) => sum + segment.value, 0)
   if (!visibleSegments.length || total <= 0) {
-    return <div className="price-chart-empty">No sleeves.</div>
+    return (
+      <div className="overview-sleeve-empty">
+        <div className="price-chart-empty">No classified sleeves.</div>
+        {unassigned ? (
+          <div className="overview-sleeve-unassigned">
+            <span>Unassigned</span>
+            <strong>{unassigned.valueLabel}</strong>
+            <em>{unassigned.detail}</em>
+          </div>
+        ) : null}
+      </div>
+    )
   }
 
   const radius = 44
@@ -705,7 +718,7 @@ function StrategySleeveDonut({
         </svg>
         <div className="overview-sleeve-donut-center">
           <strong>{formatPercent(total)}</strong>
-          <span>Allocated</span>
+          <span>Classified</span>
         </div>
       </div>
       <div className="overview-sleeve-donut-list">
@@ -718,6 +731,13 @@ function StrategySleeveDonut({
             <em>{segment.valueLabel}</em>
           </div>
         ))}
+        {unassigned ? (
+          <div className="overview-sleeve-unassigned">
+            <span>Unassigned</span>
+            <strong>{unassigned.valueLabel}</strong>
+            <em>{unassigned.detail}</em>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -1145,15 +1165,29 @@ export default function OverviewPage() {
       bucket.value != null && Number.isFinite(bucket.value) &&
       bucket.weight != null && Number.isFinite(bucket.weight),
   )
+  const unassignedSleeveBucket = completeSleeveBuckets.find(
+    (bucket) => bucket.id === '__unassigned__',
+  )
   const sleeveRibbonSegments =
     completeSleeveBuckets.length === composition.topLevelBuckets.length
-      ? completeSleeveBuckets.map((bucket) => ({
+      ? completeSleeveBuckets
+        .filter((bucket) => bucket.id !== '__unassigned__')
+        .map((bucket) => ({
           id: bucket.id,
           label: bucket.label,
           value: bucket.weight,
           valueLabel: formatPercent(bucket.weight),
           detail: `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`,
         }))
+      : null
+  const unassignedSleeve =
+    completeSleeveBuckets.length === composition.topLevelBuckets.length &&
+    unassignedSleeveBucket &&
+    unassignedSleeveBucket.weight > 0
+      ? {
+          valueLabel: formatPercent(unassignedSleeveBucket.weight),
+          detail: `${unassignedSleeveBucket.holdingsCount} lines · ${formatCurrency(unassignedSleeveBucket.value, resolvedBaseCurrency)}`,
+        }
       : null
   const topHoldingRows = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT)
   const completeTopHoldingRows = topHoldingRows.filter(hasFiniteAllocation)
@@ -1771,7 +1805,10 @@ export default function OverviewPage() {
                     <div className="panel-title">Strategy Sleeves</div>
                   </div>
                   {sleeveRibbonSegments ? (
-                    <StrategySleeveDonut segments={sleeveRibbonSegments} />
+                    <StrategySleeveDonut
+                      segments={sleeveRibbonSegments}
+                      unassigned={unassignedSleeve}
+                    />
                   ) : (
                     <div className="price-chart-empty">Sleeve allocation unavailable.</div>
                   )}
