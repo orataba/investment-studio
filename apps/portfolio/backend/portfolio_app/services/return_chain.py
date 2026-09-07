@@ -57,7 +57,11 @@ def has_complete_valuation(snapshot: dict[str, object]) -> bool:
 
 
 def is_reliable_valuation_snapshot(snapshot: dict[str, object]) -> bool:
-    return has_complete_valuation(snapshot) and not bool(snapshot.get("stale_price_flag"))
+    return (
+        has_complete_valuation(snapshot)
+        and not bool(snapshot.get("stale_price_flag"))
+        and not bool(snapshot.get("stale_fx_flag"))
+    )
 
 
 def resolve_reliable_snapshot_window(
@@ -84,14 +88,13 @@ def resolve_reliable_snapshot_window(
         if resolved_requested_end is None
         or cast(date, snapshot["as_of_date"]) <= resolved_requested_end
     ]
-    latest_reliable = next(
-        (
-            snapshot
-            for snapshot in reversed(candidates)
-            if is_reliable_valuation_snapshot(snapshot)
-        ),
-        None,
-    )
+    latest_reliable = None
+    blocked_snapshot = None
+    for snapshot in candidates:
+        if not is_reliable_valuation_snapshot(snapshot):
+            blocked_snapshot = snapshot
+            break
+        latest_reliable = snapshot
     effective_end_date = (
         cast(date, latest_reliable["as_of_date"])
         if latest_reliable is not None
@@ -125,7 +128,9 @@ def resolve_reliable_snapshot_window(
         and bool(trailing_candidates[-1].get("stale_price_flag"))
     )
     as_of_clamp_reason = None
-    if (
+    if blocked_snapshot is not None and blocked_snapshot.get("valuation_blocked_reason"):
+        as_of_clamp_reason = "required_market_data_missing"
+    elif (
         requested_end_date is not None
         and (
             effective_end_date is None
@@ -161,6 +166,7 @@ def resolve_reliable_snapshot_window(
         "effective_start_date": effective_start_date,
         "effective_end_date": effective_end_date,
         "as_of_clamp_reason": as_of_clamp_reason,
+        "valuation_blocked_reason": (blocked_snapshot or {}).get("valuation_blocked_reason"),
     }
 
 

@@ -236,39 +236,39 @@
   }
 }
 
+.watchlists-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 38px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.watchlists-topbar > .watchlist-breadcrumbs {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+}
 .watchlist-heading-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
 }
-.watchlist-workspace-tools {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  padding-left: 20px;
+.watchlist-heading-row > .watchlist-app-title {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
-.watchlist-workspace-tool {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 0;
-  color: #476171;
-  background: none;
-  border: none;
-  font-size: 13px;
-  cursor: pointer;
-  white-space: nowrap;
+.watchlist-heading-tools {
+  position: relative;
+  flex-shrink: 0;
+  margin-left: auto;
 }
-.watchlist-workspace-tool:hover {
-  color: #1c6560;
-}
-.watchlist-workspace-tool-assistant {
-  color: #246b66;
-}
-.watchlist-workspace-tool-risk {
-  border-right: 1px solid #dce4e8;
-  padding-right: 22px;
+.watchlist-heading-tools > .watchlist-menu {
+  left: auto;
+  right: 0;
 }
 .watchlist-instrument-name {
   display: flex;
@@ -359,9 +359,6 @@
   .watchlist-heading-row {
     flex-wrap: wrap;
     gap: 4px;
-  }
-  .watchlist-workspace-tools {
-    padding-left: 0;
   }
   .watchlist-risk-drawer {
     width: 100vw;

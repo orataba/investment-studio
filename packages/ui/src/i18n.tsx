@@ -586,6 +586,10 @@ export function matchesSystemLabel(label: string, query: string) {
 }
 
 const systemPatterns: LanguagePattern[] = [
+  { match: /^Benchmark comparison is unavailable because required observations are missing: (.+)$/, replace: (dates) => `基准缺少必要日期的价格，暂时无法比较：${dates.replace('No official market calendar is available to confirm closures.', systemLabel('No official market calendar is available to confirm closures.'))}` },
+  { match: /^Benchmark comparison is unavailable because (\d+) eligible portfolio return dates are missing from benchmark history$/, replace: (count) => `基准历史缺少 ${count} 个组合有效收益日期，暂时无法比较` },
+  { match: /^confirmed (total|price)-return basis \(([^)]+)\)$/, replace: (kind, basis) => `已确认的${kind === 'total' ? '总回报' : '价格回报'}口径（${systemLabel(basis)}）` },
+  { match: /^Required market data missing: (\d{4}-\d{2}-\d{2}); (.+)\. Supply the required observation before performance can continue\.$/, replace: (date, fields) => `缺少 ${date} 的必要行情：${fields.replace(/ valuation price/g, ' 估值价格').replace(/FX ([A-Z]{3}\/[A-Z]{3})/g, '$1 汇率')}。补齐该日数据后才能继续计算绩效。` },
   { match: /^View\s*:\s*(.+)$/, replace: (name) => `视图：${systemLabel(name)}` },
   { match: /^(\d+) Portfolios(?: · (.+))?$/, replace: (count, rest) => `${count} 个组合${rest ? ` · ${systemLabel(rest)}` : ''}` },
   { match: /^([\d,]+) (accounts?|cash accounts?|holdings accounts?|open option obligations|open lots?|holdings?|securities|instruments?|instruments\/cash|transactions?|rows?|items?|issues?|contracts?|notes?|peers|days|calendar days|snapshots|groups|activities|external flows|(?:complete |paired |risk |return )?observations)\.?$/i, replace: (count, unit) => `${count} ${unit.toLowerCase() === 'observations' ? '个观测值' : systemLabel(unit)}` },
@@ -641,7 +645,8 @@ const systemPatterns: LanguagePattern[] = [
   { match: /^Eligible-sleeve normalized HHI (.+)$/, replace: (value) => `纳入计算资产归一化集中度 ${value}` },
   { match: /^Asset mix by signed portfolio weight: (.+)$/, replace: (mix) => `按有符号组合权重划分的资产构成：${mix.split(', ').map(systemLabel).join('，')}` },
   { match: /^(Securities|FCN|Options|Cash & Settlement) (-?[\d.]+%)$/, replace: (label, weight) => `${systemLabel(label)} ${weight}` },
-  { match: /^(\d+) (?:more notes|more)$/, replace: (count) => `另有 ${count} 条` },
+  { match: /^(\d+) lines$/, replace: '$1 行' },
+  { match: /^(\d+) (?:more notes|more)$/,  replace: (count) => `另有 ${count} 条` },
   { match: /^(.+) through (.+); each Watchlist row uses that instrument's own latest calculation date\.$/, replace: (label, date) => `${systemLabel(label)}截至 ${date}；各行使用该标的最近的计算日期。` },
   { match: /^(.+) pct$/, replace: (value) => `${value} 分位` },
   { match: /^Copied (\d+) instruments to "(.+)"\.(?: (\d+) already existed there\.)?$/, replace: (count, name, existing) => `已将 ${count} 个标的复制到“${name}”。${existing ? `其中 ${existing} 个已存在。` : ''}` },
@@ -674,6 +679,19 @@ function mergePatterns(patterns?: LanguagePatternMessages): LanguagePatternMessa
     merged[language.value] = [
       ...(language.value === 'zh-Hans' ? systemPatterns : [
         { match: /^分类层级 (\d+)$/, replace: 'Taxonomy Level $1' },
+        { match: /^(\d+) 个标的$/, replace: '$1 instruments' },
+        { match: /^(\d+) 项限制$/, replace: '$1 limitations' },
+        { match: /^(\d+) 项$/, replace: '$1 items' },
+        { match: /^(\d+) 次$/, replace: '$1 reviews' },
+        { match: /^近 (\d+) 日$/, replace: 'Last $1 days' },
+        { match: /^重点标的：(.+)$/, replace: 'Focus instruments: $1' },
+        { match: /^已记录 (\d+) 条查阅记录，正在整理回答…$/, replace: '$1 source records saved. Preparing a reply…' },
+        { match: /^更新于 (.+)$/, replace: 'Updated $1' },
+        { match: /^依据日期 (.+)$/, replace: 'Evidence date $1' },
+        { match: /^发布时间 (.+)$/, replace: 'Published $1' },
+        { match: /^数据 (\d{4}-\d{2}-\d{2})$/, replace: 'Data $1' },
+        { match: /^跟进日期 (.+)$/, replace: 'Follow-up date $1' },
+        { match: /^(.+)（时区未披露）$/, replace: '$1 (timezone not disclosed)' },
         { match: /^View\s*:\s*分类$/, replace: 'View: Classification' },
         { match: /^(.+) actions$/, replace: (name: string) => `${systemSourceAliases[name] || name} actions` },
       ]),

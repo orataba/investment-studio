@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router'
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
 import {
   type RiskWorkspace,
@@ -21,6 +22,7 @@ export default function PortfolioInstrumentRisk({
   portfolioId: string
   workspace: HoldingsWorkspaceResponse
 }) {
+  const [pageParams] = useSearchParams()
   const [coverage, setCoverage] = useState<string[] | null>(null)
   const rows = workspace.rows.filter(
     (row) =>
@@ -52,15 +54,21 @@ export default function PortfolioInstrumentRisk({
   return (
     <section className="portfolio-section-block" aria-label="持仓风险关注">
       <RiskPanel
+        portfolioId={portfolioId}
         request={request}
         query={query}
         heading="持仓风险关注"
         instrumentHref={(id) =>
           buildWatchlistInstrumentDetailUrl(id, { tab: 'risk' })
         }
-        assistantHref={(id, question) =>
-          `${WATCHLIST_URL}/assistant?${new URLSearchParams({ instruments: id, question, portfolio: portfolioId })}`
-        }
+        assistantHref={(id, question) => {
+          const params = new URLSearchParams({ instruments: id, question, portfolio: portfolioId })
+          for (const key of ['tab', 'currency', 'benchmark', 'start', 'end']) {
+            const value = pageParams.get(key)
+            if (value !== null) params.set(key, value)
+          }
+          return `${WATCHLIST_URL}/assistant?${params}`
+        }}
         scopeLabel="当前组合持仓"
         scopeNote={
           <>

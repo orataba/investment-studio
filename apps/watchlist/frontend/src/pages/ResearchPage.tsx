@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { resolveWorkspaceUrl } from '../../../../../packages/ui/src/navigation'
 import { API_BASE_URL, createInstrumentResearchNote } from '../lib/api'
 import {
   readWorkbench as read,
@@ -22,31 +23,82 @@ type Evidence = {
   retrieved_at: string
   result: Record<string, unknown>
 }
+type PublicSource = { source_id?: string; title?: string; url?: string; published_at?: string | null }
 const toolLabels: Record<string, string> = {
   instruments: '标的研究与风险',
   comparison: '收益与风险比较',
   portfolio: '实际组合持仓',
   market: '市场状态',
+  search: '公开信息检索',
+  source: '公开原文',
+}
+const stateLabels: Record<string, string> = { queued: '等待回复', running: '回复中', draft: '研究草稿', failed: '回复未完成' }
+const matchingTopic = (topic: Topic, instrumentId?: string, portfolioId?: string) => topic.status !== 'archived'
+  && topic.topic_id !== 'us-sector-daily-review'
+  && !topic.topic_id.startsWith('instrument-events:')
+  && (!instrumentId || (topic.instrument_ids.length === 1 && topic.instrument_ids[0] === instrumentId))
+  && (!portfolioId || topic.portfolio_id === portfolioId)
+function stamp(value: string | null | undefined) {
+  if (!value) return '未知'
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
+}
+function publicHref(value?: string) {
+  try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
+}
+function EvidenceDetails({ evidence }: { evidence: Evidence[] }) {
+  return <details className="assistant-evidence"><summary>查阅依据（{evidence.length}）</summary>
+    {evidence.map((item) => {
+      const failed = item.result.available === false
+      const sources = failed ? [] : item.tool === 'search' && Array.isArray(item.result.sources)
+        ? item.result.sources as PublicSource[] : item.tool === 'source' ? [item.result as PublicSource] : []
+      const coverage = Array.isArray(item.result.coverage) ? item.result.coverage as string[] : []
+      return <div key={item.source_id}>
+        <p><strong>{toolLabels[item.tool] || item.tool}{failed ? ' · 读取未完成' : ''}</strong> · 获取 {stamp(item.retrieved_at)}</p>
+        {failed && <>
+          {typeof item.result.reason === 'string' && <p>{item.result.reason}</p>}
+          {typeof item.result.limitation === 'string' && <p>{item.result.limitation}</p>}
+        </>}
+        {sources.map((source, index) => {
+          const href = publicHref(source.url)
+          return <p key={source.source_id || index}>
+            {href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : source.title}
+            <br /><small>原文发布 {stamp(source.published_at)}</small>
+          </p>
+        })}
+        {coverage.length > 0 && <ul>{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
+        <details><summary>依据明细</summary><small>{item.source_id}</small><pre className="research-evidence-json" translate="no">{JSON.stringify(item.result, null, 2)}</pre></details>
+      </div>
+    })}
+  </details>
 }
 
 export default function ResearchPage({
   watchlistId,
+  instrumentId,
+  initialQuestion,
   onClose,
 }: {
   watchlistId?: string
+  instrumentId?: string
+  initialQuestion?: string
   onClose?: () => void
 }) {
   const [params, setParams] = useSearchParams()
   const selected = params.get('topic') || ''
   const listId = watchlistId || params.get('watchlist') || undefined
+  const pagePortfolioId = params.get('portfolio') || undefined
+  const portfolioSection = ['overview', 'holdings', 'performance', 'risk', 'transactions', 'accounts', 'research'].includes((params.get('tab') || '').toLowerCase())
+    ? params.get('tab')!.toLowerCase() : 'overview'
+  const topicsPath = instrumentId ? `/research/topics?instrument_id=${encodeURIComponent(instrumentId)}` : '/research/topics'
   const [topics, setTopics] = useState<Topic[]>([])
   const [assets, setAssets] = useState<ResearchAsset[]>([])
   const [connections, setConnections] = useState<Connections | null>(null)
   const [detail, setDetail] = useState<Conversation | null>(null)
-  const [question, setQuestion] = useState(params.get('question') || '')
+  const [question, setQuestion] = useState(initialQuestion ?? params.get('question') ?? '')
   const [portfolioId, setPortfolioId] = useState(params.get('portfolio') || '')
   const [focusIds, setFocusIds] = useState<string[]>(
-    params.get('instruments')?.split(',').filter(Boolean) || [],
+    instrumentId ? [instrumentId] : params.get('instruments')?.split(',').filter(Boolean) || [],
   )
   const [historyOpen, setHistoryOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -73,13 +125,13 @@ export default function ResearchPage({
   useEffect(() => {
     let active = true
     Promise.all([
-      read<Topic[]>('/research/topics'),
+      read<Topic[]>(topicsPath),
       read<{ instruments: ResearchAsset[] }>('/research/catalogue'),
       read<Connections>('/research/connections'),
     ])
       .then(([history, catalogue, available]) => {
         if (active) {
-          setTopics(history)
+          setTopics(history.filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId)))
           setAssets(catalogue.instruments)
           setConnections(available)
         }
@@ -90,7 +142,7 @@ export default function ResearchPage({
     return () => {
       active = false
     }
-  }, [])
+  }, [topicsPath, instrumentId, pagePortfolioId])
 
   useEffect(() => {
     let active = true
@@ -98,9 +150,16 @@ export default function ResearchPage({
     setAdoption(null)
     setError('')
     if (selected)
-      read<Conversation>(`/research/topics/${selected}`)
+      read<Conversation>(`/research/topics/${encodeURIComponent(selected)}`)
         .then((value) => {
           if (active) {
+            if (!matchingTopic(value.topic, instrumentId, pagePortfolioId)) {
+              setError('该会话不属于当前研究范围，请选择历史对话或新建对话。')
+              const next = new URLSearchParams(params)
+              next.delete('topic')
+              setParams(next, { replace: true })
+              return
+            }
             setDetail(value)
             setFocusIds(value.topic.instrument_ids)
             setPortfolioId(value.topic.portfolio_id || '')
@@ -112,13 +171,13 @@ export default function ResearchPage({
     return () => {
       active = false
     }
-  }, [selected])
+  }, [selected, instrumentId, pagePortfolioId])
 
   useEffect(() => {
     if (!running || !selected) return
     let active = true
     const timer = window.setInterval(() => {
-      read<Conversation>(`/research/topics/${selected}`)
+      read<Conversation>(`/research/topics/${encodeURIComponent(selected)}`)
         .then((value) => {
           if (active) setDetail(value)
         })
@@ -146,6 +205,10 @@ export default function ResearchPage({
     setHistoryOpen(false)
     if (clearQuestion) setQuestion('')
     setNotice('')
+    if (!topicId) {
+      setFocusIds(instrumentId ? [instrumentId] : params.get('instruments')?.split(',').filter(Boolean) || [])
+      setPortfolioId(pagePortfolioId || '')
+    }
   }
   async function perform(action: () => Promise<void>) {
     setBusy(true)
@@ -160,11 +223,14 @@ export default function ResearchPage({
     }
   }
   async function ensureConversation() {
-    if (selected) return selected
+    if (selected) {
+      if (detail?.topic.topic_id !== selected || !matchingTopic(detail.topic, instrumentId, pagePortfolioId)) throw new Error('请等待当前会话读取完成。')
+      return selected
+    }
     const topic = await write<Topic>('/research/topics', {
       title: question.trim().slice(0, 80) || '新对话',
       question: '',
-      instrument_ids: focusIds,
+      instrument_ids: instrumentId ? [instrumentId] : focusIds,
       portfolio_id: portfolioId || null,
     })
     setTopics((current) => [topic, ...current])
@@ -172,18 +238,29 @@ export default function ResearchPage({
   }
   async function send() {
     const message = question.trim()
-    if (!message || busy || running) return
+    if (!message || busy || running || !connections?.assistant_available) return
+    const pageContext: Record<string, string | null> = {
+      surface: pagePortfolioId ? 'portfolio' : instrumentId ? 'instrument' : 'watchlist',
+      instrument_id: instrumentId || (focusIds.length === 1 ? focusIds[0] : null),
+      watchlist_id: listId || null,
+      portfolio_id: pagePortfolioId || portfolioId || null,
+    }
+    for (const key of ['tab', 'currency', 'benchmark', 'start', 'end']) {
+      const value = params.get(key)
+      if (value !== null) pageContext[key] = value
+    }
     await perform(async () => {
       const id = await ensureConversation()
       await write(`/research/topics/${id}/analysis`, {
         question: message,
         watchlist_id: listId || null,
+        page_context: pageContext,
       })
       if (selected)
         setDetail(await read<Conversation>(`/research/topics/${id}`))
       else openConversation(id)
       setQuestion('')
-      setTopics(await read<Topic[]>('/research/topics'))
+      setTopics((await read<Topic[]>(topicsPath)).filter((topic) => matchingTopic(topic, instrumentId, pagePortfolioId)))
     })
   }
   async function changePortfolio(value: string) {
@@ -206,6 +283,7 @@ export default function ResearchPage({
       if (selected)
         setDetail(await read<Conversation>(`/research/topics/${id}`))
       else openConversation(id, false)
+      setNotice('材料已收录，发送问题后才会开始分析。')
     })
   }
   const names = Object.fromEntries(
@@ -218,12 +296,12 @@ export default function ResearchPage({
       ref={dialogRef}
       role={onClose ? 'dialog' : undefined}
       aria-modal={onClose ? true : undefined}
-      aria-label="Watchlist 研究助手"
+      aria-label="研究助手"
       tabIndex={-1}
     >
       <header className="assistant-heading">
         <div>
-          <small>Watchlist · DeepSeek</small>
+          <small>{pagePortfolioId ? connections?.portfolios.find((portfolio) => portfolio.portfolio_id === pagePortfolioId)?.portfolio_name || `组合 ${pagePortfolioId}` : instrumentId ? names[instrumentId] || instrumentId : '关注列表'} · DeepSeek</small>
           <h1>研究助手</h1>
         </div>
         <div className="toolbar">
@@ -241,9 +319,11 @@ export default function ResearchPage({
             <button onClick={onClose} aria-label="关闭研究助手">
               关闭
             </button>
+          ) : pagePortfolioId ? (
+            <a data-workspace-link href={`${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}/portfolios/${encodeURIComponent(pagePortfolioId)}/${portfolioSection}`}>返回组合</a>
           ) : (
             <Link to={listId ? `/watchlists/${listId}` : '/watchlists'}>
-              返回 Watchlist
+              返回关注列表
             </Link>
           )}
         </div>
@@ -253,15 +333,15 @@ export default function ResearchPage({
           {focusIds.length
             ? `重点标的：${focusIds.map((id) => names[id] || id).join('、')}`
             : listId
-              ? '从当前 Watchlist 开始研究'
-              : '可读取你的 Watchlist 与标的研究记录'}
+              ? '从当前关注列表开始研究'
+              : '可读取你的关注列表与标的研究记录'}
         </span>
         <label>
           关联组合
           <select
             aria-label="关联组合"
             value={portfolioId}
-            disabled={busy || running || Boolean(selected && !detail)}
+            disabled={Boolean(pagePortfolioId) || busy || running || Boolean(selected && !detail)}
             onChange={(e) => void changePortfolio(e.target.value)}
           >
             <option value="">暂不关联</option>
@@ -282,10 +362,10 @@ export default function ResearchPage({
               onClick={() => openConversation(topic.topic_id)}
             >
               <span translate="no">{topic.title}</span>
-              <small>{topic.updated_at.slice(0, 10)}</small>
+              <small>{stamp(topic.updated_at)}</small>
             </button>
           ))}
-          {!topics.length && <p>还没有历史对话。</p>}
+          {!topics.length && <p>{instrumentId ? '还没有当前标的的独立历史对话。' : '还没有历史对话。'}</p>}
         </nav>
       )}
       {error && (
@@ -301,9 +381,10 @@ export default function ResearchPage({
             <p>
               直接提问，随后可以补充条件、材料或继续追问。助手会按需读取列表、标的笔记、风险与市场数据；关联组合后，也能结合实际持仓分析。
             </p>
-            <p>你的长期研究记录仍保存在每个标的的研究页。</p>
+            <p>你的研究与投资判断保存在标的的“投资观点”，自动整理的成果在“研究追踪”。</p>
           </div>
         )}
+        {entries.some((entry) => entry.kind === 'analysis') && <p className="assistant-scope">已保存的答复反映当时查阅的资料，并非实时更新。</p>}
         {entries.map((entry) => {
           const evidence = (entry.context_json.tool_evidence ||
             []) as Evidence[]
@@ -323,23 +404,23 @@ export default function ResearchPage({
                 ) : (
                   <p translate="no">{entry.body}</p>
                 )}
-                <small>{String(entry.context_json.extraction || '')}</small>
+                <small>材料收录于 {stamp(entry.created_at)} · {String(entry.context_json.extraction || '')}</small>
               </article>
             )
           return (
             <div className="assistant-exchange" key={entry.entry_id}>
               <article className="assistant-question">
                 <small>
-                  你 · {entry.created_at.slice(0, 16).replace('T', ' ')}
+                  你 · {stamp(entry.created_at)}
                 </small>
                 <p translate="no">{entry.title}</p>
               </article>
               <article className="assistant-answer">
-                <small>DeepSeek{entry.status === 'draft' ? ' · 研究草稿' : ''}</small>
+                <small>DeepSeek · {stateLabels[entry.status] || entry.status}</small>
                 {['queued', 'running'].includes(entry.status) ? (
                   <p role="status">
-                    {evidence.length
-                      ? `已读取 ${evidence.length} 份研究依据，正在整理回答…`
+                    {entry.status === 'queued' ? '问题已排队，等待回复。' : evidence.length
+                      ? `已记录 ${evidence.length} 条查阅记录，正在整理回答…`
                       : '正在理解问题并查阅资料…'}
                   </p>
                 ) : (
@@ -352,23 +433,7 @@ export default function ResearchPage({
                     </Markdown>
                   </div>
                 )}
-                {evidence.length > 0 && (
-                  <details className="assistant-evidence">
-                    <summary>查阅依据（{evidence.length}）</summary>
-                    {evidence.map((source) => (
-                      <details key={source.source_id}>
-                        <summary>
-                          {toolLabels[source.tool] || source.tool} ·{' '}
-                          {source.retrieved_at.slice(0, 16).replace('T', ' ')}
-                        </summary>
-                        <small>{source.source_id}</small>
-                        <pre className="research-evidence-json">
-                          {JSON.stringify(source.result, null, 2)}
-                        </pre>
-                      </details>
-                    ))}
-                  </details>
-                )}
+                {evidence.length > 0 && <EvidenceDetails evidence={evidence} />}
                 {entry.status === 'draft' && (
                   <button
                     onClick={() =>
@@ -492,7 +557,7 @@ export default function ResearchPage({
               type="file"
               aria-label="补充对话材料"
               accept=".pdf,.txt,.md,.csv"
-              disabled={busy || running}
+              disabled={busy || running || Boolean(selected && detail?.topic.topic_id !== selected)}
               onChange={(e) => {
                 const file = e.target.files?.[0]
                 if (file) void attach(file)

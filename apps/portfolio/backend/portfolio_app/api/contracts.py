@@ -815,7 +815,8 @@ class AccountPositionRecord(BaseModel):
     carrying_value: float | None = None
     fair_value: float | None = None
     fair_value_coverage_status: CoverageState
-    valuation_basis: Literal["market_quote", "carried_cost"]
+    valuation_basis: Literal["market_quote", "carried_cost", "transaction_price"]
+    valuation_source_transaction_ids: list[str] = Field(default_factory=list)
     coverage_status: str
     currency: str
     cost_basis_method: CostBasisMethod | None = None
@@ -823,6 +824,8 @@ class AccountPositionRecord(BaseModel):
 
 
 class PositionRecord(BaseModel):
+    valuation_basis: str | None = None
+    valuation_source_transaction_ids: list[str] = Field(default_factory=list)
     position_id: str
     portfolio_id: str
     position_reference_id: str
@@ -878,6 +881,7 @@ class InstrumentPriceChartResponse(BaseModel):
     coverage_state: CoverageState = "unavailable"
     selection_reason: str | None = None
     split_adjusted: bool = False
+    market_session_dates: list[date] | None = None
     points: list[InstrumentPriceChartPoint] = Field(default_factory=list)
     summary: InstrumentPriceChartSummary
 
@@ -992,6 +996,8 @@ class PositionLotRealizationRecord(BaseModel):
 
 
 class PositionLotRecord(BaseModel):
+    valuation_basis: str | None = None
+    valuation_source_transaction_ids: list[str] = Field(default_factory=list)
     position_side: Literal["long", "short"] = "long"
     position_lot_id: str
     portfolio_id: str
@@ -1247,6 +1253,7 @@ class TransactionPositionPreviewResponse(BaseModel):
 
 
 class DailySnapshotRecord(BaseModel):
+    transaction_price_valuations: list[dict[str, object]] = Field(default_factory=list)
     as_of_date: date
     base_currency: SupportedCurrency
     valuation_timezone: str
@@ -1259,6 +1266,7 @@ class DailySnapshotRecord(BaseModel):
     return_chain_continuous: bool
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
+    valuation_blocked_reason: str | None = None
     total_position_count: int = 0
     priced_position_count: int = 0
     market_observation_count: int = 0
@@ -1372,6 +1380,7 @@ class DailySnapshotRecalculationResponse(BaseModel):
 
 
 class DailyPerformancePoint(BaseModel):
+    transaction_price_valuations: list[dict[str, object]] = Field(default_factory=list)
     as_of_date: date
     coverage_state: CoverageState
     valuation_coverage_state: CoverageState
@@ -3340,6 +3349,7 @@ class PeriodCalculationGroupRecord(BaseModel):
 
 class PeriodCalculationGroupsSummary(BaseModel):
     axis: ContributionAxis
+    coverage_state: CoverageState = "unavailable"
     taxonomy_id: str | None = None
     group_key: str | None = None
     group_label: str | None = None

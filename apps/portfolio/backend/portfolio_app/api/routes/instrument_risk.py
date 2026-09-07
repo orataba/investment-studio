@@ -32,6 +32,16 @@ def workspace(instrument_ids: str = Query(...)):
     return watchlist_risk("?" + urlencode({"instrument_ids": instrument_ids}))
 
 
+@router.get("/review")
+def risk_review(portfolio_id: str = Query(...)):
+    return watchlist_risk("/review?" + urlencode({"portfolio_id": portfolio_id}))
+
+
+@router.post("/review/runs", status_code=202)
+def start_risk_review(payload: dict):
+    return watchlist_risk("/review/runs", "POST", payload)
+
+
 @router.post("/cases", status_code=201)
 def add_case(payload: dict):
     return watchlist_risk("/cases", "POST", payload)

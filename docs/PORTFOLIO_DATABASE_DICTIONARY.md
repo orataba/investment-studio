@@ -146,9 +146,11 @@ Derived portfolio-level NAV, return, and reliability snapshot.
 
 | Columns |
 |---|
-| **PK** `(portfolio_id, as_of_date)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `coverage_state VARCHAR`; `valuation_coverage_state VARCHAR`; `return_coverage_state VARCHAR`; `book_pnl_coverage_state VARCHAR`; `attribution_coverage_state VARCHAR`; `nav FLOAT?`; `beginning_nav FLOAT?`; `ending_nav FLOAT?`; `daily_twr FLOAT?`; `cumulative_twr FLOAT?`; `drawdown FLOAT?`; `snapshot_json JSON`; `calculated_at VARCHAR` |
+| **PK** `(portfolio_id, as_of_date)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `coverage_state VARCHAR`; `valuation_coverage_state VARCHAR`; `return_coverage_state VARCHAR`; `book_pnl_coverage_state VARCHAR`; `attribution_coverage_state VARCHAR`; `nav FLOAT?`; `beginning_nav FLOAT?`; `ending_nav FLOAT?`; `daily_twr FLOAT?`; `cumulative_twr FLOAT?`; `drawdown FLOAT?`; `snapshot_json JSON`; `calculation_state_json JSON?`; `calculated_at VARCHAR` |
 
 `snapshot_json` also carries the separate market-risk chain: `risk_scope_excluded_pnl`, `market_risk_pnl`, `market_risk_daily_return`, `market_risk_cumulative_return`, `market_risk_drawdown`, observation eligibility/coverage, and basis label. These fields treat derivatives and base-currency cash as zero-return capital while preserving all cash facts in NAV and operational TWR.
+
+`calculation_state_json` is the rebuildable period-calculation input published by the same daily kernel and source generation. It contains open long/short lots, selected valuation and FX points, boundary information, and that day's lot, corporate-action, option and cash events. Period calculations read boundary states and project only events within the requested range, then apply the existing lot and return rules. They do not reload security/FX histories or reconstruct the ledger on every date change. This column is deferred in ordinary snapshot queries and is not included in public snapshot payloads. Migration `20260906_0060` adds the column; the calculation-version change requires existing snapshots to be rebuilt before these reads become available.
 
 ### `portfolio.portfolio_daily_holding_snapshot`
 

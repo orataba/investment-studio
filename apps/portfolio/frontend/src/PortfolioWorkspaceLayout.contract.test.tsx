@@ -2,6 +2,7 @@ import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useLocation } from 'react-router'
 
 import PortfolioWorkspaceLayout from './components/PortfolioWorkspaceLayout'
 import { PortfolioCapabilitiesContext } from './components/PortfolioCapabilitiesProvider'
@@ -26,6 +27,15 @@ vi.mock('./lib/api', () => apiMocks)
 vi.mock('./lib/preload', () => ({
   preloadPortfolioSection: vi.fn(),
 }))
+vi.mock('./components/PortfolioRiskDrawer', () => ({
+  default: ({ portfolioId, onClose }: { portfolioId: string; onClose: () => void }) =>
+    <div role="dialog" aria-label="Portfolio risk alerts" data-portfolio={portfolioId}><button onClick={onClose}>Close risk alerts</button></div>,
+}))
+
+function CurrentLocation() {
+  const location = useLocation()
+  return <span data-testid="current-location">{location.pathname}{location.search}</span>
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -37,16 +47,17 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function renderLayout(busy = false, researchEnabled = false) {
+function renderLayout(busy = false, researchEnabled = false, query = '') {
   return renderPortfolioPage(
     <LanguageProvider enableDomTranslation={false}>
       <PortfolioCapabilitiesContext.Provider value={{ research_enabled: researchEnabled }}>
         <PortfolioWorkspaceLayout activeSection="Overview" busy={busy}>
           <div>Portfolio page content</div>
+          <CurrentLocation />
         </PortfolioWorkspaceLayout>
       </PortfolioCapabilitiesContext.Provider>
     </LanguageProvider>,
-    '/portfolios/3/overview',
+    `/portfolios/3/overview${query}`,
     '/portfolios/:portfolioId/overview',
   )
 }
@@ -77,6 +88,36 @@ describe('Portfolio workspace loading contract', () => {
     }
   })
 
+  it('opens the shared research assistant with the current portfolio and only displayed page dimensions', async () => {
+    apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(workspaceSummaryFixture())
+    renderLayout(false, false, '?currency=USD&benchmark=spy&start=2026-01-01&end=2026-09-06&tab=unrelated&unrelated=value')
+    await screen.findByText('$1,000.00')
+    const link = screen.getByRole('link', { name: 'Research assistant' }) as HTMLAnchorElement
+    const url = new URL(link.href)
+    expect(url.pathname).toBe('/assistant')
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      portfolio: '3', tab: 'Overview', currency: 'USD', benchmark: 'spy', start: '2026-01-01', end: '2026-09-06',
+    })
+    const tools = link.closest<HTMLElement>('.portfolio-header-actions')!
+    expect(within(tools).getAllByRole('link').map((item) => item.textContent)).toEqual(['Research assistant'])
+    expect(within(tools).getByRole('button', { name: 'Risk alerts' })).toBeInTheDocument()
+    expect(within(tools).getByRole('button', { name: 'Portfolio Settings' })).toHaveTextContent('Settings')
+    expect(tools.closest('.portfolio-header-row')?.querySelector('.portfolio-name')).toHaveTextContent('Contract Portfolio')
+    expect(link.closest('.workspace-app-heading')).toBeNull()
+
+    const currentPage = screen.getByTestId('current-location').textContent
+    const user = userEvent.setup()
+    await user.click(within(tools).getByRole('button', { name: 'Risk alerts' }))
+    const drawer = await screen.findByRole('dialog', { name: 'Portfolio risk alerts' })
+    expect(drawer).toHaveAttribute('data-portfolio', '3')
+    expect(screen.getByTestId('current-location').textContent).toBe(currentPage)
+    expect(screen.getByText('Portfolio page content')).toBeInTheDocument()
+    await user.click(within(drawer).getByRole('button', { name: 'Close risk alerts' }))
+    expect(screen.queryByRole('dialog', { name: 'Portfolio risk alerts' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('current-location').textContent).toBe(currentPage)
+    expect(screen.getByText('Portfolio page content')).toBeInTheDocument()
+  })
+
   it('keeps the workspace structure but never invents zero-valued summary facts while loading', async () => {
     const pendingSummary = deferred<ReturnType<typeof workspaceSummaryFixture>>()
     apiMocks.getWorkspaceSummaryForPortfolio.mockReturnValue(pendingSummary.promise)
@@ -87,9 +128,10 @@ describe('Portfolio workspace loading contract', () => {
 
     expect(workspace).toHaveAttribute('aria-busy', 'true')
     expect(header).toHaveAttribute('aria-busy', 'true')
-    expect(container.querySelector('.workspace-breadcrumbs .language-switcher')).toContainElement(
+    expect(container.querySelector('.portfolio-topbar > .language-switcher')).toContainElement(
       screen.getByRole('combobox', { name: 'Language' }),
     )
+    expect(container.querySelector('.workspace-breadcrumbs .language-switcher')).toBeNull()
     expect(screen.getByRole('status')).toHaveTextContent('Loading portfolio summary.')
     expect(screen.getByText('Portfolio page content')).toBeInTheDocument()
     expect(screen.queryByText('$0.00')).not.toBeInTheDocument()

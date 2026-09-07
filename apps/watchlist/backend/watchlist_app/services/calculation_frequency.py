@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -53,6 +53,18 @@ def _annualization_periods_per_year(points: list[dict[str, Any]]) -> float | Non
     if elapsed_days <= 0:
         return None
     return (len(points) - 1) / elapsed_days * 365.25
+
+
+def source_calendar_date(now: datetime, market_calendar: object) -> date:
+    """Use the source market's local day when evaluating a publication schedule."""
+    name = str(market_calendar or "").strip()
+    if name:
+        try:
+            calendar = exchange_calendars.get_calendar(_MARKET_CALENDAR_ALIASES.get(name, name))
+            return now.astimezone(calendar.tz).date()
+        except (CalendarError, ValueError):
+            pass
+    return now.date()
 
 
 def build_calculation_frequency_context(
@@ -145,12 +157,14 @@ def assess_latest_observation_freshness(
     resolved_frequency: CalculationFrequency,
     expected_frequency: object = None,
     market_calendar: object = None,
-    release_lag_days: object = 0,
+    release_lag_days: object = None,
+    source_mode: object = None,
+    instrument_type: object = None,
 ) -> dict[str, object]:
     """Assess source-date freshness without imposing a shared Watchlist as-of.
 
     Daily exchange-calendar sources are compared with the latest completed
-    session whose calendar-day release lag has fully elapsed.  The current day
+    session whose trading-session release lag has fully elapsed.  The current day
     is deliberately excluded because an intraday Watchlist refresh must not
     require an observation scheduled to become available later that day.
     """
@@ -175,6 +189,9 @@ def assess_latest_observation_freshness(
 
     del resolved_frequency
     event_driven = str(expected_frequency or "").strip().lower() == "event_driven"
+    if release_lag_days is None and source_mode == "email" and instrument_type == "private_fund":
+        # User-confirmed email private-fund convention; explicit source settings win.
+        release_lag_days = 1
     try:
         normalized_release_lag = max(int(release_lag_days or 0), 0)
     except (TypeError, ValueError):
@@ -188,11 +205,12 @@ def assess_latest_observation_freshness(
             current_date - timedelta(days=370),
             current_date,
         )
-        available_sessions = [
+        completed_sessions = [
             session_date
             for session_date in (sessions or ())
-            if session_date + timedelta(days=normalized_release_lag) < current_date
+            if session_date < current_date
         ]
+        available_sessions = completed_sessions[:-normalized_release_lag] if normalized_release_lag else completed_sessions
         if available_sessions:
             expected_latest_date = available_sessions[-1]
 
@@ -201,6 +219,7 @@ def assess_latest_observation_freshness(
         return {
             "status": "stale" if stale else "fresh",
             "expected_latest_date": expected_latest_date.isoformat(),
+            "release_lag_trading_days": normalized_release_lag,
             "lag_days": max((current_date - latest_observation_date).days, 0),
             "reason": (
                 f"Latest observation {latest_observation_date.isoformat()} is older "

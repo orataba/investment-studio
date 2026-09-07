@@ -1,7 +1,6 @@
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
-  getPortfolioPerformance,
   getPortfolioResearchWorkbench,
   getPortfolioTaxonomyCatalog,
   getPortfolioTransactionsWorkspace,
@@ -30,10 +29,8 @@ const routeModulePreloaders: Record<PortfolioPreloadSection, PreloadTask> = {
   Research: () => import('../pages/ResearchPage'),
 }
 
-const dataPreloaders: Record<PortfolioPreloadSection, (portfolioId: string) => Promise<unknown>> = {
-  Overview: (portfolioId) => getPortfolioPerformance(portfolioId),
+const dataPreloaders: Partial<Record<PortfolioPreloadSection, (portfolioId: string) => Promise<unknown>>> = {
   Holdings: (portfolioId) => getHoldingsWorkspace(portfolioId),
-  Performance: (portfolioId) => getPortfolioPerformance(portfolioId),
   Risk: (portfolioId) => getHoldingsWorkspace(portfolioId, { include_details: true }),
   Transactions: (portfolioId) => getPortfolioTransactionsWorkspace(portfolioId),
   Accounts: (portfolioId) => getPortfolioAccountsWorkspace(portfolioId),
@@ -69,12 +66,18 @@ export function preloadPortfolioSection(section: string, portfolioId: string) {
     })
   }
 
+  // Dated performance requests must use the page's resolved window. Prefetching
+  // an undated report cannot populate that cache entry and competes with it.
+  const preloadData = dataPreloaders[section]
+  if (!preloadData) {
+    return
+  }
   const dataIntentKey = `${portfolioId}:${section}`
   if (loadedDataIntents.has(dataIntentKey)) {
     return
   }
   loadedDataIntents.add(dataIntentKey)
-  void dataPreloaders[section](portfolioId).catch(() => {
+  void preloadData(portfolioId).catch(() => {
     loadedDataIntents.delete(dataIntentKey)
   })
 }

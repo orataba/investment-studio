@@ -136,10 +136,12 @@ def test_registry_batch_loads_full_details_and_marks_missing() -> None:
 
     assert list(details) == ["equity-us-abbv", "fund-us-agg", "missing-instrument"]
     assert details["missing-instrument"] is None
-    assert details["equity-us-abbv"] is not None
-    assert len(details["equity-us-abbv"]["market_data"]) == 8
-    assert details["fund-us-agg"] is not None
-    assert len(details["fund-us-agg"]["market_data"]) == 4
+    for instrument_id in ("equity-us-abbv", "fund-us-agg"):
+        full_detail = instrument_registry.get_registry_instrument_detail(instrument_id)
+        assert full_detail is not None
+        assert details[instrument_id] is not None
+        assert details[instrument_id]["market_data"] == full_detail["market_data"]
+        assert len({point["as_of_date"] for point in full_detail["market_data"]}) > 1
 
 
 def test_registry_batch_skips_fund_nav_audit_ledger(monkeypatch) -> None:
@@ -630,6 +632,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
                 cumulative_twr=None,
                 drawdown=None,
                 snapshot_json={
+                    "calculation_version": daily_snapshots.DAILY_SNAPSHOT_CALCULATION_VERSION,
                     "base_currency": "USD",
                     "nav": 200.0,
                     "cash_balance": 0.0,
@@ -679,6 +682,13 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
                     calculated_at=calculated_at,
                 ),
             ]
+        )
+        session.flush()
+        state.source_market_data_updated_at = daily_snapshots._source_market_data_watermark(
+            session, portfolio_id,
+        )
+        state.source_calculation_inputs_updated_at = daily_snapshots._source_calculation_inputs_watermark(
+            session, portfolio_id,
         )
         session.commit()
 
@@ -1044,6 +1054,9 @@ def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_chart
     client,
     monkeypatch,
 ) -> None:
+    # Measure the fallback holding projection after the required portfolio
+    # valuation refresh, which has its own market-data reads.
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
     original_bulk_loader = workspace_routes.get_registry_instrument_details
     original_performance_loader = performance.get_registry_instrument_detail
     bulk_calls: list[tuple[str, ...]] = []

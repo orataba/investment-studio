@@ -15,15 +15,23 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
-    from watchlist_app.services.research_runner import interrupt_incomplete_runs
+    from watchlist_app.services.research_runner import harness_available, interrupt_incomplete_runs
     interrupt_incomplete_runs()
     worker_thread = None
     worker_stop_event: Event | None = None
     if settings.recalc_worker_enabled:
         worker_thread, worker_stop_event = start_recalc_worker()
+    sector_thread, sector_stop = None, None
+    if harness_available():
+        from watchlist_app.services.sector_research import start_sector_worker
+        sector_thread, sector_stop = start_sector_worker()
     try:
         yield
     finally:
+        if sector_stop is not None:
+            sector_stop.set()
+        if sector_thread is not None:
+            sector_thread.join(timeout=settings.recalc_worker_shutdown_timeout_seconds)
         if worker_stop_event is not None:
             worker_stop_event.set()
         if worker_thread is not None:

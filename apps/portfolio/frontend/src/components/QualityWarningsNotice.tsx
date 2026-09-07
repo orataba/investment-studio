@@ -14,6 +14,7 @@ export default function QualityWarningsNotice({
   }
 
   const warningDetail = visibleWarnings.join(' ')
+  const missingMarketDataWarnings = visibleWarnings.filter((warning) => warning.startsWith('Required market data missing: '))
   const warningLabel =
     visibleWarnings.length === 1
       ? 'Data quality warning'
@@ -28,6 +29,7 @@ export default function QualityWarningsNotice({
       tabIndex={0}
     >
       {warningLabel} <span aria-hidden="true">ⓘ</span>
+      {missingMarketDataWarnings.map((warning) => <div key={warning}>{warning}</div>)}
     </div>
   )
 }

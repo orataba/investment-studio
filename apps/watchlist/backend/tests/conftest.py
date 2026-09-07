@@ -648,6 +648,9 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             instrument,
         )
 
+    from watchlist_app.services import research_runner
+    monkeypatch.setattr(research_runner, "harness_available", lambda: False)
+
     import watchlist_app.main as main_module
 
     main_module = importlib.reload(main_module)

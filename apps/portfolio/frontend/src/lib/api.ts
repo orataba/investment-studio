@@ -187,6 +187,7 @@ export type PortfolioInstrumentPriceChartResponse = {
   coverage_state?: PortfolioPerformanceCoverageState
   selection_reason?: string | null
   split_adjusted?: boolean
+  market_session_dates?: string[] | null
   points: PortfolioInstrumentPriceChartPoint[]
   summary: PortfolioInstrumentPriceChartSummary
 }
@@ -2102,7 +2103,7 @@ export type PortfolioAccountPositionRecord = {
   carrying_value: number | null
   fair_value: number | null
   fair_value_coverage_status: 'complete' | 'partial' | 'unavailable'
-  valuation_basis: 'market_quote' | 'carried_cost'
+  valuation_basis: 'market_quote' | 'carried_cost' | 'transaction_price'
   coverage_status: string
   currency: string
   cost_basis_method?: 'moving_average' | 'fifo' | null
@@ -3039,6 +3040,7 @@ export type PortfolioTableViewStoreResponse<TStore = unknown> = {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const GET_CACHE_TTL_MS = 60_000
 const GET_CACHE_MAX_ENTRIES = 128
+const GET_REQUEST_TIMEOUT_MS = 120_000
 
 type CachedGetRequest = {
   expiresAt: number
@@ -3065,6 +3067,7 @@ function fetchJson<T>(
   baseUrl: string,
   path: string,
   init?: RequestInit,
+  cacheInvalidation: 'all' | 'resource' = 'all',
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   const cacheKey = method === 'GET' ? `${baseUrl}${path}` : null
@@ -3083,46 +3086,89 @@ function fetchJson<T>(
   }
 
   const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
-  const request = fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(init?.headers || {}),
-    },
-  }).then(async (response) => {
-    if (!response.ok) {
-      const body = await response.text()
-      if (body) {
-        let message = body
+  const request = (async () => {
+    const controller = method === 'GET' ? new AbortController() : null
+    const timeoutId = controller ? setTimeout(() => controller.abort(), GET_REQUEST_TIMEOUT_MS) : null
+    const deadline = now + GET_REQUEST_TIMEOUT_MS
+    let calculationPending = false
+    try {
+      while (true) {
+        controller?.signal.throwIfAborted()
+        const response = await fetch(`${baseUrl}${path}`, {
+          ...init,
+          ...(controller ? { signal: controller.signal } : {}),
+          headers: {
+            ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+            ...(init?.headers || {}),
+          },
+        })
+        if (response.ok) {
+          return (await response.json()) as T
+        }
+
+        const body = await response.text()
+        let detail: string | { code?: string; message?: string } | undefined
         try {
-          const parsed = JSON.parse(body) as { detail?: string }
-          message = parsed.detail || body
+          detail = (JSON.parse(body) as { detail?: typeof detail }).detail
         } catch {
-          message = body
+          // Non-JSON errors retain the response text below.
+        }
+        const message = (typeof detail === 'string' ? detail : detail?.message)
+          || body || `Request failed: ${response.status}`
+        if (
+          method === 'GET' && response.status === 503 && typeof detail === 'object'
+          && detail?.code === 'portfolio_calculation_pending'
+        ) {
+          const retryAfterMs = Number(response.headers.get('Retry-After')) * 1000
+          if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
+            throw new Error(message)
+          }
+          calculationPending = true
+          await new Promise((resolve) => setTimeout(
+            resolve,
+            Math.min(retryAfterMs, Math.max(0, deadline - Date.now())),
+          ))
+          continue
         }
         throw new Error(message)
       }
-
-      throw new Error(`Request failed: ${response.status}`)
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new Error(calculationPending
+          ? '已停止等待后台计算，请稍后刷新查看结果。'
+          : '请求等待超时，请稍后刷新。')
+      }
+      throw error
+    } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId)
     }
-
-    return (await response.json()) as T
-  })
+  })()
 
   if (cacheKey) {
     getRequestCache.set(cacheKey, {
-      expiresAt: now + GET_CACHE_TTL_MS,
+      // A pending calculation is one shared request, even past the result TTL.
+      expiresAt: Number.POSITIVE_INFINITY,
       promise: request,
     })
     trimGetRequestCache()
-    request.catch(() => {
-      getRequestCache.delete(cacheKey)
-    })
+    request.then(
+      () => {
+        const cached = getRequestCache.get(cacheKey)
+        if (cached?.promise === request) cached.expiresAt = Date.now() + GET_CACHE_TTL_MS
+      },
+      () => {
+        if (getRequestCache.get(cacheKey)?.promise === request) getRequestCache.delete(cacheKey)
+      },
+    )
     return request
   }
 
   return request.then((value) => {
-    getRequestCache.clear()
+    if (cacheInvalidation === 'resource') {
+      getRequestCache.delete(`${baseUrl}${path}`)
+    } else {
+      getRequestCache.clear()
+    }
     return value
   })
 }
@@ -3266,6 +3312,7 @@ export function savePortfolioTableViewStore<TStore>(
       method: 'PUT',
       body: JSON.stringify({ store }),
     },
+    'resource',
   )
 }
 

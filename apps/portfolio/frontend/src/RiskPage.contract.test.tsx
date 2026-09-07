@@ -493,6 +493,10 @@ describe('Risk rendered page contract', () => {
     const riskGap = screen.getByRole('img', { name: 'Risk budget target gap' })
     const riskHealth = screen.getByRole('region', { name: 'Risk health' })
 
+    expect(screen.queryByRole('region', { name: '风险研判' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '持仓风险关注' })).not.toBeInTheDocument()
+    expect(apiMocks.requestInstrumentRisk).not.toHaveBeenCalled()
+
     expect(within(weightGap).getByText('Cash')).toBeInTheDocument()
     expect(within(weightGap).getByText('Derivatives')).toBeInTheDocument()
     expect(within(weightGap).getAllByText('10.00%').length).toBeGreaterThan(0)

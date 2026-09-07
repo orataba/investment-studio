@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 from math import isfinite
-from typing import Callable
+from typing import Callable, cast
 
 from investment_studio_instrument_core.fx_contract import fx_instrument_identity
 
@@ -91,6 +91,20 @@ def instrument_detail_cache_get(
     return cache[instrument_id]
 
 
+def _fx_boundary_point_cache(
+    instrument_id: str,
+    detail: InstrumentDetail,
+    instrument_detail_cache: InstrumentDetailCache,
+) -> dict[tuple[str, date], dict[str, object] | None]:
+    """Keep resolved boundaries on a calculation-local copy of the detail."""
+
+    if "_fx_boundary_points" not in detail:
+        detail = dict(detail)
+        detail["_fx_boundary_points"] = {}
+        instrument_detail_cache[instrument_id] = detail
+    return cast(dict[tuple[str, date], dict[str, object] | None], detail["_fx_boundary_points"])
+
+
 def fx_direct_instrument_map(fx_payload: dict[str, object]) -> FxInstrumentMap:
     direct_instruments: FxInstrumentMap = {}
     for item in fx_payload.get("rates", []):
@@ -129,24 +143,32 @@ def direct_fx_point_as_of(
     )
     if not isinstance(detail, dict):
         return None
+    point_cache = _fx_boundary_point_cache(instrument_id, detail, instrument_detail_cache)
+    cache_key = ("as_of", as_of_date)
+    if cache_key in point_cache:
+        return point_cache[cache_key]
     point = resolve_quote_point(
         detail,
         candidate_bases=["spot"],
         as_of_date=as_of_date,
     ).point
     if point is None:
+        point_cache[cache_key] = None
         return None
     rate = _safe_float(point.get("value"))
     point_date = _parse_iso_date(point.get("as_of_date"))
     if rate is None or rate <= 0 or point_date is None:
+        point_cache[cache_key] = None
         return None
-    return {
+    result = {
         "rate": rate,
         "as_of_date": point_date,
         "status": market_data_status(point),
-        "stale": point_date < as_of_date,
+        "stale": bool(point.get("stale")),
         "source_instrument_ids": [instrument_id],
     }
+    point_cache[cache_key] = result
+    return result
 
 
 def direct_fx_point_before(
@@ -163,25 +185,33 @@ def direct_fx_point_before(
     )
     if not isinstance(detail, dict):
         return None
+    point_cache = _fx_boundary_point_cache(instrument_id, detail, instrument_detail_cache)
+    cache_key = ("before", before_date)
+    if cache_key in point_cache:
+        return point_cache[cache_key]
     resolution = resolve_quote_series(
         detail,
         candidate_bases=["spot"],
         end_date=before_date,
     )
     if not resolution.available:
+        point_cache[cache_key] = None
         return None
     for point in reversed(resolution.points):
         point_date = _parse_iso_date(point.get("as_of_date"))
         rate = _safe_float(point.get("value"))
         if point_date is None or point_date >= before_date or rate is None or rate <= 0:
             continue
-        return {
+        result = {
             "rate": rate,
             "as_of_date": point_date,
             "status": market_data_status(point),
             "stale": False,
             "source_instrument_ids": [instrument_id],
         }
+        point_cache[cache_key] = result
+        return result
+    point_cache[cache_key] = None
     return None
 
 

@@ -72,7 +72,7 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
         for note in session.scalars(select(InstrumentResearchNote).where(InstrumentResearchNote.instrument_id == iid, InstrumentResearchNote.note_type == "risk", InstrumentResearchNote.deleted_at.is_(None))):
             signals[f"note:{note.note_id}"] = dict(title=note.title, body=note.body or note.summary, severity="observation" if note.importance == "low" else "attention", observed_on=note.note_date, evidence={"note_id": note.note_id, "source": note.source_refs, "importance": note.importance, "recorded_on": note.note_date.isoformat()})
         existing = list(session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid, RiskCase.trigger_active.is_(True))))
-        active = {case.signal: case for case in existing if case.signal != "manual"}
+        active = {case.signal: case for case in existing if case.signal != "manual" and not case.signal.startswith("sector:")}
         for signal, reading in signals.items():
             reading_date = reading.get("observed_on", observed_on)
             case = active.pop(signal, None)

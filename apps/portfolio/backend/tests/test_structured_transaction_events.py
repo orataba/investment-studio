@@ -795,7 +795,7 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
     assert serialized_by_id["txn-3"].net_cash_effect == pytest.approx(-110_005.0)
 
 
-def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
+def test_independent_stock_buy_after_fcn_knock_in_uses_initial_purchase_valuation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     equity_detail = _equity_detail("equity-1", [])
@@ -825,7 +825,7 @@ def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
         "base_currency": "USD",
         "valuation_timezone": "Asia/Shanghai",
         "valuation_cutoff_policy": "latest_complete_eod",
-        "as_of_date": "2026-02-01",
+        "as_of_date": "2026-02-02",
     }
     accounts = [
         {
@@ -890,31 +890,49 @@ def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
         accounts,
         transactions,
         start_date=date(2026, 1, 31),
-        end_date=date(2026, 2, 1),
+        end_date=date(2026, 2, 2),
         include_materialized_rows=True,
     )
 
-    before_delivery, delivery_day = snapshots
-    delivered_stock = next(
-        row
-        for row in delivery_day["_holding_rows"]
-        if row["holding_kind"] == "position"
-        and row["instrument_id"] == "equity-1"
-    )
+    before_delivery, delivery_day, missing_next_close = snapshots
     assert before_delivery["ending_nav"] == pytest.approx(100_000.0)
-    assert delivery_day["valuation_coverage_state"] == "partial"
-    assert delivery_day["return_coverage_state"] == "partial"
-    assert delivery_day["position_market_value"] is None
-    assert delivery_day["ending_nav"] is None
-    assert delivery_day["daily_twr"] is None
-    assert delivery_day["total_position_count"] == 1
-    assert delivery_day["priced_position_count"] == 0
+    assert delivery_day["as_of_date"] == date(2026, 2, 1)
+    # This is a separate cash purchase, not a noncash derivative delivery.
+    # The confirmed 1,000 x 110 purchase can value its first holding day.
+    assert delivery_day["valuation_coverage_state"] == "complete"
+    assert delivery_day["nav"] == pytest.approx(110_000.0)
+    assert delivery_day["transaction_price_valuations"][0]["transaction_ids"] == ["txn-3"]
+    assert not delivery_day["market_risk_return_observation_eligible"]
+    initial_stock = next(
+        row for row in delivery_day["_holding_rows"]
+        if row["holding_kind"] == "position" and row["instrument_id"] == "equity-1"
+    )
+    assert initial_stock["valuation_basis"] == "transaction_price"
+    assert initial_stock["market_value"] == pytest.approx(110_000.0)
+    # A missing close on the next market session still stops the chain.
+    assert missing_next_close["as_of_date"] == date(2026, 2, 2)
+    assert missing_next_close["valuation_coverage_state"] == "unavailable"
+    assert missing_next_close["return_coverage_state"] == "unavailable"
+    assert missing_next_close["nav"] is None
+    assert "equity-1 valuation price" in missing_next_close["valuation_blocked_reason"]
+    assert "_holding_rows" not in missing_next_close
+
+    # An official close overrides the initial purchase price when available.
+    equity_detail["market_data"] = _equity_detail("equity-1", [("2026-02-01", "120")])["market_data"]
+    priced_snapshots = performance.build_daily_portfolio_snapshots(
+        portfolio, accounts, transactions,
+        start_date=date(2026, 1, 31), end_date=date(2026, 2, 1),
+        include_materialized_rows=True,
+    )
+    assert priced_snapshots[-1]["nav"] == pytest.approx(120_000.0)
+    assert priced_snapshots[-1]["transaction_price_valuations"] == []
+    delivered_stock = next(
+        row for row in priced_snapshots[-1]["_holding_rows"]
+        if row["holding_kind"] == "position" and row["instrument_id"] == "equity-1"
+    )
     assert delivered_stock["cost_basis"] == pytest.approx(110_000.0)
-    assert delivered_stock["market_value"] is None
-    assert delivered_stock["market_value_base"] is None
-    assert delivered_stock["carrying_value"] is None
-    assert delivered_stock["fair_value"] is None
-    assert delivered_stock["coverage_status"] == "unpriced"
+    assert delivered_stock["market_value"] == pytest.approx(120_000.0)
+    assert delivered_stock["market_value_base"] == pytest.approx(120_000.0)
 
 
 def test_independent_fcn_close_and_stock_buy_reconcile_to_nav(

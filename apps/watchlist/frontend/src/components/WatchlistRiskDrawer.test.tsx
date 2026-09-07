@@ -8,8 +8,11 @@ import {
   waitFor,
 } from '@testing-library/react'
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
+import InstrumentRiskDrawer from './InstrumentRiskDrawer'
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request }))
+vi.mock('./SectorResearchPanel', () => ({ default: () => null }))
+vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery }: { scopeQuery: string }) => <span data-testid="officer-scope">{scopeQuery}</span> }))
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -29,6 +32,18 @@ const caseFor = (id: string, severity = 'attention') => ({
   follow_up_date: null,
   evidence_json: {},
   history_json: [],
+})
+it('scopes instrument detail risk to the instrument even when opened from a list', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [caseFor('a')] })
+  const ask = vi.fn()
+  const { container } = render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" watchlistId="source-list" onClose={vi.fn()} onAskAssistant={ask} />)
+  await screen.findByText('a 风险事项')
+  expect(request).toHaveBeenCalledWith('/api/risk?instrument_id=a', undefined)
+  expect(screen.getByTestId('officer-scope').textContent).toBe('instrument_id=a')
+  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=source-list')
+  expect(container.querySelector('.risk-readings')?.hasAttribute('open')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: '问助手' }))
+  expect(ask).toHaveBeenCalledWith(expect.stringContaining('标的 A'))
 })
 it('keeps the full originating list when locating an instrument and closes only from outside', async () => {
   request.mockResolvedValue({
@@ -51,8 +66,11 @@ it('keeps the full originating list when locating an instrument and closes only 
     />,
   )
   await screen.findByText('a 风险事项')
+  expect(screen.getByRole('dialog', { name: '风险提示' })).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=3')
   expect(screen.getByText('b 风险事项')).toBeTruthy()
   expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=3', undefined)
+  expect(screen.getByTestId('officer-scope').textContent).toBe('watchlist_id=3')
   expect(screen.queryByRole('combobox', { name: '筛选标的' })).toBeNull()
   expect(screen.queryByRole('combobox', { name: '关联组合' })).toBeNull()
   fireEvent.click(screen.getAllByRole('button', { name: '问助手' })[0])
@@ -117,4 +135,70 @@ it('shows rolling losses and saves instrument-wide review lines, including an ex
   fireEvent.click(screen.getByRole('button', { name: '保存提醒设置' }))
   await screen.findByText('提醒设置已保存')
   expect(request).toHaveBeenCalledWith('/api/risk/rules/a', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ drawdown_limit: 10, period_limits: { day: null, week: 2, month: 5, quarter: 8 } }) }))
+})
+
+it.each([
+  ['risk', '风险', 'confirmed', '已确认'],
+  ['opportunity', '机会', 'reported', '报道线索'],
+  ['uncertain', '重大不确定性', 'unverified', '待证实'],
+])('shows sector %s direction, evidence timing, and the next observation without changing price rules', async (direction, label, confidence, confidenceLabel) => {
+  request.mockResolvedValue({
+    instruments: [{ instrument_id: 'xlk-us', name: 'XLK 信息技术' }],
+    cases: [{ ...caseFor('xlk-us'), signal: 'sector:cloud-demand', evidence_json: {
+      direction, confidence, next_watch: '关注下一次云业务指引。',
+      sources: [
+        { title: '公司最新指引', url: 'https://example.com/earnings', published_at: '2026-09-06T08:00:00+08:00' },
+        { title: '不支持的链接', url: 'javascript:alert(1)', published_at: null },
+      ],
+    } }],
+  })
+  const ask = vi.fn()
+  render(<WatchlistRiskDrawer watchlistId="sectors" watchlistName="美股行业ETF" onClose={vi.fn()} onAskAssistant={ask} onChanged={vi.fn()} />)
+  if (direction === 'opportunity') {
+    await screen.findByRole('button', { name: '全部记录 1' })
+    expect(screen.queryByText(label)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '全部记录 1' }))
+  }
+  expect(await screen.findByText(label)).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'xlk-us 风险事项' }).getAttribute('href')).toBe('/instruments/xlk-us?tab=events&watchlist=sectors')
+  expect(screen.getByText('关注下一次云业务指引。')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '问助手' }))
+  expect(ask).toHaveBeenCalledWith('xlk-us', expect.stringContaining(`的${label}事项`))
+  fireEvent.click(screen.getByText('跟进与证据'))
+  expect(screen.getByText(`证据状态：${confidenceLabel}`)).toBeTruthy()
+  expect(screen.getByRole('link', { name: '公司最新指引' }).getAttribute('href')).toBe('https://example.com/earnings')
+  expect(screen.getByText('发布时间 2026-09-06T08:00:00+08:00')).toBeTruthy()
+  expect(screen.getByText('发布时间待核实')).toBeTruthy()
+  expect(screen.queryByRole('link', { name: /不支持的链接/ })).toBeNull()
+})
+
+it('keeps recent unresolved risks, uncertainty and price triggers ahead of history across instruments', async () => {
+  const cases = [
+    { ...caseFor('older'), updated_at: '2026-09-02' },
+    { ...caseFor('price'), signal: 'period_loss', updated_at: '2026-09-05' },
+    { ...caseFor('uncertain'), signal: 'sector:uncertain', evidence_json: { direction: 'uncertain' }, updated_at: '2026-09-04' },
+    { ...caseFor('opportunity'), signal: 'sector:opportunity', evidence_json: { direction: 'opportunity' }, updated_at: '2026-09-06' },
+    { ...caseFor('handled'), status: 'handled', updated_at: '2026-09-06' },
+    { ...caseFor('resolved'), trigger_active: false, updated_at: '2026-09-06' },
+  ]
+  request.mockResolvedValue({ instruments: cases.map((item) => ({ instrument_id: item.instrument_id, name: item.instrument_id })), cases })
+  const { container } = render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} />)
+  await screen.findByRole('button', { name: '重点关注 3' })
+  expect(Array.from(container.querySelectorAll('.risk-case h3')).map((node) => node.textContent)).toEqual(['price 风险事项', 'uncertain 风险事项', 'older 风险事项'])
+  fireEvent.click(screen.getByRole('button', { name: '全部记录 6' }))
+  expect(screen.getByText('opportunity 风险事项')).toBeTruthy()
+  expect(screen.getByText('handled 风险事项')).toBeTruthy()
+  expect(screen.getByText('resolved 风险事项')).toBeTruthy()
+})
+
+it('keeps attention selected when a located instrument only has an opportunity or handled history', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [
+    { ...caseFor('a'), signal: 'sector:opportunity', evidence_json: { direction: 'opportunity' } },
+    { ...caseFor('a'), case_id: 'handled', title: '已处理事项', status: 'handled' },
+  ] })
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" focusInstrumentId="a" onClose={vi.fn()} onAskAssistant={vi.fn()} onChanged={vi.fn()} />)
+  expect(await screen.findByText('当前范围没有触发中的重点风险事项。')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '重点关注 0' }).getAttribute('aria-pressed')).toBe('true')
+  expect(screen.queryByText('a 风险事项')).toBeNull()
+  expect(screen.queryByText('已处理事项')).toBeNull()
 })

@@ -1,0 +1,74 @@
+.risk-officer {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 16px 0;
+  border-bottom: 1px solid #dce3e8;
+  color: var(--text-primary, #263547);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.risk-officer-heading,
+.risk-officer-conclusion-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.risk-officer h2,
+.risk-officer h3,
+.risk-officer h4 {
+  margin: 0;
+  font-weight: 600;
+}
+.risk-officer h2 { font-size: 16px; }
+.risk-officer h3,
+.risk-officer h4 { font-size: 13px; }
+.risk-officer-heading p {
+  margin: 3px 0 0;
+  color: #6c7b88;
+  font-size: 12px;
+}
+.risk-officer button {
+  border: 1px solid #cdd8df;
+  border-radius: 0;
+  padding: 6px 12px;
+  background: transparent;
+  color: #315d68;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.risk-officer button:hover:not(:disabled) { background: #f3f6f8; }
+.risk-officer button:disabled { opacity: .5; cursor: default; }
+.risk-officer button:focus-visible,
+.risk-officer summary:focus-visible { outline: 2px solid #315d68; outline-offset: 3px; }
+.risk-officer-counts {
+  display: flex;
+  gap: 12px 26px;
+  flex-wrap: wrap;
+  margin: 14px 0 6px;
+  padding: 10px 0;
+  border-top: 1px solid #e6ebef;
+  border-bottom: 1px solid #e6ebef;
+}
+.risk-officer-counts > div { display: flex; align-items: baseline; gap: 8px; }
+.risk-officer-counts dt { color: #6c7b88; font-size: 12px; }
+.risk-officer-counts dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
+.risk-officer p { margin: 7px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.risk-officer .risk-officer-muted,
+.risk-officer-conclusion-heading time { color: #70808c; font-size: 12px; }
+.risk-officer .risk-officer-warning { color: #93622c; font-size: 12px; }
+.risk-officer .risk-officer-error { color: #a55140; font-size: 12px; }
+.risk-officer-conclusion { padding-top: 14px; }
+.risk-officer .risk-officer-summary { margin: 10px 0; }
+.risk-officer-priorities { padding-left: 22px; margin: 12px 0 0; }
+.risk-officer-priorities > li { padding: 10px 0; border-top: 1px solid #e6ebef; }
+.risk-officer-priorities > li::marker { color: #70808c; font-size: 12px; }
+.risk-officer summary { cursor: pointer; color: #526a78; font-size: 12px; padding: 4px 0; }
+.risk-officer details p { font-size: 12px; }
+.risk-officer details strong { font-weight: 500; }
+.risk-officer-limitations { margin-top: 12px; }
+.risk-officer-limitations ul { margin: 5px 0; padding-left: 18px; color: #70808c; font-size: 12px; }
+.risk-officer-limitations li { margin: 5px 0; }

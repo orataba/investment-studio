@@ -32,3 +32,9 @@ api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monito
 
 from watchlist_app.api.routes import workbench
 api_router.include_router(workbench.router, tags=["research-workbench"])
+from watchlist_app.api.routes import sector_research
+api_router.include_router(sector_research.router, tags=["sector-research"])
+from watchlist_app.api.routes import research_dossier
+api_router.include_router(research_dossier.router, tags=["research-dossier"])
+from watchlist_app.api.routes import risk_officer
+api_router.include_router(risk_officer.router, tags=["risk-officer"])

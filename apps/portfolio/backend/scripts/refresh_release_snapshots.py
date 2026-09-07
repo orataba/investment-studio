@@ -13,8 +13,8 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
+    _run_portfolio_daily_snapshot_recalculation_synchronously,
     _state_requires_refresh,
-    ensure_portfolio_daily_snapshots,
 )
 
 
@@ -58,7 +58,7 @@ def main(*, recover_interrupted: bool = False) -> int:
         with session_factory() as session:
             should_refresh = _state_requires_refresh(session, str(portfolio_id))
         if should_refresh:
-            ensure_portfolio_daily_snapshots(str(portfolio_id))
+            _run_portfolio_daily_snapshot_recalculation_synchronously(str(portfolio_id))
             refreshed.append(str(portfolio_id))
 
     with session_factory() as session:

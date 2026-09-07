@@ -19,6 +19,8 @@ vi.mock('./lib/api', () => ({
 }))
 
 vi.mock('./pages/TransactionsPage', () => ({ default: () => null }))
+vi.mock('./pages/OverviewPage', () => ({ default: () => null }))
+vi.mock('./pages/PerformancePage', () => ({ default: () => null }))
 
 import { preloadPortfolioSection } from './lib/preload'
 
@@ -38,5 +40,13 @@ describe('portfolio intent preloading', () => {
     expect(apiMocks.performance).not.toHaveBeenCalled()
     expect(apiMocks.research).not.toHaveBeenCalled()
     expect(apiMocks.taxonomy).not.toHaveBeenCalled()
+  })
+
+  it('does not prefetch undated reports for pages that resolve their own dates', () => {
+    preloadPortfolioSection('Overview', 'portfolio-date-intent')
+    preloadPortfolioSection('Performance', 'portfolio-date-intent')
+
+    expect(apiMocks.performance).not.toHaveBeenCalled()
+    expect(apiMocks.holdings).not.toHaveBeenCalled()
   })
 })

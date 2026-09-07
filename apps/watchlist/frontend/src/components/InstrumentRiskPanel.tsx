@@ -10,6 +10,7 @@ export default function InstrumentRiskPanel({
   heading,
   onAskAssistant,
   onChanged,
+  mode = 'attention',
 }: {
   instrumentId?: string
   watchlistId?: string
@@ -18,31 +19,32 @@ export default function InstrumentRiskPanel({
   heading?: string | null
   onAskAssistant?: (id: string, question: string) => void
   onChanged?: () => void
+  mode?: 'attention' | 'price'
 }) {
   return (
-    <RiskPanel
-      instrumentId={instrumentId}
-      focusInstrumentId={focusInstrumentId}
-      query={
-        watchlistId ? `watchlist_id=${encodeURIComponent(watchlistId)}` : ''
-      }
-      request={request}
-      scopeLabel={scopeLabel}
-      heading={
-        heading === undefined
-          ? instrumentId
-            ? '近期风险与跟进'
-            : '风险关注'
-          : heading
-      }
-      onAskAssistant={onAskAssistant}
-      onChanged={onChanged}
-      instrumentHref={(id) =>
-        `/instruments/${encodeURIComponent(id)}?${new URLSearchParams({ tab: 'risk', ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
-      }
-      assistantHref={(id, question) =>
-        `/assistant?${new URLSearchParams({ instruments: id, question, ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
-      }
-    />
+      <RiskPanel
+        caseScope={mode === 'price' ? 'traditional' : 'all'}
+        attentionLabel="重点关注"
+        instrumentId={instrumentId}
+        focusInstrumentId={focusInstrumentId}
+        query={
+          watchlistId && !instrumentId ? `watchlist_id=${encodeURIComponent(watchlistId)}` : ''
+        }
+        request={request}
+        scopeLabel={scopeLabel}
+        heading={
+          heading === undefined
+            ? mode === 'price' ? '价格与风险跟进' : '重点关注'
+            : heading
+        }
+        onAskAssistant={onAskAssistant}
+        onChanged={onChanged}
+        instrumentHref={(id, signal) =>
+          `/instruments/${encodeURIComponent(id)}?${new URLSearchParams({ tab: signal?.startsWith('sector:') ? 'events' : 'risk', ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
+        }
+        assistantHref={(id, question) =>
+          `/assistant?${new URLSearchParams({ instruments: id, question, ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
+        }
+      />
   )
 }

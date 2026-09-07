@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearPortfolioApiCache,
   getHoldingsWorkspace,
+  getPortfolioPerformance,
   getPortfolioPositionHoldingProjection,
+  getPortfolioTableViewStore,
+  savePortfolioTableViewStore,
+  updatePortfolioSettings,
 } from './lib/api'
 
 afterEach(() => {
@@ -12,6 +16,30 @@ afterEach(() => {
 })
 
 describe('holdings workspace request contract', () => {
+  it('keeps computed reports cached after table preferences change but invalidates them after portfolio settings change', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getHoldingsWorkspace('portfolio-cache')
+    await getPortfolioPerformance('portfolio-cache', { start_date: '2026-07-01', end_date: '2026-07-15' })
+    await getPortfolioTableViewStore('portfolio-cache', 'holdings')
+    await savePortfolioTableViewStore('portfolio-cache', 'holdings', { activeViewId: 'default' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+
+    await getHoldingsWorkspace('portfolio-cache')
+    await getPortfolioPerformance('portfolio-cache', { start_date: '2026-07-01', end_date: '2026-07-15' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    await getPortfolioTableViewStore('portfolio-cache', 'holdings')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+
+    await updatePortfolioSettings('portfolio-cache', { base_currency: 'CNY' })
+    await getHoldingsWorkspace('portfolio-cache')
+    await getPortfolioPerformance('portfolio-cache', { start_date: '2026-07-01', end_date: '2026-07-15' })
+    expect(fetchMock).toHaveBeenCalledTimes(8)
+  })
+
   it('keeps the default holdings payload lightweight', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from portfolio_app.core.settings import Settings, get_settings
+from portfolio_app.services.daily_snapshot_worker import run_daily_snapshot_recalculation_worker_once
 
 
 def test_research_requires_explicit_enablement(monkeypatch):
@@ -21,6 +22,10 @@ def test_research_deployment_boundary(monkeypatch, enabled):
     with TestClient(main_module.app) as client:
         assert client.get("/api/capabilities").json() == {"research_enabled": enabled}
         assert client.get("/api/portfolios").status_code == 200
+        summary = client.get("/api/workspace/summary?portfolio_id=investment-studio")
+        assert summary.status_code == 503
+        assert summary.json()["detail"]["code"] == "portfolio_calculation_pending"
+        assert run_daily_snapshot_recalculation_worker_once()
         summary = client.get("/api/workspace/summary?portfolio_id=investment-studio")
         assert summary.status_code == 200
         sections = {item["href"] for item in summary.json()["sections"]}

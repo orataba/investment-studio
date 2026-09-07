@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from copy import deepcopy
+from datetime import date, timedelta
 
 import pytest
 
+from portfolio_app.services import instrument_charts
 from portfolio_app.services.instrument_charts import (
+    build_instrument_holdings_market_profile_from_detail,
     build_instrument_price_chart_from_detail,
     build_instrument_trend_metrics_from_detail,
 )
@@ -67,6 +70,104 @@ def _split_event(**overrides: object) -> dict[str, object]:
         "status": "confirmed",
         **overrides,
     }
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["different_bases", "full_history", "split", "unconfirmed_split", "duplicate", "empty"],
+)
+def test_holdings_profile_shares_raw_series_and_preserves_chart_and_return_contracts(
+    monkeypatch,
+    scenario: str,
+) -> None:
+    as_of_date = date(2026, 7, 15)
+    start_date = as_of_date - timedelta(days=450)
+    holding_start_date = as_of_date - timedelta(days=120)
+    points = [
+        _point("close", (start_date + timedelta(days=index)).isoformat(), str(100 + index))
+        for index in range(451)
+    ]
+    actions = []
+    if scenario in {"different_bases", "full_history"}:
+        # Chart coverage and total-return preference are separate policies.
+        points.extend([
+            _point("adjusted_close", (as_of_date - timedelta(days=30 - index)).isoformat(), str(100 + index))
+            for index in range(31)
+        ])
+        if scenario == "full_history":
+            points.extend([
+                _point("adjusted_close", start_date.isoformat(), "400"),
+                _point("adjusted_close", (start_date + timedelta(days=1)).isoformat(), "100"),
+            ])
+    elif scenario in {"split", "unconfirmed_split"}:
+        actions = [_split_event(status="confirmed" if scenario == "split" else "proposed")]
+    elif scenario == "duplicate":
+        points.append(dict(points[-1]))
+    else:
+        points = []
+    detail = _detail(points, corporate_actions=actions)
+    detail["exchange_code"] = "XNYS"
+    original_detail = deepcopy(detail)
+    expected = {
+        **{
+            f"price_chart_{range_key}": build_instrument_price_chart_from_detail(
+                detail,
+                instrument_id="equity-history",
+                as_of_date=as_of_date,
+                range_key=range_key,
+                max_points=48,
+            )["points"]
+            for range_key in instrument_charts.HOLDINGS_PRICE_CHART_RANGE_KEYS
+        },
+        **build_instrument_trend_metrics_from_detail(
+            detail,
+            as_of_date=as_of_date,
+            holding_start_date=holding_start_date,
+        ),
+    }
+    calls: list[tuple[str, ...]] = []
+    original_resolve = instrument_charts.resolve_quote_series
+
+    def counted_resolve(detail, *, candidate_bases, end_date):
+        calls.append(tuple(candidate_bases))
+        return original_resolve(detail, candidate_bases=candidate_bases, end_date=end_date)
+
+    def unused_calendar(*_args, **_kwargs):
+        raise AssertionError("A holdings point array does not need full chart calendar metadata")
+
+    monkeypatch.setattr(instrument_charts, "resolve_quote_series", counted_resolve)
+    monkeypatch.setattr(instrument_charts, "market_calendar_sessions", unused_calendar)
+    actual = build_instrument_holdings_market_profile_from_detail(
+        detail,
+        instrument_id="equity-history",
+        as_of_date=as_of_date,
+        holding_start_date=holding_start_date,
+    )
+    assert actual == expected
+    assert detail == original_detail
+    assert len(calls) == len(set(calls))
+    if scenario == "different_bases":
+        assert actual["instrument_trend_basis"] == "adjusted_close"
+        assert actual["price_chart_6m"][-1]["value"] == 550.0
+        assert actual["instrument_return_1m"] == pytest.approx(0.3)
+    if scenario == "full_history":
+        assert actual["instrument_max_drawdown"] == pytest.approx(-0.75)
+
+    calls.clear()
+    compact = build_instrument_holdings_market_profile_from_detail(
+        detail,
+        instrument_id="equity-history",
+        as_of_date=as_of_date,
+        holding_start_date=holding_start_date,
+        include_details=False,
+    )
+    assert compact == {
+        **expected,
+        "price_chart_1m": [],
+        "price_chart_3m": [],
+        "price_chart_1y": [],
+    }
+    assert len(calls) == len(set(calls))
 
 
 def test_holdings_total_return_does_not_switch_to_a_longer_price_series() -> None:

@@ -1,0 +1,229 @@
+{
+  "version": "1",
+  "frameworks": [
+    {
+      "id": "equity-fundamentals",
+      "title": "股票：经营、预期与估值",
+      "body": "公司靠什么创造收入和现金流？需求、定价、成本、竞争与资本投入中，哪些变量决定盈利质量？\n资产负债表、现金回收、融资需求和治理是否支持经营判断？会计利润与可分配现金有何差异？\n当前估值隐含怎样的增长、利润率和资本回报？新增证据改变了哪项预期，而非仅重复公司叙事？\n事件如何影响收入、利润、现金流或风险溢价？对经营有利的变化是否也有利于该证券的价值？\n何种可观察变化会确认或推翻判断？影响有多大、何时体现，是否足以形成重要风险、机会或不确定性？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/research_workbench.py#ANALYST_FOCUS",
+      "role": "research_method",
+      "instrument_types": [
+        "equity"
+      ]
+    },
+    {
+      "id": "etf-fundamentals",
+      "title": "ETF：底层资产、暴露与价格",
+      "body": "先核实基金跟踪什么指数、持有什么资产、采用何种复制方式；股票、债券、商品或衍生品的驱动是否不同？\n成分、权重、集中度、币种和披露日期是否有证据？市场事件通过哪些真实持仓或规则影响基金？\n底层估值应使用什么口径？股票关注盈利与现金流，债券关注收益率、久期与信用，商品关注供需与合约结构；不能统一套用每股收益。\n费用、跟踪偏离、折溢价、流动性或合约展期是否足以影响投资判断？底层价格变化与基金结构影响如何区分？\n哪些新增证据改变底层回报前景或风险补偿？影响是否集中于少数成分，什么数据能验证或推翻判断？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/research_workbench.py#ANALYST_FOCUS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ]
+    },
+    {
+      "id": "index-fundamentals",
+      "title": "指数：结构、估值与市场环境",
+      "body": "指数覆盖什么市场与资产，如何选样、加权和调整？价格指数与全收益指数的口径是否明确？\n行业、公司、币种与风格集中度如何影响指数？当前成分结构是否与所分析时期一致？\n适用的盈利、现金流、收益率或其他估值口径隐含什么预期？聚合指标是否被极端成分或样本变化扭曲？\n宏观、政策与公司事件通过哪些成分和风险溢价传导？指数本身没有基金经理、申赎条款或基金费用。\n上涨与下跌的驱动是否有足够广度？哪些新增证据构成重要风险、机会或对原判断的反证？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/research_workbench.py#ANALYST_FOCUS",
+      "role": "research_method",
+      "instrument_types": [
+        "index"
+      ]
+    },
+    {
+      "id": "public-fund-fundamentals",
+      "title": "公募基金：管理能力、持仓与回报来源",
+      "body": "基金及份额类别、投资目标、基准、经理与费用是什么？风格和投资流程是否与实际结果一致？\n已披露持仓对应哪个报告期，何时披露？行业、信用、久期或集中度判断是否受披露滞后限制？\n相对基准的回报来自市场暴露、选券或选股、费用还是偶发因素？比较是否使用一致期间、币种与净值口径？\n底层资产估值与策略容量如何影响未来回报？基金净值高低本身不能代表便宜或昂贵。\n经理、投资约束或底层资产的变化能否实质改变回报与风险？需要哪些公告、持仓或后续表现来核实？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/research_workbench.py#ANALYST_FOCUS",
+      "role": "research_method",
+      "instrument_types": [
+        "public_fund"
+      ]
+    },
+    {
+      "id": "private-fund-fundamentals",
+      "title": "私募基金：策略证据、敞口与流动性",
+      "body": "策略靠什么获得回报，依赖哪些市场条件？管理人材料、实际净值频率和可核实操作是否支持其解释？\n持仓、杠杆、对冲、交易对手和容量有哪些直接证据？未披露部分如何限制市场事件与本产品的关联判断？\n净值的估值方式与价格可观察性如何？平滑净值是否可能反映低频估值或不流动资产，而非低风险？\n费用、锁定期、赎回条款与资产流动性是否匹配？融资或赎回压力如何传导至投资者回报？\n哪些变化足以支持重要风险或机会判断，哪些仍需管理人核实？仅有材料目录、资料缺失或看似稳定的净值，不能证明投资机会。",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/research_workbench.py#ANALYST_FOCUS",
+      "role": "research_method",
+      "instrument_types": [
+        "private_fund"
+      ]
+    },
+    {
+      "id": "sector-xlb",
+      "title": "XLB：原材料研究问题",
+      "body": "矿业、化工与包装分别处于怎样的供需、库存和产能阶段？需求改善来自终端消耗还是补库存？\n原料、能源和运输成本如何传导至售价与利润？同一价格变化对生产商和加工企业是否方向相反？\n资本开支、产能退出与现金回报会怎样改变供给纪律？估值是否已计入周期拐点？\n政策、贸易或供给中断影响哪些真实成分？哪些价格、库存或利润证据能验证其重要性？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLB"
+      ]
+    },
+    {
+      "id": "sector-xlc",
+      "title": "XLC：通信服务研究问题",
+      "body": "广告平台、内容娱乐与电信公司的收入和利润驱动分别是什么？需求与用户变现是否同步？\n内容、获客、网络或计算投入带来多少现金回报？增长是否以更高资本消耗或竞争支出为代价？\n监管、竞争与分发规则如何影响定价权、成本和用户关系？受益方与受损方在基金中的暴露有多大？\n当前估值包含怎样的广告、订阅或电信增长预期？新增证据改变了什么，哪些指标能反证？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLC"
+      ]
+    },
+    {
+      "id": "sector-xle",
+      "title": "XLE：能源研究问题",
+      "body": "原油与天然气的供需、库存、政策和运输约束是什么？短期中断与持续供给变化如何区分？\n价格变化怎样分别影响生产商、炼化和油服的利润与现金流？不能把商品或商品基金指标当作行业ETF指标。\n资本开支、产量纪律、成本与现金分配如何影响后续供给和股东回报？\n估值已反映何种能源价格与风险溢价？事件对真实成分有何重要影响，库存、产量或企业披露能否验证？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLE"
+      ]
+    },
+    {
+      "id": "sector-xlf",
+      "title": "XLF：金融研究问题",
+      "body": "银行、保险、资产管理及其他金融业务分别通过什么渠道盈利？不能把所有金融公司视为银行。\n银行净息差、存款成本、融资与信用损失，保险承保和投资回报，资管资金流各发生了什么变化？\n资本、流动性和监管约束如何影响盈利与现金回报？利率变化对收入、资产价值及融资成本是否相互抵消？\n估值隐含怎样的信用、增长和资本回报预期？哪些资产质量或融资证据会使风险、机会判断改变？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLF"
+      ]
+    },
+    {
+      "id": "sector-xli",
+      "title": "XLI：工业研究问题",
+      "body": "航空航天、国防、运输与通用工业的订单和资本开支处于什么阶段？新增订单是否可兑现？\n积压订单、交付、供应链、人工成本与定价如何传导至利润和现金回收？\n企业或政府支出、贸易政策和融资条件影响哪些真实成分？业务周期和兑现期限有何差异？\n估值是否已包含订单复苏或利润率改善？哪些交付、取消订单或现金流数据能验证新增风险与机会？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLI"
+      ]
+    },
+    {
+      "id": "sector-xlk",
+      "title": "XLK：信息技术研究问题",
+      "body": "半导体、硬件与软件分别依赖什么需求、竞争和政策条件？人工智能投入如何转化为客户收益与供应商收入？\n资本开支、折旧、毛利、现金流和投资回报是否相互匹配？收入增长是否依赖客户融资或持续高投入？\n政策、技术效率与竞争变化如何沿产业链传导？用于验证需求的公司是否确实属于ETF成分？\n估值已计入何种增长和利润预期？哪些订单、客户回报或同财期预期变化能确认或推翻风险与机会判断？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS; /Users/shaw/Projects/market-intelligence/industry_research_agent/codex_skills/sector-risk-intelligence/SKILL.md",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLK"
+      ]
+    },
+    {
+      "id": "sector-xlp",
+      "title": "XLP：必需消费研究问题",
+      "body": "销量、价格和产品组合各贡献多少增长？终端需求与渠道库存是否一致？\n原料、运输、汇率和促销如何影响利润？定价能力能否抵消消费者降级与零售竞争？\n现金流、资本投入与现金分配是否支持稳健回报？防御性估值是否已充分反映稳定增长？\n哪些新增消费、渠道或成本证据会实质改变盈利前景？受益与受损成分的权重和验证指标是什么？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLP"
+      ]
+    },
+    {
+      "id": "sector-xlre",
+      "title": "XLRE：房地产研究问题",
+      "body": "不同物业类型的入住率、租金、租约与净经营收入如何变化？租户需求和新增供给是否匹配？\n利率、债务到期、再融资和资产处置如何影响现金流与分配能力？\n应使用怎样的资产与现金流估值口径？房地产投资信托的普通每股收益可能失真，缺少FFO、AFFO或债务资料时能得出什么有限结论？\n市场定价已包含怎样的租金与融资预期？哪些运营或融资证据能验证重要风险与机会？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLRE"
+      ]
+    },
+    {
+      "id": "sector-xlu",
+      "title": "XLU：公用事业研究问题",
+      "body": "电力或其他公用需求增长来自哪些客户，持续性如何？新增负荷是否已转化为可收费收入？\n资本开支、监管准许回报、费率调整与融资需求如何衔接？增长是否稀释现金回报？\n燃料成本如何传导，利率、信用和项目执行有何约束？不同监管地区与真实成分的暴露是否不同？\n估值隐含多少需求与回报改善？哪些费率、项目或现金流证据能验证新增风险与机会？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLU"
+      ]
+    },
+    {
+      "id": "sector-xlv",
+      "title": "XLV：医疗保健研究问题",
+      "body": "制药、器械、医疗服务和支付方分别由什么需求、定价和成本驱动？\n试验、审批、专利、支付政策与医疗利用率如何影响收入、利润和研发回报？应核实哪些原始结果或监管文件？\n单一药物或公司事件影响哪些真实成分及上下游？其影响能否合理外推至行业？\n估值已包含怎样的成功率、增长和费用预期？哪些临床、支付或经营证据会改变风险与机会判断？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLV"
+      ]
+    },
+    {
+      "id": "sector-xly",
+      "title": "XLY：可选消费研究问题",
+      "body": "实际收入、就业、信用与融资条件如何影响消费者可选支出？零售、汽车、旅游和平台的敏感度有何不同？\n销量、促销、库存和产品组合怎样影响定价、利润和现金流？需求改善是否依赖降价或更宽松信贷？\n竞争、资本开支与融资安排如何改变股东回报？行业需求验证与ETF真实成分暴露是否一致？\n估值已反映怎样的需求与利润恢复？哪些消费、库存或企业披露能确认重要风险、机会或反证？",
+      "version": "1",
+      "source": "apps/watchlist/backend/watchlist_app/services/sector_research.py#SECTORS; /Users/shaw/Projects/market-intelligence/industry_research_agent/codex_skills/sector-risk-intelligence/SKILL.md",
+      "role": "research_method",
+      "instrument_types": [
+        "etf"
+      ],
+      "tickers": [
+        "XLY"
+      ]
+    },
+    {
+      "id": "shared-evidence-discipline",
+      "title": "共享证据纪律：时间、原文与判断",
+      "body": "这是事实、观点、传闻还是模型推断？来源是否有可读正文，转述是否可追至原出处，资料目录与摘要是否被误当成已核实原文？\n事件发生、出版、采集、首次发现与本轮读取分别是什么时间？仅日期或未知时间是否如实保留，旧消息与补录是否被误标为新事件？\n数值属于哪个标的、指标、币种、财期和频率？预期修订是否来自同口径且采集时间推进的可比快照，分析师样本是否变化？\n新增信息通过什么路径影响经营、现金流、融资、估值或风险溢价？当前市场预期与实际敞口是否有证据，价格波动是否仅为辅助印证？\n历史类比的机制和背景状态是否匹配，重要差异是什么？精选旧案例不能充当当期事实、发生概率、预期收益或交易规则。\n信息是否足够重要且改变了此前判断？没有新增可保持安静，未检索到或资料不足不能证明没有风险；已有事件应按新证据跟进，不能靠本轮空结果自动解除。",
+      "version": "1",
+      "source": "/Users/shaw/Projects/market-intelligence/industry_research_agent/codex_skills/sector-risk-intelligence/SKILL.md",
+      "role": "research_method",
+      "instrument_types": [
+        "equity",
+        "etf",
+        "index",
+        "public_fund",
+        "private_fund"
+      ]
+    }
+  ]
+}

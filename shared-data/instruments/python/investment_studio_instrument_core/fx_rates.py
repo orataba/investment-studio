@@ -129,10 +129,24 @@ def _load_latest_spot_points(
                 ).where(Instrument.instrument_id.in_(instrument_ids))
             )
         }
-        market_data_by_instrument: dict[str, list[dict[str, object]]] = {
-            instrument_id: [] for instrument_id in instrument_ids
-        }
-        for row in session.execute(
+        latest_points: dict[str, dict[str, object]] = {}
+        invalid_instruments: set[str] = set()
+        duplicate_latest_dates: set[str] = set()
+        # An invalid older observation makes the pair unavailable, even when
+        # its latest observation is valid. Preserve that whole-history check,
+        # but retain only the latest point instead of building every point twice.
+        for (
+            instrument_id,
+            metric_family,
+            quote_basis,
+            point_date,
+            value,
+            currency,
+            price_unit,
+            price_scale,
+            provider,
+            status,
+        ) in session.execute(
             select(
                 InstrumentMarketData.instrument_id,
                 InstrumentMarketData.metric_family,
@@ -144,34 +158,60 @@ def _load_latest_spot_points(
                 InstrumentMarketData.price_scale,
                 InstrumentMarketData.provider,
                 InstrumentMarketData.status,
-            ).where(
+            )
+            .where(
                 InstrumentMarketData.instrument_id.in_(instrument_ids),
                 InstrumentMarketData.metric_family == "fx",
                 InstrumentMarketData.quote_basis == "spot",
             )
-        ):
-            market_data_by_instrument[str(row.instrument_id)].append(
-                {
-                    "metric_family": row.metric_family,
-                    "quote_basis": row.quote_basis,
-                    "as_of_date": row.as_of_date,
-                    "value": row.value,
-                    "currency": row.currency,
-                    "price_unit": row.price_unit,
-                    "price_scale": row.price_scale,
-                    "provider": row.provider,
-                    "status": row.status,
-                }
+            .order_by(
+                InstrumentMarketData.instrument_id,
+                InstrumentMarketData.as_of_date.desc(),
             )
+        ):
+            instrument = instruments.get(instrument_id)
+            if instrument is None or instrument_id in invalid_instruments:
+                continue
+            try:
+                validated = validate_fx_market_data_contract(
+                    instrument_id=instrument_id,
+                    instrument_type=instrument["instrument_type"],
+                    instrument_currency=instrument["currency"],
+                    metric_family=metric_family,
+                    quote_basis=quote_basis,
+                    point_currency=currency,
+                    value=value,
+                    status=status,
+                )
+            except ValueError:
+                invalid_instruments.add(instrument_id)
+                continue
+            if validated is None:
+                invalid_instruments.add(instrument_id)
+                continue
+            latest = latest_points.get(instrument_id)
+            if latest is not None and point_date <= latest["as_of_date"]:
+                if point_date == latest["as_of_date"]:
+                    duplicate_latest_dates.add(instrument_id)
+                continue
+            duplicate_latest_dates.discard(instrument_id)
+            latest_points[instrument_id] = {
+                "metric_family": metric_family,
+                "quote_basis": quote_basis,
+                "as_of_date": point_date,
+                "value": validated.rate,
+                "currency": validated.identity.quote_currency,
+                "price_unit": price_unit,
+                "price_scale": price_scale,
+                "provider": provider,
+                "status": validated.status,
+            }
 
     return {
         instrument_id: (
-            _latest_spot_point_from_instrument(
-                instruments[instrument_id],
-                market_data_by_instrument[instrument_id],
-            )
-            if instrument_id in instruments
-            else None
+            None
+            if instrument_id in invalid_instruments or instrument_id in duplicate_latest_dates
+            else latest_points.get(instrument_id)
         )
         for instrument_id in instrument_ids
     }

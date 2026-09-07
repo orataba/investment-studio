@@ -52,6 +52,8 @@ cryptography==50.0.0
     # via
     #   -c requirements/python.lock
     #   pyjwt
+duckdb==1.5.5
+    # via investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 et-xmlfile==2.0.0
     # via
     #   -c requirements/python.lock
@@ -212,7 +214,9 @@ pyluach==2.3.0
     #   -c requirements/python.lock
     #   exchange-calendars
 pypdf==6.17.0
-    # via investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    # via
+    #   -c requirements/python.lock
+    #   investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 pytest==9.1.1
     # via
     #   -c requirements/python.lock

@@ -31,6 +31,7 @@ const apiMocks = vi.hoisted(() => ({
   getWatchlistDetail: vi.fn(),
   runScreenerQuery: vi.fn(),
   updateWatchlistView: vi.fn(),
+  fetchJson: vi.fn(),
 }))
 
 vi.mock('../lib/api', async (importOriginal) => ({
@@ -40,6 +41,11 @@ vi.mock('../lib/api', async (importOriginal) => ({
 
 describe('WatchlistsPage loading', () => {
   it('does not refetch unchanged screener criteria after the result renders', async () => {
+    apiMocks.fetchJson.mockImplementation(async (path: string) => path.startsWith('/api/risk/review?')
+      ? { available: true, scope: { kind: 'watchlist', id: 'all-private-funds', name: 'All Private Funds' },
+        input_as_of: null, counts: { research: 0, quantitative: 0, coverage: 0 }, instruments: [],
+        limitations: [], latest_completed: null, latest_run: null }
+      : { instruments: [], cases: [], available: true, sectors: [], events: [] })
     apiMocks.getWatchlists.mockResolvedValue([
       {
         watchlist_id: 'all-private-funds',
@@ -158,9 +164,33 @@ describe('WatchlistsPage loading', () => {
     )
     expect(new Set(criteriaKeys).size).toBe(criteriaKeys.length)
     expect(apiMocks.runScreenerQuery.mock.calls[0][0].selected_fields).toContain('attr.risk_attention')
-    expect(screen.getByRole('button', { name: 'Fund 1 有风险事项，查看风险关注' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Fund 1 有关注事项，查看风险提示' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '风险关注：升序' })).toBeNull()
-
+    const title = screen.getByRole('heading', { name: 'All Private Funds', level: 1 })
+    const tools = screen.getByRole('group', { name: 'Current workspace tools' })
+    expect(title.parentElement?.contains(tools)).toBe(true)
+    expect(tools.closest('.watchlists-topbar')).toBeNull()
+    expect(document.querySelector('.watchlists-topbar > .language-switcher')).toBeTruthy()
+    expect(within(tools).getAllByRole('button').map((button) => button.textContent)).toEqual(['Settings', 'Risk alerts', 'Research assistant'])
+    fireEvent.click(within(tools).getByRole('button', { name: 'Watchlist settings' }))
+    const settings = screen.getByRole('group', { name: 'Watchlist settings menu' })
+    expect(within(settings).getByRole('button', { name: 'Column settings' })).toBeTruthy()
+    expect(within(settings).getByRole('button', { name: 'Copy Watchlist' })).toBeTruthy()
+    expect(within(settings).queryByRole('button', { name: 'Delete Watchlist' })).toBeNull()
+    const language = screen.getByRole('combobox', { name: 'Language' })
+    fireEvent.change(language, { target: { value: 'zh-Hans' } })
+    expect(within(tools).getByRole('button', { name: '列表设置' }).getAttribute('title')).toBe('列表设置')
+    expect(screen.getByRole('group', { name: '列表设置菜单' })).toBeTruthy()
+    expect(within(settings).getByRole('button', { name: '列设置' })).toBeTruthy()
+    fireEvent.change(language, { target: { value: 'en' } })
+    expect(within(tools).getByRole('button', { name: 'Watchlist settings' }).getAttribute('title')).toBe('Watchlist settings')
+    expect(screen.queryByRole('button', { name: 'Watchlist actions' })).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Fund 1' }))
+    expect(within(tools).getByRole('button', { name: 'Research assistant' }).textContent).toBe('Research assistant(1)')
+    fireEvent.click(within(tools).getByRole('button', { name: 'Risk alerts' }))
+    expect(screen.queryByRole('group', { name: 'Watchlist settings menu' })).toBeNull()
+    expect(await screen.findByRole('dialog', { name: '风险提示' })).toBeTruthy()
+    await waitFor(() => expect(apiMocks.fetchJson).toHaveBeenCalledWith('/api/risk?watchlist_id=all-private-funds', undefined))
   })
 
   it('uses a flat table until grouping is explicitly selected for mixed watchlists', async () => {
@@ -441,7 +471,13 @@ describe('WatchlistsPage loading', () => {
       </LanguageProvider>,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Columns' }))
+    await waitFor(() => expect(screen.getByText('Equity 1')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist settings' }))
+    const settings = screen.getByRole('group', { name: 'Watchlist settings menu' })
+    expect(within(settings).getByRole('button', { name: 'Copy Watchlist' })).toBeTruthy()
+    expect(within(settings).getByRole('button', { name: 'Delete Watchlist' })).toBeTruthy()
+    fireEvent.click(within(settings).getByRole('button', { name: 'Column settings' }))
+    expect(screen.queryByRole('group', { name: 'Watchlist settings menu' })).toBeNull()
     const columnsDialog = screen.getByRole('dialog', { name: 'Choose columns' })
     const currencyField = within(columnsDialog).getByText('Currency').closest('label')!
     fireEvent.click(currencyField.querySelector('input')!)

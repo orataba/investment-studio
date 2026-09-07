@@ -1,5 +1,5 @@
 """Source-bound research inputs; numerical work stays outside the language model."""
-from datetime import date
+from datetime import UTC, date, datetime
 import math
 from statistics import correlation, mean
 from urllib.parse import urlencode
@@ -7,7 +7,7 @@ from urllib.request import urlopen
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.core.settings import get_settings
-from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentRiskReadModel, InstrumentManualProfile, WatchlistRowReadModel, Watchlist, WatchlistItem
+from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentRiskReadModel, InstrumentManualProfile, WatchlistRowReadModel, Watchlist, WatchlistItem, InstrumentSummaryReadModel, InstrumentPerformanceReadModel, InstrumentExposureReadModel, InstrumentExposureHoldingsReadModel
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.api.routes.research import _research_response
 from watchlist_app.services.read_models import serialize_payload
@@ -56,27 +56,63 @@ def catalogue(session: Session):
     return output
 
 
-def instrument_evidence(session: Session, ids: list[str]):
+ANALYST_FOCUS = {
+    "equity": "公司分析师：经营与盈利驱动、财务质量、估值所隐含的预期，以及公告和事件如何改变投资判断。区分预测财期、财报期和发布时间；没有可比历史快照不能声称预期上修或下修。",
+    "etf": "ETF分析师：先辨别市场、资产类别和跟踪指数，再分析相关行业或资产驱动、已披露成份集中度和事件冲击。不要把行业股票ETF逻辑套到债券或其他ETF。逐标的核实成份和预期覆盖；A股ETF缺失的数据不能用美股或相似ETF替代。预期变化须同公司、同财期、同频率和币种比较历史采集快照。",
+    "index": "指数分析师：关注编制规则、资产与行业结构、估值及市场环境。区分价格指数和全收益指数；指数本身没有基金经理、申赎条款或基金费用。",
+    "public_fund": "公募基金分析师：关注基金经理、投资风格、已披露持仓、相对基准表现和费用。标注持仓报告期与披露滞后，不能当成实时持仓；区分基金与份额类别、净值收益与股票价格收益。",
+    "private_fund": "私募基金分析师：结合实际净值频率、策略、管理人材料、费用、锁定期和赎回条款。未披露的持仓、杠杆和对冲只能列为待核实项；不要由平滑净值推断低风险，也不要把周度或月度净值当日频。公开市场事件与本产品的关联需要敞口证据。",
+}
+
+
+def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True):
+    from watchlist_app.services.shared_instrument_registry import get_shared_reference_data
+    from watchlist_app.services.sector_estimates import read_estimate_evidence
+    from watchlist_app.services.sector_research import latest_reviews
+    completed_research = latest_reviews(session, completed_only=True)
     assets = [item for item in catalogue(session) if item["instrument_id"] in ids]
     for asset in assets:
         iid = asset["instrument_id"]
+        asset["analyst_focus"] = ANALYST_FOCUS.get(asset["instrument_type"])
+        asset["reference_data"] = get_shared_reference_data(iid)
+        if asset["instrument_type"] == "etf":
+            asset["analyst_estimate_history"] = read_estimate_evidence(session, iid)
+        for name, model in (("summary", InstrumentSummaryReadModel), ("performance", InstrumentPerformanceReadModel),
+                            ("exposure", InstrumentExposureReadModel), ("holdings", InstrumentExposureHoldingsReadModel)):
+            row = session.get(model, iid)
+            asset[name] = {"data": row.payload_json, "freshness": row.data_freshness_status,
+                           "source_cutoff_at": row.source_cutoff_at} if row else None
         asset["research"] = _research_response(session, iid)
+        asset["research_tracking"] = completed_research.get(iid)
+        asset["research_tracking_note"] = "这是已保存的自动研究结论，不是本轮最新核实；请按生成日期使用，并回到原始证据核实相关事实。"
         manual = session.get(InstrumentManualProfile, iid)
+        asset["product_information"] = {"people": manual.people_payload_json, "strategy": manual.strategy_payload_json,
+                                        "terms_and_fees": manual.price_payload_json, "nav_settings": manual.nav_settings_json,
+                                        "record_updated_at": manual.updated_at} if manual else None
+        asset["data_note"] = "数据截至时间和资料录入时间不是公告发布时间或持仓报告期。空字段表示未取得；人工资料及已披露持仓须按原报告期使用。"
         asset["materials"] = (manual.documents_payload_json or {}).get("current_documents", []) if manual else []
         asset["materials_note"] = "既有材料提供目录；没有正文的文件不能视为已阅读，可由用户补充至对话。"
         risk = session.get(InstrumentRiskReadModel, iid)
         asset["risk"] = risk.payload_json if risk else None
         asset["risk_freshness"] = risk.data_freshness_status if risk else "missing"
         asset["risk_cases"] = [{"case_id": x.case_id, "title": x.title, "body": x.body, "trigger_active": x.trigger_active, "status": x.status, "observed_on": x.observed_on, "evidence": x.evidence_json} for x in session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid))]
+        if include_dossier:
+            from watchlist_app.services.research_dossier import read_dossier
+            from watchlist_app.services.research_notebook import dossier_outline
+            asset["research_dossier"] = dossier_outline(read_dossier(session, iid))
     return serialize_payload({"assets": assets})
 
 
-def conversation_context(session: Session, topic: ResearchTopic, question: str, watchlist_id: str | None):
+def conversation_context(session: Session, topic: ResearchTopic, question: str, watchlist_id: str | None, page_context: dict | None = None):
     entries = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic.topic_id).order_by(ResearchEntry.created_at)))
     if watchlist_id is None:
         watchlist_id = next((x.context_json.get("watchlist_id") for x in reversed(entries) if x.kind == "analysis"), None)
     return serialize_payload({
-        "topic_id": topic.topic_id, "question": question, "as_of_date": date.today(),
+        "topic_id": topic.topic_id, "question": question, "as_of_date": date.today(), "requested_at": datetime.now(UTC),
+        "page_context": page_context,
+        "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
+                           "guidance": ANALYST_FOCUS.get(instrument.instrument_type)}
+                          for iid in topic.instrument_ids if (instrument := session.get(InstrumentDetail, iid))],
         "watchlist_id": watchlist_id,
         "watchlists": [{"watchlist_id": w.watchlist_id, "name": w.name} for w in session.scalars(select(Watchlist).order_by(Watchlist.sort_order))],
         "catalogue": catalogue(session), "selected_instrument_ids": topic.instrument_ids,

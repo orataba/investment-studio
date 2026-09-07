@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    sector_market_database_path: Path | None = None
     research_portfolio_api_url: str | None = None
     research_regime_api_url: str | None = None
 

@@ -11,8 +11,12 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
-import InvestmentResearchWorkspace from '../components/InvestmentResearchWorkspace'
-import InstrumentResearchAttributes from '../components/InstrumentResearchAttributes'
+import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
+import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
+import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
+import SectorResearchPanel from '../components/SectorResearchPanel'
+import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
+import './fund-detail.css'
 import {
   type CalculationFrequencyProfile,
   type CorporateActionEvent,
@@ -25,7 +29,6 @@ import {
   type FundPriceResponse,
   type InstrumentResearchNote,
   type InstrumentResearchResponse,
-  type InstrumentMonitoringResponse,
   type InstrumentRiskResponse as FundRiskResponse,
   type FundStrategyResponse,
   type InstrumentSummaryResponse,
@@ -48,7 +51,6 @@ import {
   getInstrumentPerformance,
   getInstrumentPrice,
   getInstrumentResearch,
-  getInstrumentMonitoring,
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentReferenceData,
@@ -72,7 +74,7 @@ import {
   formatPercent,
 } from '../lib/format'
 import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
-import { fundDetailTabLabel } from '../lib/instrumentDetailArchitecture'
+import { fundDetailTabLabel, fundDetailTabs, resolveFundDetailLocation, type FundPrimaryTab, type FundArchiveSection } from '../lib/instrumentDetailArchitecture'
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -113,7 +115,6 @@ type FundDetailBundle = {
   price: FundPriceResponse
   documents: FundDocumentsResponse
   research: InstrumentResearchResponse
-  monitoring: InstrumentMonitoringResponse | null
   navSeries: FundNavSeriesResponse
   reference: InstrumentReferenceData | null
 }
@@ -184,30 +185,7 @@ type ChartTimelineNoteContextMenu = {
 
 type PriceEditSection = 'table'
 
-type DetailTab =
-  | 'overview'
-  | 'performance'
-  | 'risk'
-  | 'price'
-  | 'exposure'
-  | 'people'
-  | 'strategy'
-  | 'documents'
-  | 'research'
-  | 'monitoring'
-
-const DETAIL_TAB_CODES: DetailTab[] = [
-  'overview',
-  'performance',
-  'risk',
-  'price',
-  'exposure',
-  'people',
-  'strategy',
-  'documents',
-  'research',
-  'monitoring',
-]
+type DetailTab = FundPrimaryTab
 
 export type FundInstrumentType = 'public_fund' | 'private_fund'
 type QuoteBasis = NavQuoteBasis
@@ -374,21 +352,6 @@ function saveWatchlistRollingRiskSettings(settings: WatchlistRollingRiskSettings
   }
 }
 
-const TAB_ORDER: DetailTab[] = [
-  'overview',
-  'performance',
-  'risk',
-  'price',
-  'exposure',
-  'people',
-  'strategy',
-  'documents',
-  'research',
-  'monitoring',
-]
-
-const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
-
 type LocalizedText = {
   en: string
   zh: string
@@ -396,15 +359,10 @@ type LocalizedText = {
 
 const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   overview: { en: 'Overview', zh: '总览' },
-  performance: { en: 'Performance', zh: '业绩' },
-  risk: { en: 'Risk', zh: '风险' },
-  price: { en: 'Price', zh: '费用' },
-  exposure: { en: 'Exposure', zh: '持仓' },
-  people: { en: 'People', zh: '团队' },
-  strategy: { en: 'Strategy', zh: '策略' },
-  documents: { en: 'Documents', zh: '文档' },
-  research: { en: 'Research', zh: '研究' },
-  monitoring: { en: 'Monitoring', zh: '监控' },
+  research: { en: 'Investment Views', zh: '投资观点' },
+  events: { en: 'Research Tracking', zh: '研究追踪' },
+  performance: { en: 'Performance & Risk', zh: '业绩与风险' },
+  archive: { en: 'Fund Archive', zh: '基金档案' },
 }
 
 const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
@@ -414,14 +372,6 @@ const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
     zh: '复权累计净值',
   },
   nav: { en: 'Unit NAV', zh: '单位净值' },
-}
-
-const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
-  nav_with_dividend_series: 'Cumulative NAV Series',
-  nav_series: 'Unit NAV Series',
-  manual_nav_editor: 'Manual Editor',
-  shared: 'Shared Asset Data',
-  local: 'Local Facts',
 }
 
 type PeopleOverviewField = {
@@ -1072,21 +1022,6 @@ function formatTimelineNoteImportance(importance: InstrumentResearchNote['import
   return 'Medium'
 }
 
-function formatStarRating(rating: number | null | undefined) {
-  if (rating == null || !Number.isFinite(rating)) {
-    return '—'
-  }
-  const normalizedRating = Math.max(0, Math.min(5, Math.round(rating)))
-  return `${'★'.repeat(normalizedRating)}${'☆'.repeat(5 - normalizedRating)}`
-}
-
-function parseManualRating(value: unknown) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null
-  }
-  return Math.max(1, Math.min(5, Math.round(value)))
-}
-
 function getNumber(value: unknown) {
   return typeof value === 'number' && !Number.isNaN(value) ? value : null
 }
@@ -1294,33 +1229,6 @@ function formatManualOverviewValue(key: string, value: unknown) {
   return String(value)
 }
 
-function formatMonitoringStatus(value: unknown) {
-  if (typeof value !== 'string' || !value) {
-    return 'Unknown'
-  }
-  return toTitleCase(value)
-}
-
-function getMonitoringStatusTone(value: unknown) {
-  if (typeof value !== 'string' || !value) {
-    return 'status-pending'
-  }
-  const normalized = value.toLowerCase()
-  if (
-    normalized === 'fresh' ||
-    normalized === 'current' ||
-    normalized === 'healthy' ||
-    normalized === 'ready' ||
-    normalized === 'imported'
-  ) {
-    return 'status-fresh'
-  }
-  if (normalized === 'failed' || normalized === 'blocked') {
-    return 'status-error'
-  }
-  return 'status-pending'
-}
-
 function getDocumentStatusTone(value: unknown) {
   if (typeof value !== 'string' || !value) {
     return 'status-pending'
@@ -1355,13 +1263,6 @@ function formatFileSize(value: unknown) {
   }
   const digits = unitIndex === 0 || size >= 10 ? 0 : 1
   return `${size.toFixed(digits)} ${units[unitIndex]}`
-}
-
-function formatNavBasisSource(value: string | null | undefined) {
-  if (!value) {
-    return '—'
-  }
-  return NAV_BASIS_SOURCE_LABELS[value] || toTitleCase(value)
 }
 
 function cleanListRows(rows: EditableListRow[]) {
@@ -1452,19 +1353,6 @@ function upsertKeyValueRows(rows: EditableKeyValueRow[], key: string, value: str
     return rows.map((row) => (row.key === key ? { ...row, value } : row))
   }
   return [...rows, { id: makeRowId('overview'), key, value }]
-}
-
-function normalizeTabs(sourceTabs: string[]): DetailTab[] {
-  const set = new Set<DetailTab>(CORE_TABS)
-
-  sourceTabs.forEach((tab) => {
-    const normalizedTab = tab === 'portfolio' ? 'exposure' : tab
-    if (TAB_ORDER.includes(normalizedTab as DetailTab)) {
-      set.add(normalizedTab as DetailTab)
-    }
-  })
-
-  return TAB_ORDER.filter((tab) => set.has(tab))
 }
 
 function defaultFundPortfolioResponse(): FundPortfolioResponse {
@@ -2906,12 +2794,26 @@ export default function FundDetailPage({
   const [detailSearchParams, setDetailSearchParams] = useSearchParams()
   const fundId = propFundId || routeFundId
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
-  const [activeTab, setActiveTab] = useState<DetailTab>(() => {
-    const requested = detailSearchParams.get('tab')
-    return DETAIL_TAB_CODES.includes(requested as DetailTab)
-      ? (requested as DetailTab)
-      : 'overview'
+  const [activeTab, setActiveTabState] = useState<DetailTab>(() => {
+    return resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType).tab
   })
+  const [archiveSection, setArchiveSection] = useState<FundArchiveSection>(() =>
+    resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType).section)
+  const [assistant, setAssistant] = useState<{ instrumentId: string; question: string } | null>(null)
+  const [riskOpen, setRiskOpen] = useState<string | null>(null)
+  function openAssistant(question = '') {
+    setRiskOpen(null)
+    setAssistant({ instrumentId: fundId, question })
+  }
+  function openRisk() {
+    setAssistant(null)
+    setRiskOpen(fundId)
+  }
+  function setActiveTab(tab: DetailTab) {
+    setActiveTabState(tab)
+    setDetailSearchParams((params) => { const next = new URLSearchParams(params); next.set('tab', tab); return next }, { replace: true })
+  }
+  const activeDataSection = activeTab === 'archive' ? archiveSection : activeTab
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>(() => {
     const requested = detailSearchParams.get('basis')
     return requested === 'nav' || requested === 'nav_with_dividend'
@@ -3007,18 +2909,14 @@ export default function FundDetailPage({
   const [productFrameworkAttributes, setProductFrameworkAttributes] =
     useState<InstrumentAttributeValuesResponse | null>(null)
   const [productFrameworkLoadError, setProductFrameworkLoadError] = useState<string | null>(null)
-  const [productFrameworkRetryToken, setProductFrameworkRetryToken] = useState(0)
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
   const detailSearchKey = detailSearchParams.toString()
 
   useEffect(() => {
     detailUrlSyncRef.current = detailSearchKey
-    const requestedTab = detailSearchParams.get('tab')
-    setActiveTab(
-      requestedTab && DETAIL_TAB_CODES.includes(requestedTab as DetailTab)
-        ? requestedTab as DetailTab
-        : 'overview',
-    )
+    const requested = resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType)
+    setActiveTabState(requested.tab)
+    setArchiveSection(requested.section)
     const requestedBasis = detailSearchParams.get('basis')
     setQuoteBasis(
       requestedBasis === 'nav' || requestedBasis === 'nav_with_dividend'
@@ -3047,6 +2945,7 @@ export default function FundDetailPage({
           }
         }
         setOrDelete('tab', activeTab, 'overview')
+        setOrDelete('section', activeTab === 'archive' ? archiveSection : '')
         setOrDelete('basis', quoteBasis, 'nav_with_dividend')
         next.delete('frequency')
         setOrDelete('currency', selectedCurrency, 'USD')
@@ -3059,6 +2958,7 @@ export default function FundDetailPage({
     )
   }, [
     activeTab,
+    archiveSection,
     benchmarkFundId,
     chartEndDate,
     chartStartDate,
@@ -3152,7 +3052,7 @@ export default function FundDetailPage({
           'provider reference',
         ])
 
-        const nextTabs = normalizeTabs(summary.tabs || [])
+        const nextTabs = [...fundDetailTabs()]
 
         detailBundleKeyRef.current = bundleKey
         setBundle({
@@ -3170,7 +3070,6 @@ export default function FundDetailPage({
             researchResult,
             previousBundle?.research ?? emptyInstrumentResearchResponse(),
           ),
-          monitoring: previousBundle?.monitoring ?? null,
           navSeries: settledValue(
             navSeriesResult,
             previousBundle?.navSeries ?? defaultFundNavSeriesResponse(fundId),
@@ -3187,7 +3086,7 @@ export default function FundDetailPage({
             : null,
         )
         startTransition(() => {
-          setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
+          setActiveTabState((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
         })
       } catch (loadError) {
         if (!cancelled) {
@@ -3226,7 +3125,7 @@ export default function FundDetailPage({
     ) {
       return undefined
     }
-    const loadKey = `${bundleKey}:${activeTab}`
+    const loadKey = `${bundleKey}:${activeDataSection}`
 
     type LazyRequest = {
       key: keyof FundDetailBundle
@@ -3235,28 +3134,28 @@ export default function FundDetailPage({
     }
     let requests: LazyRequest[] = []
     if (activeTab === 'performance') {
-      requests = [{ key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) }]
-    } else if (activeTab === 'risk') {
-      requests = [{ key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) }]
-    } else if (activeTab === 'price') {
+      requests = [
+        { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
+        { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
+      ]
+    } else if (activeDataSection === 'price') {
       requests = [{ key: 'price', label: 'price', load: () => getInstrumentPrice(fundId) }]
-    } else if (activeTab === 'exposure') {
+    } else if (activeDataSection === 'exposure') {
       requests = [
         { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
         { key: 'holdings', label: 'holdings', load: () => getInstrumentPortfolioHoldings(fundId) },
       ]
-    } else if (activeTab === 'people') {
+    } else if (activeDataSection === 'people') {
       requests = [{ key: 'people', label: 'people', load: () => getInstrumentPeople(fundId) }]
-    } else if (activeTab === 'strategy') {
+    } else if (activeDataSection === 'strategy') {
       requests = [{ key: 'strategy', label: 'strategy', load: () => getInstrumentStrategy(fundId) }]
-    } else if (activeTab === 'documents') {
+    } else if (activeDataSection === 'documents') {
       requests = [{ key: 'documents', label: 'documents', load: () => getInstrumentDocuments(fundId) }]
-    } else if (activeTab === 'monitoring') {
+    } else if (activeDataSection === 'monitoring') {
       requests = [
         { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
         { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
         { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
-        { key: 'monitoring', label: 'investment monitoring', load: () => getInstrumentMonitoring(fundId) },
       ]
     }
     if (!requests.length) {
@@ -3328,10 +3227,12 @@ export default function FundDetailPage({
       }
     })
     return undefined
-  }, [activeTab, detailBundleKey, fundId, fundType, refreshToken, sectionRetryToken])
+  }, [activeTab, activeDataSection, detailBundleKey, fundId, fundType, refreshToken, sectionRetryToken])
 
   useEffect(() => {
     setTimelineNoteCaptureMode(false)
+    setAssistant(null)
+    setRiskOpen(null)
     setRequestedResearchNoteDate(null)
     setTimelineNoteViewAnchorDate(null)
     setChartTimelineNoteContextMenu(null)
@@ -3364,7 +3265,7 @@ export default function FundDetailPage({
     return () => {
       cancelled = true
     }
-  }, [fundId, productFrameworkRetryToken, refreshToken])
+  }, [fundId, refreshToken])
 
   useEffect(() => {
     const assignedNodeId =
@@ -3737,7 +3638,7 @@ export default function FundDetailPage({
   }
 
   function focusTimelineNoteInQuote(noteDate: string) {
-    setActiveTab('overview')
+    setActiveTab('performance')
     setChartStartDate('')
     setChartEndDate('')
     setTimelineNoteViewAnchorDate(noteDate)
@@ -3875,7 +3776,7 @@ export default function FundDetailPage({
     )
   }
 
-  const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, monitoring, navSeries } = bundle
+  const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, navSeries } = bundle
   const timelineNotes = research.notes
   const availableCurrencies = getAvailableQuoteCurrencies(navSeries.rows)
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
@@ -4013,7 +3914,6 @@ export default function FundDetailPage({
   }
   const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
   const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
-  const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
   const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
   const chartBenchmarkCumulativeReturn =
     chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
@@ -4030,7 +3930,7 @@ export default function FundDetailPage({
   const quoteLatestStats = getLatestPointChangeStats(unitNavSeries)
   const quoteChange = quoteLatestStats.change
   const quoteChangePct = quoteLatestStats.changePct
-  const availableTabs = normalizeTabs(summary.tabs || [])
+  const availableTabs = fundDetailTabs()
   const detailPageLabel = localize(
     language,
     fundType === 'public_fund'
@@ -4043,11 +3943,6 @@ export default function FundDetailPage({
     summary.series_snapshot?.selected_series_label ||
     summary.selected_series?.label ||
     null
-  const selectedDateLabel =
-    navSeries.selected_date_label ||
-    summary.series_snapshot?.selected_date_label ||
-    summary.selected_series?.date_label ||
-    'Last Quote Date'
   const navBasisLabel = NAV_BASIS_LABELS[navBasisType]
     ? localize(language, NAV_BASIS_LABELS[navBasisType])
     : selectedSeriesLabel || toTitleCase(navBasisType)
@@ -4898,108 +4793,6 @@ export default function FundDetailPage({
     )
   const latestNavRecord = navSeries.rows[navSeries.rows.length - 1]
   const navRefreshStatus = navSeries.refresh_status || null
-  const monitoredInstrument = monitoring?.instrument || null
-  const monitoringOverviewRows = [
-    {
-      label: 'Freshness Status',
-      value: formatMonitoringStatus(summary.freshness.data_freshness_status),
-      tone: getMonitoringStatusTone(summary.freshness.data_freshness_status),
-    },
-    {
-      label: 'Coverage Status',
-      value: getString(summary.instrument_attributes.coverage_status),
-      tone: 'status-attribute',
-    },
-    { label: 'Last Fact Update', value: formatDateTime(summary.freshness.last_fact_update_at), tone: null },
-    { label: 'Last Recalculated', value: formatDateTime(summary.freshness.last_recalculated_at), tone: null },
-    {
-      label: 'Last Snapshot',
-      value: formatDateTime(summary.freshness.last_successful_snapshot_at),
-      tone: null,
-    },
-    {
-      label: selectedDateLabel,
-      value: formatDate(latestNavRecord?.as_of_date || null),
-      tone: null,
-    },
-    {
-      label: 'Refresh Owner',
-      value: 'backend maintenance',
-      tone: 'status-attribute',
-    },
-    {
-      label: 'Last Update Trigger',
-      value: formatDateTime(navRefreshStatus?.requested_at || null),
-      tone: null,
-    },
-    {
-      label: 'Required Fields Missing',
-      value: monitoredInstrument ? String(monitoredInstrument.missing_attribute_count) : '—',
-      tone: monitoredInstrument
-        ? monitoredInstrument.missing_attribute_count
-          ? 'status-pending'
-          : 'status-fresh'
-        : null,
-    },
-    {
-      label: 'Research Records',
-      value: monitoredInstrument ? String(monitoredInstrument.research.active_note_count) : '—',
-      tone: null,
-    },
-    {
-      label: 'Next Review',
-      value: formatDate(monitoredInstrument?.research.next_review_date || null),
-      tone: null,
-    },
-    {
-      label: 'Next Follow-up',
-      value: formatDate(monitoredInstrument?.research.next_follow_up_date || null),
-      tone: null,
-    },
-  ]
-  const monitoringPipelineRows = [
-    {
-      domain: `${quoteBasisLabel} Series`,
-      asOf: formatDate(latestNavRecord?.as_of_date || null),
-      cutoff: formatDateTime(navRefreshStatus?.requested_at || latestNavRecord?.adopted_at || summary.freshness.last_fact_update_at),
-      methodology: formatNavBasisSource(navSeries.nav_basis_source),
-      status: formatMonitoringStatus(navRefreshStatus?.status || navSeries.nav_basis_status || summary.freshness.data_freshness_status),
-      tone: getMonitoringStatusTone(navRefreshStatus?.status || navSeries.nav_basis_status || summary.freshness.data_freshness_status),
-    },
-    {
-      domain: 'Performance Snapshot',
-      asOf: formatDate(performance.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(performance.snapshot_metadata?.source_cutoff_at || null),
-      methodology: getString(performance.snapshot_metadata?.methodology_version),
-      status: performance.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
-      tone: performance.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
-    },
-    {
-      domain: 'Risk Snapshot',
-      asOf: formatDate(risk.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(risk.snapshot_metadata?.source_cutoff_at || null),
-      methodology: getString(risk.snapshot_metadata?.methodology_version),
-      status: risk.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
-      tone: risk.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
-    },
-    {
-      domain: 'Portfolio Snapshot',
-      asOf: formatDate(portfolio.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(portfolio.snapshot_metadata?.source_cutoff_at || null),
-      methodology: getString(portfolio.snapshot_metadata?.methodology_version),
-      status: portfolio.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
-      tone: portfolio.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
-    },
-  ]
-  const monitoringAlertRows = [
-    ...(navRefreshStatus?.message ? [navRefreshStatus.message] : []),
-    ...(summary.freshness.staleness_reason ? [summary.freshness.staleness_reason] : []),
-    ...summary.quick_monitoring_items,
-    ...(monitoredInstrument?.missing_attribute_labels.length
-      ? [`Missing required fields: ${monitoredInstrument.missing_attribute_labels.join(' / ')}`]
-      : []),
-    ...(monitoredInstrument?.issue_flags || []).map(formatLabel),
-  ]
   const performanceReferenceEndDate = calculationBasisSeries[calculationBasisSeries.length - 1]?.date || null
   const comparisonReferenceWindow =
     selectedBenchmark && benchmarkCalculationSeries.length
@@ -5365,11 +5158,7 @@ export default function FundDetailPage({
   const lifetimePerformanceSnapshot =
     performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ||
     buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
-  const researchManualRating = parseManualRating(research.profile.manual_rating)
-  const overviewRatingValue = formatStarRating(researchManualRating)
-  const overviewRatingNote = researchManualRating == null
-      ? 'No manual research rating'
-      : 'Manual research rating'
+  const currentOpinion = latestInvestmentOpinion(research)
   const overviewRankingValue =
     performance.ranking
       ? [
@@ -5889,6 +5678,8 @@ export default function FundDetailPage({
 
   return (
     <div className="terminal-page instrument-detail-page">
+      {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} onClose={() => setAssistant(null)} />}
+      {riskOpen === fundId && <InstrumentRiskDrawer instrumentId={fundId} instrumentName={summary.instrument_name} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} onClose={() => setRiskOpen(null)} onAskAssistant={openAssistant} />}
       <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
       <section className="panel instrument-detail-shell">
         {loadWarning ? (
@@ -5919,28 +5710,27 @@ export default function FundDetailPage({
             <span className="instrument-detail-breadcrumb-separator">/</span>
             <span className="instrument-detail-breadcrumb-current">{summary.ticker_or_isin}</span>
           </div>
-          <div className="instrument-detail-actions">
-            <LanguageSelector />
-            <button
-              type="button"
-              onClick={() => {
-                setCoverageStatusDraft(currentCoverageStatus)
-                setTaxonomyDraftNodeId(currentTaxonomyNodeId)
-                setSectionError(null)
-                setSectionNotice(null)
-                setSettingsModalOpen(true)
-              }}
-            >
-              {localize(language, SYSTEM_LABELS.settings)}
-            </button>
-          </div>
+          <LanguageSelector />
         </div>
-        <div className="instrument-detail-hero">
+        <div className="instrument-detail-hero fund-detail-hero">
           <div className="instrument-detail-headline">
             <div className="instrument-detail-eyebrow">{detailPageLabel}</div>
-            <h1 className="instrument-detail-title" translate="no">
-              {summary.instrument_name} <span>{summary.ticker_or_isin}</span>
-            </h1>
+            <div className="fund-detail-title-row">
+              <h1 className="instrument-detail-title" translate="no">
+                {summary.instrument_name} <span>{summary.ticker_or_isin}</span>
+              </h1>
+              <WorkspaceTools
+                settings={{ label: language === 'zh-Hans' ? '标的设置' : 'Instrument settings', onClick: () => {
+                  setCoverageStatusDraft(currentCoverageStatus)
+                  setTaxonomyDraftNodeId(currentTaxonomyNodeId)
+                  setSectionError(null)
+                  setSectionNotice(null)
+                  setSettingsModalOpen(true)
+                } }}
+                risk={{ onClick: openRisk }}
+                assistant={{ onClick: () => openAssistant() }}
+              />
+            </div>
             <div className="instrument-detail-badges">
               {detailClassificationLabel ? (
                 <span className="context-chip" data-investment-studio-i18n-ignore="true">
@@ -5959,27 +5749,21 @@ export default function FundDetailPage({
 
         <div className="instrument-detail-tabs-row" data-investment-studio-i18n-ignore="true">
           <div className="instrument-detail-tabs">
-            {availableTabs.filter(value => ['overview', 'performance', 'research', 'risk'].includes(value)).map((tab) => (
+            {availableTabs.map((tab) => (
               <button
                 key={tab}
                 type="button"
                 className={tab === activeTab ? 'instrument-detail-tab instrument-detail-tab-active' : 'instrument-detail-tab'}
                 onClick={() => setActiveTab(tab)}
               >
-                {fundDetailTabLabel(
-                  fundType,
-                  tab,
-                  language,
-                  localize(language, TAB_LABELS[tab]),
-                )}
+                {fundDetailTabLabel(fundType, tab, language, localize(language, TAB_LABELS[tab]))}
               </button>
             ))}
-          <button type="button" className={`instrument-detail-tab ${!['overview', 'performance', 'research', 'risk'].includes(activeTab) ? 'instrument-detail-tab-active' : ''}`} onClick={() => setActiveTab('price')}>{language === 'zh-Hans' ? '资料与明细' : 'Details'}</button>
-</div>
+          </div>
         </div>
-        {!['overview', 'performance', 'research', 'risk'].includes(activeTab) && <div className="instrument-detail-tabs">{availableTabs.filter(value => !['overview', 'performance', 'research', 'risk'].includes(value)).map(item => <button key={item} className={`instrument-detail-tab ${item === activeTab ? 'instrument-detail-tab-active' : ''}`} onClick={() => setActiveTab(item)}>{fundDetailTabLabel(fundType, item, language, localize(language, TAB_LABELS[item]))}</button>)}</div>}
 
 
+        {productFrameworkLoadError ? <p role="alert" className="fund-overview-date-note">{language === 'zh-Hans' ? '标的分类暂时无法读取：' : 'Instrument classification unavailable: '}{productFrameworkLoadError}</p> : null}
         {sectionError ? <div className="inline-notice inline-notice-error">{sectionError}</div> : null}
         {sectionNotice ? <div className="inline-notice inline-notice-success">{sectionNotice}</div> : null}
         {sectionLoadErrors[activeTab] ? (
@@ -5993,7 +5777,7 @@ export default function FundDetailPage({
             </button>
           </div>
         ) : null}
-        {loadingSectionKeys.has(`${detailBundleKey}:${activeTab}`) ? (
+        {loadingSectionKeys.has(`${detailBundleKey}:${activeDataSection}`) ? (
           <div className="inline-notice" role="status">
             Loading {localize(language, TAB_LABELS[activeTab]).toLowerCase()} data…
           </div>
@@ -6148,52 +5932,44 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'overview' ? (
+        <section className="fund-overview" aria-label={language === 'zh-Hans' ? '基金总览' : 'Fund overview'}>
+          <div className="fund-overview-snapshot">
+            <div className="fund-overview-nav">
+              <span>{localize(language, QUOTE_BASIS_LABELS.nav)}</span>
+              <strong>{unitNavValue == null ? '—' : formatNumber(unitNavValue, 4)}</strong>
+              <small>{formatDate(unitNavDate)} · {effectiveCurrency}</small>
+            </div>
+            <div className="fund-overview-nav fund-overview-nav-secondary">
+              <span>{localize(language, QUOTE_BASIS_LABELS.nav_with_dividend)}</span>
+              <strong>{cumulativeNavValue == null ? '—' : formatNumber(cumulativeNavValue, 4)}</strong>
+              <small>{formatDate(cumulativeNavDate)}</small>
+            </div>
+            <div className="fund-overview-key-metrics">
+              {[
+                { label: language === 'zh-Hans' ? '今年以来' : 'YTD', value: latestYtdReturn },
+                { label: language === 'zh-Hans' ? '可用历史年化收益' : 'Annualized over available history', value: lifetimePerformanceSnapshot.annualizedReturn },
+                { label: language === 'zh-Hans' ? '当前回撤' : 'Current drawdown', value: currentDrawdownValue },
+              ].map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value == null ? '—' : formatPercent(row.value)}</strong></div>)}
+            </div>
+          </div>
+          <p className="fund-overview-date-note">{language === 'zh-Hans' ? '可用历史' : 'Available history'} {formatDate(calculationBasisSeries[0]?.date)} — {formatDate(performanceReferenceEndDate)} · {calculationFrequencyStatus}</p>
+          {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status">{summary.freshness.staleness_reason}</p>}
+          <SectorResearchPanel instrumentId={fundId} variant="summary" onOpenEvents={() => setActiveTab('events')} />
+          <div className="fund-overview-section">
+            <header><h2>{language === 'zh-Hans' ? '最新投资观点' : 'Latest investment view'}</h2><button type="button" onClick={() => setActiveTab('research')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
+            {currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p>{currentOpinion.body}</p></>
+              : <p className="muted">{language === 'zh-Hans' ? '尚未记录投资观点。' : 'No investment view recorded yet.'}</p>}
+          </div>
+          <div className="fund-overview-destinations">
+            <button type="button" onClick={() => setActiveTab('events')}><strong>{language === 'zh-Hans' ? '研究追踪' : 'Research tracking'}</strong><span>{language === 'zh-Hans' ? '查阅整理好的跟踪结论、投资机会与风险。' : 'Read prepared findings, opportunities and risks.'}</span></button>
+            <button type="button" onClick={() => setActiveTab('performance')}><strong>{language === 'zh-Hans' ? '业绩与风险' : 'Performance & risk'}</strong><span>{language === 'zh-Hans' ? '净值、回撤、基准比较与区间指标。' : 'NAV, drawdown, benchmark comparisons and period metrics.'}</span></button>
+            <button type="button" onClick={() => setActiveTab('archive')}><strong>{language === 'zh-Hans' ? '基金档案' : 'Fund archive'}</strong><span>{fundType === 'public_fund' ? (language === 'zh-Hans' ? '持仓风格、管理团队与披露材料。' : 'Holdings, style, management and disclosures.') : (language === 'zh-Hans' ? '策略、流动性、交易条款与基金材料。' : 'Strategy, liquidity, dealing terms and documents.')}</span></button>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'performance' ? (
         <>
-          {corporateActions.length ? (
-            <section className="panel instrument-corporate-actions-panel">
-              <div className="instrument-section-header">
-                <div>
-                  <div className="panel-title">Corporate Actions</div>
-                  <div className="instrument-section-title">Unit adjustments</div>
-                </div>
-                <span className="muted">Adjusted series handles returns; confirmed events adjust portfolio units.</span>
-              </div>
-              <div className="table-shell">
-                <table className="instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Effective</th>
-                      <th>Record</th>
-                      <th>Action</th>
-                      <th>Ratio</th>
-                      <th>Rounding</th>
-                      <th>Status</th>
-                      <th>Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...corporateActions].reverse().map((event) => (
-                      <tr key={event.corporate_action_event_id}>
-                        <td>{formatDate(event.effective_date)}</td>
-                        <td>{formatDate(event.record_date)}</td>
-                        <td>{event.action_type === 'share_split' ? 'Share split' : formatLabel(event.action_type)}</td>
-                        <td>{String(event.new_units)} : {String(event.old_units)}</td>
-                        <td>{formatLabel(event.quantity_rounding)}</td>
-                        <td><span className={`status-badge status-${event.status}`}>{formatLabel(event.status)}</span></td>
-                        <td>{formatLabel(event.source)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {corporateActions.some((event) => event.status === 'detected') ? (
-                <div className="instrument-corporate-action-warning">
-                  Detected events are informational only and never change portfolio quantities until issuer,
-                  exchange, or depository evidence confirms ratio and fractional treatment.
-                </div>
-              ) : null}
-            </section>
-          ) : null}
           <section className="panel instrument-quote-panel">
             <div className="instrument-chart-shell">
               <div className="instrument-chart-header">
@@ -6219,11 +5995,7 @@ export default function FundDetailPage({
                         {formatChangeSummary(quoteChange, quoteChangePct)}
                       </div>
                     </div>
-                    <div className="instrument-quote-rating-block">
-                      <span>Research rating</span>
-                      <strong>{overviewRatingValue}</strong>
-                      <em>{overviewRatingNote}</em>
-                    </div>
+
                   </div>
                   <div className="instrument-quote-meta">
                     <div className="instrument-quote-asof">
@@ -6994,7 +6766,6 @@ export default function FundDetailPage({
                 <div className="panel-title">Performance</div>
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Metrics Matrix</div>
-                  {renderBenchmarkSearch('Performance benchmark', 'instrument-performance-benchmark-select')}
                   {peerComparison?.status === 'limited_sample' ? (
                     <span
                       className="context-chip"
@@ -7131,9 +6902,9 @@ export default function FundDetailPage({
         </section>
       ) : null}
 
-      {activeTab === 'risk' ? (
+      {activeTab === 'performance' ? (
         <section className="panel instrument-risk-shell">
-          <InstrumentRiskPanel instrumentId={fundId} />
+          <InstrumentRiskPanel instrumentId={fundId} mode="price" onAskAssistant={(_instrumentId, question) => openAssistant(question)} />
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
             <div className="instrument-risk-section-header instrument-risk-rolling-header">
@@ -7141,7 +6912,6 @@ export default function FundDetailPage({
                 <div className="panel-title">Risk</div>
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Rolling Risk</div>
-                  {renderBenchmarkSearch('Risk benchmark', 'instrument-performance-benchmark-select')}
                 </div>
               </div>
               <div className="instrument-risk-section-actions">
@@ -7186,7 +6956,19 @@ export default function FundDetailPage({
         </section>
       ) : null}
 
-      {activeTab === 'price' ? (
+      {activeTab === 'archive' ? (
+        <section className={`fund-archive-layout fund-archive-${fundType}`} aria-label={language === 'zh-Hans' ? '基金档案' : 'Fund archive'}>
+          <header className="fund-workspace-heading">
+            <div><h2>{language === 'zh-Hans' ? '基金档案' : 'Fund archive'}</h2>
+              <p>{fundType === 'public_fund'
+                ? (language === 'zh-Hans' ? '持仓与风格以披露期为准，结合管理团队与基金材料阅读。' : 'Read holdings and style at their disclosure dates alongside manager and fund documents.')
+                : (language === 'zh-Hans' ? '策略、流动性与交易条款，以及净值披露和基金材料。' : 'Strategy, liquidity and dealing terms, NAV disclosures and fund documents.')}</p>
+            </div>
+            <button type="button" onClick={() => setArchiveSection('documents')}>{language === 'zh-Hans' ? '查看与上传材料' : 'View / upload documents'}</button>
+          </header>
+        <details className="fund-archive-group" id="fund-archive-price" open={archiveSection === 'price'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('price') }}>
+          <summary>{fundType === 'private_fund' ? (language === 'zh-Hans' ? '费用、流动性与交易条款' : 'Fees, liquidity and dealing terms') : (language === 'zh-Hans' ? '费用与交易安排' : 'Fees and dealing')}</summary>
+          <div className="fund-archive-group-body">
         <>
         {providerFeeFacts.length ? (
           <section className="panel instrument-edit-surface">
@@ -7362,9 +7144,11 @@ export default function FundDetailPage({
           </section>
         </section>
         </>
-      ) : null}
-
-      {activeTab === 'exposure' ? (
+          </div>
+        </details>
+        <details className="fund-archive-group" id="fund-archive-exposure" open={archiveSection === 'exposure'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('exposure') }}>
+          <summary>{fundType === 'private_fund' ? (language === 'zh-Hans' ? '敞口与已披露持仓' : 'Exposure and disclosed holdings') : (language === 'zh-Hans' ? '持仓、配置与风格' : 'Holdings, allocation and style')}</summary>
+          <div className="fund-archive-group-body">
         <>
         {providerReferenceHoldings.length ? (
           <ReferenceDataTable
@@ -7464,9 +7248,11 @@ export default function FundDetailPage({
           </section>
         </section>
         </>
-      ) : null}
-
-      {activeTab === 'people' ? (
+          </div>
+        </details>
+        <details className="fund-archive-group" id="fund-archive-people" open={archiveSection === 'people'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('people') }}>
+          <summary>{fundType === 'private_fund' ? (language === 'zh-Hans' ? '机构与关键人员' : 'Organization and key people') : (language === 'zh-Hans' ? '基金经理与管理团队' : 'Fund managers and team')}</summary>
+          <div className="fund-archive-group-body">
         <section className="instrument-people-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
 
@@ -7579,9 +7365,11 @@ export default function FundDetailPage({
             </div>
           </section>
         </section>
-      ) : null}
-
-      {activeTab === 'strategy' ? (
+          </div>
+        </details>
+        <details className="fund-archive-group" id="fund-archive-strategy" open={archiveSection === 'strategy'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('strategy') }}>
+          <summary>{language === 'zh-Hans' ? '投资策略与流程' : 'Investment strategy and process'}</summary>
+          <div className="fund-archive-group-body">
         <section className="instrument-strategy-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
 
@@ -7739,9 +7527,11 @@ export default function FundDetailPage({
             </div>
           </section>
         </section>
-      ) : null}
-
-      {activeTab === 'documents' ? (
+          </div>
+        </details>
+        <details className="fund-archive-group" id="fund-archive-documents" open={archiveSection === 'documents'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('documents') }}>
+          <summary>{language === 'zh-Hans' ? '基金材料' : 'Fund documents'}</summary>
+          <div className="fund-archive-group-body">
         <section className="instrument-documents-shell instrument-edit-surface" data-investment-studio-i18n-ignore="true">
           <div className="instrument-price-topline" />
 
@@ -7877,245 +7667,86 @@ export default function FundDetailPage({
             </div>
           </section>
         </section>
-      ) : null}
-
-      {activeTab === 'research' ? (
-        <section className="instrument-research-shell instrument-edit-surface">
-          <div className="instrument-price-topline" />
-          <div className="instrument-section-header instrument-research-page-header">
-            <div>
-              <div className="panel-title">Research</div>
-            </div>
           </div>
-
-          <InvestmentResearchWorkspace
-            instrumentId={fundId}
-            instrumentType={fundType}
-            research={research}
-            language={language}
-            defaultNoteDate={latestPoint?.date || latestNavRecord?.as_of_date || ''}
-            requestedNoteDate={requestedResearchNoteDate}
-            onRequestedNoteHandled={() => setRequestedResearchNoteDate(null)}
-            onOpenNote={focusTimelineNoteInQuote}
-            onChange={(nextResearch) =>
-              setBundle((current) =>
-                current ? { ...current, research: nextResearch } : current,
-              )
-            }
-          >
-
-          <InstrumentResearchAttributes
-            instrumentId={fundId}
-            attributeValues={productFrameworkAttributes}
-            loadError={productFrameworkLoadError}
-            language={language}
-            onRetry={() => setProductFrameworkRetryToken((current) => current + 1)}
-            onChange={(nextAttributes) => {
-              setProductFrameworkAttributes(nextAttributes)
-              setBundle((current) =>
-                current
-                  ? {
-                      ...current,
-                      summary: {
-                        ...current.summary,
-                        instrument_attributes: {
-                          ...current.summary.instrument_attributes,
-                          ...nextAttributes.values,
-                        },
-                      },
-                    }
-                  : current,
-              )
-            }}
-          />
-
-          </InvestmentResearchWorkspace>
-        </section>
-      ) : null}
-
-      {activeTab === 'monitoring' ? (
-        <section className="instrument-monitoring-shell">
-          <div className="instrument-price-topline" />
-          <div className="instrument-section-header instrument-monitoring-page-header">
-            <div>
-              <div className="panel-title">Monitoring</div>
-            </div>
-          </div>
-
-          <InstrumentResearchAttributes
-            instrumentId={fundId}
-            attributeValues={productFrameworkAttributes}
-            loadError={productFrameworkLoadError}
-            language={language}
-            domains={['monitoring']}
-            onRetry={() => setProductFrameworkRetryToken((current) => current + 1)}
-            onChange={setProductFrameworkAttributes}
-          />
-
-          <section className="instrument-monitoring-section">
-            <div className="instrument-monitoring-section-header">
-              <div>
-                <div className="panel-title">Monitoring</div>
-                <div className="instrument-section-title">Status Overview</div>
-              </div>
-            </div>
-            <div className="instrument-monitoring-facts-grid">
-              {monitoringOverviewRows.map((row) => (
-                <div key={row.label} className="instrument-monitoring-fact">
-                  <span>{row.label}</span>
-                  {row.tone ? (
-                    <strong>
-                      <span className={`status-badge ${row.tone}`}>{row.value}</span>
-                    </strong>
-                  ) : (
-                    <strong>{row.value}</strong>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="instrument-monitoring-section">
-            <div className="instrument-monitoring-section-header">
-              <div>
-                <div className="panel-title">Investment Follow-up</div>
-                <div className="instrument-section-title">
-                  {monitoredInstrument?.research.primary_analyst || 'No primary analyst assigned'}
-                </div>
-              </div>
-              <Link className="table-action" to="/monitoring">Open Monitoring Dashboard</Link>
-            </div>
-            <div className="instrument-monitoring-facts-grid">
-              <div className="instrument-monitoring-fact">
-                <span>Current View</span>
-                <strong>{monitoredInstrument?.research.current_view || '—'}</strong>
-              </div>
-              <div className="instrument-monitoring-fact">
-                <span>Research Rating</span>
-                <strong>
-                  {monitoredInstrument?.research.manual_rating == null
-                    ? '—'
-                    : `${'★'.repeat(monitoredInstrument.research.manual_rating)}${'☆'.repeat(
-                        Math.max(0, 5 - monitoredInstrument.research.manual_rating),
-                      )}`}
-                </strong>
-              </div>
-              <div className="instrument-monitoring-fact">
-                <span>Research Updated</span>
-                <strong>{formatDateTime(monitoredInstrument?.research.last_updated_at || null)}</strong>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-monitoring-section">
-            <div className="instrument-monitoring-section-header">
-              <div>
-                <div className="panel-title">Monitoring</div>
-                <div className="instrument-section-title">Pipeline Status</div>
-              </div>
-            </div>
-            <div className="table-shell instrument-monitoring-table-shell">
-              <table className="terminal-table terminal-table-compact instrument-monitoring-table">
-                <thead>
-                  <tr>
-                    <th>Domain</th>
-                    <th>As Of</th>
-                    <th>Source Cutoff</th>
-                    <th>Methodology</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monitoringPipelineRows.map((row) => (
-                    <tr key={row.domain}>
-                      <td>{row.domain}</td>
-                      <td>{row.asOf}</td>
-                      <td>{row.cutoff}</td>
-                      <td>{row.methodology}</td>
-                      <td>
-                        <span className={`status-badge ${row.tone}`}>{row.status}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          {monitoring?.open_recalc_jobs.length ? (
-            <section className="instrument-monitoring-section">
-              <div className="instrument-monitoring-section-header">
+        </details>
+        <details className="fund-archive-group" id="fund-archive-monitoring" open={archiveSection === 'monitoring'} onToggle={(event) => { if (event.currentTarget.open) setArchiveSection('monitoring') }}>
+          <summary>{language === 'zh-Hans' ? '披露与数据状态' : 'Disclosure and data status'}</summary>
+          <div className="fund-archive-group-body">
+          {corporateActions.length ? (
+            <section className="panel instrument-corporate-actions-panel">
+              <div className="instrument-section-header">
                 <div>
-                  <div className="panel-title">Monitoring</div>
-                  <div className="instrument-section-title">Open Recalculation Jobs</div>
+                  <div className="panel-title">Corporate Actions</div>
+                  <div className="instrument-section-title">Unit adjustments</div>
                 </div>
+                <span className="muted">Adjusted series handles returns; confirmed events adjust portfolio units.</span>
               </div>
-              <div className="table-shell instrument-monitoring-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-monitoring-table">
+              <div className="table-shell">
+                <table className="instrument-data-table">
                   <thead>
-                    <tr><th>Job</th><th>Status</th><th>Enqueued</th><th>Error</th></tr>
+                    <tr>
+                      <th>Effective</th>
+                      <th>Record</th>
+                      <th>Action</th>
+                      <th>Ratio</th>
+                      <th>Rounding</th>
+                      <th>Status</th>
+                      <th>Source</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {monitoring.open_recalc_jobs.map((job) => (
-                      <tr key={job.recalc_job_id}>
-                        <td>{formatLabel(job.job_type)}</td>
-                        <td>{formatLabel(job.job_status)}</td>
-                        <td>{formatDateTime(job.enqueued_at)}</td>
-                        <td>{job.error_message || '—'}</td>
+                    {[...corporateActions].reverse().map((event) => (
+                      <tr key={event.corporate_action_event_id}>
+                        <td>{formatDate(event.effective_date)}</td>
+                        <td>{formatDate(event.record_date)}</td>
+                        <td>{event.action_type === 'share_split' ? 'Share split' : formatLabel(event.action_type)}</td>
+                        <td>{String(event.new_units)} : {String(event.old_units)}</td>
+                        <td>{formatLabel(event.quantity_rounding)}</td>
+                        <td><span className={`status-badge status-${event.status}`}>{formatLabel(event.status)}</span></td>
+                        <td>{formatLabel(event.source)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {corporateActions.some((event) => event.status === 'detected') ? (
+                <div className="instrument-corporate-action-warning">
+                  Detected events are informational only and never change portfolio quantities until issuer,
+                  exchange, or depository evidence confirms ratio and fractional treatment.
+                </div>
+              ) : null}
             </section>
           ) : null}
-
-          <section className="instrument-monitoring-section">
-            <div className="instrument-monitoring-section-header">
-              <div>
-                <div className="panel-title">Monitoring</div>
-                <div className="instrument-section-title">Open Items</div>
-              </div>
-            </div>
-            {monitoringAlertRows.length ? (
-              <div className="instrument-monitoring-notes">
-                <ul className="bullet-list">
-                  {monitoringAlertRows.map((item, index) => (
-                    <li key={`${item}-${index}`}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <div className="instrument-placeholder instrument-monitoring-placeholder">No monitoring items yet.</div>
-            )}
-          </section>
-
-          <section className="instrument-monitoring-section">
-            <div className="instrument-monitoring-section-header">
-              <div>
-                <div className="panel-title">Monitoring</div>
-                <div className="instrument-section-title">
-                  {fundType === 'private_fund' ? 'Operational Data Contract' : 'Fund Reference Profile'}
-                </div>
-              </div>
-              <span className="muted">Provider: {bundle.reference?.provider || 'unconfigured'}</span>
-            </div>
-            <div className="instrument-monitoring-facts-grid">
-              {fundSourceFacts.map((fact) => (
-                <div key={fact.label} className="instrument-monitoring-fact">
-                  <span>{fact.label}</span>
-                  <strong>{String(fact.value || '—')}</strong>
-                </div>
-              ))}
-            </div>
-            {bundle.reference && Object.keys(bundle.reference.section_errors).length ? (
-              <div className="instrument-corporate-action-warning">
-                {Object.values(bundle.reference.section_errors).join(' ')}
-              </div>
-            ) : null}
-          </section>
+        <section className="fund-disclosure-record">
+          <div className="fund-archive-facts">
+            {fundSourceFacts.map((fact) => <div key={fact.label}><span>{fact.label}</span><strong>{String(fact.value || '—')}</strong></div>)}
+            <div><span>{language === 'zh-Hans' ? '净值截至' : 'NAV as of'}</span><strong>{formatDate(latestNavRecord?.as_of_date || null)}</strong></div>
+            <div><span>{language === 'zh-Hans' ? '持仓披露截至' : 'Holdings as of'}</span><strong>{formatDate(holdings.snapshot_metadata?.as_of_date || portfolio.snapshot_metadata?.as_of_date || null)}</strong></div>
+            <div><span>{language === 'zh-Hans' ? '业绩数据截至' : 'Performance as of'}</span><strong>{formatDate(performance.snapshot_metadata?.as_of_date || null)}</strong></div>
+            <div><span>{language === 'zh-Hans' ? '风险数据截至' : 'Risk as of'}</span><strong>{formatDate(risk.snapshot_metadata?.as_of_date || null)}</strong></div>
+          </div>
+          {summary.freshness.staleness_reason && <p role="status">{summary.freshness.staleness_reason}</p>}
+          {navRefreshStatus?.message && <p>{navRefreshStatus.message}</p>}
+          {bundle.reference && Object.keys(bundle.reference.section_errors).length > 0 && <p>{Object.values(bundle.reference.section_errors).join(' ')}</p>}
+        </section>
+          </div>
+        </details>
         </section>
       ) : null}
+
+      {activeTab === 'research' ? (
+        <InvestmentOpinionTimeline
+          instrumentId={fundId}
+          research={research}
+          language={language}
+          requestedNoteDate={requestedResearchNoteDate}
+          onRequestedNoteHandled={() => setRequestedResearchNoteDate(null)}
+          onOpenNote={focusTimelineNoteInQuote}
+          onChange={(nextResearch) => setBundle((current) => current ? { ...current, research: nextResearch } : current)}
+        />
+      ) : null}
+
+      {activeTab === 'events' ? <SectorResearchPanel instrumentId={fundId} onAskAssistant={openAssistant} /> : null}
 
     </div>
   )

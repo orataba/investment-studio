@@ -40,11 +40,11 @@ export VITE_HOME_URL=https://yunguyungu.com
 export VITE_WATCHLIST_URL=https://watchlist.yunguyungu.com
 export VITE_PORTFOLIO_URL=https://portfolio.yunguyungu.com
 npm --prefix home/frontend ci
-npm --prefix home/frontend run build
+npm --prefix home/frontend run build -- --manifest
 npm --prefix apps/watchlist/frontend ci
-npm --prefix apps/watchlist/frontend run build
+npm --prefix apps/watchlist/frontend run build -- --manifest
 npm --prefix apps/portfolio/frontend ci
-npm --prefix apps/portfolio/frontend run build
+npm --prefix apps/portfolio/frontend run build -- --manifest
 install -d deploy/regime-ui
 cp apps/regime/app/multi_market_regime_dashboard/static/* deploy/regime-ui/
 ```
@@ -56,6 +56,14 @@ Regime service. This allows UI-only releases without modifying the verified
 Regime package or its data. Include `deploy/regime-ui` alongside the three `dist`
 directories when publishing frontends, and reload Nginx after `nginx -t` when
 its configuration changes. Keep the previous UI assets for rollback.
+
+Before switching a Studio release, retain the preceding build's hashed assets
+in the new `dist/assets` without overwriting new files. An already-open page may
+request its previous version's lazy-loaded chunks after the switch. Use the
+preceding build's `dist/.vite/manifest.json` (`file`, `css`, and `assets` entries)
+to copy only that build's files; leave the new manifest unchanged so the next
+deployment does not accumulate every historical build. HTML always comes from
+the new release. Do not replace this with frontend exception retries.
 
 Reproduce the locked Python environment (including test tooling):
 
@@ -191,9 +199,21 @@ INVESTMENT_STUDIO_HOME_APP_URLS={"watchlist":"https://watchlist.yunguyungu.com",
 
 Keep `yunguyungu.com` as the login and application portal. Create three `A`
 records named `watchlist`, `portfolio`, and `regime`, all pointing to
-the server IPv4 address. The TLS certificate at
-`/etc/letsencrypt/live/yunguyungu.com/` must include the root domain and all
-three subdomains. The homepage cards and cross-app deep links use only these
+the server IPv4 address. Point `www` to the same server; HTTPS `www` redirects
+to the canonical root domain with its path and query preserved.
+
+The root and `www` use the operator-supplied certificate chain and matching
+private key at `/etc/nginx/certificates/www.yunguyungu.com/fullchain.pem` and
+`privkey.pem`. Install the supplied `.pem` as `fullchain.pem` and `.key` as
+`privkey.pem`; keep the directory root-owned `0700` and the private key `0600`.
+Verify the certificate's SAN includes both names and its public key matches the
+private key before `nginx -t` and reload. This certificate is renewed through
+its issuer and replaced here before expiry; Certbot does not renew this pair.
+
+The three application subdomains use the independently renewed certificate at
+`/etc/letsencrypt/live/yunguyungu.com/`. It must include all three subdomains;
+the supplied root/`www` certificate cannot be used for those hosts.
+The homepage cards and cross-app deep links use only these
 production hosts. There is no application selector on the IP address and no
 separate Basic authentication prompt for the apps.
 

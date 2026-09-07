@@ -6,24 +6,27 @@ Portfolio 承载组合、账户、交易、账本、持仓、绩效、风险、t
 
 当前交易主路径支持：
 
-- Registry 中的股票、ETF、公募和私募基金；
+- Registry 中的股票、ETF、公募和私募基金；股票/ETF 另支持明确记录的卖空、买回与期初空头；
 - Portfolio-local FCN 与 Option 合约及其已确认生命周期事件；
 - Cash、费用、税、利息、换汇和账户内转移；
 - Preview/Commit、CSV/Excel 和截图助手共用的交易 command contract。
 
-Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。普通证券卖空、直接债券、融资、PE/VC capital call、基金份额转换、衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks、FCN 自动 barrier 判定和期权自动行权不在当前支持范围。
+Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。基金卖空、直接债券、券商授信与购买力计算、PE/VC capital call、基金份额转换、空头证券及衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks、FCN 自动 barrier 判定和期权自动行权不在当前支持范围。实际融资借还和抵押释放可通过明确现金用途的账户与内部划转记录。
 
 关键运行约束：
 
 - FCN 和 Option 是 Portfolio-local immutable contracts；只有 underlying/deliverable 证券引用 Registry；
 - Portfolio 的 reporting/base currency 在组合 Settings 管理；切换后交易事实币种不变，所有旧口径派生快照失效并全量重算；
-- 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 实物交付尚未支持，不能用虚构现金兑付及独立买股替代；
+- 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 实物交付在同一兑付记录保存实际证券、确认价值、现金尾差及必要的汇率，不能用虚构现金兑付及独立买股替代；
 - 已有期权空头使用 `opening_written` 导入期初账面负债，不重复记录历史权利金现金；FCN 敲入观察使用 `knock_in_observation`，不提前清仓；
 - 账户出现资产交易后不允许切换成本法并重述历史。Option 的交割方式、行权风格以及 FCN 观察条款按已确认合约保存；未知条款明确保留为未确认；
 - 交易的 trade、position-effective、entitlement、settlement 和 snapshot 时钟不能互相替代；
 - 所有写路径先保存 canonical facts，再标记最早受影响日期并重建派生读模型；
 - daily snapshot 重算的外部入口只写 durable calculation state 并返回 `202`；单线程 worker 合并 generation、保留最早 `dirty_from`，发布前复核 source generation；
-- 组合 summary、Overview 和默认 Holdings 共享同一 fresh-complete snapshot 选择规则；
+- 依赖快照的金融 GET 不在请求内重算；未就绪时返回 `503 portfolio_calculation_pending` 与 `Retry-After`，前端合并相同请求并有界等待。交易事实明细不受此等待或估值截止日限制；显式 Research 计算及离线刷新仍可调用现有计算内核；
+- Performance 区间计算读取每日核算发布的边界批次、估值、汇率及区间内事件，保留批次原始取得顺序和内部转仓来源；切换日期无需重载证券/汇率完整历史或重建账本。分组风险读取历史有效性摘要与所需窗口的报价日期，保留原报价优先级及缺口判定。新读模型与每日快照共用计算版本和来源失效机制，不依赖已访问过的日期缓存；
+- Holdings 的分析结果和 summary 共用的风险频率按快照来源版本缓存；日期、风险政策、分析分类版本参与缓存键。计算中来源发生变化的结果不缓存，金融响应发布前再次核对来源；实时任务和衍生品观察在缓存外读取。展示图表裁剪不裁剪收益率、回撤或波动率计算历史；
+- 组合 summary、Overview 和默认 Holdings 共享同一 fresh-complete snapshot 选择规则；来源日历确认的休市可沿用前一有效点，预期行情或必要 FX 缺失则在首个缺口停止，补齐并重算前不从后续日期重新起算；
 - Taxonomy/TargetSet 是 planning truth，Research 消费它们，不建立第二套目标体系；
 - Portfolio taxonomy 与 Watchlist taxonomy 的节点、assignment 和版本完全独立，同名不代表关联；
 - 条件不足的收益、风险和研究结果明确 unavailable，不用旧算法、等权或不完整样本兜底。
@@ -81,6 +84,8 @@ npm --prefix apps/portfolio/frontend run dev -- --host 127.0.0.1 --port 5174
 ```
 
 前端默认把 `/api` 代理到 `http://127.0.0.1:8001`。真实数据库迁移必须使用根目录统一入口；不要单独升级 Portfolio Alembic chain。重建空 schema 后不会自动生成 demo portfolio，需通过 UI/API 显式创建或使用受控导入脚本。
+
+Performance 手动编辑起止日期后，点击“应用区间”或按 Enter 才提交完整区间；预设区间、最新日期和重置仍立即应用。可靠日期边界继续由后端返回的有效区间决定。前端仅对带 `portfolio_calculation_pending` 的 GET 按 `Retry-After` 重试，同一路径的在途请求共用等待，最多等待 120 秒后提示稍后刷新；计算失败、普通 `503` 和写请求不自动重试。
 
 ## 验证
 

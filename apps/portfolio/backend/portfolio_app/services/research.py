@@ -24,6 +24,10 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.daily_snapshots import (
+    _run_portfolio_daily_snapshot_recalculation_synchronously,
+    ensure_portfolio_daily_snapshots,
+)
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
@@ -2037,6 +2041,10 @@ def run_portfolio_research(
         return None
 
     latest_portfolio_as_of_date = _default_as_of_date(portfolio)
+    # This POST explicitly requests a calculation. Finish its snapshot inputs
+    # before creating the research run; financial GETs only queue this work.
+    _run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
+    ensure_portfolio_daily_snapshots(portfolio_id)
     taxonomy_name_map = _taxonomy_name_map(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:

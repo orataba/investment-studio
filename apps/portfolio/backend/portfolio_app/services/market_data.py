@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from functools import lru_cache
 from math import isfinite
-from typing import Iterable
+from typing import Callable, Iterable
+
+import exchange_calendars
+from exchange_calendars.errors import CalendarError
 
 from investment_studio_instrument_core import (
     FUND_INSTRUMENT_TYPES,
@@ -12,11 +16,144 @@ from investment_studio_instrument_core import (
     canonical_price_contract,
     confirmed_total_return_quote_bases,
 )
+from portfolio_app.services.asset_deliveries import expand_asset_deliveries
+from portfolio_app.services.transaction_dates import transaction_position_effective_date
 
 
 USABLE_MARKET_DATA_STATUS = "complete"
 
 SUPPORTED_PRIMARY_QUOTE_BASES = frozenset(QUOTE_BASIS_METRIC_FAMILY)
+
+
+@lru_cache(maxsize=256)
+def market_calendar_sessions(
+    calendar_name: str, start_date: date, end_date: date,
+) -> tuple[date, ...] | None:
+    try:
+        # The registry uses Shenzhen's MIC. exchange_calendars publishes the
+        # common mainland exchange session schedule under XSHG only.
+        if calendar_name == "XSHE":
+            calendar_name = "XSHG"
+        calendar = exchange_calendars.get_calendar(calendar_name)
+        return tuple(session.date() for session in calendar.sessions_in_range(
+            start_date.isoformat(), end_date.isoformat(),
+        ))
+    except (CalendarError, ValueError):
+        return None
+
+
+def quote_is_stale(
+    detail: dict[str, object], *, point_date: date, as_of_date: date,
+) -> bool:
+    """Carry a close only across confirmed non-session days, never missing prices."""
+    # Point readers use date.max to request the latest available observation,
+    # without a valuation date against which freshness could be assessed.
+    if as_of_date == date.max or point_date >= as_of_date:
+        return False
+    settings = detail.get("source_settings")
+    calendar_name = str(
+        (settings.get("market_calendar") if isinstance(settings, dict) else None)
+        or detail.get("exchange_code") or ""
+    ).strip()
+    if not calendar_name:
+        return True
+    sessions = market_calendar_sessions(calendar_name, point_date + timedelta(days=1), as_of_date)
+    return sessions is None or bool(sessions)
+
+
+def bind_initial_purchase_valuations(
+    transactions: list[dict[str, object]],
+    detail_cache: dict[str, dict[str, object] | None],
+    *,
+    instrument_detail_loader: Callable[[str], dict[str, object] | None],
+) -> None:
+    """Bind portfolio transaction evidence to request-local valuation details.
+
+    This never adds a quote to market_data. Only the instrument's first
+    position-effective date can establish this basis; later additions cannot
+    price an already-held position. Multiple initial buys use gross/quantity,
+    excluding charges, and share one price across accounts and cost lots.
+    """
+    entries: dict[str, list[tuple[date, dict[str, object]]]] = {}
+    for transaction in expand_asset_deliveries(transactions):
+        instrument_id = str(transaction.get("instrument_id") or "")
+        effective_date = transaction_position_effective_date(transaction)
+        if not instrument_id or effective_date is None:
+            continue
+        entries.setdefault(instrument_id, []).append((effective_date, transaction))
+    for instrument_id, facts in entries.items():
+        first_date = min(day for day, _ in facts)
+        initial_facts = [fact for day, fact in facts if day == first_date]
+        if any(
+            fact.get("transaction_type") != "buy"
+            or fact.get("_short_source_type") or fact.get("noncash_delivery")
+            for fact in initial_facts
+        ):
+            continue
+        quantity = sum(float(fact.get("quantity") or 0) for fact in initial_facts)
+        gross = sum(float(fact.get("gross_amount") or 0) for fact in initial_facts)
+        if quantity <= 0 or gross <= 0:
+            continue
+        if instrument_id not in detail_cache:
+            detail_cache[instrument_id] = instrument_detail_loader(instrument_id)
+        detail = detail_cache[instrument_id]
+        if not isinstance(detail, dict):
+            continue
+        purchase_point = {
+            "_portfolio_id": str(initial_facts[0].get("portfolio_id") or ""),
+            "as_of_date": first_date,
+            "value": gross / quantity,
+            "currency": initial_facts[0].get("currency"),
+            "price_unit": "per_unit",
+            "price_scale": 1.0,
+            "status": "transaction-price",
+            "provider": "portfolio_transactions",
+            "valuation_source_transaction_ids": sorted(
+                str(fact["transaction_id"]) for fact in initial_facts
+            ),
+            "stale": False,
+        }
+        if detail.get("_initial_purchase_valuation") != purchase_point:
+            detail_cache[instrument_id] = {
+                **detail, "_initial_purchase_valuation": purchase_point,
+            }
+
+
+def initial_purchase_valuation_point(
+    detail: dict[str, object],
+    *,
+    market_point: dict[str, object] | None,
+    as_of_date: date,
+    candidate_bases: Iterable[str],
+) -> dict[str, object] | None:
+    if market_point is not None and not market_point.get("stale"):
+        return market_point
+    purchase_point = detail.get("_initial_purchase_valuation")
+    if not isinstance(purchase_point, dict) or as_of_date == date.max:
+        return market_point
+    purchase_date = purchase_point["as_of_date"]
+    if as_of_date < purchase_date or quote_is_stale(
+        detail, point_date=purchase_date, as_of_date=as_of_date,
+    ):
+        return market_point
+    # Missing observations permit the transaction basis; malformed or
+    # ambiguous official series must retain their explicit failure.
+    if market_point is None and resolve_quote_series(
+        detail, candidate_bases=candidate_bases, end_date=as_of_date,
+    ).unavailable_reason != "quote_series_unavailable":
+        return None
+    # Physical option stock legs are persisted as buys at strike. Only their
+    # explicit delivery links distinguish them from ordinary cash purchases.
+    # Consult those links only when a transaction valuation would be used.
+    from portfolio_app.services.portfolio_store import list_option_delivery_links
+
+    purchase_ids = set(purchase_point["valuation_source_transaction_ids"])
+    if any(
+        str(link["stock_transaction_id"]) in purchase_ids
+        for link in list_option_delivery_links(purchase_point["_portfolio_id"])
+    ):
+        return market_point
+    return {key: value for key, value in purchase_point.items() if key != "_portfolio_id"}
 
 
 @dataclass(frozen=True)
@@ -313,7 +450,9 @@ def resolve_quote_point(
         return QuotePointResolution(unavailable_reason=series.unavailable_reason)
     point = dict(series.points[-1])
     point_date = _parse_iso_date(point.get("as_of_date"))
-    point["stale"] = point_date is not None and point_date < as_of_date
+    point["stale"] = point_date is not None and quote_is_stale(
+        detail, point_date=point_date, as_of_date=as_of_date,
+    )
     return QuotePointResolution(point=point)
 
 

@@ -1863,6 +1863,7 @@ def build_materialized_holding_rows(
             else None
         )
         holding_start_date = parse_iso_date(bucket.get("holding_start_date"))
+        transaction_valued = (price_point or {}).get("status") == "transaction-price"
         quoted_price = safe_float((price_point or {}).get("value"))
         last_price, market_value, event_valued = resolve_position_valuation(
             quantity=quantity,
@@ -1873,7 +1874,7 @@ def build_materialized_holding_rows(
             quoted_price_scale=safe_float((price_point or {}).get("price_scale")),
             position_market_value=position_market_value,
         )
-        if event_valued:
+        if event_valued or transaction_valued:
             # Carrying basis is a useful operational NAV input, but it is not
             # an observed quote.  Never manufacture a zero daily return or a
             # complete quote record for an event-valued asset.
@@ -2025,11 +2026,15 @@ def build_materialized_holding_rows(
                 "carrying_value": market_value if event_valued else None,
                 "carrying_value_base": converted_market_value if event_valued else None,
                 **carrying_fx_metrics,
-                "fair_value": None if event_valued else market_value,
+                "fair_value": None if event_valued or transaction_valued else market_value,
                 "fair_value_coverage_status": (
-                    "unavailable" if event_valued else "complete"
+                    "unavailable" if event_valued else "partial" if transaction_valued else "complete"
                 ),
-                "valuation_basis": "carried_cost" if event_valued else "market_quote",
+                "valuation_basis": (
+                    "carried_cost" if event_valued else "transaction_price"
+                    if transaction_valued else "market_quote"
+                ),
+                "valuation_source_transaction_ids": (price_point or {}).get("valuation_source_transaction_ids", []),
                 "performance_eligible": not event_valued,
                 "risk_eligible": not event_valued,
                 **option_exposure,

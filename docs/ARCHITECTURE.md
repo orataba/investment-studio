@@ -70,8 +70,10 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 直接读取 `instrument_data`
 - 当前已发布范围是 `public_fund / private_fund / etf / equity / index`；其他共享资产可以存在于共享资产数据，但不进入 Watchlist 主工作面
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架
-- 维护研究对话、证据、助手运行快照和标的风险跟进；Portfolio 的标的风险入口读写同一套 Watchlist 风险事项
+- 维护研究对话、标的资料档案、持续研究底稿、原始证据及其日期、助手运行快照和风险跟进；沿用 ResearchTopic / ResearchEntry，PM 观点与自动研究分别保存
+- 每日研究与列表、可访问组合的风控研判复用既有 08:30 worker，单标的风控按需运行；研究助手可读取档案和风控结论，底稿按实际完成逐步积累，不宣称全部登记标的均已深研
 - 研究工具通过显式配置的只读 API 取得 Portfolio 持仓与 Regime 状态；不取得交易写权限，不跨 schema 复制这些事实
+- 美股行业 ETF 研究可显式配置现有 Market Research Database DuckDB 的只读路径；分析输入快照与网页证据保存在 Watchlist 研究记录中，外部 FMP 数据库仍由原项目更新。每日检查与来源时间边界见 [Watchlist README](../apps/watchlist/README.md)。
 
 ### Portfolio
 
@@ -79,7 +81,28 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 直接读取 `instrument_data`
 - 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
 - 在本地维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
-- 标的风险面板经 Watchlist API 读取和更新跟进记录。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败只使标的风险面板不可用
+- 风险面板经 Watchlist API 读取和更新跟进记录及范围内风控研判；研判读取 Portfolio 实际持仓，市值敞口不等于风险贡献。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败不影响账本和绩效计算
+
+### DeepSeek Harness
+
+Harness 只负责模型循环和受限 MCP 工具调用；数据库事实、计算和结果发布仍由所属应用维护。
+
+| 入口 | 所有者与输入 | 允许产生的结果 |
+| --- | --- | --- |
+| 页面研究助手 | Watchlist；页面标的、观察列表或组合必须与对话关联一致 | 对话草稿及引用，不发布研究事件或交易 |
+| 标的研究追踪 | Watchlist；本轮绑定的标的、档案快照及取得的原始证据 | 结构化草稿经独立事实核证后发布底稿和研究事件 |
+| 风控研判 | Watchlist；绑定的研究、价格风险与 Portfolio 只读风险上下文 | 结构化研判及原有 case_id 引用，不写 Portfolio 账本 |
+| 交易截图 Copilot | Portfolio；限定组合和导入批次的证据 | 分析修订和导入预览；交易确认仍由 Portfolio 自己执行 |
+
+Watchlist 的三个入口共用 `research_runner.py` 和对应的 Harness patch；交易截图使用
+Portfolio 自己的 runner、patch 和 MCP。子进程只接收运行所需的显式环境变量，
+没有数据库、行情供应商或交易提交权限。普通对话接口不能修改系统研究档案或风控记录；
+自动研究不能经普通对话工具绕过已绑定的输入。对同一标的的批量和单标研究在入队时
+按标的串行检查，避免并发覆盖底稿与事件。
+
+部署地址与外部运行配置见 [Server Deployment](SERVER_DEPLOYMENT.md)，
+研究材料和任务流程见 [Watchlist README](../apps/watchlist/README.md)，
+截图工具边界见 [Portfolio Copilot Harness](PORTFOLIO_COPILOT_HARNESS.md)。
 
 ## Same-Name Page Boundary
 
@@ -117,6 +140,7 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - notice toast and download-format menu
 - Sparkline and table export
 - InstrumentRiskPanel 的展示和跟进交互；风险事项持久化仍由 Watchlist 所有
+- RiskOfficerPanel 的研判展示与 WorkspaceTools 的页面工具入口；请求和页面范围由各应用提供
 - request identity and serial task helpers
 
 只沉淀已经在多个 app 中稳定复用的基础能力；业务布局、业务表格和领域组件仍留在各自 app。

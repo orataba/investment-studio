@@ -63,7 +63,11 @@ def manage(group: str, action: str) -> None:
                 status = state.group(1) if loaded and state else "stopped"
                 print(f"{service}: {status}", flush=True)
                 continue
-            if action in {"stop", "restart"} and loaded:
+            if action == "restart" and loaded:
+                if service != "market-data-refresh":
+                    run(["launchctl", "kickstart", "-k", target])
+                continue
+            if action == "stop" and loaded:
                 run(["launchctl", "bootout", target])
                 loaded = False
             if action in {"start", "restart"} and not loaded:

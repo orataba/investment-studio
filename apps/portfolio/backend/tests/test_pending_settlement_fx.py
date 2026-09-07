@@ -280,10 +280,14 @@ def test_pending_settlement_fx_fails_closed_when_prior_fx_boundary_is_unavailabl
     )
     end_snapshot = snapshots[-1]
 
-    assert end_snapshot["pending_settlement_currency_gains"] is None
-    assert end_snapshot["total_pnl"] is None
-    assert end_snapshot["book_pnl_coverage_state"] == "partial"
-    assert end_snapshot["attribution_coverage_state"] == "partial"
+    assert len(snapshots) == 1
+    assert end_snapshot["as_of_date"] == date(2026, 1, 1)
+    assert end_snapshot["nav"] is None
+    assert end_snapshot.get("pending_settlement_currency_gains") is None
+    assert end_snapshot.get("total_pnl") is None
+    assert end_snapshot["book_pnl_coverage_state"] == "unavailable"
+    assert end_snapshot["attribution_coverage_state"] == "unavailable"
+    assert "FX HKD/USD" in end_snapshot["valuation_blocked_reason"]
 
     grouped = performance.build_period_calculation_groups_report(
         _portfolio(),
@@ -293,8 +297,7 @@ def test_pending_settlement_fx_fails_closed_when_prior_fx_boundary_is_unavailabl
         end_date=date(2026, 1, 2),
         axis="account",
     )
-    groups_by_key = {str(group["group_key"]): group for group in grouped["groups"]}
-    cash_group = groups_by_key["cash-hkd"]
-    assert cash_group["pending_settlement_currency_gains"] is None
-    assert cash_group["total_pnl"] is None
-    assert cash_group["capital_gains"] is None
+    assert grouped["summary"]["effective_start_date"] is None
+    assert grouped["summary"]["effective_end_date"] is None
+    assert grouped["summary"]["as_of_clamp_reason"] == "required_market_data_missing"
+    assert grouped["groups"] == []

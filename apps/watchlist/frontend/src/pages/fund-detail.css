@@ -1,0 +1,69 @@
+.fund-detail-hero .instrument-detail-headline { width: 100%; max-width: none; }
+.fund-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.fund-detail-title-row > h1 { min-width: 0; overflow-wrap: anywhere; }
+.fund-overview { padding: 8px 0 24px; }
+.fund-overview-snapshot { display: grid; grid-template-columns: 170px 170px minmax(0, 1fr); gap: 28px; padding: 22px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.fund-overview-nav { display: grid; align-content: start; gap: 6px; }
+.fund-overview-nav > span,
+.fund-overview-key-metrics span,
+.fund-overview-date-note,
+.fund-overview-nav small { font-size: 12px; color: var(--muted, #64748b); }
+.fund-overview-nav > strong { font-size: 28px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.fund-overview-nav-secondary > strong { font-size: 22px; }
+.fund-overview-key-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.fund-overview-key-metrics > div { display: flex; flex-direction: column; gap: 9px; }
+.fund-overview-key-metrics strong { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.fund-overview-date-note { margin: 10px 0 0; line-height: 1.6; }
+.fund-overview-section { padding: 24px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.fund-overview-section header,
+.fund-workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.fund-overview-section h2,
+.fund-workspace-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.fund-overview-section time { display: block; margin-top: 20px; font-size: 12px; color: var(--muted, #64748b); }
+.fund-overview-section h3 { margin: 8px 0; font-size: 14px; font-weight: 600; }
+.fund-overview-section p { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
+.fund-overview-destinations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 24px; }
+.fund-overview-destinations > button { display: grid; align-content: start; gap: 9px; padding: 14px 0; border: 0; border-top: 1px solid var(--line-strong, #cbd5e1); border-radius: 0; background: transparent; text-align: left; }
+.fund-overview-destinations strong { font-size: 14px; font-weight: 600; }
+.fund-overview-destinations span { font-size: 12px; line-height: 1.65; color: var(--muted, #64748b); }
+.fund-archive-layout { display: flex; flex-direction: column; gap: 0; }
+.fund-workspace-heading { padding: 18px 0 24px; }
+.fund-workspace-heading p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted, #64748b); }
+.fund-workspace-heading button { flex-shrink: 0; }
+.fund-archive-group { border-top: 1px solid var(--line-strong, #cbd5e1); }
+.fund-archive-group > summary { padding: 18px 0; font-size: 15px; font-weight: 600; cursor: pointer; }
+.fund-archive-group-body { padding: 0 0 24px; }
+.fund-archive-group-body > .panel,
+.fund-archive-group-body > .instrument-edit-surface { margin-top: 0; border-top: 0; }
+.fund-archive-group-body .instrument-price-topline { display: none; }
+.fund-archive-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding: 12px 0; }
+.fund-archive-facts > div { display: grid; gap: 7px; }
+.fund-archive-facts span { color: var(--muted, #64748b); font-size: 12px; }
+.fund-archive-facts strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.fund-disclosure-record > p { font-size: 13px; color: var(--muted, #64748b); line-height: 1.6; }
+.fund-archive-public_fund #fund-archive-exposure { order: 1; }
+.fund-archive-public_fund #fund-archive-people { order: 2; }
+.fund-archive-public_fund #fund-archive-strategy { order: 3; }
+.fund-archive-public_fund #fund-archive-price { order: 4; }
+.fund-archive-private_fund #fund-archive-strategy { order: 1; }
+.fund-archive-private_fund #fund-archive-price { order: 2; }
+.fund-archive-private_fund #fund-archive-people { order: 3; }
+.fund-archive-private_fund #fund-archive-exposure { order: 4; }
+.fund-archive-layout #fund-archive-documents { order: 5; }
+.fund-archive-layout #fund-archive-monitoring { order: 6; }
+.investment-opinion-date > button { padding: 0; border: 0; background: transparent; color: inherit; font-size: 11px; text-align: left; }
+
+@media (max-width: 900px) {
+  .fund-overview-snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fund-overview-key-metrics { grid-column: 1 / -1; }
+  .fund-archive-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .fund-detail-title-row { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .fund-detail-title-row > .workspace-context-tools { align-self: flex-end; }
+  .fund-overview-snapshot { gap: 20px; }
+  .fund-overview-key-metrics { gap: 12px; }
+  .fund-overview-key-metrics strong { font-size: 17px; }
+  .fund-overview-destinations { grid-template-columns: 1fr; gap: 8px; }
+  .fund-workspace-heading { align-items: flex-start; flex-direction: column; gap: 14px; }
+}

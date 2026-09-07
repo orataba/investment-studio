@@ -1,0 +1,50 @@
+.listed-overview-quote { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.listed-risk-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.listed-overview-brief { border-top: 1px solid var(--line-strong); }
+.listed-overview-brief-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 16px 0; }
+.listed-overview-brief-row + .listed-overview-brief-row { border-top: 1px solid var(--line); }
+.listed-overview-brief-row > div { min-width: 0; }
+.listed-overview-brief-row h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.listed-overview-brief-row time { color: var(--muted); font-size: 11px; }
+.listed-overview-brief-row p { margin: 6px 0 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.listed-overview-brief-row > button { flex-shrink: 0; font-size: 12px; }
+.listed-drawdown-line { stroke: #a63b32; stroke-width: 2; }
+.listed-etf-profile { padding: 16px 20px; }
+.listed-etf-profile-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.listed-etf-profile h3, .listed-etf-profile h4 { margin: 0; font-size: 14px; }
+.listed-etf-profile-heading a { color: var(--accent); font-size: 12px; }
+.listed-etf-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; margin: 18px 0; }
+.listed-etf-facts dt { color: var(--muted); font-size: 11px; }
+.listed-etf-facts dd { margin: 7px 0 0; font-size: 13px; }
+.listed-etf-source { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.listed-etf-details { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.listed-etf-details summary { cursor: pointer; color: var(--accent); }
+.listed-etf-details > p { white-space: pre-wrap; line-height: 1.7; }
+.listed-etf-holdings { max-height: 350px; overflow: auto; }
+.listed-etf-holdings th { position: sticky; top: 0; background: #fff; }
+.listed-etf-exposures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 20px; }
+.listed-etf-exposures dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.listed-etf-exposures dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) {
+  .listed-etf-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .listed-etf-exposures { grid-template-columns: 1fr; }
+  .listed-overview-quote, .listed-risk-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .listed-overview-brief-row { gap: 12px; }
+}
+
+.listed-index-performance-shell .instrument-performance-section-monthly .table-shell { max-height: 380px; overflow: auto; }
+.listed-index-performance-shell .instrument-heatmap-table thead { position: sticky; top: 0; background: #fff; z-index: 1; }
+.listed-estimate-history { padding: 16px 20px; font-size: 13px; line-height: 1.6; }
+.listed-estimate-history > summary { cursor: pointer; font-weight: 600; }
+.listed-estimate-history p { color: var(--muted, #64748b); }
+.listed-estimate-table { max-height: 320px; overflow: auto; }
+.listed-estimate-table table { width: 100%; border-collapse: collapse; }
+.listed-estimate-table th, .listed-estimate-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line, #e2e8f0); }
+.listed-estimate-table th { position: sticky; top: 0; background: white; }
+.listed-detail-hero .listed-hero-heading { flex: 1; min-width: 0; }
+.listed-hero-side { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; flex: 0 0 auto; }
+@media (max-width: 780px) {
+  .listed-detail-page .listed-detail-hero { display: flex; flex-direction: column; }
+  .listed-hero-side { width: 100%; flex-direction: row-reverse; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+  .listed-hero-side .listed-hero-quote { text-align: left; }
+}

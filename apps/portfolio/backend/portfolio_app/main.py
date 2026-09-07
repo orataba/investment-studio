@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from portfolio_app.api.router import api_router
 from portfolio_app.core.settings import get_settings
@@ -10,6 +10,7 @@ from portfolio_app.services.daily_snapshot_worker import (
     start_daily_snapshot_recalculation_worker,
     stop_daily_snapshot_recalculation_worker,
 )
+from portfolio_app.services.daily_snapshots import PortfolioCalculationUnavailable
 
 settings = get_settings()
 
@@ -39,12 +40,29 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.exception_handler(PortfolioCalculationUnavailable)
+async def portfolio_calculation_unavailable(_request, error: PortfolioCalculationUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": {
+                "code": error.code,
+                "portfolio_id": error.portfolio_id,
+                "status": error.status,
+                "message": str(error),
+            }
+        },
+        headers={"Retry-After": str(error.retry_after)} if error.retry_after is not None else None,
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 app.include_router(api_router, prefix="/api")

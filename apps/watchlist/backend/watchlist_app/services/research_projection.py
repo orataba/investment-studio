@@ -65,6 +65,8 @@ def build_research_watchlist_attribute_overrides(
         if follow_up_dates:
             values["research_next_follow_up_date"] = min(follow_up_dates)
     for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
+        if case.status == "handled" or (case.evidence_json or {}).get("direction") == "opportunity":
+            continue
         values = overrides[case.instrument_id]
         if case.severity == "attention":
             values["risk_attention"] = "attention"

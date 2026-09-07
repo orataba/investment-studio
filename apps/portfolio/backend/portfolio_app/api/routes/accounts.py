@@ -218,7 +218,7 @@ def get_accounts_workspace(
         else None
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
-    transactions = list_transactions(portfolio_id, end_date=resolved_as_of_date)
+    transactions = list_transactions(portfolio_id)
     try:
         workspace = build_account_workspace(
             portfolio_id,

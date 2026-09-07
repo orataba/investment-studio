@@ -52,6 +52,7 @@ import {
   normalizePerformanceWindowSelection,
   PERFORMANCE_PERIOD_PRESETS,
   performancePresetStartDate,
+  performanceWindowError,
   resolvePerformanceWindow,
   shiftIsoDate,
   validIsoDate,
@@ -73,6 +74,7 @@ type CalculationGroupChildRow = CalculationGroupRow['children'][number]
 type CalculationDisplayRow = CalculationGroupRow | CalculationGroupChildRow
 
 type PerformanceMetricRow = {
+  section: 'Return' | 'Risk' | 'Relative'
   metric: string
   value: string
   reliabilityNote?: string
@@ -96,7 +98,6 @@ type BenchmarkPeriodMetrics = {
   annualizedDownsideVolatility: number | null
   sharpe: number | null
   sortino: number | null
-  calmar: number | null
   currentDrawdown: number | null
   maxDrawdown: number | null
   dailyReturns: DatedReturn[]
@@ -174,6 +175,7 @@ type CalculationSyntheticRowKind =
   | 'withdrawals'
   | 'portfolio_total'
   | 'contribution_residual'
+  | 'twr_linking_difference'
   | 'risk_contribution_residual'
 
 type CalculationTableRow =
@@ -289,7 +291,7 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   fx_pnl: 'Position & Cash FX',
   pending_settlement_fx: 'Pending Settlement FX',
   period_return: 'Period Return',
-  return_contribution: 'Return Contribution',
+  return_contribution: 'Arithmetic Return Contribution',
   own_vol: 'Vol',
   own_sharpe: 'Sharpe',
   own_corr: 'Corr to Portfolio',
@@ -299,6 +301,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 }
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
+  return_contribution:
+    'Sum of daily return contributions. The TWR linking difference reconciles this arithmetic sum to the geometrically linked period TWR.',
   fx_pnl:
     'Daily path attribution from currency translation on positions and settled cash; this is not an accounting realized/unrealized classification.',
   pending_settlement_fx:
@@ -424,6 +428,9 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return '—'
   }
   const absolute = formatPercent(Math.abs(value), digits)
+  if (Number((value * 100).toFixed(digits)) === 0) {
+    return absolute
+  }
   if (value > 0) {
     return `+${absolute}`
   }
@@ -780,45 +787,29 @@ function sampleStddev(values: number[]) {
 }
 
 function dayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
+  const leftTime = Date.parse(`${left}T00:00:00Z`)
+  const rightTime = Date.parse(`${right}T00:00:00Z`)
   if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
     return null
   }
   return Math.max(0, (rightTime - leftTime) / 86_400_000)
 }
 
-function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {
-  const sortedDates = [...dateKeys].sort()
-  if (observationCount < 1 || sortedDates.length < 2) {
-    return null
-  }
-  if (startDate) {
-    const elapsedDays = dayDiff(startDate, sortedDates[sortedDates.length - 1])
-    return elapsedDays != null && elapsedDays > 0 ? (observationCount / elapsedDays) * DAYS_PER_YEAR : null
-  }
-  const elapsedDays = dayDiff(sortedDates[0], sortedDates[sortedDates.length - 1])
-  if (elapsedDays == null) {
-    return null
-  }
-  const gaps = sortedDates
-    .slice(1)
-    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
-    .filter((value): value is number => value != null && value > 0)
-    .sort((left, right) => left - right)
-  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
-  const observationSpanDays = elapsedDays + medianGap
-  return observationSpanDays > 0 ? (observationCount / observationSpanDays) * DAYS_PER_YEAR : null
+function annualizationPeriodsPerYear(observationCount: number, startDate: string, endDate: string) {
+  const elapsedDays = dayDiff(startDate, endDate)
+  return observationCount > 0 && elapsedDays != null && elapsedDays > 0
+    ? (observationCount / elapsedDays) * DAYS_PER_YEAR
+    : null
 }
 
-function annualizedVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
+function annualizedVolatility(values: number[], startDate: string, endDate: string) {
   const stddev = sampleStddev(values)
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+  const periodsPerYear = annualizationPeriodsPerYear(values.length, startDate, endDate)
   return stddev == null || periodsPerYear == null ? null : stddev * Math.sqrt(periodsPerYear)
 }
 
-function annualizedDownsideVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+function annualizedDownsideVolatility(values: number[], startDate: string, endDate: string) {
+  const periodsPerYear = annualizationPeriodsPerYear(values.length, startDate, endDate)
   if (!values.length || periodsPerYear == null) {
     return null
   }
@@ -829,8 +820,8 @@ function annualizedDownsideVolatility(values: number[], dateKeys: string[] = [],
   return Math.sqrt(downsideSquares.reduce((total, value) => total + value, 0) / values.length) * Math.sqrt(periodsPerYear)
 }
 
-function annualizedMeanReturn(values: number[], dateKeys: string[], startDate?: string | null) {
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+function annualizedMeanReturn(values: number[], startDate: string, endDate: string) {
+  const periodsPerYear = annualizationPeriodsPerYear(values.length, startDate, endDate)
   if (!values.length || periodsPerYear == null) {
     return null
   }
@@ -850,6 +841,31 @@ function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: nu
   return finiteReturn != null && finiteDrawdown != null && finiteDrawdown < 0
     ? finiteReturn / Math.abs(finiteDrawdown)
     : null
+}
+
+function actualYearFraction(startDate: string, endDate: string) {
+  if (!validIsoDate(startDate) || !validIsoDate(endDate) || endDate < startDate) {
+    return null
+  }
+  const [year, month, day] = startDate.split('-').map(Number)
+  const anniversary = (years: number) => {
+    const targetYear = year + years
+    const anniversaryDay = Math.min(day, new Date(Date.UTC(targetYear, month, 0)).getUTCDate())
+    return `${targetYear}-${String(month).padStart(2, '0')}-${String(anniversaryDay).padStart(2, '0')}`
+  }
+  let wholeYears = Number(endDate.slice(0, 4)) - year
+  if (anniversary(wholeYears) > endDate) {
+    wholeYears -= 1
+  }
+  const currentAnniversary = anniversary(wholeYears)
+  // Match the ledger's anniversary Actual/Actual convention, including
+  // February 29 anniversaries and the actual length of a remaining stub.
+  return wholeYears + dayDiff(currentAnniversary, endDate)! / dayDiff(currentAnniversary, anniversary(wholeYears + 1))!
+}
+
+function performanceStartBoundary(summary: PortfolioPerformanceSummary) {
+  const startDate = summary.effective_start_date ?? summary.start_date ?? ''
+  return summary.include_start_date_return ? shiftIsoDate(startDate, -1) : startDate
 }
 
 function latestBenchmarkPointOnOrBefore(
@@ -891,9 +907,9 @@ export function eligiblePortfolioReturnDates(
 function benchmarkAlignedDailyReturns(
   points: PortfolioInstrumentPriceChartPoint[],
   portfolioDailySeries: PortfolioDailyPerformancePoint[],
-  startBoundaryDate: string,
   startDate: string,
   endDate: string,
+  marketSessionDates: string[] | null,
 ) {
   if (!portfolioDailySeries.length) {
     const returns: Array<{ date: string; value: number }> = []
@@ -910,15 +926,18 @@ function benchmarkAlignedDailyReturns(
 
   const eligiblePortfolioDates = eligiblePortfolioReturnDates(portfolioDailySeries, startDate, endDate)
   const benchmarkByDate = benchmarkPointByDate(points)
-  if (!eligiblePortfolioDates.length || eligiblePortfolioDates.some((dateKey) => !benchmarkByDate.has(dateKey))) {
+  const marketSessions = marketSessionDates == null ? null : new Set(marketSessionDates)
+  if (eligiblePortfolioDates.some((dateKey) =>
+    !benchmarkByDate.has(dateKey) && (marketSessions == null || marketSessions.has(dateKey)))) {
     return null
   }
 
   const dailyReturns: Array<{ date: string; value: number }> = []
-  let previousBenchmarkPoint = latestBenchmarkPointOnOrBefore(points, startBoundaryDate)
-
   for (const dateKey of eligiblePortfolioDates) {
-    const currentBenchmarkPoint = benchmarkByDate.get(dateKey)
+    const currentBenchmarkPoint = benchmarkByDate.get(dateKey) ?? latestBenchmarkPointOnOrBefore(points, dateKey)
+    // A portfolio daily return measures the preceding calendar close to this
+    // close, even after an excluded observation. Do not bridge a missing day.
+    const previousBenchmarkPoint = latestBenchmarkPointOnOrBefore(points, shiftIsoDate(dateKey, -1))
     if (!currentBenchmarkPoint || !previousBenchmarkPoint || previousBenchmarkPoint.value === 0) {
       return null
     }
@@ -926,7 +945,6 @@ function benchmarkAlignedDailyReturns(
       date: dateKey,
       value: currentBenchmarkPoint.value / previousBenchmarkPoint.value - 1,
     })
-    previousBenchmarkPoint = currentBenchmarkPoint
   }
 
   return dailyReturns
@@ -937,12 +955,9 @@ export function buildBenchmarkPeriodMetrics(
   startDate: string,
   endDate: string,
   portfolioDailySeries: PortfolioDailyPerformancePoint[] = [],
+  includesStartDateReturn = false,
+  marketSessionDates: string[] | null = null,
 ): BenchmarkPeriodMetrics | null {
-  const includesStartDateReturn = eligiblePortfolioReturnDates(
-    portfolioDailySeries,
-    startDate,
-    endDate,
-  ).includes(startDate)
   const startBoundaryDate = includesStartDateReturn
     ? shiftIsoDate(startDate, -1)
     : startDate
@@ -951,7 +966,8 @@ export function buildBenchmarkPeriodMetrics(
     .slice()
     .sort((left, right) => left.date.localeCompare(right.date))
   const startAnchorPoint = latestBenchmarkPointOnOrBefore(sortedPoints, startBoundaryDate)
-  if (!startAnchorPoint) {
+  const endAnchorPoint = latestBenchmarkPointOnOrBefore(sortedPoints, endDate)
+  if (!startAnchorPoint || !endAnchorPoint || startAnchorPoint.value === 0) {
     return null
   }
   const periodPoints = sortedPoints.filter((point) => point.date >= startAnchorPoint.date && point.date <= endDate)
@@ -959,26 +975,26 @@ export function buildBenchmarkPeriodMetrics(
   const dailyReturns = benchmarkAlignedDailyReturns(
     periodPoints,
     portfolioDailySeries,
-    startBoundaryDate,
     startDate,
     endDate,
+    marketSessionDates,
   )
-  if (!dailyReturns?.length) {
+  if (dailyReturns == null) {
     return null
   }
 
-  const periodReturn = compoundReturn(dailyReturns.map((point) => point.value))
-  const lastReturnDate = dailyReturns[dailyReturns.length - 1]?.date ?? null
-  const elapsedDays = lastReturnDate ? dayDiff(startBoundaryDate, lastReturnDate) : null
+  // Whole-period comparison includes cash-only dates after the last market
+  // risk observation. Risk sampling below remains a separate calculation.
+  const periodReturn = endAnchorPoint.value / startAnchorPoint.value - 1
+  const elapsedYears = actualYearFraction(startBoundaryDate, endDate)
   const annualizedReturn =
-    periodReturn != null && elapsedDays != null && elapsedDays > 0
-      ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
+    elapsedYears != null && elapsedYears >= 1
+      ? (1 + periodReturn) ** (1 / elapsedYears) - 1
       : null
   const dailyReturnValues = dailyReturns.map((point) => point.value)
-  const dailyReturnDates = dailyReturns.map((point) => point.date)
-  const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
-  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
-  const annualizedMean = annualizedMeanReturn(dailyReturnValues, dailyReturnDates, startBoundaryDate)
+  const annualizedVol = annualizedVolatility(dailyReturnValues, startBoundaryDate, endDate)
+  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, startBoundaryDate, endDate)
+  const annualizedMean = annualizedMeanReturn(dailyReturnValues, startBoundaryDate, endDate)
 
   let highWater = 1
   let benchmarkGrowth = 1
@@ -1007,16 +1023,17 @@ export function buildBenchmarkPeriodMetrics(
       annualizedMean != null && annualizedDownsideVol != null && annualizedDownsideVol !== 0
         ? annualizedMean / annualizedDownsideVol
         : null,
-    calmar: ratioToDrawdown(annualizedReturn, maxDrawdown),
     currentDrawdown,
     maxDrawdown,
     dailyReturns,
   }
 }
 
-function buildRelativePerformanceMetrics(
+export function buildRelativePerformanceMetrics(
   portfolioDailySeries: PortfolioDailyPerformancePoint[],
   benchmarkMetrics: BenchmarkPeriodMetrics | null,
+  startBoundaryDate: string,
+  endDate: string,
 ): RelativePerformanceMetrics | null {
   if (!benchmarkMetrics?.dailyReturns.length) {
     return null
@@ -1036,12 +1053,11 @@ function buildRelativePerformanceMetrics(
     return null
   }
 
-  const dates = pairs.map((point) => point.date)
   const portfolioReturns = pairs.map((point) => point.portfolioReturn)
   const benchmarkReturns = pairs.map((point) => point.benchmarkReturn)
   const activeReturns = pairs.map((point) => point.portfolioReturn - point.benchmarkReturn)
-  const trackingError = annualizedVolatility(activeReturns, dates)
-  const activeAnnualizedMean = annualizedMeanReturn(activeReturns, dates)
+  const trackingError = annualizedVolatility(activeReturns, startBoundaryDate, endDate)
+  const activeAnnualizedMean = annualizedMeanReturn(activeReturns, startBoundaryDate, endDate)
 
   const benchmarkMean = benchmarkReturns.reduce((total, value) => total + value, 0) / benchmarkReturns.length
   const portfolioMean = portfolioReturns.reduce((total, value) => total + value, 0) / portfolioReturns.length
@@ -1118,18 +1134,24 @@ function performanceUnavailableReason(reason: string | null | undefined) {
       return 'No valid XIRR root'
     case 'return_coverage_incomplete':
       return 'Return coverage is incomplete'
+    case 'required_market_data_missing':
+      return 'Required market data is missing; supply prices or FX to continue'
     case 'cash_flow_window_unavailable':
       return 'Cash-flow window is unavailable'
     case 'risk_observation_frequency_unavailable':
       return 'Risk observation frequency is unavailable'
     case 'risk_metric_calculation_unavailable':
       return 'Risk calculation is unavailable'
+    case 'insufficient_return_samples':
+      return 'Insufficient return samples'
+    case 'no_modeled_market_assets':
+      return 'No modeled market assets'
     default:
       return reason ? reason.replace(/_/g, ' ') : null
   }
 }
 
-function buildPerformanceMetricRows(
+export function buildPerformanceMetricRows(
   summary: PortfolioPerformanceSummary,
   dailySeries: PortfolioDailyPerformancePoint[],
   baseCurrency: string,
@@ -1141,12 +1163,19 @@ function buildPerformanceMetricRows(
   const historyReliability = buildPerformanceHistoryReliability(summary)
   const annualizedReturnEligible = historyReliability.annualizedReturnEligible
   const comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null
-  const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, comparableBenchmarkMetrics)
+  const riskAvailable = summary.risk_result_status === 'available'
+  const riskValue = (value: number | null) => riskAvailable ? value : null
+  const startBoundaryDate = performanceStartBoundary(summary)
+  const endDate = summary.effective_end_date ?? summary.end_date ?? ''
+  const relativeMetrics = riskAvailable
+    ? buildRelativePerformanceMetrics(dailySeries, comparableBenchmarkMetrics, startBoundaryDate, endDate)
+    : null
   const showRiskComparison =
+    riskAvailable &&
     relativeComparisonEligible &&
     (selectedBenchmarkInstrument != null || benchmarkLoading)
   const operationalReturn = summary.performance_basis === 'operational_carrying_basis'
-  const showReturnComparison = showRiskComparison && !operationalReturn
+  const showReturnComparison = relativeComparisonEligible && !operationalReturn && summary.return_coverage_state === 'complete'
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
   const fxPnlComponents = [
     summary.cash_currency_gains,
@@ -1156,8 +1185,13 @@ function buildPerformanceMetricRows(
   const totalFxPnl = fxPnlComponents.every((value) => finiteNumber(value) != null)
     ? sumNullable(...fxPnlComponents)
     : null
-  const irrReliabilityNote = !annualizedReturnEligible
+  const annualizationNote = summary.annualization_unavailable_reason === 'measurement_period_shorter_than_one_year'
     ? 'Requires ≥ 1 year'
+    : summary.annualization_unavailable_reason === 'operational_carrying_basis_not_annualized'
+      ? 'Requires complete fair-value valuations'
+      : historyReliability.annualizationMessage ?? undefined
+  const irrReliabilityNote = !annualizedReturnEligible
+    ? annualizationNote
     : irr == null
       ? performanceUnavailableReason(summary.irr_unavailable_reason) ?? 'IRR / MWRR unavailable'
       : undefined
@@ -1167,13 +1201,13 @@ function buildPerformanceMetricRows(
       : summary.risk_unavailable_reason === 'insufficient_return_samples'
         ? `Requires ≥ ${summary.risk_minimum_sample_count} ${summary.risk_calculation_frequency} return samples (${summary.risk_sample_count} available)`
         : performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk metrics unavailable'
-  const calmarRatio =
-    summary.risk_result_status === 'available'
-      ? ratioToDrawdown(
-          summary.annualized_return_from_daily_mean,
-          summary.max_drawdown,
-        )
-      : null
+  const elapsedYears = actualYearFraction(startBoundaryDate, endDate)
+  const calmarAnnualizationEligible = elapsedYears != null && elapsedYears >= 1
+  const annualizedMarketRiskReturn = riskAvailable && calmarAnnualizationEligible &&
+    summary.market_risk_cumulative_return != null
+    ? (1 + summary.market_risk_cumulative_return) ** (1 / elapsedYears) - 1
+    : null
+  const calmarRatio = ratioToDrawdown(annualizedMarketRiskReturn, summary.max_drawdown)
   const returnDifference =
     summary.cumulative_twr != null && comparableBenchmarkMetrics?.periodReturn != null
       ? summary.cumulative_twr - comparableBenchmarkMetrics.periodReturn
@@ -1207,8 +1241,9 @@ function buildPerformanceMetricRows(
       ? summary.max_drawdown - comparableBenchmarkMetrics.maxDrawdown
       : null
 
-  return [
+  const rows: PerformanceMetricRow[] = [
     {
+      section: 'Return',
       metric: summary.performance_label,
       value: signedPercent(summary.cumulative_twr),
       valueClassName: signedValueClass(summary.cumulative_twr),
@@ -1223,10 +1258,11 @@ function buildPerformanceMetricRows(
       showComparison: showReturnComparison,
     },
     {
+      section: 'Return',
       metric: 'Annualized TWR',
       value: annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A',
       valueClassName: annualizedReturnEligible ? signedValueClass(summary.annualized_twr) : 'performance-cell-muted',
-      reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
+      reliabilityNote: annualizedReturnEligible ? undefined : annualizationNote,
       benchmark: annualizedReturnEligible
         ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.annualizedReturn)
         : selectedBenchmarkInstrument
@@ -1246,6 +1282,7 @@ function buildPerformanceMetricRows(
       showComparison: showReturnComparison,
     },
     {
+      section: 'Return',
       metric: 'IRR / MWRR',
       value: annualizedReturnEligible && irr != null ? signedPercent(irr) : 'N/A',
       valueClassName:
@@ -1253,48 +1290,57 @@ function buildPerformanceMetricRows(
       reliabilityNote: irrReliabilityNote,
     },
     {
+      section: 'Return',
       metric: 'Total P&L',
       value: formatSignedCurrency(summary.total_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.total_pnl),
     },
     {
+      section: 'Return',
       metric: 'Total FX Attribution',
       value: formatSignedCurrency(totalFxPnl, baseCurrency),
       valueClassName: signedValueClass(totalFxPnl),
     },
     {
+      section: 'Return',
       metric: 'Market Risk P&L',
       value: formatSignedCurrency(summary.market_risk_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.market_risk_pnl),
     },
     {
+      section: 'Return',
       metric: 'P&L Excluded from Market Risk',
       value: formatSignedCurrency(summary.risk_scope_excluded_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.risk_scope_excluded_pnl),
     },
     {
+      section: 'Return',
       metric: 'Derivative Lifecycle Realized P&L',
       value: formatSignedCurrency(summary.derivative_lifecycle_realized_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.derivative_lifecycle_realized_pnl),
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Return',
-      value: signedPercent(summary.market_risk_cumulative_return),
-      valueClassName: signedValueClass(summary.market_risk_cumulative_return),
+      value: signedPercent(riskValue(summary.market_risk_cumulative_return)),
+      valueClassName: signedValueClass(riskValue(summary.market_risk_cumulative_return)),
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Mean Daily Return',
-      value: signedPercent(summary.mean_daily_return, 3),
-      valueClassName: signedValueClass(summary.mean_daily_return),
+      value: signedPercent(riskValue(summary.mean_daily_return), 3),
+      valueClassName: signedValueClass(riskValue(summary.mean_daily_return)),
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Calmar Ratio',
-      value: formatRatio(calmarRatio),
-      reliabilityNote: riskReliabilityNote,
+      value: calmarRatio == null ? 'N/A' : formatRatio(calmarRatio),
+      reliabilityNote: !calmarAnnualizationEligible ? 'Requires ≥ 1 year' : riskReliabilityNote,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Volatility',
-      value: formatPercent(summary.annualized_volatility),
+      value: formatPercent(riskValue(summary.annualized_volatility)),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
@@ -1308,8 +1354,9 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Downside Volatility',
-      value: formatPercent(summary.annualized_downside_volatility),
+      value: formatPercent(riskValue(summary.annualized_downside_volatility)),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
@@ -1326,8 +1373,9 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Sharpe Ratio',
-      value: formatRatio(summary.sharpe_ratio),
+      value: formatRatio(riskValue(summary.sharpe_ratio)),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sharpe, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
@@ -1335,8 +1383,9 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Sortino Ratio',
-      value: formatRatio(summary.sortino_ratio),
+      value: formatRatio(riskValue(summary.sortino_ratio)),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sortino, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
@@ -1344,9 +1393,10 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Current DD',
-      value: signedPercent(summary.current_drawdown),
-      valueClassName: signedValueClass(summary.current_drawdown),
+      value: signedPercent(riskValue(summary.current_drawdown)),
+      valueClassName: signedValueClass(riskValue(summary.current_drawdown)),
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.currentDrawdown),
       benchmarkClassName: benchmarkMetricClassName(
         selectedBenchmarkInstrument,
@@ -1358,9 +1408,10 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Risk',
       metric: 'Market Risk Max DD',
-      value: signedPercent(summary.max_drawdown),
-      valueClassName: signedValueClass(summary.max_drawdown),
+      value: signedPercent(riskValue(summary.max_drawdown)),
+      valueClassName: signedValueClass(riskValue(summary.max_drawdown)),
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
       benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
@@ -1368,30 +1419,39 @@ function buildPerformanceMetricRows(
       showComparison: showRiskComparison,
     },
     {
+      section: 'Relative',
       metric: 'Tracking Error',
+      reliabilityNote: riskReliabilityNote,
       value: formatPercent(relativeMetrics?.trackingError),
     },
     {
+      section: 'Relative',
       metric: 'Information Ratio',
+      reliabilityNote: riskReliabilityNote,
       value: formatRatio(relativeMetrics?.informationRatio),
     },
     {
+      section: 'Relative',
       metric: 'Beta',
       value: formatRatio(relativeMetrics?.beta),
     },
     {
+      section: 'Relative',
       metric: 'Upside Capture',
       value: formatPercent(relativeMetrics?.upsideCapture == null ? null : relativeMetrics.upsideCapture / 100),
     },
     {
+      section: 'Relative',
       metric: 'Downside Capture',
       value: formatPercent(relativeMetrics?.downsideCapture == null ? null : relativeMetrics.downsideCapture / 100),
     },
     {
+      section: 'Relative',
       metric: 'CAP Ratio',
       value: formatRatio(relativeMetrics?.captureRatio),
     },
-  ] satisfies PerformanceMetricRow[]
+  ]
+  return rows.filter((row) => row.section !== 'Relative' || selectedBenchmarkInstrument != null)
 }
 
 function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; label: string; tone?: 'muted' | 'error' }) {
@@ -1405,34 +1465,35 @@ function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; l
 }
 
 function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
-  const columnLabels = ['Return', 'Risk', 'Relative']
-  const columnCount = columnLabels.length
-  const showComparisonColumns = rows.some((row) => row.showComparison)
-  const rowsPerColumn = Math.ceil(rows.length / columnCount)
-  const columnRows = Array.from({ length: columnCount }, (_, index) =>
-    rows.slice(index * rowsPerColumn, (index + 1) * rowsPerColumn),
-  ).filter((items) => items.length > 0)
+  const columnLabels: PerformanceMetricRow['section'][] = ['Return', 'Risk', 'Relative']
+  const sections = columnLabels
+    .map((label) => ({ label, rows: rows.filter((row) => row.section === label),
+      showComparison: rows.some((row) => row.section === label && row.showComparison) }))
+    .filter((section) => section.rows.length > 0)
 
   return (
     <div className="performance-metric-table-grid">
-      {columnRows.map((items, columnIndex) => (
-        <div className="performance-metric-table-shell" key={`metric-column-${columnIndex}`}>
-          <div className="performance-metric-column-title">{columnLabels[columnIndex]}</div>
+      {sections.map((section) => (
+        <div className="performance-metric-table-shell" key={section.label}>
+          <div className="performance-metric-column-title">{section.label}</div>
           <table
-            className={`performance-metric-table ${
-              showComparisonColumns ? 'performance-metric-table-has-comparison' : ''
+            className={`performance-metric-table ${section.label === 'Return' ? 'performance-metric-table-return' : ''} ${
+              section.showComparison ? 'performance-metric-table-has-comparison' : ''
             }`}
           >
+            {section.label === 'Return' && section.showComparison ? (
+              <colgroup><col style={{ width: '40%' }} /><col style={{ width: '30%' }} /><col style={{ width: '15%' }} /><col style={{ width: '15%' }} /></colgroup>
+            ) : null}
             <thead>
               <tr>
                 <th>Metric</th>
                 <th>Portfolio</th>
-                {showComparisonColumns ? <th>BM</th> : null}
-                {showComparisonColumns ? <th>Diff</th> : null}
+                {section.showComparison ? <th>BM</th> : null}
+                {section.showComparison ? <th>Diff</th> : null}
               </tr>
             </thead>
             <tbody>
-              {items.map((row) => (
+              {section.rows.map((row) => (
                 <tr key={row.metric}>
                   <th scope="row">
                     <span className="performance-metric-table-name">
@@ -1447,10 +1508,10 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
                     </span>
                   </th>
                   <td className={row.valueClassName ?? ''}>{row.value}</td>
-                  {showComparisonColumns ? (
+                  {section.showComparison ? (
                     <td className={row.benchmarkClassName ?? ''}>{row.showComparison ? row.benchmark ?? '—' : '—'}</td>
                   ) : null}
-                  {showComparisonColumns ? (
+                  {section.showComparison ? (
                     <td className={row.differenceClassName ?? ''}>{row.showComparison ? row.difference ?? '—' : '—'}</td>
                   ) : null}
                 </tr>
@@ -1511,6 +1572,14 @@ function PerformancePage() {
     ],
   )
   const waitingForDefaultEndDate = Boolean(portfolioId && unresolvedDefaultEndDate)
+  const [draftStartDate, setDraftStartDate] = useState(effectiveStartDate)
+  const [draftEndDate, setDraftEndDate] = useState(effectiveEndDate)
+  useEffect(() => {
+    setDraftStartDate(effectiveStartDate)
+    setDraftEndDate(effectiveEndDate)
+  }, [effectiveStartDate, effectiveEndDate, portfolioId])
+  const windowDraftChanged = draftStartDate !== effectiveStartDate || draftEndDate !== effectiveEndDate
+  const draftWindowError = performanceWindowError(draftStartDate, draftEndDate)
   const performanceWindowFilters = useMemo(
     () => buildPerformanceWindowFilters(effectiveStartDate, effectiveEndDate),
     [effectiveEndDate, effectiveStartDate],
@@ -2124,6 +2193,17 @@ function PerformancePage() {
     if (portfolioId) {
       savePerformanceWindowSelection(portfolioId, normalizedStartDate, normalizedEndDate, mode)
     }
+    const nextWindow = resolvePerformanceWindow({
+      queryStartDate: normalizedStartDate,
+      queryEndDate: normalizedEndDate,
+      querySinceInception: mode === 'since_inception',
+      portfolioAsOfDate,
+      todayDate,
+      portfolioSummarySettled,
+      defaultLookbackDays: DEFAULT_PERFORMANCE_LOOKBACK_DAYS,
+    })
+    setDraftStartDate(nextWindow.effectiveStartDate)
+    setDraftEndDate(nextWindow.effectiveEndDate)
     setSearchParams(nextParams)
   }
 
@@ -2169,9 +2249,7 @@ function PerformancePage() {
     () => eligiblePortfolioReturnDates(workspace?.daily_series ?? [], reportStartDate, reportEndDate),
     [reportEndDate, reportStartDate, workspace?.daily_series],
   )
-  const benchmarkStartBoundaryDate = benchmarkEligibleDates.includes(reportStartDate)
-    ? shiftIsoDate(reportStartDate, -1)
-    : reportStartDate
+  const benchmarkStartBoundaryDate = summary ? performanceStartBoundary(summary) : reportStartDate
   const benchmarkGuard = useMemo(
     () =>
       selectedBenchmarkInstrument && benchmarkChart
@@ -2183,6 +2261,8 @@ function PerformancePage() {
             points: benchmarkChart.points,
             startBoundaryDate: benchmarkStartBoundaryDate,
             eligiblePortfolioDates: benchmarkEligibleDates,
+            endBoundaryDate: reportEndDate,
+            marketSessionDates: benchmarkChart.market_session_dates,
           })
         : null,
     [
@@ -2191,6 +2271,7 @@ function PerformancePage() {
       benchmarkEligibleDates,
       benchmarkStartBoundaryDate,
       selectedBenchmarkInstrument,
+      reportEndDate,
     ],
   )
   const benchmarkCurrencyMismatch = benchmarkGuard?.reason === 'benchmark_currency_mismatch'
@@ -2216,12 +2297,15 @@ function PerformancePage() {
             reportStartDate,
             reportEndDate,
             workspace?.daily_series ?? [],
+            summary?.include_start_date_return ?? false,
+            benchmarkChart?.market_session_dates ?? null,
           ),
     [
       benchmarkChart,
       benchmarkGuard?.mode,
       reportEndDate,
       reportStartDate,
+      summary?.include_start_date_return,
       workspace?.daily_series,
     ],
   )
@@ -2295,6 +2379,11 @@ function PerformancePage() {
   const portfolioPeriodPnl = calculationSummary?.delta ?? summary?.delta ?? summary?.total_pnl ?? null
   const portfolioContribution = calculationGroupsSummary?.total_period_contribution ?? summary?.cumulative_twr ?? null
   const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
+  const twrLinkingDifference = summary?.cumulative_twr != null &&
+    calculationGroupsSummary?.total_period_contribution != null
+    ? summary.cumulative_twr - calculationGroupsSummary.total_period_contribution
+    : null
+  const showTwrLinkingDifference = visibleCalculationColumns.includes('return_contribution') && twrLinkingDifference != null
   const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationRiskStatusLabel = calculationGroupsSummary?.risk_frequency_status_label ?? null
@@ -2304,7 +2393,7 @@ function PerformancePage() {
       : `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
           resolvedCalculationGroupBy,
         )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}`
-  const riskMetricsAvailable = realizedRiskMetricsAvailable(
+  const riskMetricsAvailable = summary?.risk_result_status === 'available' && realizedRiskMetricsAvailable(
     calculationGroupsSummary?.risk_return_observation_count,
     calculationGroupsSummary?.annualized_volatility,
   )
@@ -2373,6 +2462,11 @@ function PerformancePage() {
         label: 'Portfolio Total',
         syntheticKind: 'portfolio_total',
       })
+      if (showTwrLinkingDifference) {
+        rows.push({ kind: 'synthetic', key: 'twr-linking-difference',
+          className: 'performance-calculation-residual-row',
+          label: 'TWR Linking Difference', syntheticKind: 'twr_linking_difference' })
+      }
       if (showRiskContributionResidual) {
         rows.push({
           kind: 'synthetic',
@@ -2442,6 +2536,11 @@ function PerformancePage() {
         syntheticKind: 'contribution_residual',
       })
     }
+    if (showTwrLinkingDifference) {
+      rows.push({ kind: 'synthetic', key: 'twr-linking-difference',
+        className: 'performance-calculation-residual-row',
+        label: 'TWR Linking Difference', syntheticKind: 'twr_linking_difference' })
+    }
     rows.push({
       kind: 'synthetic',
       key: 'final-value',
@@ -2455,6 +2554,7 @@ function PerformancePage() {
     calculationRows,
     calculationTableMode,
     showContributionResidual,
+    showTwrLinkingDifference,
     showRiskContributionResidual,
   ])
 
@@ -2466,6 +2566,9 @@ function PerformancePage() {
   }
 
   function calculationTableMetricValue(row: CalculationTableRow, column: CalculationColumnKey): number | null {
+    if (['own_corr', 'beta', 'risk_contribution'].includes(column) && !riskMetricsAvailable) {
+      return null
+    }
     if (column === 'line') {
       return null
     }
@@ -2482,6 +2585,8 @@ function PerformancePage() {
           return column === 'pnl_flow' ? finiteNumber(expenseImpact(calculationSummary?.withdrawals)) : null
         case 'contribution_residual':
           return column === 'return_contribution' ? finiteNumber(contributionResidual) : null
+        case 'twr_linking_difference':
+          return column === 'return_contribution' ? finiteNumber(twrLinkingDifference) : null
         case 'risk_contribution_residual':
           return column === 'risk_contribution' ? finiteNumber(riskContributionResidual) : null
         case 'portfolio_total':
@@ -2515,9 +2620,13 @@ function PerformancePage() {
             case 'return_contribution':
               return finiteNumber(portfolioContribution)
             case 'own_vol':
-              return finiteNumber(calculationGroupsSummary?.annualized_volatility ?? summary?.annualized_volatility)
+              return summary?.risk_result_status === 'available'
+                ? finiteNumber(calculationGroupsSummary?.annualized_volatility ?? summary?.annualized_volatility)
+                : null
             case 'own_sharpe':
-              return finiteNumber(calculationGroupsSummary?.sharpe_ratio ?? summary?.sharpe_ratio)
+              return summary?.risk_result_status === 'available'
+                ? finiteNumber(calculationGroupsSummary?.sharpe_ratio ?? summary?.sharpe_ratio)
+                : null
             case 'own_corr':
             case 'beta':
             case 'risk_contribution':
@@ -2630,6 +2739,18 @@ function PerformancePage() {
 
     const header = visibleCalculationColumns.map((column) => CALCULATION_COLUMN_LABELS[column])
     const rows: TableCell[][] = [
+      ['Portfolio', portfolioId],
+      ['Period', periodLabel],
+      ['Currency', baseCurrency],
+      ['Return basis', summary?.performance_label ?? ''],
+      ['Start boundary', summary?.start_boundary_kind ?? ''],
+      ['Valuation timezone', workspace?.valuation_timezone ?? ''],
+      ['Valuation cutoff', workspace?.valuation_cutoff_policy ?? ''],
+      ['Fees and taxes', 'Recorded fees and taxes deducted'],
+      ['Risk method', 'Daily observations; annualized by actual period length; risk-free rate and minimum acceptable return = 0'],
+      ['Return units', 'Decimal fractions: 0.01 = 1%'],
+      ['Contribution method', 'Sum of daily return contributions; add TWR Linking Difference to reconcile to period TWR'],
+      [],
       header,
       ...calculationTableRows.map((row) =>
         visibleCalculationColumns.map((column) =>
@@ -2658,15 +2779,26 @@ function PerformancePage() {
       >
       <section className="portfolio-detail-surface performance-surface">
         <div className="performance-window-bar">
-          <div className="performance-window-group">
+          <form
+            className="performance-window-group"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (draftWindowError || waitingForDefaultEndDate) return
+              updateWindowParams(
+                draftStartDate || null,
+                draftEndDate || null,
+                appliedSinceInception && !draftStartDate ? 'since_inception' : 'dates',
+              )
+            }}
+          >
             <label>
               <span>Start Date</span>
               <input
                 className="performance-window-input"
                 type="date"
                 title="Normally an end-of-day boundary; a funded-segment start includes that day's BOD-to-EOD return."
-                value={effectiveStartDate}
-                onChange={(event) => updateWindowParams(event.target.value || null, effectiveEndDate || null)}
+                value={draftStartDate}
+                onChange={(event) => setDraftStartDate(event.target.value)}
               />
             </label>
             <label>
@@ -2675,17 +2807,18 @@ function PerformancePage() {
                 className="performance-window-input"
                 type="date"
                 title="The interval ends at this date's end-of-day valuation."
-                value={effectiveEndDate}
-                onChange={(event) =>
-                  updateWindowParams(
-                    appliedSinceInception ? null : effectiveStartDate || null,
-                    event.target.value || null,
-                    appliedSinceInception ? 'since_inception' : 'dates',
-                  )
-                }
+                value={draftEndDate}
+                onChange={(event) => setDraftEndDate(event.target.value)}
               />
             </label>
-          </div>
+            <button
+              type="submit"
+              className="performance-window-action"
+              disabled={!windowDraftChanged || Boolean(draftWindowError) || waitingForDefaultEndDate}
+            >
+              Apply period
+            </button>
+          </form>
           <div className="performance-window-actions" aria-label="Performance period controls">
             <button
               type="button"
@@ -2752,9 +2885,9 @@ function PerformancePage() {
             />
           ) : null}
         </div>
-        {windowError ? (
+        {windowError || (windowDraftChanged && draftWindowError) ? (
           <div className="inline-notice inline-notice-error" role="alert">
-            {windowError}
+            {windowDraftChanged && draftWindowError ? draftWindowError : windowError}
           </div>
         ) : null}
 
@@ -2767,7 +2900,7 @@ function PerformancePage() {
         {summary?.as_of_clamp_reason ? (
           <div className="inline-notice inline-notice-warning" role="status">
             Performance requested through {summary.requested_end_date ?? effectiveEndDate}; reliable results end on{' '}
-            {summary.effective_end_date ?? summary.end_date ?? '—'} ({summary.as_of_clamp_reason}).
+            {summary.effective_end_date ?? summary.end_date ?? '—'} ({performanceUnavailableReason(summary.as_of_clamp_reason)}).
           </div>
         ) : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
@@ -2797,6 +2930,20 @@ function PerformancePage() {
                   />
                 </div>
               </div>
+              <div className="portfolio-detail-meta">
+                <span>Currency</span>: {baseCurrency} · <span>Recorded fees and taxes deducted</span> ·{' '}
+                <span>{performanceIsOperational ? 'Operational carrying-basis return; incomplete fair-value performance' : 'Market-value time-weighted return'}</span>
+              </div>
+              <div className="portfolio-detail-meta">
+                <span>Risk: daily observations, annualized by actual period length; risk-free rate and minimum acceptable return = 0</span>
+                {' · '}{summary.risk_return_observation_count} <span>risk observations</span>
+                {' · '}<span>Derivatives and base-currency cash modeled at zero return</span>
+              </div>
+              {summary.risk_result_status !== 'available' ? (
+                <div className="inline-notice inline-notice-warning" role="status">
+                  <span>Risk metrics unavailable</span>: {performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk calculation is unavailable'}
+                </div>
+              ) : null}
               <MetricGrid rows={metricRows} />
             </section>
 
@@ -2856,6 +3003,11 @@ function PerformancePage() {
                   </div>
                 </div>
               </div>
+              {visibleCalculationColumns.includes('return_contribution') ? (
+                <div className="portfolio-detail-meta">
+                  Arithmetic contributions + TWR linking difference = period TWR.
+                </div>
+              ) : null}
               {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>

@@ -51,6 +51,7 @@ from watchlist_app.services.instrument_resolution import (
     sync_local_instrument,
 )
 from watchlist_app.services.calculation_frequency import (
+    source_calendar_date,
     assess_latest_observation_freshness,
     build_calculation_frequency_context,
 )
@@ -2739,11 +2740,13 @@ class CanonicalRecalcService:
                 if isinstance(latest_observation_date, date)
                 else None
             ),
-            current_date=now.date(),
+            current_date=source_calendar_date(now, source_settings.get("market_calendar")),
             resolved_frequency=resolved_frequency,
             expected_frequency=source_settings.get("expected_frequency"),
             market_calendar=source_settings.get("market_calendar"),
             release_lag_days=source_settings.get("release_lag_days"),
+            source_mode=source_settings.get("source_mode"),
+            instrument_type=instrument.instrument_type,
         )
         freshness_status = (
             "unavailable"
@@ -2852,6 +2855,7 @@ class CanonicalRecalcService:
                     "expected_latest_date"
                 ),
                 "observation_lag_days": observation_freshness.get("lag_days"),
+                "release_lag_trading_days": observation_freshness.get("release_lag_trading_days"),
             },
             "quick_monitoring_items": [],
             "tabs": (

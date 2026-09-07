@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   groupedAnnualizedVolatility,
   groupedCurrentDrawdown,
   groupedMaxDrawdown,
   groupedReturnSeries,
+  buildHoldingsGroupRiskMetrics,
 } from './pages/PortfolioHomePage'
 import {
   holdingFixture,
@@ -27,6 +28,66 @@ function returnSeries(
 }
 
 describe('holdings current-basket period identity', () => {
+  it('builds each group risk result with the same values and missing-period rules as the existing calculations', () => {
+    function seriesFor(offset: number, missingPeriod: boolean) {
+      const end = Date.parse('2026-07-15T00:00:00Z')
+      const periods = Array.from({ length: 380 }, (_, index): [string, string, number] => [
+        new Date(end - (380 - index) * 86_400_000).toISOString().slice(0, 10),
+        new Date(end - (379 - index) * 86_400_000).toISOString().slice(0, 10),
+        index % 3 === 0 ? -0.02 - offset : 0.01 + offset,
+      ]).filter((_period, index) => !missingPeriod || index !== 370)
+      return {
+        instrument_return_series_1m: returnSeries(periods.slice(-35)),
+        instrument_return_series_3m: returnSeries(periods.slice(-100)),
+        instrument_return_series_6m: returnSeries(periods.slice(-190)),
+        instrument_return_series_1y: returnSeries(periods),
+        instrument_return_series_all: returnSeries(periods),
+      }
+    }
+    for (const missingPeriod of [false, true]) {
+      const rows = [
+        holdingFixture({ market_value: 600, market_value_base: 600, ...seriesFor(0, false) }),
+        holdingFixture({
+          line_id: 'holding:asset-2', market_value: 400, market_value_base: 400,
+          ...seriesFor(0.003, missingPeriod),
+        }),
+      ]
+      const workspace = holdingsWorkspaceFixture({ rows })
+      const result = buildHoldingsGroupRiskMetrics(rows, workspace)
+      for (const range of ['1m', '3m', '6m', '1y'] as const) {
+        expect(result.volatility[range]).toBe(groupedAnnualizedVolatility(rows, workspace, range))
+        if (missingPeriod) expect(result.volatility[range]).toBeNull()
+        else expect(result.volatility[range]).toBeGreaterThan(0)
+      }
+      expect(result.currentDrawdown).toBe(groupedCurrentDrawdown(rows, workspace))
+      expect(result.maxDrawdown).toBe(groupedMaxDrawdown(rows, workspace))
+      if (missingPeriod) {
+        expect(result.currentDrawdown).toBeNull()
+        expect(result.maxDrawdown).toBeNull()
+      } else {
+        expect(result.maxDrawdown).toBeLessThan(0)
+      }
+    }
+  })
+
+  it('normalizes the full-history series once for both drawdown values', () => {
+    const series = returnSeries([
+      ['2026-07-12', '2026-07-13', 0.1],
+      ['2026-07-13', '2026-07-14', -0.2],
+      ['2026-07-14', '2026-07-15', 0.05],
+    ])
+    const readPoints = vi.fn(() => series.points)
+    const row = holdingFixture({
+      instrument_return_series_all: { ...series, get points() { return readPoints() } },
+    })
+    const result = buildHoldingsGroupRiskMetrics([row], holdingsWorkspaceFixture({ rows: [row] }))
+
+    // normalizedReturnSeries checks then reads points: two property reads per alignment.
+    expect(readPoints).toHaveBeenCalledTimes(2)
+    expect(result.currentDrawdown).toBeCloseTo(-0.16)
+    expect(result.maxDrawdown).toBeCloseTo(-0.2)
+  })
+
   it('allows unequal initial histories once every member shares one complete common path', () => {
     const first = holdingFixture({
       market_value: 500,

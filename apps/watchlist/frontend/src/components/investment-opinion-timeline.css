@@ -1,0 +1,112 @@
+.investment-opinion-timeline {
+  padding: 0 0 20px;
+  color: var(--ink, #17212e);
+}
+
+.investment-opinion-heading,
+.investment-opinion-entry-heading,
+.investment-opinion-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.investment-opinion-heading {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line-strong, #cbd5e1);
+}
+
+.investment-opinion-heading h2,
+.investment-opinion-entry-heading h3,
+.investment-opinion-editor h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.investment-opinion-heading p,
+.investment-opinion-hint,
+.investment-opinion-empty,
+.investment-opinion-message {
+  margin: 7px 0 0;
+  color: var(--muted, #64748b);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.investment-opinion-empty,
+.investment-opinion-message { padding: 16px 0; }
+.investment-opinion-message[role='alert'] { color: #b42318; }
+.investment-opinion-heading button { flex-shrink: 0; }
+
+.investment-opinion-entries {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.investment-opinion-entries > li {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 24px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+}
+
+.investment-opinion-date {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 4px;
+  color: var(--muted, #64748b);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.investment-opinion-entry-heading h3 { font-size: 14px; }
+.investment-opinion-entry-heading button { padding: 2px 7px; font-size: 12px; }
+
+.investment-opinion-body,
+.investment-opinion-summary,
+.investment-opinion-legacy dd {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+  font-size: 14px;
+}
+
+.investment-opinion-summary { font-weight: 500; }
+.investment-opinion-source { display: flex; align-items: baseline; gap: 10px; color: var(--muted, #64748b); font-size: 12px; overflow-wrap: anywhere; }
+.investment-opinion-source > span { flex-shrink: 0; }
+
+.investment-opinion-editor {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--line-strong, #cbd5e1);
+  background: var(--band, #f8fafc);
+}
+
+.investment-opinion-form-row { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 18px; }
+.investment-opinion-editor label { display: grid; gap: 6px; font-size: 12px; color: var(--muted, #64748b); }
+.investment-opinion-editor input,
+.investment-opinion-editor textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong, #cbd5e1); border-radius: 0; background: #fff; color: var(--ink, #17212e); font: inherit; font-size: 14px; line-height: 1.6; }
+.investment-opinion-editor textarea { resize: vertical; }
+.investment-opinion-editor input:focus-visible,
+.investment-opinion-editor textarea:focus-visible { outline: 2px solid #64748b; outline-offset: 1px; }
+.investment-opinion-editor-actions { justify-content: flex-end; }
+.investment-opinion-editor-actions .investment-opinion-delete { margin-right: auto; color: #b42318; }
+.investment-opinion-legacy { margin-top: 24px; font-size: 13px; color: var(--muted, #64748b); }
+.investment-opinion-legacy summary { cursor: pointer; padding: 8px 0; }
+.investment-opinion-legacy dl { display: grid; gap: 18px; margin: 14px 0; }
+.investment-opinion-legacy dd { color: var(--ink, #17212e); margin-top: 4px; }
+
+@media (max-width: 640px) {
+  .investment-opinion-entries > li { grid-template-columns: 1fr; gap: 8px; }
+  .investment-opinion-date { flex-direction: row; gap: 12px; }
+  .investment-opinion-form-row { grid-template-columns: 1fr; }
+  .investment-opinion-heading { align-items: flex-start; }
+}

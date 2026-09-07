@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import RiskOfficerPanel from './RiskOfficerPanel'
 import {
   type RiskAsset,
   type PriceRiskPeriod,
@@ -19,12 +20,23 @@ const due = (c: RiskCase) =>
   c.status !== 'handled' &&
   Boolean(c.follow_up_date && c.follow_up_date <= today())
 const attention = (c: RiskCase) =>
-  c.trigger_active && c.severity === 'attention'
+  c.trigger_active && c.severity === 'attention' && c.status !== 'handled'
+  && c.evidence_json.direction !== 'opportunity'
 const coverage = (c: RiskCase) => c.trigger_active && c.severity === 'coverage'
 const priority = (c: RiskCase) =>
   (attention(c) && c.evidence_json.importance === 'high' ? 4 : 0) +
   (due(c) ? 2 : 0) +
   (attention(c) ? 1 : 0)
+
+function evidenceHref(value: unknown) {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined
+  } catch {
+    return undefined
+  }
+}
 
 function CaseRow({
   record,
@@ -32,6 +44,7 @@ function CaseRow({
   refresh,
   request,
   assistantHref,
+  instrumentHref,
   onAskAssistant,
 }: {
   record: RiskCase
@@ -39,6 +52,7 @@ function CaseRow({
   refresh: () => Promise<void>
   request: RiskRequest
   assistantHref: (id: string, question: string) => string
+  instrumentHref: (id: string, signal?: string) => string
   onAskAssistant?: (id: string, question: string) => void
 }) {
   const [note, setNote] = useState('')
@@ -46,13 +60,19 @@ function CaseRow({
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const evidence = record.evidence_json
-  const question = `分析 ${asset.name} 的风险事项：${record.title}。${record.body} 请核查原因、可能的组合影响和下一步需要补充的证据。`
+  const sectorEvent = record.signal.startsWith('sector:')
+  const direction = ({ risk: '风险', opportunity: '机会', uncertain: '重大不确定性' } as Record<string, string>)[String(evidence.direction)]
+  const confidence = ({ confirmed: '已确认', reported: '报道线索', unverified: '待证实' } as Record<string, string>)[String(evidence.confidence)]
+  const sources = sectorEvent && Array.isArray(evidence.sources) ? evidence.sources as Array<{ url: string; title: string; published_at: string | null }> : []
+  const question = `分析 ${asset.name} 的${sectorEvent ? direction || '风险与机会' : '风险'}事项：${record.title}。${record.body} 请核查原因、可能的组合影响和下一步需要补充的证据。`
   const nextStep = String(
-    ['drawdown_limit', 'period_loss'].includes(record.signal)
-      ? '复核亏损来源、策略是否偏离，以及原有持有依据是否仍成立。'
-      : record.severity === 'coverage'
-        ? '核对最新披露或行情来源，再判断风险是否变化。'
-        : '核实价格影响与实际敞口，记录判断和下次跟进时间。',
+    sectorEvent && evidence.next_watch
+      ? evidence.next_watch
+      : ['drawdown_limit', 'period_loss'].includes(record.signal)
+        ? '复核亏损来源、策略是否偏离，以及原有持有依据是否仍成立。'
+        : record.severity === 'coverage'
+          ? '核对最新披露或行情来源，再判断风险是否变化。'
+          : '核实价格影响与实际敞口，记录判断和下次跟进时间。',
   )
   async function update(status: string, clear = false) {
     setBusy(true)
@@ -75,6 +95,23 @@ function CaseRow({
       setBusy(false)
     }
   }
+  if (evidence.withdrawn === true) return <article className="risk-case">
+    <div className="risk-case-meta"><strong>核证撤回</strong>{typeof evidence.withdrawn_at === 'string' && <span>撤回时间 {evidence.withdrawn_at}</span>}</div>
+    <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
+    <p>{String(evidence.withdrawal_reason || '原有判断未通过核证，已撤回。')}</p>
+    <details className="risk-follow-up"><summary>撤回前记录与来源</summary>
+      <p className="research-muted">以下为已撤回的旧稿，不再作为当前风险判断。</p>
+      <p translate="no">{record.body}</p>
+      <ul className="risk-event-sources">{sources.map((source, index) => {
+        const href = evidenceHref(source.url)
+        return <li key={`${source.url}:${index}`}>
+          {href ? <a href={href} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : <span>{source.title || '原始来源'}（链接不可用）</span>}
+          <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}</small>
+        </li>
+      })}</ul>
+      <ul className="risk-history">{record.history_json.map((item, index) => <li key={index}>{item.at.slice(0, 16).replace('T', ' ')} · {item.detail}</li>)}</ul>
+    </details>
+  </article>
   return (
     <article className={`risk-case risk-case-${record.severity}`}>
       <div className="risk-case-meta">
@@ -85,20 +122,22 @@ function CaseRow({
               : ''
           }
         >
-          {record.severity === 'coverage'
-            ? '监测受限'
-            : record.severity === 'observation'
-              ? '一般记录'
-              : evidence.importance === 'high'
-                ? '优先核查'
-                : '需要复核'}
+          {sectorEvent && direction
+            ? direction
+            : record.severity === 'coverage'
+              ? '监测受限'
+              : record.severity === 'observation'
+                ? '一般记录'
+                : evidence.importance === 'high'
+                  ? '优先核查'
+                  : '需要复核'}
         </span>
         <span>
           {record.trigger_active ? statusLabels[record.status] : '当前未触发'}
         </span>
       </div>
-      <h3>{record.title}</h3>
-      <p>{record.body}</p>
+      <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
+      <p translate="no">{record.body}</p>
       {record.trigger_active && record.severity !== 'observation' && (
         <p className="risk-next-step">
           <strong>下一步</strong> {nextStep}
@@ -138,6 +177,17 @@ function CaseRow({
       </div>
       <details className="risk-follow-up">
         <summary>跟进与证据</summary>
+        {sectorEvent && confidence && <p className="risk-source">证据状态：{confidence}</p>}
+        {sources.length > 0 && <ul className="risk-event-sources">
+          {sources.map((source, index) => {
+            const href = evidenceHref(source.url)
+            const title = source.title || source.url || '原始来源'
+            return <li key={`${source.url}:${index}`}>
+              {href ? <a href={href} target="_blank" rel="noopener noreferrer">{title}</a> : <span>{title}（链接不可用）</span>}
+              <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}</small>
+            </li>
+          })}
+        </ul>}
         {evidence.source ? (
           <p className="risk-source">来源：{String(evidence.source)}</p>
         ) : null}
@@ -200,7 +250,7 @@ function CaseRow({
           )}
         </div>
         <p className="research-muted">
-          已处理表示完成本次跟进；风险条件仍存在时，提醒会保留。
+          {sectorEvent ? '已处理表示完成本次跟进；事项仍需关注时，提醒会保留。' : '已处理表示完成本次跟进；风险条件仍存在时，提醒会保留。'}
         </p>
         {error && <p role="alert">{error}</p>}
         <ul className="risk-history">
@@ -457,6 +507,7 @@ function PriceRiskSettings({
 }
 
 export default function InstrumentRiskPanel({
+  portfolioId,
   instrumentId,
   focusInstrumentId,
   query = '',
@@ -465,25 +516,31 @@ export default function InstrumentRiskPanel({
   assistantHref,
   onAskAssistant,
   onChanged,
+  caseScope = 'all',
+  attentionLabel = '风险关注',
   scopeLabel = '当前标的',
   scopeNote,
   instrumentContext,
   heading = '近期风险与跟进',
 }: {
+  portfolioId?: string
   instrumentId?: string
   focusInstrumentId?: string
   query?: string
   request: RiskRequest
-  instrumentHref: (id: string) => string
+  instrumentHref: (id: string, signal?: string) => string
   assistantHref: (id: string, question: string) => string
   onAskAssistant?: (id: string, question: string) => void
   onChanged?: () => void
+  caseScope?: 'all' | 'traditional'
+  attentionLabel?: string
   scopeLabel?: string
   scopeNote?: ReactNode
   instrumentContext?: (id: string) => ReactNode
   heading?: string | null
 }) {
   const [data, setData] = useState<RiskWorkspace | null>(null)
+  const [officerRefresh, setOfficerRefresh] = useState(0)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('attention')
   const [manual, setManual] = useState(false)
@@ -499,8 +556,17 @@ export default function InstrumentRiskPanel({
   const params = new URLSearchParams(query)
   if (instrumentId) params.set('instrument_id', instrumentId)
   const path = `/risk?${params}`
+  const officerScope = portfolioId
+    ? new URLSearchParams({ portfolio_id: portfolioId }).toString()
+    : params.has('watchlist_id')
+      ? new URLSearchParams({ watchlist_id: params.get('watchlist_id')! }).toString()
+      : params.has('instrument_id')
+        ? new URLSearchParams({ instrument_id: params.get('instrument_id')! }).toString()
+        : null
   function receive(response: RiskWorkspace) {
-    setData(response)
+    setData(caseScope === 'traditional'
+      ? { ...response, cases: response.cases.filter((record) => !record.signal.startsWith('sector:')) }
+      : response)
   }
   const load = async () => receive(await request<RiskWorkspace>(path))
   useEffect(() => {
@@ -513,20 +579,6 @@ export default function InstrumentRiskPanel({
       .then((response) => {
         if (cancelled) return
         receive(response)
-        if (
-          focusInstrumentId &&
-          !response.cases.some(
-            (c) => c.instrument_id === focusInstrumentId && attention(c),
-          )
-        ) {
-          setFilter(
-            response.cases.some(
-              (c) => c.instrument_id === focusInstrumentId && coverage(c),
-            )
-              ? 'coverage'
-              : 'all',
-          )
-        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message)
@@ -534,9 +586,10 @@ export default function InstrumentRiskPanel({
     return () => {
       cancelled = true
     }
-  }, [path, request, focusInstrumentId])
-  async function refresh() {
+  }, [path, request, focusInstrumentId, caseScope])
+  async function refresh(refreshOfficer = true) {
     await load()
+    if (refreshOfficer) setOfficerRefresh((value) => value + 1)
     onChanged?.()
   }
   async function perform(action: () => Promise<void>) {
@@ -580,12 +633,13 @@ export default function InstrumentRiskPanel({
         Number(b.asset.instrument_id === focusInstrumentId) -
           Number(a.asset.instrument_id === focusInstrumentId) ||
         (b.cases.length ? priority(b.cases[0]) : 0) -
-          (a.cases.length ? priority(a.cases[0]) : 0),
+          (a.cases.length ? priority(a.cases[0]) : 0) ||
+        (b.cases[0]?.updated_at || '').localeCompare(a.cases[0]?.updated_at || ''),
     )
   const tabs = [
     {
       key: 'attention',
-      label: '风险关注',
+      label: attentionLabel,
       count: cases.filter(attention).length,
     },
     { key: 'due', label: '到期待跟进', count: cases.filter(due).length },
@@ -598,6 +652,8 @@ export default function InstrumentRiskPanel({
   ]
   return (
     <section className="research-workbench risk-workbench">
+      {officerScope && <RiskOfficerPanel request={request} scopeQuery={officerScope} refreshToken={officerRefresh}
+        onCompleted={() => { void refresh(false).catch((failure) => setError(failure instanceof Error ? failure.message : '风险事项读取失败')) }} />}
       <div className="research-page-heading">
         <div>
           {heading && <h2>{heading}</h2>}
@@ -784,6 +840,7 @@ export default function InstrumentRiskPanel({
                     record={c}
                     asset={asset}
                     refresh={refresh}
+                    instrumentHref={instrumentHref}
                     request={request}
                     assistantHref={assistantHref}
                     onAskAssistant={onAskAssistant}
@@ -813,7 +870,6 @@ export default function InstrumentRiskPanel({
           </div>
           <details
             className="research-section risk-readings"
-            open={Boolean(instrumentId)}
           >
             <summary>价格风险与提醒设置</summary>
             {data.instruments.map((asset) => (
@@ -847,8 +903,7 @@ export default function InstrumentRiskPanel({
               自动关注日、周、月、季度跌幅及已设置的高点回撤线；事件与研究风险记录按重要程度呈现。数据缺失或滞后单列，不能用来确认风险解除。
             </p>
             <p>
-              市场状态，以及影响股票、ETF
-              价格的宏观、行业和公司事件，尚未接入自动监测。
+              自动价格提醒依据行情计算；事件分析的来源覆盖与限制请查看相应检查记录。
             </p>
           </details>
         </>

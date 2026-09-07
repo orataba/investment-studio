@@ -9,10 +9,14 @@ import sqlite3
 from alembic import command
 from alembic.config import Config
 import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 from investment_studio_instrument_core import (
     MarketDataPoint,
 )
+from investment_studio_instrument_core import instrument_store as shared_store
+from investment_studio_instrument_core.db_models import InstrumentMarketData, InstrumentRegistryBase
 
 from studio_data.services import instrument_store
 from studio_data.services.instrument_store import (
@@ -703,6 +707,86 @@ def test_instrument_summary_batch_is_bounded_and_does_not_load_histories(
     assert summary["latest_market_data"]
     assert "market_data" not in summary
     assert "fund_nav_event_revisions" not in summary
+
+
+def test_calculation_details_keep_history_without_hydrating_market_data_models(
+    isolated_store: Path,
+) -> None:
+    from studio_data.db.session import get_session_factory
+
+    factory = get_session_factory()
+    expected = get_instrument("fund-us-agg")
+    hydrated_market_data: list[InstrumentMarketData] = []
+
+    def record_loaded(_session, instance) -> None:
+        if isinstance(instance, InstrumentMarketData):
+            hydrated_market_data.append(instance)
+
+    event.listen(factory, "loaded_as_persistent", record_loaded)
+    try:
+        details = shared_store.get_instrument_details(
+            factory,
+            ["fund-us-agg", "missing", "fund-us-agg"],
+            include_fund_nav_ledger=False,
+        )
+    finally:
+        event.remove(factory, "loaded_as_persistent", record_loaded)
+
+    assert list(details) == ["fund-us-agg", "missing"]
+    assert details["missing"] is None
+    assert details["fund-us-agg"] == expected
+    assert hydrated_market_data == []
+
+
+def test_detail_history_latest_and_source_remain_independently_mutable() -> None:
+    source = deepcopy(TEST_SHARED_STORE["instruments"][1])
+    source["market_data"] = [
+        {
+            "metric_family": "nav",
+            "quote_basis": "official_nav",
+            "as_of_date": "2026-04-15",
+            "value": "1.25",
+            "currency": "USD",
+            "price_unit": "per_unit",
+            "price_scale": "1",
+            "provider": "test_fixture",
+            "status": "complete",
+            "nav_lineage": {
+                "kind": "provider_explicit",
+                "evidence": {"observations": [{"source": "provider_file"}]},
+            },
+        }
+    ]
+    detail = shared_store._serialize_detail_record(source)
+    detail["market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] = "edited"
+
+    assert detail["latest_market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] == "provider_file"
+    assert source["market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] == "provider_file"
+    detail["latest_market_data"][0]["value"] = "999"
+    assert detail["market_data"][0]["value"] == "1.25"
+
+
+def test_calculation_details_still_reject_corrupt_historical_observations() -> None:
+    # A pre-existing invalid store must still fail at the read boundary. The
+    # current migration's write triggers correctly prevent creating this state.
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    shared_store.reset_store(factory, deepcopy(TEST_SHARED_STORE))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE instrument_market_data SET value = 'NaN' "
+            "WHERE instrument_id = 'fund-us-agg'"
+        )
+    try:
+        with pytest.raises(ValueError):
+            shared_store.get_instrument_details(
+                factory,
+                ["fund-us-agg"],
+                include_fund_nav_ledger=False,
+            )
+    finally:
+        engine.dispose()
 
 
 def test_runtime_rejects_missing_persisted_quote_policy_without_fallback(

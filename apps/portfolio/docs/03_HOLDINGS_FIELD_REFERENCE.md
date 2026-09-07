@@ -25,11 +25,13 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - 行级 `Position Value (Local)` 与带 `(Local)` 的成本、盈亏字段使用标的本币；带 `(Base)` 的字段及所有可加总金额使用组合 base currency。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
 - 普通非现金市值为 `quantity × selected valuation quote × price_scale`；再用 `as_of_date` FX 转为 base currency。FCN/长期权在没有可靠 fair value 时使用 `valuation_basis=carried_cost`，written option 使用 `valuation_basis=premium_liability` 和负的 NAV amount；两者的 `fair_value` 及 quote identity 均为空。现金市值为 settled cash amount。
 - 行级 `Weight = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
-- 缺少唯一且合法的 valuation quote、价格单位/scale 或 FX 时，依赖它的字段为不可用，不用图表点或 0 补齐。状态型快照可以携带最近有效行情或 FX 维持 NAV 连续性，但必须标记 stale，且不能进入 latest fresh complete 选择或伪装成当日市场观察。
+- 缺少唯一且合法的 valuation quote、价格单位/scale 或必要 FX 时，依赖它的字段为不可用，不用图表点或 0 补齐。来源日历确认的休市可以沿用前一有效点并保留 source date；应更新的行情或 FX 缺失时，日度估值链在首个缺口停止。默认 Holdings 使用此前最后完整快照并披露实际日期，缺口补齐并重算前不能从后续报价重新建立连续估值链。
+- 唯一的普通持仓初始估值例外是首次买入份额确认日：无正式价格时，按当日买入总 gross / 总 quantity 对所有账户和 lots 一致估值。`valuation_basis=transaction_price`、`quote_status=transaction-price` 与来源交易 IDs 明确披露，正式 quote identity 和日涨跌留空；费用仍进入损益。后续只有已确认休市可沿用，已有持仓加仓和下一交易日缺价不适用此例外；非现金交付与期权实物交付关联的股票腿也不适用。
 
 ### 2.2 成本、盈亏与收益分类
 
 - `Book Cost (Local)` 是当前开放头寸的 remaining accounting cost。FIFO 为开放 lots 剩余成本之和；moving average 为滚动平均成本 bucket 的剩余成本。普通分红不修改 book cost；明确的资本返还会冲减 book cost。
+- FIFO 默认按原始 `acquisition_date` 及开仓事实时间/sequence 消耗批次；转入、历史开仓导入和拆股保留原取得顺序，不以接收或导入时间排到新批次之后。轻量头寸与完整 lot 读模型使用同一规则。
 - `Book Cost (Base, Current FX)` 用 `as_of_date` 汇率换算本币 book cost；`Book Cost (Base, Trade FX)` 则把每个仍在持有的成本来源按其 acquisition date 汇率换算后求和。moving-average 合并或部分卖出不能抹掉这些成本来源。
 - `Book Avg Cost = remaining cost basis / remaining quantity`。它不是某笔成交价，也不把显示舍入后的价格反写到账本。
 - `Net Invested (Local)` 是当前连续持仓周期的净投入：买入成本和费用为正，已卖部分的净回款、已实现分红/票息和资本返还为负。`Break-even Price = Net Invested / current quantity`，因此它可以低于 book average cost，甚至在累计回款超过投入后为负。完全平仓后再次买入会开始新的持仓周期。
@@ -38,7 +40,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - Event-valued position 的 carrying basis 不等于 fair value；option obligation 也没有 long-position Book Cost / Book Avg Cost / fair-value Unrealized P&L。相关证券盈亏字段留空，但外币 carrying amount 另行展示 `Historical Carrying Basis (Base)` 与 `Carrying FX Translation (Base)`；这是账面 carrying value 的汇率折算，不得命名为或冒充 fair-value P&L。
 - Securities group/subtotal 的 `Total Unrealized Return (Base)` 使用组内 base-currency 总未实现盈亏除以历史汇率成本重算。它不包含 Cash & Settlement，也不冒充组合级 TWR。
 - 普通 `dividend / coupon` 在 entitlement date 进入已实现 `Income`，不冲减 book cost，也不进入未实现盈亏；但会降低当前持仓周期的 `Net Invested` 与 `Break-even Price`。
-- `dividend_reinvestment` 先确认已实现 `Income`，再以 reinvested gross amount 建立新 lot；不得建立零成本份额或重复记现金。
+- `dividend_reinvestment` 在权益日确认已实现 `Income`，新份额尚未生效时以 reinvested gross amount 在原证券账户形成应收；份额生效日才转为有成本的新 lot。新 lot 的取得日为份额生效日，历史基准币成本使用权益日收入确认 FX；不得提前显示份额、建立零成本份额或重复记现金。
 - 只有明确的 `return_of_capital` 才冲减开放成本；按剩余股数逐批分摊，每批成本最低为零，超过该批剩余成本的部分确认已实现收益，不制造负的多头成本。
 - FIFO 处置可用 `lot_selections` 指定开仓或接收批次，未指定按 FIFO；移动平均账户不选择单批成本。有持仓历史后不能直接更改账户成本法。实物行权的批次选择针对期权多头，股票交付成本另按证券账户计算。
 - 股票/ETF 空头的 remaining quantity、book cost 及市场价值带负号进入净资产；`short_sell` 按实际事实开空，`buy_to_cover` 释放空头净账面负债并确认买回损益。期初空头保留原开仓日和剩余净账面负债，不重复增加现金；普通基金不支持卖空。
@@ -97,12 +99,14 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 Pending row 的 identity 固定为：
 
 ```text
-pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}:{pending_until_date}
+pending:{kind}:{posting_account}:{economic_instrument}:{currency}:{settlement_date}:{pending_until_date}
 ```
 
-它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
+它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。普通现金结算使用结算现金账户，红利再投资应收使用原证券账户；后者展示为 `settlement_receivable`，不会增加可用现金。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
 Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `cash:{currency}:{account_id}`。每个账户使用移动平均的 historical base-currency monetary basis：价值第一次进入账本时按 `monetary_recognition_date` 建立；pending receivable / payable / subscription bridge 转成 settled cash 时原样继承，不在 settlement date 重置。现金减少时按当时平均 basis 释放；组合内部同币种现金划转也继承来源账户 basis。`monetary unrealized FX P&L = current base value - historical monetary basis`。历史或当前 FX 不完整时对应行的汇兑损益为不可用，不以当前汇率回填历史成本。
+
+同一现金生效日按交易时刻、创建时间及 `transaction_sequence` 重放；即使同批记录创建时间相同，先出后入与先入后出的历史汇率成本也必须分别按真实顺序核算，不能按倒序展示列表计算。
 
 `FX Cost Basis` 是货币资产或负债的历史基准币成本，不是证券 `Book Cost`。一个 pending row 若合并了同一结算边界下多笔不同 recognition date 的交易，只展示加权 FX basis；单一 recognition date 仅在组成交易一致时返回。
 

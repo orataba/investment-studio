@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Hashable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date
 import json
@@ -12,6 +13,7 @@ from typing import TypeVar
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
+    _state_requires_refresh,
     build_materialized_contribution_report,
     build_materialized_holdings_workspace,
     build_materialized_performance_report,
@@ -47,6 +49,8 @@ def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, str | None, st
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
         if state is None or state.daily_snapshot_status != "current":
+            return None
+        if _state_requires_refresh(session, portfolio_id):
             return None
         return (
             state.refresh_request_id,
@@ -109,7 +113,7 @@ def _cache_key(
     args: tuple[Hashable, ...],
     fingerprint: tuple[str | None, str | None, str | None, str | None],
 ) -> tuple[Hashable, ...]:
-    return (portfolio_id, surface, *args, *fingerprint)
+    return (get_session_factory(), portfolio_id, surface, *args, *fingerprint)
 
 
 def _get_cached_portfolio_value(
@@ -120,16 +124,63 @@ def _get_cached_portfolio_value(
     builder: Callable[[], T],
 ) -> T:
     fingerprint = _snapshot_fingerprint(portfolio_id)
+    cache_key = None
     if fingerprint is not None:
-        cached_value = _read_cache(_cache_key(portfolio_id, surface, args, fingerprint))
+        cache_key = _cache_key(portfolio_id, surface, args, fingerprint)
+        cached_value = _read_cache(cache_key)
         if cached_value is not None:
             return cached_value  # type: ignore[return-value]
 
     value = builder()
     refreshed_fingerprint = _snapshot_fingerprint(portfolio_id)
-    if refreshed_fingerprint is not None:
-        _write_cache(_cache_key(portfolio_id, surface, args, refreshed_fingerprint), value)
+    if (
+        cache_key is not None
+        and refreshed_fingerprint is not None
+        and cache_key == _cache_key(portfolio_id, surface, args, refreshed_fingerprint)
+    ):
+        # A builder may span a source update or refresh. Never label a result
+        # from the earlier generation with the newly published generation.
+        _write_cache(cache_key, value)
     return value
+
+
+def get_cached_holdings_analytics_workspace(
+    portfolio_id: str,
+    *,
+    as_of_date: date | None,
+    risk_policy: dict[str, object],
+    analytics_policy_version: int,
+    builder: Callable[[], T],
+) -> T:
+    value = _get_cached_portfolio_value(
+        portfolio_id,
+        surface="holdings_analytics",
+        args=(
+            _date_key(as_of_date),
+            json.dumps(risk_policy, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            analytics_policy_version,
+        ),
+        builder=builder,
+    )
+    # The caller adds live quality/task information and public response fields.
+    # Those request-specific edits must not become part of the cached workspace.
+    return deepcopy(value)
+
+
+def get_cached_portfolio_risk_basis(
+    portfolio_id: str,
+    *,
+    as_of_date: date | None,
+    builder: Callable[[], T],
+) -> T:
+    return deepcopy(
+        _get_cached_portfolio_value(
+            portfolio_id,
+            surface="portfolio_risk_basis",
+            args=(_date_key(as_of_date),),
+            builder=builder,
+        )
+    )
 
 
 def get_cached_materialized_holdings_workspace(

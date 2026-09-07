@@ -99,4 +99,48 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.reason).toBe('benchmark_date_coverage_incomplete')
     expect(assessment.missingEligibleDates).toEqual(['2026-07-07'])
   })
+
+  const cashTailInput = {
+    ...comparableInput,
+    startBoundaryDate: '2026-09-03', endBoundaryDate: '2026-09-08',
+    eligiblePortfolioDates: ['2026-09-04'],
+    marketSessionDates: ['2026-09-03', '2026-09-04', '2026-09-08'],
+    points: [{ date: '2026-09-03', value: 100 }, { date: '2026-09-04', value: 110 },
+      { date: '2026-09-08', value: 121 }],
+  }
+
+  it.each(['2026-09-04', '2026-09-08'])('rejects a missing official trading day %s, including the cash-only tail', (missingDate) => {
+    const assessment = assessBenchmarkComparisonGuard({ ...cashTailInput,
+      eligiblePortfolioDates: [],
+      points: cashTailInput.points.filter((point) => point.date !== missingDate),
+    })
+    expect(assessment.mode).toBe('unavailable')
+    expect(assessment.missingEligibleDates).toEqual([missingDate])
+  })
+
+  it('allows the official US Labor Day closure and a cash-only weekend without extrapolating a trading day', () => {
+    const assessment = assessBenchmarkComparisonGuard({ ...cashTailInput,
+      endBoundaryDate: '2026-09-07', eligiblePortfolioDates: [],
+      points: cashTailInput.points.slice(0, 2),
+    })
+    expect(assessment.mode).toBe('canonical')
+  })
+
+  it('requires the last official session before a non-trading start boundary', () => {
+    const assessment = assessBenchmarkComparisonGuard({ ...cashTailInput,
+      startBoundaryDate: '2026-09-07',
+      points: cashTailInput.points.filter((point) => point.date !== '2026-09-04'),
+    })
+    expect(assessment.mode).toBe('unavailable')
+    expect(assessment.missingEligibleDates).toEqual(['2026-09-04'])
+  })
+
+  it('does not infer a holiday when an official calendar is unavailable', () => {
+    const assessment = assessBenchmarkComparisonGuard({ ...cashTailInput,
+      endBoundaryDate: '2026-09-07', marketSessionDates: null,
+    })
+    expect(assessment.mode).toBe('unavailable')
+    expect(assessment.missingEligibleDates).toEqual(['2026-09-05', '2026-09-06', '2026-09-07'])
+    expect(assessment.warning).toContain('No official market calendar')
+  })
 })

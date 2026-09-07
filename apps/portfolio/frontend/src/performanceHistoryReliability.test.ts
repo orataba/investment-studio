@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildPerformanceHistoryReliability } from './lib/performanceHistoryReliability'
-import performancePageSource from './pages/PerformancePage.tsx?raw'
 
 describe('performance short-history reliability policy', () => {
   it('marks a sub-year observed period as ineligible for annualized return headlines', () => {
@@ -40,18 +39,14 @@ describe('performance short-history reliability policy', () => {
     expect(profile.annualizationMessage).toBeNull()
   })
 
-  it('wires period return, N/A annualization, and observed-sample metadata into Performance', () => {
-    expect(performancePageSource).toContain('metric: summary.performance_label')
-    expect(performancePageSource).toContain('const showReturnComparison = showRiskComparison && !operationalReturn')
-    expect(performancePageSource).toContain("metric: 'Market Risk Volatility'")
-    expect(performancePageSource).toContain('summary.market_risk_cumulative_return')
-    expect(performancePageSource).not.toContain('Annualized Operational Return')
-    expect(performancePageSource).not.toContain('Mean Daily Operational Return')
-    expect(performancePageSource).toContain("metric: 'Derivative Lifecycle Realized P&L'")
-    expect(performancePageSource).toContain("metric: 'IRR / MWRR'")
-    expect(performancePageSource).toContain("annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A'")
-    expect(performancePageSource).toContain("reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year'")
-    expect(performancePageSource).not.toContain('performance-history-reliability-warning')
-    expect(performancePageSource).toContain('performanceMetricsMeta')
+  it('explains that carrying-basis returns require fair-value valuations even with long history', () => {
+    const profile = buildPerformanceHistoryReliability({
+      start_date: '2024-01-01', end_date: '2026-01-01',
+      snapshot_count: 732, return_observation_count: 731, risk_return_observation_count: 500,
+      annualization_eligible: false,
+      annualization_unavailable_reason: 'operational_carrying_basis_not_annualized',
+    })
+    expect(profile.annualizationMessage).toContain('require complete fair-value valuations')
+    expect(profile.annualizationMessage).toContain('Additional history alone')
   })
 })

@@ -851,6 +851,58 @@ describe('Holdings rendered page contract', () => {
     expect(await screen.findByRole('cell', { name: 'Beta Fund' })).toBeInTheDocument()
   })
 
+  it('shows the default holdings view while the independent taxonomy request is pending', async () => {
+    const taxonomy = deferred<PortfolioTaxonomyCatalogResponse>()
+    apiMocks.getPortfolioTaxonomyCatalog.mockReturnValueOnce(taxonomy.promise)
+    renderHoldings()
+
+    expect(await screen.findByRole('cell', { name: 'Alpha Fund' })).toBeInTheDocument()
+    await act(async () => taxonomy.resolve(taxonomyCatalogFixture()))
+  })
+
+  it('waits for taxonomy data when the selected view groups by taxonomy', async () => {
+    const taxonomy = deferred<PortfolioTaxonomyCatalogResponse>()
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture())
+    apiMocks.getPortfolioTaxonomyCatalog.mockReturnValueOnce(taxonomy.promise)
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
+      store: {
+        activeViewId: 'custom:taxonomy',
+        views: [{ id: 'custom:taxonomy', name: 'By Taxonomy', state: { groupBy: 'taxonomy_top' } }],
+      },
+    })
+    render(
+      <MemoryRouter initialEntries={['/portfolios/3/holdings?holdings_group_by=taxonomy_top']}>
+        <Routes>
+          <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalled())
+    expect(screen.queryByRole('table', { name: 'Security holdings' })).not.toBeInTheDocument()
+    await act(async () => taxonomy.resolve(taxonomyCatalogFixture()))
+    expect(await screen.findByRole('table', { name: 'Security holdings' })).toBeInTheDocument()
+  })
+
+  it('keeps the current table mounted and identifies its date while new holdings load', async () => {
+    renderHoldings()
+    await waitForHoldings()
+    const originalTable = screen.getByRole('table', { name: 'Security holdings' })
+    const refreshedHoldings = deferred<ReturnType<typeof holdingsWorkspaceFixture>>()
+    apiMocks.getHoldingsWorkspace.mockReturnValueOnce(refreshedHoldings.promise)
+
+    fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-14' } })
+
+    expect(screen.getByRole('table', { name: 'Security holdings' })).toBe(originalTable)
+    expect(screen.getByText('As Of Date').parentElement).toHaveTextContent('2026-07-15')
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14' })
+    expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
+
+    await act(async () => refreshedHoldings.resolve(holdingsWorkspaceFixture({ as_of_date: '2026-07-14' })))
+    expect(screen.getByRole('table', { name: 'Security holdings' })).toBe(originalTable)
+    expect(screen.queryByText('As Of Date')).not.toBeInTheDocument()
+  })
+
   it('puts FCN and option facts in explicit derivative columns instead of name annotations', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
@@ -1372,5 +1424,78 @@ describe('Holdings rendered page contract', () => {
         include_details: true,
       })
     })
+  })
+
+  it('reuses loaded full inputs for column changes but requests fresh inputs for another date or portfolio', async () => {
+    apiMocks.getHoldingsWorkspace.mockImplementation(async (portfolioId, filters) => holdingsWorkspaceFixture({
+      portfolio_id: portfolioId,
+      as_of_date: filters?.as_of_date ?? '2026-07-15',
+      detail_level: filters?.include_details ? 'full' : 'compact',
+    }))
+    render(<MemoryRouter initialEntries={['/portfolios/3/holdings']}><HoldingsRouteHarness /></MemoryRouter>)
+    await waitForHoldings()
+    const user = userEvent.setup()
+    const selectView = async (current: string, next: string) => {
+      await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: new RegExp(`View\\s*: ${current}$`) }))
+      await user.click(screen.getByRole('option', { name: next }))
+    }
+    await selectView('Default', 'Return & Risk')
+    await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(2))
+    await selectView('Return & Risk', 'Default')
+    await selectView('Default', 'Return & Risk')
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(2)
+
+    fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-14' } })
+    await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(3))
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14', include_details: true })
+    await selectView('Return & Risk', 'Default')
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(3)
+    fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-13' } })
+    await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(4))
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-13' })
+
+    await user.click(screen.getByRole('button', { name: 'Switch portfolio' }))
+    await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(5))
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('4', { as_of_date: undefined })
+  })
+
+  it('shares aligned risk inputs across subtotal cells, column edits, and sorting', async () => {
+    const points = [
+      { start_date: '2026-07-12', date: '2026-07-13', value: 0.1 },
+      { start_date: '2026-07-13', date: '2026-07-14', value: -0.2 },
+      { start_date: '2026-07-14', date: '2026-07-15', value: 0.05 },
+    ]
+    const readPoints = vi.fn(() => points)
+    renderHoldings(holdingsWorkspaceFixture({
+      detail_level: 'full',
+      rows: [holdingFixture({ instrument_return_series_all: {
+        first_return_start_date: '2026-07-12', get points() { return readPoints() },
+      } })],
+    }))
+    await waitForHoldings()
+    expect(readPoints).toHaveBeenCalledTimes(2)
+    const user = userEvent.setup()
+    await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
+    await user.click(screen.getByRole('button', { name: 'Securities Columns' }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Choose security columns' })).getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Sort Instrument: ascending' }))
+    expect(readPoints).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', { name: 'Currency' }))
+    // The data regrouping builds one shared path for the subtotal and one for USD.
+    expect(readPoints).toHaveBeenCalledTimes(6)
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+    const exportedRows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
+    const header = exportedRows.find((row) => row.includes('Current DD'))!
+    const subtotal = exportedRows.find((row) => row.includes('Securities Subtotal (USD)'))!
+    expect(subtotal[header.indexOf('Current DD')]).toBeCloseTo(-0.16)
+    expect(subtotal[header.indexOf('Max DD')]).toBeCloseTo(-0.2)
+    expect(readPoints).toHaveBeenCalledTimes(6)
   })
 })

@@ -41,6 +41,8 @@ type BenchmarkComparisonGuardInput = {
   points: BenchmarkPoint[]
   startBoundaryDate: string
   eligiblePortfolioDates: string[]
+  endBoundaryDate?: string
+  marketSessionDates?: string[] | null
 }
 
 export function normalizeBenchmarkCurrency(value: string | null | undefined) {
@@ -76,6 +78,8 @@ export function assessBenchmarkComparisonGuard({
   points,
   startBoundaryDate,
   eligiblePortfolioDates,
+  endBoundaryDate,
+  marketSessionDates,
 }: BenchmarkComparisonGuardInput): BenchmarkComparisonGuard {
   const basisAssessment = assessPerformanceBenchmarkBasis(chartBasis, returnSemantics)
   const benchmarkCurrency = normalizeBenchmarkCurrency(rawBenchmarkCurrency)
@@ -120,8 +124,23 @@ export function assessBenchmarkComparisonGuard({
     )
   }
 
-  const uniqueEligibleDates = [...new Set(eligiblePortfolioDates)].sort()
-  if (!uniqueEligibleDates.length) {
+  let requiredDates = [...new Set(eligiblePortfolioDates)].sort()
+  if (endBoundaryDate) {
+    if (marketSessionDates != null) {
+      const sessions = marketSessionDates.slice().sort()
+      const startSession = sessions.filter((dateKey) => dateKey <= startBoundaryDate).slice(-1)[0]
+      requiredDates = sessions.filter((dateKey) => dateKey > startBoundaryDate && dateKey <= endBoundaryDate)
+      if (startSession) requiredDates.unshift(startSession)
+    } else {
+      // Without an official schedule, a price gap cannot establish a closure.
+      requiredDates = []
+      for (let time = Date.parse(`${startBoundaryDate}T00:00:00Z`);
+        time <= Date.parse(`${endBoundaryDate}T00:00:00Z`); time += 86_400_000) {
+        requiredDates.push(new Date(time).toISOString().slice(0, 10))
+      }
+    }
+  }
+  if (!requiredDates.length && !endBoundaryDate) {
     return unavailableAssessment(
       basisAssessment,
       'benchmark_date_coverage_unavailable',
@@ -131,16 +150,18 @@ export function assessBenchmarkComparisonGuard({
     )
   }
   const benchmarkDates = new Set(finitePoints.map((point) => point.date))
-  const missingEligibleDates = uniqueEligibleDates.filter((dateKey) => !benchmarkDates.has(dateKey))
+  const missingEligibleDates = requiredDates.filter((dateKey) => !benchmarkDates.has(dateKey))
   if (missingEligibleDates.length) {
     return unavailableAssessment(
       basisAssessment,
       'benchmark_date_coverage_incomplete',
       benchmarkCurrency,
       portfolioCurrency,
-      `Benchmark comparison is unavailable because ${missingEligibleDates.length} eligible portfolio return date${
-        missingEligibleDates.length === 1 ? ' is' : 's are'
-      } missing from benchmark history.`,
+      endBoundaryDate
+        ? `Benchmark comparison is unavailable because required observations are missing: ${missingEligibleDates.join(', ')}.${marketSessionDates == null ? ' No official market calendar is available to confirm closures.' : ''}`
+        : `Benchmark comparison is unavailable because ${missingEligibleDates.length} eligible portfolio return date${
+            missingEligibleDates.length === 1 ? ' is' : 's are'
+          } missing from benchmark history.`,
       missingEligibleDates,
     )
   }

@@ -1,6 +1,6 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
-import { LanguageSelector, matchesSystemLabel } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
 
 import {
   copyWatchlistItems,
@@ -44,7 +44,7 @@ import { fieldSupportsAllInstrumentTypes } from '../lib/watchlistFieldScope'
 import LoadingOverlay from '../components/LoadingOverlay'
 import ResearchPage from './ResearchPage'
 import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
-import WorkspaceToolIcon from '../components/WorkspaceToolIcon'
+import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
@@ -539,7 +539,7 @@ function renderCell(
     return (
       <span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
-      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)} aria-label={`${value || instrumentId} 有风险事项，查看风险关注`} title="有风险事项仍在触发 · 点击查看"><WorkspaceToolIcon kind="risk" /></button>}</span>
+      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)} aria-label={`${value || instrumentId} 有关注事项，查看风险提示`} title="有重点事项仍需关注 · 点击查看"><WorkspaceToolIcon kind="risk" /></button>}</span>
     )
   }
 
@@ -557,7 +557,7 @@ function renderCell(
     return labels[String(value)] || '观察中'
   }
   if (fieldKey === 'attr.risk_attention') {
-    const labels: Record<string, string> = { attention: '风险关注', limited: '监测受限', no_trigger: '暂无触发' }
+    const labels: Record<string, string> = { attention: '重点关注', limited: '监测受限', no_trigger: '暂无触发' }
     return <button className="watchlist-risk-cell" onClick={() => openRisk(instrumentId)}>{labels[String(value)] || '待核查'}</button>
   }
   if (fieldKey === 'attr.coverage_status') {
@@ -730,6 +730,8 @@ function parseJsonSearchParam<T>(value: string | null, fallback: T): T {
 }
 
 export default function WatchlistsPage() {
+  const { language } = useLanguage()
+  const zh = language === 'zh-Hans'
   const primaryDisplayColumn = 'instrument_name'
   const requiredColumns = [primaryDisplayColumn]
   const navigate = useNavigate()
@@ -2463,7 +2465,18 @@ export default function WatchlistsPage() {
   }, [])
 
 
+  function openColumns() {
+    setColumnDraft(ensureRequiredColumns(visibleColumns))
+    setModalError(null)
+    setModalKind('columns')
+    setFilterMenuOpen(false)
+    setGroupMenuOpen(false)
+    setSelectorMenuOpen(false)
+    setNotice(null)
+  }
+
   function openRisk(id?: string) {
+    setSelectorMenuOpen(false)
     const next = new URLSearchParams(watchlistSearchParams)
     next.set('risk', '1')
     if (id) next.set('risk_instrument', id)
@@ -2473,6 +2486,7 @@ export default function WatchlistsPage() {
   }
 
   function openAssistant(id?: string, question?: string) {
+    setSelectorMenuOpen(false)
     const next = new URLSearchParams(watchlistSearchParams)
     next.set('assistant', '1')
     next.delete('risk'); next.delete('risk_instrument'); next.delete('topic')
@@ -2525,24 +2539,70 @@ export default function WatchlistsPage() {
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">
-        <div className="watchlist-breadcrumbs">
-          <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
-            Home
-          </a>
-          <span className="watchlist-breadcrumb-separator">/</span>
-          <Link to="/watchlists" className="watchlist-breadcrumb-link">
-            Watchlist
-          </Link>
-          <span className="watchlist-breadcrumb-separator">/</span>
-          <span translate={activeWatchlist && activeWatchlist.owner_type !== 'system' ? 'no' : undefined} className="watchlist-breadcrumb-current">{activeWatchlist?.name || 'Watchlists'}</span>
+        <div className="watchlists-topbar">
+          <div className="watchlist-breadcrumbs">
+            <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
+              Home
+            </a>
+            <span className="watchlist-breadcrumb-separator">/</span>
+            <Link to="/watchlists" className="watchlist-breadcrumb-link">
+              Watchlist
+            </Link>
+            <span className="watchlist-breadcrumb-separator">/</span>
+            <span translate={activeWatchlist && activeWatchlist.owner_type !== 'system' ? 'no' : undefined} className="watchlist-breadcrumb-current">{activeWatchlist?.name || 'Watchlists'}</span>
+          </div>
           <LanguageSelector />
         </div>
 
         <div className="watchlist-heading-row">
-          <div className="watchlist-app-title">Watchlist</div>
-          <div className="watchlist-workspace-tools" aria-label="当前列表工具">
-            <button className="watchlist-workspace-tool watchlist-workspace-tool-risk" onClick={() => openRisk()}><WorkspaceToolIcon kind="risk" /><span>风险关注</span></button>
-            <button className="watchlist-workspace-tool watchlist-workspace-tool-assistant" onClick={() => openAssistant()}><WorkspaceToolIcon kind="assistant" /><span>{selectedRows.length && rowsAreCurrent ? `问助手 (${selectedRows.length})` : '研究助手'}</span></button>
+          <h1 className="watchlist-app-title" translate={activeWatchlist && activeWatchlist.owner_type !== 'system' ? 'no' : undefined}>{activeWatchlist?.name || 'Watchlist'}</h1>
+          <div className="watchlist-heading-tools" ref={selectorMenuRef}>
+            <WorkspaceTools
+              settings={{
+                label: zh ? '列表设置' : 'Watchlist settings',
+                disabled: !activeWatchlist || !detailIsCurrent,
+                onClick: () => {
+                  setSelectorMenuOpen((current) => !current)
+                  setFilterMenuOpen(false)
+                  setGroupMenuOpen(false)
+                },
+              }}
+              risk={{ onClick: () => openRisk() }}
+              assistant={{ onClick: () => openAssistant(), count: rowsAreCurrent ? selectedRows.length : 0 }}
+            />
+            {selectorMenuOpen && activeWatchlist ? (
+              <div className="watchlist-menu" role="group" aria-label={zh ? '列表设置菜单' : 'Watchlist settings menu'}>
+                <button type="button" onClick={openColumns}>{zh ? '列设置' : 'Column settings'}</button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const copied = await copyWatchlist(activeWatchlist.watchlist_id)
+                      setWatchlists((current) => [...current, copied])
+                      setNotice(`Copied watchlist "${activeWatchlist.name}".`)
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : 'Failed to copy watchlist.')
+                    } finally {
+                      setSelectorMenuOpen(false)
+                    }
+                  }}
+                >
+                  Copy Watchlist
+                </button>
+                {!activeWatchlistIsSystem ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmError(null)
+                      setPendingDeleteWatchlist(activeWatchlist)
+                      setSelectorMenuOpen(false)
+                    }}
+                  >
+                    Delete Watchlist
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -2557,59 +2617,13 @@ export default function WatchlistsPage() {
           </Link>
           {watchlists.map((watchlist) =>
             watchlist.watchlist_id === watchlistId ? (
-              <div className="watchlist-menu-shell" key={watchlist.watchlist_id} ref={selectorMenuRef}>
-                <div className="watchlist-switcher-chip watchlist-switcher-chip-active">
-                  <Link
-                    className="watchlist-switcher-chip-label watchlist-switcher-chip-label-active"
-                    to={buildWatchlistPath(watchlist.watchlist_id)}
-                  >
-                    {watchlist.name}
-                  </Link>
-                  <button
-                    type="button"
-                    className="watchlist-menu-trigger watchlist-menu-trigger-active"
-                    onClick={() => setSelectorMenuOpen((current) => !current)}
-                    aria-label="Watchlist actions"
-                  >
-                    ...
-                  </button>
-                </div>
-                {selectorMenuOpen ? (
-                  <div className="watchlist-menu">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          const copied = await copyWatchlist(watchlist.watchlist_id)
-                          setWatchlists((current) => [...current, copied])
-                          setNotice(`Copied watchlist "${watchlist.name}".`)
-                        } catch (requestError) {
-                          setError(
-                            requestError instanceof Error
-                              ? requestError.message
-                              : 'Failed to copy watchlist.',
-                          )
-                        } finally {
-                          setSelectorMenuOpen(false)
-                        }
-                      }}
-                    >
-                      Copy Watchlist
-                    </button>
-                    {!isSystemWatchlist(watchlist) ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setConfirmError(null)
-                          setPendingDeleteWatchlist(watchlist)
-                          setSelectorMenuOpen(false)
-                        }}
-                      >
-                        Delete Watchlist
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
+              <div className="watchlist-switcher-chip watchlist-switcher-chip-active" key={watchlist.watchlist_id}>
+                <Link
+                  className="watchlist-switcher-chip-label watchlist-switcher-chip-label-active"
+                  to={buildWatchlistPath(watchlist.watchlist_id)}
+                >
+                  {watchlist.name}
+                </Link>
               </div>
             ) : (
               <button
@@ -2721,14 +2735,7 @@ export default function WatchlistsPage() {
             <button
               type="button"
               className="watchlists-toolbar-button"
-              onClick={() => {
-                setColumnDraft(ensureRequiredColumns(visibleColumns))
-                setModalError(null)
-                setModalKind('columns')
-                setFilterMenuOpen(false)
-                setGroupMenuOpen(false)
-                setNotice(null)
-              }}
+              onClick={openColumns}
             >
               Columns
             </button>

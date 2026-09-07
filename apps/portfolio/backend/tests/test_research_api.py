@@ -4037,7 +4037,7 @@ def test_research_risk_budget_solver_returns_binding_signed_negative_constrained
     assert solution.execution_ready is False
 
 
-def test_research_target_volatility_rejects_unaligned_risk_history(client):
+def test_research_target_volatility_rejects_too_few_aligned_observations(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -4065,10 +4065,10 @@ def test_research_target_volatility_rejects_unaligned_risk_history(client):
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
-    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]
+    assert "requires at least 90 complete aligned return observations; got 41" in run_response.json()["detail"]
 
 
-def test_research_target_volatility_rejects_missing_child_sleeve_history(client):
+def test_research_target_volatility_rejects_insufficient_child_sleeve_history(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="weight")
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -4092,10 +4092,10 @@ def test_research_target_volatility_rejects_missing_child_sleeve_history(client)
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
-    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]
+    assert "requires at least 90 complete aligned return observations; got 41" in run_response.json()["detail"]
 
 
-def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(client):
+def test_research_run_rejects_insufficient_aligned_history(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -4117,4 +4117,4 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
-    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]
+    assert "requires at least 90 complete aligned return observations; got 41" in run_response.json()["detail"]

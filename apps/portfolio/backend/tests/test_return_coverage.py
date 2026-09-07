@@ -231,8 +231,8 @@ def test_fair_value_nav_and_twr_do_not_depend_on_book_pnl_coverage(monkeypatch) 
     assert report["summary"]["cumulative_twr"] == pytest.approx(0.10)
 
 
-def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(monkeypatch) -> None:
-    portfolio_id = "flow-gap-reanchor-test"
+def test_external_flow_inside_valuation_gap_stops_return_chain(monkeypatch) -> None:
+    portfolio_id = "flow-gap-stop-test"
     instrument_id = "equity-gap-asset"
     instrument_detail = {
         "instrument_id": instrument_id,
@@ -287,7 +287,7 @@ def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(mo
             portfolio_id,
             "txn-buy",
             "buy",
-            date(2026, 1, 2),
+            date(2026, 1, 1),
             transaction_sequence=3,
             gross_amount=100.0,
             account_id="broker-us-main",
@@ -306,29 +306,31 @@ def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(mo
     )
     by_date = {snapshot["as_of_date"]: snapshot for snapshot in snapshots}
 
+    # The first confirmed purchase is valued at its transaction price on Jan 1.
+    # The Jan 2 deposit coincides with a genuinely missing subsequent close.
+    assert set(by_date) == {date(2026, 1, 1), date(2026, 1, 2)}
     assert by_date[date(2026, 1, 1)]["nav"] == pytest.approx(100.0)
-    assert by_date[date(2026, 1, 2)]["nav"] is None
-    assert by_date[date(2026, 1, 2)]["external_cash_in"] == pytest.approx(100.0)
-    assert by_date[date(2026, 1, 3)]["nav"] == pytest.approx(200.0)
-    assert by_date[date(2026, 1, 3)]["daily_twr"] is None
-    assert by_date[date(2026, 1, 3)]["return_coverage_state"] != "complete"
-    assert by_date[date(2026, 1, 4)]["beginning_nav"] == pytest.approx(200.0)
-    assert by_date[date(2026, 1, 4)]["daily_twr"] == pytest.approx(0.0)
-    assert by_date[date(2026, 1, 2)]["cumulative_twr"] is None
-    assert by_date[date(2026, 1, 3)]["drawdown"] is None
-    assert by_date[date(2026, 1, 4)]["cumulative_twr"] is None
-    assert by_date[date(2026, 1, 4)]["return_chain_continuous"] is False
+    gap = by_date[date(2026, 1, 2)]
+    assert gap["nav"] is None
+    assert gap["return_coverage_state"] == "unavailable"
+    assert gap["return_chain_continuous"] is False
+    assert "equity-gap-asset valuation price" in gap["valuation_blocked_reason"]
 
     report = performance.build_portfolio_performance_report_from_snapshots(
         _portfolio(portfolio_id, date(2026, 1, 4)),
         snapshots,
         transactions=transactions,
     )
-    assert report["summary"]["cumulative_twr"] is None
+    assert report["summary"]["effective_end_date"] == date(2026, 1, 1)
+    assert report["summary"]["as_of_clamp_reason"] == "required_market_data_missing"
+    assert report["summary"]["end_nav"] == pytest.approx(100.0)
+    assert report["summary"]["external_cash_in"] == 0.0
+    assert report["summary"]["cumulative_twr"] == 0.0
     assert report["summary"]["current_drawdown"] is None
     assert report["summary"]["irr"] is None
-    assert report["daily_series"][-1]["cumulative_twr"] is None
-    assert report["daily_series"][-1]["drawdown"] is None
+    assert report["daily_series"][-1]["cumulative_twr"] == 0.0
+    assert report["daily_series"][-1]["drawdown"] == 0.0
+    assert [item["as_of_date"] for item in report["daily_series"]] == [date(2026, 1, 1)]
 
 
 def test_performance_summary_clamps_to_latest_reliable_endpoint() -> None:

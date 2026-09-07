@@ -290,6 +290,14 @@
 .risk-source {
   color: #647685;
 }
+.risk-event-sources {
+  padding-left: 18px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.risk-event-sources li { margin: 8px 0; }
+.risk-event-sources a { color: #326c68; text-decoration: underline; }
+.risk-event-sources small { display: block; color: #647685; margin-top: 3px; }
 .risk-due {
   color: #a5612c;
 }

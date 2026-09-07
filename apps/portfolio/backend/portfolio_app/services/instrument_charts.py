@@ -11,7 +11,9 @@ from portfolio_app.services.execution_quotes import execution_quote_bases
 from investment_studio_instrument_core import resolve_quote_return_semantics
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
+    QuoteSeriesResolution,
     analytical_return_quote_bases,
+    market_calendar_sessions,
     resolve_quote_series,
 )
 
@@ -367,11 +369,31 @@ def _selection_rank(
     )
 
 
+def _resolve_profile_quote_series(
+    detail: dict[str, object],
+    *,
+    quote_basis: str,
+    as_of_date: date,
+    resolutions: dict[str, QuoteSeriesResolution],
+) -> QuoteSeriesResolution:
+    # This dictionary belongs to one instrument and as-of date. Chart and
+    # total-return selection keep their own policies, sharing only raw inputs.
+    if quote_basis not in resolutions:
+        resolutions[quote_basis] = resolve_quote_series(
+            detail,
+            candidate_bases=[quote_basis],
+            end_date=as_of_date,
+        )
+    return resolutions[quote_basis]
+
+
 def _select_chart_series(
     detail: dict[str, object],
     *,
     as_of_date: date,
+    resolutions: dict[str, QuoteSeriesResolution] | None = None,
 ) -> ChartSeriesSelection:
+    resolutions = {} if resolutions is None else resolutions
     candidate_bases = _candidate_chart_bases(detail)
     if not candidate_bases:
         return ChartSeriesSelection(
@@ -385,10 +407,11 @@ def _select_chart_series(
     unavailable_reasons: list[str] = []
     withheld_reasons: list[str] = []
     for policy_index, quote_basis in enumerate(candidate_bases):
-        resolution = resolve_quote_series(
+        resolution = _resolve_profile_quote_series(
             detail,
-            candidate_bases=[quote_basis],
-            end_date=as_of_date,
+            quote_basis=quote_basis,
+            as_of_date=as_of_date,
+            resolutions=resolutions,
         )
         if not resolution.available:
             if resolution.unavailable_reason:
@@ -456,7 +479,9 @@ def _select_total_return_series(
     detail: dict[str, object],
     *,
     as_of_date: date,
+    resolutions: dict[str, QuoteSeriesResolution] | None = None,
 ) -> ChartSeriesSelection:
+    resolutions = {} if resolutions is None else resolutions
     analytical_bases = analytical_return_quote_bases(detail)
     candidate_bases = _candidate_total_return_bases(detail)
     if not candidate_bases:
@@ -471,10 +496,11 @@ def _select_total_return_series(
 
     unavailable_reasons: list[str] = []
     for policy_index, quote_basis in enumerate(candidate_bases):
-        resolution = resolve_quote_series(
+        resolution = _resolve_profile_quote_series(
             detail,
-            candidate_bases=[quote_basis],
-            end_date=as_of_date,
+            quote_basis=quote_basis,
+            as_of_date=as_of_date,
+            resolutions=resolutions,
         )
         if not resolution.available:
             if resolution.unavailable_reason:
@@ -926,6 +952,21 @@ def build_instrument_trend_metrics_from_detail(
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     selection = _select_total_return_series(detail, as_of_date=as_of_date)
+    return _build_instrument_trend_metrics_from_selection(
+        selection,
+        as_of_date=as_of_date,
+        holding_start_date=holding_start_date,
+        calculation_frequency=calculation_frequency,
+    )
+
+
+def _build_instrument_trend_metrics_from_selection(
+    selection: ChartSeriesSelection,
+    *,
+    as_of_date: date,
+    holding_start_date: date | None,
+    calculation_frequency: CalculationFrequency,
+) -> dict[str, object]:
     selected_points = list(selection.points)
     selected_basis = selection.selected_basis
     if not selected_points:
@@ -1074,6 +1115,23 @@ def build_instrument_trend_metrics(
     )
 
 
+def _chart_window_points(
+    selection: ChartSeriesSelection,
+    *,
+    as_of_date: date,
+    range_key: str,
+) -> list[dict[str, object]]:
+    range_start_date = _range_start_date(as_of_date=as_of_date, range_key=range_key)
+    visible_points = [
+        point
+        for point in selection.points
+        if range_start_date is None or point["date"] >= range_start_date
+    ]
+    if not visible_points and selection.points:
+        return [selection.points[-1]]
+    return visible_points
+
+
 def build_instrument_price_chart_from_detail(
     detail: dict[str, object],
     *,
@@ -1089,22 +1147,24 @@ def build_instrument_price_chart_from_detail(
         if price_level
         else _select_chart_series(detail, as_of_date=as_of_date)
     )
-    selected_points = list(selection.points)
     selected_basis = selection.selected_basis
-
-    range_start_date = _range_start_date(as_of_date=as_of_date, range_key=normalized_range_key)
-    visible_points = (
-        [
-            point
-            for point in selected_points
-            if range_start_date is None or point["date"] >= range_start_date
-        ]
-        if selected_points
-        else []
+    visible_points = _chart_window_points(
+        selection,
+        as_of_date=as_of_date,
+        range_key=normalized_range_key,
     )
-    if not visible_points and selected_points:
-        visible_points = [selected_points[-1]]
 
+    settings = detail.get("source_settings")
+    calendar_name = str(
+        (settings.get("market_calendar") if isinstance(settings, dict) else None)
+        or detail.get("exchange_code") or ""
+    ).strip()
+    # Calendar coverage extends through the requested date, including missing
+    # prices after the last observation. Never infer closures from price gaps.
+    market_sessions = (
+        market_calendar_sessions(calendar_name, visible_points[0]["date"], as_of_date)
+        if calendar_name and visible_points else None
+    )
     visible_points = _downsample_points(visible_points, max_points=max_points)
     point_values = [float(point["value"]) for point in visible_points]
     first_value = point_values[0] if point_values else None
@@ -1136,6 +1196,10 @@ def build_instrument_price_chart_from_detail(
         "coverage_state": str((selection.coverage or {}).get("state") or "unavailable"),
         "selection_reason": selection.reason,
         "split_adjusted": selection.split_adjusted,
+        "market_session_dates": (
+            [session.isoformat() for session in market_sessions]
+            if market_sessions is not None else None
+        ),
         "metric_family": (
             str(visible_points[-1].get("metric_family") or "")
             if visible_points
@@ -1242,20 +1306,6 @@ def build_instrument_sparkline(
     ]
 
 
-def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, object]]:
-    points = chart.get("points", []) if isinstance(chart, dict) else []
-    if not isinstance(points, list):
-        return []
-    return [
-        {
-            "date": str(point.get("date") or ""),
-            "value": float(point.get("value")),
-        }
-        for point in points
-        if isinstance(point, dict) and _safe_float(point.get("value")) is not None
-    ]
-
-
 def build_instrument_holdings_market_profile_from_detail(
     detail: dict[str, object],
     *,
@@ -1264,23 +1314,37 @@ def build_instrument_holdings_market_profile_from_detail(
     holding_start_date: date | None = None,
     max_points: int = 48,
     calculation_frequency: CalculationFrequency = "daily",
+    include_details: bool = True,
 ) -> dict[str, object]:
+    resolutions: dict[str, QuoteSeriesResolution] = {}
+    chart_selection = _select_chart_series(
+        detail, as_of_date=as_of_date, resolutions=resolutions,
+    )
+    trend_selection = _select_total_return_series(
+        detail, as_of_date=as_of_date, resolutions=resolutions,
+    )
+    # Holdings exposes only chart points. Full chart metadata and calendar
+    # sessions belong to the separate price-chart response.
     charts = {
-        f"price_chart_{range_key}": _chart_points_payload(
-            build_instrument_price_chart_from_detail(
-                detail,
-                instrument_id=instrument_id,
-                as_of_date=as_of_date,
-                range_key=range_key,
-                max_points=max_points,
-            )
+        f"price_chart_{range_key}": (
+            [
+                {"date": point["date_iso"], "value": float(point["value"])}
+                for point in _downsample_points(
+                    _chart_window_points(
+                        chart_selection, as_of_date=as_of_date, range_key=range_key,
+                    ),
+                    max_points=max_points,
+                )
+            ]
+            if include_details or range_key == "6m"
+            else []
         )
         for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
     }
     return {
         **charts,
-        **build_instrument_trend_metrics_from_detail(
-            detail,
+        **_build_instrument_trend_metrics_from_selection(
+            trend_selection,
             as_of_date=as_of_date,
             holding_start_date=holding_start_date,
             calculation_frequency=calculation_frequency,

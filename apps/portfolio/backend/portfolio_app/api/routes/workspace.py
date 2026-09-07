@@ -3,15 +3,11 @@ from datetime import date
 from typing import cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from sqlalchemy import select
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.api.assemblers import resolve_transaction_net_cash_effect
-from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
-from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
-    DAILY_SNAPSHOT_CALCULATION_VERSION,
     build_materialized_position_holding_projection,
     ensure_portfolio_daily_snapshots,
     list_materialized_derivative_risk_context,
@@ -19,7 +15,9 @@ from portfolio_app.services.daily_snapshots import (
 from portfolio_app.services.derivative_holding_risk import (
     enrich_derivative_holding_risk,
 )
+from portfolio_app.api.financial_read import FinancialReadRoute
 from portfolio_app.services.analytics_scope import (
+    analytics_policy_version,
     resolve_instrument_analytics_scopes,
 )
 from portfolio_app.services.instrument_charts import (
@@ -30,6 +28,8 @@ from portfolio_app.services.instrument_charts import (
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
+    get_cached_holdings_analytics_workspace,
+    get_cached_portfolio_risk_basis,
     preload_portfolio_workspace_cache,
 )
 from portfolio_app.services.ledger import (
@@ -56,15 +56,13 @@ from portfolio_app.services.holdings_market_profile import (
 )
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
-    get_portfolio_live_summary,
     list_accounts,
     list_transactions,
 )
 from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
-from portfolio_app.services.snapshot_selection import latest_fresh_complete_portfolio_snapshot
 from portfolio_app.services.transaction_dates import transaction_cash_activity_date
 
-router = APIRouter()
+router = APIRouter(route_class=FinancialReadRoute)
 
 _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_trend_as_of_date",
@@ -579,6 +577,11 @@ def _public_holdings_workspace_response(
     if include_details:
         workspace["detail_level"] = "full"
         return workspace
+    return _compact_holdings_workspace(workspace)
+
+
+def _compact_holdings_workspace(workspace: dict[str, object]) -> dict[str, object]:
+    rows = workspace.get("rows")
     workspace["detail_level"] = "compact"
     if isinstance(rows, list):
         for row in rows:
@@ -742,6 +745,7 @@ def _enrich_holdings_workspace_market_data(
     position_lots: list[dict[str, object]],
     risk_basis_profile: dict[str, object],
     instrument_details: dict[str, dict[str, object] | None],
+    include_details: bool = True,
 ) -> dict[str, object]:
     enriched_workspace = deepcopy(workspace)
     enriched_workspace.pop("price_chart_range", None)
@@ -787,6 +791,7 @@ def _enrich_holdings_workspace_market_data(
                     as_of_date=as_of_date,
                     holding_start_date=holding_start_date,
                     calculation_frequency=calculation_frequency,
+                    include_details=include_details,
                 )
             )
         else:
@@ -799,38 +804,17 @@ def _enrich_holdings_workspace_market_data(
     return enriched_workspace
 
 
-def _materialized_summary_is_current(portfolio_id: str) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
-            return False
-        payload = session.scalar(
-            select(PortfolioDailySnapshotModel.snapshot_json)
-            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
-            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-            .limit(1)
-        )
-        if not isinstance(payload, dict):
-            return False
-        return (
-            str(payload.get("calculation_version") or "") == DAILY_SNAPSHOT_CALCULATION_VERSION
-            and latest_fresh_complete_portfolio_snapshot(session, portfolio_id) is not None
-        )
-
-
-def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: bool = False) -> dict[str, object]:
+def _require_portfolio(portfolio_id: str | None, *, ensure_materialized_summary: bool = False) -> dict[str, object]:
     if not portfolio_id:
         raise HTTPException(status_code=400, detail="portfolio_id is required")
-    if live_if_materialized_stale:
+    if ensure_materialized_summary:
         try:
             ensure_portfolio_daily_snapshots(portfolio_id)
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
-    if live_if_materialized_stale and not _materialized_summary_is_current(portfolio_id):
-        resolved_portfolio = get_portfolio_live_summary(portfolio_id)
-    else:
-        resolved_portfolio = get_portfolio(portfolio_id)
+    # A completed refresh can end at a valuation gap. Its valid prefix is the
+    # summary boundary; rebuilding live would silently bypass that boundary.
+    resolved_portfolio = get_portfolio(portfolio_id)
     if resolved_portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return resolved_portfolio
@@ -844,6 +828,14 @@ def _portfolio_calculation_frequency_status(portfolio: dict[str, object], *, as_
 
 
 def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as_of_date: date) -> dict[str, object]:
+    return get_cached_portfolio_risk_basis(
+        str(portfolio.get("portfolio_id") or ""),
+        as_of_date=as_of_date,
+        builder=lambda: _build_portfolio_calculation_frequency_profile(portfolio, as_of_date=as_of_date),
+    )
+
+
+def _build_portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as_of_date: date) -> dict[str, object]:
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     if not portfolio_id:
         return calculation_frequency_profile_for_instruments([], end_date=as_of_date)
@@ -889,7 +881,7 @@ def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as
 
 @router.get("/summary")
 def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=True)
+    resolved_portfolio = _require_portfolio(portfolio_id, ensure_materialized_summary=True)
 
     as_of_date = str(resolved_portfolio.get("as_of_date") or date.today().isoformat())
     parsed_as_of_date = date.fromisoformat(as_of_date)
@@ -948,7 +940,7 @@ def holdings_workspace(
     as_of_date: date | None = None,
     include_details: bool = False,
 ) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=as_of_date is None)
+    resolved_portfolio = _require_portfolio(portfolio_id, ensure_materialized_summary=True)
 
     portfolio_as_of_date = (
         date.fromisoformat(str(resolved_portfolio.get("as_of_date")))
@@ -956,9 +948,54 @@ def holdings_workspace(
         else None
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
+    blocked_from = resolved_portfolio.get("valuation_blocked_from")
+    if blocked_from and resolved_as_of_date >= date.fromisoformat(str(blocked_from)):
+        raise HTTPException(status_code=409, detail=str(resolved_portfolio["valuation_blocked_reason"]))
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    transactions = list_transactions(resolved_portfolio_id)
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
+
+    def build_analytics_workspace() -> dict[str, object]:
+        # Read inputs after the cache captures its source generation. Otherwise
+        # a worker could publish a newer generation before this builder starts.
+        workspace = _build_holdings_analytics_workspace(
+            _require_portfolio(resolved_portfolio_id),
+            resolved_as_of_date=resolved_as_of_date,
+            transactions=list_transactions(resolved_portfolio_id),
+            risk_policy=risk_policy or {},
+            include_details=include_details,
+        )
+        return workspace if include_details else _compact_holdings_workspace(workspace)
+
+    response = (
+        build_analytics_workspace()
+        if include_details
+        else get_cached_holdings_analytics_workspace(
+            resolved_portfolio_id,
+            as_of_date=resolved_as_of_date,
+            risk_policy=risk_policy or {},
+            analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
+            builder=build_analytics_workspace,
+        )
+    )
+    # Operational tasks and derivative observations can change independently
+    # of the accounting snapshot. Refresh them outside the analytics cache.
+    return _public_holdings_workspace_response(
+        response,
+        include_details=include_details,
+        transactions=list_transactions(resolved_portfolio_id),
+        as_of_date=resolved_as_of_date,
+    )
+
+
+def _build_holdings_analytics_workspace(
+    resolved_portfolio: dict[str, object],
+    *,
+    resolved_as_of_date: date,
+    transactions: list[dict[str, object]],
+    risk_policy: dict[str, object],
+    include_details: bool,
+) -> dict[str, object]:
+    resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
@@ -966,12 +1003,29 @@ def holdings_workspace(
     if materialized_workspace is not None:
         try:
             instrument_ids = _instrument_ids_from_holdings_workspace(materialized_workspace)
-            instrument_details = get_registry_instrument_details(instrument_ids)
-            risk_basis_profile = calculation_frequency_profile_for_instruments(
-                instrument_ids,
-                end_date=resolved_as_of_date,
-                detail_loader=instrument_details.get,
+            instrument_details: dict[str, dict[str, object] | None] = {}
+
+            def build_risk_basis() -> dict[str, object]:
+                # This cache has its own generation boundary; do not capture
+                # observations loaded before it checked that generation.
+                current_workspace = get_cached_materialized_holdings_workspace(
+                    resolved_portfolio_id, as_of_date=resolved_as_of_date,
+                )
+                current_ids = _instrument_ids_from_holdings_workspace(current_workspace or {})
+                instrument_details.update(get_registry_instrument_details(current_ids))
+                return calculation_frequency_profile_for_instruments(
+                    current_ids,
+                    end_date=resolved_as_of_date,
+                    detail_loader=instrument_details.get,
+                )
+
+            risk_basis_profile = get_cached_portfolio_risk_basis(
+                resolved_portfolio_id,
+                as_of_date=resolved_as_of_date,
+                builder=build_risk_basis,
             )
+            if not instrument_details:
+                instrument_details = get_registry_instrument_details(instrument_ids)
             calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
             if _holdings_workspace_has_market_profile(
                 materialized_workspace,
@@ -993,12 +1047,7 @@ def holdings_workspace(
                     calculation_frequency=calculation_frequency,
                     risk_policy=risk_policy or {},
                 )
-                return _public_holdings_workspace_response(
-                    enriched_response,
-                    include_details=include_details,
-                    transactions=transactions,
-                    as_of_date=resolved_as_of_date,
-                )
+                return enriched_response
             accounts = list_accounts(resolved_portfolio_id)
             position_lots = build_position_lots(
                 resolved_portfolio_id,
@@ -1016,6 +1065,7 @@ def holdings_workspace(
                 position_lots=position_lots,
                 risk_basis_profile=risk_basis_profile,
                 instrument_details=instrument_details,
+                include_details=include_details,
             )
             scoped_response = _enrich_holdings_analytics_scope(
                 response,
@@ -1029,12 +1079,7 @@ def holdings_workspace(
                 calculation_frequency=calculation_frequency,
                 risk_policy=risk_policy or {},
             )
-            return _public_holdings_workspace_response(
-                enriched_response,
-                include_details=include_details,
-                transactions=transactions,
-                as_of_date=resolved_as_of_date,
-            )
+            return enriched_response
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -1084,6 +1129,7 @@ def holdings_workspace(
                 as_of_date=resolved_as_of_date,
                 holding_start_date=holding_start_dates.get(instrument_id),
                 calculation_frequency=calculation_frequency,
+                include_details=include_details,
             )
             for position in statement.get("positions", [])
             if (instrument_id := str(position.get("instrument_id") or ""))
@@ -1358,12 +1404,7 @@ def holdings_workspace(
         calculation_frequency=calculation_frequency,
         risk_policy=risk_policy or {},
     )
-    return _public_holdings_workspace_response(
-        enriched_response,
-        include_details=include_details,
-        transactions=transactions,
-        as_of_date=resolved_as_of_date,
-    )
+    return enriched_response
 
 
 @router.get("/holdings/position")

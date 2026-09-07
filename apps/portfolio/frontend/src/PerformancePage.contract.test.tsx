@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,8 +17,10 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioInstruments: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
 }))
+const exportMocks = vi.hoisted(() => ({ downloadTable: vi.fn() }))
 
 vi.mock('./lib/api', () => apiMocks)
+vi.mock('../../../../packages/ui/src/tableExport', () => exportMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
@@ -267,6 +269,36 @@ describe('Performance rendered page contract', () => {
     expect(hint).toHaveAttribute('title', expect.stringContaining('operational ledger return'))
     expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
     expect(screen.queryByText('Not a complete fair-value TWR.')).not.toBeInTheDocument()
+    expect(screen.getByText('Operational carrying-basis return; incomplete fair-value performance')).toBeVisible()
+    expect(screen.getByText('Recorded fees and taxes deducted')).toBeVisible()
+  })
+
+  it('shows the missing observation and arithmetic-to-TWR bridge, and preserves export context', async () => {
+    const fixture = performanceFixture()
+    const missingWarning = 'Required market data missing: 2026-07-16; stock-a valuation price, FX USD/CNY. Supply the required observation before performance can continue.'
+    apiMocks.getPortfolioPerformance.mockResolvedValue({ ...fixture, summary: {
+      ...fixture.summary, cumulative_twr: .029, quality_warnings: [missingWarning],
+      as_of_clamp_reason: 'required_market_data_missing', effective_end_date: '2026-07-15',
+      requested_end_date: '2026-07-16',
+    } })
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-16',
+      '/portfolios/:portfolioId/performance')
+    expect(await screen.findByText(missingWarning)).toBeVisible()
+    const bridge = await screen.findByRole('row', { name: /TWR Linking Difference/ })
+    expect(within(bridge).getByText('-0.12%')).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: /Arithmetic Return Contribution/ })).toBeVisible()
+    expect(screen.queryByText('Relative')).not.toBeInTheDocument()
+    const maxDrawdown = screen.getByRole('row', { name: /^Market Risk Max DD/ })
+    expect(maxDrawdown.closest('.performance-metric-table-shell')).toHaveTextContent('Risk')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+    const exportedRows = exportMocks.downloadTable.mock.calls[0][1]
+    expect(exportedRows).toContainEqual(['Currency', 'USD'])
+    expect(exportedRows).toContainEqual(['Period', '2026-07-06 to 2026-07-15'])
+    expect(exportedRows).toContainEqual(['Return units', 'Decimal fractions: 0.01 = 1%'])
+    expect(exportedRows).toContainEqual(['Fees and taxes', 'Recorded fees and taxes deducted'])
   })
 
   it('waits for the default planning taxonomy before loading calculation groups', async () => {
@@ -394,7 +426,49 @@ describe('Performance rendered page contract', () => {
     expect(periodReturnCells[1]).not.toHaveTextContent('—')
     expect(periodReturnCells[2]).not.toHaveTextContent('—')
     const trackingErrorCells = within(screen.getByRole('row', { name: /Tracking Error/ })).getAllByRole('cell')
+    expect(trackingErrorCells).toHaveLength(1)
     expect(trackingErrorCells[0]).not.toHaveTextContent('—')
+  })
+
+  it.each([
+    { missingDate: '2026-07-15', allCash: false },
+    { missingDate: '2026-07-08', allCash: true },
+    { missingDate: null, allCash: true },
+  ])('checks all benchmark sessions through the cash tail ($missingDate)', async ({ missingDate, allCash }) => {
+    const user = userEvent.setup()
+    const performance = performanceFixture()
+    performance.daily_series = performance.daily_series.map((point) => ({ ...point,
+      market_risk_daily_return: !allCash && point.as_of_date === '2026-07-07' ? 0 : null,
+      market_risk_return_observation_eligible: !allCash && point.as_of_date === '2026-07-07',
+    }))
+    apiMocks.getPortfolioPerformance.mockResolvedValue(performance)
+    const instrument = { instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark',
+      instrument_type: 'index', currency: 'USD', identifiers: [], latest_market_data: [] }
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    const sessionDates = ['2026-07-06', '2026-07-07', '2026-07-08', '2026-07-09',
+      '2026-07-10', '2026-07-13', '2026-07-14', '2026-07-15']
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
+      portfolio_id: '3', instrument_core: instrument, as_of_date: '2026-07-15', range_key: 'all',
+      chart_basis: 'close', return_semantics: 'price_return', currency: 'USD', metric_family: 'price',
+      market_session_dates: sessionDates,
+      points: sessionDates.map((date, index) => ({ date, value: 100 + index * 3 }))
+        .filter((point) => point.date !== missingDate),
+      summary: { point_count: 8, change_value: 21, change_pct: .21, high: 121, low: 100 },
+    })
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance')
+    await user.type(await screen.findByRole('searchbox', { name: 'Compare benchmark' }), 'Market')
+    await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
+    const hint = await screen.findByRole('note', { name: /Benchmark comparison:/ })
+    const returnRow = screen.getByRole('row', { name: /Total Portfolio Return/ })
+    if (missingDate) {
+      expect(hint).toHaveAttribute('title', expect.stringContaining(`required observations are missing: ${missingDate}`))
+      expect(within(returnRow).getAllByRole('cell')).toHaveLength(1)
+      expect(screen.getByRole('row', { name: /Tracking Error/ })).toHaveTextContent('—')
+    } else {
+      expect(within(returnRow).getAllByRole('cell')[1]).toHaveTextContent('+21.00%')
+    }
   })
 
   it('renders the period controls and derives calendar presets from the selected end boundary', async () => {
@@ -511,6 +585,47 @@ describe('Performance rendered page contract', () => {
     })
   })
 
+  it('submits edited dates together without requesting intermediate windows', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+    await screen.findByRole('row', { name: /Portfolio Total/ })
+    apiMocks.getPortfolioPerformance.mockClear()
+    apiMocks.getPortfolioPerformanceCalculation.mockClear()
+    apiMocks.getPortfolioPerformanceCalculationGroups.mockClear()
+
+    fireEvent.change(screen.getByLabelText('Start Date'), { target: { value: '2026-07-01' } })
+    fireEvent.change(screen.getByLabelText('End Date'), { target: { value: '2026-07-14' } })
+    expect(apiMocks.getPortfolioPerformance).not.toHaveBeenCalled()
+    expect(apiMocks.getPortfolioPerformanceCalculation).not.toHaveBeenCalled()
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Apply period' }))
+    await waitFor(() => expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1))
+    expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', {
+      start_date: '2026-07-01', end_date: '2026-07-14',
+    })
+  })
+
+  it('keeps an invalid draft from replacing the applied period', async () => {
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+    await screen.findByRole('row', { name: /Portfolio Total/ })
+    apiMocks.getPortfolioPerformance.mockClear()
+    fireEvent.change(screen.getByLabelText('Start Date'), { target: { value: '2026-07-20' } })
+
+    expect(screen.getByRole('button', { name: 'Apply period' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Start Date must be on or before End Date.')
+    expect(apiMocks.getPortfolioPerformance).not.toHaveBeenCalled()
+    expect(screen.getByRole('row', { name: /Portfolio Total/ })).toBeInTheDocument()
+  })
+
   it('lets the backend resolve SI inception and keeps one unguessed window across all reports', async () => {
     const user = userEvent.setup()
     apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(
@@ -608,9 +723,9 @@ describe('Performance rendered page contract', () => {
         risk_sample_count: 1,
         risk_result_status: 'insufficient_samples',
         risk_unavailable_reason: 'insufficient_return_samples',
-        annualized_volatility: null,
+        annualized_volatility: .25,
         annualized_downside_volatility: null,
-        sharpe_ratio: null,
+        sharpe_ratio: 1.3,
         sortino_ratio: null,
         pending_settlement_currency_gains: null,
       },
@@ -633,6 +748,10 @@ describe('Performance rendered page contract', () => {
     ).toBeInTheDocument()
 
     const volatilityRow = screen.getByRole('row', { name: /^Market Risk Volatility/ })
+    expect(within(volatilityRow).getByText('—')).toBeVisible()
+    const portfolioTotal = await screen.findByRole('row', { name: /Portfolio Total/ })
+    expect(portfolioTotal).not.toHaveTextContent('25.00%')
+    expect(portfolioTotal).not.toHaveTextContent('1.30')
     expect(
       within(volatilityRow).getByRole('note', {
         name: 'Market Risk Volatility availability: Requires ≥ 2 daily return samples (1 available)',

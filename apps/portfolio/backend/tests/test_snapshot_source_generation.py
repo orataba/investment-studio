@@ -102,7 +102,9 @@ def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) ->
         capture_rebuild_scope,
     )
 
-    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
+    with pytest.raises(daily_snapshots.PortfolioCalculationPending):
+        daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
 
     assert requested_start_dates == [None]
     with session_factory() as session:

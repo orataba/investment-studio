@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 
-ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES = frozenset({"dividend", "coupon"})
+ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES = frozenset({"dividend", "coupon", "dividend_reinvestment"})
 EXTERNAL_FLOW_TRANSACTION_TYPES = frozenset({"deposit", "withdrawal"})
 POSITION_EFFECTIVE_TRANSACTION_TYPES = frozenset(
     {
@@ -135,6 +135,25 @@ def transaction_precedes_entitlement_bod(
         return False
     acquisition_date = _parse_date(transaction.get("acquisition_date"))
     return acquisition_date is not None and acquisition_date < entitlement_date
+
+
+def transaction_precedes_asset_cash_flow(
+    transaction: dict[str, object],
+    cash_flow: dict[str, object],
+) -> bool:
+    """Use the actual charge time for expenses without a historical entitlement."""
+
+    if (
+        cash_flow.get("transaction_type") in {"fee", "tax"}
+        and _parse_date(cash_flow.get("entitlement_date")) is None
+    ):
+        return transaction_sort_key(transaction) < transaction_sort_key(cash_flow)
+    entitlement_date = _parse_date(cash_flow.get("entitlement_date")) or _parse_date(
+        cash_flow.get("trade_date")
+    )
+    return entitlement_date is not None and transaction_precedes_entitlement_bod(
+        transaction, entitlement_date
+    )
 
 
 def transaction_economic_date(transaction: dict[str, object]) -> date | None:

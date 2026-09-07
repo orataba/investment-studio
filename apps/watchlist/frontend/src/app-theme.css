@@ -21,6 +21,17 @@
   backdrop-filter: none;
 }
 
+.instrument-detail-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.instrument-detail-topbar > .language-switcher {
+  justify-self: end;
+  margin-left: auto;
+}
+
 .watchlist-breadcrumb-separator,
 .instrument-detail-breadcrumb-separator {
   color: var(--faint);

@@ -54,7 +54,7 @@ GIPS 要求至少月度计算 TWR；如果不计算日收益，则大额外部�
 - 每个 daily snapshot 显式保留 `beginning_nav` 与 `ending_nav`；组合已经存在时，显式区间把 `start_date`、`end_date` 都解释为 EOD boundary，使用首日 `ending_nav` 作为 initial value、末日 `ending_nav` 作为 final value，并只链接 `(start_date, end_date]` 的日收益；
 - 普通起始日事实已经进入 initial value，不再重复计入区间 external flow、P&L 或 contribution。请求起点等于 funded-segment start（首次入金，或 NAV 真正归零后的再次入金）时，显式区间保留该日 BOD-to-EOD 子期间；导入式 opening balance 则作为 EOD anchor。留存现金仍属于组合资产，中途新买 instrument 也不构成 segment restart；
 - 组合 NAV 归零后的无资本日期不生成虚构的 0% return observation。跨越这种 inactive gap 的连续 TWR fail closed，归零前后的 funded segments 分别计算；
-- 外部现金流发生日天然拥有当日估值；
+- 外部现金流发生日必须具备当日有效估值；若必要价格或 FX 缺失，同样在首个缺口停止，现金流记录本身不能证明估值完整；
 - buy / sell 是内部资产转换，不作为外部流；系统保留实际成交金额、交易日头寸与 pending settlement，成交价到 EOD fair value 的变化进入当日 P&L/TWR；
 - 日频外部流目前采用 BOD contribution / EOD withdrawal convention。只有具备流发生时点前后的完整组合估值时，才能把盘中大额流拆成精确子期间；交易时间本身不能替代估值；
 - 当前系统不另设 large cash flow threshold；
@@ -74,7 +74,8 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 - `stale_price_flag`、`stale_fx_flag` 及 requested/effective as-of 必须随关键结果返回；
 - 经营收益的区间 daily series 与 summary 必须使用同一组 window-rebased `daily_twr`；风险 summary、risk drawdown 与 realized risk attribution 必须使用同一组 window-rebased `market_risk_daily_return`，两条链不得混用。
 - MTD / QTD / YTD 分别使用上月末 / 上季末 / 上年 `12-31` EOD anchor；休市目标日的组合使用完整 EOD carry state，标的和 benchmark 使用目标日或之前最近一个有效收盘；
-- external flow 落在不可靠估值 gap 内时，不跨 gap 几何链接；下一个可靠点只建立新 anchor。自然月、MTD/QTD/YTD 等期间还必须有可靠起止边界和连续 return coverage；
+- 来源日历确认的休市 carry 可以形成完整 EOD 边界，并保留真实行情日期。预期交易日报价或必要 FX 缺失时在首个缺口停止，只发布此前可靠前缀；缺口补齐并重算前，后续价格恢复也不能重新建立 anchor。自然月、MTD/QTD/YTD 等期间还必须有可靠起止边界和连续 return coverage；
+- 初次买入确认日无正式价格时，系统采用明确披露的成交基准初始估值：当日买入总 gross / 总 quantity，排除费用税费；正式价优先，后续仅合法休市可沿用，下一交易日继续严格要求正式价。该例外不包含非现金交付和期权实物交付关联的股票腿。它不是该日官方 EOD 行情，不能构造正式报价身份或市场风险观察；该初始估值约定不构成 GIPS compliance 声明；
 - 用户请求终点超过 latest reliable endpoint 时，后端 clamp 到有效终点并返回 requested/effective as-of 与原因，所有区间组件共用这一终点。
 
 ### 2.5 成本法不得污染绩效收益率
@@ -85,21 +86,26 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 
 - 账户级成本法只影响 `Cost Basis`、`Avg Cost`、realized capital gain、unrealized P&L 和 lot 展示；
 - 公允价值覆盖完整时，组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
-- 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
+- 已有资产交易后禁止更改账户成本法。FIFO 的默认释放顺序取原始 acquisition date 与开仓事实顺序，历史导入、转仓和拆股不重置取得先后；显式指定批次另按已记录选择执行。
 
 FCN、长期权和期权卖方义务当前采用明确的 event-accounting boundary，不构成公允价值例外：
 
 - 没有可靠 fair value 的 FCN/长期权只按 remaining transaction basis carried；written option liability 只按 remaining premium basis carried；
-- event purchase charges 当日 expense，writer premium 在 sell-to-open 时先建立等额 liability，只在 buy-to-close、writer expiry 或 writer cash settlement 时释放并确认 option P&L；option contract 不预设 settlement mode；
+- event purchase charges 当日 expense，writer premium 在 sell-to-open 时先建立等额 liability，在 buy-to-close、writer expiry、writer cash settlement 或已确认实物 assignment 时按关闭份额释放并确认 option P&L；option contract 不预设 settlement mode；
 - 总 NAV 为了资产负债表对账仍包含这些 carrying amounts，内部也可以产生 flow-neutral operational/carrying-basis daily return；
 - operational daily return 可以形成独立、明确命名的经营收益链，用于 NAV reconciliation 与经营复盘，但不得命名为完整 fair-value 或 GIPS-informed return，也不得直接输入风险统计；
 - volatility、Sharpe、Sortino、Calmar、risk drawdown、benchmark risk compare 与 realized risk attribution 使用独立 `Market Risk Return`：同一总 NAV 分母中将 base-currency cash 与衍生品作为 0-return capital，并从风险 P&L 分子剔除衍生品 cash result/FCN coupon/charges 和现金利息。普通证券 total return 与普通证券 income 保留，non-base cash FX 仍属于市场风险；
+- 期权实物行权/指派在股票腿形成的 strike-to-market 交割损益及交割费用也从风险分子剔除；否则期权兑现会伪装成股票市场收益。股票交割后真实市场变动照常进入风险链，期权 premium book P&L 与股票 strike book cost 的账本政策保持独立；
 - Holdings 的 event day change、fair value 和 quote identity 必须为空，priced coverage 不包含 event rows；Risk 只对 effective-dated policy 明确标记 `risk_eligible=true` 的 modeled market sleeve 建模，并披露 excluded carrying value/liability、coverage ratio 和 excluded rows；
 - 因此任何包含 material event-valued asset 或 derivative liability 的 operational result 和 `Market Risk Return` 都不能命名为完整 fair-value 或 GIPS-informed TWR。0-return 是明确的风险建模约定，不是对衍生品未知公允价值收益的估计。
 - 当前没有逐日 sleeve cash subledger，ordinary-sleeve TWR 明确 unavailable；从 total operational return 中过滤 derivative rows 不是可接受的 performance scope 计算。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：显式区间按 `start_date` EOD 市值重置期初持仓，只重放 `(start_date, end_date]` 内交易，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
 Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 优先使用区间期末 assignment；期末已清仓且期末不再有 active assignment 的 instrument，使用其区间内有效 assignment 承接历史 P&L，避免把 closed-position attribution 误列为 Unassigned。
+
+逐日贡献的算术和在 Calculation 中明确命名为 `Arithmetic Return Contribution`，与几何区间 TWR 的差额单列 `TWR Linking Difference`；它不是额外经济损益。表格导出保留该对平关系，并披露有效期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法和百分比单位。
+
+红利再投资在权益日确认收入，份额延后生效时先在原证券账户记录应收，确认日再转为有成本的新 lot；不得在等待期间漏掉资产或提前制造份额。关联资产的独立 fee / tax 未指定历史权益日时按费用发生前的实际同日顺序校验，支持先开仓后收费；显式历史权益日仍按 BOD 权益口径。现金同日同时间事实通过 `transaction_sequence` 重放，不能由页面排序改变汇率成本。
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
@@ -120,11 +126,12 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 本项目采用：
 
 - portfolio realized volatility、rolling volatility 默认使用 `market_risk_daily_return` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
+- Calmar 使用同一区间市场风险收益的几何年化收益除以最大回撤绝对值，采用自然周年门槛及 anniversary-aware Actual/Actual 年分数；不使用算术年化均值。风险状态不可用时，mean、volatility / downside volatility、Sharpe / Sortino 等样本统计留空，保留覆盖、样本数和不可用原因；完整收益链上独立计算的合法 drawdown 可以保留在 API，Performance headline 风险展示仍服从风险状态；
 - 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，3-year ex-post standard deviation 必须使用 36 个 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
-- 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
+- 所有必要市场与 FX 来源均未更新的合法休市日不生成风险样本；预期缺价不以 carry-forward 0 return 补齐；
 - event-valued carrying asset、premium-basis liability 和 derivative lifecycle activity 对应的 operational return 不进入风险样本；它们的资本通过 total NAV 分母按 0-return capital 进入 `market_risk_daily_return`；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
-- 手动 benchmark 对比只有在币种一致、起点锚点存在且 benchmark 覆盖组合 eligible return dates 时才输出；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
+- 手动 benchmark 对比只有在币种一致、所选期间起点锚点存在且 benchmark 覆盖全部组合 eligible return dates 时才输出；不得仅取期间内有数据的尾段冒充全期。Benchmark 几何年化与组合采用相同自然周年门槛和 Actual/Actual 年分数；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
 
 ### 2.7 少于一年不得年化
 
@@ -164,10 +171,10 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | Source generation fence | snapshot 计算前、计算后与 publish 前核对源 generation；变化时丢弃并重试，不发布混合世代结果 |
-| MWR | `_solve_xirr_result()` 只发布 `unique_root`；`no_root` / `multiple_roots` / `invalid_cash_flows` 显式不可用 |
+| MWR | `period_metrics.solve_xirr_result()` 在允许利率域内按导数临界点隔离真实根，只发布 `unique_root`；`no_root` / `multiple_roots_or_non_unique` / `invalid_cash_flows` 显式不可用；符号变化次数不等于实际根数 |
 | Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
-| Manual benchmark guard | Performance 页面要求同币种、起点锚点和 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
-| External-flow effective date | deposit / withdrawal 使用显式 external-flow date 或 settlement date；dividend / coupon 的经济日期可来自 entitlement date |
+| Manual benchmark guard | Performance 页面要求同币种、全期起点锚点和全部 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
+| External-flow effective date | deposit / withdrawal 使用 settlement date，缺失时回退 trade date；响应中的 external_flow_date 是派生值；dividend / coupon / dividend_reinvestment 的收入确认可来自 entitlement date |
 | 少于一年年化 | 后端以 calendar-anniversary eligibility 直接 withholding annualized TWR/MWR 与 Calmar；UI/export 沿用同一状态 |
 | 费用 basis | 当前只能标记 `after recorded expenses`，尚不支持正式 gross/net-of-fees 声明 |
 | Coverage 分层 | API 与物化 snapshot 分别返回 valuation / return / book-P&L / attribution coverage，成本或归因缺口不反向污染完整 NAV/TWR |

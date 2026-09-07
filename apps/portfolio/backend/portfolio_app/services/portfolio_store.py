@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Integer, String, and_, cast, delete, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import selectinload
 from investment_studio_instrument_core import SUPPORTED_FX_CURRENCIES
 from investment_studio_instrument_core.db_models import InstrumentMarketData
 
@@ -1506,6 +1507,14 @@ def _serialize_portfolio_row_with_materialized_summary(
     item: PortfolioRecordModel,
 ) -> dict[str, object]:
     payload = _serialize_portfolio_row(item)
+    state = session.get(PortfolioCalculationStateModel, item.portfolio_id)
+    if state is not None and state.daily_snapshot_status == "failed":
+        # Import here because daily_snapshots also consumes Portfolio facts.
+        from portfolio_app.services.daily_snapshots import _state_requires_refresh
+
+        if not _state_requires_refresh(session, item.portfolio_id):
+            payload["valuation_blocked_from"] = state.dirty_from.isoformat()
+            payload["valuation_blocked_reason"] = state.error_message
     latest_snapshot = default_portfolio_snapshot(session, item.portfolio_id)
     if latest_snapshot is None:
         payload["nav"] = None
@@ -1578,6 +1587,8 @@ def _serialize_option_delivery_link(
 
 
 def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object]:
+    contract = item.derivative_contract if item.derivative_contract_id is not None else None
+    contract_payload = _serialize_derivative_contract_row(contract) if contract is not None else None
     return {
         "asset_deliveries": deepcopy(item.asset_deliveries_json or []),
         "lot_selections": deepcopy(item.lot_selections_json or []),
@@ -1587,11 +1598,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "transaction_type": item.transaction_type,
         "option_action": resolve_option_action(
             item.transaction_type,
-            derivative_contract=(
-                _serialize_derivative_contract_row(item.derivative_contract)
-                if item.derivative_contract is not None
-                else None
-            ),
+            derivative_contract=contract_payload,
         ),
         "lifecycle_event_type": item.lifecycle_event_type,
         "trade_date": item.trade_date.isoformat(),
@@ -1612,11 +1619,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "instrument_id": item.instrument_id,
         "instrument_ref": deepcopy(item.instrument_ref_json),
         "derivative_contract_id": item.derivative_contract_id,
-        "derivative_contract": (
-            _serialize_derivative_contract_row(item.derivative_contract)
-            if item.derivative_contract is not None
-            else None
-        ),
+        "derivative_contract": contract_payload,
         "quantity": item.quantity,
         "source_quantity": _decimal_text(item.source_quantity),
         "price": item.price,
@@ -2600,6 +2603,9 @@ def get_portfolio_live_summary(portfolio_id: str) -> dict[str, object] | None:
         record = session.get(PortfolioRecordModel, portfolio_id)
         if record is None:
             return None
+        materialized = _serialize_portfolio_row_with_materialized_summary(session, record)
+        if materialized.get("valuation_blocked_from"):
+            return materialized
         return _serialize_portfolio_row_with_live_summary(session, record)
 
 
@@ -5102,7 +5108,9 @@ def list_transactions(
     session_factory = get_session_factory()
     with session_factory() as session:
         has_deliveries = cast(TransactionRecordModel.asset_deliveries_json, String).not_in(["[]", "null"])
-        statement = select(TransactionRecordModel).where(
+        statement = select(TransactionRecordModel).options(
+            selectinload(TransactionRecordModel.derivative_contract),
+        ).where(
             TransactionRecordModel.portfolio_id == portfolio_id
         )
         if account_id:

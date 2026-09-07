@@ -10,6 +10,30 @@ def seed(client):
     return watchlist['watchlist_id']
 
 
+@pytest.mark.parametrize("topic_id", ["dossier:xlk", "risk-officer:portfolio:held", "instrument-events:xlk", "us-sector-daily-review"])
+def test_generic_conversation_routes_cannot_mutate_managed_research_topics(client, monkeypatch, topic_id):
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import research_runner
+    monkeypatch.setattr(research_runner, "harness_available", lambda: True)
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id=topic_id, title="系统研究记录", instrument_ids=["xlk"]))
+        session.flush()
+        session.add(ResearchEntry(entry_id="managed-note", topic_id=topic_id, kind="note", title="专属研究底稿"))
+        session.commit()
+    responses = [
+        client.put(f"/api/research/topics/{topic_id}", json={"title": "重写为另一标的", "instrument_ids": []}),
+        client.post(f"/api/research/topics/{topic_id}/entries", json={"kind": "conclusion", "title": "替换结论", "body": "错误归属"}),
+        client.post(f"/api/research/topics/{topic_id}/analysis", json={"question": "普通对话不应进入系统专题"}),
+        client.put("/api/research/entries/managed-note/completion", json={"completed": True}),
+    ]
+    assert all(response.status_code == 422 for response in responses)
+    with get_session_factory()() as session:
+        topic = session.get(ResearchTopic, topic_id)
+        assert topic.instrument_ids == ["xlk"] and topic.title == "系统研究记录" and not topic.conclusion
+        assert session.get(ResearchEntry, "managed-note").completed_at is None
+
+
 def test_topics_share_evidence_keep_conclusion_history_and_complete_followups(client):
     seed(client)
     catalogue = client.get('/api/research/catalogue')
@@ -234,3 +258,29 @@ def test_minor_sample_lows_and_low_importance_notes_do_not_raise_attention(clien
     assert manual.status_code == 201
     assert manual.json()['severity'] == 'observation'
     assert manual.json()['evidence_json']['source'] == '公开公告 2026-09-04'
+
+
+def test_watchlist_risk_indicator_excludes_opportunities_and_handled_items(client):
+    seed(client)
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.services.research_projection import build_research_watchlist_attribute_overrides
+    with get_session_factory()() as session:
+        case = RiskCase(case_id='priority-case', instrument_id='sxv264', signal='sector:priority',
+                        title='研究事项', body='已保存证据', severity='attention', status='open',
+                        trigger_active=True, evidence_json={'direction': 'opportunity'}, history_json=[])
+        session.add(case)
+        session.flush()
+        def indicator():
+            return build_research_watchlist_attribute_overrides(session, instrument_ids=['sxv264'])['sxv264']['risk_attention']
+        assert indicator() != 'attention'
+        case.evidence_json = {'direction': 'risk'}
+        session.flush()
+        assert indicator() == 'attention'
+        case.status = 'handled'
+        session.flush()
+        assert indicator() != 'attention'
+        case.status = 'investigating'
+        case.evidence_json = {'direction': 'uncertain'}
+        session.flush()
+        assert indicator() == 'attention'

@@ -9,6 +9,7 @@ from portfolio_app.api.routes import (
     ledger_postings,
     performance,
     portfolios,
+    portfolio_risk_context,
     positions,
     table_views,
     taxonomies,
@@ -21,6 +22,7 @@ from portfolio_app.api.routes import (
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(portfolios.router, prefix="/portfolios", tags=["portfolios"])
+api_router.include_router(portfolio_risk_context.router, prefix="/portfolios", tags=["portfolio-risk-context"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["workspace"])
 api_router.include_router(accounts.router, prefix="/portfolios", tags=["accounts"])
 api_router.include_router(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from math import isfinite, sqrt
+from math import exp, expm1, fsum, isfinite, log1p, sqrt
 from typing import Literal
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
@@ -224,6 +224,56 @@ def xnpv(rate: float, cash_flows: list[tuple[date, float]]) -> float:
     return total
 
 
+def _discounted_cash_flow_roots(
+    terms: list[tuple[float, float]], low: float, high: float,
+) -> list[float]:
+    """Isolate all admissible roots in log(1+r), including turning-point roots.
+
+    Sign variations bound the number of roots; they do not prove multiplicity.
+    After removing the positive exponential factor, the derivative has one
+    fewer term. Its roots partition the original function into monotone pieces,
+    so bisection cannot skip a pair of IRRs between arbitrary grid points.
+    """
+    scale = max(abs(amount) for _, amount in terms)
+    first_time = terms[0][0]
+    terms = [(time - first_time, amount / scale) for time, amount in terms]
+    variations = sum(a * b < 0 for (_, a), (_, b) in zip(terms, terms[1:]))
+    if not variations:
+        return []
+
+    def value(x: float) -> float:
+        exponents = [-time * x for time, _ in terms]
+        shift = max(exponents)
+        weighted = [amount * exp(exponent - shift)
+                    for (_, amount), exponent in zip(terms, exponents)]
+        return fsum(weighted) / fsum(abs(amount) for amount in weighted)
+
+    critical = []
+    if variations > 1:
+        critical = _discounted_cash_flow_roots(
+            [(time, -time * amount) for time, amount in terms[1:]], low, high,
+        )
+    boundaries = sorted(set([low, *critical, high]))
+    values = [value(x) for x in boundaries]
+    roots = [x for x, y in zip(boundaries, values) if abs(y) <= 1e-12]
+    for left, right, left_value, right_value in zip(
+        boundaries, boundaries[1:], values, values[1:],
+    ):
+        if abs(left_value) <= 1e-12 or abs(right_value) <= 1e-12 or left_value * right_value >= 0:
+            continue
+        for _ in range(128):
+            middle = (left + right) / 2
+            middle_value = value(middle)
+            if abs(middle_value) <= 1e-13 or right - left <= 1e-13:
+                break
+            if left_value * middle_value < 0:
+                right = middle
+            else:
+                left, left_value = middle, middle_value
+        roots.append(middle)
+    return sorted(roots)
+
+
 def solve_xirr_result(cash_flows: list[tuple[date, float]]) -> XirrSolveResult:
     cash_flows_by_date: dict[date, float] = defaultdict(float)
     for cash_flow_date, amount in cash_flows:
@@ -252,52 +302,16 @@ def solve_xirr_result(cash_flows: list[tuple[date, float]]) -> XirrSolveResult:
     if not has_positive or not has_negative:
         return XirrSolveResult(status="no_root")
 
-    signs = [1 if amount > 0 else -1 for _, amount in normalized_cash_flows]
-    sign_change_count = sum(
-        1
-        for index in range(1, len(signs))
-        if signs[index] != signs[index - 1]
-    )
-    if sign_change_count != 1:
-        return XirrSolveResult(status="multiple_roots_or_non_unique")
-
-    tolerance = max(
-        1e-10,
-        sum(abs(amount) for _, amount in normalized_cash_flows) * 1e-12,
-    )
-    low = XIRR_MIN_RATE
-    high = 0.1
-    low_value = xnpv(low, normalized_cash_flows)
-    high_value = xnpv(high, normalized_cash_flows)
-    if abs(low_value) <= tolerance:
-        return XirrSolveResult(status="unique_root", rate=low)
-    if abs(high_value) <= tolerance:
-        return XirrSolveResult(status="unique_root", rate=high)
-    iterations = 0
-    while low_value * high_value > 0 and high < XIRR_MAX_RATE and iterations < 64:
-        high = min(high * 2.0, XIRR_MAX_RATE)
-        high_value = xnpv(high, normalized_cash_flows)
-        if abs(high_value) <= tolerance:
-            return XirrSolveResult(status="unique_root", rate=high)
-        iterations += 1
-    if low_value * high_value > 0:
+    start_date = normalized_cash_flows[0][0]
+    roots = _discounted_cash_flow_roots([
+        (year_fraction(start_date, cash_flow_date), amount)
+        for cash_flow_date, amount in normalized_cash_flows
+    ], log1p(XIRR_MIN_RATE), log1p(XIRR_MAX_RATE))
+    if not roots:
         return XirrSolveResult(status="no_root")
-
-    for _ in range(128):
-        mid = (low + high) / 2.0
-        mid_value = xnpv(mid, normalized_cash_flows)
-        if abs(mid_value) <= tolerance:
-            return XirrSolveResult(status="unique_root", rate=mid)
-        if low_value * mid_value <= 0:
-            high = mid
-            high_value = mid_value
-        else:
-            low = mid
-            low_value = mid_value
-    candidate = (low + high) / 2.0
-    if isfinite(candidate) and abs(xnpv(candidate, normalized_cash_flows)) <= tolerance * 10:
-        return XirrSolveResult(status="unique_root", rate=candidate)
-    return XirrSolveResult(status="no_root")
+    if len(roots) > 1:
+        return XirrSolveResult(status="multiple_roots_or_non_unique")
+    return XirrSolveResult(status="unique_root", rate=expm1(roots[0]))
 
 
 def solve_xirr(cash_flows: list[tuple[date, float]]) -> float | None:

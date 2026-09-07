@@ -4,8 +4,15 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from investment_studio_instrument_core import fx_rates
+from investment_studio_instrument_core.db_models import (
+    Instrument,
+    InstrumentMarketData,
+    InstrumentRegistryBase,
+)
 
 
 def _direct_record(
@@ -191,3 +198,79 @@ def test_list_fx_rates_loads_spot_history_once(
     assert len(rates) == len(fx_rates.SUPPORTED_FX_CURRENCIES) * (
         len(fx_rates.SUPPORTED_FX_CURRENCIES) - 1
     )
+
+
+@pytest.mark.parametrize(
+    ("old_override", "latest_override", "duplicate_latest"),
+    [
+        ({}, {}, False),
+        ({"value": "0"}, {}, False),
+        ({"value": "NaN"}, {}, False),
+        ({"value": "Infinity"}, {}, False),
+        ({"currency": "CNY"}, {}, False),
+        ({}, {"status": "partial"}, False),
+        ({}, {"status": "unavailable"}, False),
+        ({}, {}, True),
+    ],
+)
+def test_latest_spot_batch_preserves_full_history_and_pair_availability(
+    old_override: dict[str, str],
+    latest_override: dict[str, str],
+    duplicate_latest: bool,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    histories = {
+        "fx-usd-hkd": [
+            {**_spot_point(as_of_date="2026-07-14"), **old_override},
+            {**_spot_point(), **latest_override},
+        ],
+        "fx-usd-cny": [_spot_point(value="7.2", currency="CNY")],
+        "fx-usd-eur": [],
+    }
+    if duplicate_latest:
+        # Both spellings validate to HKD but the date is ambiguous, as in the
+        # pre-existing list-based reader; neither point may silently win.
+        histories["fx-usd-hkd"].append(_spot_point(currency="hkd"))
+    expected = {identity.instrument_id: None for identity in fx_rates.FX_INSTRUMENT_IDENTITIES}
+    with factory() as session:
+        for instrument_id, points in histories.items():
+            identity = fx_rates.fx_instrument_identity(instrument_id)
+            assert identity is not None
+            instrument = {
+                "instrument_id": instrument_id,
+                "instrument_type": "fx",
+                "currency": identity.quote_currency,
+            }
+            session.add(
+                Instrument(
+                    **instrument,
+                    instrument_name=instrument_id,
+                    quote_selection_policy_json={},
+                )
+            )
+            for point in points:
+                point["price_scale"] = Decimal("1")
+                session.add(
+                    InstrumentMarketData(
+                        instrument_id=instrument_id,
+                        **{**point, "as_of_date": date.fromisoformat(point["as_of_date"])},
+                    )
+                )
+            expected[instrument_id] = fx_rates._latest_spot_point_from_instrument(
+                instrument, points
+            )
+        session.commit()
+
+    try:
+        actual = fx_rates._load_latest_spot_points(factory)
+        assert actual == expected
+        rates = fx_rates.list_fx_rates(factory)
+        hkd_direct = [
+            rate for rate in rates
+            if rate["base_currency"] == "USD" and rate["quote_currency"] == "HKD"
+        ]
+        assert bool(hkd_direct) == (expected["fx-usd-hkd"] is not None)
+    finally:
+        engine.dispose()

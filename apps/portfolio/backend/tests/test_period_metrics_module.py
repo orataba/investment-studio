@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from math import sqrt
 
 import pytest
@@ -165,3 +165,60 @@ def test_xirr_statuses_match_expected_contract(
 
     assert result.status == expected_status
     assert period_metrics.solve_xirr(cash_flows) == result.rate
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_status", "expected_q"),
+    [
+        pytest.param([100.0, -110.0], "unique_root", 1.1, id="positive-then-negative"),
+        # q^2 - 1.10005q + .000055: the second root .00005 is below the rate domain.
+        pytest.param([100.0, -110.005, 0.0055], "unique_root", 1.1, id="one-admissible-root"),
+        # -100(q - 1)^2 - 1 never vanishes, despite two sign changes.
+        pytest.param([-100.0, 200.0, -101.0], "no_root", None, id="mixed-sign-no-root"),
+        # -100(q - 1.1)^2 touches zero without changing sign.
+        pytest.param([-100.0, 220.0, -121.0], "unique_root", 1.1, id="tangent-root"),
+        # -100(q - 1.1)(q^2 - .5q + 1): the quadratic has no real roots.
+        pytest.param([-100.0, 160.0, -155.0, 110.0], "unique_root", 1.1, id="three-sign-changes-one-root"),
+        # -100(q - 1.1)^2(q - 1.2) has two distinct positive roots.
+        pytest.param(
+            [-100.0, 340.0, -385.0, 145.2],
+            "multiple_roots_or_non_unique",
+            None,
+            id="tangent-and-simple-roots",
+        ),
+    ],
+)
+def test_xirr_matches_independent_cash_flow_polynomials(
+    amounts: list[float], expected_status: str, expected_q: float | None,
+) -> None:
+    # For equal 365-day spacing, multiply XNPV by q^degree where
+    # q=(1+r)^(365/365.25). The comments above factor that ordinary polynomial.
+    cash_flows = [
+        (date(2025, 1, 1) + timedelta(days=365 * index), amount)
+        for index, amount in enumerate(amounts)
+    ]
+    result = period_metrics.solve_xirr_result(cash_flows)
+
+    assert result.status == expected_status
+    if expected_q is None:
+        assert result.rate is None
+    else:
+        expected_rate = expected_q ** (365.25 / 365.0) - 1.0
+        assert result.rate == pytest.approx(expected_rate, abs=1e-9)
+        assert period_metrics.xnpv(result.rate, cash_flows) == pytest.approx(0.0, abs=1e-8)
+
+
+def test_xirr_tangent_at_supported_lower_rate_boundary_is_one_root() -> None:
+    minimum_rate = -0.9999
+    q = (1.0 + minimum_rate) ** (365.0 / 365.25)
+    # -100(q_observed - q)^2 has one distinct root exactly at the lower boundary.
+    cash_flows = [
+        (date(2025, 1, 1), -100.0),
+        (date(2026, 1, 1), 200.0 * q),
+        (date(2027, 1, 1), -100.0 * q * q),
+    ]
+
+    result = period_metrics.solve_xirr_result(cash_flows)
+
+    assert result.status == "unique_root"
+    assert result.rate == pytest.approx(minimum_rate, abs=1e-12)

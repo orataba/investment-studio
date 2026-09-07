@@ -1,45 +1,22 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from functools import lru_cache
 from typing import Callable
-
-import exchange_calendars
-from exchange_calendars.errors import CalendarError
 
 from portfolio_app.services.calculation_frequency import (
     calculation_frequency_profile,
     selected_observation_dates_from_detail,
 )
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
+from portfolio_app.services.market_data import market_calendar_sessions as _market_calendar_sessions
 
 
 _EXPECTED_MAX_GAP_DAYS = 4
 
 
-@lru_cache(maxsize=64)
-def _market_calendar_sessions(
-    calendar_name: str,
-    start_date: date,
-    end_date: date,
-) -> tuple[date, ...] | None:
-    try:
-        calendar = exchange_calendars.get_calendar(calendar_name)
-        return tuple(
-            session.date()
-            for session in calendar.sessions_in_range(
-                start_date.isoformat(),
-                end_date.isoformat(),
-            )
-        )
-    except (CalendarError, ValueError):
-        return None
-
-
 def _source_schedule(
-    detail: dict[str, object],
+    source_settings: object,
 ) -> tuple[str | None, bool]:
-    source_settings = detail.get("source_settings")
     if not isinstance(source_settings, dict):
         return None, False
     event_driven = (
@@ -90,12 +67,47 @@ def calculation_frequency_profile_for_instruments(
     lookback_days: int = 366,
     detail_loader: Callable[[str], dict[str, object] | None] = get_registry_instrument_detail,
 ) -> dict[str, object]:
-    start_date = end_date - timedelta(days=max(lookback_days, 1))
+    normalized_instrument_ids = _normalized_instrument_ids(instrument_ids)
+    observation_dates_by_instrument: dict[str, list[date]] = {}
+    source_settings_by_instrument: dict[str, object] = {}
+    for instrument_id in normalized_instrument_ids:
+        detail = detail_loader(instrument_id)
+        if isinstance(detail, dict):
+            observation_dates_by_instrument[instrument_id] = (
+                selected_observation_dates_from_detail(detail, end_date=end_date)
+            )
+            source_settings_by_instrument[instrument_id] = detail.get("source_settings")
+    return calculation_frequency_profile_from_observation_dates(
+        normalized_instrument_ids,
+        observation_dates_by_instrument=observation_dates_by_instrument,
+        source_settings_by_instrument=source_settings_by_instrument,
+        end_date=end_date,
+        lookback_days=lookback_days,
+    )
+
+
+def _normalized_instrument_ids(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> list[str]:
     normalized_instrument_ids = []
     for raw_instrument_id in instrument_ids:
         instrument_id = str(raw_instrument_id or "").strip()
         if instrument_id and instrument_id not in normalized_instrument_ids:
             normalized_instrument_ids.append(instrument_id)
+    return normalized_instrument_ids
+
+
+def calculation_frequency_profile_from_observation_dates(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    observation_dates_by_instrument: dict[str, list[date]],
+    source_settings_by_instrument: dict[str, object],
+    end_date: date,
+    lookback_days: int = 366,
+) -> dict[str, object]:
+    """Build risk coverage from resolved dates; absent instruments stay missing."""
+    start_date = end_date - timedelta(days=max(lookback_days, 1))
+    normalized_instrument_ids = _normalized_instrument_ids(instrument_ids)
 
     source_frequency_by_instrument: dict[str, str] = {}
     missing_instrument_ids: list[str] = []
@@ -103,19 +115,20 @@ def calculation_frequency_profile_for_instruments(
     gap_instrument_ids: list[str] = []
     gap_details: list[dict[str, object]] = []
     for instrument_id in normalized_instrument_ids:
-        detail = detail_loader(instrument_id)
-        if not isinstance(detail, dict):
+        if instrument_id not in observation_dates_by_instrument:
             missing_instrument_ids.append(instrument_id)
             continue
         dates = [
             point_date
-            for point_date in selected_observation_dates_from_detail(detail, end_date=end_date)
+            for point_date in observation_dates_by_instrument[instrument_id]
             if start_date <= point_date <= end_date
         ]
         if len(set(dates)) < 2:
             insufficient_history_instrument_ids.append(instrument_id)
             continue
-        market_calendar, event_driven = _source_schedule(detail)
+        market_calendar, event_driven = _source_schedule(
+            source_settings_by_instrument.get(instrument_id)
+        )
         source_frequency_by_instrument[instrument_id] = "daily"
         if event_driven:
             continue

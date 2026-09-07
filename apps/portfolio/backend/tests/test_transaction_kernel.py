@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
+from math import sqrt
+from statistics import stdev
 
 import pytest
 
@@ -328,9 +330,35 @@ def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> N
             InstrumentOption.model_validate(incomplete)
 
 
-def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(client):
+def _add_refresh_test_observations(monkeypatch, dates: list[str]) -> None:
+    from investment_studio_instrument_core import instrument_store as shared_store
+    from tests import conftest
+
+    # These queue tests add transactions beyond the common Apr 15 cutoff.
+    # Supply explicit fixed-price/FX source observations for those dates;
+    # production valuation must still stop on a missing required observation.
+    details = deepcopy(conftest.REGISTRY_INSTRUMENT_DETAILS)
+    for detail in details:
+        closing_points = [
+            point for point in detail["market_data"]
+            if point["as_of_date"] == "2026-04-15"
+        ]
+        detail["market_data"].extend(
+            {**point, "as_of_date": day}
+            for day in dates
+            for point in closing_points
+        )
+    monkeypatch.setattr(conftest, "REGISTRY_INSTRUMENT_DETAILS", details)
+    shared_store.reset_store(get_session_factory(), {
+        "registry_name": "Test Shared Instruments",
+        "instruments": details,
+    })
+
+
+def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(client, monkeypatch):
     baseline_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert baseline_response.status_code == 200
+    _add_refresh_test_observations(monkeypatch, ["2026-04-16"])
 
     created_response = client.post(
         "/api/portfolios/investment-studio/transactions",
@@ -415,6 +443,7 @@ def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
 
 
 def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatch):
+    _add_refresh_test_observations(monkeypatch, ["2026-04-16", "2026-04-17", "2026-04-18"])
     original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
     build_calls = {"count": 0}
 
@@ -1163,7 +1192,10 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["instrument_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_holding_start_date"] == "2026-02-10"
-    assert abbv_row["instrument_volatility_1m"] is None
+    # Mar 15–Apr 15 has 31 daily returns: two price changes and 29 zeros.
+    # The complete synthetic source now supports a one-month risk estimate.
+    daily_returns = [0.0] * 23 + [207.18 / 210.20 - 1] + [0.0] * 6 + [206.47 / 207.18 - 1]
+    assert abbv_row["instrument_volatility_1m"] == pytest.approx(stdev(daily_returns) * sqrt(365.25))
     assert abbv_row["instrument_volatility_3m"] is None
     assert abbv_row["instrument_volatility_6m"] is None
     assert abbv_row["instrument_volatility_1y"] is None
@@ -1213,8 +1245,12 @@ def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client)
     assert payload["instrument_core"]["instrument_id"] == "equity-us-abbv"
     assert payload["range_key"] == "1m"
     assert payload["chart_basis"] == "adjusted_close"
-    assert [point["date"] for point in payload["points"]] == ["2026-03-15", "2026-04-08", "2026-04-15"]
-    assert payload["summary"]["point_count"] == 3
+    expected_dates = [(date(2026, 3, 15) + timedelta(days=index)).isoformat() for index in range(32)]
+    assert [point["date"] for point in payload["points"]] == expected_dates
+    assert [point["value"] for point in payload["points"]] == pytest.approx(
+        [210.20] * 24 + [207.18] * 7 + [206.47]
+    )
+    assert payload["summary"]["point_count"] == 32
     assert payload["summary"]["change_value"] == pytest.approx(-3.73)
     assert payload["summary"]["high"] == pytest.approx(210.20)
     assert payload["summary"]["low"] == pytest.approx(206.47)

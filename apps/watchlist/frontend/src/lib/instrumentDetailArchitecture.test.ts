@@ -7,15 +7,10 @@ import {
 } from './instrumentDetailArchitecture'
 
 describe('instrument detail architecture', () => {
-  it('keeps ETF, equity, and index research surfaces distinct', () => {
-    expect(listedDetailTabs('etf')).toContain('portfolio')
-    expect(listedDetailTabs('etf')).toContain('research')
-    expect(listedDetailTabs('etf')).not.toContain('fundamentals')
-    expect(listedDetailTabs('equity')).toContain('fundamentals')
-    expect(listedDetailTabs('equity')).toContain('events')
-    expect(listedDetailTabs('equity')).toContain('research')
-    expect(listedDetailTabs('index')).toContain('profile')
-    expect(listedDetailTabs('index')).toContain('research')
+  it('gives every listed type prepared research tracking alongside personal views and quantitative risk', () => {
+    for (const instrumentType of ['etf', 'equity', 'index'] as const) {
+      expect(listedDetailTabs(instrumentType)).toEqual(['overview', 'research', 'events', 'performance'])
+    }
   })
 
   it('shares a fund workspace without erasing public and private semantics', () => {

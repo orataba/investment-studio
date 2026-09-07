@@ -1,0 +1,1638 @@
+{
+  "metadata": {
+    "schema_version": 1,
+    "artifact": "sector_event_shock_atlas",
+    "atlas_id": "event-atlas-xlk-20260831-v3",
+    "generated_at": "2026-08-30T18:01:21Z",
+    "sector_slug": "xlk",
+    "symbol": "XLK",
+    "candidate_generated_at": "2026-08-30T17:56:03.009722+00:00",
+    "model": "gpt-5.6-sol",
+    "source_artifact": "/Users/shaw/Projects/market-intelligence/industry_research_agent/outputs/event_history/xlk.json"
+  },
+  "methodology": {
+    "screening_role": "XLK 单日收盘跌幅筛选只用于发现值得研究的价格锚点，不把下跌日自动认定为事件发生日或唯一原因。",
+    "analytical_posture": "以带时间戳的公开来源、当时可知背景、预期差和传导逻辑为主；允许多因归因或保持不确定。",
+    "background_event_separation": "先还原事件前已存在的行业结构、盈利与资金状态、市场预期，再识别新增信息及其进入市场的时间。",
+    "small_sample_rule": "案例数量少且机制异质，不据此做发生频率、收益外推、机械评分或交易规则。"
+  },
+  "cases": [
+    {
+      "case_id": "event-case-xlk-20000412-dotcom-repricing",
+      "episode_id": "xlk-2000-04-12-drop-v1",
+      "case_title": "互联网泡沫不是单日刺穿：高估值、融资依赖与龙头监管风险连续重估",
+      "attribution_status": "multi_causal",
+      "confidence": "medium",
+      "background": {
+        "industry_structure": "2000 年科技板块同时包含已有现金流的软件和硬件龙头，以及大量依赖股权融资、商业模式尚未验证的互联网与通信公司；XLK 对 Microsoft 等龙头有直接暴露。",
+        "market_state": "NASDAQ 在 3 月见顶前经历多年快速上涨，市场把互联网渗透这一真实趋势外推成普遍高回报；XLK 在本事件段前 20 个交易日仍上涨 1.3387%，但较 63 日高点已回撤 6.1085%。",
+        "company_or_funding_context": "大量早期科技企业持续烧钱并依赖 IPO 与二级市场融资，龙头 Microsoft 又面临反垄断诉讼；估值、资金和监管三条脆弱性并存。",
+        "expectations_and_positioning": "‘新经济’生产率叙事很强，投资者更关注用户和收入增长而非现金流质量；当融资窗口和估值信念转向时，卖出可以在没有单一公司新闻的情况下自我强化。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2000-03-10",
+          "end": "2000-04-14"
+        },
+        "timing_relationship": "anticipated_before_shock",
+        "session_mapping": "科技估值重估从 3 月高点后已开始，4 月 3 日 Microsoft 反垄断裁决形成龙头层面的新增压力；XLK 的 4 月 10、12、14 日连续大跌是数周预期变化的加速，而非一条盘中新闻的即时反应。",
+        "expectation_build_up": "融资依赖、无盈利公司估值和美联储此前收紧都是公开背景；3 月见顶后的价格与融资环境变化逐步使这些风险从‘可忽略’变成‘需要兑现’。",
+        "verified_new_information": "美国法院于 4 月 3 日认定 Microsoft 违反反垄断法；同期科技股下跌和 IPO/融资环境收紧，为商业模式与估值重估提供了连续确认。",
+        "what_was_already_known": "互联网会长期改变经济、许多公司尚未盈利、Microsoft 诉讼存在以及政策利率处于上行周期，均早于 4 月事件段。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2000-03-10 onward",
+          "phase": "expectation_build_up",
+          "detail": "NASDAQ 从高点转弱，市场开始区分真实技术采用与无法自我融资的商业模式。"
+        },
+        {
+          "date_or_time": "2000-04-03",
+          "phase": "information_arrival",
+          "detail": "法院公布 Microsoft 反垄断结论，直接打击当时最重要的科技龙头之一。"
+        },
+        {
+          "date_or_time": "2000-04-10 to 2000-04-14",
+          "phase": "market_reaction",
+          "detail": "XLK 在三个交易日触发跌幅筛选，合并事件段累计跌 18.2629%；最差单日为 4 月 12 日的 -6.4629%。"
+        },
+        {
+          "date_or_time": "2000-04 onward",
+          "phase": "later_development",
+          "detail": "融资窗口、盈利预期和通信资本开支持续恶化，证明这是一轮长期估值制度切换，而非一次短暂标题冲击。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "极高估值需要持续融资和远期高利润共同成立。",
+          "价格转弱和监管裁决削弱市场对龙头与新经济叙事的确定性。",
+          "股权融资成本上升反过来缩短亏损公司的现金跑道。",
+          "基本面、融资和仓位形成负反馈，使多个交易日连续重估。"
+        ],
+        "first_order_effect": "Microsoft 面临监管与业务结构风险，亏损互联网和通信公司面临估值及融资压力。",
+        "second_order_effect": "供应商、广告、服务器和电信设备需求随融资与资本开支收缩，冲击从脆弱公司传至有盈利的科技龙头。",
+        "state_dependence": "技术突破本身可以长期利好生产率，但当估值以遥远现金流、客户融资和持续风险偏好为基础时，同样的行业增长会被融资约束和兑现不足压倒。",
+        "market_interpretation": "本案最重要的不是找到‘刺穿泡沫的一条新闻’，而是识别原有叙事何时失去边际买家、融资反馈何时转负，以及龙头事件如何加速已有重估。",
+        "alternative_explanations": [
+          "通胀数据和利率上行担忧可能放大 4 月中旬的估值压缩。",
+          "Microsoft 裁决无法单独解释整个科技板块及此后数年的下跌。"
+        ]
+      },
+      "sector_transmission": [
+        "MSFT 的直接权重、反垄断风险和龙头信号作用。",
+        "无盈利科技公司的股权融资与现金消耗。",
+        "通信、硬件和软件供应商通过客户资本开支收缩承压。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2000-04-12-drop-v1",
+        "interpretation": "AWB/FMP 候选文件显示 4 月 10 日至 14 日事件段累计跌 18.2629%，之后 20 个交易日再跌 7.0973%；按价格序列直到 2017-10-16 才回到事件前收盘。长期路径说明估值与盈利制度发生了深层变化，但不把全部路径归给 4 月单一信息。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "判断 AI 或其他技术泡沫不能只看估值或一次大跌；要检查现金流、外部融资依赖、客户资本开支回报、市场广度和龙头盈利是否同时转弱。",
+        "similarity_requirements": [
+          "估值建立在遥远现金流且大量公司不能自我融资。",
+          "行业客户资本开支依赖资产价格或宽松融资循环。",
+          "市场广度、融资窗口与龙头预期同时恶化。"
+        ],
+        "important_differences": [
+          "当前大型 AI 平台和芯片龙头普遍已有可观盈利与现金流，不能把 2000 年无盈利互联网公司直接类比。",
+          "当前供应约束、云商业模式和企业客户结构与 2000 年通信/互联网周期不同。"
+        ],
+        "watch_signposts": [
+          "AI 收入相对资本开支与折旧的增量。",
+          "亏损科技融资、信用利差、IPO 窗口和现金跑道。",
+          "盈利修订、市场广度及龙头相对整个主题篮子的分化。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "U.S. Department of Justice, 2000-04-03, Microsoft Conclusions of Law",
+          "url": "https://www.justice.gov/atr/cases/ms_conclusions.htm",
+          "source_type": "regulatory_primary",
+          "supports": "支持 Microsoft 反垄断裁决的内容和日期。"
+        },
+        {
+          "title": "Federal Reserve Monetary Policy Report, 2001-02, review of 2000",
+          "url": "https://www.federalreserve.gov/boarddocs/hh/2001/February/ReportSection2.htm",
+          "source_type": "official_retrospective",
+          "supports": "支持 2000 年科技估值从高位显著回落、政策收紧与增长不可持续的背景。"
+        },
+        {
+          "title": "TIME, 2015-03-12, What Did We Learn From the Dotcom Stock Bubble of 2000?",
+          "url": "https://time.com/3741681/2000-dotcom-stock-bust/",
+          "source_type": "retrospective_news",
+          "supports": "补充互联网公司现金消耗、融资与 3 月高点后叙事转折。"
+        }
+      ],
+      "limitations": [
+        "4 月事件段缺少一个可独立解释全部跌幅的单一新增事实，归因必须保持多因。",
+        "当时 XLK 的逐日成分权重和互联网/通信细分暴露尚未完整取得。"
+      ],
+      "source_id": "historical:event-case-xlk-20000412-dotcom-repricing",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20010917-september11-reopen",
+      "episode_id": "xlk-2001-09-17-drop-v1",
+      "case_title": "9·11袭击后休市四天，信息累积到复市首日才可交易",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "科技板块在互联网泡沫破裂、企业 IT 支出下滑和经济衰退中已经处于盈利下修周期。",
+        "market_state": "袭击前 20 个交易日 XLK 已跌 15.8966%，较 63 日高点回撤 24.2061%，因此复市价格同时承载新增袭击冲击和原有科技下行趋势。",
+        "company_or_funding_context": "市场基础设施、通信、电力和清算系统本身受损，企业还面临业务中断、需求和安全支出的不确定性。",
+        "expectations_and_positioning": "袭击无法事前由市场预期，但科技基本面疲弱已知；休市期间积累的卖出需求、政策支持和信息只能在复市时集中撮合。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2001-09-11",
+          "end": "2001-09-17 close"
+        },
+        "timing_relationship": "lagged_repricing",
+        "session_mapping": "袭击发生在 9 月 11 日开盘前后，但美国股票市场随后关闭，直至 9 月 17 日才恢复交易；价格反应延后并非市场忽略信息，而是缺少可交易时段。",
+        "expectation_build_up": "事件本身没有可交易的提前预期；9 月 11 日至 16 日，损失评估、政策响应和复市准备不断累积。",
+        "verified_new_information": "SEC 确认全国证券市场于 9 月 17 日复市；美联储同日降息 50 个基点并承诺提供异常充足的流动性。",
+        "what_was_already_known": "科技盈利和经济在袭击前已经走弱，不能把复市后的全部下跌视为袭击单独创造。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2001-09-11",
+          "phase": "information_arrival",
+          "detail": "恐怖袭击发生，股票市场停止正常交易，金融与城市基础设施进入应急状态。"
+        },
+        {
+          "date_or_time": "2001-09-12 to 2001-09-16",
+          "phase": "expectation_build_up",
+          "detail": "市场关闭期间，经济损失、政策支持与复市操作信息持续累积，但无法形成正常收盘价。"
+        },
+        {
+          "date_or_time": "2001-09-17 before open",
+          "phase": "confirmation",
+          "detail": "市场准备复市，美联储降息并承诺继续供应流动性。"
+        },
+        {
+          "date_or_time": "2001-09-17 regular session",
+          "phase": "market_reaction",
+          "detail": "累积信息与卖出需求在首个可交易日集中释放；XLK 跌 6.4246%。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "袭击提高经济衰退、业务中断和安全风险溢价。",
+          "休市阻止逐步定价，使多日信息和卖单在复市集中出现。",
+          "科技原有盈利下行背景放大了新增冲击。",
+          "美联储流动性支持缓解市场功能风险，但不能立即抵消经济与盈利不确定性。"
+        ],
+        "first_order_effect": "市场基础设施、航空旅行、通信和企业活动受到直接冲击，风险资产整体折价。",
+        "second_order_effect": "企业 IT 预算、广告和资本开支在衰退背景下进一步受压，同时安全与网络韧性支出获得长期结构性需求。",
+        "state_dependence": "同样的外生冲击落在强盈利、低杠杆背景时可能恢复更快；本案发生于科技泡沫破裂和盈利下修途中，复市反应叠加了原有脆弱性。",
+        "market_interpretation": "事件时间、信息累积时间和价格时间完全分离；研究不能因为大跌发生在 9 月 17 日就把它写成 9 月 17 日才发生的事件。",
+        "alternative_explanations": [
+          "袭击前科技已经急跌，原有衰退和盈利趋势贡献了部分复市压力。",
+          "休市期间流动性和订单积压使首日价格不等于均衡的长期损失估计。"
+        ]
+      },
+      "sector_transmission": [
+        "整个 XLK 通过风险溢价和经济增长下修承压。",
+        "企业软件、硬件与通信设备通过 IT 预算下滑受影响。",
+        "网络、安全和业务连续性需求成为与指数短期下跌方向不同的长期分支。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2001-09-17-drop-v1",
+        "interpretation": "候选文件显示复市首日 XLK 跌 6.4246%，此前 20 个交易日已跌 15.8966%；之后 5 个交易日再跌 3.5821%，18 个交易日回到休市前收盘。这一轨迹同时包含外生冲击、积压交易和原有熊市。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "遇到周末、休市、停牌或盘后重大事件，要把首个可交易时段作为价格映射点，并单独记录休市期间累积的信息与政策响应。",
+        "similarity_requirements": [
+          "重大外生事件发生时相关市场无法正常交易。",
+          "复市前累积了多日损失评估、政策与订单。",
+          "事件前行业已有可识别的盈利与仓位背景。"
+        ],
+        "important_differences": [
+          "现代电子交易、跨市场衍生品和全天候替代市场可能允许更早部分定价。",
+          "事件性质、市场关闭范围和政策支持速度可能完全不同。"
+        ],
+        "watch_signposts": [
+          "首个可交易市场、相关期货与海外代理资产。",
+          "清算、融资和交易基础设施是否正常。",
+          "政策流动性支持与企业盈利下修的相对速度。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "SEC, 2001-09-16, Market Recovery Information",
+          "url": "https://www.sec.gov/investor/mktrecovery.shtml",
+          "source_type": "regulatory_primary",
+          "supports": "支持美国证券市场于 9 月 17 日复市及复市前的监管安排。"
+        },
+        {
+          "title": "Federal Reserve, 2001-09-17, FOMC statement and discount rate action",
+          "url": "https://www.federalreserve.gov/boarddocs/press/general/2001/20010917/",
+          "source_type": "official",
+          "supports": "支持复市日降息 50 个基点和异常流动性供应承诺。"
+        },
+        {
+          "title": "SEC testimony, 2001-09-26, Financial markets after the attacks",
+          "url": "https://www.sec.gov/news/testimony/092601tshlp.htm",
+          "source_type": "regulatory_retrospective",
+          "supports": "支持休市、系统测试和复市决策的时间线。"
+        }
+      ],
+      "limitations": [
+        "日频 ETF 数据无法观察休市期间场外、海外与衍生品的部分定价。",
+        "无法精确分离袭击冲击、积压订单和袭击前科技熊市的贡献。"
+      ],
+      "source_id": "historical:event-case-xlk-20010917-september11-reopen",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20080929-tarp-vote",
+      "episode_id": "xlk-2008-09-29-drop-v1",
+      "case_title": "金融体系已失稳时，救助法案表决失败把尾部风险在盘中重新打开",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 不是金融 ETF，但企业 IT 需求、信用可得性、客户现金流和整体权益风险溢价都依赖金融体系正常运作。",
+        "market_state": "Lehman 倒闭、AIG 救助和货币市场压力已经发生；事件前 20 个交易日 XLK 跌 10.6529%，较 63 日高点回撤 12.3842%。",
+        "company_or_funding_context": "大型科技虽比金融机构杠杆低，但企业客户融资与全球需求急剧恶化，市场功能和交易对手风险成为压倒公司特定基本面的共同因素。",
+        "expectations_and_positioning": "周末谈判让市场期待 7000 亿美元救助方案能够通过，但支持票数并不确定；盘中点票把政治风险转成可观察的信息。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2008-09-28",
+          "end": "2008-09-29 16:00 ET"
+        },
+        "timing_relationship": "same_session",
+        "session_mapping": "救助方案在周末形成并于 9 月 29 日进入众议院表决；市场随着盘中票数不足而下跌，官方结果约在 14:07 ET 确认，余下交易时段继续重估。",
+        "expectation_build_up": "Lehman 后的系统性压力早已计入一部分，但政策支持能否及时形成仍是关键分叉。",
+        "verified_new_information": "众议院以 228 对 205 否决金融救助法案，原计划的资产购买与系统稳定工具未能按预期立即获得授权。",
+        "what_was_already_known": "住房与信贷危机、Lehman 破产、AIG 救助及 7000 亿美元方案讨论均在表决前已知。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2008-09-27 to 2008-09-28",
+          "phase": "expectation_build_up",
+          "detail": "政府与国会就救助方案谈判，市场期待形成政策阻断。"
+        },
+        {
+          "date_or_time": "2008-09-29 before 14:07 ET",
+          "phase": "market_reaction",
+          "detail": "随着表决进展显示票数不足，风险资产在最终宣布前已经快速下跌。"
+        },
+        {
+          "date_or_time": "2008-09-29 about 14:07 ET",
+          "phase": "information_arrival",
+          "detail": "表决失败正式确认，立即支持金融体系的政策路径被打断。"
+        },
+        {
+          "date_or_time": "2008-09-29 close",
+          "phase": "market_reaction",
+          "detail": "XLK 收跌 8.6538%，相对 SPY 少 0.8177 个百分点，显示系统性而非纯科技冲击。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "金融体系已处于信任与流动性危机。",
+          "救助通过预期提供了暂时的政策底。",
+          "表决失败重新打开无序去杠杆和信用收缩的尾部路径。",
+          "风险溢价和盈利预期同时恶化，冲击扩散到包括科技在内的所有权益。"
+        ],
+        "first_order_effect": "银行资本、融资市场和交易对手信任进一步受损。",
+        "second_order_effect": "企业 IT 预算、消费者需求和科技公司客户回款受信用收缩影响，估值折价持续扩大。",
+        "state_dependence": "在金融体系稳健时，单次立法失败可能只是政治噪声；在货币市场和机构信用已经断裂时，它改变的是系统是否获得及时后盾。",
+        "market_interpretation": "市场不是第一次知道金融危机，而是在盘中发现原先依赖的政策阻断可能无法按时到位。",
+        "alternative_explanations": [
+          "欧洲银行压力和同期经济数据也在加重全球风险。",
+          "投票失败发生在既有危机中，不能把之后所有下跌归给一场表决。"
+        ]
+      },
+      "sector_transmission": [
+        "大型科技通过权益风险溢价和流动性共同下跌。",
+        "企业软件、硬件和半导体通过客户信用与资本开支受损。",
+        "高现金公司相对抗压，但无法避免系统性折价。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2008-09-29-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 8.6538%，之后 20 个交易日再跌 22.3158%，回到事件前收盘用了 243 个交易日。延续下跌说明系统危机未被当天事件终结，但不是表决失败的单因证明。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "政策新闻的影响取决于市场是否把它当作系统性风险的唯一及时阻断；要跟踪提案、票数、宣布时间、后续替代方案和信用市场，而不只看标题。",
+        "similarity_requirements": [
+          "金融或融资体系已经处于功能失灵状态。",
+          "市场把某项政策工具视为短期稳定的关键前提。",
+          "盘中新增信息显著改变政策能否按时到位。"
+        ],
+        "important_differences": [
+          "当前科技龙头现金和资本结构可能远强于 2008 年的周期性客户。",
+          "央行工具、存款保障和市场基础设施已发生变化。"
+        ],
+        "watch_signposts": [
+          "信用利差、商业票据、回购和银行融资压力。",
+          "立法票数、执行时间和替代政策工具。",
+          "企业 IT 预算、订单取消和应收账款风险。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Congressional Record, 2008-09-29, House proceedings",
+          "url": "https://www.govinfo.gov/content/pkg/CREC-2008-09-29/pdf/CREC-2008-09-29.pdf",
+          "source_type": "legislative_primary",
+          "supports": "支持表决、法案争议和危机背景。"
+        },
+        {
+          "title": "FDIC working paper, 2009, The $700 Billion Bail-out Bill",
+          "url": "https://www.fdic.gov/analysis/cfr/working-papers/2009/2009-01.pdf",
+          "source_type": "official_research",
+          "supports": "支持表决结果约在 14:07 ET 宣布及盘中市场反应分析。"
+        },
+        {
+          "title": "Reuters, 2008-09-29, Dow sets record point drop as House rejects bailout",
+          "url": "https://ca.marketscreener.com/news/latest/Dow-sets-record-point-drop-as-House-rejects-bailout-13058222/",
+          "source_type": "newswire",
+          "supports": "支持当日市场对意外否决和系统风险的即时解读。"
+        }
+      ],
+      "limitations": [
+        "市场在正式结果前已根据点票下跌，无法用单一宣布时间精确切割全部反应。",
+        "事件处于连续金融危机中，后续跌幅包含大量新的银行、政策与经济信息。"
+      ],
+      "source_id": "historical:event-case-xlk-20080929-tarp-vote",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20200316-pandemic-liquidity",
+      "episode_id": "xlk-2020-03-16-drop-v1",
+      "case_title": "疫情从公共卫生风险升级为经济停摆与市场流动性危机，政策利好反被解释为严重性信号",
+      "attribution_status": "multi_causal",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 既有受线下停摆冲击较小的软件和云，也有依赖全球供应链、企业资本开支与终端需求的硬件和半导体。",
+        "market_state": "2 月高点后市场已快速下跌；3 月事件段前 10 个交易日 XLK 跌 8.3170%，较 63 日高点回撤 9.0661%，但疫情对经济、信用和市场功能的影响仍在不断上修。",
+        "company_or_funding_context": "大型科技现金流相对稳健，然而客户现金流、供应链、美元融资和商业票据市场同时受压，短期内公司质量让位于现金与流动性需求。",
+        "expectations_and_positioning": "市场从‘局部疫情和供应链扰动’逐步转向‘全球停摆与衰退’，政策措施越非常规，有时越被解读为问题比此前认知更严重。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2020-02-24",
+          "end": "2020-03-20"
+        },
+        "timing_relationship": "multi_stage",
+        "session_mapping": "疫情、旅行限制、WHO 定性和政策措施跨盘前、盘后、周末连续到达；3 月 15 日周日美联储紧急行动主要映射到 3 月 16 日交易时段，而市场将其部分解释为严重性确认。",
+        "expectation_build_up": "2 月下旬全球病例与供应链风险已引发下跌；3 月初市场持续上调经济停摆、信用和美元流动性风险。",
+        "verified_new_information": "WHO 于 3 月 11 日把 COVID-19 定性为大流行；美联储 3 月 15 日将利率降至接近零并宣布大规模资产购买，显示政策进入危机模式。",
+        "what_was_already_known": "病毒已在多国传播、中国供应链受扰和美联储准备支持经济，在 3 月 11 日前已知；新增的是全球停摆范围与市场功能恶化速度。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2020-02-24 to 2020-03-09",
+          "phase": "expectation_build_up",
+          "detail": "病例扩散、油价冲击和供应链担忧推动多轮风险规避。"
+        },
+        {
+          "date_or_time": "2020-03-11",
+          "phase": "information_arrival",
+          "detail": "WHO 宣布 COVID-19 可被定性为大流行，全球经济停摆路径更明确。"
+        },
+        {
+          "date_or_time": "2020-03-12 regular session",
+          "phase": "market_reaction",
+          "detail": "旅行限制、流动性和增长担忧共振，全球权益急跌。"
+        },
+        {
+          "date_or_time": "2020-03-15 Sunday",
+          "phase": "information_arrival",
+          "detail": "美联储紧急降息至接近零并宣布至少 7000 亿美元资产购买。"
+        },
+        {
+          "date_or_time": "2020-03-16 regular session",
+          "phase": "market_reaction",
+          "detail": "政策未能立即恢复信心，XLK 单日跌 13.8242%，成为 3 月 3 日至 20 日事件段最差一天。"
+        },
+        {
+          "date_or_time": "2020-03-18 to 2020-03-20",
+          "phase": "later_development",
+          "detail": "去杠杆和现金需求延续，随后更多财政与信用工具才逐步稳定市场功能。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "疫情由局部供应链风险升级为全球需求与生产停摆。",
+          "盈利下修与现金需求导致广泛资产出售。",
+          "国债、商业票据和美元融资市场功能恶化，触发跨资产去杠杆。",
+          "周末紧急政策先被解释为危机严重性的确认，短期信号效应压过贴现率利好。",
+          "后续更全面的信用和财政工具恢复市场功能后，科技结构性受益才重新占主导。"
+        ],
+        "first_order_effect": "供应链、企业需求和终端销售骤降，所有科技资产先受流动性折价。",
+        "second_order_effect": "云、远程协作和数字化需求随后加速，使疫情对科技盈利的中期影响与首轮价格冲击方向分化。",
+        "state_dependence": "普通降息在市场功能正常时是估值利好；在信用和流动性危机中，紧急降息可能先被视为政策制定者确认尾部风险。",
+        "market_interpretation": "本案展示同一政策的符号会随背景改变，也展示行业长期受益不能阻止短期现金与去杠杆冲击。",
+        "alternative_explanations": [
+          "油价战、期权对冲、风险平价和被动去杠杆加剧了股票跌幅。",
+          "无法从日频 ETF 数据分解公共卫生信息、流动性和机械交易的贡献。"
+        ]
+      },
+      "sector_transmission": [
+        "AAPL 与硬件链通过亚洲供应链、门店和消费者需求受压。",
+        "半导体通过周期订单与库存调整受压。",
+        "MSFT、云和软件先受流动性折价，后受益于远程化需求。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2020-03-16-drop-v1",
+        "interpretation": "候选文件把 3 月 3 日至 20 日八个大跌触发日合并为一个事件段，累计跌 23.5986%；3 月 16 日单日跌 13.8242%。随后 20 个交易日上涨 22.6295%，34 个交易日回到事件前收盘，反映市场功能稳定和科技盈利分化，但不抹去初始冲击。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "系统冲击要区分盈利冲击、市场功能和政策信号三层；政策规模大不自动等于风险资产利好，先看它是在缓解问题还是确认问题。",
+        "similarity_requirements": [
+          "实体活动和融资市场同时受到冲击。",
+          "跨资产相关性上升并出现现金或美元短缺。",
+          "紧急政策在非正常时间推出且市场仍质疑传导。"
+        ],
+        "important_differences": [
+          "当前科技公司的云收入、供应链和资产负债表结构已不同。",
+          "疫情型停摆与金融、地缘或网络攻击导致的系统冲击传导不同。"
+        ],
+        "watch_signposts": [
+          "信用利差、商业票据、美元基差和国债市场深度。",
+          "企业订单、供应链交付与客户现金流。",
+          "政策是否从利率扩展到信用、流动性与财政传导。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "WHO, 2020-03-11, Opening remarks on COVID-19 pandemic characterization",
+          "url": "https://www.who.int/director-general/speeches/detail/who-director-general-s-opening-remarks-at-the-media-briefing-on-covid-19---11-march-2020",
+          "source_type": "official",
+          "supports": "支持疫情被定性为大流行的日期与公共卫生背景。"
+        },
+        {
+          "title": "Federal Reserve, 2020-03-15, FOMC statement",
+          "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20200315a.htm",
+          "source_type": "official",
+          "supports": "支持周日紧急降息至接近零与资产购买措施。"
+        },
+        {
+          "title": "Federal Reserve Monetary Policy Report, 2020, market functioning review",
+          "url": "https://www.federalreserve.gov/publications/2020-monetary-policy.htm",
+          "source_type": "official_retrospective",
+          "supports": "支持 2 月末至 3 月国债、MBS 与其他市场功能显著恶化的背景。"
+        }
+      ],
+      "limitations": [
+        "事件段横跨多个政策、公共卫生和市场结构变化，不适合指定唯一原因。",
+        "快速反弹受到事后政策和科技盈利结构变化影响，不能作为未来系统冲击的固定模板。"
+      ],
+      "source_id": "historical:event-case-xlk-20200316-pandemic-liquidity",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20220913-cpi-duration",
+      "episode_id": "xlk-2022-09-13-drop-v1",
+      "case_title": "盘前 CPI 打破通胀降温预期，高久期科技在开盘后完成贴现率重估",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 的软件和大型科技远期现金流久期较长，对实际利率和终端政策利率预期敏感。",
+        "market_state": "2022 年已进入加息与估值压缩周期；事件前 20 个交易日 XLK 跌 7.4492%，但前 5 个交易日反弹 4.9225%，市场尝试交易通胀见顶与美联储放缓。",
+        "company_or_funding_context": "大型科技现金流并未突然消失，主要冲击来自折现率、企业需求和估值；亏损成长公司还承受融资成本上升。",
+        "expectations_and_positioning": "能源价格回落让市场期待总体通胀明显降温，风险资产反弹建立在美联储可能较早放缓紧缩的预期上。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2022-09-13 08:30 ET",
+          "end": "2022-09-13 close"
+        },
+        "timing_relationship": "same_session",
+        "session_mapping": "BLS 在美东 08:30、开盘前发布 CPI；股指期货立即调整，现金市场开盘后继续完成定价。",
+        "expectation_build_up": "前几日反弹体现通胀降温和政策放缓希望，因此 CPI 的影响来自相对这一预期的反差。",
+        "verified_new_information": "8 月总体 CPI 环比上涨 0.1%、同比 8.3%，核心 CPI 环比上涨 0.6%；价格压力广泛，打破能源下跌会带来快速降温的希望。",
+        "what_was_already_known": "美联储正积极加息、Jackson Hole 已强调控制通胀以及科技估值对利率敏感，均为发布前背景。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2022-09-06 to 2022-09-12",
+          "phase": "expectation_build_up",
+          "detail": "XLK 五日反弹，市场增加对通胀见顶和后续紧缩放缓的押注。"
+        },
+        {
+          "date_or_time": "2022-09-13 08:30 ET",
+          "phase": "information_arrival",
+          "detail": "BLS 发布高于市场希望且核心环比强劲的 8 月 CPI。"
+        },
+        {
+          "date_or_time": "2022-09-13 premarket to close",
+          "phase": "market_reaction",
+          "detail": "利率路径和高久期估值快速重估；XLK 收跌 5.3085%。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "核心通胀强于市场预期，否定快速降温叙事。",
+          "投资者上调终端利率和高利率持续时间。",
+          "实际利率与风险溢价上升压低高久期科技估值。",
+          "企业需求和融资成本担忧进一步影响盈利预期。"
+        ],
+        "first_order_effect": "软件、大型平台和无盈利成长公司的估值倍数压缩。",
+        "second_order_effect": "更紧金融条件可能延迟企业 IT 项目、云迁移和消费者硬件升级。",
+        "state_dependence": "同样的 8.3% 同比数字若低于更悲观预期可能是利好；本案的方向来自核心环比强、市场刚反弹且押注政策放缓。",
+        "market_interpretation": "市场交易的是 CPI 相对预期对政策路径的影响，而不是通胀绝对水平的静态标签。",
+        "alternative_explanations": [
+          "期权对冲和拥挤的通胀降温交易放大了开盘后的幅度。",
+          "当日为广泛宏观冲击，XLK 相对 QQQ 还高 0.1752 个百分点，并非科技独有基本面事件。"
+        ]
+      },
+      "sector_transmission": [
+        "高久期软件和平台通过实际利率传导。",
+        "半导体与硬件通过经济和企业资本开支预期传导。",
+        "亏损成长公司通过融资成本和现金跑道传导。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2022-09-13-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 5.3085%，相对 SPY 少 0.9602 个百分点；之后 20 个交易日再跌 11.4242%，98 个交易日回到事件前收盘。后续路径还包含新的 FOMC 与盈利信息，不能全部归给一次 CPI。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "宏观数据必须以发布时间和预期差对齐：记录发布前市场押注、盘前期货反应、利率路径变化及现金市场确认。",
+        "similarity_requirements": [
+          "市场刚建立通胀降温或政策放缓交易。",
+          "数据在关键核心分项上显著挑战该叙事。",
+          "实际利率与科技估值在同一窗口反向变化。"
+        ],
+        "important_differences": [
+          "当前通胀水平、政策起点和盈利增长可能完全不同。",
+          "若数据虽高但低于预期，标题相似而市场方向可以相反。"
+        ],
+        "watch_signposts": [
+          "核心服务、住房与工资相关通胀。",
+          "两年期实际利率、终端利率定价和降息路径。",
+          "软件估值、半导体订单和企业 IT 预算修订。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "U.S. Bureau of Labor Statistics, 2022-09-13, CPI August 2022",
+          "url": "https://www.bls.gov/news.release/archives/cpi_09132022.htm",
+          "source_type": "official",
+          "supports": "支持 08:30 ET 发布时间、总体与核心 CPI 数值及分项广度。"
+        },
+        {
+          "title": "Reuters, 2022-09-13, Wall St tumbles following CPI data",
+          "url": "https://www.investing.com/news/stock-market-news/wall-st-tumbles-to-biggest-loss-in-two-years-following-cpi-data-2891103",
+          "source_type": "newswire",
+          "supports": "支持通胀预期差、美联储路径和利率敏感科技的当日市场解释。"
+        }
+      ],
+      "limitations": [
+        "没有在候选文件中保存盘前期货与美债分钟数据，时序依赖官方发布时间和同时期报道。",
+        "后续 20 日包含新的政策会议和公司信息。"
+      ],
+      "source_id": "historical:event-case-xlk-20220913-cpi-duration",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20240717-chip-policy-taiwan",
+      "episode_id": "xlk-2024-07-17-drop-v1",
+      "case_title": "芯片出口限制升级担忧与台湾风险溢价同时上升",
+      "attribution_status": "multi_causal",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 对美国半导体设计、设备和大型科技权重较高；先进芯片销售受美国出口许可约束，制造又高度依赖台湾供应链。",
+        "market_state": "AI 主线此前强势，事件前 20 个交易日 XLK 上涨 2.5299%，63 日回撤仅 1.7839%，政策风险面对的是高预期而非悲观定价。",
+        "company_or_funding_context": "NVIDIA、AMD 等依赖先进制程及中国相关收入，应用更严厉域外限制也会影响 ASML 等盟国设备厂商，冲击可沿整个半导体链扩散。",
+        "expectations_and_positioning": "市场原先更关注 AI 需求和盈利上修，对出口限制进一步扩大及台湾安全风险的边际定价较轻。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-07-16",
+          "end": "2024-07-17"
+        },
+        "timing_relationship": "multi_stage",
+        "session_mapping": "关于美国考虑更严厉芯片出口限制的报道及特朗普对台湾防务的言论在 7 月 16 日至 17 日进入市场，主要价格反应落在 7 月 17 日常规交易时段。",
+        "expectation_build_up": "既有出口管制并非新事物，但市场此前没有充分交易限制工具升级与台湾风险溢价同时抬升。",
+        "verified_new_information": "报道显示美国政府考虑对继续向中国提供先进芯片技术的企业使用更严厉限制；同一窗口内，特朗普关于台湾应为美国防务付费的言论增加了供应链地缘担忧。",
+        "what_was_already_known": "美国限制中国获得先进 AI 芯片、台湾在先进制程中的关键地位，以及选举可能改变政策方向，均为事件前已知背景。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-07-16",
+          "phase": "information_arrival",
+          "detail": "媒体报道美国考虑使用更严厉的贸易限制工具，并刊出特朗普关于台湾防务的相关言论。"
+        },
+        {
+          "date_or_time": "2024-07-17 regular session",
+          "phase": "market_reaction",
+          "detail": "半导体板块广泛下挫；XLK 单日跌 3.8897%，相对 SPY 少 2.4875 个百分点。"
+        },
+        {
+          "date_or_time": "2024-07-18 onward",
+          "phase": "later_development",
+          "detail": "政策细则并未在当日完全落地，市场随后继续区分出口暴露、供应链位置与政策执行风险。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "潜在出口限制升级压低中国相关收入和可服务市场预期。",
+          "台湾防务言论提高先进制造供应链的尾部风险溢价。",
+          "高预期与集中持仓下，盈利风险和估值风险同时释放，冲击扩散至 XLK。"
+        ],
+        "first_order_effect": "对先进 GPU、芯片设计和半导体设备公司形成直接收入、合规和估值压力。",
+        "second_order_effect": "云厂商可能调整采购地点、产品组合与资本开支节奏，供应链替代成本和交付不确定性上升。",
+        "state_dependence": "相同政策新闻在低估值、低持仓状态下可能只影响少数暴露公司；在 AI 预期高、半导体拥挤时更容易演变为板块去风险。",
+        "market_interpretation": "市场交易的不是已确认收入损失，而是政策工具更严、台湾风险更高后，远期现金流与风险溢价需要同时重估。",
+        "alternative_explanations": [
+          "前期 AI 强势后的获利回吐放大了跌幅。",
+          "当日其他公司与宏观消息也可能影响指数，但不能解释半导体相对大盘的集中弱势。"
+        ]
+      },
+      "sector_transmission": [
+        "NVIDIA、AMD 等先进计算芯片公司的中国收入与产品许可渠道。",
+        "半导体设备、晶圆制造依赖和台湾供应链风险溢价。",
+        "由半导体权重和相关性向 XLK 其他高估值科技公司扩散的去风险交易。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-07-17-drop-v1",
+        "interpretation": "AWB/FMP 候选文件显示 XLK 当日跌 3.8897%，相对 SPY 少 2.4875 个百分点；之后 20 个交易日回报为 -4.2343%，回到事件前收盘用了 62 个交易日。这是价格路径描述，不证明单一因果。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "芯片政策风险要同时看收入限制、盟国设备管制和台湾供应链风险；只有新闻与高预期状态叠加时，才接近本案机制。",
+        "similarity_requirements": [
+          "限制对象覆盖先进芯片或关键设备，并改变可服务市场。",
+          "核心半导体权重处于高预期或拥挤状态。",
+          "政策或地缘信息足以影响未来现金流或贴现率，而非重复表态。"
+        ],
+        "important_differences": [
+          "当前 XLK 成分与权重、公司的中国收入暴露可能已变化。",
+          "正式规则、豁免范围和执行日期可能与媒体报道不同。"
+        ],
+        "watch_signposts": [
+          "美国商务部正式规则、许可范围与盟国协调。",
+          "NVIDIA、AMD、设备公司的中国收入指引和产品替代方案。",
+          "半导体相对 SPY 的广度、隐含波动和订单修订。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Reuters, 2024-07-17, Chip stocks shed over $500 billion in value on China trade fears",
+          "url": "https://www.investing.com/news/stock-market-news/chip-stocks-tumble-on-fears-of-tighter-us-curbs-on-sales-to-china-3522746",
+          "source_type": "newswire",
+          "supports": "支持出口限制报道、台湾言论及半导体当日集中下跌的时间与内容。"
+        },
+        {
+          "title": "AWB FMP price candidate, generated 2026-08-30",
+          "url": "file://industry_research_agent/outputs/event_history/xlk_candidates.json",
+          "source_type": "project_database_extract",
+          "supports": "支持 XLK、SPY、QQQ 的价格路径描述。"
+        }
+      ],
+      "limitations": [
+        "报道所述政策在当时仍处考虑阶段，无法精确拆分政策报道、台湾言论和获利回吐各自贡献。",
+        "本档案未取得 2024-07-17 的历史 XLK 逐成分权重快照。"
+      ],
+      "source_id": "historical:event-case-xlk-20240717-chip-policy-taiwan",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20240724-cloud-ai-roi",
+      "episode_id": "xlk-2024-07-24-drop-v1",
+      "case_title": "云厂商 AI 投入强、变现与利润率疑问触发跨指数重估",
+      "attribution_status": "multi_causal",
+      "confidence": "medium",
+      "background": {
+        "industry_structure": "Alphabet 和 Tesla 不在 XLK，但 Alphabet、Amazon、Meta 与 Microsoft 是上游 AI 芯片和数据中心需求的关键买方；其资本开支质量会反向影响 XLK 半导体链。",
+        "market_state": "XLK 在 7 月 17 日已遭遇芯片政策冲击，至 7 月 24 日前 10 个交易日回报为 -3.8757%，说明下跌前已处于轮动和去风险过程。",
+        "company_or_funding_context": "Alphabet 仍有强现金流支持 AI 基础设施，但投资者需要看到新增资本开支如何转化为云收入、广告效率和利润率。",
+        "expectations_and_positioning": "大型科技盈利本身不弱，难点是市场已经计入高增长和 AI 回报，达到预期未必足以支持估值。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-07-23 after close",
+          "end": "2024-07-24 close"
+        },
+        "timing_relationship": "after_hours_to_next_session",
+        "session_mapping": "Alphabet 和 Tesla 于 7 月 23 日盘后披露业绩；常规市场无法在发布时完成定价，主要反应映射到 7 月 24 日交易时段。",
+        "expectation_build_up": "7 月中旬已有大型科技轮动和芯片政策压力，因此盘后财报是放大既有疑虑的新证据，而非全部下跌的起点。",
+        "verified_new_information": "Alphabet 二季度结果总体超预期，但资本开支达到 132 亿美元，YouTube 广告与利润率关注压过了表面业绩；Tesla 业绩也拖累风险偏好。",
+        "what_was_already_known": "云厂商正在扩大 AI 基础设施投入、AI 变现存在时滞，以及 XLK 不直接持有 Alphabet，均为事件前已知。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-07-17 to 2024-07-23",
+          "phase": "expectation_build_up",
+          "detail": "芯片与大型科技已经走弱，市场开始提高对 AI 投入回报和估值兑现的要求。"
+        },
+        {
+          "date_or_time": "2024-07-23 after close",
+          "phase": "information_arrival",
+          "detail": "Alphabet 披露二季度业绩与 132 亿美元资本开支；Tesla 同期业绩也弱于市场希望。"
+        },
+        {
+          "date_or_time": "2024-07-24 regular session",
+          "phase": "market_reaction",
+          "detail": "大型科技和 AI 链同步下跌；XLK 跌 4.1385%，相对 SPY 少 1.8723 个百分点。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "财报确认 AI 基础设施投入继续快速增加。",
+          "收入与利润率信息没有同步消除回报周期疑虑。",
+          "市场从单纯奖励资本开支转向审视资本效率，并将疑虑传导到上游芯片和其他大型科技。"
+        ],
+        "first_order_effect": "Alphabet 估值及相关广告、云业务预期被重新审视，Tesla 的盈利弱点增加大型成长股压力。",
+        "second_order_effect": "若云客户资本开支仍高但变现较慢，上游芯片短期订单可受益，远期持续性和客户议价却会被打折。",
+        "state_dependence": "在 AI 回报尚未被高度期待时，高资本开支可被解释为需求强；在估值与预期较高时，同一数字会被解释为自由现金流压力和回收期拉长。",
+        "market_interpretation": "这不是简单的‘资本开支增加利好半导体’，而是市场开始要求需求规模、收入增速和利润率共同证明投入质量。",
+        "alternative_explanations": [
+          "Tesla 的盈利和宏观风险偏好共同加剧了大型成长股抛售。",
+          "7 月中旬已经开始的科技轮动和去拥挤可能比 Alphabet 单一财报更重要。"
+        ]
+      },
+      "sector_transmission": [
+        "GOOGL 作为 XLK 外部云需求节点，影响 NVIDIA、Broadcom 等上游需求预期。",
+        "MSFT 作为 XLK 内部云节点，面临相同的资本效率审视。",
+        "高估值软件与半导体共同受到估值压缩。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-07-24-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 4.1385%，此前 10 个交易日已跌 3.8757%；随后 20 个交易日回报为 4.4932%。这说明财报发生在既有弱势中，后续反弹也不能反证当日归因。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "分析云厂商资本开支必须同时比较收入增量、利润率、自由现金流和管理层对回收期的表述，并区分上游短期订单与远期回报风险。",
+        "similarity_requirements": [
+          "云厂商资本开支上调但相关收入或利润率没有同步改善。",
+          "上游半导体和大型科技估值已计入强 AI 回报。",
+          "市场从供给稀缺叙事转向资本效率审查。"
+        ],
+        "important_differences": [
+          "当前云收入增速、芯片供给约束和 AI 产品收费模式可能不同。",
+          "外部云厂商不在 XLK，需验证其对当期成分股的实际采购链。"
+        ],
+        "watch_signposts": [
+          "GOOGL、AMZN、META、MSFT 的资本开支与云收入增量。",
+          "自由现金流、折旧、数据中心利用率和 AI 产品收入披露。",
+          "NVIDIA、Broadcom 的客户集中度、订单可见度和交付节奏。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Alphabet, 2024-07-23, Second Quarter 2024 Results",
+          "url": "https://alphabet2025ir.q4web.com/investor/news/news-details/2024/Alphabet-Announces-Second-Quarter-2024-Results-07-23-2024/default.aspx",
+          "source_type": "company_primary",
+          "supports": "支持财报发布时间、业绩和资本开支事实。"
+        },
+        {
+          "title": "Reuters, 2024-07-24, Alphabet falls as expenses overshadow quarterly results beat",
+          "url": "https://www.investing.com/news/stock-market-news/alphabet-falls-as-expenses-overshadow-quarterly-results-beat-3533117",
+          "source_type": "newswire",
+          "supports": "支持市场对资本开支、利润率和 YouTube 广告的当日解读。"
+        },
+        {
+          "title": "AWB FMP price candidate, generated 2026-08-30",
+          "url": "file://industry_research_agent/outputs/event_history/xlk_candidates.json",
+          "source_type": "project_database_extract",
+          "supports": "支持 XLK 的事前与事后价格路径。"
+        }
+      ],
+      "limitations": [
+        "当日同时包含 Tesla 业绩、宏观和轮动因素，不能把 XLK 全部跌幅归给 Alphabet。",
+        "缺少当时每家云厂商订单在 XLK 上游公司的精确收入映射。"
+      ],
+      "source_id": "historical:event-case-xlk-20240724-cloud-ai-roi",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20240801-growth-carry-unwind",
+      "episode_id": "xlk-2024-08-01-drop-v1",
+      "case_title": "增长担忧与日元套息去杠杆形成多阶段冲击",
+      "attribution_status": "multi_causal",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 的大型成长与半导体权重久期较长、流动性好，在宏观风险和跨资产去杠杆中容易被用作减仓工具。",
+        "market_state": "事件前 20 个交易日 XLK 已跌 4.4875%，较 63 日高点回撤 7.9435%，科技轮动已经发生，但仓位与杠杆是否完全出清并不清楚。",
+        "company_or_funding_context": "企业 AI 投入仍强，但短期盈利对经济软着陆和融资条件敏感；日本低利率长期支持的套息头寸构成跨市场资金背景。",
+        "expectations_and_positioning": "市场一方面期待美联储降息带来估值支持，另一方面仍假定美国可以软着陆；对增长快速恶化和日元升值同时发生的准备不足。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-07-31",
+          "end": "2024-08-05"
+        },
+        "timing_relationship": "multi_stage",
+        "session_mapping": "日本央行 7 月 31 日调整政策后，8 月 1 日美国制造业与就业相关数据先触发风险规避；8 月 2 日非农进一步强化增长担忧，周末后的 8 月 5 日出现更剧烈的全球去杠杆。",
+        "expectation_build_up": "7 月中旬科技已转弱，日元也开始升值；风险在首个大跌日前已有迹象，但经济数据和随后仓位平仓使其分阶段显性化。",
+        "verified_new_information": "7 月美国 ISM 制造业指数为 46.8，8 月 2 日公布的非农新增 11.4 万、失业率升至 4.3%；日本央行此前上调政策利率并公布缩减购债计划。",
+        "what_was_already_known": "美联储可能在 9 月降息、日本央行逐步正常化、科技股 7 月已走弱，都是大跌前已存在的背景。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-07-31 Japan time",
+          "phase": "information_arrival",
+          "detail": "日本央行调整政策利率并给出缩减国债购买计划，推动日元和全球融资条件重估。"
+        },
+        {
+          "date_or_time": "2024-08-01 US session",
+          "phase": "information_arrival",
+          "detail": "弱于预期的美国制造业与就业相关数据令软着陆叙事受损，科技和芯片领跌。"
+        },
+        {
+          "date_or_time": "2024-08-02 08:30 ET",
+          "phase": "confirmation",
+          "detail": "美国就业报告显示新增就业放缓、失业率升至 4.3%，增长担忧进一步升级。"
+        },
+        {
+          "date_or_time": "2024-08-05 global sessions",
+          "phase": "market_reaction",
+          "detail": "日元套息交易平仓与波动上升相互强化；XLK 的合并事件区间为 8 月 1 日至 5 日，累计跌 9.5521%。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "美国增长数据削弱软着陆与盈利增长预期。",
+          "日本政策变化和日元升值提高套息头寸融资压力。",
+          "波动上升触发杠杆收缩，流动性好的大型科技成为集中卖出对象。",
+          "盈利、贴现率和资金流三条通道共同作用，形成多日冲击。"
+        ],
+        "first_order_effect": "经济敏感与高久期成长资产风险溢价上升，半导体因盈利周期和拥挤度承受更大压力。",
+        "second_order_effect": "被动减仓和跨资产保证金需求使基本面尚未变化的公司也同步下跌，相关性短期升高。",
+        "state_dependence": "若仓位轻且波动低，弱数据可能主要被解释为利率利好；当套息拥挤、日元快速升值且科技已转弱时，降息预期不足以抵消盈利和去杠杆风险。",
+        "market_interpretation": "本案不是一条新闻，而是政策、数据和仓位在不同交易日递进，价格反应既有提前部分，也有确认后和周末后的延迟部分。",
+        "alternative_explanations": [
+          "Intel、Amazon 等公司信息和科技财报情绪也加重了 8 月初卖压。",
+          "无法从公开日频价格精确区分主动基本面卖出与机械去杠杆。"
+        ]
+      },
+      "sector_transmission": [
+        "NVIDIA、Broadcom 等高预期半导体通过盈利周期和拥挤交易受压。",
+        "AAPL、MSFT 等高流动性权重成为组合降风险工具。",
+        "外部节点 AMZN 的财报与云资本开支解读影响上游需求预期。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-08-01-drop-v1",
+        "interpretation": "候选文件把 8 月 1 日和 5 日合并为同一事件段，区间跌 9.5521%；从 8 月 5 日区间终点起 8 个交易日回到事件前收盘。快速恢复说明流动性成分重要，但不排除同期基本面担忧。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "宏观冲击要建立信息链而非寻找单一标题；同时检查增长、利率、融资货币、波动和仓位是否形成自我强化。",
+        "similarity_requirements": [
+          "增长数据连续走弱而市场此前仍押注软着陆。",
+          "融资货币快速升值或杠杆资金面临追加保证金。",
+          "大型科技处于高集中、高流动性和可快速减仓的位置。"
+        ],
+        "important_differences": [
+          "当前日元利差、套息规模和美联储政策位置可能不同。",
+          "快速下跌可能来自单一公司基本面，而非跨资产去杠杆。"
+        ],
+        "watch_signposts": [
+          "美国就业、ISM 新订单和信用利差。",
+          "美元兑日元、日美利差、VIX 期限结构和跨资产相关性。",
+          "半导体相对强弱、成交量和高贝塔科技的市场广度。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Bank of Japan, 2024-07-31, Monetary Policy Meeting decision",
+          "url": "https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/index.htm",
+          "source_type": "official",
+          "supports": "支持日本央行政策变化及其发生时间。"
+        },
+        {
+          "title": "U.S. Bureau of Labor Statistics, 2024-08-02, Employment Situation July 2024",
+          "url": "https://www.bls.gov/news.release/archives/empsit_08022024.htm",
+          "source_type": "official",
+          "supports": "支持新增就业 11.4 万和失业率 4.3% 的发布事实与时间。"
+        },
+        {
+          "title": "BIS Bulletin No. 90, 2024-08, The market turbulence and carry trade unwind",
+          "url": "https://www.bis.org/publ/bisbull90.pdf",
+          "source_type": "institutional_research",
+          "supports": "支持 8 月市场波动与套息交易平仓的跨资产背景。"
+        },
+        {
+          "title": "Reuters, 2024-08-01, Wall Street retreats on slowdown fears",
+          "url": "https://www.kitco.com/news/off-the-wire/2024-08-01/wall-street-retreats-slowdown-fears-dow-small-caps-slide",
+          "source_type": "newswire",
+          "supports": "支持 8 月 1 日弱 ISM 数据、科技与芯片卖压的同日解释。"
+        }
+      ],
+      "limitations": [
+        "套息交易规模不可直接从公开日频数据观察，去杠杆判断依赖多市场证据。",
+        "合并事件段覆盖多条公司和宏观信息，无法可靠分解每个因素的价格贡献。"
+      ],
+      "source_id": "historical:event-case-xlk-20240801-growth-carry-unwind",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20240903-ai-crowding-growth",
+      "episode_id": "xlk-2024-09-03-drop-v1",
+      "case_title": "AI 高预期回归现实与弱制造业数据共振",
+      "attribution_status": "multi_causal",
+      "confidence": "medium",
+      "background": {
+        "industry_structure": "NVIDIA 是 AI 资本开支链的核心定价节点，半导体的盈利弹性和高权重使其波动容易放大到 XLK。",
+        "market_state": "8 月冲击后 XLK 在事件前 20 个交易日反弹 7.6299%，但仍较 63 日高点低 7.2955%，修复快而信心并未完全稳定。",
+        "company_or_funding_context": "NVIDIA 增长仍强，但市场开始讨论 Blackwell 交付节奏、客户资本开支回报和极高盈利预期能否继续上修。",
+        "expectations_and_positioning": "事件发生在劳动节后首个交易日及季节性偏弱月份开端，AI 交易经过快速修复后对边际坏消息更敏感。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-09-03 open",
+          "end": "2024-09-03 after close"
+        },
+        "timing_relationship": "same_session",
+        "session_mapping": "美国制造业数据在 9 月 3 日交易时段公布并加速卖盘；关于 NVIDIA 反垄断调查的新增报道在收盘后出现，不能倒置为常规时段跌幅的原因。",
+        "expectation_build_up": "8 月初已暴露增长和拥挤风险，随后快速反弹重新抬高了对 AI 主线的要求。",
+        "verified_new_information": "当日制造业数据仍显疲弱且价格分项偏强，市场对增长放缓和政策空间的组合感到不安；NVIDIA 当日跌近一成，芯片指数跌约 8%。",
+        "what_was_already_known": "AI 资本开支高、半导体估值高以及 9 月季节性波动倾向都不是当日新信息。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-08-05 to 2024-08-30",
+          "phase": "expectation_build_up",
+          "detail": "科技从 8 月初冲击中快速修复，重新形成较高的盈利与持仓要求。"
+        },
+        {
+          "date_or_time": "2024-09-03 US session",
+          "phase": "information_arrival",
+          "detail": "制造业数据偏弱、价格压力仍在，风险资产卖盘加速，AI 乐观情绪降温。"
+        },
+        {
+          "date_or_time": "2024-09-03 close",
+          "phase": "market_reaction",
+          "detail": "XLK 跌 4.5929%，相对 SPY 少 2.5350 个百分点；NVIDIA 与芯片指数显著领跌。"
+        },
+        {
+          "date_or_time": "2024-09-03 after close",
+          "phase": "later_development",
+          "detail": "NVIDIA 反垄断调查相关报道属于收盘后的后续信息，应与日内归因分开。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "弱制造业信息降低周期盈利能见度，同时价格压力限制纯粹的降息利好解释。",
+          "AI 主线刚经历快速修复，高预期使 NVIDIA 对需求与交付疑虑更敏感。",
+          "核心权重急跌触发半导体与大型成长去拥挤，扩大 XLK 相对大盘跌幅。"
+        ],
+        "first_order_effect": "NVIDIA 与周期性半导体的盈利和估值预期被压低。",
+        "second_order_effect": "云资本开支链与高估值软件被当作同一风险篮子减仓，板块内部相关性上升。",
+        "state_dependence": "相同的弱数据在深度超卖时可能强化降息交易；在快速反弹且盈利预期高时，更容易被解释为需求放缓和盈利下修。",
+        "market_interpretation": "市场并未得到一个足以单独解释跌幅的新公司事实，而是在弱宏观背景下主动降低 AI 交易的估值和仓位。",
+        "alternative_explanations": [
+          "月初资金流、季节性和技术性止损可能放大了卖盘。",
+          "个别公司交付与监管担忧虽相关，但部分信息在收盘后才到达。"
+        ]
+      },
+      "sector_transmission": [
+        "NVIDIA 作为半导体和 AI 盈利预期锚。",
+        "Broadcom、AMD 及设备链通过需求与估值相关性跟跌。",
+        "大型软件和平台公司通过高久期估值与组合去风险受影响。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-09-03-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 4.5929%，相对 SPY 少 2.5350 个百分点；此前 20 个交易日已反弹 7.6299%，随后 20 个交易日回报为 4.7759%。该路径与‘高预期后的去拥挤’相容，但不构成因果证明。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "AI 板块急跌时要区分新增基本面事实、宏观折现变化和高预期后的仓位调整，尤其不能用收盘后新闻解释更早的日内跌幅。",
+        "similarity_requirements": [
+          "AI 核心权重刚经历快速反弹或预期上修。",
+          "宏观数据同时削弱盈利可见度。",
+          "半导体相对大盘和板块广度同步恶化。"
+        ],
+        "important_differences": [
+          "当前 NVIDIA 产品周期、供给约束和估值位置可能不同。",
+          "若有明确公司盈利预警，机制将从去拥挤转为基本面冲击。"
+        ],
+        "watch_signposts": [
+          "NVIDIA 交付节奏、云客户订单和盈利修订。",
+          "ISM 新订单、价格分项与实际利率。",
+          "半导体指数相对 SPY、成交广度与领跌集中度。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Reuters, 2024-09-03, U.S. stocks tumble as September starts, investors cool on chips",
+          "url": "https://www.investing.com/news/stock-market-news/us-stocks-tumble-investors-pause-ai-rally-3599007",
+          "source_type": "newswire",
+          "supports": "支持当日宏观数据、AI 情绪降温及 NVIDIA 和芯片指数的市场反应。"
+        },
+        {
+          "title": "AWB FMP price candidate, generated 2026-08-30",
+          "url": "file://industry_research_agent/outputs/event_history/xlk_candidates.json",
+          "source_type": "project_database_extract",
+          "supports": "支持事件前反弹、当日相对跌幅和后续路径。"
+        }
+      ],
+      "limitations": [
+        "缺少可验证的日内持仓与资金流数据，去拥挤判断不能量化拆分。",
+        "当日是多因风险规避，不宜赋予单一新闻唯一归因。"
+      ],
+      "source_id": "historical:event-case-xlk-20240903-ai-crowding-growth",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20241031-ai-capex-burden",
+      "episode_id": "xlk-2024-10-31-drop-v1",
+      "case_title": "Microsoft 与 Meta 盘后信息把 AI 资本开支从需求利好改写为回报压力",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "Microsoft 是 XLK 的直接大型权重，Meta 虽不在 XLK，却是 AI 基础设施的重要买方；两家公司共同影响云、GPU、网络和定制芯片链。",
+        "market_state": "事件前 20 个交易日 XLK 上涨 3.4790%，63 日回撤仅 1.7963%，市场接近高位并对大型科技业绩要求较高。",
+        "company_or_funding_context": "两家公司现金流和融资能力强，问题不是能否投入，而是新增算力投入何时转化为 Azure、广告和 AI 产品的增量利润。",
+        "expectations_and_positioning": "市场此前通常把大型云厂商资本开支上升视为上游需求确认，但开始担忧折旧、毛利率和容量约束下的回收周期。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-10-30 after close",
+          "end": "2024-10-31 close"
+        },
+        "timing_relationship": "after_hours_to_next_session",
+        "session_mapping": "Microsoft 和 Meta 于 10 月 30 日盘后披露业绩与展望，主要价格反应落在 10 月 31 日常规交易时段。",
+        "expectation_build_up": "AI 资本开支持续上升早已为市场所知，边际变化在于支出、折旧和未来增长指引之间的匹配度。",
+        "verified_new_information": "Microsoft 对后续 Azure 增长的展望未达到部分投资者预期；Meta 指引 2024 年资本开支 380 亿至 400 亿美元，并预计 2025 年资本开支显著增长。",
+        "what_was_already_known": "生成式 AI 需要大量基础设施、云商现金流充足以及上游芯片受益于采购增长，均是此前共识。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-10-30 after close",
+          "phase": "information_arrival",
+          "detail": "Microsoft 与 Meta 发布季度结果、云增长及 AI 基础设施投入展望。"
+        },
+        {
+          "date_or_time": "2024-10-31 premarket",
+          "phase": "market_reaction",
+          "detail": "市场把焦点从盈利超预期转向 Azure 增长约束、未来资本开支和折旧压力。"
+        },
+        {
+          "date_or_time": "2024-10-31 close",
+          "phase": "market_reaction",
+          "detail": "XLK 跌 3.2140%，相对 SPY 少 1.2537 个百分点。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "盘后信息确认 AI 基础设施支出继续上升。",
+          "云收入增长和容量变现没有完全匹配市场的高要求。",
+          "投资者同时上调折旧与自由现金流压力，下调近期资本效率。",
+          "Microsoft 直接拖累 XLK，Meta 的外部读数又扩散到上游半导体与其他云相关权重。"
+        ],
+        "first_order_effect": "Microsoft 的 Azure 增长和利润率预期被重新评估，Meta 的自由现金流与费用预期承压。",
+        "second_order_effect": "上游芯片短期需求得到确认，但若下游回报不清晰，市场会降低资本开支持续性估值并要求更高盈利证据。",
+        "state_dependence": "当容量紧缺且收入转化清晰时，高资本开支是需求利好；当估值高、支出快于收入且折旧上升时，同样的信息会成为风险。",
+        "market_interpretation": "市场并非否定 AI 需求，而是开始区分‘花得更多’与‘赚得更多’，对资本开支质量而非绝对规模定价。",
+        "alternative_explanations": [
+          "月末再平衡、美国大选前风险控制及其他公司财报也可能放大波动。",
+          "Meta 不在 XLK，其影响主要是行业读数而非指数直接权重。"
+        ]
+      },
+      "sector_transmission": [
+        "MSFT 直接通过 XLK 权重、Azure 增长和云利润率传导。",
+        "META 作为外部需求节点，通过 GPU、网络和数据中心采购预期传导。",
+        "NVIDIA、Broadcom 等上游公司面临短期订单利好与远期资本效率折价的拉扯。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-10-31-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 3.2140%，随后 5 个交易日回报 6.8305%，4 个交易日回到事件前收盘。快速修复说明这更像预期与估值冲击，不代表资本效率问题已被永久解决。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "云资本开支必须用‘投入—容量—收入—利润—现金流’链条分析，不能把支出增加单向解释为上游利好。",
+        "similarity_requirements": [
+          "大型云厂商盘后同时给出更高支出和不够强的收入或利润展望。",
+          "Microsoft 对 XLK 有直接权重，外部云厂商对上游有清晰采购传导。",
+          "市场此前已经计入高 AI 回报。"
+        ],
+        "important_differences": [
+          "当前资本开支可能受到供给约束、预付款或自研芯片替代影响。",
+          "收入披露口径与 AI 业务拆分程度可能已改善。"
+        ],
+        "watch_signposts": [
+          "MSFT、GOOGL、AMZN、META 的资本开支同比增量和云收入增量。",
+          "折旧、自由现金流、数据中心利用率和管理层对容量约束的表述。",
+          "上游订单取消、交付延期和客户集中度。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Meta, 2024-10-30, Third Quarter 2024 Results",
+          "url": "https://investor.atmeta.com/investor-news/press-release-details/2024/Meta-Reports-Third-Quarter-2024-Results/default.aspx",
+          "source_type": "company_primary",
+          "supports": "支持 Meta 资本开支区间和 2025 年显著增长展望。"
+        },
+        {
+          "title": "Reuters, 2024-10-31, Wall St ends lower as megacaps highlight AI costs",
+          "url": "https://www.investing.com/news/stock-market-news/futures-tumble-as-meta-microsoft-cost-warnings-highlight-ai-trade-risks-3693602",
+          "source_type": "newswire",
+          "supports": "支持 Microsoft、Meta 盘后信息与 10 月 31 日市场解读和反应。"
+        },
+        {
+          "title": "AP, 2024-10-31, Microsoft, Meta and the burden of expectations",
+          "url": "https://apnews.com/article/7d02be7e740ae04a94a3cb712cf29b86",
+          "source_type": "news",
+          "supports": "交叉验证高预期、Azure 展望与大型科技当日拖累。"
+        }
+      ],
+      "limitations": [
+        "当时无法从公开披露准确拆分每一美元 AI 资本开支的收入贡献。",
+        "盘后两家公司信息同时到达，不能精确分解 Microsoft 直接权重与 Meta 行业读数的贡献。"
+      ],
+      "source_id": "historical:event-case-xlk-20241031-ai-capex-burden",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20241218-fed-hawkish-cut",
+      "episode_id": "xlk-2024-12-18-drop-v1",
+      "case_title": "美联储降息同时下调后续宽松路径，触发贴现率重估",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 的远期现金流占比较高，实际利率和权益风险溢价变化会通过估值倍数影响大型软件、平台和半导体。",
+        "market_state": "事件前 20 个交易日 XLK 上涨 4.5847%，较 63 日高点仅回撤 0.6047%，风险资产对继续宽松已有较强期待。",
+        "company_or_funding_context": "大型科技资产负债表稳健，但估值仍对无风险利率敏感；高资本开支也提高了现金流折现的重要性。",
+        "expectations_and_positioning": "市场预期 12 月降息，真正的预期差在于 2025 年降息路径和通胀判断，而不是是否降息本身。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2024-12-18 14:00 ET",
+          "end": "2024-12-18 close"
+        },
+        "timing_relationship": "same_session",
+        "session_mapping": "FOMC 声明和经济预测在美东时间 14:00 发布，随后新闻发布会继续传递政策信息，价格在同一常规交易时段重估。",
+        "expectation_build_up": "25 个基点降息已被广泛预期，因此会前上涨更多反映持续宽松的希望。",
+        "verified_new_information": "美联储降息 25 个基点，但更新后的路径显示 2025 年预计降息次数少于此前预期，并强调进一步调整将更谨慎。",
+        "what_was_already_known": "通胀仍高于目标、经济保持韧性以及 12 月可能降息，均非新增信息。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2024-12-18 before 14:00 ET",
+          "phase": "expectation_build_up",
+          "detail": "市场主要等待 2025 年政策路径，单次降息本身已较充分计入。"
+        },
+        {
+          "date_or_time": "2024-12-18 14:00 ET",
+          "phase": "information_arrival",
+          "detail": "FOMC 公布降息与更新后的经济预测。"
+        },
+        {
+          "date_or_time": "2024-12-18 14:30 ET to close",
+          "phase": "market_reaction",
+          "detail": "更谨慎的后续路径推动收益率和风险溢价重估；XLK 收跌 3.2253%。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "单次降息符合预期，未提供额外利好。",
+          "更少的后续降息意味着远期无风险利率高于市场原先假设。",
+          "高久期科技估值倍数压缩，并通过广泛风险规避影响 XLK。"
+        ],
+        "first_order_effect": "实际利率与贴现率预期上升，压低高估值科技现值。",
+        "second_order_effect": "融资条件更久维持偏紧可能影响企业 IT 预算、云需求和高资本开支项目的回报门槛。",
+        "state_dependence": "在估值低且增长悲观时，少降息可能由经济强劲抵消；在接近高位且已计入持续宽松时，路径下修主要表现为估值冲击。",
+        "market_interpretation": "‘降息’这一标题并非利好，决定方向的是新路径相对市场预期更偏紧。",
+        "alternative_explanations": [
+          "年末流动性、仓位和期权对冲可能放大最后两小时跌幅。",
+          "XLK 相对 SPY 仅少 0.2449 个百分点且优于 QQQ，表明这是广泛宏观冲击而非纯科技基本面事件。"
+        ]
+      },
+      "sector_transmission": [
+        "软件和大型平台通过久期与估值倍数传导。",
+        "半导体通过周期盈利与风险偏好传导。",
+        "高资本开支公司通过融资门槛和自由现金流折现传导。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2024-12-18-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 3.2253%，相对 SPY 少 0.2449 个百分点、相对 QQQ 多 0.3824 个百分点；4 个交易日回到事件前收盘。相对表现支持广泛贴现率冲击而非 XLK 独有事件。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "央行事件要比较已计入预期与新增路径，不能按‘降息利好、加息利空’的静态标签判断。",
+        "similarity_requirements": [
+          "政策决定本身符合预期，但点阵图、预测或措辞显著改变后续路径。",
+          "XLK 估值和风险偏好在事件前偏强。",
+          "收益率与高久期资产在同一时间窗口一致反应。"
+        ],
+        "important_differences": [
+          "当前盈利增速可能足以抵消或放大贴现率变化。",
+          "若冲击来自流动性而非政策路径，盘后修复模式可能不同。"
+        ],
+        "watch_signposts": [
+          "两年期与十年期美债收益率、实际利率和期限溢价。",
+          "FOMC 预测、新闻发布会措辞及利率期货路径。",
+          "XLK 相对 SPY、QQQ 的同步性和软件对半导体的内部差异。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "Federal Reserve, 2024-12-18, FOMC statement",
+          "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20241218b.htm",
+          "source_type": "official",
+          "supports": "支持政策决定和正式措辞。"
+        },
+        {
+          "title": "Federal Reserve, 2024-12-18, Chair Powell press conference",
+          "url": "https://www.federalreserve.gov/monetarypolicy/fomcpresconf20241218.htm",
+          "source_type": "official",
+          "supports": "支持同日新闻发布会和政策路径解释。"
+        },
+        {
+          "title": "Reuters, 2024-12-18, Stocks skid after Fed signals slower easing",
+          "url": "https://www.investing.com/news/economy-news/stocks-skid-after-fed-signals-it-will-slow-down-its-easing-3780547",
+          "source_type": "newswire",
+          "supports": "支持市场对更少后续降息的即时解读。"
+        }
+      ],
+      "limitations": [
+        "日频数据不能完整还原 14:00 后利率、期权对冲和 ETF 成分的分钟级传导。",
+        "后续价格路径受年末其他宏观与公司信息影响。"
+      ],
+      "source_id": "historical:event-case-xlk-20241218-fed-hawkish-cut",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20250127-deepseek-efficiency",
+      "episode_id": "xlk-2025-01-27-drop-v1",
+      "case_title": "DeepSeek 效率叙事延迟扩散，重估 AI 算力需求与赢家结构",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 的 AI 链条既含 NVIDIA 等算力供应商，也含 Microsoft 等云与软件平台；更高模型效率可能扩大应用需求，也可能降低单位任务所需算力，方向取决于时间尺度和竞争反应。",
+        "market_state": "事件前 5 个交易日 XLK 上涨 3.8178%，63 日回撤仅 1.0421%，市场对美国 AI 领先和高强度 GPU 投入的持续性有较强信心。",
+        "company_or_funding_context": "美国云厂商正扩大 AI 资本开支，NVIDIA 估值与订单建立在训练和推理需求继续快速增长的预期上。",
+        "expectations_and_positioning": "DeepSeek-R1 的技术信息并非在 1 月 27 日盘中首次出现，但其低成本与开放权重叙事在前一周及周末迅速扩散，市场直到周一才集中重估。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2025-01-20",
+          "end": "2025-01-27 close"
+        },
+        "timing_relationship": "lagged_repricing",
+        "session_mapping": "模型发布及论文信息早于大跌日，相关应用与讨论在周末扩大；美国市场在 1 月 27 日开盘后集中反应，因此价格冲击明显晚于原始信息首次公开。",
+        "expectation_build_up": "专业社区先消化模型能力和训练方法，随后媒体、应用排名与投资者讨论把技术事实转化为对 GPU 需求和美国领先地位的市场叙事。",
+        "verified_new_information": "DeepSeek 公布 R1 模型及技术材料，展示开放权重推理模型的能力和效率；市场随后重新讨论达到高性能所需的资本强度。",
+        "what_was_already_known": "模型效率持续提升、算法创新可能降低单位算力成本，以及更低成本也可能刺激更多推理需求，均是长期已知逻辑。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2025-01-20 to 2025-01-22",
+          "phase": "information_arrival",
+          "detail": "DeepSeek-R1 模型、代码与论文材料公开，技术社区开始评估。"
+        },
+        {
+          "date_or_time": "2025-01-24 to 2025-01-26",
+          "phase": "expectation_build_up",
+          "detail": "应用热度和媒体讨论在周末扩大，议题从模型能力转向美国 AI 资本开支与芯片需求。"
+        },
+        {
+          "date_or_time": "2025-01-27 US session",
+          "phase": "market_reaction",
+          "detail": "美国 AI 与半导体资产集中重估；XLK 跌 4.8976%，相对 SPY 少 3.4831 个百分点。"
+        },
+        {
+          "date_or_time": "2025-01-27 onward",
+          "phase": "later_development",
+          "detail": "NVIDIA 强调推理仍需要其芯片，市场开始区分训练效率、推理需求、出口限制和模型成本口径。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "更高效率的模型证据挑战‘能力提升必然要求同比例增加训练资本’的简单假设。",
+          "投资者下调部分 GPU 稀缺与美国技术垄断叙事的确定性。",
+          "NVIDIA 和相关半导体先被减仓，冲击再扩散到云资本开支与数据中心供应链。",
+          "同时，更低推理成本可能扩大应用需求，因此长期影响并非单向利空。"
+        ],
+        "first_order_effect": "AI 芯片需求斜率、定价权和资本开支持续性被重新评估。",
+        "second_order_effect": "云厂商可能获得更低模型成本和更多应用需求，但也面临开源模型竞争、算力采购效率和现有投入回报的重新比较。",
+        "state_dependence": "在算力稀缺、估值高且市场把资本开支视为越多越好时，效率突破容易成为负面预期差；在应用渗透不足时，同一突破也可能是需求扩张利好。",
+        "market_interpretation": "市场先交易‘单位智能成本下降会削弱算力稀缺’，随后才逐步讨论 Jevons 效应、推理扩张和真实训练成本口径。",
+        "alternative_explanations": [
+          "周末消息集中、拥挤仓位和期权结构可能放大周一开盘反应。",
+          "公开成本数字与完整研发、硬件和推理成本并非同一口径，初始市场叙事可能过度简化。"
+        ]
+      },
+      "sector_transmission": [
+        "NVIDIA 及 GPU、HBM、网络和服务器链的需求与定价权。",
+        "MSFT、GOOGL、AMZN、META 的 AI 资本开支质量与自研芯片策略。",
+        "软件与应用公司可能受益于更低推理成本，但竞争壁垒也可能下降。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2025-01-27-drop-v1",
+        "interpretation": "候选文件显示 XLK 当日跌 4.8976%，相对 SPY 少 3.4831 个百分点；20 个交易日回报仅 0.4130%，但 60 个交易日回报为 -12.9801%，期间还叠加了后续宏观和关税事件，不能把远期路径全部归给 DeepSeek。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "技术冲击要追踪‘首次公开—专业验证—叙事扩散—资金定价’四个时钟，并同时评估单位算力下降和总需求扩张两条相反路径。",
+        "similarity_requirements": [
+          "出现可验证的模型效率、成本或硬件替代进展。",
+          "市场此前把高资本强度与领先地位视为核心确定性。",
+          "叙事从技术社区扩散到资本开支和盈利预期。"
+        ],
+        "important_differences": [
+          "当前瓶颈可能从训练转向推理、数据、能源或网络。",
+          "发布方披露的成本口径、可复现性和硬件获得方式需要独立核验。"
+        ],
+        "watch_signposts": [
+          "模型基准、真实推理成本、调用量与开发者采用。",
+          "云厂商资本开支、GPU 租赁价格、利用率和订单交付。",
+          "NVIDIA 毛利率、客户集中度及推理收入表述。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "DeepSeek-AI, 2025-01, DeepSeek-R1 repository",
+          "url": "https://github.com/deepseek-ai/DeepSeek-R1",
+          "source_type": "technical_primary",
+          "supports": "支持模型发布、开放权重与技术材料。"
+        },
+        {
+          "title": "Reuters, 2025-01-27, China's DeepSeek sets off AI market rout",
+          "url": "https://www.investing.com/news/stock-market-news/chinas-deepseek-sets-off-ai-market-rout-3831131",
+          "source_type": "newswire",
+          "supports": "支持周末叙事扩散、1 月 27 日美国 AI 资产的集中市场反应。"
+        },
+        {
+          "title": "AP, 2025-01-27, DeepSeek jolts AI-related stocks",
+          "url": "https://apnews.com/article/52c54e361616509280bd2775674b6b4b",
+          "source_type": "news",
+          "supports": "交叉验证市场对低成本模型和芯片需求的初始解读。"
+        }
+      ],
+      "limitations": [
+        "模型训练成本、总研发成本和硬件来源的公开口径并不完整。",
+        "后续 60 日价格包含关税与宏观冲击，不能作为 DeepSeek 影响的延伸归因。"
+      ],
+      "source_id": "historical:event-case-xlk-20250127-deepseek-efficiency",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20250403-reciprocal-tariffs",
+      "episode_id": "xlk-2025-04-03-drop-v1",
+      "case_title": "对等关税从竞选背景升级为可执行政策并引发两日重估",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "XLK 成分公司的收入全球化、硬件供应链跨境化，Apple 与半导体链同时暴露于进口成本、终端需求和中国相关政策。",
+        "market_state": "事件前 XLK 已较 63 日高点回撤 13.4776%，前 20 个交易日跌 5.4337%，关税担忧并非毫无预期，但政策幅度仍可能形成新增冲击。",
+        "company_or_funding_context": "大型科技现金充足，却不能快速重构亚洲制造、零部件和终端销售网络；成本能否转嫁取决于品牌、产品周期和消费者需求。",
+        "expectations_and_positioning": "市场知道新政府偏好关税，但仍需要确认覆盖国家、税率、实施时间和报复风险；此前下跌反映部分预期，正式方案决定剩余重估。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2025-04-02 after close",
+          "end": "2025-04-04 close"
+        },
+        "timing_relationship": "multi_stage",
+        "session_mapping": "白宫 4 月 2 日公布对等关税方案，主要风险资产反应映射到 4 月 3 日常规交易；随后报复与衰退担忧在 4 月 4 日继续发酵，构成两日事件段。",
+        "expectation_build_up": "关税方向和 4 月初可能公布方案已被讨论数周，XLK 也已回撤；真正新增的是税率、覆盖广度及其高于部分市场预期的组合。",
+        "verified_new_information": "行政命令设定普遍及按贸易伙伴区分的附加关税框架，市场随后上调供应链成本、通胀和衰退风险。",
+        "what_was_already_known": "贸易保护主义方向、美国对中国科技限制以及企业正在多元化供应链，均为政策公布前的背景。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2025-03-20 to 2025-04-02",
+          "phase": "expectation_build_up",
+          "detail": "市场提前讨论对等关税，XLK 已处在显著回撤中。"
+        },
+        {
+          "date_or_time": "2025-04-02 after close",
+          "phase": "information_arrival",
+          "detail": "白宫公布具体关税框架、税率与实施安排。"
+        },
+        {
+          "date_or_time": "2025-04-03 regular session",
+          "phase": "market_reaction",
+          "detail": "XLK 跌 6.8245%，相对 SPY 少 1.8964 个百分点。"
+        },
+        {
+          "date_or_time": "2025-04-04 regular session",
+          "phase": "confirmation",
+          "detail": "报复、通胀和衰退担忧继续发酵，合并两日事件段跌幅达到 12.9617%。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "正式税率和覆盖范围高于部分投资者已计入水平。",
+          "硬件成本、供应链调整与终端价格同时面临上行压力。",
+          "报复风险又压低海外收入和企业、消费者需求预期。",
+          "通胀上行与增长下行的组合限制货币政策缓冲，科技盈利和估值同时被压缩。"
+        ],
+        "first_order_effect": "Apple、硬件和半导体供应链面临进口成本、需求破坏与库存调整风险。",
+        "second_order_effect": "若企业信心和消费走弱，云、软件和广告需求也会受影响；更高通胀还会提高贴现率。",
+        "state_dependence": "在政策幅度已充分计入、估值低且豁免清晰时，正式公布可能消除不确定性；本案中覆盖广、回撤未完全消化衰退路径，结果是第二轮重估。",
+        "market_interpretation": "市场交易的不只是关税成本，而是成本、报复、需求和政策空间共同恶化的宏观制度冲击。",
+        "alternative_explanations": [
+          "前期下跌后的强制降风险和期权对冲可能放大两日跌幅。",
+          "各公司实际豁免、原产地和转嫁能力不同，指数级反应掩盖了成分差异。"
+        ]
+      },
+      "sector_transmission": [
+        "AAPL 的亚洲制造、产品价格与消费者需求。",
+        "半导体和设备链的跨境供应、客户库存与中国收入。",
+        "MSFT 及软件公司通过企业信心、IT 预算和贴现率间接受压。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2025-04-03-drop-v1",
+        "interpretation": "候选文件显示 4 月 3 日至 4 日事件段累计跌 12.9617%，事件前已较 63 日高点回撤 13.4776%；随后 20 个交易日回报 10.9506%，17 个交易日回到事件前收盘。政策后续变化使反弹不能被解读为初始风险不存在。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "预期中的政策仍可造成冲击，关键是正式方案相对已计入预期的幅度、覆盖与执行路径；要把公布、报复、豁免和延期作为多阶段时间线。",
+        "similarity_requirements": [
+          "正式政策在税率、覆盖或执行速度上显著超出市场预期。",
+          "XLK 供应链和海外收入存在直接暴露。",
+          "通胀与增长风险同时上升，政策缓冲受限。"
+        ],
+        "important_differences": [
+          "当前豁免、司法状态、谈判和供应链迁移程度可能不同。",
+          "软件权重受影响更多来自需求和贴现率，而非直接进口成本。"
+        ],
+        "watch_signposts": [
+          "正式海关税则、豁免清单、实施日期和法院或谈判变化。",
+          "中国及其他贸易伙伴的反制、企业库存和订单取消。",
+          "AAPL 毛利率指引、消费者需求与半导体交付周期。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "White House, 2025-04-02, Regulating Imports with a Reciprocal Tariff",
+          "url": "https://www.whitehouse.gov/presidential-actions/2025/04/regulating-imports-with-a-reciprocal-tariff-to-rectify-trade-practices-that-contribute-to-large-and-persistent-annual-united-states-goods-trade-deficits/",
+          "source_type": "official",
+          "supports": "支持关税框架、公布时间和执行安排。"
+        },
+        {
+          "title": "Reuters, 2025-04-03, Wall Street futures in a tailspin as tariffs fuel recession fears",
+          "url": "https://www.investing.com/news/stock-market-news/wall-street-futures-in-a-tailspin-as-tariffs-fuel-recession-fears-3964312",
+          "source_type": "newswire",
+          "supports": "支持方案公布后市场对衰退、通胀和科技供应链的即时解读。"
+        },
+        {
+          "title": "Reuters, 2025-04-04, Shares bruised as tariffs stir recession fears",
+          "url": "https://www.investing.com/news/stock-market-news/shares-bruised-dollar-crumbles-as-trump-tariffs-stir-recession-fears-3966939",
+          "source_type": "newswire",
+          "supports": "支持第二交易日的全球风险与报复担忧。"
+        }
+      ],
+      "limitations": [
+        "政策在后续数日快速变化，初始两日的定价对象并不等于最终执行状态。",
+        "未取得各 XLK 成分在当时的供应链国别成本明细。"
+      ],
+      "source_id": "historical:event-case-xlk-20250403-reciprocal-tariffs",
+      "role": "historical_research"
+    },
+    {
+      "case_id": "event-case-xlk-20250416-nvidia-h20-license",
+      "episode_id": "xlk-2025-04-16-drop-v1",
+      "case_title": "NVIDIA H20 许可要求先内部发生、盘后披露后映射至下一交易日",
+      "attribution_status": "supported",
+      "confidence": "high",
+      "background": {
+        "industry_structure": "NVIDIA 是 XLK 与 AI 上游的关键权重，H20 是面向中国市场的合规产品；出口许可会直接影响收入、库存与产品路线。",
+        "market_state": "事件前 XLK 已较 63 日高点回撤 17.0452%，但前 5 个交易日反弹 11.7726%，处在关税冲击后的高波动修复阶段。",
+        "company_or_funding_context": "NVIDIA 现金流强，冲击不是融资能力，而是中国可服务市场、已采购库存和产品是否能获得许可。",
+        "expectations_and_positioning": "市场知道美国可能继续收紧先进芯片出口，但不知道公司已在 4 月 9 日收到许可通知、4 月 14 日被告知要求将无限期持续，也不知道具体费用规模。"
+      },
+      "event": {
+        "information_window": {
+          "start": "2025-04-09 private notice",
+          "end": "2025-04-16 close"
+        },
+        "timing_relationship": "after_hours_to_next_session",
+        "session_mapping": "监管信息先在 4 月 9 日和 14 日到达公司，但对公众仍不可知；NVIDIA 于 4 月 15 日收盘后提交 8-K，公开市场主要在 4 月 16 日常规交易时段定价。",
+        "expectation_build_up": "更严格中国芯片限制是长期背景，4 月关税冲击也提高政策敏感度；但具体 H20 许可和最高 55 亿美元费用在披露前不是公开确认事实。",
+        "verified_new_information": "NVIDIA 披露美国政府要求向中国出口 H20 需许可证，并预计 2026 财年一季度因库存、采购承诺及相关准备计提最高约 55 亿美元费用。",
+        "what_was_already_known": "先进 AI 芯片对华出口长期受限、公司开发降规格产品以及政策仍可能收紧，均为已知背景。"
+      },
+      "timeline": [
+        {
+          "date_or_time": "2025-04-09",
+          "phase": "information_arrival",
+          "detail": "美国政府通知 NVIDIA，H20 对华出口需要许可证；此时属于公司知情而非公开市场信息。"
+        },
+        {
+          "date_or_time": "2025-04-14",
+          "phase": "confirmation",
+          "detail": "政府告知公司许可要求将无限期持续，仍未构成公众可交易信息。"
+        },
+        {
+          "date_or_time": "2025-04-15 after close",
+          "phase": "information_arrival",
+          "detail": "NVIDIA 提交 8-K，首次向公众披露许可要求和最高约 55 亿美元费用预期。"
+        },
+        {
+          "date_or_time": "2025-04-16 regular session",
+          "phase": "market_reaction",
+          "detail": "XLK 跌 3.4744%，相对 SPY 少 1.2516 个百分点；价格反应对应公开披露后的下一交易日。"
+        }
+      ],
+      "analysis": {
+        "causal_chain": [
+          "许可要求切断或延迟 H20 对华销售。",
+          "库存与采购承诺带来明确费用，并压低中国相关未来收入。",
+          "政策可持续性提高产品重新设计和客户迁移风险。",
+          "NVIDIA 直接权重及其 AI 需求锚作用把冲击传到 XLK 半导体链。"
+        ],
+        "first_order_effect": "NVIDIA 当季费用、库存价值、中国收入和毛利率预期受损。",
+        "second_order_effect": "其他芯片、设备、云客户和中国本土替代者的需求与竞争路径被重新评估。",
+        "state_dependence": "在关税后深度回撤中，部分政策风险已计入，限制了估值冲击；但刚反弹 11.7726% 又使明确费用和永久许可措辞形成新的负面预期差。",
+        "market_interpretation": "该案例展示三个不同时间：监管决定时间、公司知情时间、公众可交易时间。历史研究应按最后一项映射市场反应，同时保留前两项因果背景。",
+        "alternative_explanations": [
+          "同期关税、增长与其他半导体政策信息仍在影响市场。",
+          "XLK 当日跌幅不能完全由 NVIDIA 单一成分解释。"
+        ]
+      },
+      "sector_transmission": [
+        "NVIDIA 的 H20 收入、库存、采购承诺和毛利率。",
+        "AMD 及其他对华 AI 芯片产品的类似许可风险。",
+        "MSFT、GOOGL、AMZN、META 对 GPU 供给、区域部署与资本开支组合的调整。"
+      ],
+      "observed_outcome": {
+        "candidate_episode_id": "xlk-2025-04-16-drop-v1",
+        "interpretation": "候选文件显示 XLK 4 月 16 日跌 3.4744%，此前 5 个交易日反弹 11.7726%；随后 20 个交易日回报 20.9055%，5 个交易日回到事件前收盘。后续反弹处在关税政策变化和大盘修复中，不能否定 H20 的公司层面损失。",
+        "causal_proof": false
+      },
+      "current_use": {
+        "lesson": "监管事件必须区分决定、公司获知、公开披露和首个可交易时段；不能用公司内部通知日直接对齐公开市场价格。",
+        "similarity_requirements": [
+          "正式许可或禁令直接改变重要产品的可销售市场。",
+          "公司公开披露可量化库存、费用或收入影响。",
+          "相关公司在 XLK 或其上游需求链具有系统重要性。"
+        ],
+        "important_differences": [
+          "当前规则可能有新许可、产品替代或政策逆转。",
+          "公司通过其他地区需求吸收库存的能力可能不同。"
+        ],
+        "watch_signposts": [
+          "SEC 文件中的费用、库存、采购承诺和中国收入变化。",
+          "美国商务部许可规则、豁免和替代产品批准。",
+          "NVIDIA 毛利率、数据中心增长及 AMD 的对应披露。"
+        ]
+      },
+      "sources": [
+        {
+          "title": "NVIDIA SEC Form 8-K, filed 2025-04-15",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000082/nvda-20250409.htm",
+          "source_type": "regulatory_primary",
+          "supports": "支持 4 月 9 日通知、4 月 14 日确认、4 月 15 日公开披露及最高约 55 亿美元费用。"
+        },
+        {
+          "title": "AP, 2025-04-16, Nvidia says US restrictions will cost billions",
+          "url": "https://apnews.com/article/0e6fbdc1ad8b54d8ecc704393c2a1558",
+          "source_type": "news",
+          "supports": "交叉验证公开披露后的市场解读与价格反应。"
+        },
+        {
+          "title": "NVIDIA SEC Form 10-Q, filed 2025-05-28",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000116/nvda-20250427.htm",
+          "source_type": "regulatory_primary",
+          "supports": "后续确认一季度实际相关费用为 45 亿美元，属于事后发展而非 4 月 16 日当时已知。"
+        }
+      ],
+      "limitations": [
+        "公司内部获知与公开披露之间是否存在其他市场传闻，公开资料无法完全排除。",
+        "5 月披露的实际费用只能用于后续验证，不能回写为 4 月 16 日市场当时已知事实。"
+      ],
+      "source_id": "historical:event-case-xlk-20250416-nvidia-h20-license",
+      "role": "historical_research"
+    }
+  ],
+  "coverage": {
+    "candidate_count": 183,
+    "analyzed_case_count": 14,
+    "coverage_note": "首版研究从 AWB 自有 FMP 价格历史筛出的 183 个候选事件段中，选取 14 个机制清晰且来源较完整的案例，跨越互联网泡沫、9·11后复市、金融危机、疫情流动性、通胀紧缩，以及近期芯片政策、云资本效率、AI 拥挤、技术效率和关税冲击。其余日期只保留为候选，不用案例数量做统计外推。"
+  },
+  "open_research_queue": [
+    "xlk-2008-09-17-drop-v1",
+    "xlk-2011-08-08-drop-v1",
+    "xlk-2018-12-04-drop-v1",
+    "xlk-2020-02-27-drop-v1",
+    "xlk-2022-01-05-drop-v1",
+    "xlk-2022-06-13-drop-v1",
+    "xlk-2022-08-26-drop-v1",
+    "xlk-2025-02-27-drop-v1",
+    "xlk-2025-03-10-drop-v1",
+    "xlk-2025-04-10-drop-v1",
+    "xlk-2025-10-10-drop-v1",
+    "xlk-2025-11-20-drop-v1",
+    "xlk-2026-03-26-drop-v1",
+    "xlk-2026-06-05-drop-v1",
+    "xlk-2026-06-23-drop-v1"
+  ],
+  "limitations": [
+    "当前 AWB/FMP 的 XLK 日线覆盖为 1998-12-22 至 2026-08-28，接近基金成立期；QQQ 基准从 1999-03-10 起，因此最早一段没有完整 QQQ 对照。",
+    "183 个候选是价格筛选结果，危机中的连续跌势可能被拆成多个事件段；它们不是 183 个彼此独立的事件。",
+    "本首版只完成 14 个代表性且来源充分的案例，其余候选不应被自动赋予事件原因。",
+    "尚未接入逐日历史成分与权重快照，因此公司传导以当时公开结构和可验证行业关系为主。",
+    "案例用于识别机制、背景与观察信号，不用于频率、收益或交易规则外推。"
+  ],
+  "role": "historical_research",
+  "reuse_limitations": [
+    "本档由XLK单日收盘跌幅≤-3%的183个候选事件段中精选14个案例；筛选带有下跌与人工选例偏差，不代表完整事件样本。",
+    "不含上涨案例与完整对照样本，不能用案例数量推断发生概率、风险与机会的比例、预期收益或交易规则，也不能直接外推至其他行业或标的。",
+    "本次仅复制旧研究，未重新核证历史数值、事件时间、归因及来源可访问性；原研究断言、置信表述与局限均按原文保留。",
+    "缺少完整历史成分权重及逐条原文留存；来源链接与摘要不等于本次已核验原文，不得用当前持仓替代历史暴露。",
+    "本档仅作历史机制与背景研究。案例中的“当前”“近期”等措辞沿用原档生成时语境，不是当期事实；复用时须核实机制、状态和重要差异，不能产生虚假概率。"
+  ]
+}

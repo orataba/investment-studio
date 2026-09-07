@@ -151,6 +151,9 @@ class PortfolioDailySnapshotModel(Base):
     cumulative_twr: Mapped[float | None]
     drawdown: Mapped[float | None]
     snapshot_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    calculation_state_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, deferred=True,
+    )
     calculated_at: Mapped[str] = mapped_column(String, nullable=False)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_snapshots")

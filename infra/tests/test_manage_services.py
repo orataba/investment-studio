@@ -47,3 +47,19 @@ def test_mac_status_reports_failed_restart_state(monkeypatch, capsys):
     )))
     module.manage('home', 'status')
     assert 'home-api: spawn scheduled' in capsys.readouterr().out
+
+
+def test_mac_restart_keeps_loaded_services_registered_and_preserves_data_schedule(monkeypatch):
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
+    monkeypatch.setattr(module.subprocess, 'run', Mock(return_value=Mock(returncode=0)))
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+
+    module.manage('investments', 'restart')
+
+    commands = [call.args[0] for call in execute.call_args_list]
+    assert len(commands) == 4
+    assert all(command[:3] == ['launchctl', 'kickstart', '-k'] for command in commands)
+    assert {command[-1].rsplit('.', 1)[-1] for command in commands} == {
+        'watchlist-api', 'watchlist-web', 'portfolio-api', 'portfolio-web',
+    }

@@ -39,7 +39,7 @@ Registry 股票，不能靠合约名称、ticker 文本或 note 推断。页面�
 | `trade_time` | 已知的真实成交时刻 | 同日交易排序 |
 | `position_effective_date` | 份额进入或离开 EOD 持仓的日期 | position、lot、持仓估值 |
 | `settlement_date` | 现金实际结算日期 | settled / pending cash posting |
-| `entitlement_date` | 收入权利确认日 | dividend / coupon income |
+| `entitlement_date` | 收入权利确认日；关联费用可指定历史权益日 | dividend / coupon / reinvestment income 与显式历史权益校验 |
 
 未知成交时间必须留空。后端会使用配置的默认时点完成确定性排序，同时写入
 `trade_time_is_estimated = true`；默认时点不是精确成交事实。开盘前或盘中成交且应进入
@@ -47,6 +47,10 @@ Registry 股票，不能靠合约名称、ticker 文本或 note 推断。页面�
 确认份额时，保留真实 `trade_date`，并把确认日写入 `position_effective_date`。
 
 期权实物结果两腿共用 `trade_time`。先买股后交割须保存各自已知实际时刻，不能依录入先后或改造时间表示交易顺序；未确认的时间仍留空。
+
+后端使用 `transaction_sequence` 作为同日同时间、同创建时间事实的确定性顺序；现金入出和内部转账同样使用该顺序重放，不读取页面正序或倒序作为账本先后。
+
+初次买入的份额确认日没有正式行情时，可按当日确认买入总金额除以总份额形成成交基准估值，并标明交易来源；费用税费照常计入损益，不能揉进该估值价格。正式行情存在时优先使用，下一交易日仍需正式价；已有持仓加仓不能用当次成交价替旧持仓补价，也不要把这项组合初始估值写入共享行情。FCN 非现金交付和期权实物交付关联的股票腿不适用此例外，交付价值与行权价不能代替正式行情。
 
 ## 3. 金额、份额和价格
 
@@ -67,6 +71,8 @@ Registry 股票，不能靠合约名称、ticker 文本或 note 推断。页面�
 `pending_subscription`、`settlement_receivable` 或 `settlement_payable`，而不是在证券账户
 提前伪造份额，也不是把在途金额当作 settled cash。确认日到达后 bridge 消失并转为真实
 position；组合 NAV 在等待期间仍必须对平。
+
+红利再投资若权益日早于新份额生效日，权益日先确认收入和原证券账户的应收，新份额到 `position_effective_date` 才进入持仓并以再投资金额形成成本。它不经过现金账户，不填写一笔虚构现金收付，也不能在份额确认时再确认一次收入；确认前应核对「原持仓市值 + 再投资应收」，而不是只核对原持仓市值。
 
 外币 monetary value 第一次进入账本时按 `monetary_recognition_date` 建立 historical base
 basis。pending balance 转成 settled cash 只改变状态，不重置 basis；同币种内部现金转账也继承
@@ -160,7 +166,9 @@ CSV/Excel 的 `derivative_additional_terms_json` 保留经确认的结算方式�
 
 指定批次处置在 FIFO 账户填开仓记录及数量，移动平均不能选择个别批次成本。导出使用 record_reference 重绑批次；更新和删除会重放全历史，不能破坏之后的卖出/交割。已存合约修改通过审计修订入口保存前后条款、确认人和依据，而不是在交易提交时覆盖条款。
 
-合约修订不能替换资产身份或使已记录交割失效。没有明确转换模型的 quanto、行权币种与标的报价币种不同的合约，以及调整后包含非标准篮子的期权，不按普通期权处理。兼并换股、分拆、权利发行、证券空头或衍生品跨账户转移仍需专用事件语义，不能通过伪造买卖代替。指定开仓记录并非税务 lot-ID 系统；具体可重复情景见 [交易情景测试](../backend/tests/test_transaction_repair_scenarios.py)。
+未指定批次时，FIFO 按原始 acquisition date 和开仓事实顺序消耗成本。历史开仓导入、内部转仓和拆股保留原取得日期及顺序，不按导入日期或转入新账户的日期重新排队；缺少逐批来源的聚合期初持仓仍只能解释为一个 synthetic opening lot。
+
+合约修订不能替换资产身份或使已记录交割失效。没有明确转换模型的 quanto、行权币种与标的报价币种不同的合约，以及调整后包含非标准篮子的期权，不按普通期权处理。兼并换股、分拆、权利发行、证券空头的跨账户转移及衍生品跨账户转移仍需专用事件语义，不能通过伪造买卖代替。指定开仓记录并非税务 lot-ID 系统；具体可重复情景见 [交易情景测试](../backend/tests/test_transaction_repair_scenarios.py)。
 
 实物行权的 `lot_selections` 选择期权多头批次，数量单位为合约张数；股票腿按证券账户成本法计算。专用结果接口中的 fees、fee_category、taxes 进入股票腿；文件和 AI 草稿将它们放在 option_delivery 内，外层费用税费为零、分类为 unknown。导出保留两腿的共同时间、股票腿费用分类和期权指定批次。AI 复核可补齐交付账户，编辑 FCN 的账户、标的、数量、价值、币种、汇率及批次；不会将缺失事实自动补成一笔已确认成交。
 
@@ -171,7 +179,7 @@ CSV/Excel 的 `derivative_additional_terms_json` 保留经确认的结算方式�
 折叠成一行 Security 或 Cash 的 `transfer_out` 动作，`account_id` 为转出账户、
 `counterparty_account_id` 为转入账户。手工文件也只填写一个方向；回导时系统重新原子生成双腿。Transfer 可填写 `source_system + external_reference`；系统把这组 command-level 来源身份保存在 `transfer_out` 腿，导出折叠后仍可原样回导并跨批次识别重复。
 
-Cash Fee / Tax 不关联资产，因此不填写 entitlement date；Security、FCN、Option 关联费用可填写 entitlement date，未填时按 trade date 校验当日的证券多空头、FCN/Option 多头或 written-option obligation。Option 的独立 Fee / Tax 是合约级现金费用：进入现金、NAV 与 Performance，但不改写 long lot cost basis 或 writer obligation。Return of Capital 用 `trade_date` 表示 entitlement/record date，用 `settlement_date` 表示实际到账日，不再重复填写 `entitlement_date`。非 margin/financing 账户的负 settled cash 会提示需核对；已明确标记的保证金或融资账户负余额按融资负债显示，不误报成缺失入金。账户用途必须依据实际安排填写，不能仅为消除提示改为融资。
+Cash Fee / Tax 不关联资产，因此不填写 entitlement date；Security、FCN、Option 关联费用可填写 entitlement date。未填时按费用实际发生前的交易顺序校验证券多空头、FCN/Option 多头或 written-option obligation，因此当日先开仓后收费可以记录，开仓前的费用不能借用稍后才形成的持仓；显式历史 entitlement date 仍按该日 BOD 权益校验。Option 的独立 Fee / Tax 是合约级现金费用：进入现金、NAV 与 Performance，但不改写 long lot cost basis 或 writer obligation。Return of Capital 用 `trade_date` 表示 entitlement/record date，用 `settlement_date` 表示实际到账日，不再重复填写 `entitlement_date`。非 margin/financing 账户的负 settled cash 会提示需核对；已明确标记的保证金或融资账户负余额按融资负债显示，不误报成缺失入金。账户用途必须依据实际安排填写，不能仅为消除提示改为融资。
 
 批量导入证券时使用 Registry `instrument_id`；Option / FCN 使用 Portfolio-local
 `derivative_contract_id`。新衍生品合约条款写在首次交易行，后续行只保留 contract

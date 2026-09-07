@@ -356,7 +356,7 @@ def test_daily_freshness_uses_instrument_calendar_and_release_lag(
     assert "future-dated" in str(future["reason"])
 
 
-def test_daily_freshness_treats_release_lag_as_calendar_days_across_a_weekend(
+def test_daily_freshness_treats_release_lag_as_trading_days_across_a_weekend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from watchlist_app.services import calculation_frequency
@@ -381,7 +381,7 @@ def test_daily_freshness_treats_release_lag_as_calendar_days_across_a_weekend(
     )
 
     assert freshness["status"] == "fresh"
-    assert freshness["expected_latest_date"] == "2026-07-24"
+    assert freshness["expected_latest_date"] == "2026-07-23"
 
 
 def test_daily_freshness_does_not_require_an_observation_on_its_release_day(
@@ -625,6 +625,7 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
         "latest_observation_date": None,
         "expected_latest_date": None,
         "observation_lag_days": None,
+        "release_lag_trading_days": None,
     }
 
 

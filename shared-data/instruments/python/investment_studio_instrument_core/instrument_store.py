@@ -797,7 +797,7 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
                 "currency": point_currency,
                 "price_unit": price_unit,
                 "price_scale": _decimal_text(price_scale),
-                "provider": point.get("provider"),
+                "provider": deepcopy(point.get("provider")),
                 "status": point_status,
                 "nav_lineage": (
                     nav_lineage.model_dump(mode="json")
@@ -1399,8 +1399,13 @@ def _is_active(item: dict[str, object]) -> bool:
     return str(_normalized_lifecycle_state(item).get("status") or "active") == "active"
 
 
-def _serialize_record(item: dict[str, object]) -> dict[str, object]:
-    market_data = _normalized_market_data(item)
+def _serialize_record(
+    item: dict[str, object],
+    *,
+    market_data: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    if market_data is None:
+        market_data = _normalized_market_data(item)
     return {
         "instrument_id": item["instrument_id"],
         "instrument_name": item["instrument_name"],
@@ -1422,8 +1427,12 @@ def _serialize_record(item: dict[str, object]) -> dict[str, object]:
 
 
 def _serialize_detail_record(item: dict[str, object]) -> dict[str, object]:
-    record = _serialize_record(item)
-    record["market_data"] = deepcopy(_normalized_market_data(item))
+    market_data = _normalized_market_data(item)
+    record = _serialize_record(item, market_data=market_data)
+    # Normalization already owns each history point and its lineage. Only the
+    # small latest view needs a copy so edits to one view do not affect the other.
+    record["latest_market_data"] = deepcopy(record["latest_market_data"])
+    record["market_data"] = market_data
     for field_name in (
         "fund_nav_events",
         "fund_nav_event_revisions",
@@ -1763,13 +1772,59 @@ def get_instrument_details(
     with session_factory() as session:
         targets = session.scalars(
             _instrument_query(
+                include_market_data=False,
                 include_fund_nav_ledger=include_fund_nav_ledger,
             ).where(Instrument.instrument_id.in_(normalized_ids))
         ).all()
+        market_data_by_id: dict[str, list[dict[str, object]]] = {
+            target.instrument_id: [] for target in targets
+        }
+        if market_data_by_id:
+            # Calculation consumers need values, not ORM identities for every
+            # historical observation. Keep the same complete history and
+            # validation contract while avoiding large ORM relationship loads.
+            for row in session.execute(
+                select(
+                    InstrumentMarketData.instrument_id,
+                    InstrumentMarketData.metric_family,
+                    InstrumentMarketData.quote_basis,
+                    InstrumentMarketData.as_of_date,
+                    InstrumentMarketData.value,
+                    InstrumentMarketData.currency,
+                    InstrumentMarketData.price_unit,
+                    InstrumentMarketData.price_scale,
+                    InstrumentMarketData.provider,
+                    InstrumentMarketData.status,
+                    InstrumentMarketData.nav_lineage_kind,
+                    InstrumentMarketData.nav_derivation_method_version,
+                    InstrumentMarketData.nav_derivation_anchor_date,
+                    InstrumentMarketData.nav_lineage_evidence_json,
+                ).where(InstrumentMarketData.instrument_id.in_(market_data_by_id))
+            ):
+                market_data_by_id[row.instrument_id].append(
+                    {
+                        "metric_family": row.metric_family,
+                        "quote_basis": row.quote_basis,
+                        "as_of_date": row.as_of_date.isoformat(),
+                        "value": row.value,
+                        "currency": row.currency,
+                        "price_unit": row.price_unit,
+                        "price_scale": row.price_scale,
+                        "provider": row.provider,
+                        "status": row.status,
+                        "nav_lineage": _serialized_nav_lineage(
+                            kind=row.nav_lineage_kind,
+                            method_version=row.nav_derivation_method_version,
+                            anchor_date=row.nav_derivation_anchor_date,
+                            evidence=row.nav_lineage_evidence_json,
+                        ),
+                    }
+                )
         details_by_id = {
             target.instrument_id: _serialize_detail_record(
                 _instrument_to_store_dict(
                     target,
+                    market_data=market_data_by_id[target.instrument_id],
                     include_fund_nav_ledger=include_fund_nav_ledger,
                 )
             )

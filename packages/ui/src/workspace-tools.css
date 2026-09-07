@@ -1,0 +1,18 @@
+.workspace-context-tools { display: flex; align-items: center; flex: 0 0 auto; margin-left: auto; gap: 0; }
+.workspace-context-tools > button,
+.workspace-context-tools > a { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 5px 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--muted, #64748b); font: inherit; font-size: 12px; line-height: 1.4; text-decoration: none; white-space: nowrap; cursor: pointer; }
+.workspace-context-tools > :last-child { padding-right: 0; }
+.workspace-context-tools > :first-child { padding-left: 0; }
+.workspace-context-tools > :not(:first-child) { border-left: 1px solid var(--line, #e2e8f0); }
+.workspace-context-tools > button:hover,
+.workspace-context-tools > a:hover { color: var(--accent, #24696c); }
+.workspace-context-tools > button:focus-visible,
+.workspace-context-tools > a:focus-visible { outline: 2px solid var(--accent, #24696c); outline-offset: 3px; }
+.workspace-context-tools > button:disabled { opacity: .45; cursor: default; }
+.workspace-context-tools svg { flex: 0 0 auto; }
+@media (max-width: 520px) {
+  .workspace-context-tools > button,
+  .workspace-context-tools > a { padding-left: 8px; padding-right: 8px; }
+  .workspace-context-tools > :first-child { padding-left: 0; }
+  .workspace-context-tools > :last-child { padding-right: 0; }
+}

@@ -24,12 +24,15 @@ from portfolio_app.services.instrument_registry import (
 from portfolio_app.services import valuation_fx
 from portfolio_app.services.holdings_market_profile import resolve_position_valuation
 from portfolio_app.services.market_data import is_usable_market_data_point
-from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_point
+from portfolio_app.services.market_data import (
+    bind_initial_purchase_valuations, initial_purchase_valuation_point,
+    quote_policy_bases, resolve_quote_point,
+)
 from portfolio_app.services.transaction_dates import (
     transaction_ledger_activity_date,
     transaction_performance_effective_date,
     transaction_position_effective_date,
-    transaction_precedes_entitlement_bod,
+    transaction_precedes_asset_cash_flow,
     transaction_sort_key,
 )
 from portfolio_app.services.transaction_pricing import transaction_price_scale
@@ -281,6 +284,7 @@ def _resolve_pricing_quote_map(
     *,
     as_of_date: date | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    transactions: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     normalized_instrument_ids = {instrument_id for instrument_id in (instrument_ids or set()) if instrument_id}
     if normalized_instrument_ids or as_of_date is not None:
@@ -314,6 +318,11 @@ def _resolve_pricing_quote_map(
             instrument_details = instrument_detail_cache
         else:
             instrument_details = loaded_details
+        if transactions is not None:
+            bind_initial_purchase_valuations(
+                transactions, instrument_details,
+                instrument_detail_loader=instrument_details.get,
+            )
         pricing_map: dict[str, object] = {}
         for instrument_id in target_instrument_ids:
             detail = instrument_details.get(instrument_id)
@@ -406,11 +415,15 @@ def _select_quote_point(
     ):
         return None
     resolved_as_of_date = as_of_date or date.max
-    return resolve_quote_point(
+    point = resolve_quote_point(
         instrument,
         candidate_bases=candidate_bases,
         as_of_date=resolved_as_of_date,
     ).point
+    return initial_purchase_valuation_point(
+        instrument, market_point=point, as_of_date=resolved_as_of_date,
+        candidate_bases=candidate_bases,
+    ) if role == "valuation" else point
 
 
 def _select_quote_value(
@@ -467,9 +480,13 @@ def _corporate_action_sort_key(event: dict[str, object]) -> tuple[str, int, str,
 
 def _transaction_timeline_sort_key(
     transaction: dict[str, object],
+    *,
+    position_recognition: bool = False,
 ) -> tuple[str, int, str, str, int, str]:
     trade_date = str(transaction.get("trade_date") or "")
     effective_date = transaction_performance_effective_date(transaction)
+    if position_recognition and transaction.get("transaction_type") == "dividend_reinvestment":
+        effective_date = transaction_position_effective_date(transaction)
     acquisition_date = str(transaction.get("acquisition_date") or "")
     is_prior_opening_balance = (
         str(transaction.get("transaction_type") or "") == "opening_balance"
@@ -485,6 +502,15 @@ def _transaction_timeline_sort_key(
         canonical_key[3],
         canonical_key[4],
     )
+
+
+def _fifo_acquisition_sort_key(transaction: dict[str, object]) -> tuple[object, ...]:
+    acquisition_date = (
+        transaction.get("acquisition_date")
+        or transaction_position_effective_date(transaction)
+        or transaction.get("trade_date")
+    )
+    return (str(acquisition_date or ""), *transaction_sort_key(transaction)[1:])
 
 
 def _resolved_corporate_actions(
@@ -860,6 +886,7 @@ def _replay_settled_monetary_postings(
             ledger_posting_effective_date_iso(item[1]),
             str(item[1].get("trade_at") or ""),
             str(item[1].get("created_at") or ""),
+            int(item[1].get("transaction_sequence") or 0),
             0
             if str(item[1].get("source_transaction_type") or "")
             == "transfer_out"
@@ -1196,6 +1223,8 @@ def pending_monetary_balances_from_postings(
                 and pending_amount > 0
             ):
                 holding_kind = "pending_subscription"
+            elif source_transaction_type == "dividend_reinvestment":
+                holding_kind = "settlement_receivable"
             else:
                 holding_kind = "position_recognition_adjustment"
             amount = pending_amount
@@ -1434,6 +1463,19 @@ def _position_recognition_bridge(
     transaction: dict[str, object],
 ) -> dict[str, object] | None:
     transaction_type = str(transaction.get("transaction_type") or "")
+    if transaction_type == "dividend_reinvestment":
+        entitlement_date = transaction_performance_effective_date(transaction)
+        position_date = transaction_position_effective_date(transaction)
+        if entitlement_date is None or position_date is None or entitlement_date >= position_date:
+            return None
+        return {
+            "account_id": str(transaction.get("account_id") or ""),
+            "posting_account_id": str(transaction.get("account_id") or ""),
+            "recognition_start_date": entitlement_date,
+            "recognition_end_date": position_date,
+            "pending_amount_delta": _safe_float(transaction.get("gross_amount")) or 0.0,
+            "settlement_cash_delta": None,
+        }
     if transaction_type not in {"buy", "sell", "maturity_redemption"}:
         return None
     settlement_cash_account_id = str(
@@ -1460,7 +1502,7 @@ def _position_recognition_bridge(
 
     return {
         "account_id": str(transaction.get("account_id") or ""),
-        "settlement_cash_account_id": settlement_cash_account_id,
+        "posting_account_id": settlement_cash_account_id,
         "recognition_start_date": settlement_date,
         "recognition_end_date": position_effective_date,
         "pending_amount_delta": pending_amount,
@@ -1520,9 +1562,10 @@ def _normalize_position_bucket(bucket: dict[str, object], cost_basis_method: str
         total_cost_basis += cost_basis
 
     if cleaned_lots:
+        cleaned_lots.sort(key=lambda lot: lot.get("fifo_order") or ())
         if cost_basis_method == "moving_average":
             bucket["lots"] = (
-                [{"quantity": total_quantity, "cost_basis": total_cost_basis}]
+                [{**cleaned_lots[0], "quantity": total_quantity, "cost_basis": total_cost_basis}]
                 if total_quantity > 1e-9
                 else []
             )
@@ -1599,6 +1642,7 @@ def _add_position_state(
     cost_basis_method: str,
     incoming_lots: list[dict[str, float]] | None = None,
     opened_by_transaction_id: str | None = None,
+    acquisition_sort_key: tuple[object, ...] | None = None,
 ) -> None:
     if quantity <= 0 and cost_basis <= 0:
         return
@@ -1613,7 +1657,9 @@ def _add_position_state(
     bucket.setdefault("lots", [])
     bucket["lots"].extend(
         {
-            "opened_by_transaction_id": opened_by_transaction_id or lot.get("opened_by_transaction_id"),
+            **lot,
+            "opened_by_transaction_id": lot.get("opened_by_transaction_id") or opened_by_transaction_id,
+            "fifo_order": lot.get("fifo_order") or acquisition_sort_key,
             "quantity": _safe_float(lot.get("quantity")) or 0.0,
             "cost_basis": _safe_float(lot.get("cost_basis")) or 0.0,
         }
@@ -1697,7 +1743,7 @@ def _consume_position_state(
         take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity) if lot_quantity > 0 else 0.0
         lot["quantity"] = lot_quantity - take_quantity
         lot["cost_basis"] = lot_cost_basis - take_cost_basis
-        moved_lots.append({"quantity": take_quantity, "cost_basis": take_cost_basis})
+        moved_lots.append({**lot, "quantity": take_quantity, "cost_basis": take_cost_basis})
 
     consumed_cost_basis = sum(lot["cost_basis"] for lot in moved_lots)
     bucket["quantity"] = max(current_quantity - consumed_quantity, 0.0)
@@ -1786,7 +1832,7 @@ def _build_position_state(
         key=lambda item: (
             _corporate_action_sort_key(item[1])
             if item[0] == "corporate_action"
-            else _transaction_timeline_sort_key(item[1])
+            else _transaction_timeline_sort_key(item[1], position_recognition=True)
         )
     )
 
@@ -1819,6 +1865,7 @@ def _build_position_state(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
             )
             continue
 
@@ -1836,6 +1883,7 @@ def _build_position_state(
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
             )
             continue
 
@@ -1862,6 +1910,8 @@ def _build_position_state(
             continue
 
         if transaction_type == "dividend_reinvestment":
+            if as_of_date is not None and transaction_position_effective_date(transaction) > as_of_date:
+                continue
             _add_position_state(
                 position_state,
                 account_id,
@@ -1870,6 +1920,7 @@ def _build_position_state(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
             )
             continue
 
@@ -1906,6 +1957,7 @@ def _build_position_state(
                 cost_basis=received_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
                 incoming_lots=incoming_lots,
             )
 
@@ -1937,6 +1989,7 @@ def derive_ledger_postings(
             postings.append(posting)
         return postings
     postings: list[dict[str, object]] = []
+    posting_counts: dict[str, int] = defaultdict(int)
     position_state: dict[tuple[str, str], dict[str, object]] = {}
     position_transfer_lots_by_group: dict[str, list[dict[str, float]]] = {}
     option_events_by_transaction: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -1963,7 +2016,8 @@ def derive_ledger_postings(
             currency if currency is not None else transaction.get("currency"),
             field_name="ledger-posting currency",
         )
-        posting_index = len([item for item in postings if item["transaction_id"] == transaction["transaction_id"]]) + 1
+        posting_counts[transaction["transaction_id"]] += 1
+        posting_index = posting_counts[transaction["transaction_id"]]
         resolved_monetary_recognition_date = (
             monetary_recognition_date
             or transaction_ledger_activity_date(transaction)
@@ -1972,6 +2026,7 @@ def derive_ledger_postings(
             {
                 "posting_id": f"{transaction['transaction_id']}-p{posting_index}",
                 "transaction_id": transaction["transaction_id"],
+                "transaction_sequence": transaction["transaction_sequence"],
                 "portfolio_id": portfolio_id,
                 "account_id": account_id,
                 "attribution_account_id": attribution_account_id,
@@ -2030,7 +2085,7 @@ def derive_ledger_postings(
         append_posting(
             transaction,
             posting_role="position_recognition_bridge",
-            account_id=str(bridge["settlement_cash_account_id"]),
+            account_id=str(bridge["posting_account_id"]),
             attribution_account_id=str(bridge["account_id"]),
             pending_amount_delta=float(bridge["pending_amount_delta"]),
             currency=str(transaction.get("currency") or ""),
@@ -2041,6 +2096,7 @@ def derive_ledger_postings(
         if (
             as_of_date is not None
             and recognition_start_date <= as_of_date < recognition_end_date
+            and bridge["settlement_cash_delta"] is not None
         ):
             transaction_type = str(transaction.get("transaction_type") or "")
             append_posting(
@@ -2050,7 +2106,7 @@ def derive_ledger_postings(
                     if transaction_type == "maturity_redemption"
                     else "security_settlement_cash"
                 ),
-                account_id=str(bridge["settlement_cash_account_id"]),
+                account_id=str(bridge["posting_account_id"]),
                 cash_amount_delta=float(bridge["settlement_cash_delta"]),
                 currency=str(transaction.get("currency") or ""),
             )
@@ -2082,7 +2138,7 @@ def derive_ledger_postings(
         key=lambda item: (
             _corporate_action_sort_key(item[1])
             if item[0] == "corporate_action"
-            else _transaction_timeline_sort_key(item[1])
+            else _transaction_timeline_sort_key(item[1], position_recognition=True)
         )
     )
 
@@ -2161,6 +2217,7 @@ def derive_ledger_postings(
                     cost_basis=gross_amount,
                     cost_basis_method=cost_basis_method,
                     opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                    acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
                 )
             else:
                 append_posting(
@@ -2235,6 +2292,7 @@ def derive_ledger_postings(
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
             )
             if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
                 append_posting(
@@ -2371,6 +2429,8 @@ def derive_ledger_postings(
             continue
 
         if transaction_type == "dividend_reinvestment":
+            if as_of_date is not None and transaction_position_effective_date(transaction) > as_of_date:
+                continue
             reinvested_quantity = quantity or 0.0
             append_posting(
                 transaction,
@@ -2388,6 +2448,7 @@ def derive_ledger_postings(
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
                 opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
             )
             continue
 
@@ -2536,6 +2597,7 @@ def derive_ledger_postings(
                     cost_basis=received_cost_basis,
                     cost_basis_method=cost_basis_method,
                     opened_by_transaction_id=str(transaction.get("transaction_id") or ""),
+                    acquisition_sort_key=_fifo_acquisition_sort_key(transaction),
                     incoming_lots=incoming_lots,
                 )
             continue
@@ -2726,7 +2788,7 @@ def validate_transaction_position_history(
             candidate
             for candidate in ordered_transactions
             if str(candidate.get("transaction_id") or "") != transaction_id
-            and transaction_precedes_entitlement_bod(candidate, entitlement_date)
+            and transaction_precedes_asset_cash_flow(candidate, transaction)
         ]
 
         available_quantity = estimate_position_quantity(
@@ -2745,15 +2807,23 @@ def validate_transaction_position_history(
             and str(derivative_contract.get("contract_type") or "").lower()
             == "option"
         ):
-            available_quantity = estimate_option_obligation_quantity_at_entitlement(
-                ordered_transactions,
-                account_id=str(transaction.get("account_id") or ""),
-                derivative_contract_id=str(
-                    transaction.get("derivative_contract_id") or ""
-                ),
-                entitlement_date=entitlement_date,
-                exclude_transaction_id=transaction_id,
-            )
+            if transaction_type in {"fee", "tax"} and not transaction.get("entitlement_date"):
+                available_quantity = sum(
+                    _safe_float(obligation.get("remaining_quantity")) or 0.0
+                    for obligation in build_option_obligations(prior_transactions, as_of_date=trade_date)
+                    if obligation.get("account_id") == transaction.get("account_id")
+                    and obligation.get("derivative_contract_id") == transaction.get("derivative_contract_id")
+                )
+            else:
+                available_quantity = estimate_option_obligation_quantity_at_entitlement(
+                    ordered_transactions,
+                    account_id=str(transaction.get("account_id") or ""),
+                    derivative_contract_id=str(
+                        transaction.get("derivative_contract_id") or ""
+                    ),
+                    entitlement_date=entitlement_date,
+                    exclude_transaction_id=transaction_id,
+                )
         if transaction_type in {"fee", "tax"}:
             available_quantity = abs(available_quantity)
         if available_quantity <= 1e-9:
@@ -2984,7 +3054,7 @@ def _active_position_lots(
     account_id: str,
     position_reference_id: str,
 ) -> list[dict[str, object]]:
-    return [
+    active_lots = [
         position_lot
         for position_lot in position_lots_by_key.get(
             (account_id, position_reference_id),
@@ -2992,6 +3062,10 @@ def _active_position_lots(
         )
         if (_safe_float(position_lot.get("remaining_quantity")) or 0.0) > 1e-9
     ]
+    return sorted(
+        active_lots,
+        key=lambda lot: lot["_fifo_order"],
+    )
 
 
 def _require_active_position_lots(
@@ -3243,6 +3317,10 @@ def build_position_lots(
         for account in accounts
         if account.get("account_type") == "securities_account"
     }
+    fifo_order_by_transaction = {
+        str(transaction.get("transaction_id") or ""): _fifo_acquisition_sort_key(transaction)
+        for transaction in transactions
+    }
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     transfer_lot_slices_by_group: dict[str, list[dict[str, object]]] = {}
     all_position_lots: list[dict[str, object]] = []
@@ -3290,8 +3368,10 @@ def build_position_lots(
         source_position_lot_id: str | None = None,
         linked_transaction_ids: set[str] | None = None,
         cost_basis_origins: list[dict[str, object]] | None = None,
+        acquisition_sort_key: tuple[object, ...] | None = None,
     ) -> dict[str, object]:
         resolved_cost_basis_method = _resolve_cost_basis_method(account_cost_methods, target_account_id)
+        fifo_order = acquisition_sort_key or fifo_order_by_transaction[opened_by_transaction_id]
         if resolved_cost_basis_method == "moving_average":
             active_lots = _active_position_lots(
                 position_lots_by_key,
@@ -3300,6 +3380,7 @@ def build_position_lots(
             )
             if active_lots:
                 position_lot = active_lots[0]
+                position_lot["_fifo_order"] = min(position_lot["_fifo_order"], fifo_order)
                 position_lot["entry_quantity"] = (_safe_float(position_lot.get("entry_quantity")) or 0.0) + entry_quantity
                 position_lot["remaining_quantity"] = (
                     (_safe_float(position_lot.get("remaining_quantity")) or 0.0) + entry_quantity
@@ -3378,6 +3459,7 @@ def build_position_lots(
             linked_transaction_ids=linked_transaction_ids,
             cost_basis_origins=cost_basis_origins,
         )
+        position_lot["_fifo_order"] = fifo_order
         position_lots_by_key[
             (target_account_id, target_position_reference_id)
         ].append(position_lot)
@@ -3404,7 +3486,9 @@ def build_position_lots(
             snapshot_transactions = [
                 transaction_item
                 for transaction_item in sorted_transactions[:transaction_index]
-                if transaction_precedes_entitlement_bod(transaction_item, entitlement_date)
+                if transaction_precedes_asset_cash_flow(
+                    transaction_item, sorted_transactions[transaction_index]
+                )
             ]
             entitled_lots = [
                 position_lot
@@ -3503,6 +3587,7 @@ def build_position_lots(
                         "instrument_ref": deepcopy(position_lot.get("instrument_ref") or {}),
                         "currency": str(position_lot.get("currency") or ""),
                         "acquisition_date": str(position_lot.get("acquisition_date") or effective_date),
+                        "acquisition_sort_key": position_lot["_fifo_order"],
                         "linked_transaction_ids": set(linked_ids) if isinstance(linked_ids, set) else set(),
                         "cost_basis_origins": cost_basis_origins,
                     }
@@ -3538,6 +3623,7 @@ def build_position_lots(
                     opening_transaction_type="corporate_action",
                     opened_at=effective_date,
                     acquisition_date=str(spec["acquisition_date"]),
+                    acquisition_sort_key=spec["acquisition_sort_key"],
                     entry_quantity=target_quantity,
                     entry_gross_amount=remaining_cost_basis,
                     entry_fee_amount=0.0,
@@ -3569,11 +3655,20 @@ def build_position_lots(
         ("transaction", transaction_index_by_identity[id(transaction)], transaction)
         for transaction in sorted_transactions
     ]
+    timeline.extend(
+        ("reinvestment_position", transaction_index_by_identity[id(transaction)], transaction)
+        for transaction in sorted_transactions
+        if transaction.get("transaction_type") == "dividend_reinvestment"
+        and transaction_performance_effective_date(transaction) != transaction_position_effective_date(transaction)
+        and (as_of_date is None or transaction_position_effective_date(transaction) <= as_of_date)
+    )
     timeline.sort(
         key=lambda item: (
             _corporate_action_sort_key(item[2])
             if item[0] == "corporate_action"
-            else _transaction_timeline_sort_key(item[2])
+            else _transaction_timeline_sort_key(
+                item[2], position_recognition=item[0] == "reinvestment_position"
+            )
         )
     )
 
@@ -3669,19 +3764,22 @@ def build_position_lots(
         ):
             if entitlement_date is None:
                 raise ValueError("Dividend reinvestment requires entitlement_date.")
-            allocate_snapshot_cash_flow(
-                transaction_index=transaction_index,
-                target_account_id=account_key,
-                target_position_reference_id=resolved_position_reference_id,
-                entitlement_date=entitlement_date,
-                amount=gross_amount,
-                field_name="income_cash_amount",
-                weight_field="remaining_quantity",
-                transaction_id=transaction_id,
-                error_message=(
-                    "Dividend reinvestment requires entitled position lots as of entitlement_date."
-                ),
-            )
+            if item_kind == "transaction":
+                allocate_snapshot_cash_flow(
+                    transaction_index=transaction_index,
+                    target_account_id=account_key,
+                    target_position_reference_id=resolved_position_reference_id,
+                    entitlement_date=entitlement_date,
+                    amount=gross_amount,
+                    field_name="income_cash_amount",
+                    weight_field="remaining_quantity",
+                    transaction_id=transaction_id,
+                    error_message=(
+                        "Dividend reinvestment requires entitled position lots as of entitlement_date."
+                    ),
+                )
+                if transaction_performance_effective_date(transaction) != position_effective_date:
+                    continue
             append_position_lot(
                 target_account_id=account_key,
                 target_position_reference_id=resolved_position_reference_id,
@@ -3694,6 +3792,7 @@ def build_position_lots(
                 opening_transaction_type=transaction_type,
                 opened_at=position_effective_date_iso,
                 acquisition_date=position_effective_date_iso,
+                cost_basis_acquisition_date=entitlement_date.isoformat(),
                 entry_quantity=quantity,
                 entry_gross_amount=gross_amount,
                 entry_fee_amount=0.0,
@@ -3912,6 +4011,7 @@ def build_position_lots(
                         "acquisition_date": str(
                             position_lot.get("acquisition_date") or position_lot.get("opened_at") or trade_date
                         ),
+                        "acquisition_sort_key": position_lot["_fifo_order"],
                         "entry_quantity": matched_quantity,
                         "entry_gross_amount": matched_entry_gross_amount,
                         "entry_fee_amount": matched_entry_fee_amount,
@@ -3977,6 +4077,7 @@ def build_position_lots(
                     acquisition_date=str(
                         incoming_slice.get("acquisition_date") or incoming_slice.get("opened_at") or trade_date
                     ),
+                    acquisition_sort_key=incoming_slice["acquisition_sort_key"],
                     entry_quantity=entry_quantity,
                     entry_gross_amount=entry_gross_amount,
                     entry_fee_amount=entry_fee_amount,
@@ -4016,6 +4117,7 @@ def build_position_lots(
                 missing_pricing_ids,
                 as_of_date=as_of_date,
                 instrument_detail_cache=instrument_detail_cache,
+                transactions=transactions,
             )
         )
     resolved_as_of_date = as_of_date or date.today()
@@ -4066,6 +4168,7 @@ def build_position_lots(
         rendered_position_lots.append(
             {
                 "position_lot_id": raw_position_lot["position_lot_id"],
+                "_fifo_order": raw_position_lot["_fifo_order"],
                 "portfolio_id": portfolio_id,
                 "account_id": raw_position_lot["account_id"],
                 "position_reference_id": raw_position_lot[
@@ -4134,6 +4237,15 @@ def build_position_lots(
                     derivative_contract=derivative_contract,
                 ),
                 "current_market_value": current_market_value,
+                "valuation_basis": (
+                    "carried_cost" if event_valued else "transaction_price"
+                    if isinstance(instrument_quote, dict) and instrument_quote.get("status") == "transaction-price"
+                    else "market_quote"
+                ),
+                "valuation_source_transaction_ids": (
+                    instrument_quote.get("valuation_source_transaction_ids", [])
+                    if isinstance(instrument_quote, dict) else []
+                ),
                 "unrealized_pnl": (
                     current_market_value - remaining_cost_basis
                     if current_market_value is not None and not event_valued
@@ -4378,7 +4490,7 @@ def build_current_position_cycle_costs(
         key=lambda item: (
             _corporate_action_sort_key(item[1])
             if item[0] == "corporate_action"
-            else _transaction_timeline_sort_key(item[1])
+            else _transaction_timeline_sort_key(item[1], position_recognition=True)
         )
     )
 
@@ -4478,6 +4590,8 @@ def build_current_position_cycle_costs(
             continue
 
         if transaction_type == "dividend_reinvestment" and quantity > 0:
+            if transaction_position_effective_date(transaction) > as_of_date:
+                continue
             if current_quantity <= 1e-9:
                 state["coverage_complete"] = False
             if currency != state.get("currency"):
@@ -4585,7 +4699,7 @@ def build_portfolio_positions(
             continue
         pricing_quote = pricing_map.get(str(bucket.get("instrument_id") or ""))
         quoted_price = _pricing_value(pricing_quote)
-        last_price, market_value, _ = resolve_position_valuation(
+        last_price, market_value, event_valued = resolve_position_valuation(
             quantity=quantity,
             cost_basis=_safe_float(bucket.get("cost_basis")),
             instrument_ref=(
@@ -4619,6 +4733,14 @@ def build_portfolio_positions(
                 "cost_basis": _safe_float(bucket.get("cost_basis")),
                 "last_price": last_price,
                 "market_value": market_value,
+                "valuation_basis": (
+                    "carried_cost" if event_valued else "transaction_price" if isinstance(pricing_quote, dict)
+                    and pricing_quote.get("status") == "transaction-price" else "market_quote"
+                ),
+                "valuation_source_transaction_ids": (
+                    pricing_quote.get("valuation_source_transaction_ids", [])
+                    if isinstance(pricing_quote, dict) else []
+                ),
                 "currency": bucket["currency"],
                 "account_ids": account_ids,
                 "account_count": len(account_ids),
@@ -4874,14 +4996,21 @@ def build_account_workspace(
                 "last_price": None if event_valued else last_price,
                 "market_value": market_value,
                 "carrying_value": market_value if event_valued else None,
-                "fair_value": None if event_valued else market_value,
+                "fair_value": None if event_valued or (isinstance(pricing_quote, dict) and pricing_quote.get("status") == "transaction-price") else market_value,
                 "fair_value_coverage_status": (
                     "unavailable"
                     if event_valued or market_value is None
+                    else "partial" if isinstance(pricing_quote, dict) and pricing_quote.get("status") == "transaction-price"
                     else "complete"
                 ),
                 "valuation_basis": (
-                    "carried_cost" if event_valued else "market_quote"
+                    "carried_cost" if event_valued else "transaction_price"
+                    if isinstance(pricing_quote, dict) and pricing_quote.get("status") == "transaction-price"
+                    else "market_quote"
+                ),
+                "valuation_source_transaction_ids": (
+                    pricing_quote.get("valuation_source_transaction_ids", [])
+                    if isinstance(pricing_quote, dict) else []
                 ),
                 "coverage_status": (
                     "event-cost"

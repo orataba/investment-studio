@@ -6,7 +6,6 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
-import PortfolioInstrumentRisk from '../components/PortfolioInstrumentRisk'
 import RollingRiskMetricChart, {
   type RiskChartDisplayStyle,
   type RollingRiskMetricPoint,
@@ -2998,7 +2997,6 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
-            <PortfolioInstrumentRisk key={portfolioId} portfolioId={portfolioId} workspace={holdingsWorkspace} />
             <section className="portfolio-section-block" aria-label="Risk health">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 from math import isclose, sqrt
 
 import pytest
@@ -68,6 +68,7 @@ def test_calculation_instrument_detail_batches_are_briefly_reused(monkeypatch) -
         }
 
     monkeypatch.setattr(performance, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(performance, "_calculation_instrument_source_generation", lambda _ids: ())
     monkeypatch.setattr(performance, "get_registry_instrument_details", load_details)
     performance._clear_calculation_instrument_detail_cache()
 
@@ -2282,7 +2283,11 @@ def test_explicit_performance_period_uses_requested_eod_close_boundary(client, m
         instrument_name="Test Equity",
         history=[
             ("2026-03-31", "100.00"),
-            ("2026-04-01", "110.00"),
+            # The scenario source reports unchanged closes throughout the interval.
+            *[
+                ((date(2026, 4, 1) + timedelta(days=offset)).isoformat(), "110.00")
+                for offset in range(19)
+            ],
             ("2026-04-20", "120.00"),
         ],
     )
@@ -2687,7 +2692,7 @@ def test_period_calculation_route_reuses_materialized_daily_inputs(
     client,
     monkeypatch,
 ):
-    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
 
     def reject_daily_replay(*args, **kwargs):
         del args, kwargs
@@ -3499,7 +3504,11 @@ def test_performance_summary_reports_full_calendar_year_twr_annualized_and_irr(c
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
         history=[
-            ("2026-01-01", "100.00"),
+            # Explicit observations keep the annualization example fully valued.
+            *[
+                ((date(2026, 1, 1) + timedelta(days=offset)).isoformat(), "100.00")
+                for offset in range(366)
+            ],
             ("2027-01-02", "110.00"),
         ],
     )
@@ -4825,7 +4834,10 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
         instrument_name="Test Equity",
         history=[
             ("2026-01-31", "100.00"),
-            ("2026-02-01", "110.00"),
+            *[
+                ((date(2026, 2, 1) + timedelta(days=offset)).isoformat(), "110.00")
+                for offset in range(28)
+            ],
             ("2026-03-01", "121.00"),
         ],
     )
@@ -8969,10 +8981,25 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
         ],
         instrument_type="public_fund",
     )
+    # This fund publishes every US market session; weekends have no expected NAV.
+    fund_detail["source_settings"] = {
+        "expected_frequency": "daily", "market_calendar": "XNYS",
+    }
     instrument_details = {
         "equity-us-daily-risk-test": daily_detail,
         "fund-us-daily-risk-test": fund_detail,
     }
+    # This kernel fixture supplies provider NAV points without a persisted fund
+    # projection ledger. Feed the same observations to the route's risk reader.
+    monkeypatch.setattr(
+        performance_routes,
+        "calculation_frequency_profile_from_registry",
+        lambda instrument_ids, *, end_date: performance.calculation_frequency_profile_for_instruments(
+            instrument_ids,
+            end_date=end_date,
+            detail_loader=lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
+        ),
+    )
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
@@ -11474,17 +11501,13 @@ def test_stale_fx_cannot_qualify_as_a_fresh_portfolio_valuation(monkeypatch):
 
     assert by_date["2026-01-01"]["valuation_coverage_state"] == "complete"
     assert by_date["2026-01-01"]["stale_fx_flag"] is False
-    assert by_date["2026-01-02"]["valuation_coverage_state"] == "complete"
-    assert by_date["2026-01-02"]["book_pnl_coverage_state"] == "partial"
+    assert set(by_date) == {"2026-01-01", "2026-01-02"}
+    assert by_date["2026-01-02"]["valuation_coverage_state"] == "unavailable"
+    assert by_date["2026-01-02"]["book_pnl_coverage_state"] == "unavailable"
     assert by_date["2026-01-02"]["stale_fx_flag"] is True
-    assert by_date["2026-01-02"]["nav"] == pytest.approx(100.0)
-    assert by_date["2026-01-02"]["daily_twr"] == pytest.approx(0.0)
-    assert by_date["2026-01-05"]["valuation_coverage_state"] == "complete"
-    assert by_date["2026-01-05"]["book_pnl_coverage_state"] == "complete"
-    assert by_date["2026-01-05"]["stale_fx_flag"] is False
-    assert by_date["2026-01-05"]["nav"] == pytest.approx(104.0)
-    assert by_date["2026-01-05"]["daily_twr"] == pytest.approx(0.04)
-    assert by_date["2026-01-05"]["cash_currency_gains"] == pytest.approx(4.0)
+    assert by_date["2026-01-02"]["nav"] is None
+    assert by_date["2026-01-02"].get("daily_twr") is None
+    assert "FX HKD/USD" in by_date["2026-01-02"]["valuation_blocked_reason"]
 
 
 def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
@@ -12525,12 +12548,11 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
     assert isclose(summary["total_pnl"], 7.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_performance_summary_ignores_flows_before_first_complete_snapshot(client, monkeypatch):
+def test_performance_summary_does_not_restart_after_gap_following_initial_purchase(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-partial-anchor",
         instrument_name="Partial Anchor Equity",
         history=[
-            ("2026-01-02", "150.00"),
             ("2026-01-03", "165.00"),
         ],
     )
@@ -12643,17 +12665,15 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
     payload = response.json()
     summary = payload["summary"]
 
-    assert summary["start_date"] == "2026-01-02"
-    assert summary["end_date"] == "2026-01-03"
-    assert summary["latest_complete_as_of_date"] == "2026-01-03"
-    assert isclose(summary["start_nav"], 150.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["end_nav"], 165.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["absolute_change"], 15.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["external_cash_in"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["external_cash_out"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["delta"], 15.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["unrealized_pnl"], 15.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["total_pnl"], 15.0, rel_tol=0.0, abs_tol=1e-12)
+    # The initial confirmed purchase values Jan 1 at 150. The missing Jan 2
+    # close stops the chain; the later 165 quote cannot establish a new anchor.
+    assert summary["start_date"] == "2026-01-01"
+    assert summary["end_date"] == "2026-01-01"
+    assert summary["latest_complete_as_of_date"] == "2026-01-01"
+    assert summary["as_of_clamp_reason"] == "required_market_data_missing"
+    assert summary["end_nav"] == 150.0
+    assert summary["cumulative_twr"] == 0.0
+    assert [point["as_of_date"] for point in payload["daily_series"]] == ["2026-01-01"]
 
 
 def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, monkeypatch):

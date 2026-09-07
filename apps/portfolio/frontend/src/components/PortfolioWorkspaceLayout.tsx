@@ -1,6 +1,7 @@
-import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
+import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import { Fragment, type FormEvent, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import {
@@ -22,12 +23,14 @@ import {
 import {
   buildPortfolioSectionPath,
   HOME_URL,
+  WATCHLIST_URL,
 } from '../lib/navigation'
 import { workspacePrimaryNavigation } from '../lib/portfolioIa'
 import { preloadPortfolioSection } from '../lib/preload'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
+import PortfolioRiskDrawer from './PortfolioRiskDrawer'
 import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
 
 type WorkspaceTab = {
@@ -82,10 +85,17 @@ export default function PortfolioWorkspaceLayout({
   controls,
   busy = false,
 }: PortfolioWorkspaceLayoutProps) {
+  const { language } = useLanguage()
   const { research_enabled } = usePortfolioCapabilities()
   const visiblePortfolioTabs = portfolioTabs.filter((item) => item.href !== '/research' || research_enabled)
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
+  const [pageParams] = useSearchParams()
+  const assistantParams = new URLSearchParams({ portfolio: portfolioId, tab: activeSection })
+  for (const key of ['currency', 'benchmark', 'start', 'end']) {
+    const value = pageParams.get(key)
+    if (value !== null) assistantParams.set(key, value)
+  }
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [summaryRevision, setSummaryRevision] = useState(0)
   const [summaryLoading, setSummaryLoading] = useState(true)
@@ -97,6 +107,7 @@ export default function PortfolioWorkspaceLayout({
   const [deletingPortfolio, setDeletingPortfolio] = useState(false)
   const [deletePortfolioError, setDeletePortfolioError] = useState<string | null>(null)
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
+  const [riskDrawerOpen, setRiskDrawerOpen] = useState(false)
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
   const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
@@ -211,6 +222,7 @@ export default function PortfolioWorkspaceLayout({
 
   useEffect(() => {
     setRiskSettingsOpen(false)
+    setRiskDrawerOpen(false)
     setRiskSettingsError(null)
   }, [portfolioId])
 
@@ -411,20 +423,22 @@ export default function PortfolioWorkspaceLayout({
     >
       <header className="portfolio-workspace-shell" aria-busy={summaryBusy}>
         <div className="portfolio-toolbar-band">
-          <div className="workspace-breadcrumbs">
-            <a data-workspace-link href={HOME_URL} className="workspace-breadcrumb-link">
-              Home
-            </a>
-            <span className="workspace-breadcrumb-separator">/</span>
-            <Link to="/portfolios" className="workspace-breadcrumb-link">
-              Portfolio
-            </Link>
-            <span className="workspace-breadcrumb-separator">/</span>
-            <Link to={portfolioHomePath} className="workspace-breadcrumb-link" translate="no">
-              {portfolioName}
-            </Link>
-            <span className="workspace-breadcrumb-separator">/</span>
-            <span className="workspace-breadcrumb-current">{activeSection}</span>
+          <div className="portfolio-topbar">
+            <div className="workspace-breadcrumbs">
+              <a data-workspace-link href={HOME_URL} className="workspace-breadcrumb-link">
+                Home
+              </a>
+              <span className="workspace-breadcrumb-separator">/</span>
+              <Link to="/portfolios" className="workspace-breadcrumb-link">
+                Portfolio
+              </Link>
+              <span className="workspace-breadcrumb-separator">/</span>
+              <Link to={portfolioHomePath} className="workspace-breadcrumb-link" translate="no">
+                {portfolioName}
+              </Link>
+              <span className="workspace-breadcrumb-separator">/</span>
+              <span className="workspace-breadcrumb-current">{activeSection}</span>
+            </div>
             <LanguageSelector />
           </div>
           <div className="workspace-app-heading">
@@ -557,17 +571,14 @@ export default function PortfolioWorkspaceLayout({
                   onRecorded={handleOptionOutcomeRecorded}
                 />
               ) : null}
-              <button
-                type="button"
-                className="portfolio-settings-button"
-                onClick={() => void handleOpenRiskSettings()}
-                aria-label="Portfolio Settings"
-                disabled={!resolvedPortfolioId || summaryBusy}
-              >
-                Settings
-              </button>
+              <WorkspaceTools
+                settings={{ label: language === 'zh-Hans' ? '组合设置' : 'Portfolio Settings', onClick: () => void handleOpenRiskSettings(), disabled: !resolvedPortfolioId || summaryBusy }}
+                risk={{ onClick: () => setRiskDrawerOpen(true), disabled: !resolvedPortfolioId || summaryBusy }}
+                assistant={{ href: `${WATCHLIST_URL}/assistant?${assistantParams}` }}
+              />
             </div>
           </div>
+          {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={resolvedPortfolioId} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} /> : null}
           {riskSettingsOpen ? (
             <div
               className="portfolio-settings-modal-backdrop"

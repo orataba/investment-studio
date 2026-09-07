@@ -208,7 +208,9 @@ def test_market_data_watermark_self_invalidates_without_notification() -> None:
         instrument.market_data_updated_at = "2099-01-01T00:00:00.000000Z"
         session.commit()
 
-    daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
+    with pytest.raises(daily_snapshots.PortfolioCalculationPending):
+        daily_snapshots.ensure_portfolio_daily_snapshots("investment-studio")
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
 
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, "investment-studio")

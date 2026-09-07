@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
 
 from watchlist_app.api.contracts import (
     ManualProfileUpsertRequest,
@@ -308,6 +309,18 @@ def get_instrument_summary(
     )
     taxonomy_context = build_taxonomy_context(node)
     merged = merge_summary_attributes(payload, attributes)
+    if instrument.instrument_type == "etf":
+        reference = session.get(InstrumentReferenceSnapshot, instrument_id)
+        reference_data = reference.value_json if reference is not None else {}
+        if reference_data.get("provider") == "fmp":
+            fund_info = reference_data.get("sections", {}).get("fund_info", {})
+            count = fund_info.get("holdingsCount")
+            if type(count) is int and count >= 0:
+                # The source's reported count is not the number of saved detail rows:
+                # the reference collector may retain only part of the holdings.
+                merged["key_stats"] = [item for item in merged.get("key_stats", []) if item.get("label") != "Holdings"] + [
+                    {"label": "Holdings", "value": str(count)}
+                ]
     if merged.get("management_firm_name") is None:
         merged["management_firm_name"] = (
             str(instrument.metadata_json.get("management_firm_name") or "").strip() or None

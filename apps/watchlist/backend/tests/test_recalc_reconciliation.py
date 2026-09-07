@@ -243,8 +243,8 @@ def test_materialized_fresh_status_ages_to_stale_without_new_source_revision(
     )
     monkeypatch.setattr(
         read_model_freshness,
-        "_utc_today",
-        lambda: date(2026, 7, 21),
+        "_source_today",
+        lambda _calendar: date(2026, 7, 21),
     )
     monkeypatch.setattr(
         read_model_freshness,

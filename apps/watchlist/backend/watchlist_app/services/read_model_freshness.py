@@ -20,6 +20,7 @@ from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrume
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 from watchlist_app.services.calculation_frequency import (
+    source_calendar_date,
     assess_latest_observation_freshness,
 )
 from watchlist_app.services.materialization_policy import (
@@ -374,26 +375,26 @@ def _source_data_is_materialized(
     )
 
 
-def _utc_today() -> date:
-    return datetime.now(UTC).date()
+def _source_today(market_calendar: object) -> date:
+    return source_calendar_date(datetime.now(UTC), market_calendar)
 
 
-def _freshness_has_aged(
+def _freshness_needs_refresh(
     *,
     shared_instrument: dict[str, object] | None,
     local_latest_date: date | None,
     local_data_freshness_status: object,
 ) -> bool:
-    """Detect a previously fresh projection that became stale with the clock.
+    """Re-evaluate freshness when the clock or source publication rule changes.
 
     Source watermarks do not advance on days when a provider publishes nothing,
-    but freshness is still a function of today's completed market sessions.  A
-    materialized stale/partial/unavailable result has already crossed this
-    boundary, so only a currently fresh projection needs another recalculation.
+    but freshness is still a function of today's completed market sessions.
+    A prior stale result may become fresh after correcting its release schedule;
+    it must be re-materialized even when its data watermark is unchanged.
     """
 
     if (
-        str(local_data_freshness_status or "").strip().lower() != "fresh"
+        str(local_data_freshness_status or "").strip().lower() not in {"fresh", "stale"}
         or local_latest_date is None
     ):
         return False
@@ -404,13 +405,15 @@ def _freshness_has_aged(
     )
     assessment = assess_latest_observation_freshness(
         latest_observation_date=local_latest_date,
-        current_date=_utc_today(),
+        current_date=_source_today(source_settings.get("market_calendar")),
         resolved_frequency="daily",
         expected_frequency=source_settings.get("expected_frequency"),
         market_calendar=source_settings.get("market_calendar"),
         release_lag_days=source_settings.get("release_lag_days"),
+        source_mode=source_settings.get("source_mode"),
+        instrument_type=shared_instrument.get("instrument_type") if shared_instrument else None,
     )
-    return assessment["status"] == "stale"
+    return assessment["status"] != str(local_data_freshness_status).strip().lower()
 
 
 def _primary_shared_identifier(shared_instrument: dict[str, object] | None) -> str | None:
@@ -546,7 +549,7 @@ def schedule_instrument_refreshes_if_stale(
                 local_cutoff_at = _parse_iso_datetime(
                     target.get("local_source_cutoff_at")
                 )
-                freshness_aged = _freshness_has_aged(
+                freshness_aged = _freshness_needs_refresh(
                     shared_instrument=shared_instrument,
                     local_latest_date=local_latest_date,
                     local_data_freshness_status=target.get(
@@ -654,7 +657,7 @@ def schedule_instrument_refresh_if_stale(
         str(local_materialization_version or "").strip()
         != WATCHLIST_MATERIALIZATION_VERSION
     )
-    freshness_aged = _freshness_has_aged(
+    freshness_aged = _freshness_needs_refresh(
         shared_instrument=shared_instrument,
         local_latest_date=local_latest_date,
         local_data_freshness_status=local_data_freshness_status,

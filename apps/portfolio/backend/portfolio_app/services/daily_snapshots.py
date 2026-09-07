@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy.orm import selectinload
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -64,6 +65,9 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-option-exposure-strike-currency-v1"
     "-written-opening-liability-per-share-capital-return-v1"
     "-physical-fcn-delivery-stock-short-selected-lots-cash-purpose-v1"
+    "-strict-session-valuation-reinvestment-fifo-option-risk-v1"
+    "-initial-purchase-transaction-valuation-v2"
+    "-period-calculation-boundary-state-v2-fifo-acquisition-order"
 )
 
 
@@ -81,6 +85,28 @@ class _SnapshotSourceGeneration:
             "calculation_inputs_updated_at": self.calculation_inputs_updated_at,
             "analytics_policy_version": self.analytics_policy_version,
         }
+
+
+class PortfolioCalculationUnavailable(RuntimeError):
+    code = "portfolio_calculation_failed"
+    retry_after: int | None = None
+
+    def __init__(self, portfolio_id: str, *, status: str, message: str) -> None:
+        super().__init__(message)
+        self.portfolio_id = portfolio_id
+        self.status = status
+
+
+class PortfolioCalculationPending(PortfolioCalculationUnavailable):
+    code = "portfolio_calculation_pending"
+    retry_after = 1
+
+    def __init__(self, portfolio_id: str, *, status: str) -> None:
+        super().__init__(
+            portfolio_id,
+            status=status,
+            message="Portfolio calculations are updating. Please retry shortly.",
+        )
 
 
 def _current_utc_timestamp() -> str:
@@ -173,7 +199,7 @@ def _public_snapshot_payload(snapshot: dict[str, object]) -> dict[str, object]:
     return {
         key: value
         for key, value in snapshot.items()
-        if key not in {"_holding_rows", "_contribution_slices"}
+        if key not in {"_holding_rows", "_contribution_slices", "_calculation_state"}
     }
 
 
@@ -189,11 +215,37 @@ def _state_for_portfolio(session, portfolio_id: str) -> PortfolioCalculationStat
     return state
 
 
-def _source_market_data_watermark(session, portfolio_id: str) -> str | None:
-    portfolio_instrument_ids = select(TransactionRecordModel.instrument_id).where(
-        TransactionRecordModel.portfolio_id == portfolio_id,
-        TransactionRecordModel.instrument_id.is_not(None),
+def _transaction_source_instrument_ids(
+    instrument_id: str | None,
+    asset_deliveries: list[dict[str, object]] | None,
+) -> set[str]:
+    instrument_ids = {instrument_id} if instrument_id else set()
+    # Canonical FCN settlement facts carry delivered securities on their legs,
+    # while the transaction itself references only the derivative contract.
+    instrument_ids.update(
+        str(leg["instrument_id"])
+        for leg in asset_deliveries or []
+        if leg.get("instrument_id")
     )
+    return instrument_ids
+
+
+def _portfolio_source_instrument_ids(session, portfolio_id: str) -> set[str]:
+    instrument_ids: set[str] = set()
+    for instrument_id, asset_deliveries in session.execute(
+        select(
+            TransactionRecordModel.instrument_id,
+            TransactionRecordModel.asset_deliveries_json,
+        ).where(TransactionRecordModel.portfolio_id == portfolio_id)
+    ):
+        instrument_ids.update(
+            _transaction_source_instrument_ids(instrument_id, asset_deliveries)
+        )
+    return instrument_ids
+
+
+def _source_market_data_watermark(session, portfolio_id: str) -> str | None:
+    portfolio_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
     value = session.scalar(
         select(func.max(Instrument.market_data_updated_at)).where(
             Instrument.market_data_updated_at.is_not(None),
@@ -210,10 +262,7 @@ def _source_calculation_inputs_watermark(
     session,
     portfolio_id: str,
 ) -> str | None:
-    portfolio_instrument_ids = select(TransactionRecordModel.instrument_id).where(
-        TransactionRecordModel.portfolio_id == portfolio_id,
-        TransactionRecordModel.instrument_id.is_not(None),
-    )
+    portfolio_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
     value = session.scalar(
         select(func.max(Instrument.calculation_inputs_updated_at)).where(
             Instrument.calculation_inputs_updated_at.is_not(None),
@@ -293,6 +342,7 @@ def _load_transactions(session, portfolio_id: str) -> list[TransactionRecordMode
     return list(
         session.scalars(
             select(TransactionRecordModel)
+            .options(selectinload(TransactionRecordModel.derivative_contract))
             .where(TransactionRecordModel.portfolio_id == portfolio_id)
             .order_by(
                 TransactionRecordModel.trade_date,
@@ -442,6 +492,8 @@ def _rebase_incremental_snapshots(
     prefix_total_pnl = _safe_float(seed.get("total_pnl"))
 
     for snapshot in snapshots:
+        if snapshot.get("valuation_blocked_reason"):
+            continue
         snapshot_date = _parse_date(snapshot.get("as_of_date"))
         if snapshot_date is None or snapshot_date <= seed_date:
             continue
@@ -1000,6 +1052,7 @@ def _recalculate_portfolio_daily_snapshots_once(
                         "cumulative_twr": _safe_float(snapshot.get("cumulative_twr")),
                         "drawdown": _safe_float(snapshot.get("drawdown")),
                         "snapshot_json": _json_safe(public_snapshot),
+                        "calculation_state_json": _json_safe(snapshot.get("_calculation_state")),
                         "calculated_at": calculated_at,
                     }
                 )
@@ -1071,6 +1124,11 @@ def _recalculate_portfolio_daily_snapshots_once(
             )
             session.flush()
             latest_snapshot = snapshots[-1] if snapshots else None
+            valuation_blocked_reason = (latest_snapshot or {}).get("valuation_blocked_reason")
+            blocked_from = (
+                _parse_date(latest_snapshot.get("as_of_date"))
+                if valuation_blocked_reason and latest_snapshot else None
+            )
             portfolio_record.as_of_date = resolved_end_date
             if latest_snapshot is not None:
                 portfolio_record.nav = _safe_float(latest_snapshot.get("nav"))
@@ -1095,7 +1153,8 @@ def _recalculate_portfolio_daily_snapshots_once(
             )
             refreshed_to = session.scalar(
                 select(func.max(PortfolioDailySnapshotModel.as_of_date)).where(
-                    PortfolioDailySnapshotModel.portfolio_id == portfolio_id
+                    PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
+                    PortfolioDailySnapshotModel.nav.is_not(None),
                 )
             )
             snapshot_count = _snapshot_count(session, portfolio_id)
@@ -1105,8 +1164,8 @@ def _recalculate_portfolio_daily_snapshots_once(
                 .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
                 .where(PortfolioCalculationStateModel.daily_snapshot_status == "running")
                 .values(
-                    daily_snapshot_status="current",
-                    dirty_from=None,
+                    daily_snapshot_status="failed" if valuation_blocked_reason else "current",
+                    dirty_from=blocked_from,
                     refreshed_from=refreshed_from,
                     refreshed_to=refreshed_to,
                     refreshed_at=calculated_at,
@@ -1116,7 +1175,7 @@ def _recalculate_portfolio_daily_snapshots_once(
                     ),
                     refresh_request_id=None,
                     refresh_completed_at=calculated_at,
-                    error_message=None,
+                    error_message=valuation_blocked_reason,
                 )
             )
             request_superseded = int(update_result.rowcount or 0) == 0
@@ -1189,9 +1248,9 @@ def _run_portfolio_daily_snapshot_recalculation_synchronously(
 ) -> dict[str, object] | None:
     """Run one claimed recalculation job for the queue worker.
 
-    This is deliberately internal.  Request handlers enqueue generations and
-    return; only the worker and read-through materialization invoke the
-    synchronous calculation kernel.
+    This is deliberately internal. Financial GETs enqueue generations and
+    return; only the worker, explicit offline refreshes, and research
+    calculations invoke the synchronous calculation kernel.
     """
 
     lock = _refresh_lock_for_portfolio(portfolio_id)
@@ -1278,14 +1337,20 @@ def _portfolio_ids_for_instrument_change(
     normalized_instrument_ids = list(dict.fromkeys(instrument_id.strip() for instrument_id in instrument_ids if instrument_id.strip()))
     if not normalized_instrument_ids:
         return []
-    return list(
-        session.scalars(
-            select(TransactionRecordModel.portfolio_id)
-            .where(TransactionRecordModel.instrument_id.in_(normalized_instrument_ids))
-            .distinct()
-            .order_by(TransactionRecordModel.portfolio_id)
-        ).all()
-    )
+    changed_instrument_ids = set(normalized_instrument_ids)
+    return sorted({
+        portfolio_id
+        for portfolio_id, instrument_id, asset_deliveries in session.execute(
+            select(
+                TransactionRecordModel.portfolio_id,
+                TransactionRecordModel.instrument_id,
+                TransactionRecordModel.asset_deliveries_json,
+            )
+        )
+        if changed_instrument_ids.intersection(
+            _transaction_source_instrument_ids(instrument_id, asset_deliveries)
+        )
+    })
 
 
 def enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change(
@@ -1370,19 +1435,13 @@ def _reconcile_materialized_source_generation_batch(
         raise ValueError("Daily snapshot reconciliation batch_size must be positive.")
     session_factory = get_session_factory()
     with session_factory() as session:
-        portfolio_ids_with_instrument_history = select(
-            TransactionRecordModel.portfolio_id
-        ).where(TransactionRecordModel.instrument_id.is_not(None))
         portfolio_ids_with_snapshots = select(
             PortfolioDailySnapshotModel.portfolio_id
         )
         statement = (
             select(PortfolioCalculationStateModel.portfolio_id)
             .where(
-                PortfolioCalculationStateModel.daily_snapshot_status == "current",
-                PortfolioCalculationStateModel.portfolio_id.in_(
-                    portfolio_ids_with_instrument_history
-                ),
+                PortfolioCalculationStateModel.daily_snapshot_status.in_(("current", "failed")),
                 PortfolioCalculationStateModel.portfolio_id.in_(
                     portfolio_ids_with_snapshots
                 ),
@@ -1401,6 +1460,9 @@ def _reconcile_materialized_source_generation_batch(
             else None
         )
         for portfolio_id in portfolio_ids:
+            state = session.get(PortfolioCalculationStateModel, str(portfolio_id))
+            if state is not None and state.daily_snapshot_status == "failed" and _source_inputs_are_current(session, str(portfolio_id), state):
+                continue
             if not _state_requires_refresh(session, str(portfolio_id)):
                 continue
             accepted = _mark_portfolio_daily_snapshots_stale_in_session(
@@ -1418,23 +1480,92 @@ def _reconcile_materialized_source_generation_batch(
 
 def _state_requires_refresh(session, portfolio_id: str) -> bool:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
-    if state is None or state.daily_snapshot_status != "current":
+    if state is None or state.daily_snapshot_status not in {"current", "failed"}:
         return True
     if _snapshot_count(session, portfolio_id) == 0:
         return True
     if _latest_snapshot_calculation_version(session, portfolio_id) != DAILY_SNAPSHOT_CALCULATION_VERSION:
         return True
+    if state.daily_snapshot_status == "failed":
+        latest = session.scalar(
+            select(PortfolioDailySnapshotModel)
+            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc()).limit(1)
+        )
+        if latest is None or not (latest.snapshot_json or {}).get("valuation_blocked_reason"):
+            return True
+        # A known data gap is deterministic. Keep its reliable prefix readable
+        # and wait for changed source inputs instead of retrying on every read.
     return not _source_inputs_are_current(session, portfolio_id, state)
 
 
-def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
+def _financial_read_generation_in_session(session, portfolio_id: str):
+    state = session.get(PortfolioCalculationStateModel, portfolio_id)
+    if state is not None and state.daily_snapshot_status == "failed":
+        latest = session.scalar(
+            select(PortfolioDailySnapshotModel)
+            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .limit(1)
+        )
+        blocked_reason = (latest.snapshot_json or {}).get("valuation_blocked_reason") if latest else None
+        if not blocked_reason or state.error_message != blocked_reason:
+            raise PortfolioCalculationUnavailable(
+                portfolio_id,
+                status="failed",
+                message=state.error_message or "Portfolio calculation failed.",
+            )
+    if _state_requires_refresh(session, portfolio_id):
+        return None
+    return (
+        _snapshot_source_generation(session, portfolio_id),
+        state.refreshed_at,
+        state.refreshed_from,
+        state.refreshed_to,
+    )
+
+
+def portfolio_financial_read_generation(portfolio_id: str):
+    """Require a published generation; queue missing work without calculating.
+
+    Existing stale/running requests retain their identity, so polling never
+    supersedes a worker's active calculation.
+    """
     session_factory = get_session_factory()
     with session_factory() as session:
         if session.get(PortfolioRecordModel, portfolio_id) is None:
-            return
-        should_refresh = _state_requires_refresh(session, portfolio_id)
-    if should_refresh:
-        _run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
+            return None
+        generation = _financial_read_generation_in_session(session, portfolio_id)
+        if generation is not None:
+            return generation
+
+    # Only the enqueue path locks the portfolio. Recheck after acquiring the
+    # lock: another reader or a fact mutation may already have queued the work.
+    with session_factory() as session:
+        portfolio = session.scalar(
+            select(PortfolioRecordModel)
+            .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+            .with_for_update()
+        )
+        if portfolio is None:
+            return None
+        generation = _financial_read_generation_in_session(session, portfolio_id)
+        if generation is not None:
+            return generation
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        if state is None or state.daily_snapshot_status not in {"stale", "running"}:
+            _mark_portfolio_daily_snapshots_stale_in_session(
+                session, portfolio_id, dirty_from=None,
+            )
+            state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        status = str(state.daily_snapshot_status)
+        session.commit()
+    _wake_daily_snapshot_worker()
+    raise PortfolioCalculationPending(portfolio_id, status=status)
+
+
+def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
+    portfolio_financial_read_generation(portfolio_id)
 
 
 def list_materialized_daily_snapshots(
@@ -1482,11 +1613,6 @@ def build_materialized_performance_report(
     end_date: date | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
-    snapshot_context_start = (
-        start_date - timedelta(days=1)
-        if start_date is not None
-        else None
-    )
     for _attempt in range(3):
         ensure_portfolio_daily_snapshots(portfolio_id)
         with session_factory() as session:
@@ -1508,11 +1634,6 @@ def build_materialized_performance_report(
             snapshot_statement = select(PortfolioDailySnapshotModel).where(
                 PortfolioDailySnapshotModel.portfolio_id == portfolio_id
             )
-            if snapshot_context_start is not None:
-                snapshot_statement = snapshot_statement.where(
-                    PortfolioDailySnapshotModel.as_of_date
-                    >= snapshot_context_start
-                )
             if end_date is not None:
                 snapshot_statement = snapshot_statement.where(
                     PortfolioDailySnapshotModel.as_of_date <= end_date
@@ -1976,6 +2097,11 @@ def _aggregate_holding_rows(
                     instrument_rows, "fair_value_coverage_status"
                 ),
                 "valuation_basis": _first_present(instrument_rows, "valuation_basis"),
+                "valuation_source_transaction_ids": sorted({
+                    str(transaction_id)
+                    for row in instrument_rows
+                    for transaction_id in row.get("valuation_source_transaction_ids", [])
+                }),
                 "settlement_date": _first_present(
                     instrument_rows, "settlement_date"
                 ),
@@ -2012,7 +2138,7 @@ def build_materialized_holdings_workspace(
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
+        if state is None or _state_requires_refresh(session, portfolio_id):
             return None
         portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio_record is None:
@@ -2204,6 +2330,7 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "fair_value",
     "fair_value_coverage_status",
     "valuation_basis",
+    "valuation_source_transaction_ids",
     "settlement_date",
     "pending_until_date",
     "pending_status",
@@ -2276,7 +2403,7 @@ def build_materialized_position_holding_projection(
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
+        if state is None or _state_requires_refresh(session, portfolio_id):
             return None
         portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio_record is None:
@@ -2374,13 +2501,14 @@ def build_materialized_contribution_report(
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
+        if state is None or _state_requires_refresh(session, portfolio_id):
             return None
         portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio_record is None:
             return None
         portfolio = _serialize_portfolio_row(portfolio_record)
         portfolio_as_of_date = portfolio_record.as_of_date
+        blocked_calculation = state.daily_snapshot_status == "failed"
         transaction_payloads = [
             _serialize_transaction_row(item)
             for item in _load_transactions(session, portfolio_id)
@@ -2502,7 +2630,8 @@ def build_materialized_contribution_report(
     ):
         return None
     if (
-        requested_end_date > last_snapshot_date
+        not blocked_calculation
+        and requested_end_date > last_snapshot_date
         and portfolio_as_of_date is not None
         and last_snapshot_date < portfolio_as_of_date
     ):
@@ -2526,7 +2655,7 @@ def build_materialized_contribution_report(
     resolved_end_date = min(requested_end_date, last_snapshot_date)
     snapshots = list_materialized_daily_snapshots(
         portfolio_id,
-        start_date=resolved_start_date,
+        start_date=None,
         end_date=resolved_end_date,
         ensure_current=False,
     )

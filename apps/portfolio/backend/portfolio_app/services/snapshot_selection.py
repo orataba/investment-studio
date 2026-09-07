@@ -30,8 +30,12 @@ def latest_fresh_complete_portfolio_snapshot(session, portfolio_id: str) -> Port
             PortfolioDailySnapshotModel.as_of_date <= valuation_today,
         )
         .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-    ).all()
-    return next((snapshot for snapshot in snapshots if is_fresh_complete_portfolio_snapshot(snapshot)), None)
+        .execution_options(yield_per=16)
+    )
+    try:
+        return next((snapshot for snapshot in snapshots if is_fresh_complete_portfolio_snapshot(snapshot)), None)
+    finally:
+        snapshots.close()
 
 
 def default_portfolio_snapshot(session, portfolio_id: str) -> PortfolioDailySnapshotModel | None:

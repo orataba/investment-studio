@@ -4,6 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
+from portfolio_app.api.financial_read import FinancialReadRoute
 from portfolio_app.api.contracts import (
     BoundaryGroupRecord,
     BoundaryGroupsResponse,
@@ -62,6 +63,8 @@ from portfolio_app.api.contracts import (
     ReturnCalendarSummary,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.period_calculation_state import load_period_calculation_inputs
+from portfolio_app.services.risk_basis_store import calculation_frequency_profile_from_registry
 from portfolio_app.services.attribution import CONTRIBUTION_AXES, CONTRIBUTION_AXIS_ERROR
 from portfolio_app.services.daily_snapshots import (
     enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change,
@@ -106,7 +109,10 @@ from portfolio_app.services.portfolio_store import (
 )
 
 
-router = APIRouter()
+router = APIRouter(route_class=FinancialReadRoute)
+# Entry reports read transaction facts and their opening boundary. Requiring a
+# portfolio-wide refresh here would change their date window at valuation gaps.
+entry_router = APIRouter()
 
 _MATERIALIZED_CALCULATION_GROUP_AXES = {"instrument", "account", "instrument_type", "currency"}
 
@@ -207,7 +213,7 @@ def list_daily_snapshots(
     try:
         loaded_snapshots = list_materialized_daily_snapshots(
             portfolio_id,
-            start_date=start_date,
+            start_date=None,
             end_date=end_date,
         )
     except InstrumentRegistryError as error:
@@ -289,7 +295,7 @@ def get_portfolio_period_calculation(
     try:
         materialized_snapshots = list_materialized_daily_snapshots(
             portfolio_id,
-            start_date=start_date,
+            start_date=None,
             end_date=end_date,
         )
         instrument_contribution_report = (
@@ -302,6 +308,12 @@ def get_portfolio_period_calculation(
         )
         if instrument_contribution_report is None:
             raise HTTPException(status_code=404, detail="Portfolio not found")
+        calculation_inputs = load_period_calculation_inputs(
+            portfolio_id,
+            start_date=start_date,
+            end_date=end_date,
+            prebuilt_snapshots=materialized_snapshots,
+        )
         report = build_period_calculation_report(
             portfolio,
             list_accounts(portfolio_id),
@@ -312,6 +324,7 @@ def get_portfolio_period_calculation(
             prebuilt_instrument_contribution_report=(
                 instrument_contribution_report
             ),
+            calculation_inputs=calculation_inputs,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -469,6 +482,13 @@ def get_portfolio_period_calculation_groups(
                         base_report=base_detail_report,
                         use_period_end_taxonomy_assignments=True,
                     )
+        calculation_inputs = load_period_calculation_inputs(
+            portfolio_id, start_date=start_date, end_date=end_date,
+        )
+        risk_frequency_profile = calculation_frequency_profile_from_registry(
+            calculation_inputs.risk_instrument_ids,
+            end_date=calculation_inputs.effective_end_date or date.today(),
+        )
         report = build_period_calculation_groups_report(
             portfolio,
             accounts,
@@ -483,6 +503,8 @@ def get_portfolio_period_calculation_groups(
             group_key=group_key,
             contribution_report=contribution_report,
             detail_contribution_report=detail_contribution_report,
+            calculation_inputs=calculation_inputs,
+            prebuilt_risk_frequency_profile=risk_frequency_profile,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -596,7 +618,7 @@ def get_portfolio_period_calculation_drilldown(
     )
 
 
-@router.get("/{portfolio_id}/performance/calculation/entries", response_model=PeriodCalculationEntriesResponse)
+@entry_router.get("/{portfolio_id}/performance/calculation/entries", response_model=PeriodCalculationEntriesResponse)
 def get_portfolio_period_calculation_entries(
     portfolio_id: str,
     start_date: date | None = None,
@@ -643,7 +665,7 @@ def get_portfolio_period_calculation_entries(
     )
 
 
-@router.get(
+@entry_router.get(
     "/{portfolio_id}/performance/calculation/entries/calendar",
     response_model=PeriodCalculationEntryCalendarResponse,
 )
@@ -1031,7 +1053,7 @@ def get_portfolio_contribution_calendar_drilldown(
     )
 
 
-@router.get("/{portfolio_id}/performance/contribution/entries", response_model=ContributionEntriesResponse)
+@entry_router.get("/{portfolio_id}/performance/contribution/entries", response_model=ContributionEntriesResponse)
 def get_portfolio_contribution_entries(
     portfolio_id: str,
     start_date: date | None = None,
@@ -1078,7 +1100,7 @@ def get_portfolio_contribution_entries(
     )
 
 
-@router.get(
+@entry_router.get(
     "/{portfolio_id}/performance/contribution/entries/calendar",
     response_model=ContributionEntryCalendarResponse,
 )
@@ -1130,3 +1152,6 @@ def get_portfolio_contribution_entries_calendar(
         summary=ContributionEntryCalendarSummary.model_validate(report["summary"]),
         buckets=[ContributionEntryCalendarBucketRecord.model_validate(item) for item in report["buckets"]],
     )
+
+
+router.include_router(entry_router)

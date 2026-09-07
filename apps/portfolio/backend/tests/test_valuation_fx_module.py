@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 
 import pytest
@@ -80,6 +81,94 @@ def test_fx_rate_resolution_cache_reuses_one_boundary_lookup(monkeypatch) -> Non
 
     assert first == second == {"rate": 7.1, "stale": False}
     assert calls == 1
+
+
+@pytest.mark.parametrize("preloaded", [False, True])
+def test_direct_fx_boundaries_reuse_local_details_without_mutating_source(monkeypatch, preloaded):
+    source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-03", 7.8), ("2026-08-04", 7.9)])
+    source["source_settings"] = {"market_calendar": "24/5"}
+    unchanged_source = deepcopy(source)
+    cache = {"fx-usd-hkd": source} if preloaded else {}
+    calls = []
+    original = valuation_fx.resolve_quote_point
+
+    def resolve(*args, **kwargs):
+        calls.append(kwargs["as_of_date"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(valuation_fx, "resolve_quote_point", resolve)
+    arguments = dict(instrument_id="fx-usd-hkd", instrument_detail_cache=cache, instrument_detail_loader=lambda _: source)
+    first = valuation_fx.direct_fx_point_as_of(**arguments, as_of_date=date(2026, 8, 3))
+    assert first["rate"] == 7.8
+    assert valuation_fx.direct_fx_point_as_of(**arguments, as_of_date=date(2026, 8, 3)) == first
+    assert calls == [date(2026, 8, 3)]
+    next_day = valuation_fx.direct_fx_point_as_of(**arguments, as_of_date=date(2026, 8, 4))
+    assert next_day["rate"] == 7.9
+    assert next_day["stale"] is False
+    missing_day = valuation_fx.direct_fx_point_as_of(**arguments, as_of_date=date(2026, 8, 5))
+    assert missing_day["rate"] == 7.9
+    assert missing_day["as_of_date"] == date(2026, 8, 4)
+    assert missing_day["stale"] is True
+    converted, stale = valuation_fx.convert_amount_on(
+        79, as_of_date=date(2026, 8, 5), from_currency="HKD", to_currency="USD",
+        direct_fx_instruments={("USD", "HKD"): "fx-usd-hkd"},
+        instrument_detail_cache=cache, instrument_detail_loader=lambda _: source,
+    )
+    assert converted == pytest.approx(10.0)
+    assert stale is True
+    assert len(calls) == 3
+    assert cache["fx-usd-hkd"] is not source
+    assert source == unchanged_source
+
+
+def test_missing_fx_boundary_is_cached_but_new_calculation_sees_backfill(monkeypatch):
+    source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-04", 7.9)])
+    cache = {}
+    calls = 0
+    original = valuation_fx.resolve_quote_point
+
+    def resolve(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(valuation_fx, "resolve_quote_point", resolve)
+    arguments = dict(instrument_id="fx-usd-hkd", as_of_date=date(2026, 8, 3), instrument_detail_loader=lambda _: source)
+    for _ in range(2):
+        assert valuation_fx.direct_fx_point_as_of(**arguments, instrument_detail_cache=cache) is None
+    assert calls == 1
+    source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-03", 7.8), ("2026-08-04", 7.9)])
+    assert valuation_fx.direct_fx_point_as_of(**arguments, instrument_detail_cache=cache) is None
+    refreshed = valuation_fx.direct_fx_point_as_of(**arguments, instrument_detail_cache={})
+    assert refreshed["rate"] == 7.8
+    assert refreshed["stale"] is False
+    assert calls == 2
+
+
+def test_previous_fx_boundary_cache_preserves_exclusive_date(monkeypatch):
+    source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-03", 7.8), ("2026-08-04", 7.9)])
+    unchanged_source = deepcopy(source)
+    calls = []
+    original = valuation_fx.resolve_quote_series
+
+    def resolve(*args, **kwargs):
+        calls.append(kwargs["end_date"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(valuation_fx, "resolve_quote_series", resolve)
+    cache = {"fx-usd-hkd": source}
+    arguments = dict(instrument_id="fx-usd-hkd", instrument_detail_cache=cache, instrument_detail_loader=lambda _: source)
+    for _ in range(2):
+        assert valuation_fx.direct_fx_point_before(**arguments, before_date=date(2026, 8, 4))["rate"] == 7.8
+    assert calls == [date(2026, 8, 4)]
+    assert valuation_fx.direct_fx_point_before(**arguments, before_date=date(2026, 8, 5))["rate"] == 7.9
+    for _ in range(2):
+        assert valuation_fx.direct_fx_point_before(**arguments, before_date=date(2026, 8, 3)) is None
+    assert len(calls) == 3
+    # The same calendar boundary has a different inclusive as-of result.
+    assert valuation_fx.direct_fx_point_as_of(**arguments, as_of_date=date(2026, 8, 4))["rate"] == 7.9
+    assert cache["fx-usd-hkd"] is not source
+    assert source == unchanged_source
 
 
 @pytest.mark.parametrize(

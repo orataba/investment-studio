@@ -42,6 +42,27 @@
   padding: 1px 0 0;
 }
 
+.portfolio-topbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-height: 38px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.portfolio-topbar > .workspace-breadcrumbs {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+}
+
+.portfolio-topbar > .language-switcher {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .workspace-app-title {
   font-size: 15px;
   font-weight: 600;
@@ -765,7 +786,7 @@
 
   .portfolio-header-actions {
     width: 100%;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .portfolio-tabs {

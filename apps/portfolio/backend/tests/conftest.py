@@ -5,6 +5,7 @@ import os
 import sys
 from uuid import uuid4
 from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 
 from alembic import command
@@ -168,6 +169,48 @@ REGISTRY_INSTRUMENT_DETAILS = [
             _market_point("fx", "spot", "2026-04-15", "7.20", "CNY"),
         ],
     },
+]
+
+
+def _with_daily_test_history(detail: dict[str, object]) -> dict[str, object]:
+    """Define complete synthetic fixed-price segments for the shared API fixture.
+
+    These are explicit test-source observations, not a production missing-price
+    fallback. Existing dated anchors (including every latest quote) stay intact.
+    Tests for actual data gaps replace this history with their own sparse facts.
+    """
+
+    first_holding_dates = [
+        str(transaction["trade_date"])
+        for transaction in TEST_PORTFOLIO_STORE["transactions"]
+        if transaction.get("instrument_id") == detail["instrument_id"]
+    ]
+    start = date.fromisoformat(
+        "2026-01-02"
+        if detail["instrument_type"] == "fx"
+        else min(first_holding_dates)
+        if first_holding_dates
+        else min(str(point["as_of_date"]) for point in detail["market_data"])
+    )
+    series: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for point in detail["market_data"]:
+        key = (point["metric_family"], point["quote_basis"], point["currency"])
+        series.setdefault(key, []).append(point)
+    observations = []
+    for anchors in series.values():
+        anchors.sort(key=lambda point: str(point["as_of_date"]))
+        by_date = {str(point["as_of_date"]): point for point in anchors}
+        previous = anchors[0]
+        day = min(start, date.fromisoformat(str(anchors[0]["as_of_date"])))
+        while day <= date(2026, 4, 15):
+            previous = by_date.get(day.isoformat(), previous)
+            observations.append({**previous, "as_of_date": day.isoformat()})
+            day += timedelta(days=1)
+    return {**detail, "market_data": observations}
+
+
+REGISTRY_INSTRUMENT_DETAILS = [
+    _with_daily_test_history(detail) for detail in REGISTRY_INSTRUMENT_DETAILS
 ]
 
 
@@ -489,18 +532,38 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client():
+def raw_client():
     import portfolio_app.main as main_module
 
     main_module = importlib.reload(main_module)
+
+    with TestClient(main_module.app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def client():
+    import portfolio_app.main as main_module
+    from portfolio_app.services.daily_snapshots import _run_portfolio_daily_snapshot_recalculation_synchronously
+
+    main_module = importlib.reload(main_module)
     class MutationClient(TestClient):
-        """Normal callers supply a unique mutation id; replay tests supply their own."""
+        """Drive queued work between GET attempts; raw_client exposes first responses."""
         def request(self, method, url, **kwargs):
             if method.upper() == "POST" and str(url).endswith(("/transactions", "/options/outcomes", "/transactions/internal-transfer")):
                 headers = dict(kwargs.get("headers") or {})
                 if not any(key.lower() == "idempotency-key" for key in headers):
                     headers["Idempotency-Key"] = str(uuid4())
                 kwargs["headers"] = headers
-            return super().request(method, url, **kwargs)
+            response = super().request(method, url, **kwargs)
+            if method.upper() == "GET" and response.status_code == 503:
+                detail = response.json().get("detail")
+                if isinstance(detail, dict) and detail.get("code") == "portfolio_calculation_pending":
+                    # The production handler has already returned without
+                    # calculating. Deterministically finish its durable job in
+                    # this test process, then simulate the caller's next GET.
+                    _run_portfolio_daily_snapshot_recalculation_synchronously(detail["portfolio_id"])
+                    response = super().request(method, url, **kwargs)
+            return response
     with MutationClient(main_module.app) as test_client:
         yield test_client

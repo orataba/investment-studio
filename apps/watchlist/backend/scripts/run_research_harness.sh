@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <run-id>" >&2
+if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != "sector" && "$2" != "risk" ) ]]; then
+  echo "Usage: $0 <run-id> [sector|risk]" >&2
   exit 64
 fi
 
@@ -15,6 +15,11 @@ copilot_patch="$copilot_project_root/apps/watchlist/backend/config/research_harn
 copilot_pnpm="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM:-$(command -v pnpm || { [[ -x /opt/homebrew/bin/pnpm ]] && echo /opt/homebrew/bin/pnpm; } || true)}"
 copilot_dsh_home="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME:-$HOME/.local/share/investment-studio/deepseek-harness}"
 research_run_id="$1"
+if [[ "${2:-}" == "sector" ]]; then
+  copilot_patch="$copilot_project_root/apps/watchlist/backend/config/sector_harness.patch.yml"
+elif [[ "${2:-}" == "risk" ]]; then
+  copilot_patch="$copilot_project_root/apps/watchlist/backend/config/risk_harness.patch.yml"
+fi
 
 if [[ -z "$copilot_pnpm" || ! -x "$copilot_pnpm" ]]; then
   echo "pnpm is required to run the pinned DeepSeek Harness runtime." >&2
@@ -45,6 +50,11 @@ export INVESTMENT_STUDIO_RESEARCH_RUN_ID="$research_run_id"
 export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="deepseek-v4-flash-vision-exp"
 
 copilot_task="Read the current Watchlist conversation. Choose research tools as needed to answer the latest user question in context, then reply in Chinese with evidence citations. The application saves your final response automatically."
+if [[ "${2:-}" == "sector" ]]; then
+  copilot_task="Read the research context, maintained dossiers and each instrument's actual asset type. Continue the prior research questions, use supplied methods, and read relevant original materials or historical cases with read_research_dossier. Use search_sector_information and read_sector_source to check material developments and opposing evidence. Prepare a supported working paper even with no new events; preserve stable question keys and track material scheduled catalysts before and after release. Present a concise PM summary with separate coverage gaps. Compare prior events and retain publication/occurrence timing. Call submit_research_review with one complete result for every selected instrument, correct any tool validation error, then acknowledge acceptance without repeating JSON."
+elif [[ "${2:-}" == "risk" ]]; then
+  copilot_task="Read read_research_context for the scope index, then read_risk_instrument for every instrument in that index. Analyze only these bound retained snapshots. For portfolio scope, also read every portfolio risk module and each derivative holding with read_portfolio_risk. Aggregate researcher risk reports, actual performance and comparisons, quantitative triggers, portfolio allocation/risk/correlation changes and FCN/Option settlement obligations; distinguish unavailable monitoring from safety. Submit the complete concise Chinese risk assessment with submit_risk_review, using shared case IDs and evidence references. Correct tool validation errors, then acknowledge acceptance without reprinting JSON. Do not search or trade."
+fi
 
 # The backend process may hold database and market-data credentials that the
 # external harness runtime does not need. Start it with an explicit allowlist.
@@ -76,8 +86,14 @@ do
   fi
 done
 
-exec /usr/bin/env -i "${copilot_exec_env[@]}" \
+copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
   "$copilot_pnpm" dlx @deepseek-ai/dsh@0.1.1-rc.2 \
   --profile headless \
   --patch "$copilot_patch" \
-  "$copilot_task"
+  "$copilot_task")
+if [[ "${2:-}" == "sector" ]]; then
+  "${copilot_command[@]}" | /usr/bin/env -i "${copilot_exec_env[@]}" \
+    "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review
+else
+  exec "${copilot_command[@]}"
+fi

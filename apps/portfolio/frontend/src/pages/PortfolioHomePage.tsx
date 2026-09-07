@@ -147,6 +147,13 @@ type HoldingTaxonomyLabels = {
 type HoldingsColumnContext = {
   workspace: HoldingsWorkspaceResponse
   taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>
+  riskMetrics?: HoldingsGroupRiskMetrics
+}
+
+type HoldingsGroupRiskMetrics = {
+  volatility: Record<GroupVolatilityRangeKey, number | null>
+  currentDrawdown: number | null
+  maxDrawdown: number | null
 }
 
 type HoldingsColumnDefinition = {
@@ -1422,22 +1429,37 @@ function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsW
   )
 }
 
-export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+function groupedDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
   if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
     return null
   }
-  const drawdown = series ? drawdownFromReturns(series.returns) : null
-  return drawdown?.currentDrawdown ?? null
+  return series ? drawdownFromReturns(series.returns) : null
+}
+
+export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  return groupedDrawdown(rows, workspace)?.currentDrawdown ?? null
 }
 
 export function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  const series = groupedDrawdownSeries(rows, workspace)
-  if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
-    return null
+  return groupedDrawdown(rows, workspace)?.maxDrawdown ?? null
+}
+
+export function buildHoldingsGroupRiskMetrics(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+): HoldingsGroupRiskMetrics {
+  const drawdown = groupedDrawdown(rows, workspace)
+  return {
+    volatility: {
+      '1m': groupedAnnualizedVolatility(rows, workspace, '1m'),
+      '3m': groupedAnnualizedVolatility(rows, workspace, '3m'),
+      '6m': groupedAnnualizedVolatility(rows, workspace, '6m'),
+      '1y': groupedAnnualizedVolatility(rows, workspace, '1y'),
+    },
+    currentDrawdown: drawdown?.currentDrawdown ?? null,
+    maxDrawdown: drawdown?.maxDrawdown ?? null,
   }
-  const drawdown = series ? drawdownFromReturns(series.returns) : null
-  return drawdown?.maxDrawdown ?? null
 }
 
 function rowsCoverWorkspace(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1947,29 +1969,29 @@ function holdingColumnSubtotalExportValue(
     case 'instrument_return_1y':
       return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
     case 'instrument_current_drawdown':
-      return groupedCurrentDrawdown(rows, context.workspace)
+      return context.riskMetrics?.currentDrawdown ?? null
     case 'instrument_volatility_1m':
       return rows.every(holdingIsExcludedFromRisk)
         ? 'N/A'
-        : groupedAnnualizedVolatility(rows, context.workspace, '1m')
+        : context.riskMetrics?.volatility['1m'] ?? null
     case 'instrument_volatility_3m':
       return rows.every(holdingIsExcludedFromRisk)
         ? 'N/A'
-        : groupedAnnualizedVolatility(rows, context.workspace, '3m')
+        : context.riskMetrics?.volatility['3m'] ?? null
     case 'instrument_volatility_6m':
       return rows.every(holdingIsExcludedFromRisk)
         ? 'N/A'
-        : groupedAnnualizedVolatility(rows, context.workspace, '6m')
+        : context.riskMetrics?.volatility['6m'] ?? null
     case 'instrument_volatility_1y':
       return rows.every(holdingIsExcludedFromRisk)
         ? 'N/A'
-        : groupedAnnualizedVolatility(rows, context.workspace, '1y')
+        : context.riskMetrics?.volatility['1y'] ?? null
     case 'forward_risk_share':
       return rows.every(holdingIsExcludedFromRisk)
         ? 'N/A'
         : totalForwardRiskShare(rows, context.workspace)
     case 'instrument_max_drawdown':
-      return groupedMaxDrawdown(rows, context.workspace)
+      return context.riskMetrics?.maxDrawdown ?? null
     case 'instrument_holding_max_drawdown':
       return null
     default:
@@ -2346,8 +2368,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedHoldingMarketMetric(row, row.instrument_current_drawdown),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_current_drawdown),
     className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_current_drawdown)),
-    total: (rows, context) => signedPercent(groupedCurrentDrawdown(rows, context.workspace)),
-    totalClassName: (rows, context) => signedValueClass(groupedCurrentDrawdown(rows, context.workspace)),
+    total: (_rows, context) => signedPercent(context.riskMetrics?.currentDrawdown),
+    totalClassName: (_rows, context) => signedValueClass(context.riskMetrics?.currentDrawdown),
   },
   instrument_volatility_1m: {
     key: 'instrument_volatility_1m',
@@ -2357,7 +2379,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1m),
     total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
       ? 'N/A'
-      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
+      : formatPercent(context.riskMetrics?.volatility['1m']),
   },
   instrument_volatility_3m: {
     key: 'instrument_volatility_3m',
@@ -2367,7 +2389,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_3m),
     total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
       ? 'N/A'
-      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
+      : formatPercent(context.riskMetrics?.volatility['3m']),
   },
   instrument_volatility_6m: {
     key: 'instrument_volatility_6m',
@@ -2377,7 +2399,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_6m),
     total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
       ? 'N/A'
-      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
+      : formatPercent(context.riskMetrics?.volatility['6m']),
   },
   instrument_volatility_1y: {
     key: 'instrument_volatility_1y',
@@ -2387,7 +2409,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1y),
     total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
       ? 'N/A'
-      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
+      : formatPercent(context.riskMetrics?.volatility['1y']),
   },
   forward_risk_share: {
     key: 'forward_risk_share',
@@ -2414,8 +2436,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedHoldingMarketMetric(row, row.instrument_max_drawdown),
     sortValue: (row) => holdingMarketMetric(row, row.instrument_max_drawdown),
     className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_max_drawdown)),
-    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace)),
-    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace)),
+    total: (_rows, context) => signedPercent(context.riskMetrics?.maxDrawdown),
+    totalClassName: (_rows, context) => signedValueClass(context.riskMetrics?.maxDrawdown),
   },
   instrument_holding_max_drawdown: {
     key: 'instrument_holding_max_drawdown',
@@ -2539,6 +2561,7 @@ export default function PortfolioHomePage() {
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
+  const loadedHoldingsInputRef = useRef<{ key: string; full: boolean } | null>(null)
   const [taxonomyCatalogResponse, setTaxonomyCatalog] =
     useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const workspace = workspaceResponse?.portfolio_id === portfolioId ? workspaceResponse : null
@@ -2633,6 +2656,9 @@ export default function PortfolioHomePage() {
     const rawGroupBy = searchParams.get('holdings_group_by')
     return rawGroupBy ? parseHoldingsGroupBy(rawGroupBy) : initialHoldingsViewState.groupBy
   })
+  const waitingForTaxonomy = !taxonomyCatalog && !taxonomyError && (
+    holdingsGroupBy.startsWith('taxonomy_') || holdingsColumns.some((column) => column.startsWith('taxonomy_'))
+  )
   const holdingsColumnResizeState = useRef<{
     column: HoldingsColumnKey
     startX: number
@@ -2775,10 +2801,12 @@ export default function PortfolioHomePage() {
     return () => observer.disconnect()
   }, [])
 
+  const securityRows = useMemo(
+    () => (workspace?.rows ?? []).filter((row) => row.holding_category === 'securities'),
+    [workspace?.rows],
+  )
   const sortedSecurityRows = useMemo(() => {
-    const rows = (workspace?.rows ?? []).filter(
-      (row) => row.holding_category === 'securities',
-    )
+    const rows = securityRows
     if (!columnContext || !holdingsSortField) {
       return rows.slice()
     }
@@ -2791,7 +2819,7 @@ export default function PortfolioHomePage() {
       )
       return primary || primaryIdentifier(left).localeCompare(primaryIdentifier(right), 'zh-Hans-CN')
     })
-  }, [columnContext, holdingsSortDirection, holdingsSortField, workspace?.rows])
+  }, [columnContext, holdingsSortDirection, holdingsSortField, securityRows])
   const derivativeRows = useMemo(
     () => (workspace?.rows ?? []).filter((row) => row.holding_category === 'derivatives'),
     [workspace?.rows],
@@ -2814,6 +2842,18 @@ export default function PortfolioHomePage() {
       workspace,
     )
   }, [holdingsGroupBy, sortedSecurityRows, taxonomyByInstrumentId, workspace])
+
+  const riskGroupingTaxonomy = holdingsGroupBy.startsWith('taxonomy_') ? taxonomyByInstrumentId : null
+  const securityRiskMetrics = useMemo(() => {
+    if (!workspace) return null
+    const groups = holdingsGroupBy === 'none' ? [] : buildGroupedRows(
+      securityRows, holdingsGroupBy, riskGroupingTaxonomy ?? new Map(), workspace,
+    )
+    return {
+      subtotal: buildHoldingsGroupRiskMetrics(securityRows, workspace),
+      groups: new Map(groups.map((group) => [group.key, buildHoldingsGroupRiskMetrics(group.rows, workspace)])),
+    }
+  }, [securityRows, workspace, holdingsGroupBy, riskGroupingTaxonomy])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -3097,13 +3137,14 @@ export default function PortfolioHomePage() {
     const appendSecuritySubtotal = (
       label: string,
       subtotalRows: PortfolioHoldingRow[],
+      riskMetrics: HoldingsGroupRiskMetrics | undefined,
     ) => {
       securityDataRows.push([
         ...(holdingsGroupBy !== 'none' ? [label] : []),
         ...visibleColumns.map((column, index) =>
           index === 0
             ? `${label} (${workspace.base_currency})`
-            : holdingColumnSubtotalExportValue(column.key, subtotalRows, columnContext),
+            : holdingColumnSubtotalExportValue(column.key, subtotalRows, { ...columnContext, riskMetrics }),
         ),
       ])
     }
@@ -3112,11 +3153,11 @@ export default function PortfolioHomePage() {
     } else {
       groupedSecurityRows.forEach((group) => {
         group.rows.forEach((row) => appendSecurityRow(row, group.label))
-        appendSecuritySubtotal(`${group.label} Subtotal`, group.rows)
+        appendSecuritySubtotal(`${group.label} Subtotal`, group.rows, securityRiskMetrics?.groups.get(group.key))
       })
     }
     if (sortedSecurityRows.length) {
-      appendSecuritySubtotal('Securities Subtotal', sortedSecurityRows)
+      appendSecuritySubtotal('Securities Subtotal', sortedSecurityRows, securityRiskMetrics?.subtotal)
     }
     appendSection('Securities', securityHeader, securityDataRows)
 
@@ -3404,6 +3445,7 @@ export default function PortfolioHomePage() {
     if (!columnContext) {
       return null
     }
+    const subtotalContext = { ...columnContext, riskMetrics: securityRiskMetrics?.subtotal }
     return (
       <HoldingsSubtotalRow
         key={key}
@@ -3415,7 +3457,7 @@ export default function PortfolioHomePage() {
           const classNames = [
             holdingsAlignmentClass(column),
             isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-            canAggregate ? column.totalClassName?.(rows, columnContext) ?? '' : '',
+            canAggregate ? column.totalClassName?.(rows, subtotalContext) ?? '' : '',
           ]
             .filter(Boolean)
             .join(' ')
@@ -3426,7 +3468,7 @@ export default function PortfolioHomePage() {
             content:
               index === 0 || !canAggregate
                 ? undefined
-                : column.total?.(rows, columnContext) ?? '',
+                : column.total?.(rows, subtotalContext) ?? '',
           }
         })}
       />
@@ -3440,6 +3482,7 @@ export default function PortfolioHomePage() {
     if (!columnContext) {
       return null
     }
+    const groupContext = { ...columnContext, riskMetrics: securityRiskMetrics?.groups.get(group.key) }
     return (
       <tr className={`holdings-group-row holdings-${level}-row`}>
         {visibleColumns.map((column, index) => {
@@ -3448,7 +3491,7 @@ export default function PortfolioHomePage() {
           const classNames = [
             holdingsAlignmentClass(column),
             isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-            canAggregate ? column.totalClassName?.(group.rows, columnContext) ?? '' : '',
+            canAggregate ? column.totalClassName?.(group.rows, groupContext) ?? '' : '',
             index === 0 ? 'holdings-group-name-cell' : '',
           ]
             .filter(Boolean)
@@ -3466,7 +3509,7 @@ export default function PortfolioHomePage() {
                   <span className="holdings-group-count">{formatNumber(group.rows.length, 0)}</span>
                 </div>
               ) : (
-                canAggregate ? column.total?.(group.rows, columnContext) ?? '' : ''
+                canAggregate ? column.total?.(group.rows, groupContext) ?? '' : ''
               )}
             </td>
           )
@@ -3633,51 +3676,44 @@ export default function PortfolioHomePage() {
 
   useEffect(() => {
     if (!portfolioId) {
+      loadedHoldingsInputRef.current = null
       setWorkspace(null)
-      setTaxonomyCatalog(null)
       setError(null)
-      setTaxonomyError(null)
       setLoading(false)
       return
     }
 
+    const inputKey = `${portfolioId}:${requestedAsOfDate}:${riskPolicyRevision}`
+    if (loadedHoldingsInputRef.current?.key === inputKey && loadedHoldingsInputRef.current.full) {
+      // Full inputs also satisfy a compact view; changing visible columns does
+      // not change the valuation date or require another holdings calculation.
+      setLoading(false)
+      return
+    }
     let cancelled = false
     setLoading(true)
 
-    Promise.allSettled([
-      getHoldingsWorkspace(portfolioId || undefined, {
-        as_of_date: requestedAsOfDate || undefined,
-        ...(holdingsNeedsDetails ? { include_details: true } : {}),
-      }),
-      getPortfolioTaxonomyCatalog(portfolioId),
-    ])
-      .then(([holdingsResult, taxonomyResult]) => {
+    getHoldingsWorkspace(portfolioId, {
+      as_of_date: requestedAsOfDate || undefined,
+      ...(holdingsNeedsDetails ? { include_details: true } : {}),
+    })
+      .then((response) => {
         if (cancelled) {
           return
         }
-
-        if (holdingsResult.status === 'fulfilled') {
-          setWorkspace(holdingsResult.value)
-          setError(null)
-        } else {
+        loadedHoldingsInputRef.current = { key: inputKey, full: response.detail_level === 'full' || holdingsNeedsDetails }
+        setWorkspace(response)
+        setError(null)
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          loadedHoldingsInputRef.current = null
           setError(
-            holdingsResult.reason instanceof Error
-              ? holdingsResult.reason.message
+            requestError instanceof Error
+              ? requestError.message
               : 'Failed to load holdings workspace.',
           )
           setWorkspace(null)
-        }
-
-        if (taxonomyResult.status === 'fulfilled') {
-          setTaxonomyCatalog(taxonomyResult.value)
-          setTaxonomyError(null)
-        } else {
-          setTaxonomyCatalog(null)
-          setTaxonomyError(
-            taxonomyResult.reason instanceof Error
-              ? taxonomyResult.reason.message
-              : 'Failed to load current taxonomy catalog.',
-          )
         }
       })
       .finally(() => {
@@ -3691,12 +3727,39 @@ export default function PortfolioHomePage() {
     }
   }, [holdingsNeedsDetails, portfolioId, requestedAsOfDate, riskPolicyRevision])
 
+  useEffect(() => {
+    if (!portfolioId) {
+      setTaxonomyCatalog(null)
+      setTaxonomyError(null)
+      return
+    }
+    let cancelled = false
+    setTaxonomyError(null)
+    getPortfolioTaxonomyCatalog(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setTaxonomyCatalog(response)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          setTaxonomyCatalog(null)
+          setTaxonomyError(
+            requestError instanceof Error ? requestError.message : 'Failed to load current taxonomy catalog.',
+          )
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId, riskPolicyRevision])
+
   return (
     <>
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <PortfolioWorkspaceLayout
         activeSection="Holdings"
-        busy={loading}
+        busy={loading || waitingForTaxonomy}
       >
       <section className="portfolio-detail-surface holdings-surface">
         <div className="holdings-filter-bar">
@@ -3722,7 +3785,10 @@ export default function PortfolioHomePage() {
             />
           </div>
         </div>
-        {loading ? <CalculationStatus /> : null}
+        {loading || waitingForTaxonomy ? <CalculationStatus /> : null}
+        {loading && workspace ? (
+          <div className="portfolio-detail-meta"><span>As Of Date</span>: {workspace.as_of_date}</div>
+        ) : null}
         {error ? <div className="error-state">{error}</div> : null}
         {holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error holdings-view-error" role="alert">
@@ -3746,7 +3812,7 @@ export default function PortfolioHomePage() {
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {!loading && !error && workspace && columnContext ? (
+        {!waitingForTaxonomy && !error && workspace && columnContext ? (
           <>
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">

@@ -25,7 +25,9 @@ def get_registry_instrument(instrument_id: str) -> dict[str, object] | None:
 
 
 def get_registry_instrument_detail(instrument_id: str) -> dict[str, object] | None:
-    return get_registry_instrument(instrument_id)
+    # Valuation and analytics need market observations, not the fund NAV audit
+    # ledger. Keep single-instrument reads on the same contract as batch reads.
+    return get_registry_instrument_details([instrument_id]).get(instrument_id)
 
 
 def get_registry_instrument_details(

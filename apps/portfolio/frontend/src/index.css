@@ -927,7 +927,7 @@ button:disabled {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -1px;
+  bottom: 0;
   height: 3px;
   background: var(--portfolio-accent);
 }
@@ -9901,8 +9901,8 @@ td b {
 }
 
 .performance-window-group {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   column-gap: 12px;
   row-gap: 6px;
@@ -10052,7 +10052,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-metric-table-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
   gap: 18px;
 }
 
@@ -10126,6 +10126,12 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.performance-metric-table-return th:nth-child(n+3),
+.performance-metric-table-return td:nth-child(n+3) {
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .performance-metric-table td.positive-cell {
@@ -10342,7 +10348,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   }
 
   .performance-window-group {
-    grid-template-columns: 1fr;
     width: 100%;
   }
 

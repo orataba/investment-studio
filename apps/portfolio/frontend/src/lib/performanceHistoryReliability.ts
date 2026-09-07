@@ -65,6 +65,8 @@ export function buildPerformanceHistoryReliability(
       ? null
       : summary.annualization_unavailable_reason === 'measurement_period_shorter_than_one_year'
         ? 'Insufficient history: annualized TWR and IRR / MWRR require one full calendar-anniversary year. Period TWR remains the primary return.'
+        : summary.annualization_unavailable_reason === 'operational_carrying_basis_not_annualized'
+          ? 'Annualized TWR and IRR / MWRR require complete fair-value valuations. Additional history alone does not make carrying-basis returns comparable.'
         : 'Annualized TWR and IRR / MWRR are unavailable until a valid measurement period is established. Period TWR remains the primary return.',
   }
 }
