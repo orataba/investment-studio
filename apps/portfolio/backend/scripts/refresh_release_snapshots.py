@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 
 from portfolio_app.db.models import (
     PortfolioCalculationStateModel,
@@ -13,6 +13,8 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
+    PortfolioCalculationUnavailable,
+    _financial_read_generation_in_session,
     _run_portfolio_daily_snapshot_recalculation_synchronously,
     _state_requires_refresh,
 )
@@ -61,43 +63,38 @@ def main(*, recover_interrupted: bool = False) -> int:
             _run_portfolio_daily_snapshot_recalculation_synchronously(str(portfolio_id))
             refreshed.append(str(portfolio_id))
 
+    incomplete: list[str] = []
+    blocked: list[str] = []
     with session_factory() as session:
-        incomplete = list(
-            session.execute(
-                select(
-                    PortfolioRecordModel.portfolio_id,
-                    PortfolioCalculationStateModel.daily_snapshot_status,
-                    PortfolioCalculationStateModel.error_message,
+        for portfolio_id in portfolio_ids:
+            state = session.get(PortfolioCalculationStateModel, portfolio_id)
+            status = state.daily_snapshot_status if state is not None else "missing"
+            error = state.error_message if state is not None else None
+            try:
+                generation = _financial_read_generation_in_session(session, portfolio_id)
+            except PortfolioCalculationUnavailable:
+                generation = None
+            if generation is None:
+                incomplete.append(f"{portfolio_id}:{status}:{error or ''}")
+            elif status == "failed":
+                # A freshly published terminal data gap is readable under the
+                # same strict cutoff contract as the financial API. It does not
+                # make a genuine calculation failure or stale generation ready.
+                blocked.append(
+                    f"{portfolio_id}: reliable_through={state.refreshed_to or 'none'}, "
+                    f"blocked_from={state.dirty_from}; {error}"
                 )
-                .outerjoin(
-                    PortfolioCalculationStateModel,
-                    PortfolioCalculationStateModel.portfolio_id
-                    == PortfolioRecordModel.portfolio_id,
-                )
-                .where(
-                    or_(
-                        PortfolioCalculationStateModel.daily_snapshot_status.is_(
-                            None
-                        ),
-                        PortfolioCalculationStateModel.daily_snapshot_status
-                        != "current",
-                    )
-                )
-                .order_by(PortfolioRecordModel.portfolio_id)
-            ).all()
-        )
+    for detail in blocked:
+        print("Release snapshot valuation blocked: " + detail)
     if incomplete:
-        details = ", ".join(
-            f"{portfolio_id}:{status or 'missing'}:{error or ''}"
-            for portfolio_id, status, error in incomplete
-        )
         raise RuntimeError(
-            "Release snapshot refresh left non-current portfolios: " + details
+            "Release snapshot refresh left unpublished portfolios: " + ", ".join(incomplete)
         )
 
     print(
         "Release snapshot refresh completed: "
-        f"{len(refreshed)} refreshed, {len(portfolio_ids) - len(refreshed)} current, "
+        f"{len(refreshed)} refreshed, {len(portfolio_ids) - len(refreshed)} already published, "
+        f"{len(blocked)} valuation blocked, "
         f"{recovered_count} interrupted recovered."
     )
     return 0

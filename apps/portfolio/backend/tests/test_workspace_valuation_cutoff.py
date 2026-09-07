@@ -4,9 +4,10 @@ from datetime import date
 import pytest
 
 from portfolio_app.api.routes import workspace
-from portfolio_app.db.models import PortfolioCalculationStateModel
+from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store
+from scripts import refresh_release_snapshots
 
 
 @pytest.fixture
@@ -78,3 +79,44 @@ def test_workspace_without_valid_anchor_does_not_use_later_live_quote(blocked_po
     assert portfolio_store.get_portfolio_live_summary(pid)["nav"] is None
     holdings = client.get("/api/workspace/holdings", params={"portfolio_id": pid})
     assert holdings.status_code == 409
+
+
+def test_release_accepts_current_published_prefix_and_reports_its_gap(blocked_portfolio, monkeypatch, capsys):
+    pid = blocked_portfolio(has_priced_prefix=True)
+    monkeypatch.setattr(
+        refresh_release_snapshots, "_run_portfolio_daily_snapshot_recalculation_synchronously",
+        lambda *_args: pytest.fail("Unchanged published data gap must not be retried"),
+    )
+    assert refresh_release_snapshots.main() == 0
+    output = capsys.readouterr().out
+    assert f"{pid}: reliable_through=2026-08-03, blocked_from=2026-08-04" in output
+    assert "gap-equity valuation price" in output
+    assert "1 valuation blocked" in output
+    with get_session_factory()() as session:
+        state = session.get(PortfolioCalculationStateModel, pid)
+        assert state.daily_snapshot_status == "failed"
+        assert state.refreshed_to == date(2026, 8, 3)
+
+
+@pytest.mark.parametrize("unpublished_reason", ["exception", "stale", "source_changed", "old_version"])
+def test_release_rejects_failed_or_outdated_generation(blocked_portfolio, monkeypatch, unpublished_reason):
+    pid = blocked_portfolio(has_priced_prefix=True)
+    with get_session_factory()() as session:
+        state = session.get(PortfolioCalculationStateModel, pid)
+        if unpublished_reason == "exception":
+            state.error_message = "Accounting calculation crashed"
+        elif unpublished_reason == "stale":
+            state.daily_snapshot_status = "stale"
+        elif unpublished_reason == "source_changed":
+            state.source_market_data_updated_at = "2099-01-01T00:00:00Z"
+        else:
+            terminal = session.get(PortfolioDailySnapshotModel, (pid, date(2026, 8, 4)))
+            terminal.snapshot_json = {**terminal.snapshot_json, "calculation_version": "outdated"}
+        session.commit()
+    # A refresh that did not publish current inputs must still fail the release.
+    monkeypatch.setattr(
+        refresh_release_snapshots, "_run_portfolio_daily_snapshot_recalculation_synchronously",
+        lambda *_args: None,
+    )
+    with pytest.raises(RuntimeError, match=f"unpublished portfolios: {pid}"):
+        refresh_release_snapshots.main()

@@ -319,6 +319,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 首次普通证券/基金买入的 `position_effective_date` 当天，若没有可用正式估值，可用当日已确认买入的 `sum(gross_amount) / sum(quantity)` 作为统一初始估值；所有账户与 lots 共用该价格，费用税费不资本化进估值，因此仍完整形成经济损益。正式行情存在时优先使用。该例外不适用于已有持仓加仓、期初余额导入、转入、非现金交付或期权实物交付关联的股票腿（行权价不是市场成交证据），也不能修补非法或歧义的行情身份；
 - 成交基准以 `valuation_basis=transaction_price`、`quote_status=transaction-price` 和来源交易 IDs 披露，不写入共享行情，不伪造正式 quote identity、当日涨跌或市场风险观察。只有日历证明其后没有应更新交易日的合法休市可以沿用；下一交易日必须有正式价，不能再次用历史成交价续算。成交日与确认日不同时以真实份额确认日为此边界；
 - 应更新的价格或必要 FX 缺失时，在首个缺口写入不可用诊断并停止后续日度计算；该缺口不发布 NAV、收益或风险数值，不用最近旧价制造连续净值；
+- 发布重建沿用财务读接口的就绪判定：计算版本与来源水位当前、末条为合法缺口诊断且与计算状态原因一致时，保留已发布的可靠区间并明确输出截止日和缺口原因；程序异常、未完成刷新、过期版本或来源水位变化仍阻止发布，不把数据不足改写为估值完整；
 - 来源日历确认的合法休市 carry 不属于缺口。来源日历未知或不可解析时，不能仅因日期是周末就认定可沿用；
 - benchmark 缺失不影响绝对口径 snapshot 的 `complete` 状态；Performance 的同区间 benchmark 对比要求完整起点锚点与全部组合 eligible return dates，不以缩短后的重叠区间代替用户所选期间；
 - 风控和 period analytics 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。

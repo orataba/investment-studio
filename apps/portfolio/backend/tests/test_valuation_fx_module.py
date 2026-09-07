@@ -121,6 +121,29 @@ def test_direct_fx_boundaries_reuse_local_details_without_mutating_source(monkey
     assert source == unchanged_source
 
 
+@pytest.mark.parametrize("day,source_day,stale", [(22, 21, False), (23, 23, False), (24, 23, True)])
+@pytest.mark.parametrize("base_currency,quote_currency", [("USD", "HKD"), ("HKD", "CNY")])
+def test_fmp_fx_weekend_carry_preserves_real_sunday_quotes_and_rejects_missing_weekdays(
+    day, source_day, stale, base_currency, quote_currency,
+):
+    sources = {
+        "fx-usd-hkd": _fx_detail("fx-usd-hkd", "HKD", [("2026-08-21", 7.8), ("2026-08-23", 7.9)]),
+        "fx-usd-cny": _fx_detail("fx-usd-cny", "CNY", [("2026-08-21", 7.0), ("2026-08-23", 7.1)]),
+    }
+    for source in sources.values():
+        source["source_settings"] = {"source_api_profile": "fmp", "expected_frequency": "daily", "market_calendar": "24/5"}
+    originals = deepcopy(sources)
+    point = valuation_fx.resolve_fx_rate_on(as_of_date=date(2026, 8, day),
+        base_currency=base_currency, quote_currency=quote_currency,
+        direct_instruments={("USD", "HKD"): "fx-usd-hkd", ("USD", "CNY"): "fx-usd-cny"},
+        instrument_detail_cache={}, instrument_detail_loader=sources.get)
+    assert point["as_of_date"] == date(2026, 8, source_day)
+    assert point["stale"] is stale
+    usd_hkd, usd_cny = (7.8, 7.0) if source_day == 21 else (7.9, 7.1)
+    assert point["rate"] == pytest.approx(usd_hkd if base_currency == "USD" else usd_cny / usd_hkd)
+    assert sources == originals
+
+
 def test_missing_fx_boundary_is_cached_but_new_calculation_sees_backfill(monkeypatch):
     source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-04", 7.9)])
     cache = {}

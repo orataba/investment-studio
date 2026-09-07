@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import date
 import json
 from pathlib import Path
 
@@ -174,3 +175,47 @@ def test_all_maintained_fx_masters_refresh_from_fmp(isolated_fx_store: None) -> 
         assert instrument["source_settings"]["source_api_profile"] == "fmp"
 
     assert client.calls == ["USDHKD", "USDCNY", "USDEUR", "USDGBP", "USDCHF"]
+
+
+def test_fmp_fx_calendar_migration_preserves_quotes_and_other_settings(tmp_path, monkeypatch):
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'fx-calendar.db'}"
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL", database_url)
+    config = Config(str(REGISTRY_MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(REGISTRY_MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260907_0033")
+    engine = sa.create_engine(database_url)
+    with engine.begin() as connection:
+        instruments = sa.Table("instrument", sa.MetaData(), autoload_with=connection)
+        quotes = sa.Table("instrument_market_data", sa.MetaData(), autoload_with=connection)
+        connection.execute(instruments.insert().values(instrument_id="unrelated", instrument_name="Unrelated",
+            instrument_type="other", currency="USD", quote_selection_policy_json={},
+            source_settings_json={"source_mode": "api", "source_api_profile": "fmp", "market_calendar": None},
+            refresh_status_json={}, lifecycle_state_json={}, calculation_inputs_updated_at="2026-01-01T00:00:00Z"))
+        for day, value in [(date(2026, 8, 21), 7.8), (date(2026, 8, 23), 7.9)]:
+            connection.execute(quotes.insert().values(instrument_id="fx-usd-hkd", metric_family="fx", quote_basis="spot",
+                as_of_date=day, value=value, currency="HKD", price_unit="rate", price_scale=1,
+                provider="fmp:historical-price-eod:full", status="complete"))
+        before = {row["instrument_id"]: dict(row) for row in connection.execute(sa.select(instruments)).mappings()}
+        original_quotes = list(connection.execute(sa.select(quotes)).mappings())
+
+    command.upgrade(config, "20260907_0034")
+    with engine.connect() as connection:
+        upgraded = {row["instrument_id"]: dict(row) for row in connection.execute(sa.select(instruments)).mappings()}
+        assert upgraded["unrelated"] == before["unrelated"]
+        for iid, old in before.items():
+            if iid == "unrelated":
+                continue
+            assert upgraded[iid]["source_settings_json"] == {**old["source_settings_json"], "market_calendar": "24/5"}
+            assert upgraded[iid]["calculation_inputs_updated_at"] > old["calculation_inputs_updated_at"]
+            assert {key: value for key, value in upgraded[iid].items() if key not in {"source_settings_json", "calculation_inputs_updated_at"}} == {
+                key: value for key, value in old.items() if key not in {"source_settings_json", "calculation_inputs_updated_at"}}
+        assert list(connection.execute(sa.select(quotes)).mappings()) == original_quotes
+
+    command.downgrade(config, "20260907_0033")
+    with engine.connect() as connection:
+        restored = {row["instrument_id"]: dict(row) for row in connection.execute(sa.select(instruments)).mappings()}
+        for iid in before:
+            assert restored[iid]["source_settings_json"] == before[iid]["source_settings_json"]
+            if iid != "unrelated":
+                assert restored[iid]["calculation_inputs_updated_at"] > upgraded[iid]["calculation_inputs_updated_at"]
+        assert list(connection.execute(sa.select(quotes)).mappings()) == original_quotes

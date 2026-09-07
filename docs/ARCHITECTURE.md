@@ -206,6 +206,8 @@ master currency，value 必须有限且大于零，status 必须 canonical；FX 
 pair id、`fx/spot` identity 与 pair quote currency。消费者不得用 USD/base currency、另一币种
 序列或本地旧行情替代不合格的 canonical observation。
 
+项目维护的五个 FMP 外汇源使用 `24/5` 日历：周一至周五应有日频观察，缺少工作日仍阻止严格估值；周末可沿用最近有效观察，FMP 实际提供的周末报价仍按原日期读取。该日历是外汇日频可用性约定，不套用股票交易所或单一地区的假期，也不生成或补齐报价。
+
 Instrument Data 的 `quote_selection_policy` 必须显式持久化五个非空 role；shared store 读取、更新和
 各消费者都不得动态补默认 role。类型默认 policy 仅是新建 instrument 时完整写入的领域规则。
 

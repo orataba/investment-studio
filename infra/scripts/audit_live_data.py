@@ -30,7 +30,7 @@ from investment_studio_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_data": "20260907_0033",
+    "instrument_data": "20260907_0034",
     "data_ingestion": "20260904_0009",
     "portfolio": "20260906_0060",
     "watchlist": "20260905_0054",
@@ -2767,41 +2767,51 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _scalar(
                     cursor,
                     """
-                    WITH holdings AS (
+                    WITH snapshots AS (
+                        SELECT snapshot.*,
+                            (
+                                snapshot.nav IS NULL
+                                AND coalesce(snapshot.valuation_coverage_state, '') = 'unavailable'
+                                AND nullif(snapshot.snapshot_json ->> 'valuation_blocked_reason', '')
+                                    IS NOT NULL
+                            ) AS valuation_blocked
+                        FROM portfolio.portfolio_daily_snapshot snapshot
+                    ), holdings AS (
                         SELECT
                             portfolio_id,
                             as_of_date,
-                            sum(market_value_base)::numeric AS market_value,
-                            sum(
+                            CAST(sum(market_value_base) AS numeric) AS market_value,
+                            CAST(sum(
                                 CASE
                                     WHEN instrument_id LIKE 'pending:%'
                                     THEN market_value_base
                                     ELSE 0
                                 END
-                            )::numeric AS materialized_pending_settlement
+                            ) AS numeric) AS materialized_pending_settlement
                         FROM portfolio.portfolio_daily_holding_snapshot
                         GROUP BY portfolio_id, as_of_date
                     )
                     SELECT greatest(
                         coalesce(max(abs(
                             coalesce(holdings.market_value, 0)
-                            - snapshot.nav::numeric
+                            - CAST(snapshot.nav AS numeric)
                         )) FILTER (
                             WHERE snapshot.valuation_coverage_state = 'complete'
                         ), 0),
                         coalesce(max(abs(
                             coalesce(holdings.materialized_pending_settlement, 0)
-                            - (snapshot.snapshot_json ->> 'pending_settlement')::numeric
+                            - CAST(snapshot.snapshot_json ->> 'pending_settlement' AS numeric)
                         )), 0),
                         CASE WHEN count(*) FILTER (
-                            WHERE (
-                                snapshot.valuation_coverage_state = 'complete'
-                                AND snapshot.nav IS NULL
-                            )
-                               OR snapshot.snapshot_json ->> 'pending_settlement' IS NULL
+                            WHERE (snapshot.nav IS NULL AND NOT snapshot.valuation_blocked)
+                               OR (snapshot.valuation_blocked AND holdings.portfolio_id IS NOT NULL)
+                               OR (
+                                   NOT snapshot.valuation_blocked
+                                   AND snapshot.snapshot_json ->> 'pending_settlement' IS NULL
+                               )
                         ) > 0 THEN 1 ELSE 0 END
                     )
-                    FROM portfolio.portfolio_daily_snapshot snapshot
+                    FROM snapshots snapshot
                     LEFT JOIN holdings USING (portfolio_id, as_of_date)
                     """,
                 )
@@ -2816,7 +2826,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     detail=(
                         "Every completely valued NAV must equal all materialized holding "
                         "value, and pending holding rows must reconcile to the snapshot "
-                        "pending-settlement total."
+                        "pending-settlement total. A terminal valuation-blocked marker "
+                        "may omit the pending total when it has neither NAV nor "
+                        "materialized holdings."
                     ),
                 )
             )

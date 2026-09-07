@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import sqlite3
 import sys
 from types import ModuleType
 
@@ -46,7 +47,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_data": "20260907_0033",
+        "instrument_data": "20260907_0034",
         "data_ingestion": "20260904_0009",
         "portfolio": "20260906_0060",
         "watchlist": "20260905_0054",
@@ -451,6 +452,95 @@ def test_twr_audit_cte_projects_daily_twr(
     )
     assert "taxonomy_node_id = '__root__'" in incomplete_configuration_query
     assert "taxonomy_node_id = '__unassigned__'" in incomplete_configuration_query
+
+
+@pytest.mark.parametrize(
+    ("nav", "coverage", "payload", "holdings", "expected_error"),
+    [
+        (100, "complete", {"pending_settlement": 0}, [("equity", 100)], 0),
+        (100, "complete", {"pending_settlement": 10}, [("equity", 90), ("pending:cash", 10)], 0),
+        (None, "unavailable", {"valuation_blocked_reason": "Required market data missing: fund valuation price"}, [], 0),
+        (100, "complete", {}, [("equity", 100)], 1),
+        (100, "complete", {"pending_settlement": 0}, [("equity", 90)], 10),
+        (100, "complete", {"pending_settlement": 10}, [("equity", 100)], 10),
+        (None, "complete", {"pending_settlement": 0}, [], 1),
+        (None, "unavailable", {"pending_settlement": 0}, [], 1),
+        (None, "unavailable", {"valuation_blocked_reason": "Required market data missing: fund valuation price"}, [("equity", 0)], 1),
+    ],
+    ids=[
+        "valued", "pending-reconciled", "terminal-marker", "missing-pending",
+        "nav-imbalance", "pending-imbalance", "complete-null-nav",
+        "unexplained-null-nav", "terminal-with-holdings",
+    ],
+)
+def test_nav_audit_preserves_reconciliation_around_terminal_markers(
+    audit_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    nav: float | None,
+    coverage: str,
+    payload: dict[str, object],
+    holdings: list[tuple[str, float]],
+    expected_error: float,
+) -> None:
+    profile = audit_module.SchemaProfile(
+        family="flat-table", status="supported", versions={}, reason="test", capabilities={}
+    )
+
+    class FakeContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return self
+
+    monkeypatch.setattr(audit_module.psycopg, "connect", lambda *_args, **_kwargs: FakeContext())
+    monkeypatch.setattr(audit_module, "_begin_read_only", lambda _cursor: None)
+    monkeypatch.setattr(audit_module, "_detect_schema_profile", lambda _cursor: profile)
+    monkeypatch.setattr(audit_module, "_column_exists", lambda *_args, **_kwargs: False)
+
+    # Execute the production reconciliation query over a reliable prefix and
+    # its following row. SQLite supports the SQL/JSON used here; only GREATEST
+    # needs registration, leaving the accounting predicates unchanged.
+    with sqlite3.connect(":memory:") as database:
+        database.create_function("greatest", -1, max)
+        database.execute("ATTACH DATABASE ':memory:' AS portfolio")
+        database.executescript("""
+            CREATE TABLE portfolio.portfolio_daily_snapshot (
+                portfolio_id TEXT, as_of_date TEXT, nav NUMERIC,
+                valuation_coverage_state TEXT, snapshot_json TEXT
+            );
+            CREATE TABLE portfolio.portfolio_daily_holding_snapshot (
+                portfolio_id TEXT, as_of_date TEXT, instrument_id TEXT,
+                market_value_base NUMERIC
+            );
+        """)
+        database.executemany(
+            "INSERT INTO portfolio.portfolio_daily_snapshot VALUES (?, ?, ?, ?, ?)",
+            [
+                ("p", "2026-08-03", 100, "complete", '{"pending_settlement":0}'),
+                ("p", "2026-08-04", nav, coverage, json.dumps(payload)),
+            ],
+        )
+        database.executemany(
+            "INSERT INTO portfolio.portfolio_daily_holding_snapshot VALUES (?, ?, ?, ?)",
+            [("p", "2026-08-03", "equity", 100)]
+            + [("p", "2026-08-04", instrument_id, value) for instrument_id, value in holdings],
+        )
+
+        def run_nav_query(_cursor, query: str):
+            if "materialized_pending_settlement" in query:
+                return database.execute(query).fetchone()[0]
+            return 0
+
+        monkeypatch.setattr(audit_module, "_scalar", run_nav_query)
+        checks = audit_module._run_flat_table_audit("postgresql://localhost/audit_test")
+
+    reconciliation = next(check for check in checks if check.name == "portfolio_nav_reconciliation")
+    assert reconciliation.value == expected_error
+    assert reconciliation.status == ("pass" if expected_error == 0 else "fail")
 
 
 def test_cli_requires_explicit_database_configuration(
