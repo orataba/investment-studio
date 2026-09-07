@@ -82,7 +82,10 @@ def _objects(connection, schema):
     return connection.execute(sa.text(
         "SELECT c.oid, c.relname, c.relacl::text FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = :schema AND c.relname NOT LIKE '%instrument_reference_snapshot%' ORDER BY c.oid"
+        # Reference storage was introduced after the schema rename under test;
+        # its own downgrades intentionally remove and recreate these objects.
+        "WHERE n.nspname = :schema AND c.relname NOT LIKE '%instrument_reference_snapshot%' "
+        "AND c.relname NOT LIKE '%reference_observation%' ORDER BY c.oid"
     ), {"schema": schema}).all()
 
 

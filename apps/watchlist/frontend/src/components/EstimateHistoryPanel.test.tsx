@@ -2,6 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import EstimateHistoryPanel from './EstimateHistoryPanel'
+import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 
 const mocks = vi.hoisted(() => ({ reference: vi.fn(), evidence: vi.fn() }))
 vi.mock('../lib/api', () => ({ getInstrumentReferenceData: mocks.reference }))
@@ -45,4 +46,28 @@ it('preserves the supported company estimate baseline', async () => {
   expect(screen.getByText('73 constituent company records retained.')).toBeTruthy()
   expect(screen.getByText(/Current collection/).textContent).toContain('Collection history begins')
   expect(screen.getByText(/Each data collection is retained/)).toBeTruthy()
+})
+
+it('translates collected estimate limitations while preserving original research text', async () => {
+  document.cookie = 'investment_studio_language=en; path=/'
+  const gaps = [
+    'FMP预期数据未提供币种，不能用股票报价币种代替。',
+    '至少一侧预期币种未确认，数值差异仅作待核实线索。',
+    '两次预期币种不同，不能直接计算上修或下修。',
+    '前次无有效分析师覆盖，新增覆盖不等于预测上修。',
+    '缺少明确的源记录采集时间，无法确定观测先后。',
+    '部分源记录采集时间尚未推进，重复读取不是新的预期观测。',
+    '两次预期数据来源口径不同，变动尚未核实。',
+    '部分公司缺少当前ETF权重，权重覆盖不完整。',
+    '当前快照没有可用的公司预期。',
+  ]
+  mocks.evidence.mockResolvedValue({ ...emptyEvidence, supported: true, status: 'limited', gaps })
+  render(<LanguageProvider><EstimateHistoryPanel instrumentId="xlk" language="en" /><p translate="no">{gaps[1]}</p></LanguageProvider>)
+  await waitFor(() => {
+    const rendered = screen.getAllByRole('listitem')
+    expect(rendered).toHaveLength(gaps.length)
+    expect(rendered.every((item) => !/[\u3400-\u9fff]/.test(item.textContent || ''))).toBe(true)
+  })
+  expect(screen.getByText('Currency is unverified in at least one observation; numerical differences are only leads to verify.')).toBeTruthy()
+  expect(screen.getByText(gaps[1], { selector: 'p[translate="no"]' })).toBeTruthy()
 })
