@@ -47,10 +47,11 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
         mcp.read_risk_instrument("outside")
 
 
-def test_conversation_context_is_unchanged_and_cannot_read_risk_scope(monkeypatch):
+def test_conversation_is_preserved_and_cannot_read_risk_scope(monkeypatch):
     context = {"conversation": [{"body": "PM观点"}]}
     monkeypatch.setattr(mcp, "request", lambda _: context)
-    assert mcp.read_research_context() is context
+    assert mcp.read_research_context()["conversation"] == [{"body": "PM观点"}]
+    assert context == {"conversation": [{"body": "PM观点"}]}
     with pytest.raises(ValueError, match="本次风控范围"):
         mcp.read_risk_instrument("asset-0")
     with pytest.raises(ValueError, match="本次风控范围"):
