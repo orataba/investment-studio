@@ -181,12 +181,18 @@ def complete_entry(entry_id: str, request: CompletionInput, session: Session = D
 
 @router.post("/research/topics/{topic_id}/files")
 async def upload_material(topic_id: str, file: UploadFile = File(...), session: Session = Depends(get_db_session)):
+    topic = require(session, ResearchTopic, topic_id)
+    return dump(await _save_uploaded_material(topic, file, session))
+
+
+async def _save_uploaded_material(topic: ResearchTopic, file: UploadFile, session: Session,
+                                  *, title: str | None = None, metadata: dict | None = None):
+    """Save a file after the owning conversation or dossier route resolves its topic."""
     from watchlist_app.api.routes.funds import _persist_uploaded_document, _safe_file_segment
     from watchlist_app.core.settings import get_settings
-    topic = require(session, ResearchTopic, topic_id)
     entry_id = uuid4().hex
     name = _safe_file_segment(file.filename, fallback="document")
-    folder = get_settings().document_storage_root / "research" / topic_id
+    folder = get_settings().document_storage_root / "research" / topic.topic_id
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{entry_id}-{name}"
     await _persist_uploaded_document(file, path)
@@ -200,8 +206,9 @@ async def upload_material(topic_id: str, file: UploadFile = File(...), session: 
             reader = PdfReader(path)
             text = "\n".join(f"[第 {i+1} 页]\n{page.extract_text() or ''}" for i, page in enumerate(reader.pages))[:60000]
             extraction = "PDF 文字层，最多前 60000 字符；扫描件需补充文字" if text.strip() else extraction
-        record = ResearchEntry(entry_id=entry_id, topic_id=topic_id, kind="evidence", title=name, body=text,
-            source=f"/api/research/entries/{entry_id}/file", status="recorded", context_json={"file_name": name, "extraction": extraction})
+        record = ResearchEntry(entry_id=entry_id, topic_id=topic.topic_id, kind="evidence", title=(title or "").strip() or name, body=text,
+            source=f"/api/research/entries/{entry_id}/file", status="recorded",
+            context_json={**(metadata or {}), "file_name": name, "extraction": extraction})
         topic.updated_at = now()
         session.add(record)
         session.commit()
@@ -212,7 +219,7 @@ async def upload_material(topic_id: str, file: UploadFile = File(...), session: 
         session.rollback()
         path.unlink(missing_ok=True)
         raise
-    return dump(record)
+    return record
 
 
 @router.get("/research/entries/{entry_id}/file")

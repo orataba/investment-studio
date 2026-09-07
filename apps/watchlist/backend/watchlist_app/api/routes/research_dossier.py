@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_db_session
 from watchlist_app.services import research_dossier as service
 from watchlist_app.services.read_models import serialize_payload
@@ -64,15 +63,10 @@ def add_material(instrument_id: str, request: MaterialInput, session: Session = 
 async def upload_material(instrument_id: str, file: UploadFile = File(...), title: str | None = Form(None),
                          source: str | None = Form(None), published_at: AwareDatetime | date | None = Form(None),
                          effective_date: date | None = Form(None), session: Session = Depends(get_db_session)):
-    from watchlist_app.api.routes.workbench import upload_material as upload_topic_material
+    from watchlist_app.api.routes.workbench import _save_uploaded_material
     require_instrument(session, instrument_id)
     topic = service.dossier_topic(session, instrument_id)
-    uploaded = await upload_topic_material(topic.topic_id, file=file, session=session)
-    entry = session.get(ResearchEntry, uploaded["entry_id"])
-    if title and title.strip():
-        entry.title = title.strip()
     # Keep source as the original-file download link; preserve the supplied attribution separately.
-    entry.context_json = {**entry.context_json, **serialize_payload({"source": source,
-        "published_at": published_at, "effective_date": effective_date})}
-    session.commit()
+    entry = await _save_uploaded_material(topic, file, session, title=title,
+        metadata=serialize_payload({"source": source, "published_at": published_at, "effective_date": effective_date}))
     return service.material_record(entry, instrument_id)

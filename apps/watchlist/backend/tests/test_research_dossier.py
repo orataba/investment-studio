@@ -219,7 +219,7 @@ def test_fund_directory_reads_real_owned_files_and_keeps_unread_records_explicit
 def test_file_upload_reuses_original_download_and_extracts_material_body(dossier_client):
     response = dossier_client.post(url("public") + "/files", files={"file": ("facts.txt", "公告原文".encode(), "text/plain")},
         data={"title": "持有人说明", "source": "基金管理人", "published_at": "2026-08-02", "effective_date": "2026-06-30"})
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     material = response.json()
     assert material["body"] == "公告原文" and material["title"] == "持有人说明"
     assert material["source"] == f"/api/research/entries/{material['entry_id']}/file"

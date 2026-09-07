@@ -25,6 +25,7 @@ def test_generic_conversation_routes_cannot_mutate_managed_research_topics(clien
         client.put(f"/api/research/topics/{topic_id}", json={"title": "重写为另一标的", "instrument_ids": []}),
         client.post(f"/api/research/topics/{topic_id}/entries", json={"kind": "conclusion", "title": "替换结论", "body": "错误归属"}),
         client.post(f"/api/research/topics/{topic_id}/analysis", json={"question": "普通对话不应进入系统专题"}),
+        client.post(f"/api/research/topics/{topic_id}/files", files={"file": ("facts.txt", b"outside owning route", "text/plain")}),
         client.put("/api/research/entries/managed-note/completion", json={"completed": True}),
     ]
     assert all(response.status_code == 422 for response in responses)
@@ -32,6 +33,7 @@ def test_generic_conversation_routes_cannot_mutate_managed_research_topics(clien
         topic = session.get(ResearchTopic, topic_id)
         assert topic.instrument_ids == ["xlk"] and topic.title == "系统研究记录" and not topic.conclusion
         assert session.get(ResearchEntry, "managed-note").completed_at is None
+        assert len(list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)))) == 1
 
 
 def test_topics_share_evidence_keep_conclusion_history_and_complete_followups(client):
