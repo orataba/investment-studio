@@ -11,6 +11,53 @@ from portfolio_app.services import daily_snapshots, performance, portfolio_store
 from portfolio_app.services.period_calculation_state import PeriodCalculationInputs, load_period_calculation_inputs
 
 
+@pytest.mark.parametrize("transaction_type", [None, "deposit", "opening_balance"])
+def test_calculation_handles_empty_and_single_boundary_portfolios(raw_client, transaction_type):
+    portfolio_id = "one-boundary"
+    day = date(2026, 8, 25)
+    portfolio = dict(
+        portfolio_id=portfolio_id, portfolio_name="One boundary", base_currency="USD",
+        inception_date=day.isoformat() if transaction_type == "opening_balance" else "2026-01-01",
+        as_of_date=day.isoformat(),
+        valuation_timezone="Asia/Shanghai", valuation_cutoff_policy="latest_complete_eod", sort_order=0,
+    )
+    accounts = [dict(
+        portfolio_id=portfolio_id, account_id="cash", account_name="Cash",
+        account_type="deposit_account", account_category="cash", currency="USD",
+        institution="Test", opened_at="2026-01-01", status="active",
+    )]
+    transactions = [] if transaction_type is None else [dict(
+        transaction_id="txn-0001", transaction_sequence=1, portfolio_id=portfolio_id,
+        transaction_type=transaction_type, trade_date=day.isoformat(), settlement_date=day.isoformat(),
+        account_id="cash", settlement_cash_account_id=None, instrument_id=None, instrument_ref=None,
+        quantity=None, price=None, gross_amount=100, fees=0, taxes=0, currency="USD",
+        created_at="2026-08-25T08:00:00Z",
+    )]
+    portfolio_store.reset_store(dict(
+        portfolios=[portfolio], accounts=accounts, transactions=transactions,
+        taxonomies=[], taxonomy_nodes=[], taxonomy_assignments=[],
+    ))
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id, end_date=day)
+    assert len(daily_snapshots.list_materialized_daily_snapshots(portfolio_id)) == 1
+
+    response = raw_client.get(f"/api/portfolios/{portfolio_id}/performance/calculation")
+    assert response.status_code == 200, response.text
+    report = response.json()
+    summary = report["summary"]
+    if transaction_type is None:
+        assert summary["coverage_state"] == "unavailable"
+        assert summary["effective_start_date"] is summary["effective_end_date"] is None
+        for field in ("initial_value", "final_value", "delta", "capital_gains", "earnings"):
+            assert summary[field] is None
+        assert report["lines"] == []
+    else:
+        assert summary["coverage_state"] == "complete"
+        assert summary["initial_value"] == (0 if transaction_type == "deposit" else 100)
+        assert summary["final_value"] == 100
+        assert summary["net_external_inflow"] == (100 if transaction_type == "deposit" else 0)
+        assert summary["delta"] == 0
+
+
 @pytest.mark.parametrize("start", [None, date(2026, 4, 8), date(2026, 4, 12)])
 def test_published_calculation_inputs_match_explicit_offline_calculation(start, monkeypatch):
     portfolio_id = "investment-studio"

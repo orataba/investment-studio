@@ -4479,7 +4479,7 @@ def build_period_calculation_report(
             "lines": [],
         }
 
-    if window is None:
+    if window is None or not transactions:
         return unavailable_report()
 
     resolved_start_date, resolved_end_date = window

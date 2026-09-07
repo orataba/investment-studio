@@ -147,6 +147,7 @@ def compare_estimate_snapshots(iid, current, previous=None):
     if not latest:
         gaps.add("current_estimates_missing")
     return {"instrument_id": iid, "supported": True, "provider": "FMP",
+        "company_symbols": sorted(set(companies) | set(old_companies)),
         "source_id": f"estimates:{current.observation_id}:{iid}", "source_type": "analyst_estimate_changes",
         "title": f"FMP · {iid.upper()}成分公司预期观测对照",
         "status": "baseline" if previous is None else "comparable" if any(row["comparable_company_count"] for row in metrics) else "limited",
