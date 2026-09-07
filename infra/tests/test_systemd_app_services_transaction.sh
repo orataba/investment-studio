@@ -173,6 +173,8 @@ MANAGED_UNITS=(
 ORIGINAL_ACTIVE_UNITS=(
   investment-studio-home-api.service
   investment-studio-market-data-refresh.timer
+  investment-studio-us-reference-data-refresh.timer
+  investment-studio-us-reference-data-refresh.service
 )
 ORIGINAL_ENABLED_UNITS=(
   investment-studio-home-api.service
@@ -234,7 +236,7 @@ SUCCESS_CASE="$TEST_ROOT/success"
 prepare_case "$SUCCESS_CASE"
 run_case "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 diff -u \
-  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer | sort) \
+  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service | sort) \
   <(sort "$SUCCESS_CASE/active")
 diff -u \
   <(printf '%s\n' "${MANAGED_UNITS[@]}" | sort) \

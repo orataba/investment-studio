@@ -89,7 +89,7 @@ mutation_started="false"
 
 stop_all_managed_services() {
   local service
-  for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web market-data-refresh; do
+  for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
     launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
   done
 }

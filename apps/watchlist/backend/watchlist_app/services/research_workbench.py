@@ -65,7 +65,7 @@ ANALYST_FOCUS = {
 }
 
 
-def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True):
+def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None):
     from watchlist_app.services.shared_instrument_registry import get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
     from watchlist_app.services.sector_research import latest_reviews
@@ -74,9 +74,9 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
     for asset in assets:
         iid = asset["instrument_id"]
         asset["analyst_focus"] = ANALYST_FOCUS.get(asset["instrument_type"])
-        asset["reference_data"] = get_shared_reference_data(iid)
+        asset["reference_data"] = get_shared_reference_data(iid, as_of=as_of)
         if asset["instrument_type"] == "etf":
-            asset["analyst_estimate_history"] = read_estimate_evidence(session, iid)
+            asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of)
         for name, model in (("summary", InstrumentSummaryReadModel), ("performance", InstrumentPerformanceReadModel),
                             ("exposure", InstrumentExposureReadModel), ("holdings", InstrumentExposureHoldingsReadModel)):
             row = session.get(model, iid)

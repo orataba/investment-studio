@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_data": "20260904_0032",
+        "instrument_data": "20260907_0033",
         "data_ingestion": "20260904_0009",
         "portfolio": "20260906_0060",
         "watchlist": "20260905_0054",

@@ -1,8 +1,54 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime
+
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
+
+from investment_studio_instrument_core.db_models import Instrument, InstrumentReferenceObservation, InstrumentReferenceSnapshot, InstrumentRegistryBase
 
 from studio_data.services import instrument_reference
+
+
+@pytest.mark.parametrize("instrument_type,section", [("etf", "holdings"), ("equity", "financials")])
+def test_each_collection_is_retained_without_overwriting_history_and_commit_is_atomic(monkeypatch, instrument_type, section):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as session:
+        session.add(Instrument(instrument_id="test", instrument_name="Reference test", instrument_type=instrument_type,
+                               currency="USD", exchange_code="XNYS", quote_selection_policy_json={}))
+        session.commit()
+    monkeypatch.setattr(instrument_reference, "get_session_factory", lambda: factory)
+    record = {"instrument_id": "test", "instrument_type": instrument_type, "provider": "fmp", "provider_symbol": "TEST",
+              "fetched_at": "2026-09-05T08:00:00Z", "source": {"provider_updated_at": "2026-09-04"},
+              "sections": {section: [{"value": 100, "date": "2026-06-30", "collected_at": "2026-09-05T07:59:00Z"}]},
+              "section_errors": {}}
+    first = deepcopy(record)
+    monkeypatch.setattr(instrument_reference, "get_instrument_reference_data", lambda _: deepcopy(record))
+    instrument_reference.refresh_instrument_reference_data("test")
+    record["fetched_at"] = "2026-09-06T08:00:00Z"
+    record["sections"][section][0].update(value=110, collected_at="2026-09-06T07:59:00Z")
+    second = deepcopy(record)
+    instrument_reference.refresh_instrument_reference_data("test")
+    with factory() as session:
+        observations = list(session.scalars(select(InstrumentReferenceObservation).order_by(InstrumentReferenceObservation.collected_at)))
+        assert [row.value_json for row in observations] == [first, second]
+        assert observations[0].collected_at == datetime(2026, 9, 5, 8)
+        assert session.get(InstrumentReferenceSnapshot, "test").value_json == second
+        previous_id = observations[0].observation_id
+    # If retaining an observation fails, its latest view must not advance either.
+    monkeypatch.setattr(instrument_reference, "uuid4", lambda: previous_id)
+    record["fetched_at"] = "2026-09-07T08:00:00Z"
+    record["sections"][section][0]["value"] = 999
+    with pytest.raises(IntegrityError):
+        instrument_reference.refresh_instrument_reference_data("test")
+    with factory() as session:
+        assert session.get(InstrumentReferenceSnapshot, "test").value_json == second
+        assert [row.value_json for row in session.scalars(select(InstrumentReferenceObservation).order_by(InstrumentReferenceObservation.collected_at))] == [first, second]
 
 
 def _instrument(

@@ -271,6 +271,8 @@ export const systemMessages: Record<string, string> = {
   "Next observation": "下一步观察",
   "FMP estimate snapshot comparison": "FMP预期快照比较",
   "Snapshot read: previous": "快照读取：前次",
+  "Snapshot collection: previous": "快照采集：前次",
+  "Some estimate currencies are inferred from company financial statements, with sources retained. The estimates endpoint does not disclose currency directly.": "部分预期币种按公司财报币种推定，来源已留存；预期接口本身未直接披露币种。",
   "These are observed changes between two source collections. The exact revision or publication time is unknown; the fiscal period is the forecast target.": "以下为两次源数据采集之间的观测变化，不能确定精确调整或发布日期；财期是预测对象。",
   "Same-period estimate changes": "同财期预期变动",
   "Fiscal period ending": "财期截至",

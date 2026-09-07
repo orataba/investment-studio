@@ -19,6 +19,11 @@ services=(
   watchlist-web
   portfolio-web
   market-data-refresh
+  cn-market-data-refresh
+  hk-market-data-refresh
+  us-market-data-refresh
+  cn-hk-reference-data-refresh
+  us-reference-data-refresh
 )
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -42,7 +47,7 @@ is_known_service() {
 }
 
 is_scheduled_service() {
-  [[ "$1" == "market-data-refresh" ]]
+  [[ "$1" == *-data-refresh ]]
 }
 
 stop_services() {

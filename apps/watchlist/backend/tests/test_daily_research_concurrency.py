@@ -14,6 +14,7 @@ def daily_scope(client, monkeypatch, *, members=6):
             instrument_name=iid, is_active=True, metadata_json={}) for iid in ids)
         session.commit()
     monkeypatch.setattr(service, "daily_review_groups", lambda session: [[iid] for iid in ids])
+    monkeypatch.setattr(service, "_research_market", lambda session, iid: "cn")
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": [{"portfolio_id": "held"}]})
     monkeypatch.setattr(risk_officer, "read_snapshot", lambda session, **scope: {"instrument_ids": ids[:members]})
     return ids

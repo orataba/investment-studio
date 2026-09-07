@@ -2,6 +2,19 @@ from __future__ import annotations
 
 
 LISTED_INSTRUMENT_TYPES = frozenset({"equity", "etf"})
+SECTOR_ETF_TICKERS = frozenset({"XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"})
+
+MARKET_SCOPE_CALENDARS = {
+    "cn": ("XSHG", "XSHE"),
+    "hk": ("XHKG",),
+    "us": ("XNAS", "XNYS", "XASE", "ARCX", "BATS"),
+}
+MARKET_SCOPE_TIMEZONES = {"cn": "Asia/Shanghai", "hk": "Asia/Hong_Kong", "us": "America/New_York"}
+
+
+def market_scope_for_calendar(calendar: str | None) -> str | None:
+    return next((scope for scope, calendars in MARKET_SCOPE_CALENDARS.items()
+                 if calendar in calendars), None)
 
 # Canonical MICs used by the shared Registry. Provider-specific exchange names
 # are translated at the Platform boundary before an instrument is created.

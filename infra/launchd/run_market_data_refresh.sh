@@ -12,12 +12,20 @@ PYTHON_BIN="$2"
 LOCK_FILE="$3"
 EXTERNAL_ENV_ROOT="$4"
 STATE_DIR="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}"
-SUMMARY_FILE="$STATE_DIR/market-data-refresh-summary.json"
-RUN_STATE_FILE="$STATE_DIR/market-data-refresh-run-state.json"
 BACKEND_ROOT="$PROJECT_ROOT/shared-data"
 REFRESH_SCRIPT="$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py"
 AUDIT_SCRIPT="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
-CHANNEL="${INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL:-all}"
+CHANNEL="${INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL:-settlement}"
+MARKET_SCOPE="${INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE:-}"
+REFRESH_NAME=market-data-refresh
+if [[ "$CHANNEL" == "reference" ]]; then
+  REFRESH_NAME=reference-data-refresh
+fi
+if [[ -n "$MARKET_SCOPE" ]]; then
+  REFRESH_NAME="$MARKET_SCOPE-$REFRESH_NAME"
+fi
+SUMMARY_FILE="$STATE_DIR/$REFRESH_NAME-summary.json"
+RUN_STATE_FILE="$STATE_DIR/$REFRESH_NAME-run-state.json"
 RETRY_FAILED_ATTEMPTS="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_FAILED_ATTEMPTS:-2}"
 FAIL_ON_ITEM_FAILURE="${INVESTMENT_STUDIO_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE:-true}"
 PRIMARY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR:-21}"
@@ -26,6 +34,7 @@ RETRY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR:-23}"
 RETRY_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE:-0}"
 RUN_KIND="${INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND:-auto}"
 NOW_OVERRIDE="${INVESTMENT_STUDIO_LOCAL_REFRESH_NOW:-}"
+SCHEDULE_TIMEZONE="${INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE:-}"
 
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 investment_studio_reject_repository_env_files "$PROJECT_ROOT"
@@ -60,7 +69,7 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 1
 fi
 case "$CHANNEL" in
-  all|email|tushare|fmp|projection) ;;
+  all|email|tushare|fmp|projection|reference|market|settlement) ;;
   *)
     echo "Invalid refresh channel: $CHANNEL" >&2
     exit 64
@@ -120,11 +129,12 @@ export INVESTMENT_STUDIO_DATA_WATCHLIST_API_URL=http://127.0.0.1:8000
 export INVESTMENT_STUDIO_DATA_PORTFOLIO_API_URL=http://127.0.0.1:8001
 
 clock_fields="$(
-  "$PYTHON_BIN" - "$NOW_OVERRIDE" <<'PY'
+  "$PYTHON_BIN" - "$NOW_OVERRIDE" "$SCHEDULE_TIMEZONE" <<'PY'
 from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 override = sys.argv[1].strip()
@@ -134,6 +144,8 @@ except ValueError as error:
     raise SystemExit(f"Invalid INVESTMENT_STUDIO_LOCAL_REFRESH_NOW: {error}") from error
 if current.tzinfo is None:
     raise SystemExit("INVESTMENT_STUDIO_LOCAL_REFRESH_NOW must include a UTC offset")
+if sys.argv[2]:
+    current = current.astimezone(ZoneInfo(sys.argv[2]))
 print(
     current.date().isoformat(),
     (current.date() - timedelta(days=1)).isoformat(),
@@ -143,6 +155,20 @@ print(
 PY
 )" || exit 64
 read -r current_date previous_date current_minutes started_at <<<"$clock_fields"
+
+if [[ "$CHANNEL" == "market" && ( "$MARKET_SCOPE" == "hk" || "$MARKET_SCOPE" == "us" ) ]]; then
+  if "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/market_close_schedule.py" \
+    --market-scope "$MARKET_SCOPE" --now "$started_at"; then
+    :
+  else
+    schedule_exit_code=$?
+    [[ $schedule_exit_code -eq 1 ]] && exit 0
+    exit "$schedule_exit_code"
+  fi
+elif [[ -n "$SCHEDULE_TIMEZONE" ]] \
+  && (( current_minutes < primary_minutes || current_minutes >= primary_minutes + 30 )); then
+  exit 0
+fi
 
 scheduled_date="$current_date"
 if [[ "$RUN_KIND" == "auto" ]]; then
@@ -249,17 +275,23 @@ refresh_arguments=(
 if [[ "$FAIL_ON_ITEM_FAILURE" == "true" ]]; then
   refresh_arguments+=(--fail-on-item-failure)
 fi
+if [[ -n "$MARKET_SCOPE" ]]; then
+  refresh_arguments+=(--market-scope "$MARKET_SCOPE")
+fi
 
 cd "$BACKEND_ROOT"
 set +e
 "$PYTHON_BIN" "$REFRESH_SCRIPT" "${refresh_arguments[@]}"
 refresh_exit_code=$?
-"$PYTHON_BIN" "$AUDIT_SCRIPT" --json
-audit_exit_code=$?
+audit_exit_code=""
+if [[ "$CHANNEL" != "reference" ]]; then
+  "$PYTHON_BIN" "$AUDIT_SCRIPT" --json
+  audit_exit_code=$?
+fi
 set -e
 
 completed_at="$("$PYTHON_BIN" -c 'from datetime import datetime; print(datetime.now().astimezone().isoformat())')"
-if [[ $refresh_exit_code -eq 0 && $audit_exit_code -eq 0 ]]; then
+if [[ $refresh_exit_code -eq 0 && ${audit_exit_code:-0} -eq 0 ]]; then
   write_run_state "succeeded" "$completed_at" "$refresh_exit_code" "$audit_exit_code"
   exit 0
 fi

@@ -43,7 +43,7 @@ prepare_case() {
 
   for service in \
     home-api watchlist-api portfolio-api \
-    home-web watchlist-web portfolio-web market-data-refresh; do
+    home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
     printf 'old-%s\n' "$service" > "$plist_root/test.investment-studio.$service.plist"
     chmod 600 "$plist_root/test.investment-studio.$service.plist"
   done
@@ -198,7 +198,7 @@ assert_old_plists_restored() {
   local service
   for service in \
     home-api watchlist-api portfolio-api \
-    home-web watchlist-web portfolio-web market-data-refresh; do
+    home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
     [[ "$(cat "$case_root/LaunchAgents/test.investment-studio.$service.plist")" == "old-$service" ]]
   done
 }

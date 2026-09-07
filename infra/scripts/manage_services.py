@@ -15,7 +15,9 @@ GROUPS = {
     "home": ("home-api", "home-web"),
     "investments": (
         "watchlist-api", "watchlist-web", "portfolio-api", "portfolio-web",
-        "market-data-refresh",
+        "market-data-refresh", "cn-market-data-refresh",
+        "hk-market-data-refresh", "us-market-data-refresh",
+        "cn-hk-reference-data-refresh", "us-reference-data-refresh",
     ),
 }
 
@@ -64,7 +66,7 @@ def manage(group: str, action: str) -> None:
                 print(f"{service}: {status}", flush=True)
                 continue
             if action == "restart" and loaded:
-                if service != "market-data-refresh":
+                if not service.endswith("-data-refresh"):
                     run(["launchctl", "kickstart", "-k", target])
                 continue
             if action == "stop" and loaded:
@@ -77,11 +79,13 @@ def manage(group: str, action: str) -> None:
         return
 
     units = [f"investment-studio-{name}.service" for name in services]
-    if "market-data-refresh" in services:
-        timer = "investment-studio-market-data-refresh.timer"
+    for service in services:
+        if not service.endswith("-data-refresh"):
+            continue
+        timer = f"investment-studio-{service}.timer"
         # Starting a group enables its schedule, not an unsolicited data refresh.
         if action in {"start", "restart"}:
-            units.remove("investment-studio-market-data-refresh.service")
+            units.remove(f"investment-studio-{service}.service")
         units.append(timer)
     command = ["systemctl", "--user", "--no-pager", action, *units]
     if os.geteuid() == 0:

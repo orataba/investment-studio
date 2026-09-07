@@ -89,13 +89,13 @@ infra/launchd/status_local_services.sh
 
 ## 6. 恢复后追数
 
-安装器加载每日刷新任务时会根据 durable run state 判断是否需要补跑。若制品数据明显早于当前可用日期，可手工触发同一个受控任务；不要分别调用供应商脚本制造不同刷新口径：
+安装器加载晚间结算任务时会根据 durable run state 判断是否需要补跑；盘后行情和盘前资料任务只注册日历计划。首次上线须先完成项目参考资料采集，再启动研究。若净值数据明显早于当前可用日期，可手工触发同一个受控结算任务：
 
 ```bash
 launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 ```
 
-Linux 使用 systemd timer/service 的对应入口，见 Server Deployment。刷新完成后由 Data 作业通知 Watchlist 和 Portfolio；durable workers 也会主动对账漏通知。
+各市场行情和研究资料的对应任务、时区与手动追数边界见 Local macOS Service；Linux 的六组 timer/service 见 Server Deployment。行情和结算完成后由 Data 作业通知 Watchlist 和 Portfolio；durable workers 也会主动对账漏通知。
 
 ## 7. 验收
 

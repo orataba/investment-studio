@@ -11,6 +11,9 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import exchange_calendars
 from pathlib import Path
 from typing import IO, Iterable, Iterator
 
@@ -32,6 +35,10 @@ from studio_data.services.downstream_notifications import (  # noqa: E402
 )
 from studio_data.services.securities import sync_security_catalogs  # noqa: E402
 from studio_data.services.instrument_reference import refresh_reference_data_batch  # noqa: E402
+from studio_data.services.instrument_store import list_instruments  # noqa: E402
+from investment_studio_instrument_core.listing_contract import (  # noqa: E402
+    MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
+)
 from studio_data.services.market_data_ops import (  # noqa: E402
     rebuild_stale_fund_nav_projections,
     refresh_market_data_batch,
@@ -169,7 +176,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Investment Studio market data without a browser session.")
     parser.add_argument(
         "--channel",
-        choices=("all", "email", "tushare", "fmp", "projection", "reference"),
+        choices=("all", "email", "tushare", "fmp", "projection", "reference", "market", "settlement"),
         default="all",
         help=(
             "Data channel to refresh. all refreshes the local FMP stock and ETF catalogs, "
@@ -177,6 +184,8 @@ def _parse_args() -> argparse.Namespace:
             "reconciliation, and asset reference snapshots."
         ),
     )
+    parser.add_argument("--market-scope", choices=("cn", "hk", "cn-hk", "us"),
+                        help="Limit market/reference updates to the instrument's exchange on a trading day.")
     parser.add_argument("--updated-by", default="scheduler", help="Audit label for refresh_status.")
     parser.add_argument("--full-history", action="store_true", help="Request full history instead of incremental refresh.")
     parser.add_argument("--include-inactive", action="store_true", help="Refresh inactive instruments as well.")
@@ -264,7 +273,28 @@ def _channels(selected_channel: str) -> list[str]:
         return ["fmp_catalog", "fmp"]
     if selected_channel == "projection":
         return ["fund_nav_projection"]
+    if selected_channel == "market":
+        return ["configured"]
+    if selected_channel == "settlement":
+        return ["fmp_catalog", "tushare", "email", "fx", "fund_nav_projection"]
     return [selected_channel]
+
+
+def _market_instrument_ids(scope: str, now: datetime, *, channel: str) -> list[str]:
+    scopes = ("cn", "hk") if scope == "cn-hk" else (scope,)
+    active_scopes = set()
+    for market in scopes:
+        local_day = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market])).date()
+        calendar = exchange_calendars.get_calendar({"cn": "XSHG", "hk": "XHKG", "us": "XNYS"}[market])
+        if calendar.is_session(local_day):
+            active_scopes.add(market)
+    types = {"equity", "etf", "index"}
+    if channel == "reference":
+        types.add("public_fund")
+    return [str(item["instrument_id"]) for item in list_instruments(include_inactive=False)
+            if item["instrument_type"] in types and market_scope_for_calendar(
+                item.get("source_settings", {}).get("market_calendar") or item.get("exchange_code")
+            ) in active_scopes]
 
 
 def _status_counts(results: Iterable[dict[str, object]]) -> dict[str, int]:
@@ -530,6 +560,12 @@ def _run_refresh(
 ) -> tuple[int, dict[str, object]]:
     started_at = started_at or datetime.now().astimezone()
     requested_instrument_ids = _requested_instrument_ids(args.instrument_ids)
+    market_scope = getattr(args, "market_scope", None)
+    if market_scope:
+        if args.channel not in {"market", "reference"}:
+            raise ValueError("--market-scope requires --channel market or reference")
+        market_ids = _market_instrument_ids(market_scope, started_at, channel=args.channel)
+        requested_instrument_ids = [iid for iid in market_ids if not requested_instrument_ids or iid in requested_instrument_ids]
     LOGGER.info(
         "scheduled market data refresh started channel=%s selected_count=%s",
         args.channel,
@@ -541,6 +577,8 @@ def _run_refresh(
     all_updated_ids: list[str] = []
     seen_updated_ids: set[str] = set()
     channels = ["configured"] if requested_instrument_ids and args.channel == "all" else _channels(args.channel)
+    if market_scope and not requested_instrument_ids:
+        channels = []
     if requested_instrument_ids:
         channels = [channel for channel in channels if channel != "fmp_catalog"]
     for channel in channels:
@@ -594,7 +632,14 @@ def _run_refresh(
                     catalog_summary["active_count"],
                 )
             continue
-        if channel == "fund_nav_projection":
+        if channel == "fx":
+            results = _refresh_selected_instruments(
+                channel="configured", instrument_ids=[str(item["instrument_id"])
+                    for item in list_instruments(include_inactive=False) if item["instrument_type"] == "fx"],
+                updated_by=args.updated_by, full_history=args.full_history,
+            )
+            response = {"results": results, "skipped_count": 0}
+        elif channel == "fund_nav_projection":
             response = rebuild_stale_fund_nav_projections(
                 updated_by=args.updated_by,
                 include_inactive=args.include_inactive,
@@ -645,7 +690,7 @@ def _run_refresh(
             )
         else:
             results = _retry_failed_results(
-                channel=channel,
+                channel="configured" if channel == "fx" else channel,
                 results=results,
                 updated_by=args.updated_by,
                 full_history=args.full_history,

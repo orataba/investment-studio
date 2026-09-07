@@ -220,11 +220,16 @@ chmod 700 "$UNIT_OUTPUT_DIR" "$UNIT_BACKUP_DIR"
 touch "$ACTIVE_STATE_FILE" "$ENABLED_STATE_FILE" "$UNIT_PRESENCE_FILE"
 chmod 600 "$ACTIVE_STATE_FILE" "$ENABLED_STATE_FILE" "$UNIT_PRESENCE_FILE"
 
-REFRESH_SERVICE_UNIT="$UNIT_PREFIX-market-data-refresh.service"
-REFRESH_TIMER_UNIT="$UNIT_PREFIX-market-data-refresh.timer"
+REFRESH_SERVICE_UNITS=()
+REFRESH_TIMER_UNITS=()
+for refresh_name in market-data-refresh cn-market-data-refresh hk-market-data-refresh \
+  us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+  REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-$refresh_name.service")
+  REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-$refresh_name.timer")
+done
 WRITER_UNITS=(
-  "$REFRESH_TIMER_UNIT"
-  "$REFRESH_SERVICE_UNIT"
+  "${REFRESH_TIMER_UNITS[@]}"
+  "${REFRESH_SERVICE_UNITS[@]}"
   "${MANAGED_UNITS[@]}"
 )
 
@@ -399,7 +404,7 @@ restore_unit_files_and_enablement() {
 restore_previous_active_units() {
   local unit restore_failed=false
   ensure_writer_units_stopped || return 1
-  for unit in "${MANAGED_UNITS[@]}" "$REFRESH_SERVICE_UNIT" "$REFRESH_TIMER_UNIT"; do
+  for unit in "${MANAGED_UNITS[@]}" "${REFRESH_SERVICE_UNITS[@]}" "${REFRESH_TIMER_UNITS[@]}"; do
     if ! grep -Fxq "$unit" "$ACTIVE_STATE_FILE"; then
       continue
     fi
@@ -429,7 +434,7 @@ publish_staged_units() {
 
 restore_refresh_writer_state() {
   local unit
-  for unit in "$REFRESH_SERVICE_UNIT" "$REFRESH_TIMER_UNIT"; do
+  for unit in "${REFRESH_SERVICE_UNITS[@]}" "${REFRESH_TIMER_UNITS[@]}"; do
     if grep -Fxq "$unit" "$ACTIVE_STATE_FILE"; then
       systemctl --user start "$unit"
     fi

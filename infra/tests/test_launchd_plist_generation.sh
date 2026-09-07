@@ -44,6 +44,11 @@ expected_services = {
     "watchlist-web",
     "portfolio-web",
     "market-data-refresh",
+    "cn-market-data-refresh",
+    "hk-market-data-refresh",
+    "us-market-data-refresh",
+    "cn-hk-reference-data-refresh",
+    "us-reference-data-refresh",
 }
 generated_services = {
     path.name.removeprefix("test.investment-studio.").removesuffix(".plist")
@@ -92,12 +97,43 @@ assert refresh["StandardOutPath"] == f"{log_root}/market-data-refresh.log"
 assert refresh["StandardErrorPath"] == f"{log_root}/market-data-refresh.error.log"
 assert refresh["EnvironmentVariables"] == {
     "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test",
+    "INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL": "settlement",
     "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR": "21",
     "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": "0",
     "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR": "23",
     "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_MINUTE": "0",
 }
 assert refresh_path.stat().st_mode & 0o777 == 0o600
+
+for scope, channel, hour, minute in (
+    ("cn", "market", 15, 30),
+    ("hk", "market", 16, 30),
+    ("us", "market", 16, 30),
+    ("cn-hk", "reference", 8, 0),
+    ("us", "reference", 8, 0),
+):
+    name = f"{scope}-{channel}-data-refresh"
+    with (plist_root / f"test.investment-studio.{name}.plist").open("rb") as source:
+        scoped = plistlib.load(source)
+    assert scoped["RunAtLoad"] is False
+    assert scoped["KeepAlive"] is False
+    assert scoped["ProgramArguments"] == refresh["ProgramArguments"]
+    environment = scoped["EnvironmentVariables"]
+    assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL"] == channel
+    assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE"] == scope
+    assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND"] == "primary"
+    assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR"] == str(hour)
+    assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE"] == str(minute)
+    if channel == "market" and scope in {"hk", "us"}:
+        assert scoped["StartCalendarInterval"] == {"Minute": 30}
+    elif scope == "us":
+        assert scoped["StartCalendarInterval"] == [{"Minute": 0}, {"Minute": 30}]
+        assert environment["INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE"] == "America/New_York"
+    else:
+        assert scoped["StartCalendarInterval"] == {"Hour": hour, "Minute": minute}
+    assert scoped["StandardOutPath"] == f"{log_root}/{name}.log"
+    assert scoped["StandardErrorPath"] == f"{log_root}/{name}.error.log"
+
 PY
 
 echo "launchd plist generation test passed."

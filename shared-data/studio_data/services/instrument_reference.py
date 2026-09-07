@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from studio_data.core.settings import get_settings
 from studio_data.services import datahub_client
 from studio_data.services.fmp import FmpApiError, FmpClient
 from studio_data.services.instrument_store import get_instrument, list_instruments
 from studio_data.contracts import StudioInstrumentReferenceData
-from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
+from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
+from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKERS
 from studio_data.db.session import get_session_factory
+from studio_data.services.sector_reference import collect_sector_market_data
 
 
 REFERENCE_INSTRUMENT_TYPES = {
@@ -225,7 +228,7 @@ def _fmp_reference(
             sections,
             errors,
             "holdings",
-            lambda: client.fund_holdings(provider_symbol)[:100],
+            lambda: client.fund_holdings(provider_symbol),
         )
         _run_section(
             sections,
@@ -239,6 +242,18 @@ def _fmp_reference(
             "country_weights",
             lambda: client.fund_country_weights(provider_symbol),
         )
+        if provider_symbol in SECTOR_ETF_TICKERS:
+            _run_section(
+                sections, errors, "sector_market_data",
+                lambda: collect_sector_market_data(
+                    provider_symbol, info=sections.get("fund_info"),
+                    holdings=sections.get("holdings", []), client=client,
+                ),
+            )
+            failures = [gap for gap in sections.get("sector_market_data", {}).get("gaps", [])
+                        if gap["kind"] == "collection_failed"]
+            if failures:
+                errors["sector_market_data"] = f"{len(failures)} constituent source requests failed; see snapshot gaps."
         return sections, errors
 
     if instrument_type == "index":
@@ -315,18 +330,24 @@ def get_instrument_reference_data(
 
 
 def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] | None:
-    """Collect provider reference data in the maintenance process only."""
+    """Atomically retain each collection and update its latest reference view."""
     record = get_instrument_reference_data(instrument_id)
     if record is None:
         return None
     record = StudioInstrumentReferenceData.model_validate(record).model_dump(mode="json")
     with get_session_factory()() as session:
-        key = instrument_id
+        key = record["instrument_id"]
         stored = session.get(InstrumentReferenceSnapshot, key)
         if stored is None:
             session.add(InstrumentReferenceSnapshot(instrument_id=key, value_json=record))
         else:
             stored.value_json = record
+        if record["sections"]:
+            session.add(InstrumentReferenceObservation(
+                observation_id=str(uuid4()), instrument_id=key,
+                collected_at=datetime.fromisoformat(record["fetched_at"].replace("Z", "+00:00")),
+                value_json=record,
+            ))
         session.commit()
     return record
 

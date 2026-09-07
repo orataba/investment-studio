@@ -1,140 +1,158 @@
-import json
+"""Sector research reads the project's retained ETF reference snapshot."""
+from copy import deepcopy
+from datetime import datetime
 
-import duckdb
 import pytest
 
+from investment_studio_instrument_core.db_models import Instrument, InstrumentReferenceObservation, InstrumentReferenceSnapshot
+from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.sector_market_data import read_sector_market_data
 
 
 @pytest.fixture
-def market_database(tmp_path):
-    path = tmp_path / "market.duckdb"
-    with duckdb.connect(str(path)) as connection:
-        connection.execute("""
-            CREATE TABLE etf_info (symbol VARCHAR, name VARCHAR, collected_at TIMESTAMPTZ);
-            INSERT INTO etf_info VALUES ('XLK', 'Technology ETF', '2026-09-05T00:00:00Z');
-            CREATE TABLE etf_holdings_current (
-                etf_symbol VARCHAR, holding_key VARCHAR, holding_symbol VARCHAR,
-                holding_name VARCHAR, weight_percent DOUBLE, snapshot_date DATE,
-                source_dataset VARCHAR, raw_sha256 VARCHAR, collected_at TIMESTAMPTZ);
-            INSERT INTO etf_holdings_current VALUES
-                ('XLK','stock','AAA','Alpha',99.5,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z'),
-                ('XLK','cash',NULL,'US DOLLAR',-0.1,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z'),
-                ('XLK','fund',NULL,'SSI US GOV MONEY MARKET CLASS',0.4,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z'),
-                ('XLK','future','IXTU6','XAK TECHNOLOGY SEP26',0.1,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z'),
-                ('XLK','contra','2602335D','CONTRA HOLOGIC',0,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z'),
-                ('XLK','unknown','BBB','Unresolved holding',0.1,'2026-09-04','fmp_etf_current_holdings','holdings-source','2026-09-05T00:00:00Z');
-            CREATE TABLE company_profiles (
-                symbol VARCHAR, company_name VARCHAR, sector VARCHAR, industry VARCHAR,
-                description VARCHAR, is_etf BOOLEAN, is_fund BOOLEAN, collected_at TIMESTAMPTZ);
-            INSERT INTO company_profiles VALUES
-                ('AAA','Alpha','Technology','Software','Business description',false,false,'2026-08-10T00:00:00Z');
-            CREATE TABLE us_eod_daily (
-                symbol VARCHAR, date DATE, close DOUBLE, adjusted_close DOUBLE,
-                source_dataset VARCHAR, collected_at TIMESTAMPTZ);
-            INSERT INTO us_eod_daily VALUES
-                ('XLK','2026-09-03',100,99,'fmp_us_eod','2026-09-04T00:00:00Z'),
-                ('XLK','2026-09-04',102,101,'fmp_us_eod','2026-09-05T00:00:00Z'),
-                ('AAA','2026-09-04',50,48,'fmp_us_eod','2026-09-05T00:00:00Z');
-            CREATE TABLE dataset_state (
-                dataset VARCHAR, status VARCHAR, last_success_at TIMESTAMPTZ,
-                last_data_date DATE, row_count BIGINT);
-            INSERT INTO dataset_state VALUES
-                ('fmp_us_eod','failed','2026-09-05T04:00:00Z','2026-09-04',3),
-                ('fmp_analyst_estimates','ok','2026-09-05T04:00:00Z','2099-12-31',2);
-        """)
-        metrics = [f"{metric}_{bound} DOUBLE" for metric in
-                   ("revenue", "ebitda", "ebit", "net_income", "eps")
-                   for bound in ("low", "high", "avg")]
-        connection.execute(
-            "CREATE TABLE analyst_estimates_current (symbol VARCHAR, estimate_period VARCHAR, "
-            "target_period_end DATE, " + ", ".join(metrics) + ", num_analysts_revenue BIGINT, "
-            "num_analysts_eps BIGINT, source_dataset VARCHAR, raw_sha256 VARCHAR, "
-            "collected_at TIMESTAMPTZ, historical_use VARCHAR)"
-        )
-        connection.execute("""
-            INSERT INTO analyst_estimates_current
-                (symbol,estimate_period,target_period_end,revenue_avg,eps_avg,
-                 num_analysts_revenue,num_analysts_eps,source_dataset,raw_sha256,collected_at,historical_use)
-            VALUES ('AAA','annual','2099-12-31',1000,2.5,12,11,'fmp_analyst_estimates_bulk',
-                    'estimate-source','2026-08-10T00:00:00Z','since_capture'),
-                   ('AAA','quarter','2000-12-31',200,0.5,10,9,'fmp_analyst_estimates_bulk',
-                    'old-estimate-source','2026-08-10T00:00:00Z','since_capture')
-        """)
-    return path
+def sector_snapshot(client):
+    estimate = {"symbol": "AAA", "estimate_period": "annual", "target_period_end": "2099-12-31",
+        "revenue_avg": 1000, "eps_avg": 2.5, "num_analysts_revenue": 12, "num_analysts_eps": 11,
+        "source_dataset": "fmp_analyst_estimates_bulk", "raw_sha256": "estimate-source",
+        "collected_at": "2026-08-10T00:00:00+00:00", "historical_use": "since_capture",
+        "currency": None, "currency_status": "not_supplied"}
+    equity = {"holding_key": "stock", "holding_symbol": "AAA", "holding_name": "Alpha",
+        "holding_type": "equity", "weight_percent": 99.5, "snapshot_date": "2026-09-04",
+        "source_dataset": "fmp_etf_current_holdings", "raw_sha256": "holdings-source",
+        "collected_at": "2026-09-05T00:00:00+00:00",
+        "company_profile": {"symbol": "AAA", "company_name": "Alpha", "currency": "USD",
+            "collected_at": "2026-08-10T00:00:00+00:00"},
+        "annual_estimates": [estimate], "quarterly_estimates": [{**estimate,
+            "estimate_period": "quarter", "target_period_end": "2000-12-31"}],
+        "latest_price": {"symbol": "AAA", "date": "2026-09-04", "close": 50, "adjusted_close": 48},
+        "price_coverage": {"first_date": "2026-09-04", "last_date": "2026-09-04", "observations": 1}}
+    holdings = [equity, *[{"holding_key": key, "holding_symbol": symbol, "holding_name": name,
+        "holding_type": kind, "weight_percent": weight, "company_profile": None,
+        "annual_estimates": [], "quarterly_estimates": [], "latest_price": None, "price_coverage": None}
+        for key, symbol, name, kind, weight in [
+            ("cash", None, "US DOLLAR", "cash", -0.1),
+            ("fund", None, "SSI US GOV MONEY MARKET CLASS", "fund", 0.4),
+            ("future", "IXTU6", "XAK TECHNOLOGY SEP26", "future", 0.1),
+            ("contra", "2602335D", "CONTRA HOLOGIC", "other", 0),
+            ("unknown", "BBB", "Unresolved holding", "unclassified", 0.1)]]]
+    raw = {"ticker": "XLK", "source": {"provider": "FMP", "collected_at": "2026-09-05T00:00:00+00:00"},
+        "etf": {"info": {"symbol": "XLK", "name": "Technology ETF"},
+            "latest_price": {"symbol": "XLK", "date": "2026-09-04", "close": 102, "adjusted_close": 101},
+            "price_coverage": {"first_date": "2026-09-03", "last_date": "2026-09-04", "observations": 2}},
+        "holdings": holdings, "dataset_status": [{"dataset": "fmp_us_eod", "status": "failed"}],
+        "gaps": [{"kind": "unclassified_holding", "symbol": "BBB"}]}
+    with get_session_factory()() as session:
+        session.add(Instrument(instrument_id="xlk", instrument_name="Technology ETF", instrument_type="etf",
+            currency="USD", exchange_code="XNYS", quote_selection_policy_json={}))
+        session.flush()
+        session.add(InstrumentReferenceSnapshot(instrument_id="xlk", value_json={"instrument_id": "xlk",
+            "provider": "fmp", "source": {"collected_at": "2026-09-05T00:00:00+00:00"},
+            "sections": {"profile": {"name": "Technology ETF"}, "fund_info": {"holdingsCount": 6},
+                "holdings": [{"symbol": "AAA", "weightPercent": 99.5}], "sector_market_data": raw}}))
+        session.commit()
+    return raw
 
 
-def test_preserves_holdings_clocks_and_estimate_meaning(market_database, monkeypatch):
-    original_connect = duckdb.connect
-    connect_modes = []
-
-    def connect(*args, **kwargs):
-        connect_modes.append(kwargs.get("read_only"))
-        return original_connect(*args, **kwargs)
-
-    monkeypatch.setattr(duckdb, "connect", connect)
-    result = read_sector_market_data(market_database, " xlk ")
-    assert connect_modes == [True]
-    json.dumps(result, allow_nan=False)
-    assert result["ticker"] == "XLK"
-    holdings = {row["holding_key"]: row for row in result["holdings"]}
-    assert len(holdings) == 6
-    assert sum(h["weight_percent"] for h in holdings.values()) == pytest.approx(100)
-    assert {key: value["holding_type"] for key, value in holdings.items()} == {
-        "stock": "equity", "cash": "cash", "fund": "fund", "future": "future",
-        "contra": "other", "unknown": "unclassified",
-    }
-    assert holdings["cash"]["weight_percent"] == -0.1
-    assert holdings["future"]["company_profile"] is None
-    stock = holdings["stock"]
-    assert stock["snapshot_date"] == "2026-09-04"
-    assert stock["company_profile"]["collected_at"] == "2026-08-10T00:00:00+00:00"
-    estimate = stock["annual_estimates"][0]
-    assert estimate["target_period_end"] == "2099-12-31"
-    assert estimate["collected_at"] == "2026-08-10T00:00:00+00:00"
-    assert estimate["revenue_avg"] == 1000 and estimate["eps_avg"] == 2.5
-    assert estimate["raw_sha256"] == "estimate-source"
-    assert estimate["currency"] is None and estimate["currency_status"] == "not_supplied"
-    assert stock["quarterly_estimates"][0]["target_period_end"] == "2000-12-31"
-    assert stock["latest_price"]["close"] == 50
-    assert stock["latest_price"]["adjusted_close"] == 48
-    assert result["etf"]["price_coverage"] == {
-        "first_date": "2026-09-03", "last_date": "2026-09-04", "observations": 2,
-    }
-    assert {row["kind"] for row in result["gaps"]} == {
-        "unclassified_holding", "no_forward_quarter_estimates",
-    }
-    assert next(x for x in result["dataset_status"] if x["dataset"] == "fmp_us_eod")["status"] == "failed"
-    # The reader closes its connection, allowing the source owner to write again.
-    with original_connect(str(market_database)) as connection:
-        assert connection.execute("SELECT count(*) FROM etf_holdings_current").fetchone()[0] == 6
+def test_project_snapshot_preserves_constituents_dates_and_unknown_estimate_currency(sector_snapshot):
+    with get_session_factory()() as session:
+        result = read_sector_market_data(session, " xlk ")
+        assert result["ticker"] == "XLK"
+        assert result["holdings"] == sector_snapshot["holdings"]
+        assert sum(row["weight_percent"] for row in result["holdings"]) == pytest.approx(100)
+        equity = result["holdings"][0]
+        assert equity["company_profile"]["currency"] == "USD"
+        assert equity["annual_estimates"][0]["currency"] is None
+        assert equity["quarterly_estimates"][0]["target_period_end"] == "2000-12-31"
+        assert result["source"]["read_at"] != equity["annual_estimates"][0]["collected_at"]
+        assert {row["kind"] for row in result["gaps"]} == {"unclassified_holding", "no_forward_quarter_estimates"}
+        assert session.get(InstrumentReferenceSnapshot, "xlk").value_json["sections"]["sector_market_data"] == sector_snapshot
 
 
-def test_readable_source_with_missing_sector_returns_visible_gaps(market_database):
-    result = read_sector_market_data(market_database, "XLE")
-    assert result["holdings"] == []
-    assert result["etf"]["info"] is None
-    assert {row["kind"] for row in result["gaps"]} == {
-        "missing_etf_info", "missing_holdings", "missing_price",
-    }
+def test_missing_project_snapshot_is_explicit_and_unsupported_ticker_is_rejected(client):
+    with get_session_factory()() as session:
+        assert read_sector_market_data(session, "XLE") is None
+        with pytest.raises(ValueError, match="11"):
+            read_sector_market_data(session, "SPY")
 
 
-def test_unsupported_symbol_is_rejected_and_missing_database_is_not_created(tmp_path):
-    path = tmp_path / "absent.duckdb"
-    with pytest.raises(ValueError, match="11 US"):
-        read_sector_market_data(path, "XLK'; DROP TABLE etf_info;--")
-    with pytest.raises(duckdb.IOException):
-        read_sector_market_data(path, "XLK")
-    assert not path.exists()
+def test_snapshot_cannot_be_read_as_another_etf(sector_snapshot):
+    with get_session_factory()() as session:
+        row = session.get(InstrumentReferenceSnapshot, "xlk")
+        payload = deepcopy(row.value_json)
+        payload["sections"]["sector_market_data"]["ticker"] = "XLF"
+        row.value_json = payload
+        session.flush()
+        with pytest.raises(ValueError, match="归属"):
+            read_sector_market_data(session, "XLK")
 
 
-def test_company_snapshot_retains_all_periods_and_source_provenance(market_database):
-    from watchlist_app.services.sector_research import sector_snapshot
-    _, evidence, companies = sector_snapshot("xlk", market_database)
+def test_company_snapshot_retains_all_estimate_periods_and_source_provenance(sector_snapshot):
+    from watchlist_app.services.sector_research import sector_snapshot as project_snapshot
+    with get_session_factory()() as session:
+        _, evidence, companies = project_snapshot("xlk", session)
     company = companies["AAA"]
+    estimate = company["annual_estimates"][0]
+    assert estimate["source_dataset"] == "fmp_analyst_estimates_bulk"
+    assert estimate["raw_sha256"] == "estimate-source" and estimate["currency"] is None
     assert company["quarterly_estimates"][0]["target_period_end"] == "2000-12-31"
-    assert company["annual_estimates"][0]["source_dataset"] == "fmp_analyst_estimates_bulk"
-    assert company["annual_estimates"][0]["raw_sha256"] == "estimate-source"
-    assert company["annual_estimates"][0]["estimate_period"] == "annual"
-    assert company["annual_estimates"][0]["currency"] is None
-    assert evidence["source"]["read_at"] != company["annual_estimates"][0]["collected_at"]
+    assert evidence["source"]["read_at"] != estimate["collected_at"]
+    assert evidence["holdings_as_of"] is None
+    assert evidence["holdings_observed_on"] == "2026-09-04"
+
+
+def test_normal_instrument_reference_excludes_heavy_sector_packet(sector_snapshot, monkeypatch):
+    from watchlist_app.services import shared_instrument_registry as registry
+    monkeypatch.setattr(registry, "get_shared_instrument", lambda _: {"instrument_id": "xlk"})
+    reference = registry.get_shared_reference_data("xlk")
+    assert reference["sections"] == {"profile": {"name": "Technology ETF"}, "fund_info": {"holdingsCount": 6},
+                                    "holdings": [{"symbol": "AAA", "weightPercent": 99.5}]}
+    assert reference["provider"] == "fmp" and reference["source"] == {"collected_at": "2026-09-05T00:00:00+00:00"}
+    with get_session_factory()() as session:
+        assert "sector_market_data" in session.get(InstrumentReferenceSnapshot, "xlk").value_json["sections"]
+
+
+def test_research_cutoff_reads_the_retained_observation_without_later_collection_leakage(sector_snapshot, monkeypatch):
+    from watchlist_app.db.models import InstrumentDetail
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.services import sector_research, shared_instrument_registry as registry
+    cutoff = datetime.fromisoformat("2026-09-05T12:00:00+00:00")
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return cutoff.astimezone(tz)
+        fromisoformat = datetime.fromisoformat
+    monkeypatch.setattr(sector_research, "datetime", Clock)
+    monkeypatch.setattr(registry, "get_shared_instrument", lambda _: {"instrument_id": "xlk", "instrument_type": "etf"})
+    with get_session_factory()() as session:
+        raw = deepcopy(session.get(InstrumentReferenceSnapshot, "xlk").value_json)
+        raw["fetched_at"] = "2026-09-05T00:00:00+00:00"
+        earlier = InstrumentReferenceObservation(observation_id="earlier", instrument_id="xlk", collected_at=datetime.fromisoformat("2026-09-05T00:00:00+00:00"), value_json=raw)
+        session.add(earlier)
+        session.flush()
+        raw = deepcopy(raw)
+        raw["fetched_at"] = "2026-09-06T00:00:00+00:00"
+        raw["sections"]["fund_info"]["holdingsCount"] = 7
+        raw["sections"]["sector_market_data"]["holdings"][0]["annual_estimates"][0]["revenue_avg"] = 2000
+        session.add(InstrumentReferenceObservation(observation_id="later", instrument_id="xlk", collected_at=datetime.fromisoformat("2026-09-06T00:00:00+00:00"), value_json=raw))
+        session.get(InstrumentReferenceSnapshot, "xlk").value_json = raw
+        session.add(InstrumentDetail(instrument_id="xlk", instrument_type="etf", detail_view_type="etf",
+            instrument_name="Technology ETF", metadata_json={}))
+        session.commit()
+        result = read_sector_market_data(session, "XLK", as_of=cutoff)
+        assert result["holdings"][0]["annual_estimates"][0]["revenue_avg"] == 1000
+        assert result["source"]["observation_id"] == earlier.observation_id
+        assert read_sector_market_data(session, "XLK")["holdings"][0]["annual_estimates"][0]["revenue_avg"] == 2000
+        assert read_sector_market_data(session, "XLK", as_of=datetime.fromisoformat("2026-09-04T00:00:00+00:00")) is None
+        run, _ = sector_research.begin_run(session, ["xlk"])
+        run_id = run.entry_id
+    sector_research.prepare_run(run_id)
+    with get_session_factory()() as session:
+        context = session.get(ResearchEntry, run_id).context_json
+        nested = context["instrument_inputs"][0]
+        assert nested["reference_data"]["sections"]["fund_info"]["holdingsCount"] == 6
+        assert "sector_market_data" not in nested["reference_data"]["sections"]
+        assert nested["analyst_estimate_history"]["current_snapshot"]["observation_id"] == "earlier"
+        assert context["sector_estimate_evidence"][0]["current_snapshot"]["observation_id"] == "earlier"
+        assert context["sector_inputs"][0]["source"]["observation_id"] == "earlier"
+        assert registry.get_shared_reference_data("xlk")["sections"]["fund_info"]["holdingsCount"] == 7
+        assert registry.get_shared_reference_data("xlk", as_of=datetime.fromisoformat("2026-09-04T00:00:00+00:00"))["sections"] == {}

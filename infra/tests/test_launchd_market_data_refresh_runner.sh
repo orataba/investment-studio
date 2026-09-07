@@ -23,6 +23,7 @@ mkdir -p \
   "$PROJECT_ROOT/infra/launchd"
 chmod 700 "$ENV_ROOT"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+printf '%s\n' 'raise SystemExit(0)' > "$PROJECT_ROOT/infra/scripts/market_close_schedule.py"
 
 printf '%s\n' \
   'INVESTMENT_STUDIO_DATA_DATAHUB_API_KEY=test-key-loaded' \
@@ -93,7 +94,7 @@ audit_payload = json.loads(
     Path(os.environ["AUDIT_CAPTURE_PATH"]).read_text(encoding="utf-8")
 )
 audit_arguments = audit_payload["argv"]
-assert arguments[arguments.index("--channel") + 1] == "all"
+assert arguments[arguments.index("--channel") + 1] == "settlement"
 assert arguments[arguments.index("--updated-by") + 1] == "launchd-scheduler"
 assert arguments[arguments.index("--retry-failed-attempts") + 1] == "2"
 assert arguments[arguments.index("--lock-file") + 1] == os.environ["LOCK_PATH"]
@@ -162,6 +163,75 @@ if [[ ! -e "$CAPTURE_PATH" || ! -e "$AUDIT_CAPTURE_PATH" ]]; then
   echo "The conditional retry did not run after a failed primary run." >&2
   exit 1
 fi
+
+# The US schedule must move with New York DST and not run on adjacent ticks.
+for scheduled_now in 2026-01-05T21:00:00+08:00 2026-07-22T20:00:00+08:00; do
+  rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=reference \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=us \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=8 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=0 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=America/New_York \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_NOW="$scheduled_now" \
+    "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+    "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
+  test -f "$CAPTURE_PATH"
+  test ! -e "$AUDIT_CAPTURE_PATH"
+  python3 - <<'PY_REFERENCE'
+import json
+import os
+from pathlib import Path
+
+arguments = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text())["argv"]
+assert arguments[arguments.index("--channel") + 1] == "reference"
+assert arguments[arguments.index("--market-scope") + 1] == "us"
+assert arguments[arguments.index("--summary-file") + 1].endswith("us-reference-data-refresh-summary.json")
+state = json.loads((Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "us-reference-data-refresh-run-state.json").read_text())
+assert state["status"] == "succeeded"
+assert state["audit_exit_code"] is None
+PY_REFERENCE
+done
+for skipped_now in 2026-07-22T19:30:00+08:00 2026-07-22T20:30:00+08:00; do
+  rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
+  INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=reference \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=us \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=8 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=0 \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=America/New_York \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_NOW="$skipped_now" \
+    "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+    "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
+  test ! -e "$CAPTURE_PATH"
+  test ! -e "$AUDIT_CAPTURE_PATH"
+done
+
+# US post-close belongs to the preceding New York date when the Mac is in China.
+INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=market \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=us \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=16 \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=30 \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=America/New_York \
+  INVESTMENT_STUDIO_LOCAL_REFRESH_NOW=2026-07-23T04:30:00+08:00 \
+  "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+  "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
+python3 - <<'PY_CLOSE'
+import json
+import os
+from pathlib import Path
+
+arguments = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text())["argv"]
+assert arguments[arguments.index("--channel") + 1] == "market"
+assert arguments[arguments.index("--market-scope") + 1] == "us"
+state = json.loads((Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "us-market-data-refresh-run-state.json").read_text())
+assert state["scheduled_date"] == "2026-07-22"
+assert state["audit_exit_code"] == 0
+PY_CLOSE
 
 set +e
 env \

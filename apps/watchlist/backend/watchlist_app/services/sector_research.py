@@ -10,14 +10,18 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 from sqlalchemy import select
+from investment_studio_instrument_core.db_models import Instrument
+from investment_studio_instrument_core.listing_contract import (
+    MARKET_SCOPE_CALENDARS, MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
+)
 
-from watchlist_app.core.settings import get_settings
 from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail, WatchlistItem, Watchlist
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.sector_market_data import read_sector_market_data
 from watchlist_app.services.sector_estimates import read_estimate_evidence, retained_estimate_sources, usable_estimate_change
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, retain_notebook, validate_notebook
+from watchlist_app.services.calculation_frequency import _market_calendar_sessions
 
 TOPIC_ID = "us-sector-daily-review"
 INSTRUMENT_TOPIC_PREFIX = "instrument-events:"
@@ -87,16 +91,20 @@ def _future(rows, today):
             (r.get("revenue_avg") is not None or r.get("eps_avg") is not None)]
 
 
-def sector_snapshot(iid, database_path):
-    raw = read_sector_market_data(database_path, iid.upper())
-    today = datetime.now(UTC).date().isoformat()
+def sector_snapshot(iid, session, *, as_of=None):
+    raw = read_sector_market_data(session, iid.upper(), as_of=as_of)
+    if raw is None:
+        return None
+    today = (as_of or datetime.now(UTC)).astimezone(UTC).date().isoformat()
     stocks = [h for h in raw["holdings"] if h["holding_type"] == "equity"]
     gap_labels = {"no_forward_quarter_estimates": "缺少未来季度预期", "no_forward_annual_estimates": "缺少未来年度预期",
                   "missing_price": "缺少行情", "missing_holdings": "缺少持仓", "missing_etf_info": "缺少ETF资料",
                   "unclassified_holding": "持仓类型待核对"}
     view = {"instrument_id": iid, "ticker": iid.upper(), "sector_name": SECTORS[iid.upper()][0],
         "price_as_of": (raw["etf"]["latest_price"] or {}).get("date"),
-        "holdings_as_of": max((str(h.get("as_of_date") or h.get("snapshot_date") or "") for h in raw["holdings"]), default="") or None,
+        "holdings_as_of": max((str(h.get("as_of_date") or "") for h in raw["holdings"]), default="") or None,
+        "holdings_observed_on": max((str(h.get("snapshot_date") or "") for h in raw["holdings"]), default="") or None,
+        "holdings_date_note": "holdings_as_of仅表示原始资料明确披露的持仓日期；holdings_observed_on是本项目采集观察日，不是持仓报告期或首次披露日期。",
         "stock_count": len(stocks), "stock_weight_pct": sum(h.get("weight_percent") or 0 for h in stocks),
         "annual_estimate_count": sum(bool(_future(h["annual_estimates"], today)) for h in stocks),
         "quarterly_estimate_count": sum(bool(_future(h["quarterly_estimates"], today)) for h in stocks),
@@ -110,12 +118,13 @@ def sector_snapshot(iid, database_path):
                   "collected_at", "source_dataset", "raw_sha256", "historical_use", "currency", "currency_status")
         companies[h["holding_symbol"]] = {"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"],
             "industry": p.get("industry"), "description": p.get("description"), "profile_collected_at": p.get("collected_at"),
+            "reporting_currency": p.get("reporting_currency"), "reporting_currency_source": p.get("reporting_currency_source"),
             "quote_currency": p.get("currency"), "holdings_collected_at": h.get("collected_at"),
             "annual_estimates": [{k:r.get(k) for k in fields} for r in h["annual_estimates"]],
             "quarterly_estimates": [{k:r.get(k) for k in fields} for r in h["quarterly_estimates"]],
             "latest_price": {k:(h["latest_price"] or {}).get(k) for k in ("date", "close", "adjusted_close")}}
     evidence = {**view, "source": raw["source"], "dataset_status": raw["dataset_status"],
-        "holdings": [{k:h.get(k) for k in ("holding_symbol", "holding_name", "holding_type", "weight_percent", "as_of_date", "snapshot_date", "collected_at")} for h in raw["holdings"]],
+        "holdings": [{k:h.get(k) for k in ("holding_symbol", "holding_name", "holding_type", "weight_percent", "as_of_date", "snapshot_date", "provider_updated_at", "collected_at")} for h in raw["holdings"]],
         "leading_companies": [{**companies[h["holding_symbol"]],
             "annual_estimates": _future(companies[h["holding_symbol"]]["annual_estimates"], today)[:2],
             "quarterly_estimates": _future(companies[h["holding_symbol"]]["quarterly_estimates"], today)[:2]} for h in stocks[:5]]}
@@ -153,18 +162,19 @@ def begin_run(session, ids, *, scheduled=False):
         return latest, False
     cutoff = datetime.now(UTC)
     if scheduled:
+        research_dates = _research_dates(session, ids, cutoff)
         # Existing batch checks still count for each sector's daily attempt.
         daily_topics = [topic_id, TOPIC_ID] if sector_scope else [topic_id]
         for prior in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id.in_(daily_topics)).order_by(ResearchEntry.created_at.desc())):
             if not prior.context_json.get("sector_run"):
                 continue
             checked = datetime.fromisoformat(prior.context_json["cutoff"])
-            if checked.astimezone(ZoneInfo("Asia/Shanghai")).date() != cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date():
+            if _research_dates(session, ids, checked) != research_dates:
                 continue
             if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
                 return prior, False
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="行业ETF每日检查" if sector_scope else title,
-        body="", source="FMP / DeepSeek" if sector_scope and get_settings().sector_market_database_path else "已留存标的资料 / DeepSeek",
+        body="", source="Investment Studio 标的资料 / DeepSeek",
         status="queued", context_json={"sector_run": True, "event_scope": "daily_sector" if sector_scope else "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
         "web_evidence": [], "reviews": {}})
@@ -180,20 +190,22 @@ def prepare_run(run_id):
         run = session.get(ResearchEntry, run_id)
         context = dict(run.context_json)
         context["cutoff"] = datetime.now(UTC).isoformat()
+        cutoff = datetime.fromisoformat(context["cutoff"])
         inputs, company_data = [], {}
-        instrument_inputs = instrument_evidence(session, context["instrument_ids"], include_dossier=False)["assets"]
+        instrument_inputs = instrument_evidence(session, context["instrument_ids"], include_dossier=False, as_of=cutoff)["assets"]
         for iid in context["instrument_ids"]:
             ensure_mandate(session, iid)
         dossiers = [read_dossier(session, iid) for iid in context["instrument_ids"]]
         sector_scope = all(iid.upper() in SECTORS for iid in context["instrument_ids"])
-        if sector_scope and get_settings().sector_market_database_path:
+        if sector_scope:
             for iid in context["instrument_ids"]:
-                _, evidence, companies = sector_snapshot(iid, get_settings().sector_market_database_path)
+                snapshot = sector_snapshot(iid, session, as_of=cutoff)
+                if snapshot is None:
+                    context.setdefault("data_gaps", []).append(f"{iid.upper()}尚无本项目留存的成分公司与分析师预期快照。")
+                    continue
+                _, evidence, companies = snapshot
                 inputs.append(evidence)
                 company_data[iid] = companies
-        else:
-            if sector_scope:
-                context["data_gaps"] = ["本次未配置行业FMP数据库；没有取得成分公司与分析师预期快照。"]
         catalogue = [{key: asset[key] for key in ("instrument_id", "name", "instrument_type")} for asset in instrument_inputs]
         prior = session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(context["instrument_ids"]), RiskCase.signal.like("sector:%")))
         for asset in instrument_inputs:
@@ -205,7 +217,8 @@ def prepare_run(run_id):
             tool_evidence=[],
             prior_events=[{**event_record(c), "evidence": c.evidence_json} for c in prior])
         run.context_json = context
-        context["sector_estimate_evidence"] = [read_estimate_evidence(session, iid, current_run=run) for iid in company_data]
+        context["sector_estimate_evidence"] = [read_estimate_evidence(session, iid,
+            as_of=cutoff) for iid in company_data]
         run.context_json = dict(context)
         session.commit()
 
@@ -416,7 +429,37 @@ def apply_result(session, run, reply):
     run.status = "completed" if searched else "failed"
 
 
-def daily_review_groups(session):
+def _research_market(session, instrument_id):
+    instrument = session.get(Instrument, instrument_id)
+    if instrument is None:
+        return None
+    if instrument.instrument_type == "private_fund":
+        return "cn"
+    calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
+    return market_scope_for_calendar(calendar)
+
+
+def _research_dates(session, ids, now):
+    dates = {}
+    for iid in ids:
+        market = _research_market(session, iid)
+        if market is None:
+            raise ValueError(f"{iid} 尚未配置支持的交易市场，不能安排自动研究。")
+        dates[iid] = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market])).date().isoformat()
+    return dates
+
+
+def _research_due(market, now):
+    if market is None:
+        return False
+    local = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market]))
+    if (local.hour, local.minute) < (8, 30):
+        return False
+    day = local.date()
+    return bool(_market_calendar_sessions(MARKET_SCOPE_CALENDARS[market][0], day, day))
+
+
+def daily_review_groups(session, *, now=None):
     from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
     registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
     statuses = {}
@@ -428,7 +471,8 @@ def daily_review_groups(session):
     ids = sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
-    groups = [[iid] for iid in ids]
+    now = now or datetime.now(UTC)
+    groups = [[iid] for iid in ids if _research_due(_research_market(session, iid), now)]
     reviews = latest_reviews(session)
     # Resume the least recently attempted work first, including after a restart or date change.
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))
@@ -440,6 +484,9 @@ def run_daily_reviews(stop):
     from watchlist_app.services.risk_officer import begin_run as begin_risk_run, read_snapshot as read_risk_snapshot
     with get_session_factory()() as session:
         groups = daily_review_groups(session)
+        if not groups:
+            return
+        research_dates = _research_dates(session, [iid for ids in groups for iid in ids], datetime.now(UTC))
         watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id))]
     risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
 
@@ -468,6 +515,9 @@ def run_daily_reviews(stop):
             try:
                 with get_session_factory()() as session:
                     member_ids = set(read_risk_snapshot(session, **scope)["instrument_ids"])
+                scope_dates = {iid: day for iid, day in research_dates.items() if iid in member_ids}
+                if not scope_dates:
+                    continue
                 # Finish this scope's members before the officer reads their reports.
                 selected = [ids for ids in remaining if member_ids.intersection(ids)]
                 for ids, finished in zip(selected, pool.map(review_group, selected)):
@@ -479,7 +529,7 @@ def run_daily_reviews(stop):
                 if pending_ids.intersection(member_ids):
                     continue
                 with get_session_factory()() as session:
-                    run, created = begin_risk_run(session, **scope, scheduled=True)
+                    run, created = begin_risk_run(session, **scope, scheduled_dates=scope_dates)
                     run_id, status = run.entry_id, run.status
                 if created or status == "queued":
                     run_analysis(run_id)
@@ -493,12 +543,10 @@ def start_sector_worker():
     stop = Event()
     def work():
         while not stop.is_set():
-            local = datetime.now(ZoneInfo("Asia/Shanghai"))
-            if (local.hour, local.minute) >= (8, 30):
-                try:
-                    run_daily_reviews(stop)
-                except Exception:
-                    logging.getLogger(__name__).exception("Daily research scope could not be read")
+            try:
+                run_daily_reviews(stop)
+            except Exception:
+                logging.getLogger(__name__).exception("Daily research scope could not be read")
             stop.wait(60)
     thread = Thread(target=work, name="daily-research", daemon=True)
     thread.start()

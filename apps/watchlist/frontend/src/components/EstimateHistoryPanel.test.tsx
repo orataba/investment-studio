@@ -36,8 +36,13 @@ it.each([{ assetClass: 'Equity' }, { fund_type: '其他' }, {}])('keeps unsuppor
 })
 
 it('preserves the supported company estimate baseline', async () => {
-  mocks.evidence.mockResolvedValue({ ...emptyEvidence, supported: true, status: 'baseline', coverage: { current_company_count: 73 } })
+  mocks.evidence.mockResolvedValue({ ...emptyEvidence, supported: true, status: 'baseline', coverage: { current_company_count: 73 },
+    current_snapshot: { observation_id: 'collection-1', collected_at: '2026-09-07T08:00:00Z',
+      collected_at_min: '2026-09-07T07:59:00Z', collected_at_max: '2026-09-07T07:59:50Z' },
+    history_available_from: '2026-09-07T08:00:00Z' })
   render(<EstimateHistoryPanel instrumentId="registered-equity-etf" language="en" />)
   expect(await screen.findByText('Constituent estimate history · First baseline')).toBeTruthy()
   expect(screen.getByText('73 constituent company records retained.')).toBeTruthy()
+  expect(screen.getByText(/Current collection/).textContent).toContain('Collection history begins')
+  expect(screen.getByText(/Each data collection is retained/)).toBeTruthy()
 })

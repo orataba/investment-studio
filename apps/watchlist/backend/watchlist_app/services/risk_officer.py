@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 import math
 from urllib.parse import quote
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -158,7 +157,7 @@ def _topic_id(scope):
     return f"{TOPIC_PREFIX}{key.removesuffix('_id')}:{value}"
 
 
-def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=None, scheduled=False):
+def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=None, scheduled_dates=None):
     scope = normalize_scope(instrument_id=instrument_id, watchlist_id=watchlist_id, portfolio_id=portfolio_id)
     topic_id = _topic_id(scope)
     topic = session.get(ResearchTopic, topic_id)
@@ -172,12 +171,14 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
     if previous:
         if previous.status in {"queued", "running"}:
             return previous, False
-        same_day = previous.created_at.replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Shanghai")).date() == now.astimezone(ZoneInfo("Asia/Shanghai")).date()
-        if scheduled and same_day and (previous.status == "failed" or
+        same_days = scheduled_dates and all((previous.context_json.get("research_dates") or {}).get(iid) == day
+                                           for iid, day in scheduled_dates.items())
+        if same_days and (previous.status == "failed" or
                 (previous.status == "completed" and previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))):
             return previous, False
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="风险研判", source="已留存风险与组合持仓", status="queued", body="", created_at=now,
-        context_json={"risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(), "scheduled": scheduled})
+        context_json={"risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(),
+                      "scheduled": scheduled_dates is not None, "research_dates": scheduled_dates or {}})
     session.add(run)
     session.commit()
     return run, True

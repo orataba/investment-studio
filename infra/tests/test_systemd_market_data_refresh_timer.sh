@@ -10,8 +10,9 @@ BACKEND_ROOT="$PROJECT_ROOT/shared-data"
 ENV_ROOT="$TEST_ROOT/secure env"
 MOCK_BIN="$TEST_ROOT/bin"
 SYSTEMCTL_CALLS="$TEST_ROOT/systemctl-calls"
-mkdir -p "$BACKEND_ROOT/scripts" "$PROJECT_ROOT/infra/launchd" "$ENV_ROOT" "$MOCK_BIN"
+mkdir -p "$BACKEND_ROOT/scripts" "$PROJECT_ROOT/infra/launchd" "$PROJECT_ROOT/infra/scripts" "$ENV_ROOT" "$MOCK_BIN"
 touch "$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py"
+cp "$REPOSITORY_ROOT/infra/scripts/market_close_schedule.py" "$PROJECT_ROOT/infra/scripts/market_close_schedule.py"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 chmod 700 "$ENV_ROOT"
@@ -106,4 +107,33 @@ fi
 grep -Fq 'enable investment-studio-market-data-refresh.timer' "$SYSTEMCTL_CALLS"
 grep -Fq 'start investment-studio-market-data-refresh.timer' "$SYSTEMCTL_CALLS"
 
-echo "systemd 21:00 market data refresh timer test passed."
+for schedule in \
+  'market|cn|15:30 Asia/Shanghai' \
+  'market|hk|*:30 Asia/Shanghai' \
+  'market|us|*:30 America/New_York' \
+  'reference|cn-hk|08:00 Asia/Shanghai' \
+  'reference|us|08:00 America/New_York'; do
+  IFS='|' read -r channel market_scope expected_time <<< "$schedule"
+  HOME="$TEST_ROOT/home" \
+  XDG_CONFIG_HOME="$TEST_ROOT/config" \
+  PATH="$MOCK_BIN:$PATH" \
+  PROJECT_ROOT="$PROJECT_ROOT" \
+  BACKEND_ROOT="$BACKEND_ROOT" \
+  PYTHON_BIN="$(command -v python3)" \
+  ENV_ROOT="$ENV_ROOT" CHANNEL="$channel" MARKET_SCOPE="$market_scope" \
+    "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+  unit_name="investment-studio-$market_scope-$channel-data-refresh"
+  service_file="$TEST_ROOT/config/systemd/user/$unit_name.service"
+  timer_file="$TEST_ROOT/config/systemd/user/$unit_name.timer"
+  grep -Fq "OnCalendar=*-*-* $expected_time" "$timer_file"
+  grep -Fq -- "--channel $channel --market-scope $market_scope" "$service_file"
+  grep -Fq -- "$market_scope-$channel-data-refresh-summary.json" "$service_file"
+  grep -Fxq 'Restart=no' "$service_file"
+  if [[ "$channel" == "market" && ( "$market_scope" == "hk" || "$market_scope" == "us" ) ]]; then
+    grep -Fq "ExecCondition=" "$service_file"
+    grep -Fq "market_close_schedule.py --market-scope $market_scope" "$service_file"
+  fi
+  grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
+done
+
+echo "systemd market close, pre-open reference and settlement timer tests passed."

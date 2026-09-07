@@ -73,7 +73,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 维护研究对话、标的资料档案、持续研究底稿、原始证据及其日期、助手运行快照和风险跟进；沿用 ResearchTopic / ResearchEntry，PM 观点与自动研究分别保存
 - 每日研究与列表、可访问组合的风控研判复用既有 08:30 worker，单标的风控按需运行；研究助手可读取档案和风控结论，底稿按实际完成逐步积累，不宣称全部登记标的均已深研
 - 研究工具通过显式配置的只读 API 取得 Portfolio 持仓与 Regime 状态；不取得交易写权限，不跨 schema 复制这些事实
-- 美股行业 ETF 研究可显式配置现有 Market Research Database DuckDB 的只读路径；分析输入快照与网页证据保存在 Watchlist 研究记录中，外部 FMP 数据库仍由原项目更新。每日检查与来源时间边界见 [Watchlist README](../apps/watchlist/README.md)。
+- 美股行业 ETF 的完整持仓、公司资料、年度及季度预期、近期价格由 shared-data 直接向 FMP 采集，存入本项目 `instrument_reference_snapshot.sections.sector_market_data`。每次参考资料采集在同一事务追加 `instrument_reference_observation`，按标的与采集时间索引，用于 PIT 查询和预期变化比较；最新快照供页面快速读取，研究记录保留分析时使用的证据。三者职责独立，历史不依赖是否运行研究，也不把采集时间当成供应商发布日期。本地与云端均用项目 PostgreSQL，不依赖其他项目的数据库；普通概况接口省略完整公司预期明细。每日检查与来源时间边界见 [Watchlist README](../apps/watchlist/README.md)。
 
 ### Portfolio
 

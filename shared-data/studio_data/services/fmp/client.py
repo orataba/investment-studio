@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import date, timedelta
 
 import requests
@@ -22,10 +23,30 @@ class FmpClient:
         session: requests.Session | None = None,
     ) -> None:
         resolved_settings = settings or get_settings()
+        self._settings = resolved_settings
         self._base_url = resolved_settings.fmp_api_url.rstrip("/")
         self._api_key = resolved_settings.resolved_fmp_api_key()
         self._timeout = resolved_settings.fmp_timeout_seconds
         self._session = session or requests.Session()
+
+    @contextmanager
+    def independent_session(self):
+        """Use an isolated HTTP session for concurrent constituent collection."""
+        with requests.Session() as session:
+            yield FmpClient(self._settings, session=session)
+
+    def analyst_estimates(self, symbol: str, *, period: str) -> list[dict[str, object]]:
+        return self._get_list(
+            "analyst-estimates",
+            params={"symbol": symbol.strip().upper(), "period": period,
+                    "page": 0, "limit": 20},
+        )
+
+    def split_adjusted_eod(self, symbol: str, *, start_date: str, end_date: str) -> list[dict[str, object]]:
+        return self._historical_eod_endpoint(
+            "historical-price-eod/full", symbol=symbol,
+            start_date=start_date, end_date=end_date,
+        )
 
     def _get_list(
         self,

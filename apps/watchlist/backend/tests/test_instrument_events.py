@@ -14,8 +14,7 @@ from watchlist_app.services import research_runner, research_workbench, sector_r
 
 
 def seed_instruments(client, monkeypatch):
-    settings = SimpleNamespace(sector_market_database_path=None)
-    monkeypatch.setattr(service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service, "_research_market", lambda session, iid: "us" if iid in {"xlk", "fund-us-agg"} else "cn")
     with get_session_factory()() as session:
         for iid, kind, name, active in (
             ("event-equity", "equity", "示例股份", True),
@@ -29,7 +28,6 @@ def seed_instruments(client, monkeypatch):
             session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
                 instrument_name=name, is_active=active, metadata_json={}))
         session.commit()
-    return settings
 
 
 def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, **changes):
@@ -91,7 +89,7 @@ def test_prepare_preserves_fund_evidence_and_original_event_survives_latest_empt
         "holdings": {"data": {"report_period": "2026-03-31", "items": [{"name": "已披露债券", "weight_percent": 8}]},
                      "source_cutoff_at": "2026-04-30T00:00:00+00:00"}}
     calls = []
-    def evidence(session, ids, *, include_dossier=False):
+    def evidence(session, ids, *, include_dossier=False, as_of=None):
         calls.append(ids)
         return {"assets": [deepcopy(asset)]}
     monkeypatch.setattr(research_workbench, "instrument_evidence", evidence)
@@ -168,8 +166,7 @@ def test_chat_is_not_an_event_review_and_missing_private_fund_material_is_not_op
 
 
 def test_non_sector_etf_singleton_keeps_its_instrument_sources(client, monkeypatch):
-    settings = seed_instruments(client, monkeypatch)
-    settings.sector_market_database_path = "/test/fmp.duckdb"
+    seed_instruments(client, monkeypatch)
     monkeypatch.setattr(service, "sector_snapshot", lambda *args: pytest.fail("A non-sector ETF must not use the US11 FMP snapshot"))
     monkeypatch.setattr(research_workbench, "instrument_evidence", lambda session, ids, **kwargs: {"assets": [
         {"instrument_id": ids[0], "name": "Aggregate Bond ETF", "instrument_type": "etf"}]})
@@ -187,6 +184,7 @@ def test_daily_research_dispatches_selected_oldest_first_and_does_not_retry_fail
     from threading import Event
     from watchlist_app.services import shared_instrument_registry, risk_officer
     seed_instruments(client, monkeypatch)
+    monkeypatch.setattr(service, "_research_due", lambda market, now: True)
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids",
         lambda **kwargs: ["xlk", "event-equity", "savf63", "inactive-equity"])
     monkeypatch.setattr(research_workbench, "portfolio_options", lambda: {"portfolios": []})

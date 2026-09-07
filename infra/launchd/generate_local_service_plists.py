@@ -138,6 +138,7 @@ def main() -> int:
         "Umask": 0o077,
         "EnvironmentVariables": {
             "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL": "settlement",
             "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR": str(args.refresh_hour),
             "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": str(args.refresh_minute),
             "INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_HOUR": str(args.refresh_retry_hour),
@@ -147,6 +148,42 @@ def main() -> int:
         "StandardErrorPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.error.log"),
     }
     _write_plist(launch_agents_dir / f"{refresh_label}.plist", refresh_payload)
+    for market_scope, channel, hour, minute, timezone in (
+        ("cn", "market", 15, 30, "Asia/Shanghai"),
+        ("hk", "market", 16, 30, "Asia/Shanghai"),
+        ("us", "market", 16, 30, "America/New_York"),
+        ("cn-hk", "reference", 8, 0, "Asia/Shanghai"),
+        ("us", "reference", 8, 0, "America/New_York"),
+    ):
+        service = f"{market_scope}-{channel}-data-refresh"
+        label = f"{args.label_prefix}.{service}"
+        environment = {
+            "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL": channel,
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE": market_scope,
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND": "primary",
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR": str(hour),
+            "INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE": str(minute),
+        }
+        calendar = {"Hour": hour, "Minute": minute}
+        if channel == "market" and market_scope in {"hk", "us"}:
+            calendar = {"Minute": 30}
+        if timezone == "America/New_York":
+            # launchd calendars follow the Mac timezone. The runner resolves New
+            # York time at each half-hour tick, including US daylight saving time.
+            if channel == "reference":
+                calendar = [{"Minute": 0}, {"Minute": 30}]
+            environment["INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE"] = timezone
+        payload = {
+            **refresh_payload,
+            "Label": label,
+            "RunAtLoad": False,
+            "StartCalendarInterval": calendar,
+            "EnvironmentVariables": environment,
+            "StandardOutPath": str(log_dir / f"{service}.log"),
+            "StandardErrorPath": str(log_dir / f"{service}.error.log"),
+        }
+        _write_plist(launch_agents_dir / f"{label}.plist", payload)
     return 0
 
 

@@ -5,7 +5,6 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
-import duckdb
 from sqlalchemy import select
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
@@ -87,16 +86,6 @@ def run_analysis(run_id: str):
             process.wait()
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode}
-    except duckdb.IOException as error:
-        if sector_run and "lock" in str(error).lower():
-            with get_session_factory()() as session:
-                run = session.get(ResearchEntry, run_id)
-                if run and run.status == "running":
-                    run.status = "queued"
-                    run.body = "FMP数据库正在更新，等待只读访问后继续本次检查。"
-                    session.commit()
-            return
-        outcome = "行业FMP数据库暂不可读，本次检查未完成。"
     except OSError as error:
         outcome = "无法启动研究运行进程。" if process is None else "读取研究运行进程结果失败。"
         runtime_error = {"type": type(error).__name__, "summary": outcome, "exit_code": process.returncode if process else None}

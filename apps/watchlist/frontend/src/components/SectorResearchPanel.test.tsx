@@ -209,13 +209,15 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
   expect(screen.queryByRole('button', { name: '保存跟进' })).toBeNull()
 })
 
-it('shows FMP estimate comparisons with matching fiscal periods and collection intervals instead of publication dates', async () => {
+it.each(['collection', 'published'])('shows FMP estimate fiscal periods and the retained clock (%s)', async (sourceKind) => {
   const previousCollected = '2026-09-04T08:00:00+08:00'
   const currentCollected = '2026-09-05T08:00:00+08:00'
   request.mockResolvedValue(payload([event({ sources: [{
     source_id: 'estimates:run-1:xlk-us', source_type: 'analyst_estimate_changes',
-    previous_snapshot: { run_id: 'run-0', read_at: '2026-09-05T09:00:00+08:00', cutoff: '2026-09-05T08:00:00+08:00' },
-    current_snapshot: { run_id: 'run-1', read_at: '2026-09-06T09:00:00+08:00', cutoff: '2026-09-06T08:00:00+08:00' },
+    previous_snapshot: sourceKind === 'collection' ? { observation_id: 'observation-0', collected_at: '2026-09-05T09:00:00+08:00' }
+      : { run_id: 'run-0', read_at: '2026-09-05T09:00:00+08:00', cutoff: '2026-09-05T08:00:00+08:00' },
+    current_snapshot: sourceKind === 'collection' ? { observation_id: 'observation-1', collected_at: '2026-09-06T09:00:00+08:00' }
+      : { run_id: 'run-1', read_at: '2026-09-06T09:00:00+08:00', cutoff: '2026-09-06T08:00:00+08:00' },
     changes: [{ symbol: 'MSFT', name: 'Microsoft', frequency: 'annual', target_period_end: '2027-06-30', metric: 'eps_avg', currency: 'USD',
       previous_value: 12, current_value: 13.2, delta_pct: 10, previous_collected_at: previousCollected,
       current_collected_at: currentCollected, analyst_count_changed: true }],
@@ -224,7 +226,7 @@ it('shows FMP estimate comparisons with matching fiscal periods and collection i
   await load()
   fireEvent.click(screen.getByText('影响、证据与下一步'))
   const source = screen.getByText('FMP预期快照比较').closest('li')!
-  expect(within(source).getByText(/^快照读取：前次/)).toBeTruthy()
+  expect(within(source).getByText(sourceKind === 'collection' ? /^快照采集：前次/ : /^快照读取：前次/)).toBeTruthy()
   fireEvent.click(within(source).getByText('同财期预期变动 · 1 项'))
   expect(within(source).getByText('MSFT · Microsoft · 年度财期截至 2027-06-30')).toBeTruthy()
   expect(within(source).getByText('平均每股收益预期：12 → 13.2 USD/股 · +10.00%')).toBeTruthy()

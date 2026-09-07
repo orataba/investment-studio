@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -174,6 +175,22 @@ class InstrumentReferenceSnapshot(InstrumentRegistryBase):
     instrument_id: Mapped[str] = mapped_column(
         ForeignKey("instrument.instrument_id", ondelete="CASCADE"), primary_key=True
     )
+    value_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+
+
+class InstrumentReferenceObservation(InstrumentRegistryBase):
+    """One provider collection, retained independently of the latest projection."""
+
+    __tablename__ = "instrument_reference_observation"
+    __table_args__ = (
+        Index("ix_reference_observation_instrument_collected", "instrument_id", "collected_at", "observation_id"),
+    )
+
+    observation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="CASCADE"), nullable=False
+    )
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     value_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
 
 

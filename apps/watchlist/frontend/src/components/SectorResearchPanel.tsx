@@ -5,17 +5,20 @@ import ResearchDossierPanel from './ResearchDossierPanel'
 import './sector-research.css'
 
 type Review = { run_id: string; status: string; checked_at: string | null; summary: string; coverage: string[] }
+// Published research keeps the clock actually retained with its source evidence.
+type EstimateSnapshot = { observation_id?: string; collected_at?: string; run_id?: string; read_at?: string | null; cutoff?: string | null }
 export type SectorResearch = { instrument_id: string; ticker: string; sector_name: string; latest_review: Review | null; last_completed_review?: Review | null }
 type EventSource = {
   source_id?: string; url?: string; title?: string; published_at?: string | null
   published_at_raw?: string | null; retrieved_at?: string | null; discovered_at?: string | null; time_status?: string
   source_type?: string
-  current_snapshot?: { run_id: string; read_at: string | null; cutoff: string | null } | null
-  previous_snapshot?: { run_id: string; read_at: string | null; cutoff: string | null } | null
+  current_snapshot?: EstimateSnapshot | null
+  previous_snapshot?: EstimateSnapshot | null
   changes?: Array<{
     symbol: string; name?: string | null; frequency: string; target_period_end: string; metric: string; currency: string | null
     previous_value: number; current_value: number; delta_pct: number | null
     previous_collected_at: string | null; current_collected_at: string | null; analyst_count_changed: boolean | null
+    current_currency_status?: string
   }>
 }
 export type EventSnapshot = {
@@ -122,8 +125,12 @@ function EventGroup({ event, progress, supplementary = false, planned = false, o
           <ul className="sector-event-sources">{snapshot.sources.map((source, index) => {
             if (source.source_type === 'analyst_estimate_changes') return <li key={source.source_id || `estimates:${index}`}>
               <strong>FMP预期快照比较</strong>
-              <small>快照读取：前次 {time(source.previous_snapshot?.read_at)} · 本次 {time(source.current_snapshot?.read_at)}</small>
+              {source.current_snapshot?.collected_at
+                ? <small>快照采集：前次 {time(source.previous_snapshot?.collected_at)} · 本次 {time(source.current_snapshot.collected_at)}</small>
+                : <small>快照读取：前次 {time(source.previous_snapshot?.read_at)} · 本次 {time(source.current_snapshot?.read_at)}</small>}
               <small>以下为两次源数据采集之间的观测变化，不能确定精确调整或发布日期；财期是预测对象。</small>
+              {source.changes?.some((change) => change.current_currency_status === 'inferred_from_reporting_currency')
+                && <small>部分预期币种按公司财报币种推定，来源已留存；预期接口本身未直接披露币种。</small>}
               <details><summary>同财期预期变动 · {source.changes?.length || 0} 项</summary>
                 <ul>{source.changes?.map((change) => <li key={`${change.symbol}:${change.frequency}:${change.target_period_end}:${change.metric}`}>
                   <span>{change.symbol}{change.name ? ` · ${change.name}` : ''} · {change.frequency === 'annual' ? '年度' : change.frequency === 'quarter' ? '季度' : change.frequency}财期截至 {change.target_period_end}</span>

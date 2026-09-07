@@ -37,6 +37,16 @@ SYSTEMD_UNITS=(
   "$SYSTEMD_UNIT_PREFIX-portfolio-web.service"
   "$SYSTEMD_UNIT_PREFIX-market-data-refresh.timer"
   "$SYSTEMD_UNIT_PREFIX-market-data-refresh.service"
+  "$SYSTEMD_UNIT_PREFIX-cn-market-data-refresh.timer"
+  "$SYSTEMD_UNIT_PREFIX-cn-market-data-refresh.service"
+  "$SYSTEMD_UNIT_PREFIX-hk-market-data-refresh.timer"
+  "$SYSTEMD_UNIT_PREFIX-hk-market-data-refresh.service"
+  "$SYSTEMD_UNIT_PREFIX-us-market-data-refresh.timer"
+  "$SYSTEMD_UNIT_PREFIX-us-market-data-refresh.service"
+  "$SYSTEMD_UNIT_PREFIX-cn-hk-reference-data-refresh.timer"
+  "$SYSTEMD_UNIT_PREFIX-cn-hk-reference-data-refresh.service"
+  "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.timer"
+  "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.service"
 )
 
 PSQL_BIN=""
@@ -150,7 +160,17 @@ start_managed_services() {
           "$SYSTEMD_UNIT_PREFIX"-watchlist-web.service|\
           "$SYSTEMD_UNIT_PREFIX"-portfolio-web.service|\
           "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.service)
+          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.service|\
+          "$SYSTEMD_UNIT_PREFIX"-cn-market-data-refresh.timer|\
+          "$SYSTEMD_UNIT_PREFIX"-cn-market-data-refresh.service|\
+          "$SYSTEMD_UNIT_PREFIX"-hk-market-data-refresh.timer|\
+          "$SYSTEMD_UNIT_PREFIX"-hk-market-data-refresh.service|\
+          "$SYSTEMD_UNIT_PREFIX"-us-market-data-refresh.timer|\
+          "$SYSTEMD_UNIT_PREFIX"-us-market-data-refresh.service|\
+          "$SYSTEMD_UNIT_PREFIX"-cn-hk-reference-data-refresh.timer|\
+          "$SYSTEMD_UNIT_PREFIX"-cn-hk-reference-data-refresh.service|\
+          "$SYSTEMD_UNIT_PREFIX"-us-reference-data-refresh.timer|\
+          "$SYSTEMD_UNIT_PREFIX"-us-reference-data-refresh.service)
             active_units+=("$unit")
             ;;
           *)
@@ -175,7 +195,7 @@ stop_all_managed_services() {
     launchd)
       for service in \
         home-api watchlist-api portfolio-api \
-        home-web watchlist-web portfolio-web market-data-refresh; do
+        home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
         launchctl bootout \
           "gui/$UID/${LABEL_PREFIX:-com.orataba.investment-studio}.$service" \
           >/dev/null 2>&1 || true

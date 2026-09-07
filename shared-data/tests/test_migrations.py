@@ -70,6 +70,39 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     command.upgrade(config, "head")
 
 
+def test_reference_observation_migration_preserves_real_collection_clock_and_is_reversible(tmp_path, monkeypatch):
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'reference-observations.db'}"
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260904_0032")
+    engine = create_engine(database_url)
+    valid = {"fetched_at": "2026-09-07T13:00:00+08:00", "source": {"provider_updated_at": "2026-06-30"},
+             "sections": {"holdings": [{"symbol": "AAA", "weightPercentage": 10}]}}
+    snapshots = {"dated": valid, "naive": {**valid, "fetched_at": "2026-09-07T13:00:00"},
+                 "invalid": {**valid, "fetched_at": "unavailable"}, "empty": {**valid, "sections": {}}}
+    with engine.begin() as connection:
+        metadata = sa.MetaData()
+        instruments = sa.Table("instrument", metadata, autoload_with=connection)
+        current = sa.Table("instrument_reference_snapshot", metadata, autoload_with=connection)
+        for iid, record in snapshots.items():
+            connection.execute(instruments.insert().values(instrument_id=iid, instrument_name=iid, instrument_type="other", currency="USD",
+                quote_selection_policy_json={}, source_settings_json={}, refresh_status_json={}, lifecycle_state_json={}))
+            connection.execute(current.insert().values(instrument_id=iid, value_json=record))
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        observations = sa.Table("instrument_reference_observation", sa.MetaData(), autoload_with=connection)
+        rows = connection.execute(sa.select(observations)).mappings().all()
+        assert len(rows) == 1 and rows[0]["instrument_id"] == "dated"
+        assert rows[0]["value_json"] == valid
+        assert rows[0]["collected_at"].isoformat() == "2026-09-07T05:00:00"
+        assert inspect(connection).get_indexes("instrument_reference_observation")[0]["column_names"] == ["instrument_id", "collected_at", "observation_id"]
+    command.downgrade(config, "20260904_0032")
+    with engine.connect() as connection:
+        assert "instrument_reference_observation" not in inspect(connection).get_table_names()
+        assert connection.scalar(text("SELECT count(*) FROM instrument_reference_snapshot")) == 4
+
+
 def test_registry_metadata_has_no_derivative_identity() -> None:
     from investment_studio_instrument_core.db_models import Instrument
 

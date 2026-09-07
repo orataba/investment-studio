@@ -1,28 +1,41 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from investment_studio_instrument_core import instrument_store as shared_store
+from sqlalchemy import select
 
 from watchlist_app.db.session import get_session_factory
-from investment_studio_instrument_core.db_models import InstrumentReferenceSnapshot
+from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
 
 
-def get_shared_reference_data(instrument_id: str) -> dict[str, object] | None:
+def get_shared_reference_data(instrument_id: str, *, as_of: datetime | None = None) -> dict[str, object] | None:
     instrument = get_shared_instrument(instrument_id)
     if instrument is None:
         return None
     canonical_id = str(instrument["instrument_id"])
     with get_session_factory()() as session:
-        snapshot = session.get(InstrumentReferenceSnapshot, canonical_id)
+        if as_of is None:
+            snapshot = session.get(InstrumentReferenceSnapshot, canonical_id)
+        else:
+            if as_of.tzinfo is None:
+                raise ValueError("Reference cutoff must include a timezone.")
+            snapshot = session.scalar(select(InstrumentReferenceObservation).where(
+                InstrumentReferenceObservation.instrument_id == canonical_id,
+                InstrumentReferenceObservation.collected_at <= as_of,
+            ).order_by(InstrumentReferenceObservation.collected_at.desc(),
+                       InstrumentReferenceObservation.observation_id.desc()).limit(1))
         if snapshot is not None:
-            return dict(snapshot.value_json)
+            # Sector research reads this heavy constituent packet directly and
+            # binds it once per run; normal detail/assistant views need the core sections.
+            return {**snapshot.value_json, "sections": {key: value for key, value in
+                (snapshot.value_json.get("sections") or {}).items() if key != "sector_market_data"}}
     return {
         "instrument_id": canonical_id,
         "instrument_type": instrument["instrument_type"],
         "provider": "unavailable", "provider_symbol": None, "fetched_at": None,
         "source": {}, "sections": {},
-        "section_errors": {"reference": "Reference data has not been collected by backend maintenance."},
+        "section_errors": {"reference": "No retained reference data is available for the requested time."},
     }
 
 

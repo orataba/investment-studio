@@ -9,21 +9,40 @@ if [[ -x "$BACKEND_ROOT/.venv/bin/python" ]]; then
   DEFAULT_PYTHON_BIN="$BACKEND_ROOT/.venv/bin/python"
 fi
 PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
-UNIT_NAME="${UNIT_NAME:-investment-studio-market-data-refresh}"
-ON_CALENDAR="${ON_CALENDAR:-*-*-* 21:00 Asia/Shanghai}"
+CHANNEL="${CHANNEL:-settlement}"
+MARKET_SCOPE="${MARKET_SCOPE:-}"
+REFRESH_NAME=market-data-refresh
+DEFAULT_ON_CALENDAR="*-*-* 21:00 Asia/Shanghai"
+DEFAULT_RESTART_ON_FAILURE=true
+if [[ -n "$MARKET_SCOPE" ]]; then
+  DEFAULT_RESTART_ON_FAILURE=false
+  case "$CHANNEL:$MARKET_SCOPE" in
+    market:cn) DEFAULT_ON_CALENDAR="*-*-* 15:30 Asia/Shanghai" ;;
+    market:hk) DEFAULT_ON_CALENDAR="*-*-* *:30 Asia/Shanghai" ;;
+    market:us) DEFAULT_ON_CALENDAR="*-*-* *:30 America/New_York" ;;
+    reference:cn-hk) DEFAULT_ON_CALENDAR="*-*-* 08:00 Asia/Shanghai" ;;
+    reference:us) DEFAULT_ON_CALENDAR="*-*-* 08:00 America/New_York" ;;
+    *) echo "Unsupported scheduled channel/market scope: $CHANNEL/$MARKET_SCOPE" >&2; exit 64 ;;
+  esac
+  if [[ "$CHANNEL" == "reference" ]]; then
+    REFRESH_NAME=reference-data-refresh
+  fi
+  REFRESH_NAME="$MARKET_SCOPE-$REFRESH_NAME"
+fi
+UNIT_NAME="${UNIT_NAME:-investment-studio-$REFRESH_NAME}"
+ON_CALENDAR="${ON_CALENDAR:-$DEFAULT_ON_CALENDAR}"
 ENV_ROOT="${ENV_ROOT:-}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/investment-studio}"
 LOG_DIR="${LOG_DIR:-$STATE_DIR/logs}"
-LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/$REFRESH_NAME.log}"
 LOCK_FILE="${LOCK_FILE:-$STATE_DIR/market-data-refresh.lock}"
-SUMMARY_FILE="${SUMMARY_FILE:-$STATE_DIR/market-data-refresh-summary.json}"
-CHANNEL="${CHANNEL:-all}"
+SUMMARY_FILE="${SUMMARY_FILE:-$STATE_DIR/$REFRESH_NAME-summary.json}"
 UPDATED_BY="${UPDATED_BY:-scheduler}"
 RETRY_FAILED_ATTEMPTS="${RETRY_FAILED_ATTEMPTS:-2}"
 TIMEOUT_START_SEC="${TIMEOUT_START_SEC:-2h}"
 FAIL_ON_ITEM_FAILURE="${FAIL_ON_ITEM_FAILURE:-true}"
 REQUIRE_DOWNSTREAM_SUCCESS="${REQUIRE_DOWNSTREAM_SUCCESS:-true}"
-RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-true}"
+RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-$DEFAULT_RESTART_ON_FAILURE}"
 RESTART_SEC="${RESTART_SEC:-20min}"
 START_LIMIT_INTERVAL_SEC="${START_LIMIT_INTERVAL_SEC:-3h}"
 START_LIMIT_BURST="${START_LIMIT_BURST:-3}"
@@ -131,6 +150,10 @@ escaped_updated_by="$(printf '%q' "$UPDATED_BY")"
 escaped_retry_failed_attempts="$(printf '%q' "$RETRY_FAILED_ATTEMPTS")"
 escaped_lock_file="$(printf '%q' "$LOCK_FILE")"
 escaped_summary_file="$(printf '%q' "$SUMMARY_FILE")"
+market_scope_arg=""
+if [[ -n "$MARKET_SCOPE" ]]; then
+  market_scope_arg=" --market-scope $(printf '%q' "$MARKET_SCOPE")"
+fi
 fail_on_item_failure_arg=""
 if [[ "$FAIL_ON_ITEM_FAILURE" == "true" ]]; then
   fail_on_item_failure_arg=" --fail-on-item-failure"
@@ -144,6 +167,15 @@ if [[ "$RESTART_ON_FAILURE" == "true" ]]; then
   restart_policy="on-failure"
 fi
 environment_file_line="EnvironmentFile=$(printf '%q' "$ENV_FILE")"
+schedule_condition=""
+if [[ "$CHANNEL" == "market" && ( "$MARKET_SCOPE" == "hk" || "$MARKET_SCOPE" == "us" ) ]]; then
+  if [[ ! -f "$PROJECT_ROOT/infra/scripts/market_close_schedule.py" ]]; then
+    echo "Cannot find the market close schedule helper under PROJECT_ROOT." >&2
+    exit 1
+  fi
+  escaped_schedule_helper="$(printf '%q' "$PROJECT_ROOT/infra/scripts/market_close_schedule.py")"
+  schedule_condition="ExecCondition=/bin/bash -lc '$escaped_python_bin $escaped_schedule_helper --market-scope $MARKET_SCOPE'"
+fi
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -162,7 +194,8 @@ Environment=INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
 TimeoutStartSec=$TIMEOUT_START_SEC
 Restart=$restart_policy
 RestartSec=$RESTART_SEC
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
+$schedule_condition
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel$market_scope_arg --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF

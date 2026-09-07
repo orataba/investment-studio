@@ -52,8 +52,6 @@ cryptography==50.0.0
     # via
     #   -c requirements/python.lock
     #   pyjwt
-duckdb==1.5.5
-    # via investment-studio-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 et-xmlfile==2.0.0
     # via
     #   -c requirements/python.lock

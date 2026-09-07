@@ -615,3 +615,35 @@ def test_atomic_summary_replaces_file_without_temp_residue(tmp_path: Path) -> No
         "status": "succeeded",
     }
     assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_market_scope_uses_exchange_dates_and_does_not_treat_private_nav_as_listed_prices(monkeypatch):
+    from datetime import UTC, datetime
+    rows = [{"instrument_id": iid, "instrument_type": kind, "source_settings": {"market_calendar": calendar}}
+            for iid, kind, calendar in [("xlk", "etf", "XASE"), ("cn-stock", "equity", "XSHE"),
+                                       ("hk-stock", "equity", "XHKG"), ("nav", "private_fund", "XSHG")]]
+    monkeypatch.setattr(scheduled_refresh, "list_instruments", lambda **kwargs: rows)
+    # US Labor Day; both Asian markets are open. US aliases share the NYSE session.
+    now = datetime(2026, 9, 7, 13, tzinfo=UTC)
+    assert scheduled_refresh._market_instrument_ids("us", now, channel="market") == []
+    assert scheduled_refresh._market_instrument_ids("cn-hk", now, channel="market") == ["cn-stock", "hk-stock"]
+    assert scheduled_refresh._market_instrument_ids("us", datetime(2026, 9, 8, 13, tzinfo=UTC), channel="reference") == ["xlk"]
+
+
+def test_empty_market_scope_never_falls_back_to_global_refresh(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+    monkeypatch.setattr(scheduled_refresh, "_market_instrument_ids", lambda *args, **kwargs: [])
+    def unexpected(**kwargs):
+        raise AssertionError("An empty market scope must not refresh every instrument")
+    monkeypatch.setattr(scheduled_refresh, "refresh_reference_data_batch", unexpected)
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", unexpected)
+    code, summary = scheduled_refresh._run_refresh(
+        _args(tmp_path, channel="reference", market_scope="us"),
+        started_at=datetime(2026, 9, 7, 13, tzinfo=UTC),
+    )
+    assert code == 0
+
+
+def test_settlement_retains_nav_projection_and_fx_without_repeating_research():
+    assert scheduled_refresh._channels("settlement") == ["fmp_catalog", "tushare", "email", "fx", "fund_nav_projection"]
+    assert scheduled_refresh._channels("market") == ["configured"]

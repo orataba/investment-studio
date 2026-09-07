@@ -9,10 +9,7 @@ This project runs six user-systemd services in production:
 - `investment-studio-portfolio-api.service`
 - `investment-studio-portfolio-web.service`
 
-The market-data timer is installed separately as:
-
-- `investment-studio-market-data-refresh.service`
-- `investment-studio-market-data-refresh.timer`
+Six data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` and `us-reference-data-refresh` for pre-open research inputs.
 
 ## Deployment ownership
 
@@ -307,19 +304,42 @@ of `warning` may still allow market-data refresh and ordinary operational pages,
 but Risk and Risk Budget must be labelled unavailable until the analytics scope
 warnings are cleared.
 
-Install and start the market-data timer:
+Install all six data schedules as the service user, using the same installer:
 
 ```bash
-PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/shared-data" PYTHON_BIN="$PWD/.venv/bin/python" \
-  ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio" \
-  infra/systemd/install_market_data_refresh_timer.sh
+for schedule in settlement: market:cn market:hk market:us reference:cn-hk reference:us; do
+  CHANNEL="${schedule%%:*}" MARKET_SCOPE="${schedule#*:}" \
+    PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/shared-data" PYTHON_BIN="$PWD/.venv/bin/python" \
+    ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio" \
+    infra/systemd/install_market_data_refresh_timer.sh
+done
 ```
 
-The timer defaults to `21:00 Asia/Shanghai`. It uses a non-blocking `fcntl` lock,
-atomically records the latest run summary under `~/.local/state/investment-studio`,
-and treats item-level or downstream refresh failures as a failed run. The
-installer's bounded systemd restart policy retries those failures without
-allowing overlapping batches.
+| Channel / market scope | Schedule |
+| --- | --- |
+| `market / cn` | 15:30 Asia/Shanghai |
+| `market / hk` | Actual Hong Kong session close + 30 minutes |
+| `market / us` | Actual US session close + 30 minutes |
+| `reference / cn-hk` | 08:00 Asia/Shanghai |
+| `reference / us` | 08:00 America/New_York |
+| `settlement` | 21:00 Asia/Shanghai |
+
+IANA timezones handle US daylight saving time. The shared runner selects instruments by their configured
+market calendars and skips closed markets. Hong Kong and US post-close timers check at each hour
+`:30`; the shared `infra/scripts/market_close_schedule.py` condition runs the batch only in the half-hour
+window beginning 30 minutes after the actual session close, including half-days. A calendar error fails
+the service; an ordinary off-schedule tick leaves the previous refresh summary unchanged.
+
+Pre-open batches collect project-owned reference snapshots and sector ETF research inputs; the
+matching market's research starts at 08:30 and collects current news and event evidence. Collect the initial references before
+activating research on a new release. Watchlist reads these snapshots without an external DuckDB source.
+Nightly settlement covers the FMP catalogue, Tushare fund NAVs, email NAVs, FX and private-fund projections,
+without repeating equity closing-price or reference collection.
+
+All batches retain the shared non-blocking `fcntl` lock. Each schedule has its own log and atomic summary
+under `~/.local/state/investment-studio`. Item and downstream failures fail the service. Settlement retains
+its existing bounded systemd restart policy; the five market schedules do not add restarts. App installation,
+database restore and the service-group controls include every data service/timer in their stop/restore sets.
 
 ## Ports
 

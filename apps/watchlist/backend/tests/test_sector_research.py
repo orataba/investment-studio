@@ -11,7 +11,7 @@ from watchlist_app.db.session import get_session_factory
 
 
 def seed_sector(client, monkeypatch):
-    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(sector_market_database_path="/test/fmp.duckdb"))
+    monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
     with get_session_factory()() as session:
         for iid in ("xlk", "xlf"):
             session.add(InstrumentDetail(instrument_id=iid, instrument_type="etf", detail_view_type="etf", instrument_name=iid.upper(), metadata_json={}))
@@ -171,7 +171,7 @@ def test_failed_search_cannot_become_no_event_success(client, monkeypatch):
 
 def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
     seed_sector(client, monkeypatch)
-    monkeypatch.setattr(service,"sector_snapshot",lambda iid,path: ({},{"instrument_id":iid,"ticker":iid.upper()},{}))
+    monkeypatch.setattr(service,"sector_snapshot",lambda iid,session,**kwargs: ({},{"instrument_id":iid,"ticker":iid.upper()},{}))
     with get_session_factory()() as session:
         run,_=service.begin_run(session,["xlk"])
         rid=run.entry_id
@@ -179,7 +179,18 @@ def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
     context=client.get(f"/api/research/runs/{rid}/context").json()
     assert context["catalogue"][0]["instrument_id"]=="xlk"
     assert "sector_company_data" not in context
-    assert context["sector_estimate_evidence"][0]["status"] == "baseline"
+    assert context["sector_estimate_evidence"][0]["status"] == "no_snapshot"
+
+
+def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        rid = run.entry_id
+    service.prepare_run(rid)
+    context = client.get(f"/api/research/runs/{rid}/context").json()
+    assert context["sector_inputs"] == [] and context["sector_estimate_evidence"] == []
+    assert any("本项目留存" in gap for gap in context["data_gaps"])
 
 
 def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(client, monkeypatch):
@@ -189,7 +200,11 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
                "collected_at": "2026-09-04T00:00:00+00:00", "num_analysts_revenue": 5,
                "source_dataset": "fmp_analyst_estimates_bulk", "raw_sha256": "older-raw"}
     old_company = {"AAA": {"name": "Alpha", "weight_percent": 60, "annual_estimates": [old_row], "quarterly_estimates": []}}
-    previous = SimpleNamespace(entry_id="previous-run",status="completed",context_json={"sector_company_data":{"xlk":old_company}})
+    def observation(identifier, row):
+        return SimpleNamespace(observation_id=identifier, value_json={"fetched_at": row["collected_at"],
+            "sections": {"sector_market_data": {"holdings": [{"holding_symbol": "AAA", "holding_name": "Alpha",
+                "holding_type": "equity", "weight_percent": 60, "annual_estimates": [row], "quarterly_estimates": []}]}}})
+    previous = observation(1, old_row)
     with get_session_factory()() as session:
         run,_=service.begin_run(session,["xlk"])
         run.context_json={**run.context_json,"web_evidence":[{"operation":"search","sources":[]}]}
@@ -197,7 +212,7 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
             row = {**old_row, "revenue_avg": 110, "collected_at": "2026-09-05T00:00:00+00:00", "raw_sha256": "newer-raw", **changes}
             company = {"AAA": {**old_company["AAA"], "annual_estimates": [row]}}
             run.context_json = {**run.context_json,"sector_company_data":{"xlk":company}}
-            evidence = compare_estimate_snapshots("xlk",run,None if baseline else previous)
+            evidence = compare_estimate_snapshots("xlk", observation(2, row), None if baseline else previous)
             run.context_json = {**run.context_json,"sector_estimate_evidence":[evidence]}
             reply = result(sources=[evidence["source_id"]],body="AAA同财年营收共识由100升至110，需判断对XLK的影响。")
             if baseline or changes:
@@ -222,10 +237,10 @@ def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(cli
         session.flush()
         case=session.scalar(select(RiskCase).where(RiskCase.signal=="sector:new-policy"))
         source=case.history_json[0]["snapshot"]["sources"][0]
-        assert source["source_id"] == f"estimates:{run.entry_id}:xlk"
+        assert source["source_id"] == "estimates:2:xlk"
         assert source["changes"][0]["delta"] == 10
         assert source["changes"][0]["current_collected_at"] == "2026-09-05T00:00:00+00:00"
-        assert source["previous_snapshot"]["run_id"] == "previous-run"
+        assert source["previous_snapshot"]["observation_id"] == 1
         assert "url" not in source and "published_at" not in source
         assert case.evidence_json["published_at"] is None and case.evidence_json["occurred_at"] is None
         view=service.event_record(case)["history"][0]["snapshot"]["sources"][0]

@@ -86,13 +86,13 @@ def test_prepared_snapshot_and_result_scope_and_staleness(client):
         case.body = "新的原文改变了已留存风险判断。"
         session.commit()
         assert service.review_workspace(session, watchlist_id="risk-list")["latest_completed"]["stale"]
-        next_run, _ = service.begin_run(session, watchlist_id="risk-list")
+        next_run, _ = service.begin_run(session, watchlist_id="risk-list", scheduled_dates={"risk-a": "2026-09-08"})
         next_run.status, next_run.body = "failed", "本次运行未完成。"
         session.commit()
         state = service.review_workspace(session, watchlist_id="risk-list")
         assert state["latest_completed"]["run_id"] == run_id
         assert state["latest_run"]["status"] == "failed"
-        assert not service.begin_run(session, watchlist_id="risk-list", scheduled=True)[1]
+        assert not service.begin_run(session, watchlist_id="risk-list", scheduled_dates={"risk-a": "2026-09-08"})[1]
 
 
 def test_portfolio_uses_real_holdings_nav_and_preserves_unknown_values(client, monkeypatch):
@@ -304,16 +304,31 @@ def test_explicit_comparison_uses_common_dates_and_rejects_frequency_or_currency
 def test_same_day_completed_review_reruns_only_after_real_input_change(client):
     seed(client)
     with get_session_factory()() as session:
-        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled=True)
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})
         run.context_json = {**run.context_json, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a")}
         service.apply_result(session, run, reply())
         session.commit()
-        assert not service.begin_run(session, instrument_id="risk-a", scheduled=True)[1]
+        assert not service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})[1]
         session.get(RiskCase, "research").body = "今天的新原文改变了既有研究判断。"
         session.commit()
-        updated, created = service.begin_run(session, instrument_id="risk-a", scheduled=True)
+        updated, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})
         assert created and updated.entry_id != run.entry_id
-        assert not service.begin_run(session, instrument_id="risk-a", scheduled=True)[1]
+        assert not service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-08"})[1]
+
+
+def test_scheduled_risk_failure_uses_member_research_days_instead_of_beijing_date(client):
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, watchlist_id="risk-list",
+            scheduled_dates={"risk-a": "2026-09-08", "risk-b": "2026-09-08"})
+        run.status = "failed"
+        session.commit()
+        # One market may leave the due scope after its local midnight.
+        same, created = service.begin_run(session, watchlist_id="risk-list", scheduled_dates={"risk-a": "2026-09-08"})
+        assert not created and same.entry_id == run.entry_id
+        next_day, created = service.begin_run(session, watchlist_id="risk-list",
+            scheduled_dates={"risk-a": "2026-09-09", "risk-b": "2026-09-08"})
+        assert created and next_day.entry_id != run.entry_id
 
 
 def test_risk_input_keeps_longest_underwater_duration_separate_from_max_drawdown_episode(client):

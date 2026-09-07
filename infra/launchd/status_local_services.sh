@@ -20,26 +20,34 @@ for service in home-api watchlist-api portfolio-api home-web watchlist-web portf
   fi
 done
 
-refresh_service=market-data-refresh
+for refresh_service in market-data-refresh cn-market-data-refresh hk-market-data-refresh \
+  us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
 refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
-refresh_hour=21
-refresh_minute=0
-refresh_retry_hour=23
-refresh_retry_minute=0
-if [[ -f "$refresh_plist" && -x /usr/libexec/PlistBuddy ]]; then
-  if /usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Hour' "$refresh_plist" >/dev/null 2>&1; then
-    refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Hour' "$refresh_plist")"
-    refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Minute' "$refresh_plist")"
-    refresh_retry_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:1:Hour' "$refresh_plist")"
-    refresh_retry_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:1:Minute' "$refresh_plist")"
-  else
-    refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Hour' "$refresh_plist" 2>/dev/null || printf '21')"
-    refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Minute' "$refresh_plist" 2>/dev/null || printf '0')"
-  fi
+refresh_schedule=unavailable
+if [[ -f "$refresh_plist" && -x "$PYTHON_BIN" ]]; then
+  refresh_schedule="$("$PYTHON_BIN" - "$refresh_plist" <<'PY_SCHEDULE'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    plist = plistlib.load(source)
+environment = plist.get("EnvironmentVariables", {})
+timezone = environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE", "Asia/Shanghai system time")
+if environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL") == "market" and environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE") in {"hk", "us"}:
+    print(f"session close + 30 minutes {timezone} (hourly calendar checks)")
+elif "INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE" in environment:
+    hour = int(environment["INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR"])
+    minute = int(environment["INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE"])
+    print(f"{hour:02}:{minute:02} {timezone} (half-hour timezone checks)")
+else:
+    intervals = plist["StartCalendarInterval"]
+    if isinstance(intervals, dict):
+        intervals = [intervals]
+    print(", ".join(f"{entry['Hour']:02}:{entry['Minute']:02}" for entry in intervals), timezone)
+PY_SCHEDULE
+)"
 fi
-printf -v refresh_schedule '%02d:%02d primary, %02d:%02d conditional retry (local)' \
-  "$refresh_hour" "$refresh_minute" "$refresh_retry_hour" "$refresh_retry_minute"
 if details="$(launchctl print "$domain/$refresh_label" 2>/dev/null)"; then
   state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
   pid="$(awk '/^[[:space:]]*pid = / { print $3; exit }' <<<"$details")"
@@ -54,7 +62,7 @@ else
   printf '%-20s not installed (schedule=%s)\n' "$refresh_service" "$refresh_schedule"
 fi
 
-refresh_summary="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}/market-data-refresh-summary.json"
+refresh_summary="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}/$refresh_service-summary.json"
 if [[ -f "$refresh_summary" && -x "$PYTHON_BIN" ]]; then
   "$PYTHON_BIN" - "$refresh_summary" <<'PY'
 from __future__ import annotations
@@ -83,6 +91,10 @@ elif [[ -f "$refresh_summary" ]]; then
 else
   printf '  latest result: no completed run recorded\n'
 fi
+printf '  log: %s/%s.log (errors: %s/%s.error.log)\n' \
+  "$LOG_DIR" "$refresh_service" "$LOG_DIR" "$refresh_service"
+printf '  summary: %s\n' "$refresh_summary"
+done
 
 printf '\nHealth checks:\n'
 for url in \
@@ -100,6 +112,3 @@ for url in \
 done
 
 printf '\nLogs: %s\n' "$LOG_DIR"
-printf 'Scheduled refresh: %s/%s.log (errors: %s/%s.error.log)\n' \
-  "$LOG_DIR" "$refresh_service" "$LOG_DIR" "$refresh_service"
-printf 'Scheduled summary: %s\n' "$refresh_summary"
