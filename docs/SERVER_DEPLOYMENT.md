@@ -312,7 +312,11 @@ runs the read-only live-data audit. The backup covers `identity`, `instrument_da
 and service credentials separately. Migration order is dependency-aware so
 Data Ingestion raw-evidence storage exists before destructive shared NAV cleanup.
 
-Migration, unit publication, daemon reload, enablement, restart, or active-state
+Before accepting an upgrade, the installer checks HTTP readiness for all eight
+API and web endpoints; a running process alone is insufficient. `HEALTH_ATTEMPTS`
+defaults to 60, with bounded requests and a one-second pause between attempts.
+
+Migration, unit publication, daemon reload, enablement, restart, or readiness
 gate failure restores the database, old unit files, prior enablement, and exact
 prior active set in that order. The refresh timer is restored only after the API
 writers. A database or service-state rollback failure leaves all managed writers
@@ -367,6 +371,11 @@ for schedule in settlement: market:cn market:hk market:us reference:cn-hk refere
     infra/systemd/install_market_data_refresh_timer.sh
 done
 ```
+
+During a coordinated release, set `START_TIMERS=false` for this installer and
+the Briefing timer installer. Regenerate definitions while writers are paused,
+verify the upgraded services and data, then restore the previously active timers.
+Shared market pipeline definition generation never starts its timers.
 
 | Channel / market scope | Schedule |
 | --- | --- |

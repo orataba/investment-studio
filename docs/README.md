@@ -13,6 +13,7 @@
 | 数据库拓扑、迁移、重建、恢复与 PostgreSQL 测试 | [Database Workflow](./DATABASE_WORKFLOW.md) |
 | macOS 常驻服务、定时刷新、日志和卸载 | [macOS Local Service](./LOCAL_MACOS_SERVICE.md) |
 | Linux/systemd 部署、网络和访问控制 | [Server Deployment](./SERVER_DEPLOYMENT.md) |
+| 多账号启用、历史作者认领、组合权限和服务凭证 | [Multi-account System](./MULTI_ACCOUNT_SYSTEM.md) |
 | 新机器恢复代码、secrets、数据库和托管服务 | [New Machine Restore](./NEW_MACHINE_RESTORE.md) |
 | Portfolio 数据表、字段和写入所有权 | [Portfolio Database Dictionary](./PORTFOLIO_DATABASE_DICTIONARY.md) |
 | 基金 NAV 事件、复投证据、投影和重算 | [Fund NAV Event Model](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md) |
@@ -57,6 +58,3 @@ infra/scripts/verify_repository.sh static
 ```bash
 infra/scripts/verify_repository.sh all-local
 ```
-
-
-多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。启用新的权限接口前必须先迁移身份库并配置真实会话与后台服务身份。
