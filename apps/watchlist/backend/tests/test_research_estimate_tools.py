@@ -98,6 +98,7 @@ def test_sector_overview_and_company_use_bound_evidence_and_full_holdings_remain
     holdings = [{"symbol": f"C{number:03}", "name": "完整持仓", "description": "原始字段" * 50} for number in range(95)]
     asset["reference_data"] = {"sections": {"holdings": holdings}}
     context = {"sector_run": True, "instrument_ids": ["xlk"], "run_id": "daily", "cutoff": "2026-09-08T05:00:00Z",
+        "catalogue": [{"instrument_id": "xlk"}],
         "instrument_inputs": [asset], "research_dossiers": [{"instrument_id": "xlk", "mandate": {"focus": "真实研究任务"}}],
         "sector_estimate_evidence": [asset["analyst_estimate_history"]],
         "sector_inputs": [{"instrument_id": "xlk", "stock_count": 95, "holdings": holdings, "leading_companies": holdings}]}

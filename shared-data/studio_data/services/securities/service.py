@@ -89,7 +89,7 @@ def refresh_security_eod(
     instrument_id: str,
     *,
     full_history: bool = False,
-    client: FmpClient | None = None,
+    store=None,
 ) -> dict[str, object]:
     instrument = get_instrument(instrument_id)
     if instrument is None:
@@ -99,13 +99,13 @@ def refresh_security_eod(
         return refresh_equity_eod(
             instrument_id,
             full_history=full_history,
-            client=client,
+            store=store,
         )
     if instrument_type == "etf":
         return refresh_etf_eod(
             instrument_id,
             full_history=full_history,
-            client=client,
+            store=store,
         )
     if instrument_type == "index":
         source_profile = str(
@@ -116,7 +116,7 @@ def refresh_security_eod(
                 instrument_id,
                 instrument_type="index",
                 full_history=full_history,
-                client=client,
+                store=store,
             )
         if source_profile in {"tushare", "tushare_pro", "tushare-pro"}:
             from studio_data.services.market_data_ops import refresh_market_data

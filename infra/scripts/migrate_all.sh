@@ -68,16 +68,19 @@ load_env_file() {
 }
 
 if [[ -n "$ENV_ROOT" ]]; then
-  for app in data portfolio watchlist; do
+  for app in home data portfolio watchlist market briefing; do
     load_env_file "$ENV_ROOT/$app.env" true
   done
 fi
 
 for required_database_variable in \
+  INVESTMENT_STUDIO_HOME_DATABASE_URL \
   INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL \
   INVESTMENT_STUDIO_DATA_DATABASE_URL \
   INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
-  INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL; do
+  INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL \
+  INVESTMENT_STUDIO_MARKET_DATABASE_URL \
+  INVESTMENT_STUDIO_BRIEFING_DATABASE_URL; do
   if [[ -z "${!required_database_variable:-}" ]]; then
     echo "Set $required_database_variable explicitly before running migrations." >&2
     exit 1
@@ -86,6 +89,9 @@ done
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA="${INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA:-instrument_data}"
 
 "$PYTHON_BIN" "$SCRIPT_DIR/validate_migration_targets.py"
+
+# Schema creation is separate from account bootstrap and business ownership claims.
+PYTHONPATH="$PROJECT_ROOT/home/backend${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -m home_api.cli migrate
 
 run_migration() {
   local label="$1"
@@ -185,5 +191,7 @@ run_migration \
   "$PROJECT_ROOT/apps/watchlist/backend:$INSTRUMENT_CORE_PYTHON"
 
 run_migration "shared asset data" "$REGISTRY_MIGRATION_ROOT" "$INSTRUMENT_CORE_PYTHON"
+run_migration "shared market data" "$PROJECT_ROOT/shared-data/market" "$PROJECT_ROOT/shared-data/market"
+run_migration "market briefing" "$PROJECT_ROOT/apps/briefing/backend" "$PROJECT_ROOT/apps/briefing/backend:$PROJECT_ROOT/shared-data/market"
 
 echo "All release migrations completed successfully."

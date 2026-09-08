@@ -5,6 +5,9 @@ import App from './App'
 
 const apiMocks = vi.hoisted(() => ({ getPortfolioCapabilities: vi.fn() }))
 vi.mock('./lib/api', () => apiMocks)
+// Account/portfolio authorization has its own boundary contract tests.
+vi.mock('./components/PortfolioSessionProvider', () => ({ default: ({ children }: { children: React.ReactNode }) => children }))
+vi.mock('./components/PortfolioAccessProvider', () => ({ default: ({ children }: { children: React.ReactNode }) => children }))
 vi.mock('./pages/ResearchPage', () => ({ default: () => <p>Private research</p> }))
 vi.mock('./pages/OverviewPage', () => ({ default: () => <p>Portfolio overview</p> }))
 

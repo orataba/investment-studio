@@ -64,7 +64,6 @@ from portfolio_app.api.contracts import (
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.period_calculation_state import load_period_calculation_inputs
-from portfolio_app.services.risk_basis_store import calculation_frequency_profile_from_registry
 from portfolio_app.services.attribution import CONTRIBUTION_AXES, CONTRIBUTION_AXIS_ERROR
 from portfolio_app.services.daily_snapshots import (
     enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change,
@@ -485,10 +484,6 @@ def get_portfolio_period_calculation_groups(
         calculation_inputs = load_period_calculation_inputs(
             portfolio_id, start_date=start_date, end_date=end_date,
         )
-        risk_frequency_profile = calculation_frequency_profile_from_registry(
-            calculation_inputs.risk_instrument_ids,
-            end_date=calculation_inputs.effective_end_date or date.today(),
-        )
         report = build_period_calculation_groups_report(
             portfolio,
             accounts,
@@ -504,7 +499,6 @@ def get_portfolio_period_calculation_groups(
             contribution_report=contribution_report,
             detail_contribution_report=detail_contribution_report,
             calculation_inputs=calculation_inputs,
-            prebuilt_risk_frequency_profile=risk_frequency_profile,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

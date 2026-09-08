@@ -30,16 +30,22 @@ from investment_studio_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
+    "identity": "20260908_0001",
     "instrument_data": "20260907_0034",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260906_0060",
-    "watchlist": "20260905_0054",
+    "portfolio": "20260908_0062",
+    "watchlist": "20260908_0056",
+    "market_data": "studio_market_0002",  # This migration chain also owns market_text.
+    "briefing": "20260908_0003",
 }
 VERSION_TABLES = {
+    "identity": "alembic_version",
     "instrument_data": "alembic_version",
     "data_ingestion": "platform_alembic_version",
     "portfolio": "alembic_version",
     "watchlist": "alembic_version",
+    "market_data": "studio_market_alembic_version",
+    "briefing": "alembic_version",
 }
 FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 
@@ -285,6 +291,14 @@ AUDIT_CHECK_NAMES = (
     "held_confirmed_share_split_events_covered",
     "held_detected_or_uncovered_share_adjustments",
     "listed_total_return_coverage",
+    "numeric_publication_catalog_contract",
+    "numeric_current_source_contract",
+    "numeric_complete_snapshot_contract",
+    "numeric_dataset_clock_contract",
+    "market_text_version_contract",
+    "market_text_entity_contract",
+    "briefing_frozen_source_contract",
+    "briefing_report_version_contract",
 )
 
 
@@ -455,6 +469,11 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
             "portfolio",
             "taxonomy_assignment_record",
         ),
+        **{f"numeric_{name}": ("market_data", name) for name in
+           ("datasets", "batches", "files", "current", "snapshots")},
+        **{f"text_{name}": ("market_text", name) for name in
+           ("document_version", "import_receipt", "entity", "document_entity", "document_event")},
+        "briefing_report": ("briefing", "report"),
     }
     capabilities = {
         name: _relation_kind(cursor, *relation)
@@ -474,6 +493,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "target_line",
         "taxonomy",
         "taxonomy_assignment",
+        *[name for name in relation_specs if name.startswith(("numeric_", "text_", "briefing_"))],
     }
     unsupported_overhaul_markers = {
         name for name in relation_specs if name.startswith("unsupported_")
@@ -631,6 +651,130 @@ def _schema_identifier_contract_query() -> str:
     """
 
 
+def _public_data_checks(cursor: psycopg.Cursor[Any]) -> list[AuditCheck]:
+    checks = (
+        ("numeric_publication_catalog_contract", """
+            WITH catalog AS (
+                SELECT b.id, b.status, b.row_count, b.published_at, d.name,
+                    count(f.part) AS parts, coalesce(sum(f.row_count), 0) AS file_rows,
+                    min(f.first_row) AS first_row, max(f.last_row) AS last_row
+                FROM market_data.batches b LEFT JOIN market_data.datasets d ON d.name=b.dataset
+                LEFT JOIN market_data.files f ON f.batch_id=b.id
+                GROUP BY b.id, b.status, b.row_count, b.published_at, d.name
+            ), invalid AS (
+                SELECT id FROM catalog WHERE name IS NULL OR row_count<0
+                    OR status NOT IN ('writing','failed','ready')
+                    OR (status='ready' AND (published_at IS NULL OR file_rows<>row_count
+                        OR (row_count>0 AND (first_row<>0 OR last_row<>row_count-1))))
+                    OR (status<>'ready' AND parts>0)
+                UNION ALL
+                SELECT batch_id FROM (
+                    SELECT f.*, lag(last_row) OVER (PARTITION BY batch_id ORDER BY part) AS previous_last
+                    FROM market_data.files f
+                ) f WHERE row_count<=0 OR bytes<=0 OR last_row-first_row+1<>row_count
+                    OR (previous_last IS NOT NULL AND first_row<>previous_last+1)
+                    OR path NOT LIKE 'numeric/%' OR path ~ '(^|/)\\.\\.(/|$)'
+            ) SELECT count(*) FROM invalid
+        """, "Ready numerical batches must own contiguous, correctly counted file catalogs; complete empty captures remain valid."),
+        ("numeric_current_source_contract", """
+            SELECT count(*) FROM market_data.current c
+            LEFT JOIN market_data.batches b ON b.id=c.batch_id
+            WHERE b.id IS NULL OR b.status<>'ready' OR b.dataset<>c.dataset
+               OR c.payload->>'source_id' IS DISTINCT FROM 'numeric:'||c.batch_id||':'||c.row_index
+               OR c.payload->>'batch_id' IS DISTINCT FROM c.batch_id
+               OR c.payload->>'row_index' IS DISTINCT FROM c.row_index::text
+               OR c.payload->>'_current_key' IS DISTINCT FROM c.key
+               OR NOT EXISTS (SELECT 1 FROM market_data.files f WHERE f.batch_id=c.batch_id
+                              AND c.row_index BETWEEN f.first_row AND f.last_row)
+        """, "Every current projection must point to its own immutable published numerical row."),
+        ("numeric_complete_snapshot_contract", """
+            WITH invalid AS (
+                SELECT s.scope_key FROM market_data.snapshots s
+                LEFT JOIN market_data.batches b ON b.id=s.batch_id
+                WHERE b.id IS NULL OR b.status<>'ready' OR b.dataset<>s.dataset
+                    OR s.row_count<0 OR s.row_count>b.row_count OR s.snapshot_at>now()
+                UNION ALL
+                SELECT c.key FROM market_data.current c
+                WHERE c.dataset='analyst_estimates' AND NOT EXISTS (
+                    SELECT 1 FROM market_data.snapshots s
+                    WHERE s.dataset=c.dataset AND s.scope_key=c.payload->>'_snapshot_key'
+                        AND s.snapshot_at=(c.payload->>'snapshot_at')::timestamptz
+                        AND NOT EXISTS (SELECT 1 FROM market_data.snapshots newer
+                            WHERE newer.dataset=s.dataset AND newer.scope_key=s.scope_key AND newer.snapshot_at>s.snapshot_at)
+                )
+            ) SELECT count(*) FROM invalid
+        """, "Complete capture scopes, including empty responses, must retire older analyst projection rows independently per symbol/frequency."),
+        ("numeric_dataset_clock_contract", """
+            SELECT count(*) FROM market_data.datasets d
+            JOIN (SELECT dataset,max(published_at) AS newest FROM market_data.batches
+                  WHERE status='ready' GROUP BY dataset) b ON b.dataset=d.name
+            WHERE d.updated_at IS DISTINCT FROM b.newest
+        """, "Importing older history must not move a dataset's latest publication clock backward."),
+        ("market_text_version_contract", """
+            SELECT count(*) FROM market_text.document_version v
+            WHERE source_id<>'text:'||version_id
+                OR status NOT IN ('active','corrected','withdrawn','superseded')
+                OR body_sha256 !~ '^[a-f0-9]{64}$' OR raw_sha256 !~ '^[a-f0-9]{64}$'
+                OR record_sha256 !~ '^[a-f0-9]{64}$'
+                OR published_at_precision NOT IN ('unknown','date','datetime')
+                OR occurred_at_precision NOT IN ('unknown','date','datetime')
+                OR (published_at_precision='datetime') IS DISTINCT FROM (published_at IS NOT NULL)
+                OR (published_at_precision='date') IS DISTINCT FROM (published_date IS NOT NULL)
+                OR (occurred_at_precision='datetime') IS DISTINCT FROM (occurred_at IS NOT NULL)
+                OR (occurred_at_precision='date') IS DISTINCT FROM (occurred_date IS NOT NULL)
+        """, "Text versions retain immutable identities and truthful date-only, timestamp, and unknown source clocks."),
+        ("market_text_entity_contract", """
+            SELECT count(*) FROM (
+                SELECT l.version_id FROM market_text.document_entity l
+                LEFT JOIN market_text.document_version v USING(version_id)
+                LEFT JOIN market_text.entity e USING(entity_id)
+                WHERE v.version_id IS NULL OR e.entity_id IS NULL
+                UNION ALL
+                SELECT l.version_id FROM market_text.document_event l
+                LEFT JOIN market_text.document_version v USING(version_id) WHERE v.version_id IS NULL
+            ) invalid
+        """, "Text entity and event associations must refer to preserved document versions."),
+        ("briefing_frozen_source_contract", """
+            WITH frozen AS (
+                SELECT r.report_id,r.cutoff,s.value AS source
+                FROM briefing.report r CROSS JOIN LATERAL
+                    json_array_elements(coalesce(r.input_json->'sources','[]'::json)) s
+                WHERE r.status='completed'
+            ), invalid AS (
+                SELECT f.report_id FROM frozen f LEFT JOIN market_text.document_version v
+                    ON v.source_id=f.source->>'source_id' AND v.version_id=f.source->>'version_id'
+                WHERE f.source->>'source_type'='public_document'
+                    AND (v.version_id IS NULL OR v.observed_at>f.cutoff OR v.received_at>f.cutoff)
+                UNION ALL
+                SELECT f.report_id FROM frozen f LEFT JOIN market_data.batches b
+                    ON b.id=f.source->>'batch_id'
+                WHERE f.source->>'source_type'='numeric' AND (
+                    b.id IS NULL OR b.status<>'ready'
+                    OR (f.source->>'observed_at')::timestamptz>f.cutoff
+                    OR (f.source->>'available_at')::timestamptz>f.cutoff
+                    OR NOT EXISTS (SELECT 1 FROM market_data.files p WHERE p.batch_id=b.id
+                        AND (f.source->>'row_index')::bigint BETWEEN p.first_row AND p.last_row)
+                )
+                UNION ALL
+                SELECT f.report_id FROM frozen f CROSS JOIN LATERAL
+                    json_array_elements_text(coalesce(f.source->'source_ids','[]'::json)) link
+                WHERE f.source->>'source_type' IN ('market_row','macro_row') AND NOT EXISTS (
+                    SELECT 1 FROM frozen bound WHERE bound.report_id=f.report_id
+                        AND bound.source->>'source_id'=link.value)
+            ) SELECT count(*) FROM invalid
+        """, "Completed reports must bind existing text and numerical versions visible at their cutoff, including both endpoints of derived rows."),
+        ("briefing_report_version_contract", """
+            SELECT count(*) FROM briefing.report
+            WHERE version<1 OR report_type NOT IN ('daily','weekly')
+                OR status NOT IN ('queued','running','completed','failed')
+                OR (status='completed' AND (completed_at IS NULL OR result_json IS NULL
+                    OR input_json->'sources' IS NULL
+                    OR (input_json->>'cutoff')::timestamptz IS DISTINCT FROM cutoff))
+        """, "Completed report versions require their frozen input, matching cutoff, result, and completion clock."),
+    )
+    return [_count_check(cursor,name=name,query=query,detail=detail) for name,query,detail in checks]
+
+
 def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
     checks: list[AuditCheck] = []
     database_url = _normalize_database_url(database_url)
@@ -640,6 +784,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             profile = _detect_schema_profile(cursor)
             if profile.family != "flat-table":
                 return _unsupported_checks(profile)
+            checks.extend(_public_data_checks(cursor))
             checks.append(
                 _count_check(
                     cursor,

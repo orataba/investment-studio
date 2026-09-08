@@ -455,11 +455,13 @@ Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 positi
 
 事件型衍生品使用以下独立估值边界，不能伪装成普通 market quote：
 
-- FCN 和长期权在没有可靠公允价值时按 remaining transaction basis carried，使用 `holding_kind=position`、`valuation_basis=carried_cost`、`fair_value=null`、空 quote identity 和 `quote_status=event-cost`；
+- FCN 和长期权在没有可靠公允价值时按 remaining transaction basis carried，使用 `holding_kind=derivative_contract`、`valuation_basis=carried_cost`、`fair_value=null`、空 quote identity 和 `quote_status=event-cost`；
 - event-valued purchase 的 fees / taxes 在交易日确认为 expense，不进入 carrying basis；
 - Call / Put 的 sell-to-open 同时增加 settlement cash 和等额 premium-basis liability；short-option row 使用 `holding_kind=option_obligation`、`valuation_basis=premium_liability`、负的 NAV amount，并披露 open contract count、`contract count × multiplier` 的标的数量、remaining premium basis 和 carrying liability。风险读模型可汇总同一组合的现有标的股票或同币种 settled cash，显示 portfolio-level backing ratio/shortfall；该指标不分配具体担保物，也不声明券商保证金或质押状态；
 - partial/full buy-to-close、writer expiry、writer cash settlement 和 assignment 按关闭的合约数量比例释放 premium basis。释放 basis 减去 close cost 与 charges 形成 realized option P&L；
-- FCN 敲入观察只记录已确认的障碍事件，不改变数量、账面本金或现金；敲入后的最终兑付不能早于最终观察日。FCN close 按关闭数量释放 carrying basis，现金金额使用实际回单。实物收股在同一记录的 asset_deliveries 保存数量、接收账户、本币总确认价值及 fx_rate_to_contract；合约处置损益 = 确认收股折算价值 + 实际现金尾差 − 费用税费 − 所处置合约成本。收到证券按本币确认价值建 lot，不能虚构现金兑付再独立买股；
+- FCN 敲入观察只记录已确认的障碍事件，不改变数量、账面本金或现金；敲入后的最终兑付不能早于最终观察日。FCN close 按关闭数量释放 carrying basis，现金金额使用实际回单。实物收股在同一记录的 asset_deliveries 保存数量、接收账户、本币总确认价值及 fx_rate_to_contract；合约处置损益 = 确认收股折算价值 + 实际现金尾差 − 合约处置费用税费 − 所处置合约成本。收到证券按本币确认价值加股票取得费用税费建 lot，取得费用从证券币种现金账户独立扣除一次，不能重复冲减合约损益或虚构本金现金兑付再买股。quantity_fx_rate、fractional_quantity、fractional_reference_price 为回单依据，不生成现金换汇；
+- 同一 FCN close 的 settlement_cashflows 保存末期票息及合约费用税费。按各自 recognition_date 确认收益/费用、settlement_date 收付现金；票息使用合约币种，合约费用可使用其他币种并按确认日汇率归集。asset_deliveries 的经济生效日沿用母交易 position_effective_date/trade_date，自该日起进入股票估值与市场风险；delivery_date 记录实际证券到账日，到账前数量不可被处置，未记录日期显示未知。股票取得费用的 fee_settlement_date 与母交易现金尾差结算日互相独立，默认经济生效日；
+- FCN lifecycle 只读视图用账本剩余和已释放来源追踪接票股票，保留来源交易、证券和币种，不将原有同标的股票收益并入 FCN。整笔收益 = FCN 处置损益 + 票息 − 合约入场及独立费用 + 来源股票后续已实现/未实现及收入；FCN 入场费用在发生时费用化，兑付费用已扣除于处置损益；股票取得费用已在股票成本中。平均成本混合持仓先按来源原始数量分配股票数量与处置收入，再按各来源成本计算损益；发生拆合股时按账本实际数量调整来源，仅调整事件日前已持有的来源，历史处置和权益收入仍使用各自日期的数量口径。跨账户舍入导致同一来源无法唯一追溯时显示 N/A。合约币种汇总包含股票持有期间 FX，缺少必要行情、FX 或无法完整追溯来源时显示 N/A，不使用接票条款汇率替代随后日期的市场汇率；
 - Option 的结算方式、行权风格、行权币种及条款依据按合约保存，不从证券名称推测。已知现金交割合约不能实物交付，已知实物交割合约不能用现金关闭代替；欧式及百慕大式结果须符合合约行权日期。long/writer 到期作废使用零现金 expiry。经人工确认的实物行权或指派由专用命令原子生成两条事实：期权腿以零现金关闭并释放 remaining premium/cost basis，股票腿严格按合约 strike、multiplier 和 Call/Put 方向买入或卖出；费用和税费只记在股票腿。`option_delivery_link` 保存严格一对一关系，任一腿不能单独修改或删除。期权 premium P&L 与股票自身 book cost/realized P&L 保持分开，属于组合账面绩效口径，不承诺等于券商税务成本。权利金币种可不同于股票币种；股票腿的明确 strike_currency 必须与标的报价及交付账户币种一致，不推断合约 FX 转换。非股票/ETF 或非标准篮子仍不支持，不能因此改记现金交割。期权和股票腿共用实际 trade_time；实物行权的 lot_selections 只指定期权多头批次，股票腿遵循其账户成本法。
 
 只要期间内存在 material event-valued asset、writer liability 或 derivative lifecycle activity，账本仍完整发布用于 NAV reconciliation 的 flow-neutral operational/carrying-basis daily return，并明确标记为 `Total Portfolio Operational Return`；它不是完整 fair-value 或 GIPS-informed return。所有波动率、downside volatility、Sharpe、Sortino、Calmar、风险 drawdown、benchmark risk compare 和 realized risk attribution 统一消费独立的 `Market Risk Return`，不得消费 operational return。FCN、长期权和 writer obligation 是 system-level derivative tracking scope：Taxonomy assignment 不能把它们重新纳入 Research universe、target solve、covariance、Risk Budget 或 point-in-time backtest；它们未分配 planning taxonomy 时也不得阻断普通证券 Research。
@@ -777,8 +779,9 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。显式区间的期初已有持仓按 `start_date` EOD market value 重置为期间成本，只重放 `(start_date, end_date]` 内交易；期末未卖出的持仓用 `end_date` EOD market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 可影响已实现与未实现的期间拆分，但不改变二者之和或组合收益。FIFO 使用原始取得顺序，内部转仓保留该顺序；已发布的期初批次与区间内交易采用相同规则。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
-- Performance 中的区间风险贡献是 realized market-risk attribution，不另设 Risk tab。每个 daily slice 独立保存 `market_risk_excluded_pnl`、`market_risk_total_pnl`、`market_risk_daily_return`、`market_risk_daily_contribution` 及其 coverage/eligibility；分组、taxonomy 和 calculation detail 聚合都必须消费这些字段，不能复用 operational `daily_return` / `daily_contribution`，也不能靠分类过滤猜测风险范围。纯衍生品与本币现金 slice 没有 eligible observation；非本币现金的 FX return/contribution 正常进入矩阵。对每个 eligible group，`Vol / Sharpe` 使用 group 自身 market-risk daily return；`Corr to Portfolio` 使用 group return 与 portfolio `market_risk_daily_return`；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(MarketRiskContribution_g, R_p) / Var(R_p)`。行级 `Obs` 表示真正对齐后的 observation count。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
-- Calculation 将逐日贡献之和明确标为 `Arithmetic Return Contribution`，另列 `TWR Linking Difference` 使两者与几何链接的区间 TWR 对平；链接差不是额外投资损益。CSV/XLSX 沿用表格数值与这项解释，并附实际期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法及百分比小数单位说明。
+- Performance 中的区间风险贡献是 realized market-risk attribution，不另设 Risk tab。每个 daily slice 独立保存 `market_risk_excluded_pnl`、`market_risk_total_pnl`、`market_risk_daily_return`、`market_risk_daily_contribution` 及其 coverage/eligibility；分组、taxonomy 和 calculation detail 聚合都必须消费这些字段，不能复用 operational `daily_return` / `daily_contribution`，也不能靠分类过滤猜测风险范围。纯衍生品与本币现金 slice 没有 eligible observation；非本币现金的 FX return/contribution 正常进入矩阵。对每个 eligible group，`Vol / Sharpe` 使用 group 自身 market-risk daily return；`Corr to Portfolio` 使用 group return 与 portfolio `market_risk_daily_return`；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(MarketRiskContribution_g, R_p) / Var(R_p)`。行级 `Obs` 表示该组自身有效收益 observation count。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
+- Calculation 默认展示 `Linked Return Contribution`（收益贡献（复利链接）），使用组合此前的累计 TWR 增长倍数逐日链接贡献；顶层行合计等于期间 TWR，子行合计等于父组。`Arithmetic Return Contribution` 保留为可选列，只有展示算术列时才显示对应的 `TWR Linking Difference`；链接差不是额外投资损益。CSV/XLSX 沿用可见列、表格数值与口径解释，并附实际期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法及百分比小数单位说明。
+- 分组风险直接复用已发布 NAV 区间的 market-risk return / contribution slices 与 coverage/eligibility，不再单独查询 Registry 总回报净值或执行 366 天历史完整性检查。Vol / Sharpe 使用各组区间内有效样本，Corr / Beta 使用该组与组合的日期交集；RC 使用同一组共同日期上的已知贡献，任一活动组贡献未知的日期整体排除，未持有组和已知零贡献可取零。`Obs` 为该组自身有效收益样本数，相关性和 RC 的共同样本数可能更少。申购确认价可以支持账簿估值，但不因此生成基金当日总回报净值。
 
 Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
 
@@ -1116,7 +1119,7 @@ benchmark-relative 指标必须携带：
 
 ### 7.1 首版归因目标
 
-首版优先支持**日频算术归因**，而不是一开始就做最复杂的多层 Brinson 变体。
+以日频损益贡献为基础，区间默认使用复利链接贡献，同时保留算术贡献供核对。
 
 说明：
 
@@ -1131,16 +1134,25 @@ $$
 Contribution_{g,t} = \frac{PnL_{g,t}}{NAV_{t-1} + ExternalCashIn_t}
 $$
 
-区间贡献：
+算术区间贡献（API `period_contribution`）：
 
 $$
 Contribution_{g,period} = \sum_t Contribution_{g,t}
 $$
 
+复利链接区间贡献（Calculation API `linked_period_contribution`）：
+
+$$
+LinkedContribution_{g,period} = \sum_t Contribution_{g,t}\prod_{s<t}(1+TWR_{p,s})
+$$
+
+其中乘积只包含同一所选区间内、当日之前的组合经营 `daily_twr`，起始增长倍数为 1；不使用 market-risk 收益或该组自身收益。沿用 TWR 的起点边界：收盘锚点不计当日收益，入金日开盘起点计当日收益。各组使用同一组合增长链，因此重新分组及现金/标的明细拆分仍然可加总；`total_linked_period_contribution` 汇总顶层组，不重复计入子行。未知收益或未知贡献保持不可得，不作为零收益补齐。
+
 ### 说明
 
 - 贡献的分母与组合当日 TWR 分母一致；没有组内资金变动时可写作期初权重乘组收益，有买卖或划转时不能简单套用期初权重；
 - 组级 return 使用自身 flow-adjusted denominator，与占组合总分母的 contribution 分开；
+- 在逐日贡献对平的完整期间，`Sum(LinkedContribution) = Product(1 + daily_twr) - 1 = Period TWR`。不对每个组的贡献单独做复利，也不按最终 TWR 比例缩放算术贡献，因此正负收益抵消、零 TWR 的期间同样适用；
 - 逐日算术贡献之和通常不等于跨日几何 TWR。`TWR Linking Difference = Period TWR - Sum(Arithmetic Return Contribution)` 单列对平，不能将该差异描述为舍入误差或遗漏损益。例如两日各 +10%，算术贡献合计 20%，TWR 为 21%，链接差为 1 个百分点。
 
 ### 7.3 Active contribution

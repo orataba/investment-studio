@@ -60,7 +60,7 @@ Registry 股票，不能靠合约名称、ticker 文本或 note 推断。页面�
   contract 反算并按 source precision 保存。页面展示的 NAV 仅作参考，不自动写入成交价格。
 - ETF / 股票：数量与实际 execution price 为常用锚点，gross amount 由 price-scale contract
   计算；若成交回单直接给出金额，可用金额反算价格。
-- FCN：合约进入、利息收入和关闭分别记录；关闭结果可选正常到期、敲入或敲出。
+- FCN：合约进入、期间利息收入和关闭分别记录；关闭结果可选正常到期、敲入或敲出。末期票息及合约费用可作为关闭记录的绑定现金明细，和收股、现金尾差一起保存、修改或删除；已单独录入的票息不要重复添加。
 - FCN 的 notional 是每张合约名义本金，quantity 是合约数量；成交金额可以因折价、溢价或二级交易而不同于名义本金。敲入观察单独使用 `knock_in_observation`，金额为零、不填数量，不关闭持仓；note 保存发行人确认依据。最终现金兑付、票息和实际结算日分别记录。
 - 期权：数量单位为合约张数，gross amount 使用本地合约 multiplier；普通开平仓与现金结果各自记录。经人工确认的实物行权/指派由专用命令把期权零现金关闭和按 strike 的股票买卖原子落账，费用与税费只进入股票腿。
 - fees、taxes 与 fee category 必须分开保存，不能揉进 gross amount。
@@ -129,7 +129,7 @@ history、解析后的时间戳或内部配对 ID。导入时仍会按目标 Por
 ### Excel 手工填写模板
 
 提供给其他人手工录入时，优先使用 `Blank Excel Template`。模板的 `Transactions` 工作表仍
-保留标准 CSV 的 45 个字段（包含交付、批次引用及补充条款），第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
+保留标准 CSV 的 46 个字段（包含交付、绑定现金明细、批次引用及补充条款），第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
 模板另外提供以下工作表：
 
 - `Instructions`：填写流程、普通交易与内部转移的必填规则、金额方向和上传限制；
@@ -158,7 +158,15 @@ Import 预览的后端校验为准。
 只能在同币种现金账户间进行。换汇行的 `currency` 是转出现金账户币种，
 `counter_amount = gross_amount × fx_rate`，目标币种由 `counterparty_account_id` 对应账户确定。
 
-FCN 实物收股在最终兑付中填写 `asset_deliveries`：实际股票数量、本币确认总价值与合约折算汇率。gross_amount 只填现金尾差；不要另造现金兑付与买入。Option 的实物行权/指派由同一个 outcome command 原子生成股票腿；CSV/Excel 用 physical_long / physical_written + option_delivery_json，导出保留关系，不再导入股票腿。`opening_balance`、`opening_written`、`short_opening_balance` 的交易和结算日必须等于组合 inception；原开仓日填 acquisition_date，剩余负债或成本不重复影响期初现金。
+FCN 最终结算使用一张结算单：`asset_deliveries` 保存实际收股数量、本币确认总价值与合约折算汇率，`gross_amount` 只填合约币种现金尾差，`settlement_cashflows` 保存末期票息及合约费用税费。CSV/Excel 对应 `asset_deliveries_json` 和 `settlement_cashflows_json`。不要另造本金现金兑付、换汇或股票买入；只有回单确认账户实际发生独立换汇时才另录真实换汇。
+
+每条收股明细分别填写经济生效日对应的公允确认价值、实际证券到账日、股票取得费用税费及同证券币种的扣费现金账户。取得费用计入股票成本并只扣一次现金，不再次冲减 FCN 处置损益。`fx_rate_to_contract` 为每单位证券币种折合的合约币种；`quantity_fx_rate` 为按条款计算股数时使用的反向汇率，和碎股数量、碎股计价依据一起仅作回单证据。合同接票价、确认公允价值及随后真实股票成交价分别保留，不能相互代填。
+
+收股自经济生效日起进入估值和市场风险，实际到账前在详情标记待交付；现金尾差、股票取得费用和其他现金明细按各自结算日进入现金。实际证券到账日未录入时显示未知。到账前 FIFO 账户如有其他已到账股票，卖出需指定该批次；平均成本账户需等同标的待交付股票到账后再处置，以免错误消耗未到账来源。修改或删除结算不能破坏后续真实卖出及账户历史。
+
+FCN 与所收股票详情均展示整笔投资追踪：FCN 处置损益、票息及合约费用，加上来源股票后续已实现、未实现和现金股息；与原有同标的股票混仓时按真实来源批次分配。股票取得费用已包含在其成本中。缺少所需行情或汇率，以及尚不能完整追溯的红利再投资、返还本金或跨证券公司行动，会明确显示不完整与 N/A。已关闭 FCN 可从股票详情或原结算记录回看。
+
+Option 的实物行权/指派由同一个 outcome command 原子生成股票腿；CSV/Excel 用 physical_long / physical_written + option_delivery_json，导出保留关系，不再导入股票腿。`opening_balance`、`opening_written`、`short_opening_balance` 的交易和结算日必须等于组合 inception；原开仓日填 acquisition_date，剩余负债或成本不重复影响期初现金。
 
 CSV/Excel 的 `derivative_additional_terms_json` 保留经确认的结算方式、行权风格、FCN 观察/付息日期及条款依据，导出后可原样回导；基础条款仍使用专用列。条款缺失时界面显示未确认，不自动补成美式、现金交割或实物交割。截图提取不能仅凭“购/沽”、日期或“卖空”猜测期权/权证身份或开平仓方向。
 

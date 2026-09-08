@@ -152,7 +152,8 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "lot_selections_json": ("指定开仓批次", "可选", "FIFO 卖出、买回或兑付可指定 [{opening_transaction_id, quantity}]，数量之和必须等于本次处置量。文件内可引用 record_reference。留空使用账户成本法。"),
     "record_reference": ("本行引用编号", "可选", "文件内唯一编号，供后续指定批次引用。导出自动保留引用；转仓行代表接收批次。不是券商业务号。"),
     "option_delivery_json": ("期权原子实物交割", "physical_long / physical_written 必填", "一行同时表达期权结果及实际股票腿；填写 stock_account_id、settlement_cash_account_id、fees、fee_category、taxes，以及券商已形成股票空头时的 allow_stock_short。外层 fees/taxes 为零，费用分类留 unknown；两腿共用本行 trade_time。数量和行权价由合约校验，不要另填独立股票成交。"),
-    "asset_deliveries_json": ("FCN 实物交付列表", "实物兑付时必填", "每项包含 account_id、instrument_id、quantity、fair_value（该腿总确认价值）、currency、fx_rate_to_contract。gross_amount 仅填实际碎股/尾差现金；note 填交割确认依据。"),
+    "asset_deliveries_json": ("FCN 实物交付列表", "实物兑付时必填", "每项包含 account_id、instrument_id、quantity、fair_value（总确认价值）、currency、fx_rate_to_contract。delivery_date 为实际到账；取得费用 taxes/fees 使用该腿币种及 settlement_cash_account_id，fee_settlement_date 为扣款日。quantity_fx_rate（证券币/合约币）仅解释股数。gross_amount 仅填实际尾差；note 填交割依据。"),
+    "settlement_cashflows_json": ("FCN 末期票息与合约费用", "可选", "每项含 kind（coupon/fee/tax）、cash_account_id、currency、amount、recognition_date、settlement_date。票息使用合约币；费用可用实际其他币种。不能重复录入已有票息或交付腿已资本化税费。"),
     "derivative_additional_terms_json": (
         "补充合约条款 JSON", "新建衍生品合约时选填",
         '期权示例：{"settlement_type":"physical","exercise_style":"american","strike_currency":"USD","terms_reference":"broker-confirmation"}。FCN 可填写 knock_in_observation、knock_out_observation_dates、coupon_payment_dates、coupon_day_count、settlement_type、payoff_description、terms_reference。不确定的条款留空，不推测；基础条款使用专用列。',
@@ -361,6 +362,15 @@ def _template_example(
 
 
 TEMPLATE_EXAMPLE_ROWS = (
+    _template_example(
+        "FCN｜美元本金接港股及港币税费", "FCN-CROSS-CURRENCY-001",
+        asset_type="fcn", transaction_action="knock_in_close", trade_date="2026-06-19", settlement_date="2026-06-23",
+        account_id="USD_FCN_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_USD_FCN_ID", currency="USD", quantity=1, gross_amount="22.41",
+        asset_deliveries_json='[{"account_id":"HKD_SECURITY_ACCOUNT_ID","instrument_id":"HK_FCN_UNDERLYING_ID","quantity":4881,"fair_value":3416700,"currency":"HKD","fx_rate_to_contract":"0.128040973111395647","quantity_fx_rate":"7.81","fractional_quantity":"0.25","fractional_reference_price":700,"delivery_date":"2026-06-23","settlement_cash_account_id":"HKD_CASH_ACCOUNT_ID","taxes":3905,"fee_settlement_date":"2026-06-22"}]',
+        settlement_cashflows_json='[{"kind":"coupon","cash_account_id":"USD_CASH_ACCOUNT_ID","currency":"USD","amount":"3333.34","recognition_date":"2026-06-19","settlement_date":"2026-06-23"}]',
+        note="示意回单：50万美元本金、800港元接票价，700港元公允确认价；股数FX为7.81港元/美元。税费和末期票息按实际回单填写，已录票息勿重复。无需另造本金换汇或买股。",
+    ),
     _template_example("证券｜实际卖空", "SHORT-SALE-001", asset_type="security", transaction_action="short_sell", trade_date="2026-05-04", account_id="USD_SECURITY_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=100, price=100, gross_amount=10000, fees=2, note="券商已确认卖空成交，不是卖出未持有股票的普通多头"),
     _template_example("证券｜买回空头", "SHORT-COVER-001", asset_type="security", transaction_action="buy_to_cover", trade_date="2026-05-05", account_id="USD_SECURITY_ACCOUNT_ID", settlement_cash_account_id="USD_CASH_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=50, price=90, gross_amount=4500, fees=2),
     _template_example("证券｜期初空头负债", "SHORT-OPENING-001", asset_type="security", transaction_action="short_opening_balance", trade_date="2026-01-02", acquisition_date="2025-12-15", account_id="USD_SECURITY_ACCOUNT_ID", instrument_id="EQUITY_INSTRUMENT_ID", quantity=100, gross_amount=9998, note="原成交净收入形成剩余负债，不新增权利金或现金；trade_date 必须为组合 inception"),

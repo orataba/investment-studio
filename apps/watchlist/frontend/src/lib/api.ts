@@ -126,6 +126,8 @@ export type FieldRegistryRecord = {
 }
 
 export type FieldRegistryResponse = {
+  column_field_keys: string[]
+  filter_field_keys: string[]
   categories: FieldCategory[]
   fields: FieldRegistryRecord[]
   total_fields: number
@@ -772,6 +774,35 @@ export type InstrumentResearchNote = {
   updated_at: string
   updated_by: string | null
   revision_number: number
+  readonly author_user_id?: string | null
+  research_context?: InvestmentOpinionResearchContext | null
+}
+
+export type InvestmentOpinionResearchContextInput = {
+  theme_id?: string | null
+  related_note_id?: string | null
+  related_revision?: number | null
+  relationship?: 'initial' | 'update' | 'review' | 'lesson'
+  background?: string
+  horizon?: string
+  verification?: string
+  invalidation?: string
+  outcome?: string
+  mechanism_assessment?: string
+  alternative_explanations?: string[]
+  lesson?: string
+  applicability?: string
+  limitations?: string
+  source_ids?: string[]
+}
+
+export type InvestmentOpinionResearchContext = InvestmentOpinionResearchContextInput & {
+  readonly author_role?: string
+  readonly source_run_id?: string
+  readonly recorded_via?: string
+  readonly source_quote?: string
+  readonly research_snapshot?: Record<string, unknown>
+  readonly information_cutoff?: string
 }
 
 export type InstrumentResearchResponse = {
@@ -786,8 +817,8 @@ export type InstrumentResearchProfileInput = Omit<
 
 export type InstrumentResearchNoteInput = Omit<
   InstrumentResearchNote,
-  'note_id' | 'created_at' | 'updated_at' | 'updated_by' | 'revision_number'
->
+  'note_id' | 'created_at' | 'updated_at' | 'updated_by' | 'revision_number' | 'author_user_id' | 'research_context'
+> & { research_context?: InvestmentOpinionResearchContextInput | null }
 
 export type InstrumentResearchProfileRevision = InstrumentResearchProfileInput & {
   revision_number: number
@@ -816,6 +847,7 @@ export type InstrumentResearchProfileUpdatePayload = {
 export type InstrumentResearchNoteUpdatePayload = {
   note: InstrumentResearchNoteInput
   updated_by?: string
+  source_entry_id?: string
 }
 
 export function emptyInstrumentResearchResponse(): InstrumentResearchResponse {
@@ -999,10 +1031,12 @@ export async function fetchJson<T>(
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
     },
+    credentials: 'include',
     ...init,
   })
 
   if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event('studio:unauthorized'))
     throw new Error(await responseErrorMessage(response))
   }
 

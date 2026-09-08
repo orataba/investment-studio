@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+from studio_identity import resolve_token, revoke_delegation
+from portfolio_app.services.portfolio_access import require_access
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.transaction_captures import (
@@ -29,11 +31,11 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
-def _run_harness_process(*, portfolio_id: str, batch_id: str) -> tuple[int, bool]:
+def _run_harness_process(*, portfolio_id: str, batch_id: str, run_token: str) -> tuple[int, bool]:
     process = subprocess.Popen(
         [str(HARNESS_RUNNER), portfolio_id, batch_id],
         cwd=BACKEND_ROOT.parents[2],
-        env=os.environ.copy(),
+        env={**os.environ, "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN": run_token},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -52,6 +54,7 @@ def run_transaction_capture_analysis(
     portfolio_id: str,
     batch_id: str,
     attempt: int,
+    run_token: str,
 ) -> None:
     started, starting_revision = mark_transaction_capture_analysis_run_started(
         portfolio_id=portfolio_id,
@@ -59,12 +62,16 @@ def run_transaction_capture_analysis(
         attempt=attempt,
     )
     if not started:
+        revoke_delegation(run_token)
         return
 
     try:
+        principal = resolve_token(run_token, "portfolio")
+        require_access(portfolio_id, "editor", principal)
         return_code, timed_out = _run_harness_process(
             portfolio_id=portfolio_id,
             batch_id=batch_id,
+            run_token=run_token,
         )
         revision_created = has_transaction_capture_agent_revision(
             portfolio_id=portfolio_id,
@@ -100,3 +107,6 @@ def run_transaction_capture_analysis(
             succeeded=False,
             error="The restricted agent runner could not start or complete.",
         )
+
+    finally:
+        revoke_delegation(run_token)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from studio_identity import current_principal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -129,7 +130,7 @@ def review_portfolio_instrument_event_task(
             decision=payload.decision,
             transaction_ids=payload.transaction_ids,
             note=payload.note,
-            reviewed_by=payload.reviewed_by,
+            reviewed_by=current_principal().display_name,
             expected_row_version=payload.expected_row_version,
         )
         record = next(

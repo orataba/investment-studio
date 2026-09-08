@@ -19,6 +19,8 @@ def test_research_deployment_boundary(monkeypatch, enabled):
     import portfolio_app.main as main_module
 
     main_module = importlib.reload(main_module)
+    from tests.conftest import authorize_fixture_client
+    authorize_fixture_client(main_module.app)
     with TestClient(main_module.app) as client:
         assert client.get("/api/capabilities").json() == {"research_enabled": enabled}
         assert client.get("/api/portfolios").status_code == 200

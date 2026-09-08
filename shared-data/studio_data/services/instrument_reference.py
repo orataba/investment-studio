@@ -6,13 +6,12 @@ from uuid import uuid4
 
 from studio_data.core.settings import get_settings
 from studio_data.services import datahub_client
-from studio_data.services.fmp import FmpApiError, FmpClient
+from studio_market.config import MarketSettings
+from studio_market.numeric.registered import read_reference_data
 from studio_data.services.instrument_store import get_instrument, list_instruments
 from studio_data.contracts import StudioInstrumentReferenceData
 from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
-from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKERS
 from studio_data.db.session import get_session_factory
-from studio_data.services.sector_reference import collect_sector_market_data
 
 
 REFERENCE_INSTRUMENT_TYPES = {
@@ -78,7 +77,7 @@ def _run_section(
 ) -> None:
     try:
         sections[name] = loader()
-    except (FmpApiError, datahub_client.DataHubClientError, ValueError) as error:
+    except (datahub_client.DataHubClientError, ValueError) as error:
         errors[name] = str(error)
 
 
@@ -180,95 +179,7 @@ def _tushare_reference(
     return sections, errors
 
 
-def _fmp_reference(
-    *,
-    instrument_type: str,
-    provider_symbol: str,
-    client: FmpClient,
-) -> tuple[dict[str, object], dict[str, str]]:
-    sections: dict[str, object] = {}
-    errors: dict[str, str] = {}
-    if instrument_type == "equity":
-        _run_section(sections, errors, "profile", lambda: client.profile(provider_symbol))
-        _run_section(
-            sections,
-            errors,
-            "financials",
-            lambda: client.income_statements(provider_symbol, limit=5),
-        )
-        _run_section(
-            sections,
-            errors,
-            "key_metrics",
-            lambda: client.key_metrics(provider_symbol, limit=5),
-        )
-        _run_section(
-            sections,
-            errors,
-            "ratios",
-            lambda: client.financial_ratios(provider_symbol, limit=5),
-        )
-        _run_section(
-            sections,
-            errors,
-            "dividends",
-            lambda: client.dividends(provider_symbol, limit=20),
-        )
-        _run_section(
-            sections,
-            errors,
-            "splits",
-            lambda: client.splits(provider_symbol, limit=20),
-        )
-        return sections, errors
-
-    if instrument_type in {"etf", "public_fund"}:
-        _run_section(sections, errors, "fund_info", lambda: client.fund_info(provider_symbol))
-        _run_section(
-            sections,
-            errors,
-            "holdings",
-            lambda: client.fund_holdings(provider_symbol),
-        )
-        _run_section(
-            sections,
-            errors,
-            "sector_weights",
-            lambda: client.fund_sector_weights(provider_symbol),
-        )
-        _run_section(
-            sections,
-            errors,
-            "country_weights",
-            lambda: client.fund_country_weights(provider_symbol),
-        )
-        if provider_symbol in SECTOR_ETF_TICKERS:
-            _run_section(
-                sections, errors, "sector_market_data",
-                lambda: collect_sector_market_data(
-                    provider_symbol, info=sections.get("fund_info"),
-                    holdings=sections.get("holdings", []), client=client,
-                ),
-            )
-            failures = [gap for gap in sections.get("sector_market_data", {}).get("gaps", [])
-                        if gap["kind"] == "collection_failed"]
-            if failures:
-                errors["sector_market_data"] = f"{len(failures)} constituent source requests failed; see snapshot gaps."
-        return sections, errors
-
-    if instrument_type == "index":
-        _run_section(sections, errors, "index_info", lambda: client.index_info(provider_symbol))
-        return sections, errors
-
-    errors["reference"] = f"FMP reference data is not defined for {instrument_type}."
-    return sections, errors
-
-
-def get_instrument_reference_data(
-    instrument_id: str,
-    *,
-    client: FmpClient | None = None,
-) -> dict[str, object] | None:
+def get_instrument_reference_data(instrument_id: str) -> dict[str, object] | None:
     instrument = get_instrument(instrument_id)
     if instrument is None:
         return None
@@ -282,6 +193,8 @@ def get_instrument_reference_data(
     provider_symbol: str | None = None
     sections: dict[str, object] = {}
     errors: dict[str, str] = {}
+    fetched_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    source = _source_context(instrument)
 
     if source_profile in {"tushare", "tushare_pro", "tushare-pro"}:
         provider = "datahub:tushare"
@@ -305,11 +218,10 @@ def get_instrument_reference_data(
             prefix="fmp:",
         )
         if provider_symbol:
-            sections, errors = _fmp_reference(
-                instrument_type=instrument_type,
-                provider_symbol=provider_symbol,
-                client=client or FmpClient(),
-            )
+            public = read_reference_data(MarketSettings.from_environment(), provider_symbol, instrument_type)
+            sections, errors = public["sections"], public["section_errors"]
+            fetched_at = public["observed_at"]
+            source.update(public["source"])
         else:
             errors["reference"] = "The instrument has no FMP provider symbol."
     elif instrument_type == "private_fund":
@@ -322,15 +234,15 @@ def get_instrument_reference_data(
         "instrument_type": instrument_type,
         "provider": provider,
         "provider_symbol": provider_symbol,
-        "fetched_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "source": _source_context(instrument),
+        "fetched_at": fetched_at,
+        "source": source,
         "sections": sections,
         "section_errors": errors,
     }
 
 
 def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] | None:
-    """Atomically retain each collection and update its latest reference view."""
+    """Atomically retain changed source observations and update the app view."""
     record = get_instrument_reference_data(instrument_id)
     if record is None:
         return None
@@ -338,11 +250,15 @@ def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] |
     with get_session_factory()() as session:
         key = record["instrument_id"]
         stored = session.get(InstrumentReferenceSnapshot, key)
+        previous = stored.value_json if stored is not None else None
         if stored is None:
             session.add(InstrumentReferenceSnapshot(instrument_id=key, value_json=record))
         else:
             stored.value_json = record
-        if record["sections"]:
+        # Reading the same public versions again is not a new observation.
+        changed = previous is None or any(previous.get(field) != record.get(field)
+            for field in ("sections", "fetched_at"))
+        if record["sections"] and record["fetched_at"] and changed:
             session.add(InstrumentReferenceObservation(
                 observation_id=str(uuid4()), instrument_id=key,
                 collected_at=datetime.fromisoformat(record["fetched_at"].replace("Z", "+00:00")),
@@ -353,7 +269,7 @@ def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] |
 
 
 def refresh_reference_data_batch(*, instrument_ids: list[str] | None = None) -> dict[str, object]:
-    """Collect reference snapshots for registered assets; leave prices/NAV untouched."""
+    """Refresh registered app views from source observations; leave prices/NAV untouched."""
     selected = set(instrument_ids) if instrument_ids is not None else None
     results = []
     for instrument in list_instruments(include_inactive=False):
@@ -368,7 +284,10 @@ def refresh_reference_data_batch(*, instrument_ids: list[str] | None = None) -> 
             status = "failed" if errors else "refreshed"
             if record and record["provider"] == "manual":
                 status = "skipped"
-            results.append({"instrument_id": instrument_id, "status": status, "message": str(errors) if errors else "Reference snapshot collected"})
+            coverage = dict(record.get("source", {}).get("section_coverage", {})) if record else {}
+            unavailable = [f"{section}: {value['reason']}" for section, value in coverage.items() if value.get("status") == "unavailable"]
+            message = str(errors) if errors else "; ".join(["Reference snapshot projected", *unavailable])
+            results.append({"instrument_id": instrument_id, "status": status, "message": message})
         except Exception as error:
             results.append({"instrument_id": instrument_id, "status": "failed", "message": str(error)})
     return {"results": results, "refreshed_count": sum(item["status"] == "refreshed" for item in results)}

@@ -35,11 +35,14 @@ fi
   "$PROJECT_ROOT/requirements/python.lock"
 
 for package_root in \
+  "$PROJECT_ROOT/packages/identity" \
   "$PROJECT_ROOT/shared-data/instruments/python" \
+  "$PROJECT_ROOT/shared-data/market" \
   "$PROJECT_ROOT/home/backend" \
   "$PROJECT_ROOT/shared-data" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
-  "$PROJECT_ROOT/apps/portfolio/backend"; do
+  "$PROJECT_ROOT/apps/portfolio/backend" \
+  "$PROJECT_ROOT/apps/briefing/backend"; do
   "$UV_BIN" pip install --python "$VENV_ROOT/bin/python" --no-deps --editable "$package_root"
 done
 

@@ -209,7 +209,6 @@ def materialize_equity(
         refresh_equity_eod(
             instrument_id,
             full_history=not bool(coverage.get("latest_date")),
-            client=fmp,
         )
     instrument = get_instrument(instrument_id)
     if instrument is None:
@@ -221,11 +220,11 @@ def refresh_equity_eod(
     instrument_id: str,
     *,
     full_history: bool = False,
-    client: FmpClient | None = None,
+    store=None,
 ) -> dict[str, object]:
     return refresh_fmp_eod(
         instrument_id=instrument_id,
         instrument_type="equity",
         full_history=full_history,
-        client=client,
+        store=store,
     )

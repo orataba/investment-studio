@@ -20,6 +20,10 @@ printf '%s\n' \
   'INVESTMENT_STUDIO_DATA_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   > "$ENV_ROOT/data.env"
 chmod 600 "$ENV_ROOT/data.env"
+printf '%s\n' \
+  'INVESTMENT_STUDIO_MARKET_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
+  > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/market.env"
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -97,6 +101,7 @@ grep -Fq -- '--require-downstream-success' "$SERVICE_FILE"
 grep -Fq -- '--json' "$SERVICE_FILE"
 grep -Fq 'EnvironmentFile=' "$SERVICE_FILE"
 grep -Fq 'data.env' "$SERVICE_FILE"
+grep -Fq 'market.env' "$SERVICE_FILE"
 grep -Fxq 'Environment=INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data' "$SERVICE_FILE"
 grep -Fxq 'Environment=INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion' "$SERVICE_FILE"
 grep -Fq 'INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=' "$SERVICE_FILE"

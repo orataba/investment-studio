@@ -64,6 +64,7 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "instrument_ids": [],
         "json": False,
         "lock_file": tmp_path / "refresh.lock",
+        "lock_wait_seconds": 0.0,
         "summary_file": tmp_path / "summary.json",
     }
     values.update(overrides)
@@ -601,6 +602,43 @@ def test_exclusive_lock_rejects_overlap_from_another_process(tmp_path: Path) -> 
         holder.stdin.flush()
         holder.wait(timeout=5)
     assert holder.returncode == 0
+
+
+def test_waiting_projection_acquires_lock_after_the_owner_finishes(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    waiting = Event()
+    real_sleep = scheduled_refresh.time.sleep
+    def observe_wait(seconds):
+        waiting.set()
+        real_sleep(seconds)
+    monkeypatch.setattr(scheduled_refresh.time, "sleep", observe_wait)
+    lock_file = tmp_path / "refresh.lock"
+    def acquire_after_owner():
+        with scheduled_refresh._exclusive_refresh_lock(lock_file, wait_seconds=2):
+            with pytest.raises(scheduled_refresh.RefreshAlreadyRunningError):
+                with scheduled_refresh._exclusive_refresh_lock(lock_file):
+                    pytest.fail("waiter did not hold the exclusive lock")
+            return True
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        with scheduled_refresh._exclusive_refresh_lock(lock_file):
+            future = workers.submit(acquire_after_owner)
+            assert waiting.wait(timeout=1)
+            assert not future.done()
+        assert future.result(timeout=3)
+
+
+def test_lock_wait_timeout_returns_tempfail_without_refresh_or_summary(tmp_path, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(scheduled_refresh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(scheduled_refresh.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    args = _args(tmp_path, lock_wait_seconds=0.6)
+    monkeypatch.setattr(scheduled_refresh, "_parse_args", lambda: args)
+    monkeypatch.setattr(scheduled_refresh, "_wait_for_database", lambda **kwargs: pytest.fail("timeout attempted data work"))
+    with scheduled_refresh._exclusive_refresh_lock(args.lock_file):
+        assert scheduled_refresh.main() == scheduled_refresh.ALREADY_RUNNING_EXIT_CODE
+        assert clock[0] == 0.6
+        assert not args.summary_file.exists()
 
 
 def test_atomic_summary_replaces_file_without_temp_residue(tmp_path: Path) -> None:

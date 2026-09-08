@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
 from threading import Event
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from studio_identity import IdentityError, principal_context, resolve_request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -44,6 +47,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def studio_identity_boundary(request: Request, call_next):
+    if request.url.path in {"/api/health", "/health"} or not request.url.path.startswith("/api/") or request.method == "OPTIONS":
+        return await call_next(request)
+    try:
+        principal = await run_in_threadpool(resolve_request, request, audience="watchlist", allowed_origins=settings.cors_origins)
+        with principal_context(principal):
+            from watchlist_app.db.session import get_session_factory
+            from watchlist_app.services.research_access import enforce_request
+            def authorize():
+                with get_session_factory()() as session:
+                    enforce_request(request, session)
+            await run_in_threadpool(authorize)
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "private, no-store"
+            return response
+    except (IdentityError, HTTPException) as error:
+        return JSONResponse({"detail": error.detail}, status_code=error.status_code)
+
+
+@app.get("/api/identity")
+def identity():
+    from watchlist_app.services.research_identity import research_identity
+    return research_identity()
+
+# Keep CORS outside identity so trusted frontends can handle expired-session errors.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -51,6 +80,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 app.include_router(api_router, prefix="/api")
 

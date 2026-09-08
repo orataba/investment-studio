@@ -377,6 +377,49 @@ describe('Risk rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
+  it('keeps quality details in the Risk Health heading and opens them on request', async () => {
+    const user = userEvent.setup()
+    const warning = 'Corporate action review required: confirm the issuer evidence.'
+    apiMocks.getHoldingsWorkspace.mockResolvedValue({
+      ...twoHoldingWorkspace(), quality_warnings: [warning],
+    })
+    renderRiskPage()
+
+    const hint = await screen.findByRole('button', { name: /Data quality warning:/ })
+    expect(hint.closest('.panel-title')).toHaveTextContent('Risk Health')
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+    await user.click(hint)
+    expect(within(screen.getByRole('tooltip')).getByText(warning)).toBeVisible()
+  })
+
+  it.each([
+    { currency: 'USD', blocked: false, detail: 'Comparison uses the selected price-return series.' },
+    { currency: 'HKD', blocked: true, detail: 'requires a base-currency return series; got HKD versus USD.' },
+  ])('keeps $currency benchmark comparison details in the rolling-risk toolbar', async ({ currency, blocked, detail }) => {
+    const user = userEvent.setup()
+    const instrument = {
+      instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark',
+      instrument_type: 'index', currency, identifiers: [], latest_market_data: [],
+    }
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrument] })
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
+      portfolio_id: '3', instrument_core: instrument, as_of_date: '2026-07-15', range_key: 'all',
+      chart_basis: 'close', return_semantics: 'price_return', currency, metric_family: 'price',
+      coverage_state: 'complete',
+      points: returnPoints.map((point, index) => ({ date: point.date, value: 100 + index })),
+    })
+    renderRiskPage()
+    await user.type(await screen.findByRole('searchbox', { name: 'Compare benchmark' }), 'Market')
+    await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
+
+    const hint = await screen.findByRole('button', { name: /Benchmark comparison:/ })
+    expect(hint.closest('.risk-rolling-toolbar')).not.toBeNull()
+    expect(hint).toHaveAttribute('title', expect.stringContaining(detail))
+    expect(Boolean(screen.queryByText('Benchmark unavailable'))).toBe(blocked)
+    await user.click(hint)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
+  })
+
   it('fails closed when every active member shares a provider observation gap', () => {
     const workspace = twoHoldingWorkspace()
     workspace.risk_basis = {

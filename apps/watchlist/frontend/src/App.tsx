@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from 'react-router'
 import './research-workbench.css'
 
 import LoadingOverlay from './components/LoadingOverlay'
+import AccountBoundary from './components/AccountBoundary'
 
 const InstrumentDetailPage = lazy(() => import('./pages/InstrumentDetailPage'))
 const MonitoringPage = lazy(() => import('./pages/MonitoringPage'))
@@ -14,7 +15,7 @@ const ResearchPage = lazy(() => import('./pages/ResearchPage'))
 
 export default function App() {
   return (
-    <div className="app-shell">
+    <AccountBoundary><div className="app-shell">
       <main className="page-shell page-shell-terminal">
         <Suspense fallback={<LoadingOverlay label="Loading page" />}>
           <Routes>
@@ -31,6 +32,6 @@ export default function App() {
           </Routes>
         </Suspense>
       </main>
-    </div>
+    </div></AccountBoundary>
   )
 }

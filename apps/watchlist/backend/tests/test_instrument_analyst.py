@@ -10,7 +10,7 @@ def register_fund(client):
 def start_analysis(client, monkeypatch, instrument_id="sxv264", page_context=None):
     import watchlist_app.services.research_runner as runner
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None: None)
     topic_response = client.post("/api/research/topics", json={"title": "标的分析", "instrument_ids": [instrument_id]})
     assert topic_response.status_code == 201, topic_response.text
     topic = topic_response.json()
@@ -44,7 +44,7 @@ def test_assistant_rejects_page_scope_that_disagrees_with_linked_topic(client, m
     import watchlist_app.services.research_runner as runner
     from watchlist_app.services import research_workbench
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None: None)
     monkeypatch.setattr(research_workbench, "external_json", lambda service, path:
                         {"research_enabled": True} if path == "/capabilities" else [{"portfolio_id": "linked"}])
     topic = client.post("/api/research/topics", json={"title": "组合对话", "portfolio_id": "linked"}).json()
@@ -106,7 +106,16 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
         'title': '管理人说明', 'body': '管理人说明策略机制，未披露底层持仓。', 'source': '用户提供的管理人说明', 'published_at': '2026-08-31'}).json()
     sid = material['source_id']
     with get_session_factory()() as session:
-        run, _ = sector_research.begin_run(session, ['sxv264'])
+        # Ordinary funds no longer launch active research. Retained historical
+        # research still provides the same evidence to today's personal assistant.
+        from watchlist_app.db.models.workbench import ResearchTopic
+        topic = ResearchTopic(topic_id="instrument-events:sxv264", title="已有基金研究", instrument_ids=["sxv264"], visibility="team")
+        session.add(topic)
+        session.flush()
+        run = ResearchEntry(entry_id="retained-fund-research", topic_id=topic.topic_id, kind="analysis", title="已保存的基金研究", status="queued",
+                            context_json={"sector_run": True, "instrument_ids": ["sxv264"], "reviews": {}})
+        session.add(run)
+        session.commit()
         run_id = run.entry_id
     sector_research.prepare_run(run_id)
     outline = client.get(f'/api/research/runs/{run_id}/context').json()
@@ -117,9 +126,9 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         run.context_json = {**run.context_json, 'web_evidence': [{'operation': 'search', 'sources': []}]}
-        with pytest.raises(ValueError, match='研究底稿'):
-            sector_research.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'sxv264', 'summary': '没有新事件。',
-                  'coverage': [], 'events': []}]}))
+        # A quiet check does not require an invented notebook or opinion.
+        sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({'reviews': [
+            {'instrument_id': 'sxv264', 'change_kind': 'none', 'summary': '', 'coverage': [], 'events': []}]}))
         paper = {'fundamental_view': '策略来自管理人说明，底层敞口仍待核实。', 'key_drivers': [], 'valuation_view': '暂没有可比估值资料。',
             'questions': [{'key': 'exposure', 'question': '底层敞口是什么？', 'assessment': '尚未披露。', 'next_check': '取得持仓说明。',
                           'status': 'open', 'source_ids': [sid]}], 'source_ids': [sid]}

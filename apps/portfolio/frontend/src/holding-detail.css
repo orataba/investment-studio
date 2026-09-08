@@ -111,6 +111,11 @@
 .fcn-underlying-selector { margin-bottom: -10px; }
 .portfolio-security-detail .derivative-risk-facts dt { font-size: 11px; }
 .portfolio-security-detail .derivative-risk-facts dd { font-size: 13px; }
+.fcn-lifecycle-panel { margin: 24px 0; }
+.fcn-lifecycle-contract + .fcn-lifecycle-contract { margin-top: 24px; }
+.fcn-lifecycle-contract h3 { margin: 0; font-size: 15px; }
+.fcn-lifecycle-contract .table-shell { margin-top: 16px; }
+.fcn-lifecycle-contract caption { padding: 10px 0; text-align: left; font-weight: 600; }
 .portfolio-security-detail .option-payoff-panel { border: 0; border-top: 1px solid var(--detail-border); border-bottom: 1px solid var(--detail-border); padding: 18px 0; border-radius: 0; }
 .portfolio-security-detail .option-payoff-chart { max-width: 740px; margin: 16px auto; }
 

@@ -76,6 +76,19 @@ it('places the three instrument tools beside the fund title and keeps only bread
   await waitFor(() => expect(api.taxonomy).toHaveBeenCalledOnce())
 })
 
+it('keeps section loading beside the active tab without adding an in-flow notice row', async () => {
+  let resolvePerformance!: (value: unknown) => void
+  api.performance.mockImplementationOnce(() => new Promise(resolve => { resolvePerformance = resolve }))
+  const { container } = show('/instruments/fund-1?tab=risk')
+  const title = await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
+  const status = await screen.findByRole('status', { name: /Loading .* data/ })
+  expect(status.closest('.instrument-detail-tab-active')).not.toBeNull()
+  expect(container.querySelector('.inline-notice[role="status"]')).toBeNull()
+  resolvePerformance({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null, peer_comparison: null, calculation_frequency_profile: null, snapshot_metadata: null })
+  await waitFor(() => expect(screen.queryByRole('status', { name: /Loading .* data/ })).toBeNull())
+  expect(screen.getByRole('heading', { level: 1, name: '测试基金 TEST' })).toBe(title)
+})
+
 it('keeps risk alerts scoped to the fund and makes risk and assistant drawers mutually exclusive', async () => {
   show('/instruments/fund-1?tab=events&currency=CNY')
   await screen.findByTestId('fund-research-tracking')

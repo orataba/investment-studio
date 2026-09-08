@@ -158,11 +158,23 @@ def _topic_id(scope):
 
 
 def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=None, scheduled_dates=None):
+    from watchlist_app.services.research_identity import research_identity
+    from watchlist_app.services.research_access import require_portfolio, require_team_write
+    if portfolio_id:
+        require_portfolio(portfolio_id)
+    else:
+        require_team_write()
     scope = normalize_scope(instrument_id=instrument_id, watchlist_id=watchlist_id, portfolio_id=portfolio_id)
     topic_id = _topic_id(scope)
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import text
+        # A portfolio/watchlist scope has no shared instrument row to lock, and
+        # its topic may not exist yet. Serialize its first creation and enqueue.
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('watchlist-risk-officer'), hashtext(:scope))"),
+                        {"scope": topic_id})
     topic = session.get(ResearchTopic, topic_id)
     if topic is None:
-        topic = ResearchTopic(topic_id=topic_id, title="风险研判", question="综合当前范围的风险、关联与下一步", instrument_ids=[], portfolio_id=portfolio_id)
+        topic = ResearchTopic(topic_id=topic_id, title="风险研判", question="综合当前范围的风险、关联与下一步", instrument_ids=[], portfolio_id=portfolio_id, visibility="team")
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
@@ -177,7 +189,7 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
                 (previous.status == "completed" and previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))):
             return previous, False
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="风险研判", source="已留存风险与组合持仓", status="queued", body="", created_at=now,
-        context_json={"risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(),
+        context_json={"research_actor": research_identity(), "risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(),
                       "scheduled": scheduled_dates is not None, "research_dates": scheduled_dates or {}})
     session.add(run)
     session.commit()
@@ -288,6 +300,9 @@ def evidence_sources(snapshot):
 
 def review_workspace(session, **scope):
     from watchlist_app.services.research_runner import harness_available
+    if scope.get("portfolio_id"):
+        from watchlist_app.services.research_access import require_portfolio
+        require_portfolio(scope["portfolio_id"])
     snapshot = read_snapshot(session, **scope)
     runs = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == _topic_id(scope)).order_by(ResearchEntry.created_at.desc())))
     latest = runs[0] if runs else None

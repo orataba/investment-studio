@@ -91,13 +91,11 @@ def _overview_view_columns(
         {"field_key": "instrument_name", "display_order": 1, "width": 280},
         {"field_key": "instrument_type", "display_order": 2, "width": 110},
         {"field_key": "attr.instrument_taxonomy_path", "display_order": 3, "width": 210},
-        {"field_key": "attr.research_stage", "display_order": 4, "width": 100},
-        {"field_key": "return_chart_1m", "display_order": 5, "width": 120},
-        {"field_key": "return_ytd", "display_order": 6, "width": 115},
-        {"field_key": "attr.current_drawdown", "display_order": 7, "width": 115},
-        {"field_key": "attr.risk_attention", "display_order": 8, "width": 120},
-        {"field_key": "attr.research_updated_at", "display_order": 9, "width": 150},
-        {"field_key": "latest_quote_date", "display_order": 10, "width": 120},
+        {"field_key": "return_chart_1m", "display_order": 4, "width": 120},
+        {"field_key": "return_ytd", "display_order": 5, "width": 115},
+        {"field_key": "attr.current_drawdown", "display_order": 6, "width": 115},
+        {"field_key": "latest_quote_date", "display_order": 7, "width": 120},
+        {"field_key": "metric_as_of_date", "display_order": 8, "width": 140},
     ]
 
 
@@ -106,11 +104,10 @@ def _classification_view_columns() -> list[dict[str, object]]:
         {"field_key": "instrument_name", "display_order": 1, "width": 320},
         {"field_key": "instrument_type", "display_order": 2, "width": 130},
         {"field_key": "attr.instrument_taxonomy_path", "display_order": 3, "width": 280},
-        {"field_key": "attr.instrument_taxonomy_leaf", "display_order": 4, "width": 180},
-        {"field_key": "latest_quote", "display_order": 5, "width": 130},
-        {"field_key": "latest_quote_date", "display_order": 6, "width": 140},
-        {"field_key": "data_freshness_status", "display_order": 7, "width": 140},
-        {"field_key": "attr.coverage_status", "display_order": 8, "width": 110},
+        {"field_key": "latest_quote", "display_order": 4, "width": 130},
+        {"field_key": "latest_quote_date", "display_order": 5, "width": 140},
+        {"field_key": "data_freshness_status", "display_order": 6, "width": 140},
+        {"field_key": "attr.coverage_status", "display_order": 7, "width": 110},
     ]
 
 
@@ -364,6 +361,8 @@ class SQLAlchemyWatchlistRepository:
 
         used_local_view_ids: set[str] = set()
         for view in source.views:
+            if view.author_user_id is not None:
+                continue
             local_view_id = (
                 view.watchlist_view_id[len(f"{source_watchlist_id}::") :]
                 if view.watchlist_view_id.startswith(f"{source_watchlist_id}::")

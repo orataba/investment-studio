@@ -25,6 +25,29 @@ RESEARCH_WATCHLIST_FIELD_KEYS = {
 }
 
 
+def build_risk_watchlist_attribute_overrides(
+    session: Session,
+    *,
+    instrument_ids: list[str],
+) -> dict[str, dict[str, object]]:
+    normalized_ids = list(dict.fromkeys(value for value in instrument_ids if value))
+    if not normalized_ids:
+        return {}
+    overrides = {
+        instrument_id: {"risk_attention": "no_trigger"}
+        for instrument_id in normalized_ids
+    }
+    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
+        if case.status == "handled" or (case.evidence_json or {}).get("direction") == "opportunity":
+            continue
+        values = overrides[case.instrument_id]
+        if case.severity == "attention":
+            values["risk_attention"] = "attention"
+        elif case.severity == "coverage" and values["risk_attention"] != "attention":
+            values["risk_attention"] = "limited"
+    return overrides
+
+
 def build_research_watchlist_attribute_overrides(
     session: Session,
     *,
@@ -36,7 +59,7 @@ def build_research_watchlist_attribute_overrides(
 
     repository = SQLAlchemyInstrumentResearchRepository()
     overrides = {
-        instrument_id: {"research_note_count": 0, "research_stage": "watching", "risk_attention": "no_trigger"}
+        instrument_id: {"research_note_count": 0, "research_stage": "watching"}
         for instrument_id in normalized_ids
     }
     for profile in repository.list_profiles(session, normalized_ids):
@@ -64,12 +87,8 @@ def build_research_watchlist_attribute_overrides(
         ]
         if follow_up_dates:
             values["research_next_follow_up_date"] = min(follow_up_dates)
-    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
-        if case.status == "handled" or (case.evidence_json or {}).get("direction") == "opportunity":
-            continue
-        values = overrides[case.instrument_id]
-        if case.severity == "attention":
-            values["risk_attention"] = "attention"
-        elif case.severity == "coverage" and values["risk_attention"] != "attention":
-            values["risk_attention"] = "limited"
+    for instrument_id, values in build_risk_watchlist_attribute_overrides(
+        session, instrument_ids=normalized_ids,
+    ).items():
+        overrides[instrument_id].update(values)
     return overrides

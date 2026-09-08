@@ -13,7 +13,9 @@ def test_daily_scope_uses_latest_saved_proposed_or_invested_status_and_reloads_c
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
     rows = [
         ("proposed", "etf", True, "Proposed"),
-        ("invested", "private_fund", True, "Invested"),
+        ("invested", "equity", True, "Invested"),
+        ("private-invested", "private_fund", True, "Invested"),
+        ("public-proposed", "public_fund", True, "Proposed"),
         ("watch", "equity", True, "Watch"),
         ("paused", "public_fund", True, "Paused"),
         ("exited", "index", True, "Exited"),
@@ -77,20 +79,22 @@ def _registered(session, iid, kind, calendar, exchange=None):
         adopted_at=datetime.now(UTC)))
 
 
-def test_daily_scope_uses_registered_calendar_and_keeps_private_funds_in_domestic_morning(client, monkeypatch):
-    ids = ["daily-cn", "daily-hk", "daily-us", "daily-private", "daily-index"]
+def test_daily_scope_uses_registered_calendar_for_stocks_etfs_indices_and_pauses_funds(client, monkeypatch):
+    ids = ["daily-cn", "daily-hk", "daily-us", "daily-private", "daily-public", "daily-index", "daily-unknown"]
     monkeypatch.setattr(shared_instrument_registry, "list_shared_active_instrument_ids", lambda **kwargs: ids)
     with get_session_factory()() as session:
         _registered(session, "daily-cn", "etf", "XSHE", "XSHE")
         _registered(session, "daily-hk", "equity", "XHKG", "XHKG")
         _registered(session, "daily-us", "equity", None, "ARCX")
         _registered(session, "daily-private", "private_fund", None)
-        _registered(session, "daily-index", "index", None)
+        _registered(session, "daily-public", "public_fund", "XSHG")
+        _registered(session, "daily-index", "index", "XSHG")
+        _registered(session, "daily-unknown", "index", None)
         session.commit()
         morning = datetime.fromisoformat("2026-09-08T00:30:00+00:00")
-        assert service.daily_review_groups(session, now=morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-private"]]
+        assert service.daily_review_groups(session, now=morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index"]]
         us_morning = datetime.fromisoformat("2026-09-08T12:30:00+00:00")
-        assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-private", "daily-us"]]
+        assert service.daily_review_groups(session, now=us_morning) == [[iid] for iid in ["daily-cn", "daily-hk", "daily-index", "daily-us"]]
 
 
 def test_scheduled_us_review_deduplicates_across_beijing_midnight_and_reopens_next_us_day(client, monkeypatch):

@@ -7,6 +7,7 @@ import InstrumentPriceChart from '../components/InstrumentPriceChart'
 import DerivativeHoldingOverview from '../components/DerivativeHoldingOverview'
 import CashHoldingOverview from '../components/CashHoldingOverview'
 import SecurityLinkedOptionsPanel from '../components/SecurityLinkedOptionsPanel'
+import FcnLifecyclePanel from '../components/FcnLifecyclePanel'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import HoldingPeriodPanel from '../components/HoldingPeriodPanel'
@@ -897,6 +898,7 @@ export default function PortfolioHoldingDetailPage() {
               Holdings
             </Link>
             <label className="holding-detail-asof">{t('As of date')}<input type="date" aria-label={t('Holding date')} value={resolvedAsOfDate} onChange={(event) => { if (event.target.value) updateSearchParam('as_of_date', event.target.value) }} /></label>
+            <QualityWarningsNotice warnings={workspace?.quality_warnings} />
             {detailKind === 'security' && selectedRow?.instrument_core ? (
               <a data-workspace-link className="portfolio-security-secondary-link" href={watchlistDetailUrl}>
                 View instrument research
@@ -1051,7 +1053,6 @@ export default function PortfolioHoldingDetailPage() {
         {workspaceLoading ? <CalculationStatus /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
         {relatedDataError ? <div className="error-state">{t(relatedDataError)}</div> : null}
-        <QualityWarningsNotice warnings={workspace?.quality_warnings} />
         {!workspaceLoading && !workspaceError && workspace && !selectedRows.length ? (
           <div className="empty-state" role="status">Not held as of selected date.</div>
         ) : null}
@@ -1099,6 +1100,9 @@ export default function PortfolioHoldingDetailPage() {
           </div>
         ) : null}
 
+        {activeDetailTab === 'overview' && resolvedAsOfDate && !monetaryDetail && relatedDataResolved && (detailKind === 'fcn' || detailKind === 'security') ? (
+          <FcnLifecyclePanel key={`${holdingId}:${resolvedAsOfDate}`} portfolioId={portfolioId} positionReferenceId={holdingId} asOfDate={resolvedAsOfDate} />
+        ) : null}
         {activeDetailTab === 'overview' && workspace && !workspaceLoading && (monetaryDetail || relatedDataResolved) ? (
           <div
             id="portfolio-security-panel-overview"

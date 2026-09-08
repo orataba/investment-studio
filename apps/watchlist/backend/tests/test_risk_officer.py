@@ -7,6 +7,13 @@ from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import risk_officer as service
 
 
+@pytest.fixture(autouse=True)
+def portfolio_access_fixture(monkeypatch):
+    # Domain tests below isolate snapshot semantics; actual ACL/revocation uses the account route suite.
+    from watchlist_app.services import research_access
+    monkeypatch.setattr(research_access, "require_portfolio", lambda pid: {"portfolio_id": pid, "role": "reader"})
+
+
 def seed(client):
     with get_session_factory()() as session:
         session.add(Watchlist(watchlist_id="risk-list", name="范围列表", owner_type="user", owner_id="test"))
@@ -182,7 +189,7 @@ def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch)
     seed(client)
     calls = []
     monkeypatch.setattr(route, "harness_available", lambda: True)
-    monkeypatch.setattr(route, "run_analysis", calls.append)
+    monkeypatch.setattr(route, "run_analysis", lambda run_id, token: calls.append(run_id))
     assert client.post("/api/risk/review/runs", json={"portfolio_id": "p1", "weights": {"risk-a": 1}}).status_code == 422
     assert client.post("/api/risk/review/runs", json={"watchlist_id": "risk-list", "instrument_id": "risk-a"}).status_code == 422
     response = client.post("/api/risk/review/runs", json={"instrument_id": "risk-a"})

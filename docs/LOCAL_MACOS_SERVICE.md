@@ -1,6 +1,6 @@
 # macOS 本地后台服务
 
-项目提供六个用户级 `launchd` 常驻服务，在登录后自动启动三个 API 与三个前端；另有六个一次性数据任务，分别处理各市场盘后行情、盘前研究资料和晚间净值结算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
+项目提供八个用户级 `launchd` 常驻服务，在登录后自动启动四个 API 与四个前端；另有六个一次性数据任务，分别处理各市场盘后行情、盘前研究资料和晚间净值结算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -34,8 +34,8 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 先通过交互方式把认证信息配置到当前用户权限为 `0600` 的 `.pgpass`，避免 shell
 history 和进程参数暴露凭据。
 
-安装器会停止并等待旧服务退出，创建并校验 `instrument_data / data_ingestion / portfolio / watchlist`
-四个项目 schema 的迁移前 custom-format 备份，执行全部 Alembic 迁移，重建三个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
+安装器会停止并等待旧服务退出，创建并校验 `identity / instrument_data / instrument_registry / data_ingestion / platform / portfolio / watchlist / market_data / market_text / briefing`
+项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移，重建四个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
 服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
 和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
 校验后的迁移前备份默认保留在
@@ -62,7 +62,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 | `market-data-refresh` | `settlement` | 上海 21:00；失败时 23:00 补跑 |
 
 市场任务按标的配置的交易日历选择资产并跳过休市市场。盘后行情使用标的已配置的数据来源；
-盘前资料采集将公司资料、持仓及预期写入项目参考快照与历史观察；同市场 08:30 的研究再收集新闻、公告和事件证据，并读取这些资料。
+盘前资料任务读取共享数值库并更新登记资产投影；同市场 08:30 的研究优先读取共享原文及事件包，并按需要补充检索。
 Watchlist 不依赖外部 DuckDB。港股和美股盘后任务在每小时 `:30` 检查实际交易日历，
 仅在当天真实收盘后 30 分钟起的半小时内执行，覆盖半日市及休市日；两端共用
 `infra/scripts/market_close_schedule.py`，不维护另一份冬夏令时或提前收盘日期表。
@@ -89,13 +89,13 @@ canonical 单位净值/复权累计净值才写入 `instrument_data`；安装或
 覆盖两者，避免只恢复行情结果却丢失 ingestion checkpoint 后重复全量扫描。
 
 数据维护 CLI 和定时任务读取
-`~/.config/orataba/secrets/investment-studio/data.env`；主页只读取同目录的 `home.env`，不连接数据库。各模块不读取仓库
+`~/.config/orataba/secrets/investment-studio/data.env` 与 `market.env`；Briefing 使用 `briefing.env` 和 `market.env`。主页读取同目录的 `home.env`，仅拥有项目 PostgreSQL 中的 `identity` schema，不读取业务数据。各模块不读取仓库
 内的 runtime `.env`。秘密目录必须由当前用户拥有且权限为 `0700`，文件必须由
 当前用户拥有且权限为 `0600`。安全加载器只接受
-`INVESTMENT_STUDIO_DATA_*` 赋值，把值作为纯文本导入，不会执行 `$()`、反引号
+对应模块和统一身份配置前缀的赋值，把值作为纯文本导入，不会执行 `$()`、反引号
 等 shell 语法。安装器不会把 DataHub API key、邮件密码等秘密复制进 plist；数据库
-连接只写入 Watchlist/Portfolio 两个 API 与定时刷新 plist，主页 API 和三个纯 web job 不携带数据库
-凭据。为了避免 Pydantic 再从第二来源补入配置，安装器、三个 API runner 和定时
+连接供 Home、Watchlist、Portfolio、Briefing API 与需要数据访问的定时任务使用；四个纯 web job 不携带数据库
+配置。数据库 URL 不含密码，认证使用私密 `.pgpass`。为了避免 Pydantic 再从第二来源补入配置，安装器、四个 API runner 和定时
 runner 都会拒绝任一 backend 目录中存在
 `.env` 文件或软链接；先把其中的值迁移到外部秘密目录并删除该文件后再安装。
 
@@ -104,7 +104,21 @@ runner 都会拒绝任一 backend 目录中存在
 - Investment Studio：`http://127.0.0.1:5172`
 - Watchlist：`http://127.0.0.1:5173`
 - Portfolio：`http://127.0.0.1:5174`
+- 日报／周报：`http://127.0.0.1:5175`，本地只生成预览
 - Regime：`http://127.0.0.1:3011`，由 `apps/regime/deploy/launchd/install.sh` 独立安装和管理
+
+本机采用显式免登录模式：Home 的外部 `home.env` 设置 `INVESTMENT_STUDIO_HOME_ENVIRONMENT=local` 与 `INVESTMENT_STUDIO_HOME_AUTH_MODE=local`；各业务应用（含独立 Regime）的外部运行配置设置 `INVESTMENT_STUDIO_AUTH_MODE=local`，并指向本机 Home 身份服务。先迁移 `identity` 并显式初始化真实拥有者，再启用业务；启动程序不会创建默认用户。
+
+仅从 loopback 连接和地址访问时，无凭证请求才以当前团队拥有者获得本机全部业务权限，页面显示“本机全权限”，不要求登录或退出。新操作仍记录真实人员，旧署名保留。显式传入的其他账号或短期任务凭证仍按原范围处理；模型不能借本机权限跨出任务或工具范围。后台定时任务继续使用独立服务凭证。云端必须使用账号模式，本机配置不能原样复制到云端。
+
+## 公开数据复制与简报
+
+`market.env` 明确 `ROLE=replica`；本地不排入全市场来源采集。使用
+`infra/scripts/install_market_pipeline.py --scheduler launchd --role replica --env-root /absolute/external/config`
+写出每小时与登录后补齐数据的任务，再通过 `launchctl` 加载。资讯源与云数值发行目录必须显式配置。
+Mac 离线后的遗漏按数据包回执补齐；首次运行前应导入规范数值、原始资讯并核对覆盖。
+`briefing.env` 设置 `EDITION_ROLE=preview`，正式报告的定时器仅在云端启用。
+PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipeline](MARKET_DATA_PIPELINE.md)。
 
 ## 状态、日志与卸载
 
@@ -141,9 +155,12 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 执行。单资产 CLI 修正属于另一条显式数据写入操作；运行全量定时批次时不要同时修改同一资产。
 
 执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
-加载的六个常驻 job 和全部六个定时 job，完成安全备份和数据库恢复/迁移后再加载。
+加载的八个 API/前端 job、六个行情/结算定时 job 及公共数据同步 job，完成安全备份和数据库恢复/迁移后再加载。
 晚间任务按 `RunAtLoad` 判断补跑，市场行情/资料任务重新注册日历计划。恢复失败会先自动回滚
 数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
 继续写入。incoming dump 必须具有通过校验的 SHA-256 文件，不能跳过；停服后若
 仍有客户端连接无法终止，恢复会在备份或 schema 删除前硬失败。恢复脚本与安装器
 共用同一个 project-schema backup/rollback 原语。
+
+
+多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。本机免登录也须先迁移身份库、建立真实拥有者并配置后台服务身份；云端会话和权限独立配置。本文是运行配置说明，不代表本次实际启用已完成。

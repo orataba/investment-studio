@@ -11,6 +11,17 @@ from portfolio_app.api.contracts import (
 )
 
 
+
+@pytest.fixture(autouse=True)
+def capture_identity_contract(monkeypatch):
+    from studio_identity import Principal
+    from portfolio_app.api.routes import transaction_captures
+    from portfolio_app.services import transaction_capture_runner
+    monkeypatch.setattr(transaction_captures, "issue_delegation", lambda principal, audience, resource_scope: "test-run:" + resource_scope["id"])
+    monkeypatch.setattr(transaction_captures, "revoke_delegation", lambda token: None)
+    monkeypatch.setattr(transaction_capture_runner, "revoke_delegation", lambda token: None)
+    monkeypatch.setattr(transaction_capture_runner, "resolve_token", lambda token, audience: Principal("test-manager", "Test Manager", "default", resource_scope={"kind": "capture", "id": token.removeprefix("test-run:")}))
+
 PNG_SCREENSHOT = b"\x89PNG\r\n\x1a\nportfolio-screenshot-fixture"
 PNG_SCREENSHOT_OVERLAP = b"\x89PNG\r\n\x1a\nportfolio-overlap-fixture"
 
@@ -167,7 +178,8 @@ def test_multiple_screenshots_form_one_reusable_agent_batch(client) -> None:
 
     context = client.get(
         "/api/portfolios/investment-studio/transaction-capture-batches/"
-        f"{batch['batch_id']}/agent-context"
+        f"{batch['batch_id']}/agent-context",
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert context.status_code == 200, context.text
     payload = context.json()
@@ -262,6 +274,7 @@ def test_screenshot_analysis_run_is_queued_once(client, monkeypatch) -> None:
             "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 1,
+            "run_token": "test-run:" + batch["batch_id"],
         }
     ]
 
@@ -342,6 +355,7 @@ def test_interrupted_screenshot_analysis_can_be_retried(
             "portfolio_id": "investment-studio",
             "batch_id": batch["batch_id"],
             "attempt": 2,
+            "run_token": "test-run:" + batch["batch_id"],
         }
     ]
 
@@ -389,6 +403,7 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
             },
             "transaction_import": None,
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert revision.status_code == 200, revision.text
     assert revision.json()["batch"]["analysis_run_status"] == "succeeded"
@@ -433,6 +448,7 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
         portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
+        run_token="test-run:" + batch["batch_id"],
     )
 
     detail = client.get(
@@ -514,6 +530,7 @@ def test_screenshot_analysis_runner_requires_an_agent_revision(
         portfolio_id="investment-studio",
         batch_id=batch["batch_id"],
         attempt=queued["analysis_run_attempt"],
+        run_token="test-run:" + batch["batch_id"],
     )
 
     detail = client.get(
@@ -595,6 +612,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
             "analysis": analysis,
             "transaction_import": transaction_import,
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert response.status_code == 422
     assert "must use source_system" in response.json()["detail"]
@@ -611,6 +629,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
             "analysis": analysis,
             "transaction_import": transaction_import,
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert response.status_code == 422
     assert "batch source identity" in response.json()["detail"]
@@ -629,6 +648,7 @@ def test_agent_analysis_is_batch_scoped_preview_and_never_auto_commits(client) -
             "analysis": analysis,
             "transaction_import": transaction_import,
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert response.status_code == 200, response.text
     result = response.json()
@@ -776,6 +796,7 @@ def test_position_snapshot_analysis_does_not_require_fake_transactions(client) -
                 "questions": ["Confirm the snapshot date before initialization."],
             },
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert response.status_code == 200, response.text
     result = response.json()
@@ -873,6 +894,7 @@ def test_ambiguous_account_assignment_stays_reviewable_without_a_proposal(client
                 "questions": ["Which USD securities account should receive this trade?"],
             },
         },
+        headers={"X-Test-Capture-Batch": batch["batch_id"]},
     )
     assert response.status_code == 200, response.text
     result = response.json()

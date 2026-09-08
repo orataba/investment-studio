@@ -7,6 +7,7 @@ import {
   copyPortfolio,
   deletePortfolio,
   getPortfolios,
+  clearPortfolioApiCache,
   reorderPortfolios,
   SUPPORTED_PORTFOLIO_CURRENCIES,
   updatePortfolioSettings,
@@ -15,7 +16,10 @@ import {
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
 import { buildPortfolioSectionPath, HOME_URL } from '../lib/navigation'
+import { usePortfolioSession } from '../components/PortfolioSessionProvider'
+import PortfolioMembersSettings from '../components/PortfolioMembersSettings'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
 
@@ -47,11 +51,12 @@ function isValidIsoDate(value: string) {
 
 export default function PortfoliosPage() {
   const navigate = useNavigate()
+  const currentSession = usePortfolioSession()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -71,6 +76,7 @@ export default function PortfoliosPage() {
   useEffect(() => {
     let cancelled = false
 
+    clearPortfolioApiCache()
     getPortfolios()
       .then((response) => {
         if (!cancelled) {
@@ -108,14 +114,6 @@ export default function PortfoliosPage() {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [menuOpenId])
-
-  useEffect(() => {
-    if (!notice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [notice])
 
   const resolvedPortfolios = portfolios
   const baseCurrencies = new Set(resolvedPortfolios.map((item) => item.base_currency))
@@ -183,7 +181,7 @@ export default function PortfoliosPage() {
 
     if (nextOrder.length) {
       void reorderPortfolios(nextOrder.map((item) => item.portfolio_id)).catch((requestError) => {
-        setNotice(
+        setError(
           requestError instanceof Error
             ? requestError.message
             : 'Failed to reorder portfolios.',
@@ -259,7 +257,7 @@ export default function PortfoliosPage() {
       setPortfolios((current) =>
         current.filter((item) => item.portfolio_id !== pendingDelete.portfolio_id),
       )
-      setNotice(`Deleted portfolio "${pendingDelete.portfolio_name}".`)
+      setNotice({ id: Date.now(), message: `Deleted portfolio "${pendingDelete.portfolio_name}".`, tone: 'success' })
       setPendingDelete(null)
     } catch (requestError) {
       setDeleteError(
@@ -292,9 +290,7 @@ export default function PortfoliosPage() {
         current.map((item) => (item.portfolio_id === updated.portfolio_id ? updated : item)),
       )
       setSettingsPortfolio(null)
-      setNotice(
-        `Base currency changed to ${updated.base_currency}; historical values are recalculating.`,
-      )
+      setNotice({ id: Date.now(), message: `Base currency changed to ${updated.base_currency}; historical values are recalculating.`, tone: 'success' })
     } catch (requestError) {
       setSettingsError(
         requestError instanceof Error
@@ -318,14 +314,15 @@ export default function PortfoliosPage() {
           <LanguageSelector />
         </div>
         <div className="portfolio-entry-hero">
-          <h1 className="portfolio-entry-title">All Portfolios</h1>
+          <h1 className="portfolio-entry-title">我可访问的组合</h1>
+          {currentSession && <span className="portfolio-access-label">{currentSession.display_name}</span>}
           <span className="portfolio-entry-nav">{totalNavLabel}</span>
           {totalChangeLabel ? <span className={totalChangeClassName}>{totalChangeLabel}</span> : null}
         </div>
       </header>
 
       {error ? <div className="panel error-state">{error}</div> : null}
-      {notice ? <div className="inline-notice">{notice}</div> : null}
+      <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
 
       <section className="portfolio-entry-list-shell">
         {resolvedPortfolios.map((portfolio) => (
@@ -377,19 +374,21 @@ export default function PortfoliosPage() {
                   <div className="workspace-selector-menu">
                     <button
                       type="button"
+                      disabled={!portfolio.access?.can_edit}
                       onClick={() => openPortfolioSettings(portfolio)}
                     >
                       Portfolio Settings
                     </button>
                     <button
                       type="button"
+                      disabled={!portfolio.access?.can_manage}
                       onClick={async () => {
                         try {
                           const copied = await copyPortfolio(portfolio.portfolio_id)
                           setPortfolios((current) => [...current, copied])
-                          setNotice(`Copied portfolio "${portfolio.portfolio_name}".`)
+                          setNotice({ id: Date.now(), message: `Copied portfolio "${portfolio.portfolio_name}".`, tone: 'success' })
                         } catch (requestError) {
-                          setNotice(
+                          setError(
                             requestError instanceof Error
                               ? requestError.message
                               : 'Failed to copy portfolio.',
@@ -438,6 +437,7 @@ export default function PortfoliosPage() {
           <button
             type="button"
             className="workspace-create-link"
+            disabled={!currentSession?.can_create}
             onClick={openCreatePortfolio}
           >
             + Create Portfolio
@@ -509,6 +509,7 @@ export default function PortfoliosPage() {
                 </button>
               </footer>
             </form>
+            {settingsPortfolio.access?.can_manage && <PortfolioMembersSettings portfolioId={settingsPortfolio.portfolio_id} />}
           </section>
         </div>
       ) : null}

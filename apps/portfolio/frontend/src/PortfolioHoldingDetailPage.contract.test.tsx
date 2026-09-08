@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioOptionObligations: vi.fn(),
   getPortfolioPositionLots: vi.fn(),
   getPortfolioTransactions: vi.fn(),
+  getPortfolioFcnLifecycles: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
@@ -65,6 +66,7 @@ function compactHoldingProjection() {
 
 describe('Portfolio holding detail contract', () => {
   beforeEach(() => {
+    apiMocks.getPortfolioFcnLifecycles.mockResolvedValue({ portfolio_id: '3', position_reference_id: 'asset-1', as_of_date: '2026-07-15', lifecycles: [] })
     vi.clearAllMocks()
     apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValue({
       portfolio_id: '3',
@@ -142,6 +144,10 @@ describe('Portfolio holding detail contract', () => {
   })
 
   it('fetches the holdings context and related ledgers only after the detail route opens', async () => {
+    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValueOnce({
+      portfolio_id: '3', portfolio_name: 'Contract Portfolio', base_currency: 'USD', as_of_date: '2026-07-15', view_label: 'View: Holdings',
+      quality_warnings: ['Quote coverage needs review.'], rows: [compactHoldingProjection()],
+    })
     renderPortfolioPage(
       <PortfolioHoldingDetailPage />,
       '/portfolios/3/holdings/asset-1',
@@ -149,6 +155,7 @@ describe('Portfolio holding detail contract', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Data quality warning: Quote coverage needs review/ }).closest('.portfolio-security-detail-nav')).not.toBeNull()
     expect(await screen.findByText('2 detail chart points')).toBeInTheDocument()
 
     expect(apiMocks.getPortfolioPositionHoldingProjection).toHaveBeenCalledWith(

@@ -49,7 +49,7 @@ investment_studio_reject_repository_env_files() {
 
   local project_root="$1"
   local relative_root repository_env
-  for relative_root in home/backend shared-data apps/watchlist/backend apps/portfolio/backend; do
+  for relative_root in home/backend shared-data shared-data/market apps/watchlist/backend apps/portfolio/backend apps/briefing/backend; do
     repository_env="$project_root/$relative_root/.env"
     if [[ -e "$repository_env" || -L "$repository_env" ]]; then
       echo "Repository runtime environment files are not allowed for managed services: $repository_env" >&2

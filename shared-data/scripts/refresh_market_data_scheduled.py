@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import json
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -116,16 +117,26 @@ def _wait_for_database(
 
 
 @contextmanager
-def _exclusive_refresh_lock(lock_file: Path) -> Iterator[IO[str]]:
+def _exclusive_refresh_lock(lock_file: Path, *, wait_seconds: float = 0) -> Iterator[IO[str]]:
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_file.open("a+", encoding="utf-8")
     try:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RefreshAlreadyRunningError(
-                f"Another market data refresh owns lock {lock_file}."
-            ) from error
+        deadline = time.monotonic() + wait_seconds
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RefreshAlreadyRunningError(
+                        f"Another market data refresh owns lock {lock_file}."
+                    ) from error
+                if not waiting:
+                    LOGGER.info("waiting for existing market data refresh lock timeout_seconds=%s", wait_seconds)
+                    waiting = True
+                time.sleep(min(0.25, remaining))
         handle.seek(0)
         handle.truncate()
         handle.write(
@@ -256,6 +267,12 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=STATE_ROOT / "market-data-refresh.lock",
         help="fcntl lock file used to reject overlapping scheduled runs.",
+    )
+    parser.add_argument(
+        "--lock-wait-seconds",
+        type=float,
+        default=0.0,
+        help="Wait at most this long for an existing refresh to finish; default rejects overlap.",
     )
     parser.add_argument(
         "--summary-file",
@@ -830,9 +847,12 @@ def main() -> int:
     if args.database_retry_interval_seconds <= 0:
         LOGGER.error("--database-retry-interval-seconds must be positive.")
         return 2
+    if not math.isfinite(args.lock_wait_seconds) or args.lock_wait_seconds < 0:
+        LOGGER.error("--lock-wait-seconds must be finite and nonnegative.")
+        return 2
 
     try:
-        with _exclusive_refresh_lock(args.lock_file):
+        with _exclusive_refresh_lock(args.lock_file, wait_seconds=args.lock_wait_seconds):
             started_at = datetime.now().astimezone()
             try:
                 database_ready_attempts = _wait_for_database(

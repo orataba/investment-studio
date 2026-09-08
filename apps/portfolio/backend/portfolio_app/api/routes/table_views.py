@@ -6,10 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from portfolio_app.services.portfolio_store import get_portfolio
-from portfolio_app.services.table_views import (
-    get_portfolio_table_view_store,
-    upsert_portfolio_table_view_store,
-)
+from portfolio_app.services.portfolio_access import get_preference, save_preference, now
+from portfolio_app.services.table_views import normalize_table_view_scope
 
 
 router = APIRouter()
@@ -26,7 +24,8 @@ def get_table_view_store(portfolio_id: str, view_scope: str) -> dict[str, object
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        record = get_portfolio_table_view_store(portfolio_id, view_scope)
+        normalize_table_view_scope(view_scope)
+        record = get_preference(f"table:{portfolio_id}:{view_scope}")
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -48,7 +47,11 @@ def put_table_view_store(
     payload: PortfolioTableViewStoreUpdateRequest,
 ) -> dict[str, object]:
     try:
-        return upsert_portfolio_table_view_store(portfolio_id, view_scope, payload.store)
+        normalize_table_view_scope(view_scope)
+        key = f"table:{portfolio_id}:{view_scope}"
+        previous = get_preference(key) or {}
+        timestamp = now()
+        return save_preference(key, {"portfolio_id": portfolio_id, "view_scope": view_scope, "store": payload.store, "created_at": previous.get("created_at") or timestamp, "updated_at": timestamp})
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

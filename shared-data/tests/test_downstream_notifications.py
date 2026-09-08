@@ -7,6 +7,13 @@ from urllib.error import URLError
 import pytest
 
 from studio_data.services import downstream_notifications
+from studio_identity import Principal, IdentityError
+
+
+@pytest.fixture(autouse=True)
+def maintenance_identity(monkeypatch):
+    monkeypatch.setattr(downstream_notifications, "service_principal", lambda audience: Principal(None, "数据维护", "default", kind="service", service_id="data-maintenance", scopes=["portfolio:maintain", "watchlist:maintenance"], credential="maintenance-token"))
+
 
 
 class _StubSettings:
@@ -51,6 +58,7 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
 
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         del timeout
+        assert request.get_header("Authorization") == "Bearer maintenance-token"
         payload = json.loads(request.data.decode("utf-8"))
         requests.append((request.full_url, payload))
         if request.full_url.endswith("/api/recalc/bulk"):
@@ -242,3 +250,13 @@ def test_notification_timeout_must_be_positive() -> None:
             instrument_ids=["fund-a"],
             watchlist_request_timeout_seconds=0,
         )
+
+
+def test_missing_service_identity_does_not_send_anonymous_refresh(monkeypatch):
+    monkeypatch.setattr(downstream_notifications, "get_settings", lambda: _StubSettings())
+    def missing(*args):
+        raise IdentityError(503, "服务身份尚未配置")
+    monkeypatch.setattr(downstream_notifications, "service_principal", missing)
+    monkeypatch.setattr(downstream_notifications, "urlopen", lambda *args, **kwargs: pytest.fail("must not send unauthenticated requests"))
+    result = downstream_notifications.notify_market_data_downstream_refresh(instrument_ids=["fund-a"])
+    assert result.request_count == 2 and len(result.failures) == 2

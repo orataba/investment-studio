@@ -12,9 +12,11 @@ APP_SERVICES = (
     "home-api",
     "watchlist-api",
     "portfolio-api",
+    "briefing-api",
     "home-web",
     "watchlist-web",
     "portfolio-web",
+    "briefing-web",
 )
 MARKET_DATA_REFRESH_SERVICE = "market-data-refresh"
 
@@ -103,7 +105,7 @@ def main() -> int:
             "StandardOutPath": str(log_dir / f"{service}.log"),
             "StandardErrorPath": str(log_dir / f"{service}.error.log"),
         }
-        if service in {"watchlist-api", "portfolio-api"}:
+        if service in {"watchlist-api", "portfolio-api", "briefing-api"}:
             payload["EnvironmentVariables"] = {
                 "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
             }

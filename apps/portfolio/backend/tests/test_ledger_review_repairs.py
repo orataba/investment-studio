@@ -181,7 +181,7 @@ def test_accounts_workspace_loads_reinvestment_before_its_recorded_trade_date(cl
     monkeypatch.setattr(routes, 'list_transactions', lambda pid, **kwargs: [item for item in facts if not kwargs.get('end_date') or item['trade_date'] <= str(kwargs['end_date'])])
     monkeypatch.setattr(ledger, 'list_registry_corporate_actions', lambda *args, **kwargs: [])
     monkeypatch.setattr(ledger, '_resolve_pricing_quote_map', lambda *args, **kwargs: {REF['instrument_id']: {'value': 9, 'price_scale': 1}})
-    response = client.get('/api/portfolios/audit/accounts/workspace?as_of_date=2026-06-02')
+    response = client.get('/api/portfolios/investment-studio/accounts/workspace?as_of_date=2026-06-02')
     assert response.status_code == 200, response.text
     asset_account = next(item for item in response.json()['accounts'] if item['account']['account_id'] == 'a')
     assert asset_account['pending_settlement'] == 100

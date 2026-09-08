@@ -1,6 +1,7 @@
-import { screen, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useLocation } from 'react-router'
 
 import AccountsPage from './pages/AccountsPage'
 import type {
@@ -21,6 +22,24 @@ vi.mock('./lib/api', () => apiMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
+vi.mock('./components/PortfolioAccessProvider', () => ({
+  usePortfolioAccess: () => ({ can_edit: true }),
+}))
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="account-location">{location.search}</output>
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 const cashAccount = {
   account_id: 'cash-1',
@@ -248,6 +267,9 @@ describe('Accounts rendered page contract', () => {
     expect(await screen.findByRole('heading', { name: 'Private Fund Account' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Account setup' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Transaction-derived' })).toBeInTheDocument()
+    const accountingHint = screen.getByRole('button', { name: /Transaction-derived balances:/ })
+    expect(accountingHint.closest('.account-section-heading')).toContainElement(screen.getByRole('heading', { name: 'Transaction-derived' }))
+    expect(screen.queryByText('Custody accounts and their transaction-derived balances.')).not.toBeInTheDocument()
     expect(screen.getByText('Monetary FX P&L · CNY')).toHaveAttribute(
       'title',
       expect.stringContaining('Historical FX basis is preserved'),
@@ -334,5 +356,117 @@ describe('Accounts rendered page contract', () => {
     expect(screen.queryByRole('heading', { name: 'Account setup' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Open positions' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Direct transactions' })).not.toBeInTheDocument()
+  })
+
+  it('uses the same centered accessible modal for adding and editing an account', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts?account_id=broker-1', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Private Fund Account' })
+    const add = screen.getByRole('button', { name: 'Add Account' })
+    await user.click(add)
+    const createDialog = screen.getByRole('dialog', { name: 'Add account' })
+    expect(createDialog).toHaveClass('transaction-entry-modal', 'account-editor-modal')
+    expect(createDialog.parentElement).toHaveClass('transaction-entry-backdrop', 'account-editor-backdrop')
+    expect(within(createDialog).getByLabelText('Account Name')).toHaveValue('')
+    expect(within(createDialog).getByLabelText('Account Opening Date')).toHaveAttribute('type', 'date')
+    expect(within(createDialog).getByRole('button', { name: 'Save Account' })).toBeInTheDocument()
+    expect(within(createDialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(within(createDialog).queryByText(/借款与还款、抵押与释放/)).not.toBeInTheDocument()
+    await user.selectOptions(within(createDialog).getByLabelText('现金用途'), 'margin')
+    expect(within(createDialog).getByText(/借款与还款、抵押与释放/)).toHaveClass('account-cash-purpose-help')
+    await user.selectOptions(within(createDialog).getByLabelText('现金用途'), 'operating')
+    expect(within(createDialog).queryByText(/借款与还款、抵押与释放/)).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(add).toHaveFocus())
+    await user.click(screen.getByRole('button', { name: 'Edit Account' }))
+    const editDialog = screen.getByRole('dialog', { name: 'Edit account' })
+    expect(editDialog).toHaveClass('transaction-entry-modal', 'account-editor-modal')
+    expect(within(editDialog).getByLabelText('Account Name')).toHaveValue('Private Fund Account')
+    expect(within(editDialog).getByRole('button', { name: 'Update Account' })).toBeInTheDocument()
+    await user.click(within(editDialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('finishes loading an empty account directory and leaves account creation available', async () => {
+    apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue({ ...accountsWorkspaceFixture(), selected_account_id: null, accounts: [], positions: [], ledger_postings: [], linked_transactions: [] })
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts', '/portfolios/:portfolioId/accounts')
+    expect(await screen.findByText('No account.')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Selected account' })).toHaveAttribute('aria-busy', 'false')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add Account' })).toBeEnabled()
+  })
+
+  it('confirms an account update with a toast while keeping the directory mounted', async () => {
+    apiMocks.updatePortfolioAccount.mockResolvedValue(securitiesAccount)
+    const user = userEvent.setup()
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts?account_id=broker-1', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Private Fund Account' })
+    const directory = screen.getByRole('navigation', { name: 'Accounts' })
+    await user.click(screen.getByRole('button', { name: 'Edit Account' }))
+    await user.click(screen.getByRole('button', { name: 'Update Account' }))
+    expect(await screen.findByText('Updated Private Fund Account.')).toHaveClass('investment-studio-notice-toast-success')
+    expect(screen.getByRole('navigation', { name: 'Accounts' })).toBe(directory)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('keeps the directory and selected identity mounted while loading only the new account details', async () => {
+    const user = userEvent.setup()
+    const cashResponse = deferred<PortfolioAccountsWorkspaceResponse>()
+    apiMocks.getPortfolioAccountsWorkspace.mockImplementation((_portfolioId, accountId) => accountId === 'cash-1' ? cashResponse.promise : Promise.resolve(accountsWorkspaceFixture()))
+    renderPortfolioPage(<><AccountsPage /><LocationProbe /></>, '/portfolios/3/accounts?account_id=broker-1&account_tab=positions', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Open positions' })
+    const directory = screen.getByRole('navigation', { name: 'Accounts' })
+    const detail = screen.getByRole('region', { name: 'Selected account' })
+    const cashButton = within(directory).getByRole('button', { name: /Settlement Cash/ })
+    await user.click(cashButton)
+    expect(screen.getByRole('navigation', { name: 'Accounts' })).toBe(directory)
+    expect(screen.getByRole('region', { name: 'Selected account' })).toBe(detail)
+    expect(cashButton).toHaveAttribute('aria-current', 'true')
+    expect(detail).toHaveAttribute('aria-busy', 'true')
+    expect(within(detail).getByRole('heading', { name: 'Settlement Cash' })).toBeInTheDocument()
+    expect(detail).toHaveTextContent('750,000.00')
+    expect(detail).not.toHaveTextContent('300,000.00')
+    expect(within(detail).queryByRole('link', { name: '017847' })).not.toBeInTheDocument()
+    expect(within(detail).getByRole('status')).toHaveTextContent('Loading')
+    expect(within(detail).getByRole('status')).toHaveClass('account-detail-loading-status')
+    expect(detail.querySelector('.calculation-status')).not.toBeInTheDocument()
+    expect(screen.getByTestId('account-location')).toHaveTextContent('account_id=cash-1&account_tab=positions')
+    await act(async () => cashResponse.resolve({ ...accountsWorkspaceFixture(), selected_account_id: 'cash-1', positions: [], ledger_postings: [], linked_transactions: [] }))
+    await waitFor(() => expect(detail).toHaveAttribute('aria-busy', 'false'))
+    expect(screen.getByRole('navigation', { name: 'Accounts' })).toBe(directory)
+    expect(within(detail).getByRole('heading', { name: 'Open positions' })).toBeInTheDocument()
+  })
+
+  it('ignores a late account response after switching back and keeps the URL tab context', async () => {
+    const user = userEvent.setup()
+    const lateResponse = deferred<PortfolioAccountsWorkspaceResponse>()
+    apiMocks.getPortfolioAccountsWorkspace.mockImplementation((_portfolioId, accountId) => accountId === 'cash-1' ? lateResponse.promise : Promise.resolve(accountsWorkspaceFixture()))
+    renderPortfolioPage(<><AccountsPage /><LocationProbe /></>, '/portfolios/3/accounts?account_id=broker-1&account_tab=ledger', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Ledger entries' })
+    const directory = screen.getByRole('navigation', { name: 'Accounts' })
+    await user.click(within(directory).getByRole('button', { name: /Settlement Cash/ }))
+    await user.click(within(directory).getByRole('button', { name: /Private Fund Account/ }))
+    expect(await screen.findByRole('heading', { name: 'Ledger entries' })).toBeInTheDocument()
+    await act(async () => lateResponse.resolve({ ...accountsWorkspaceFixture(), selected_account_id: 'cash-1', positions: [], ledger_postings: [] }))
+    expect(screen.getByRole('heading', { name: 'Private Fund Account' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ledger entries' })).toBeInTheDocument()
+    expect(screen.getByTestId('account-location')).toHaveTextContent('account_id=broker-1&account_tab=ledger')
+    expect(apiMocks.getPortfolioAccountsWorkspace).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the directory usable after a detail request fails', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioAccountsWorkspace.mockImplementation((_portfolioId, accountId) => accountId === 'cash-1' ? Promise.reject(new Error('Account unavailable')) : Promise.resolve(accountsWorkspaceFixture()))
+    renderPortfolioPage(<AccountsPage />, '/portfolios/3/accounts?account_id=broker-1', '/portfolios/:portfolioId/accounts')
+    await screen.findByRole('heading', { name: 'Private Fund Account' })
+    const directory = screen.getByRole('navigation', { name: 'Accounts' })
+    await user.click(within(directory).getByRole('button', { name: /Settlement Cash/ }))
+    expect(await screen.findByText('Account unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Accounts' })).toBe(directory)
+    expect(screen.queryByRole('heading', { name: 'Account setup' })).not.toBeInTheDocument()
+    await user.click(within(directory).getByRole('button', { name: /Private Fund Account/ }))
+    expect(await screen.findByRole('heading', { name: 'Account setup' })).toBeInTheDocument()
+    expect(screen.queryByText('Account unavailable')).not.toBeInTheDocument()
   })
 })

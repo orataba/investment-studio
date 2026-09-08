@@ -1,7 +1,7 @@
 from __future__ import annotations
 from portfolio_app.services.lot_selection import selected_quantities
 
-from portfolio_app.services.asset_deliveries import expand_asset_deliveries
+from portfolio_app.services.asset_deliveries import expand_asset_deliveries, pending_asset_delivery_quantities
 from portfolio_app.services.short_positions import SHORT_TRANSACTION_TYPES, partition_security_sides, reflect_short_lot
 
 from collections import defaultdict
@@ -2299,7 +2299,10 @@ def derive_ledger_postings(
                     transaction,
                     posting_role="security_settlement_cash",
                     account_id=settlement_cash_account_id,
-                    cash_amount_delta=-(gross_amount + fees + taxes),
+                    cash_amount_delta=-(
+                        (0.0 if transaction.get("noncash_delivery") else gross_amount)
+                        + fees + taxes
+                    ),
                     currency=currency,
                 )
             continue
@@ -2730,6 +2733,45 @@ def validate_transaction_position_history(
     for transaction in ordered_transactions:
         transaction_type = str(transaction.get("transaction_type") or "")
         position_reference_id = _position_reference_id(transaction)
+        if transaction.get("instrument_id") and (
+            transaction_type in {"sell", "short_sell"}
+            or (transaction_type == "transfer_out" and transaction.get("transfer_object_type") == "position")
+        ):
+            trade_date = _parse_iso_date(transaction.get("trade_date"))
+            prior_transactions = [
+                candidate for candidate in ordered_transactions
+                if transaction_sort_key(candidate) < transaction_sort_key(transaction)
+            ]
+            key = (str(transaction["account_id"]), str(transaction["instrument_id"]))
+            pending_quantity = pending_asset_delivery_quantities(prior_transactions, trade_date).get(key, 0.0)
+            if pending_quantity > 0:
+                prior_state = _build_position_state(
+                    prior_transactions,
+                    account_cost_methods=account_cost_methods, corporate_actions=corporate_actions, as_of_date=trade_date,
+                )
+                owned_quantity = float(prior_state.get(key, {}).get("quantity") or 0)
+                disposal_quantity = float(transaction.get("quantity") or 0)
+                if transaction_type == "short_sell":
+                    disposal_quantity = min(disposal_quantity, max(owned_quantity, 0.0))
+                if disposal_quantity > owned_quantity - pending_quantity + 1e-9:
+                    raise ValueError("Transaction quantity exceeds delivered shares; FCN shares awaiting delivery cannot be sold or transferred.")
+                cost_method = _resolve_cost_basis_method(account_cost_methods, key[0])
+                if cost_method == "moving_average":
+                    raise ValueError("Moving-average disposals must wait until pending FCN delivery completes; the pooled cost method would otherwise release undelivered share origins.")
+                pending_source_ids = {
+                    str(source["transaction_id"])
+                    for source in expand_asset_deliveries(prior_transactions)
+                    if source.get("noncash_delivery")
+                    and (str(source["account_id"]), str(source["instrument_id"])) == key
+                    and transaction_position_effective_date(source) <= trade_date
+                    and str(source["delivery_date"]) > trade_date.isoformat()
+                }
+                _, consumed_lots = _consume_position_state(
+                    prior_state, key[0], key[1], quantity=disposal_quantity,
+                    cost_basis_method=cost_method, lot_selections=transaction.get("lot_selections") or [],
+                )
+                if any(str(lot.get("opened_by_transaction_id") or "") in pending_source_ids for lot in consumed_lots):
+                    raise ValueError("The disposal selects FCN shares awaiting delivery. Select an already delivered opening lot or wait until delivery completes.")
         if transaction_type == "lifecycle_event" and transaction.get("lifecycle_event_type") == "fcn_knock_in":
             prior_transactions = [
                 candidate for candidate in ordered_transactions
@@ -3320,6 +3362,7 @@ def build_position_lots(
     fifo_order_by_transaction = {
         str(transaction.get("transaction_id") or ""): _fifo_acquisition_sort_key(transaction)
         for transaction in transactions
+        if not transaction.get("fcn_settlement_cashflow")
     }
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     transfer_lot_slices_by_group: dict[str, list[dict[str, object]]] = {}
@@ -3672,6 +3715,7 @@ def build_position_lots(
         )
     )
 
+    settlement_lot_cashflows: list[dict[str, object]] = []
     for item_kind, transaction_index, transaction in timeline:
         if item_kind == "corporate_action":
             apply_share_split(transaction)
@@ -3711,6 +3755,16 @@ def build_position_lots(
         )
         resolved_position_reference_id = _position_reference_id(transaction)
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_key)
+
+        if transaction.get("fcn_settlement_cashflow") and (
+            trade_date >= str(transaction["settlement_source_economic_date"])
+            or currency != str((derivative_contract or {}).get("currency") or currency)
+        ):
+            # A final payment can be recognized after the note has closed.
+            # Attach same-currency amounts to the lots redeemed by this fact;
+            # cross-currency expenses stay native in the cash/performance ledger.
+            settlement_lot_cashflows.append(transaction)
+            continue
 
         if (
             transaction_type in {"opening_balance", "buy"}
@@ -4092,6 +4146,26 @@ def build_position_lots(
                     ),
                 )
             continue
+
+    for cashflow in settlement_lot_cashflows:
+        contract_currency = str((cashflow.get("derivative_contract") or {}).get("currency") or cashflow["currency"])
+        if cashflow["currency"] != contract_currency:
+            continue
+        matched_lots = [
+            lot for lot in all_position_lots
+            if lot["account_id"] == cashflow["account_id"]
+            and lot.get("derivative_contract_id") == cashflow.get("derivative_contract_id")
+            and any(item["transaction_id"] == cashflow["transaction_id"] for item in lot["realizations"])
+        ]
+        weights = [sum(
+            float(item["quantity"]) for item in lot["realizations"]
+            if item["transaction_id"] == cashflow["transaction_id"]
+        ) for lot in matched_lots]
+        amounts = _proportional_allocations(float(cashflow["gross_amount"]), weights)
+        field = "income_cash_amount" if cashflow["transaction_type"] == "coupon" else "expense_cash_amount"
+        for lot, amount in zip(matched_lots, amounts, strict=True):
+            lot[field] += amount
+            _touch_position_lot(lot, str(cashflow["transaction_id"]))
 
     filtered_position_lots = [
         position_lot

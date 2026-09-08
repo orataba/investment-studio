@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -82,6 +82,24 @@ def test_route_reuses_financial_read_generation_contract():
     from portfolio_app.api.routes.portfolio_risk_context import router
     assert len(router.routes) == 1
     assert isinstance(router.routes[0], FinancialReadRoute)
+
+
+def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
+    from types import SimpleNamespace
+    from portfolio_app.api.routes import workspace as workspace_routes, taxonomies
+    calls = []
+    selected = date(2026, 3, 10)
+    def read_holdings(**kwargs):
+        calls.append(kwargs)
+        value = workspace()
+        value['as_of_date'] = kwargs['as_of_date'].isoformat()
+        return value
+    monkeypatch.setattr(workspace_routes, 'holdings_workspace', read_holdings)
+    monkeypatch.setattr(taxonomies, 'get_portfolio_taxonomies', lambda *args, **kwargs: SimpleNamespace(model_dump=lambda **kwargs: catalog()))
+    result = service.read_portfolio_risk_context('p', as_of_date=selected)
+    assert calls == [{'portfolio_id': 'p', 'as_of_date': selected, 'include_details': True}]
+    assert result['as_of_date'] == result['workspace']['as_of_date'] == selected.isoformat()
+    assert all(source['end_date'] == selected.isoformat() for source in result['sources'])
 
 
 @pytest.mark.parametrize("change", ["currency", "model", "date"])

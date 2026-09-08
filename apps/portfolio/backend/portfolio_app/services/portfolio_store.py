@@ -1,5 +1,6 @@
 from __future__ import annotations
 from portfolio_app.services.lot_selection import resolve_import_lot_references
+from studio_identity import current_principal, IdentityError
 
 import hashlib
 import json
@@ -637,6 +638,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "instrument_id": item.instrument_id,
                 "instrument_ref": deepcopy(item.instrument_ref_json),
                 "asset_deliveries": deepcopy(item.asset_deliveries_json or []),
+                "settlement_cashflows": deepcopy(item.settlement_cashflows_json or []),
                 "lot_selections": deepcopy(item.lot_selections_json or []),
                 "derivative_contract_id": item.derivative_contract_id,
                 "derivative_contract": (
@@ -1186,6 +1188,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 source_fees=source_fees,
                 fee_category=str(raw_transaction.get("fee_category") or "unknown"),
                 asset_deliveries_json=deepcopy(raw_transaction.get("asset_deliveries") or []),
+                settlement_cashflows_json=deepcopy(raw_transaction.get("settlement_cashflows") or []),
                 lot_selections_json=deepcopy(raw_transaction.get("lot_selections") or []),
                 taxes=float(source_taxes),
                 source_taxes=source_taxes,
@@ -1591,6 +1594,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
     contract_payload = _serialize_derivative_contract_row(contract) if contract is not None else None
     return {
         "asset_deliveries": deepcopy(item.asset_deliveries_json or []),
+        "settlement_cashflows": deepcopy(item.settlement_cashflows_json or []),
         "lot_selections": deepcopy(item.lot_selections_json or []),
         "transaction_id": item.transaction_id,
         "transaction_sequence": item.transaction_sequence,
@@ -1661,6 +1665,8 @@ def _serialize_transaction_change_log_row(
         "after": deepcopy(item.after_json) if isinstance(item.after_json, dict) else None,
         "request_idempotency_key": item.request_idempotency_key,
         "changed_at": item.changed_at,
+        "actor_user_id": item.actor_user_id,
+        "actor_name": item.actor_name,
     }
 
 
@@ -1675,6 +1681,10 @@ def _append_transaction_change_log(
     after: dict[str, object] | None,
     request_idempotency_key: str | None = None,
 ) -> None:
+    try:
+        principal = current_principal()
+    except IdentityError:
+        principal = None  # Historical imports retain unknown attribution.
     session.add(
         TransactionChangeLogModel(
             change_id=f"txchg-{uuid4().hex}",
@@ -1686,6 +1696,8 @@ def _append_transaction_change_log(
             after_json=deepcopy(after) if after is not None else None,
             request_idempotency_key=request_idempotency_key,
             changed_at=_transaction_change_timestamp(),
+            actor_user_id=principal.user_id if principal else None,
+            actor_name=principal.display_name if principal else None,
         )
     )
 
@@ -2575,11 +2587,13 @@ def _validate_target_set_lines(
     return parent_node, scope_members
 
 
-def list_portfolios() -> list[dict[str, object]]:
+def list_portfolios(*, portfolio_ids: list[str] | None = None) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
+            select(PortfolioRecordModel).where(
+                PortfolioRecordModel.portfolio_id.in_(portfolio_ids) if portfolio_ids is not None else True
+            ).order_by(
                 PortfolioRecordModel.sort_order,
                 PortfolioRecordModel.portfolio_name,
                 PortfolioRecordModel.portfolio_id,
@@ -3992,6 +4006,16 @@ def set_default_planning_taxonomy(
         return _serialize_portfolio_row(portfolio)
 
 
+def _initialize_created_portfolio_access(session, portfolio_id: str) -> None:
+    try:
+        principal = current_principal()
+    except IdentityError:
+        return
+    from portfolio_app.services.portfolio_access import initialize_access
+    session.flush()
+    initialize_access(session, portfolio_id, principal)
+
+
 def create_portfolio(
     name: str | None = None,
     *,
@@ -4001,7 +4025,7 @@ def create_portfolio(
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolios = session.scalars(select(PortfolioRecordModel)).all()
-        resolved_name = (name or "").strip() or f"Portfolio {len(portfolios) + 1}"
+        resolved_name = (name or "").strip() or "新组合"
         base_id = _slugify(resolved_name)
         candidate = base_id
         suffix = 2
@@ -4027,6 +4051,7 @@ def create_portfolio(
             risk_policy_json=None,
         )
         session.add(record)
+        _initialize_created_portfolio_access(session, record.portfolio_id)
         session.commit()
         return _serialize_portfolio_row(record)
 
@@ -4387,6 +4412,10 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             for delivery in copied_transaction.get("asset_deliveries") or []:
                 delivery["account_id"] = account_id_map[delivery["account_id"]]
+                if delivery.get("settlement_cash_account_id"):
+                    delivery["settlement_cash_account_id"] = account_id_map[delivery["settlement_cash_account_id"]]
+            for flow in copied_transaction.get("settlement_cashflows") or []:
+                flow["cash_account_id"] = account_id_map[flow["cash_account_id"]]
             source_quantity = _transaction_source_from_mapping(
                 copied_transaction,
                 source_key="source_quantity",
@@ -4496,6 +4525,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     source_fees=source_fees,
                     fee_category=str(copied_transaction.get("fee_category") or "unknown"),
                     asset_deliveries_json=deepcopy(copied_transaction.get("asset_deliveries") or []),
+                    settlement_cashflows_json=deepcopy(copied_transaction.get("settlement_cashflows") or []),
                     lot_selections_json=deepcopy(copied_transaction.get("lot_selections") or []),
                     taxes=float(source_taxes),
                     source_taxes=source_taxes,
@@ -4557,6 +4587,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
 
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, candidate)
+        _initialize_created_portfolio_access(session, candidate)
         session.commit()
         return _serialize_portfolio_row(copied)
 
@@ -5006,14 +5037,25 @@ def update_account(
             return None
 
         previous_account_category = record.account_category
-        delivery_history = [tx for tx in session.scalars(select(TransactionRecordModel).where(
+        settlement_history_dates: list[date] = []
+        for tx in session.scalars(select(TransactionRecordModel).where(
             TransactionRecordModel.portfolio_id == portfolio_id,
             TransactionRecordModel.derivative_contract_id.is_not(None),
-        )) if any(leg["account_id"] == account_id for leg in tx.asset_deliveries_json or [])]
-        if delivery_history and (account_category != record.account_category or cost_basis_method != record.cost_basis_method):
-            raise ValueError("Account category and cost method cannot change after asset delivery history exists.")
-        if any((opened_at and tx.trade_date < opened_at) or (closed_at and tx.settlement_date > closed_at) for tx in delivery_history):
-            raise ValueError("Account dates must include its asset delivery history.")
+        )):
+            economic_date = tx.position_effective_date or tx.trade_date
+            for leg in tx.asset_deliveries_json or []:
+                if leg["account_id"] == account_id:
+                    settlement_history_dates.extend([economic_date, date.fromisoformat(leg["delivery_date"]) if leg.get("delivery_date") else economic_date])
+                if leg.get("settlement_cash_account_id") == account_id:
+                    settlement_history_dates.extend([economic_date, date.fromisoformat(leg["fee_settlement_date"]) if leg.get("fee_settlement_date") else economic_date])
+            for flow in tx.settlement_cashflows_json or []:
+                if flow["cash_account_id"] == account_id:
+                    recognized = date.fromisoformat(flow["recognition_date"]) if flow.get("recognition_date") else economic_date
+                    settlement_history_dates.extend([recognized, date.fromisoformat(flow["settlement_date"]) if flow.get("settlement_date") else recognized])
+        if settlement_history_dates and (account_category != record.account_category or cost_basis_method != record.cost_basis_method):
+            raise ValueError("Account category and cost method cannot change after FCN settlement history exists.")
+        if any((opened_at and day < opened_at) or (closed_at and day > closed_at) for day in settlement_history_dates):
+            raise ValueError("Account dates must include its FCN settlement history.")
         next_account_category = _validate_account_storage_contract(
             session,
             portfolio_id=portfolio_id,
@@ -5108,6 +5150,7 @@ def list_transactions(
     session_factory = get_session_factory()
     with session_factory() as session:
         has_deliveries = cast(TransactionRecordModel.asset_deliveries_json, String).not_in(["[]", "null"])
+        has_cashflows = cast(TransactionRecordModel.settlement_cashflows_json, String).not_in(["[]", "null"])
         statement = select(TransactionRecordModel).options(
             selectinload(TransactionRecordModel.derivative_contract),
         ).where(
@@ -5119,6 +5162,7 @@ def list_transactions(
                     TransactionRecordModel.account_id == account_id,
                     TransactionRecordModel.settlement_cash_account_id == account_id,
                     has_deliveries,
+                    has_cashflows,
                     and_(
                         TransactionRecordModel.transaction_type == "fx_conversion",
                         TransactionRecordModel.counterparty_account_id == account_id,
@@ -5170,7 +5214,8 @@ def list_transactions(
         return [_serialize_transaction_row(item) for item in records if (
             not account_id or item.account_id == account_id or item.settlement_cash_account_id == account_id
             or (item.transaction_type == "fx_conversion" and item.counterparty_account_id == account_id)
-            or any(leg["account_id"] == account_id for leg in item.asset_deliveries_json or [])
+            or any(account_id in {leg["account_id"], leg.get("settlement_cash_account_id")} for leg in item.asset_deliveries_json or [])
+            or any(flow["cash_account_id"] == account_id for flow in item.settlement_cashflows_json or [])
         ) and (
             not position_reference_id or position_reference_id in {item.instrument_id, item.derivative_contract_id}
             or any(leg["instrument_id"] == position_reference_id for leg in item.asset_deliveries_json or [])
@@ -5333,6 +5378,7 @@ def create_transaction(
     idempotency_payload: dict[str, Any] | None = None,
     idempotency_operation: str = "create",
     asset_deliveries: list[dict[str, object]] | None = None,
+    settlement_cashflows: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     records = create_transactions(
@@ -5340,6 +5386,7 @@ def create_transaction(
         records=[
             {
                 "asset_deliveries": asset_deliveries or [],
+                "settlement_cashflows": settlement_cashflows or [],
                 "lot_selections": lot_selections or [],
                 "transaction_type": transaction_type,
                 "lifecycle_event_type": lifecycle_event_type,
@@ -5491,6 +5538,7 @@ def create_transactions(
             _apply_transaction_record(
                 record,
                 asset_deliveries=values.get("asset_deliveries") or [],
+                settlement_cashflows=values.get("settlement_cashflows") or [],
                 lot_selections=values.get("lot_selections") or [],
                 transaction_type=str(values["transaction_type"]),
                 lifecycle_event_type=(
@@ -5721,6 +5769,7 @@ def update_transaction(
     position_effective_date: date | None = None,
     expected_row_version: int | None = None,
     asset_deliveries: list[dict[str, object]] | None = None,
+    settlement_cashflows: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
@@ -5757,6 +5806,7 @@ def update_transaction(
         _apply_transaction_record(
             record,
             asset_deliveries=asset_deliveries or [],
+            settlement_cashflows=settlement_cashflows or [],
             lot_selections=lot_selections or [],
             transaction_type=transaction_type,
             lifecycle_event_type=lifecycle_event_type,
@@ -5966,6 +6016,7 @@ def _apply_transaction_record(
     note: str | None,
     created_at: str,
     asset_deliveries: list[dict[str, object]] | None = None,
+    settlement_cashflows: list[dict[str, object]] | None = None,
     lot_selections: list[dict[str, object]] | None = None,
 ) -> None:
     if instrument_id and derivative_contract_id:
@@ -6023,6 +6074,7 @@ def _apply_transaction_record(
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
     record.transaction_type = transaction_type
     record.asset_deliveries_json = deepcopy(asset_deliveries or [])
+    record.settlement_cashflows_json = deepcopy(settlement_cashflows or [])
     record.lot_selections_json = deepcopy(lot_selections or [])
     record.lifecycle_event_type = lifecycle_event_type
     record.trade_date = trade_date

@@ -4,7 +4,7 @@ umask 077
 
 if [[ $# -ne 1 || "$1" != "--confirm-destroy-project-schemas" ]]; then
   echo "Usage: INVESTMENT_STUDIO_LOCAL_DATABASE_URL=postgresql://user@host/database $0 --confirm-destroy-project-schemas" >&2
-  echo "This command permanently deletes instrument_registry, data_ingestion (formerly platform), portfolio, and watchlist." >&2
+  echo "This command permanently deletes the identity, instrument, ingestion, portfolio, watchlist, market_data, market_text and briefing schemas." >&2
   exit 64
 fi
 
@@ -89,7 +89,7 @@ mutation_started="false"
 
 stop_all_managed_services() {
   local service
-  for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+  for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
   done
 }
@@ -140,6 +140,10 @@ investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
   --set ON_ERROR_STOP=1 \
   --single-transaction \
   --command '
+    DROP SCHEMA IF EXISTS identity CASCADE;
+    DROP SCHEMA IF EXISTS briefing CASCADE;
+    DROP SCHEMA IF EXISTS market_text CASCADE;
+    DROP SCHEMA IF EXISTS market_data CASCADE;
     DROP SCHEMA IF EXISTS watchlist CASCADE;
     DROP SCHEMA IF EXISTS portfolio CASCADE;
     DROP SCHEMA IF EXISTS data_ingestion CASCADE;
@@ -150,10 +154,15 @@ investment_studio_run_libpq_command "$LIBPQ_PASSFILE" \
     CREATE SCHEMA platform;
     CREATE SCHEMA portfolio;
     CREATE SCHEMA watchlist;
+    CREATE SCHEMA market_data;
+    CREATE SCHEMA market_text;
+    CREATE SCHEMA briefing;
+    CREATE SCHEMA identity;
   '
 
 # Every migration chain receives the exact URL that psql just used. ENV_ROOT is
 # intentionally empty so no dotenv source can redirect an individual chain.
+export INVESTMENT_STUDIO_HOME_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
@@ -167,6 +176,9 @@ export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
 export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
+export INVESTMENT_STUDIO_MARKET_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_BRIEFING_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"

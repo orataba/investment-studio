@@ -1,11 +1,14 @@
 import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
+import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
+import type { ResearchReference } from '../lib/researchDossierApi'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import EstimateHistoryPanel from '../components/EstimateHistoryPanel'
@@ -501,12 +504,13 @@ const TRAILING_RETURN_COLUMNS = [
 ] as const
 
 export default function ListedInstrumentDetailPage({ instrument, watchlistContext }: Props) {
+  const canWriteTeam = useCanWriteTeam()
   const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
   const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index'
-  const [assistant, setAssistant] = useState<{ instrumentId: string; question: string } | null>(null)
+  const [assistant, setAssistant] = useState<{ instrumentId: string; question: string; researchReference?: ResearchReference } | null>(null)
   const [riskInstrumentId, setRiskInstrumentId] = useState<string | null>(null)
-  function openAssistant(question = '') { setRiskInstrumentId(null); setAssistant({ instrumentId, question }) }
+  function openAssistant(question = '', researchReference?: ResearchReference) { setRiskInstrumentId(null); setAssistant({ instrumentId, question, researchReference }) }
   function openRisk() { setAssistant(null); setRiskInstrumentId(instrumentId) }
   const isIndex = listedInstrumentType === 'index'
   const tabs = listedDetailTabs(listedInstrumentType)
@@ -906,6 +910,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
         </div>
         <div className="listed-chart-controls">
+          {chartView === 'return' && <InfoHint label={zh ? '累计收益口径' : 'Return chart basis'} detail={zh ? `区间起点归零 · ${analysisBasisLabel}` : `Rebased to zero at the period start · ${analysisBasisLabel}`} />}
           <div className="listed-segmented-control" aria-label={zh ? '图表内容' : 'Chart content'}>
             <button type="button" className={chartView === 'price' ? 'active' : ''} onClick={() => setChartView('price')}>{zh ? '价格' : 'Price'}</button>
             <button type="button" className={chartView === 'return' ? 'active' : ''} disabled={!canonicalCloseAnalysisBars.length} onClick={() => setChartView('return')}>{zh ? '累计收益' : 'Cumulative Return'}</button>
@@ -922,9 +927,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       </div>
       {chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : error ? <div className="error-state">{error}</div> : <CandlestickChart bars={visibleBars} />}
-      <div className="listed-source-note">
-        {chartView === 'return' ? (zh ? `区间起点归零 · ${analysisBasisLabel}` : `Rebased to zero at the period start · ${analysisBasisLabel}`) : !qfqAvailable && barsResponse?.count ? (zh ? '复权因子不完整，当前仅提供原始价格。' : 'Adjustment factors are incomplete; raw price only.') : null}
-      </div>
+      {chartView === 'price' && !qfqAvailable && Boolean(barsResponse?.count) ? <div className="listed-source-alert">{zh ? '复权因子不完整，当前仅提供原始价格。' : 'Adjustment factors are incomplete; raw price only.'}</div> : null}
       {sourceRefreshFailed ? (
         <div className="listed-source-alert">
           Source update failed; existing canonical history was preserved. {barsResponse?.source_refresh_message}
@@ -943,6 +946,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
         </div>
         <div className="listed-chart-controls">
+          <InfoHint label={zh ? '指数图表口径' : 'Index chart basis'} detail={indexChartDescription} />
           <div className="listed-segmented-control" aria-label={zh ? '图表内容' : 'Chart content'}>
             <button type="button" className={chartView === 'price' ? 'active' : ''} onClick={() => setChartView('price')}>{zh ? '价格' : 'Price'}</button>
             <button type="button" className={chartView === 'return' ? 'active' : ''} disabled={!canonicalCloseAnalysisBars.length} onClick={() => setChartView('return')}>{zh ? '累计收益' : 'Cumulative Return'}</button>
@@ -957,15 +961,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       <div className="listed-chart-shell">
         {chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} />}
       </div>
-      <div className="listed-source-note">
-        {indexChartDescription}
-      </div>
     </section>
   )
 
   return (
     <div className="instrument-detail-page listed-detail-page">
-      {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} onClose={() => setAssistant(null)} />}
+      {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
       {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={openAssistant} />}
       <div className="instrument-detail-topbar">
         <div className="instrument-detail-breadcrumbs">
@@ -1004,7 +1005,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
         <div className="listed-hero-side">
           <WorkspaceTools
-            settings={{ label: zh ? '标的设置' : 'Instrument settings', onClick: () => setSettingsOpen(true) }}
+            settings={{ label: zh ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam, onClick: () => setSettingsOpen(true) }}
             risk={{ onClick: openRisk }}
             assistant={{ onClick: () => openAssistant() }}
           />
@@ -1157,7 +1158,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               Investment research unavailable: {researchError}
             </div>
           ) : null}
-          <InvestmentOpinionTimeline instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />
+          <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />
         </div>
       ) : null}
 

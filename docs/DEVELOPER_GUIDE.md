@@ -9,7 +9,7 @@
 
 1. 本文：知道模块归属、数据流、计算时钟和变更检查范围。
 2. [ARCHITECTURE.md](./ARCHITECTURE.md)：知道什么可以共享、什么必须留在 app 私域。
-3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)：知道单库四 schema、迁移顺序和测试数据库边界。
+3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)：知道单库八 schema、迁移顺序和测试数据库边界。
 4. 对应 app 的 README 和 docs：只深入当前任务涉及的模块。
 5. 涉及 Portfolio 指标时，先查
    [01_CALCULATION_SPEC.md](../apps/portfolio/docs/01_CALCULATION_SPEC.md)，不要从页面文案或单个函数反推口径。
@@ -41,9 +41,9 @@ Watchlist (`watchlist`)          Portfolio (`portfolio`)
 观察、单资产研究、监控            账户、交易、账本、组合计算、研究
 ```
 
-四个 schema 在同一个 PostgreSQL database 中。Watchlist 和 Portfolio 直接读取
-`instrument_data`，不通过入口 HTTP 取共享事实，也不互相调用业务 API。入口服务下线不应阻断
-二者的核心数据读写；共享数据维护和摄取由 CLI/定时任务独立执行。
+八个 schema 在同一个 PostgreSQL database 中；Home 只在 `identity` 持有账号、会话与服务凭证。Watchlist 和 Portfolio 直接读取 `instrument_data`；四个业务 App 的公共数值与文本证据由 `market_data`、`market_text` 和外部不可变文件提供，Briefing 报告写入 `briefing`。Home 只承担账号、会话和导航，核心共享事实不经由 Home API 获取。研究、风险与页面助手按明确合同调用其他 App 的只读接口。共享数据维护和摄取由 CLI/定时任务执行。
+
+外部 Market Information Feed 只负责采集、清洗和传送文本包。Studio 自己采集数值、保留 PIT 与原始响应，不依赖其他项目的数据库。完整数据流见 [Market Data Pipeline](./MARKET_DATA_PIPELINE.md)。
 
 ### 2.1 写入所有权
 
@@ -54,6 +54,8 @@ Watchlist (`watchlist`)          Portfolio (`portfolio`)
 | watchlist membership、单资产研究、monitoring、recalc read model | Watchlist | Instrument Data 或 Portfolio |
 | portfolio、account、transaction、FCN/Option contract、ledger、snapshot、taxonomy、research run | Portfolio | Instrument Data 或 Watchlist |
 | 稳定共享资产合同与 DB helper | `shared-data/instruments` | app 之间复制一份近似合同 |
+| 公共数值、PIT、文本原文版本与数据包目录 | `shared-data/market` → `market_data` / `market_text` + 不可变文件 | 其他项目数据库或各 App 私有表 |
+| 日报周报及绑定的证据版本 | Briefing → `briefing` | 采集服务器 |
 | 已经跨 app 稳定复用的 UI 基础能力 | `packages/ui` | 为单一页面预先建立通用框架 |
 
 FCN 和 Option 是 Portfolio-local 不可变合约，不是共享市场资产。只有 underlying 或 deliverable
@@ -74,7 +76,9 @@ apps/watchlist/                watchlist、单资产详情、monitoring、recalc
 apps/portfolio/                组合运营、计算、风险、研究
   backend/portfolio_app/
   frontend/src/
-apps/regime/                  独立 Git 子模块、自有数据与运行；不共享根 Python 环境
+apps/briefing/                日报周报、引用与阅读界面
+shared-data/market/            公共数值、PIT、文本与数据包
+apps/regime/                  独立 Git 子模块、自有模型与运行；安装 Studio market 包读取公共数据
 shared-data/instruments/       共享资产合同、模型、store helper 与 Alembic 迁移
 packages/ui/                   小而稳定的跨 app UI 基础能力
 infra/launchd/                 macOS 托管服务和每日刷新
@@ -83,7 +87,7 @@ infra/scripts/                 统一迁移、审计和质量门
 docs/                          当前仓库级合同与手册
 ```
 
-主页包为 `home_api`，不连接数据库。后台维护包为 `studio_data`，业务包为 `watchlist_app`、`portfolio_app`；后三者使用同一个 PostgreSQL 数据库，各自维护明确的分区。
+主页包为 `home_api`，只持有 `identity` 的账号、会话与服务凭证，不读取业务账本。后台维护包为 `studio_data`、`studio_market`，业务包为 `watchlist_app`、`portfolio_app`、`briefing_app`；各包在同一个 PostgreSQL 数据库中维护明确分区。Regime 继续使用独立 Python 环境。
 
 ### 3.1 修改什么，至少检查什么
 
@@ -95,7 +99,7 @@ docs/                          当前仓库级合同与手册
 | 修改交易 | Portfolio command/store/ledger | Preview/Commit、日期与金额合同、lots/obligations、cash posting、snapshot invalidation、导入导出、审计日志 |
 | 修改 Portfolio 计算 | Portfolio calculation service | `01_CALCULATION_SPEC.md`、Holdings 字典、coverage/unavailable 语义、`calculation_version` 和重建路径 |
 | 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | effective date、PIT 输入、target 完整性、Risk/Risk Budget eligibility、历史模拟披露 |
-| 修改数据库结构 | 对应 Alembic chain | 单库四 schema 依赖顺序、升级数据、恢复路径、migration-head 和 PostgreSQL integration tests |
+| 修改数据库结构 | 对应 Alembic chain | 单库八 schema 依赖顺序、升级数据、恢复路径、migration-head 和 PostgreSQL integration tests |
 | 修改部署脚本 | `infra/launchd` 或 `infra/systemd` | 停写、备份、迁移、回滚、原服务集合恢复、loopback 网络边界、shell tests |
 
 复杂文件不因行数大就机械拆分。Portfolio 的账务和计算内核有大量相互约束的语义；只有存在明确职责边界、
@@ -167,29 +171,30 @@ npm --prefix shared-data/instruments/ts ci
 npm --prefix home/frontend ci
 npm --prefix apps/watchlist/frontend ci
 npm --prefix apps/portfolio/frontend ci
+npm --prefix apps/briefing/frontend ci
 ```
 
-运行时 secret 只从仓库外目录或显式进程环境加载；三个 backend 目录只保留 `.env.example` 键名模板，
+运行时 secret 只从仓库外目录或显式进程环境加载；各 backend 目录只保留 `.env.example` 键名模板，
 不创建 `.env` 或 symlink。密码使用权限为 `0600` 的 `.pgpass`，不要写进 URL、文档、聊天或 Git。
 
-需要六个 app 服务和每日刷新长期运行时，使用受控安装器：
+需要八个 API/前端服务和每日刷新长期运行时，使用受控安装器：
 
 ```bash
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   infra/launchd/install_local_services.sh
 ```
 
-安装器负责停写、四 schema 备份、顺序迁移、派生快照重建、只读数据审计、失败恢复和健康检查。状态、日志与卸载见 [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)；代码、secrets 和数据库从零恢复见 [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)。不要在本文复制两个 runbook 的完整命令。
+公共 Parquet、原文文件和 Regime source writer 的恢复/停写边界见 Database Workflow。安装器负责停写、八 schema 备份、顺序迁移、派生快照重建、只读数据审计、失败恢复和健康检查。状态、日志与卸载见 [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)；代码、secrets 和数据库从零恢复见 [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)。不要在本文复制两个 runbook 的完整命令。
 
 ## 7. Linux 服务器部署
 
 使用 [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md) 中的 user-systemd 安装器。部署完成不等于可公开访问：
 
-- 六个原生服务默认只绑定 `127.0.0.1`；
-- 应用当前没有内建登录、用户身份或 RBAC；
+- 八个原生服务默认只绑定 `127.0.0.1`；
+- Home 提供真实账号与共享会话；各业务 API 自行验证身份、团队和资源范围，Portfolio 按组合授予 manager/editor/viewer 权限；
 - 远程入口必须由经过审核的反向代理终止 TLS，并同时保护页面和 `/api`；
 - 不要直接公开 `310x`、`810x` 或 PostgreSQL 端口，也不要把云控制台登录误当成页面访问控制；
-- 在身份方案明确前，可用服务器本机访问或受控 SSH tunnel 进行维护验收。
+- 内部维护使用服务器本机或受控 SSH tunnel，不能以此替代公网入口的访问控制验收。
 
 供应商 transport 等会随部署环境变化的限制只在 Server Deployment 维护，接手时按当前配置重新核对，不在多份文档复制带日期的探测结论。
 
@@ -201,11 +206,11 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 infra/scripts/verify_repository.sh all-local
 ```
 
-它覆盖仓库卫生、Markdown 链接、Home、Data、Portfolio、Watchlist 四组 backend 快速测试、shared TypeScript、三个 frontend test/build
+它覆盖仓库卫生、Markdown 链接、Home、Data、Market、Portfolio、Watchlist、Briefing 六组 backend 快速测试、shared TypeScript、四个 frontend test/build
 以及便携 infra tests。
 
 涉及 migration、search path、cross-schema FK、PostgreSQL constraint 或数据库并发时，按
-[DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md) 把四条 migration target 和 PostgreSQL integration URL
+[DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md) 把七条 migration target 和 PostgreSQL integration URL
 指向专用测试数据库，再运行 `migration-heads` 与 `postgres-integration`。`migration-heads` 会实际应用
 migration，不是只读检查；不得指向真实业务库。对真实运行库只执行只读发布审计：
 
@@ -220,7 +225,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 - 相关回归测试和 `all-local` 通过；
 - 涉及 PostgreSQL 行为时专用库 integration tests 通过且没有 skip；
 - 当前 migration heads 与 live audit 通过；
-- 本机或服务器目标的六个服务与健康检查通过；
+- 本机或服务器目标的八个 API/前端服务及 Regime 独立服务与健康检查通过；
 - 文档描述当前合同；一次性 Review、发布数字和排查证据留在任务或版本历史，不进入长期文档；
 - 没有具体高严重度缺陷；暂不支持的产品能力明确写成边界，不用 fallback 假装支持。
 
@@ -228,10 +233,10 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 
 - Watchlist 主链路只覆盖公募、私募、ETF、股票和指数；cash、FX、other 没有详情工作面。
 - Documents 只具备现有数据/附件能力，没有完整通用文档工作台；PDF/图片 OCR 和官方指数方法论文档摄取未实现。
-- Portfolio 不支持普通证券卖空、直接债券、融资、PE/VC capital call、基金份额转换或衍生品 transfer。
+- Portfolio 支持股票／ETF 的显式卖空与回补；不支持直接债券、融资、PE/VC capital call、基金份额转换或衍生品 transfer。
 - FCN/Option 没有 daily fair value、Greeks、自动 barrier/行权或 covariance risk；相关持仓按明确的 carrying/liability 口径披露。
 - Portfolio Research 历史曲线是 point-in-time policy simulation，不是实盘绩效；执行模型不包含拒单、部分成交、容量和 market impact。
-- 应用没有内建身份认证；远程使用必须由外部受控入口补齐 TLS 和页面/API 访问控制。
+- 共享登录会话由 Home 提供；远程访问须通过配置了 TLS 和页面/API 会话校验的受控入口。
 - 远程访问和供应商 transport 的当前限制以 [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md) 为准。
 
 新增能力时以真实业务需求和可审计事实为前提。不要把未支持对象塞进 `other`、notes 或兼容字段，

@@ -12,6 +12,7 @@ from alembic import command
 from alembic.config import Config
 import pytest
 import sqlalchemy as sa
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -423,6 +424,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 )
             additive_transaction_columns = {
                 "asset_deliveries_json": "JSON",
+                "settlement_cashflows_json": "JSON",
                 "lot_selections_json": "JSON",
                 "transaction_sequence": "INTEGER NOT NULL DEFAULT 1",
                 "lifecycle_event_type": "VARCHAR",
@@ -515,6 +517,10 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
             for table_name in reversed(temporary_seed_tables):
                 connection.exec_driver_sql(f"DROP TABLE {table_name}")
 
+    from studio_identity import Principal
+    from portfolio_app.services import daily_snapshot_worker
+    monkeypatch.setattr(daily_snapshot_worker, "service_principal", lambda audience: Principal(None, "Test Valuation", "default", kind="service", service_id="test-valuation", scopes=["portfolio:maintain"]))
+
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
@@ -531,11 +537,43 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     session_module.get_session_factory.cache_clear()
 
 
+
+def _grant_financial_fixture_portfolios(principal):
+    from portfolio_app.db.models import PortfolioAccessStateModel, PortfolioMembershipModel, PortfolioRecordModel
+    from portfolio_app.db.session import get_session_factory
+    with get_session_factory()() as session:
+        for portfolio in session.scalars(sa.select(PortfolioRecordModel)):
+            if session.get(PortfolioAccessStateModel, portfolio.portfolio_id) is None:
+                session.add(PortfolioAccessStateModel(portfolio_id=portfolio.portfolio_id, team_id="default"))
+            if session.get(PortfolioMembershipModel, (portfolio.portfolio_id, principal.user_id)) is None:
+                session.add(PortfolioMembershipModel(portfolio_id=portfolio.portfolio_id, user_id=principal.user_id, display_name=principal.display_name, role="manager", granted_by=principal.user_id, granted_at="2026-09-08T00:00:00+00:00"))
+        session.commit()
+
+
+def authorize_fixture_client(app):
+    """Explicit manager for financial tests, including their replacement store seeds.
+
+    The security suite constructs its own client and uses real request resolution;
+    none of these synthetic grants or dependency overrides exist in that suite.
+    """
+    from studio_identity import Principal
+    from portfolio_app.api.authorization import authenticated_principal
+    from dataclasses import replace
+    principal = Principal(user_id="test-manager", display_name="Test Manager", team_id="default", is_team_owner=True, team_role="admin", credential="test-session")
+    _grant_financial_fixture_portfolios(principal)
+    async def fixture_identity(request: Request):
+        _grant_financial_fixture_portfolios(principal)
+        batch_id = request.headers.get("X-Test-Capture-Batch")
+        return replace(principal, resource_scope={"kind": "capture", "id": batch_id}) if batch_id else principal
+    app.dependency_overrides[authenticated_principal] = fixture_identity
+
+
 @pytest.fixture
 def raw_client():
     import portfolio_app.main as main_module
 
     main_module = importlib.reload(main_module)
+    authorize_fixture_client(main_module.app)
 
     with TestClient(main_module.app) as test_client:
         yield test_client
@@ -547,6 +585,7 @@ def client():
     from portfolio_app.services.daily_snapshots import _run_portfolio_daily_snapshot_recalculation_synchronously
 
     main_module = importlib.reload(main_module)
+    authorize_fixture_client(main_module.app)
     class MutationClient(TestClient):
         """Drive queued work between GET attempts; raw_client exposes first responses."""
         def request(self, method, url, **kwargs):

@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from portfolio_app.api.authorization import portfolio_request_context
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from studio_identity import IdentityError
 
 from portfolio_app.api.router import api_router
 from portfolio_app.core.settings import get_settings
@@ -40,6 +42,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def private_api_cache_policy(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/capabilities"}:
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.exception_handler(IdentityError)
+async def identity_unavailable(_request, error: IdentityError):
+    return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+
 @app.exception_handler(PortfolioCalculationUnavailable)
 async def portfolio_calculation_unavailable(_request, error: PortfolioCalculationUnavailable):
     return JSONResponse(
@@ -70,7 +85,7 @@ app.include_router(api_router, prefix="/api")
 if settings.research_enabled:
     from portfolio_app.api.routes import research
 
-    app.include_router(research.router, prefix="/api/portfolios", tags=["research"])
+    app.include_router(research.router, prefix="/api/portfolios", tags=["research"], dependencies=[Depends(portfolio_request_context)])
 
 
 @app.get("/api/capabilities")

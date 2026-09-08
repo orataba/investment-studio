@@ -51,5 +51,8 @@ def start_review(request: ScopeInput, background: BackgroundTasks, session: Sess
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     if created:
-        background.add_task(run_analysis, run.entry_id)
+        from studio_identity import current_principal
+        from watchlist_app.services.research_runner import authorize_run
+        token = authorize_run(current_principal(), run.entry_id)
+        background.add_task(run_analysis, run.entry_id, token)
     return {"run_id": run.entry_id, "status": run.status}

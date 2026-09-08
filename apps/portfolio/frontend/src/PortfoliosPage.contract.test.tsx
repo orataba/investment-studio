@@ -8,19 +8,28 @@ import PortfoliosPage from './pages/PortfoliosPage'
 
 const apiMocks = vi.hoisted(() => ({
   SUPPORTED_PORTFOLIO_CURRENCIES: ['USD', 'HKD', 'CNY', 'EUR', 'GBP', 'CHF'],
+  clearPortfolioApiCache: vi.fn(),
   copyPortfolio: vi.fn(),
   createPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
   getPortfolios: vi.fn(),
+  getPortfolioMembers: vi.fn(),
+  getPortfolioMemberCandidates: vi.fn(),
   reorderPortfolios: vi.fn(),
   updatePortfolioSettings: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
+const sessionState = vi.hoisted(() => ({ user_id: 'test-manager', display_name: 'Test Manager', can_create: true, is_team_owner: false, local_unrestricted: false }))
+vi.mock('./components/PortfolioSessionProvider', () => ({ usePortfolioSession: () => sessionState }))
 
 describe('Portfolios rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionState.local_unrestricted = false
+    sessionState.is_team_owner = false
+    apiMocks.getPortfolioMembers.mockResolvedValue({ members: [] })
+    apiMocks.getPortfolioMemberCandidates.mockResolvedValue({ members: [] })
     apiMocks.getPortfolios.mockResolvedValue([])
     apiMocks.createPortfolio.mockResolvedValue({
       portfolio_id: 'new-portfolio',
@@ -34,6 +43,15 @@ describe('Portfolios rendered page contract', () => {
       securities_count: 0,
       sort_order: 0,
     })
+  })
+
+  it('shows the account name without exposing permission or recovery controls', async () => {
+    sessionState.local_unrestricted = true
+    sessionState.is_team_owner = true
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+    expect(await screen.findByText('Test Manager')).toBeInTheDocument()
+    expect(screen.queryByText('本机全权限')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '恢复组合管理权限' })).not.toBeInTheDocument()
   })
 
   it('creates a portfolio through one accessible form with explicit inception', async () => {
@@ -74,6 +92,7 @@ describe('Portfolios rendered page contract', () => {
     const portfolio = {
       portfolio_id: 'portfolio-a',
       portfolio_name: 'Portfolio A',
+      access: { can_edit: true, can_manage: true },
       base_currency: 'USD',
       inception_date: '2026-01-01',
       as_of_date: '2026-09-01',
@@ -104,8 +123,12 @@ describe('Portfolios rendered page contract', () => {
     )
 
     await screen.findByText('Portfolio A')
+    expect(screen.queryByRole('region', { name: '组合权限' })).not.toBeInTheDocument()
+    expect(apiMocks.getPortfolioMembers).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Portfolio A actions' }))
     await user.click(screen.getByRole('button', { name: 'Portfolio Settings' }))
+    expect(screen.getByRole('region', { name: '组合权限' })).toBeInTheDocument()
+    await waitFor(() => expect(apiMocks.getPortfolioMembers).toHaveBeenCalledWith('portfolio-a'))
 
     expect(screen.getByRole('dialog', { name: 'Portfolio Settings' })).toHaveTextContent(
       'Transactions keep their original currencies.',
@@ -118,7 +141,7 @@ describe('Portfolios rendered page contract', () => {
         base_currency: 'CNY',
       })
     })
-    expect(await screen.findByText(/historical values are recalculating/i)).toBeInTheDocument()
+    expect(await screen.findByText(/historical values are recalculating/i)).toHaveClass('investment-studio-notice-toast-success')
     expect(screen.getByText('Recalculating')).toBeInTheDocument()
   })
 })

@@ -34,7 +34,7 @@ def ingestion_database(monkeypatch):
     with admin.connect() as connection:
         connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
     try:
-        for namespace in ("INSTRUMENT_DATA", "DATA", "PORTFOLIO", "WATCHLIST"):
+        for namespace in ("HOME", "INSTRUMENT_DATA", "DATA", "PORTFOLIO", "WATCHLIST", "MARKET", "BRIEFING"):
             monkeypatch.setenv(f"INVESTMENT_STUDIO_{namespace}_DATABASE_URL", url)
             monkeypatch.setenv(f"INVESTMENT_STUDIO_{namespace}_ALEMBIC_DATABASE_URL", url)
         for key, value in {

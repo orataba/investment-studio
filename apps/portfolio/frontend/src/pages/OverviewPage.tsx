@@ -1604,26 +1604,6 @@ export default function OverviewPage() {
       <section className="portfolio-detail-surface portfolio-overview-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
-        {performanceWorkspace?.summary.as_of_clamp_reason ? (
-          <div
-            className="inline-notice"
-            role="status"
-            title={performanceWorkspace.summary.as_of_clamp_reason}
-            aria-label={`Performance shown through ${
-              performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'
-            }. ${performanceWorkspace.summary.as_of_clamp_reason}`}
-          >
-            Performance shown through{' '}
-            {performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'}.
-          </div>
-        ) : null}
-        <QualityWarningsNotice
-          warnings={[
-            ...(holdingsWorkspace?.quality_warnings ?? []),
-            ...(performanceWorkspace?.summary.quality_warnings ?? []),
-          ]}
-        />
-
         {workspaceLoading ? <CalculationStatus /> : null}
 
         {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (
@@ -1662,6 +1642,21 @@ export default function OverviewPage() {
                           tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
                         />
                       ) : null}
+                      {performanceWorkspace?.summary.as_of_clamp_reason ? (
+                        <InfoHint
+                          label="Performance data cutoff"
+                          detail={`Performance shown through ${
+                            performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'
+                          }. ${performanceWorkspace.summary.as_of_clamp_reason}`}
+                          tone="warning"
+                        />
+                      ) : null}
+                      <QualityWarningsNotice
+                        warnings={[
+                          ...(holdingsWorkspace.quality_warnings ?? []),
+                          ...(performanceWorkspace?.summary.quality_warnings ?? []),
+                        ]}
+                      />
                     </div>
                     {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     {performanceLoading && !performanceWorkspace ? (

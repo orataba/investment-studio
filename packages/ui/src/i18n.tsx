@@ -54,6 +54,11 @@ const baseMessages: LanguageMessages = {
     Portfolio: '组合',
     'Investment Studio': 'Investment Studio',
     Regime: '市场状态',
+    'Market Briefing': '市场简报',
+    'Daily and weekly research': '日报与周报',
+    'Read market briefings, source evidence, and changes in expectations.':
+      '阅读市场日报与周报、查阅来源依据、跟踪预期变化。',
+    'Investment workspaces': '投资工作区',
     'Sign out': '退出',
     Workspace: '工作区',
     'Choose where to work.': '选择工作区。',
@@ -586,13 +591,15 @@ export function matchesSystemLabel(label: string, query: string) {
 }
 
 const systemPatterns: LanguagePattern[] = [
+  { match: /^([\d,]+) (matching )?activit(?:y|ies)$/i, replace: (count, matching) => `${count} 项${matching ? '匹配' : ''}活动` },
   { match: /^Benchmark comparison is unavailable because required observations are missing: (.+)$/, replace: (dates) => `基准缺少必要日期的价格，暂时无法比较：${dates.replace('No official market calendar is available to confirm closures.', systemLabel('No official market calendar is available to confirm closures.'))}` },
   { match: /^Benchmark comparison is unavailable because (\d+) eligible portfolio return dates are missing from benchmark history$/, replace: (count) => `基准历史缺少 ${count} 个组合有效收益日期，暂时无法比较` },
   { match: /^confirmed (total|price)-return basis \(([^)]+)\)$/, replace: (kind, basis) => `已确认的${kind === 'total' ? '总回报' : '价格回报'}口径（${systemLabel(basis)}）` },
   { match: /^Required market data missing: (\d{4}-\d{2}-\d{2}); (.+)\. Supply the required observation before performance can continue\.$/, replace: (date, fields) => `缺少 ${date} 的必要行情：${fields.replace(/ valuation price/g, ' 估值价格').replace(/FX ([A-Z]{3}\/[A-Z]{3})/g, '$1 汇率')}。补齐该日数据后才能继续计算绩效。` },
   { match: /^View\s*:\s*(.+)$/, replace: (name) => `视图：${systemLabel(name)}` },
   { match: /^(\d+) Portfolios(?: · (.+))?$/, replace: (count, rest) => `${count} 个组合${rest ? ` · ${systemLabel(rest)}` : ''}` },
-  { match: /^([\d,]+) (accounts?|cash accounts?|holdings accounts?|open option obligations|open lots?|holdings?|securities|instruments?|instruments\/cash|transactions?|rows?|items?|issues?|contracts?|notes?|peers|days|calendar days|snapshots|groups|activities|external flows|(?:complete |paired |risk |return )?observations)\.?$/i, replace: (count, unit) => `${count} ${unit.toLowerCase() === 'observations' ? '个观测值' : systemLabel(unit)}` },
+  { match: /^([\d,]+) holdings? accounts?\.?$/i, replace: (count) => `${count} 个持仓账户` },
+  { match: /^([\d,]+) (accounts?|cash accounts?|open option obligations|open lots?|holdings?|securities|instruments?|instruments\/cash|transactions?|rows?|items?|issues?|contracts?|notes?|peers|days|calendar days|snapshots|groups|activities|external flows|(?:complete |paired |risk |return )?observations)\.?$/i, replace: (count, unit) => `${count} ${unit.toLowerCase() === 'observations' ? '个观测值' : systemLabel(unit)}` },
   { match: /^(Postings|Lots|Position Lots|History|Positions|Transactions|Ledger|Held|Observed|Former) (\d+)$/, replace: (label, count) => `${systemLabel(label)} ${count}` },
   { match: /^(.+) actions$/, replace: (name) => `${systemLabel(name)}操作` },
   { match: /^Move (.+) (up|down)$/, replace: (name, direction) => `${direction === 'up' ? '上移' : '下移'} ${name}` },

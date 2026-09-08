@@ -6,6 +6,7 @@ import InstrumentRiskPanel from './InstrumentRiskPanel'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request }))
+vi.mock('./ResearchThemesPanel', () => ({ default: () => null }))
 vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: () => null }))
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-06T08:00:00+08:00')) })
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers() })
@@ -44,9 +45,16 @@ it('shows completed fundamental research for an arbitrary instrument before its 
   expect(conclusion.querySelector('time')?.dateTime).toBe(completed.checked_at)
   expect(screen.getByRole('heading', { name: '研究追踪' })).toBeTruthy()
   expect(screen.getByText('私募信用基金 · 研究已更新')).toBeTruthy()
+  const hint = screen.getByRole('button', { name: /研究更新口径:/ })
+  expect(hint.closest('.sector-research-heading')).not.toBeNull()
+  expect(screen.queryByText('持续检查新信息，只有重要观点、预测或风险变化才形成研究更新。')).toBeNull()
+  fireEvent.click(hint)
+  expect(screen.getByRole('tooltip').textContent).toContain('持续检查新信息')
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(screen.queryByRole('tooltip')).toBeNull()
   expect(screen.queryByRole('textbox')).toBeNull()
   expect(screen.queryByText(/只美股行业 ETF/)).toBeNull()
-  expect(screen.getAllByRole('heading', { level: 3 }).map((node) => node.textContent)).toEqual(['当前研究结论', '风险与机会', '研究进展'])
+  expect(screen.getAllByRole('heading', { level: 3 }).map((node) => node.textContent)).toEqual(['当前研究结论'])
 })
 
 it('keeps the last completed conclusion when the latest research update fails', async () => {
@@ -62,6 +70,41 @@ it('keeps the last completed conclusion when the latest research update fails', 
   expect(within(conclusion).getByRole('status').textContent).toContain('研究更新未完成')
   expect(screen.getByText(`本轮未完成原因：${failed.summary}`).closest('details')?.open).toBe(false)
   expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(false)
+})
+
+it('separates a quiet check from the original view date without creating empty risk or event sections', async () => {
+  const originalDate = '2026-09-01T08:00:00+08:00'
+  const checked = { ...review('completed'), view_updated_at: originalDate, view_run_id: 'original-view-run', change_kind: 'none' as const, coverage: [] }
+  request.mockResolvedValue(payload([], { latest_review: checked, last_completed_review: checked }))
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  const conclusion = screen.getByRole('region', { name: '当前研究结论' })
+  expect(Array.from(conclusion.querySelectorAll('time')).map(node => node.dateTime)).toEqual([originalDate, checked.checked_at])
+  expect(within(conclusion).getByText(/未发现新增投资变化/)).toBeTruthy()
+  expect(screen.queryByRole('region', { name: '当前风险与机会' })).toBeNull()
+  expect(screen.queryByRole('region', { name: '研究进展' })).toBeNull()
+  await act(async () => { fireEvent.click(screen.getByText('研究来源与覆盖')); await vi.advanceTimersByTimeAsync(0) })
+  expect(request.mock.calls.some(([path]) => path === '/api/research/runs/original-view-run/context')).toBe(true)
+})
+
+it('qualifies a quiet result when the research had material coverage gaps', async () => {
+  const checked = { ...review('limited'), change_kind: 'none' as const, coverage: ['未取得最新持仓数据'] }
+  request.mockResolvedValue(payload([], { latest_review: checked, last_completed_review: checked }))
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  const conclusion = screen.getByRole('region', { name: '当前研究结论' })
+  expect(within(conclusion).getByText(/在已覆盖的信息中未发现新增投资变化/)).toBeTruthy()
+  expect(within(conclusion).queryByText('未发现新增投资变化', { exact: true })).toBeNull()
+  expect(screen.getByText('未取得最新持仓数据')).toBeTruthy()
+})
+
+it('preserves saved fund research while pausing active deep research', async () => {
+  request.mockResolvedValue({ ...payload(), research_enabled: false, message: '普通公募和私募暂缓主动深研，已有档案与研究记录仍可查阅。' })
+  render(<SectorResearchPanel instrumentId="public-fund" />)
+  await load()
+  expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getByText(review('limited').summary)).toBeTruthy()
+  expect(screen.getByText(/普通公募和私募暂缓主动深研/)).toBeTruthy()
 })
 
 it('loads only the saved conclusion’s fetched originals on expansion and shares one source list for a multi-instrument run', async () => {
@@ -84,7 +127,7 @@ it('loads only the saved conclusion’s fetched originals on expansion and share
     fireEvent.click(screen.getByText(/^研究来源与覆盖/))
     await vi.advanceTimersByTimeAsync(0)
   })
-  const originals = screen.getByRole('region', { name: '本轮查阅原文' })
+  const originals = screen.getByRole('region', { name: '对应研究查阅原文' })
   expect(within(originals).getByRole('link', { name: '已查阅的公司报告' }).getAttribute('href')).toBe('https://example.com/report')
   expect(within(originals).getByText('这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。')).toBeTruthy()
   expect(Array.from(originals.querySelectorAll('time')).map((node) => node.dateTime)).toEqual([published, retrieved, '', ''])
@@ -170,7 +213,7 @@ it('keeps verification withdrawals outside normal progress while retaining the o
   render(<SectorResearchPanel instrumentId="xlk-us" onAskAssistant={vi.fn()} />)
   await load()
   expect(within(screen.getByLabelText('所选日期内研究进展')).queryByText(old.body)).toBeNull()
-  expect(within(screen.getByRole('region', { name: '当前风险与机会' })).queryByText(old.title)).toBeNull()
+  expect(screen.queryByRole('region', { name: '当前风险与机会' })).toBeNull()
   expect(screen.queryByText('已结束')).toBeNull()
   const archive = screen.getByText('核证撤回记录 · 1').closest('details')!
   expect(archive.open).toBe(false)
@@ -235,6 +278,28 @@ it.each(['collection', 'published'])('shows FMP estimate fiscal periods and the 
   expect(within(source).getByText('分析师样本数量发生变化，共识变化不等于每位分析师均调整预测。')).toBeTruthy()
   expect(within(source).queryByText(/^原文发布/)).toBeNull()
   expect(within(source).queryByRole('link')).toBeNull()
+})
+
+it('shows computed volatility observations separately from publication dates and avoids inventing values for other calculations', async () => {
+  request.mockResolvedValue(payload([event({ sources: [
+    { source_id: 'risk-metric', source_type: 'computed_metric', title: 'XLK EWMA 波动观察', as_of: '2026-09-06T08:00:00+08:00',
+      measurement: { current: { date: '2026-09-04', volatility_pct: 24.5 }, previous: { date: '2026-09-03', volatility_pct: 22.5 }, change_pp: 2, five_session_change_pp: 3.2 },
+      methodology: { half_life_sessions: 21, annualization: 252 } },
+    { source_id: 'macro-comparison', source_type: 'computed_metric', title: '宏观序列比较', as_of: '2026-09-06T08:00:00+08:00', measurement: { current: null } },
+  ] })]))
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
+  await load()
+  fireEvent.click(screen.getByText('影响、证据与下一步'))
+  const risk = screen.getByText('数值风险依据').closest('li')!
+  expect(within(risk).getByText(/当前波动率 24.50%/)).toBeTruthy()
+  expect(within(risk).getByText('较前次 +2.00 个百分点')).toBeTruthy()
+  expect(within(risk).getByText('近 5 个交易观察 +3.20 个百分点')).toBeTruthy()
+  expect(Array.from(risk.querySelectorAll('time')).map(node => node.dateTime)).toEqual(['2026-09-06T08:00:00+08:00', '2026-09-04'])
+  const macro = screen.getByText('计算依据').closest('li')!
+  expect(within(macro).getByText(/宏观序列比较/)).toBeTruthy()
+  expect(within(macro).queryByText(/波动率/)).toBeNull()
+  expect(within(risk).queryByText(/原文发布/)).toBeNull()
+  expect(within(macro).queryByText(/原文发布/)).toBeNull()
 })
 
 it('keeps the full-list drawer compact and shows the saved research conclusion in the overview', async () => {

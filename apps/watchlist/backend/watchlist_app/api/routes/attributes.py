@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from numbers import Real
 
+from studio_identity import current_principal
 from fastapi import APIRouter, Depends
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -359,7 +360,7 @@ def update_instrument_settings(
     )
     taxonomy_changed = (current_assignment.node_id if current_assignment else None) != node_id
     status_changed = current_values["values"].get("coverage_status") != coverage_status
-    source_record_id = str(payload.updated_by or "terminal_ui").strip() or "terminal_ui"
+    source_record_id = str(current_principal().user_id or current_principal().service_id)
 
     if taxonomy_changed:
         taxonomy_repository.upsert_assignment(

@@ -240,12 +240,12 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
         "limitations": ["尚未配置RC变化或相关性变化的报警阈值；仅提供真实变化供研判。"]}
 
 
-def read_portfolio_risk_context(portfolio_id):
+def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = None):
     from fastapi import HTTPException
     from portfolio_app.api.routes.workspace import holdings_workspace
     from portfolio_app.api.routes.taxonomies import get_portfolio_taxonomies
     from portfolio_app.services.daily_snapshots import PortfolioCalculationUnavailable
-    workspace = holdings_workspace(portfolio_id=portfolio_id, include_details=True)
+    workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
     catalog = get_portfolio_taxonomies(portfolio_id, include_market_profile=False).model_dump(mode="json")
     with get_session_factory()() as session:
         previous_date = session.scalar(select(PortfolioDailySnapshotModel.as_of_date).where(

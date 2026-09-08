@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from watchlist_app.db.models.instruments import InstrumentDetail
 
 from watchlist_app.db.models.research import (
     InstrumentResearchNote,
@@ -68,6 +70,8 @@ class SQLAlchemyInstrumentResearchRepository:
         values: dict[str, object],
         updated_by: str | None,
     ) -> InstrumentResearchProfile:
+        session.execute(select(InstrumentDetail.instrument_id).where(
+            InstrumentDetail.instrument_id == instrument_id).with_for_update())
         now = datetime.now(UTC).replace(microsecond=0)
         normalized_text = {
             field: str(values.get(field) or "").strip()
@@ -76,6 +80,8 @@ class SQLAlchemyInstrumentResearchRepository:
         next_review_date = cast(date | None, values.get("next_review_date"))
         manual_rating = cast(int | None, values.get("manual_rating"))
         record = self.get_profile(session, instrument_id)
+        if record is not None:
+            session.refresh(record)
         if record is None:
             record = InstrumentResearchProfile(
                 instrument_id=instrument_id,
@@ -161,13 +167,17 @@ class SQLAlchemyInstrumentResearchRepository:
         session: Session,
         instrument_id: str,
         note_id: str,
+        *, for_update: bool = False,
     ) -> InstrumentResearchNote | None:
+        statement = select(InstrumentResearchNote).where(
+            InstrumentResearchNote.instrument_id == instrument_id,
+            InstrumentResearchNote.note_id == note_id,
+            InstrumentResearchNote.deleted_at.is_(None),
+        )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return session.scalar(
-            select(InstrumentResearchNote).where(
-                InstrumentResearchNote.instrument_id == instrument_id,
-                InstrumentResearchNote.note_id == note_id,
-                InstrumentResearchNote.deleted_at.is_(None),
-            )
+            statement
         )
 
     def create_note(
@@ -178,6 +188,8 @@ class SQLAlchemyInstrumentResearchRepository:
         note_id: str,
         values: dict[str, object],
         updated_by: str | None,
+        author_user_id: str | None = None,
+        team_id: str = "default",
     ) -> InstrumentResearchNote:
         now = datetime.now(UTC).replace(microsecond=0)
         record = InstrumentResearchNote(
@@ -193,6 +205,9 @@ class SQLAlchemyInstrumentResearchRepository:
             source_refs=str(values.get("source_refs") or "").strip(),
             people=str(values.get("people") or "").strip(),
             author=str(values.get("author") or "").strip(),
+            author_user_id=author_user_id,
+            team_id=team_id,
+            research_context=deepcopy(values.get("research_context") or {}),
             follow_up_date=cast(date | None, values.get("follow_up_date")),
             completed_at=values.get("completed_at"),
             revision_number=1,
@@ -233,6 +248,8 @@ class SQLAlchemyInstrumentResearchRepository:
             "follow_up_date": cast(date | None, values.get("follow_up_date")),
             "completed_at": values.get("completed_at"),
         }
+        if values.get("research_context") is not None:
+            normalized["research_context"] = deepcopy(values["research_context"])
         if all(getattr(record, field) == value for field, value in normalized.items()):
             return record
         for field, value in normalized.items():
@@ -315,6 +332,9 @@ class SQLAlchemyInstrumentResearchRepository:
                 source_refs=record.source_refs,
                 people=record.people,
                 author=record.author,
+                author_user_id=record.author_user_id,
+                team_id=record.team_id,
+                research_context=deepcopy(record.research_context or {}),
                 follow_up_date=record.follow_up_date,
                 completed_at=record.completed_at,
                 recorded_at=recorded_at,

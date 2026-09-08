@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
-from studio_data.services.fmp.client import FmpClient
+from studio_market.config import MarketSettings
+from studio_market.numeric import NumericStore
 from studio_data.services.instrument_store import (
     get_instrument,
     get_price_bar_coverage,
@@ -42,7 +43,7 @@ def refresh_fmp_eod(
     *,
     instrument_type: str,
     full_history: bool = False,
-    client: FmpClient | None = None,
+    store: NumericStore | None = None,
 ) -> dict[str, object]:
     instrument = get_instrument(instrument_id)
     if instrument is None:
@@ -71,24 +72,19 @@ def refresh_fmp_eod(
     if not full_history and latest_date:
         start_date = date.fromisoformat(latest_date) - timedelta(days=7)
     end_date = date.today()
-    fmp = client or FmpClient()
-    raw_rows = fmp.historical_eod(
-        symbol,
-        adjusted=False,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-    )
-    adjusted_rows = fmp.historical_eod(
-        symbol,
-        adjusted=True,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-    )
-    adjusted_by_date = {
-        str(row.get("date") or ""): row
-        for row in adjusted_rows
-        if str(row.get("date") or "")
-    }
+    market = store or NumericStore(MarketSettings.from_environment())
+    raw_rows, offset = [], 0
+    try:
+        while True:
+            page = market.query("raw_eod_daily", symbols=[symbol], start=start_date.isoformat(),
+                                end=end_date.isoformat(), limit=10000, offset=offset)
+            raw_rows.extend(page["rows"])
+            offset += len(page["rows"])
+            if offset >= page["total"]:
+                break
+    finally:
+        if store is None:
+            market.close()
     currency = str(instrument.get("currency") or "").strip().upper()
     multiplier = _price_multiplier(instrument)
     price_bars: list[dict[str, object]] = []
@@ -98,10 +94,10 @@ def refresh_fmp_eod(
         if not as_of_date:
             continue
         close = _decimal_value(row, "close", "adjClose") * multiplier
-        adjusted = adjusted_by_date.get(as_of_date)
+        adjusted = row.get("adjusted_close")
         adjustment_factor: Decimal | None = None
         if adjusted is not None:
-            adjusted_close = _decimal_value(adjusted, "adjClose", "close") * multiplier
+            adjusted_close = Decimal(str(adjusted)) * multiplier
             adjustment_factor = adjusted_close / close
         price_bars.append(
             {
@@ -151,7 +147,7 @@ def refresh_fmp_eod(
         record = update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
-            message=f"FMP returned no EOD rows for {symbol}.",
+            message=f"Shared market data has no raw EOD rows for {symbol} in the requested interval.",
             updated_by=updated_by,
             mode="api",
         )
@@ -166,7 +162,7 @@ def refresh_fmp_eod(
     record = update_refresh_status(
         instrument_id=instrument_id,
         status="refreshed",
-        message=f"Stored {len(price_bars)} FMP EOD rows for {symbol}.",
+        message=f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}.",
         updated_by=updated_by,
         mode="api",
     )

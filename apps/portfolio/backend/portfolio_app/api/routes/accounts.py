@@ -40,7 +40,8 @@ def _transactions_booked_to_account(
         transaction
         for transaction in transactions
         if str(transaction.get("account_id") or "") == account_id
-        or any(leg["account_id"] == account_id for leg in transaction.get("asset_deliveries") or [])
+        or any(account_id in {leg["account_id"], leg.get("settlement_cash_account_id")} for leg in transaction.get("asset_deliveries") or [])
+        or any(flow["cash_account_id"] == account_id for flow in transaction.get("settlement_cashflows") or [])
         or (
             str(transaction.get("transaction_type") or "") == "fx_conversion"
             and str(transaction.get("counterparty_account_id") or "") == account_id

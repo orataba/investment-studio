@@ -95,3 +95,23 @@ infra/scripts/verify_repository.sh frontend portfolio
 ```
 
 修改 Holdings 字段时运行文档合同测试；修改 migration、cross-schema FK、search path、事务或并发行为时按 [Database Workflow](../../docs/DATABASE_WORKFLOW.md) 运行 PostgreSQL 专项门禁。
+
+## 统一账号与逐组合权限
+
+Portfolio 后端通过 `packages/identity` 向 Home 解析真实身份，不接受 `X-User-ID` 建立权限。云端账号模式按会话和逐组合授权访问；显式本机模式由 Home 返回实际拥有者的 `local_unrestricted` 身份，本机免登录且可管理全部组合（含未分配旧组合），仍保留实际操作人和账本校验。该标记在云端无效，短期工具委托仍先受绑定资源和工具范围限制，不能借本机权限入账。配置 `INVESTMENT_STUDIO_AUTH_URL`、统一会话 cookie 名称及允许的浏览器 Origin。跨应用用户请求传递原凭证，组合访问由 Portfolio 当前授权决定。
+
+每个组合的 `portfolio_access_state` 明确团队归属，`portfolio_membership` 采用 `manager / editor / viewer`。组合列表在读取净值摘要前先按授权筛选。管理者在组合的 Settings 内授予或移除角色，外层页面不单独展示权限入口；移除最后一位有效管理者前须先交接。团队管理员没有隐含业务访问权。排序与表格设置归个人；新创建及复制组合仅将创建者设为管理者。
+
+迁移 `20260908_0061` 保留账本和原交易历史，旧组合不会自动授给任何新账号。首次授权由部署时明确指定的拥有者认领。拥有者恢复授权 API 保留：目录只包含 ID、名称和管理状态，不含净值或持仓，目录读取和授权均留审计；组合外层页面不展示恢复入口。
+
+所有组合 API、工作区、文件下载、研究报告、截图及批量请求经过同一服务端授权。文件和受保护响应带 `Cache-Control: private, no-store`。研究助手保持人工入账边界：截图 MCP 使用 Home 生成的单次任务委托，只能读取绑定批次材料和本组合事实、执行 Preview、提交复核稿，不能 Commit，也不能凭用户填入的作者名或 batch ID 建立身份；撤权后下一次工具调用即失效。
+
+页面研究助手传递当前 `holding_id / as_of_date / account_id`，其中持仓引用可为本地 FCN、Option 或现金头寸，不能当作共享证券 ID。历史风险上下文通过 `risk-context?as_of_date=...` 读取当日持仓；账户或单持仓作为焦点附在全组合上下文上，不重定义组合净值分母。保存的当前目标和重算模型仍按其非 PIT 边界披露。
+
+组合只读成员可以读取风险并发起组合分析；共享标的风险事项的写入另按团队研究权限控制。`session.can_write_team_research` 决定共享跟进/规则的编辑入口，不能由组合编辑权限代替；团队只读账号不显示共享研究写控件。
+
+估值后台线程使用独立服务身份，须具备 `portfolio:maintain`，每轮执行前向 Home 重新解析。首版是单团队部署，`portfolio:maintain` 明确代表部署实例级估值维护，队列及全量重算面向实例全部组合；无 `resource_scope` 的维护服务或本机全权限主体可调用全量重算，普通账号会话和绑定组合的委托不能全量重算。该服务的 HTTP 权限不允许修改交易、组合成员或共享业务配置。维护服务凭证通过 `INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE`（仅本人可读）或部署环境注入。浏览器、截图模型进程不能取得该主凭证。
+
+`GET /api/portfolios/{id}/access` 返回当前用户的 `user_id / team_id / role / can_read / can_edit / can_manage`。未登录返回 401，无组合访问返回 404，权限不足的写操作返回 403。研究中的跨服务调用也必须使用相同用户或绑定的委托，内部地址不构成授权。
+
+后台组合风险研究可被明确授予服务级 `portfolio:read`：允许读取本团队全部已归属组合，但不允许重算维护、修改交易或授权。此全团队只读权限仅适用于显式配置的服务身份；普通用户始终按逐组合授权，带组合范围的服务委托仍只读该组合。

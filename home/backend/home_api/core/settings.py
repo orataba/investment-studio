@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     ]
     apps_file: Path = Path(__file__).resolve().parents[3] / "apps.json"
     app_urls: dict[str, str] = {}
-    auth_username: str | None = None
-    auth_password_hash_file: Path | None = None
-    auth_session_secret_file: Path | None = None
+    database_url: str = ""
+    auth_mode: Literal["account", "local"] = "account"
+    auth_totp_key_file: Path | None = None
+    auth_require_admin_totp: bool = False
+    auth_cookie_secure: bool = True
     auth_cookie_name: str = "__Secure-yungu_session"
     auth_cookie_domain: str | None = None
     auth_session_ttl_seconds: int = 24 * 60 * 60
@@ -45,6 +47,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_cors_policy(self) -> "Settings":
+        if self.auth_mode == "local" and self.environment.strip().lower() != "local":
+            raise ValueError("Local owner access requires environment=local.")
+        if not self.auth_cookie_secure and self.environment.strip().lower() not in {"development", "dev", "local", "test"}:
+            raise ValueError("Insecure cookies are only allowed in explicit local/test environments.")
+        if not self.auth_cookie_secure and self.auth_cookie_name.startswith("__Secure-"):
+            raise ValueError("Local HTTP cookies must use a name without the __Secure- prefix.")
         if self.environment.strip().lower() not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
             raise ValueError("cors_origins must not contain '*' outside development/test.")
         return self

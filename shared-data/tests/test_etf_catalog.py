@@ -52,6 +52,18 @@ def isolated_etf_store(
     _upgrade(database_url, root=BACKEND_ROOT)
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT)
 
+    from studio_market.config import MarketSettings
+    from studio_market.numeric import NumericStore
+    from datetime import UTC, datetime
+    market_url = f"sqlite+pysqlite:///{tmp_path / 'shared-market.db'}"
+    market_root = tmp_path / "market"
+    monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATABASE_URL", market_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATA_ROOT", str(market_root))
+    market = NumericStore(MarketSettings(market_url, market_root))
+    market.create_schema_for_testing()
+    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-15", "open": 66, "high": 68, "low": 65, "close": 67, "adjusted_close": 67.1, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=datetime(2026, 8, 16, tzinfo=UTC))
+    market.close()
+
     yield
 
     settings_module.get_settings.cache_clear()
@@ -102,35 +114,6 @@ class FakeFmpClient:
                     if exchange == "HKSE"
                     else "US"
                 ),
-            }
-        ]
-
-    def historical_eod(
-        self,
-        symbol: str,
-        *,
-        adjusted: bool,
-        start_date: str,
-        end_date: str,
-    ) -> list[dict[str, object]]:
-        self.eod_calls.append(
-            {
-                "symbol": symbol,
-                "adjusted": adjusted,
-                "start_date": start_date,
-                "end_date": end_date,
-            }
-        )
-        if adjusted:
-            return [{"date": "2026-08-15", "adjClose": 67.1}]
-        return [
-            {
-                "date": "2026-08-15",
-                "open": 66,
-                "high": 68,
-                "low": 65,
-                "close": 67,
-                "volume": 123456,
             }
         ]
 
@@ -197,10 +180,7 @@ def test_etf_materialization_loads_history_then_refreshes_incrementally(
     assert first["source_settings"]["source_api_profile"] == "fmp"
     assert first["source_settings"]["market_calendar"] == "BATS"
     assert len(list_instruments(instrument_type="etf", limit=None)) == 1
-    assert [call["adjusted"] for call in client.eod_calls] == [False, True, False, True]
-    assert client.eod_calls[0]["start_date"] == "1900-01-01"
-    expected_incremental_start = (date(2026, 8, 15) - timedelta(days=7)).isoformat()
-    assert client.eod_calls[2]["start_date"] == expected_incremental_start
+    assert client.eod_calls == []
     coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
     assert coverage["latest_date"] == "2026-08-15"
     assert coverage["adjustment_factor_count"] == 1
@@ -269,7 +249,8 @@ def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
         for item in materialized["identifiers"]
     )
     assert materialized["source_settings"]["source_api_profile"] == "fmp"
-    assert {str(call["symbol"]) for call in client.eod_calls} == {"MAGS"}
+    assert client.eod_calls == []
+    assert get_price_bar_coverage(instrument_id=str(materialized["instrument_id"]))["latest_date"] == "2026-08-15"
 
 
 def test_xetra_etf_verifies_currency_and_keeps_listing_exchange(

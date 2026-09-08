@@ -12,6 +12,7 @@ from watchlist_app.services.read_models import execute_watchlist_query
 from watchlist_app.services.research_projection import (
     RESEARCH_WATCHLIST_FIELD_KEYS,
     build_research_watchlist_attribute_overrides,
+    build_risk_watchlist_attribute_overrides,
 )
 from watchlist_app.services.read_model_freshness import (
     latest_local_market_data_date,
@@ -36,23 +37,10 @@ canonical_recalc_service = CanonicalRecalcService()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
 
 
-def _field_supports_all_instrument_types(field, instrument_types: set[str]) -> bool:
-    scope = {
-        str(value).strip().lower()
-        for value in field.instrument_scope_json or []
-        if str(value).strip()
-    }
-    if not instrument_types:
-        return not scope
-    return not scope or instrument_types.issubset(scope)
-
-
 def _validate_query_contract(
     session: Session,
     payload_data: dict[str, object],
     view,
-    *,
-    rows,
 ) -> None:
     field_records = list(field_registry_repository.list_fields(session))
     fields = {item.field_key: item for item in field_records}
@@ -76,41 +64,6 @@ def _validate_query_contract(
         if "group_by" in payload_data
         else view.default_group_by if view else "none"
     )
-    active_instrument_types = {
-        str(row.instrument_type or "").strip().lower()
-        for row in rows
-        if str(row.instrument_type or "").strip()
-    }
-    type_filter = filters.get("instrument_type") if isinstance(filters, dict) else None
-    if isinstance(type_filter, list) and type_filter:
-        active_instrument_types.intersection_update(str(value) for value in type_filter)
-    unavailable_fields = sorted(
-        field_key
-        for field_key in _requested_query_fields(payload_data, view)
-        if field_key
-        and field_key not in {
-            "none",
-            "taxonomy",
-            "instrument_id",
-            "metric_as_of_date",
-            "metric_return_kind",
-            "metric_quote_basis",
-            "metric_series_type",
-        }
-        and field_key in fields
-        and not _field_supports_all_instrument_types(
-            fields[field_key],
-            active_instrument_types,
-        )
-    )
-    if unavailable_fields:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Fields are not available for every instrument type in this Watchlist: "
-                f"{', '.join(unavailable_fields)}."
-            ),
-        )
     available_group_by_codes = {
         item["code"]
         for item in present_group_by_options(field_records)
@@ -204,10 +157,11 @@ def run_screener_query(
             watchlist_id=payload.watchlist_id,
             view_id=payload.view_id,
         )
-        if view is None:
+        from studio_identity import current_principal
+        if view is None or (not current_principal().local_unrestricted and view.author_user_id not in {None, current_principal().user_id}):
             raise HTTPException(status_code=404, detail="Watchlist view not found")
     rows = read_model_repository.list_watchlist_rows(session, payload.watchlist_id)
-    _validate_query_contract(session, payload_data, view, rows=rows)
+    _validate_query_contract(session, payload_data, view)
     charts = read_model_repository.list_charts(
         session,
         [row.instrument_id for row in rows],
@@ -256,14 +210,18 @@ def run_screener_query(
             status_code=502,
             detail=f"Live peer comparison is unavailable: {error}",
         ) from error
-    research_attribute_overrides = (
-        build_research_watchlist_attribute_overrides(
+    if requested_fields.intersection(RESEARCH_WATCHLIST_FIELD_KEYS - {"attr.risk_attention"}):
+        research_attribute_overrides = build_research_watchlist_attribute_overrides(
             session,
             instrument_ids=[row.instrument_id for row in rows],
         )
-        if requested_fields.intersection(RESEARCH_WATCHLIST_FIELD_KEYS)
-        else {}
-    )
+    elif "attr.risk_attention" in requested_fields:
+        research_attribute_overrides = build_risk_watchlist_attribute_overrides(
+            session,
+            instrument_ids=[row.instrument_id for row in rows],
+        )
+    else:
+        research_attribute_overrides = {}
     attribute_overrides = _merge_attribute_overrides(
         peer_attribute_overrides,
         research_attribute_overrides,

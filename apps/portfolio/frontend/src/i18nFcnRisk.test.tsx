@@ -43,3 +43,28 @@ describe('FCN risk translations', () => {
     })
   })
 })
+
+it('translates singular, plural and filtered transaction activity counts', async () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
+  render(<LanguageProvider><span>1 activity</span><span>2 activities</span><span>1 matching activity</span><span>12 matching activities</span></LanguageProvider>)
+  await waitFor(() => {
+    expect(screen.getByText('1 项活动')).toBeTruthy()
+    expect(screen.getByText('2 项活动')).toBeTruthy()
+    expect(screen.getByText('1 项匹配活动')).toBeTruthy()
+    expect(screen.getByText('12 项匹配活动')).toBeTruthy()
+  })
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
+})
+
+it('keeps account field labels separate from count classifiers and uses account date meanings', async () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
+  render(<LanguageProvider><span>Holding account</span><span>1 holding account</span><span>2 holding accounts</span><span>Account Opening Date</span><span>Account Closing Date</span></LanguageProvider>)
+  await waitFor(() => {
+    expect(screen.getByText('持仓账户')).toBeTruthy()
+    expect(screen.getByText('1 个持仓账户')).toBeTruthy()
+    expect(screen.getByText('2 个持仓账户')).toBeTruthy()
+    expect(screen.getByText('开户日期')).toBeTruthy()
+    expect(screen.getByText('关闭日期')).toBeTruthy()
+    expect(screen.queryByText('个持仓账户')).toBeNull()
+  })
+})

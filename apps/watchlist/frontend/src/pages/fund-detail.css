@@ -1,6 +1,7 @@
 .fund-detail-hero .instrument-detail-headline { width: 100%; max-width: none; }
 .fund-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .fund-detail-title-row > h1 { min-width: 0; overflow-wrap: anywhere; }
+.fund-section-loading { position: absolute; right: -12px; top: 50%; width: 10px; transform: translateY(-50%); font-size: 12px; color: var(--muted); }
 .fund-overview { padding: 8px 0 24px; }
 .fund-overview-snapshot { display: grid; grid-template-columns: 170px 170px minmax(0, 1fr); gap: 28px; padding: 22px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
 .fund-overview-nav { display: grid; align-content: start; gap: 6px; }

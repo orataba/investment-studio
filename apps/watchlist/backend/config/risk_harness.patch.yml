@@ -213,6 +213,7 @@
         env:
           INVESTMENT_STUDIO_RESEARCH_API_BASE_URL: !!js process.env.INVESTMENT_STUDIO_RESEARCH_API_BASE_URL
           INVESTMENT_STUDIO_RESEARCH_RUN_ID: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_ID
+          INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN
           DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
         toolCallTimeoutMs: 60000
         failOnStartupError: true

@@ -15,6 +15,9 @@ from watchlist_app.services.research_workbench import catalogue, portfolio_optio
 from watchlist_app.services.risk_workbench import refresh_risk_cases, event, now
 from watchlist_app.services.price_risk import period_loss_readings, series_limitation
 
+from studio_identity import current_principal
+from watchlist_app.services.research_access import require_topic_access, require_entry_access, visible_topics, require_portfolio
+
 router = APIRouter()
 
 
@@ -30,6 +33,10 @@ def require(session, model, identifier):
     record = session.get(model, identifier)
     if record is None:
         raise HTTPException(404, "Record not found")
+    if model is ResearchTopic:
+        require_topic_access(session, record)
+    if model is ResearchEntry:
+        require_entry_access(session, record)
     if model is ResearchTopic and managed_topic(record.topic_id):
         raise HTTPException(422, "此记录由研究追踪或风控模块维护，请使用对应页面")
     return record
@@ -56,16 +63,31 @@ class CompletionInput(BaseModel):
     completed: bool
 
 
+class ResearchReferenceInput(BaseModel):
+    theme_id: str | None = None
+    pm_note_id: str | None = None
+    pm_note_revision: int | None = Field(default=None, ge=1)
+    instrument_id: str
+    notebook_version_id: str | None = None
+    investment_view_version_id: str | None = None
+    forecast_key: str | None = None
+    forecast_version_id: str | None = None
+
+
 class PageContextInput(BaseModel):
     surface: Literal["instrument", "watchlist", "portfolio"]
     instrument_id: str | None = None
     watchlist_id: str | None = None
     portfolio_id: str | None = None
+    holding_id: str | None = None
+    account_id: str | None = None
+    as_of_date: date | None = None
     tab: str | None = None
     currency: str | None = None
     benchmark: str | None = None
     start: date | None = None
     end: date | None = None
+    research_reference: ResearchReferenceInput | None = None
 
 
 class MessageInput(BaseModel):
@@ -112,7 +134,7 @@ def portfolio_context(portfolio_id: str):
 
 @router.get("/research/topics")
 def topics(instrument_id: str | None = None, session: Session = Depends(get_db_session)):
-    records = session.scalars(select(ResearchTopic).order_by(ResearchTopic.updated_at.desc())).all()
+    records = visible_topics(session)
     return [dump(x) for x in records if not managed_topic(x.topic_id) and (not instrument_id or instrument_id in x.instrument_ids)]
 
 
@@ -132,7 +154,9 @@ def validate_scope(session, request):
 @router.post("/research/topics", status_code=201)
 def create_topic(request: TopicInput, session: Session = Depends(get_db_session)):
     validate_scope(session, request)
-    record = ResearchTopic(topic_id=uuid4().hex, **request.model_dump(), conclusion="")
+    actor = current_principal()
+    record = ResearchTopic(topic_id=uuid4().hex, **request.model_dump(), conclusion="", team_id=actor.team_id,
+                           created_by_user_id=actor.user_id, visibility="private")
     session.add(record)
     session.commit()
     return dump(record)
@@ -142,6 +166,8 @@ def create_topic(request: TopicInput, session: Session = Depends(get_db_session)
 def update_topic(topic_id: str, request: TopicInput, session: Session = Depends(get_db_session)):
     record = require(session, ResearchTopic, topic_id)
     validate_scope(session, request)
+    if record.portfolio_id != request.portfolio_id and session.scalar(select(ResearchEntry.entry_id).where(ResearchEntry.topic_id == topic_id).limit(1)):
+        raise HTTPException(422, "已有记录的对话不能更换或解除组合范围，请新建对话")
     for key, value in request.model_dump().items():
         setattr(record, key, value)
     session.commit()
@@ -157,7 +183,8 @@ def topic_detail(topic_id: str, session: Session = Depends(get_db_session)):
 @router.post("/research/topics/{topic_id}/entries", status_code=201)
 def add_entry(topic_id: str, request: EntryInput, session: Session = Depends(get_db_session)):
     topic = require(session, ResearchTopic, topic_id)
-    record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, **request.model_dump(), status="recorded", context_json={})
+    record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, **request.model_dump(), status="recorded", context_json={},
+                           team_id=topic.team_id, author_user_id=current_principal().user_id)
     if request.kind == "conclusion":
         record.context_json = {"previous_conclusion": topic.conclusion}
         topic.conclusion = request.body
@@ -206,7 +233,7 @@ async def _save_uploaded_material(topic: ResearchTopic, file: UploadFile, sessio
             reader = PdfReader(path)
             text = "\n".join(f"[第 {i+1} 页]\n{page.extract_text() or ''}" for i, page in enumerate(reader.pages))[:60000]
             extraction = "PDF 文字层，最多前 60000 字符；扫描件需补充文字" if text.strip() else extraction
-        record = ResearchEntry(entry_id=entry_id, topic_id=topic.topic_id, kind="evidence", title=(title or "").strip() or name, body=text,
+        record = ResearchEntry(entry_id=entry_id, topic_id=topic.topic_id, team_id=topic.team_id, author_user_id=current_principal().user_id, kind="evidence", title=(title or "").strip() or name, body=text,
             source=f"/api/research/entries/{entry_id}/file", status="recorded",
             context_json={**(metadata or {}), "file_name": name, "extraction": extraction})
         topic.updated_at = now()
@@ -243,6 +270,10 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
     topic = session.scalar(select(ResearchTopic).where(ResearchTopic.topic_id == topic_id).with_for_update())
     if not topic:
         raise HTTPException(404, "对话不存在")
+    require_topic_access(session, topic)
+    from watchlist_app.services.research_access import topic_portfolio_ids
+    if topic_portfolio_ids(session, topic) - {topic.portfolio_id}:
+        raise HTTPException(422, "此旧对话包含其他组合的历史资料；可查阅历史，请新建绑定组合的对话继续研究")
     if managed_topic(topic.topic_id):
         raise HTTPException(422, "此记录由研究追踪或风控模块维护，请使用对应页面")
     if not request.question.strip():
@@ -253,10 +284,14 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
         require(session, Watchlist, request.watchlist_id)
     page = request.page_context
     if page:
+        if page.surface != "portfolio" and any((page.holding_id, page.account_id, page.as_of_date)):
+            raise HTTPException(422, "持仓、账户与组合估值日只能用于已绑定组合的页面")
         if page.surface == "portfolio" and (not page.portfolio_id or page.portfolio_id != topic.portfolio_id):
             raise HTTPException(422, "当前页面与对话关联的组合不一致，请重新打开该组合的研究助手")
         if page.surface == "instrument" and (not page.instrument_id or page.instrument_id not in topic.instrument_ids):
             raise HTTPException(422, "当前页面与对话关联的标的不一致，请重新打开该标的的研究助手")
+        if page.research_reference and page.research_reference.instrument_id not in topic.instrument_ids:
+            raise HTTPException(422, "引用的研究记录不在对话关联标的内")
         if page.surface == "watchlist":
             if not page.watchlist_id or (request.watchlist_id and page.watchlist_id != request.watchlist_id):
                 raise HTTPException(422, "当前页面与对话关联的观察列表不一致")
@@ -266,36 +301,68 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
         topic.title = request.question.strip()[:80]
     context = conversation_context(session, topic, request.question, request.watchlist_id,
                                    request.page_context.model_dump(mode="json", exclude_none=True) if request.page_context else None)
-    record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=request.question, body="", source="DeepSeek Harness", status="queued", context_json=context)
+    record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, team_id=topic.team_id, kind="analysis", title=request.question, body="", source="DeepSeek Harness", status="queued", created_at=now(), context_json=context)
     session.add(record)
     topic.updated_at = now()
     session.commit()
-    background.add_task(run_analysis, record.entry_id)
+    from watchlist_app.services.research_runner import authorize_run
+    token = authorize_run(current_principal(), record.entry_id)
+    background.add_task(run_analysis, record.entry_id, token)
     return dump(record)
 
 
 @router.get("/research/runs/{run_id}/context")
-def run_context(run_id: str, session: Session = Depends(get_db_session)):
+def run_context(run_id: str, originals: bool = False, session: Session = Depends(get_db_session)):
     record = require(session, ResearchEntry, run_id)
     if record.kind != "analysis":
         raise HTTPException(404, "Analysis not found")
     from watchlist_app.services.research_notebook import dossier_outline
     context = {key: value for key, value in record.context_json.items() if key != "sector_company_data"}
-    if context.get("research_dossiers"):
+    if originals:
+        from datetime import datetime
+        from watchlist_app.services.market_evidence import hydrate_source
+        cutoff = datetime.fromisoformat(context["cutoff"])
+        context["market_text_sources"] = [hydrate_source(source, cutoff=cutoff)
+            for source in context.get("market_text_sources", [])]
+        context["web_evidence"] = [{**capture, "sources": [hydrate_source(source, cutoff=cutoff)
+            for source in capture.get("sources", [])]} for capture in context.get("web_evidence", [])]
+        dossiers = []
+        for dossier in context.get("research_dossiers", []):
+            notebook = dossier.get("notebook")
+            dossiers.append({**dossier, "prior_sources": [hydrate_source(source, cutoff=cutoff)
+                for source in dossier.get("prior_sources", [])],
+                "notebook": {**notebook, "sources": [hydrate_source(source, cutoff=cutoff)
+                    for source in notebook.get("sources", [])]} if notebook else None})
+        context["research_dossiers"] = dossiers
+    elif context.get("research_dossiers"):
         context["research_dossiers"] = [dossier_outline(d) for d in context["research_dossiers"]]
     return context
 
 
 @router.get("/research/runs/{run_id}/dossier/{instrument_id}")
-def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, session: Session = Depends(get_db_session)):
+def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, version_id: str | None = None,
+                session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_notebook import dossier_outline, dossier_source
     record = require(session, ResearchEntry, run_id)
-    if not record.context_json.get("sector_run") or instrument_id not in record.context_json.get("instrument_ids", []):
+    if not (record.context_json.get("sector_run") or record.context_json.get("research_run")):
         raise HTTPException(404, "本轮研究没有该标的的档案快照")
-    dossier = next(d for d in record.context_json["research_dossiers"] if d["instrument_id"] == instrument_id)
+    dossier = next((d for d in record.context_json.get("research_dossiers", []) if d["instrument_id"] == instrument_id), None)
+    if dossier is None:
+        raise HTTPException(404, "请先读取该标的以绑定本轮研究档案")
     try:
+        if version_id:
+            from watchlist_app.services.research_dossier import read_dossier_version
+            from watchlist_app.services.research_identity import run_identity
+            version = read_dossier_version(session, instrument_id, version_id, actor=run_identity(record.context_json))
+            recorded = version["value"].get("recorded_at") or version["value"].get("updated_at") or version["value"].get("created_at")
+            stamp = datetime.fromisoformat(recorded) if recorded else None
+            bound_pm_version = version["kind"] == "pm_view" and any(
+                item.get("version_id") == version_id for note in dossier.get("pm_views", []) for item in note.get("versions", []))
+            if not bound_pm_version and stamp and stamp.replace(tzinfo=stamp.tzinfo or UTC) > datetime.fromisoformat(record.context_json["cutoff"]):
+                raise ValueError("该版本在本轮截止时间之后才保存，请在新一轮读取")
+            return version
         return dossier_source(dossier, source_id) if source_id else dossier_outline(dossier)
-    except ValueError as error:
+    except (ValueError, LookupError) as error:
         raise HTTPException(404, str(error)) from error
 
 
@@ -304,13 +371,14 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     record = session.scalar(select(ResearchEntry).where(ResearchEntry.entry_id == run_id).with_for_update())
     if not record or record.kind != "analysis":
         raise HTTPException(404, "对话回复不存在")
+    require_entry_access(session, record, tool_write=True)
     if record.status not in {"queued", "running"}:
         raise HTTPException(409, "本轮对话已结束")
     context = record.context_json
     if context.get("risk_run"):
         raise HTTPException(422, "风控研判只使用本轮已绑定的风险与持仓快照")
-    if context.get("sector_run"):
-        raise HTTPException(422, "研究追踪只使用本轮已绑定的标的快照与专用研究证据工具")
+    if context.get("sector_run") and request.tool in {"portfolio", "risk_review"}:
+        raise HTTPException(422, "标的研究只读取已绑定的标的范围；组合持仓需在关联组合的对话中读取")
     known = {x["instrument_id"] for x in context["catalogue"]}
     ids = list(dict.fromkeys([*request.instrument_ids, *([request.benchmark_id] if request.benchmark_id else [])]))
     if not set(ids).issubset(known) or (request.target_id and request.target_id not in ids):
@@ -318,13 +386,18 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     if request.tool in {"instruments", "comparison"} and not ids:
         raise HTTPException(422, "请选择需要读取的标的")
     if request.tool == "instruments":
-        result = instrument_evidence(session, ids)
+        from watchlist_app.services.sector_research import bind_research_instruments
+        bind_research_instruments(session, record, ids)
+        context = record.context_json
+        result = {"assets": [asset for asset in context["instrument_inputs"] if asset["instrument_id"] in ids]}
     elif request.tool == "dossier":
-        from watchlist_app.services.research_dossier import read_dossier
         from watchlist_app.services.research_notebook import dossier_outline, dossier_source
         if len(ids) != 1:
             raise HTTPException(422, "请选择一个标的的研究档案")
-        dossier = read_dossier(session, ids[0])
+        from watchlist_app.services.sector_research import bind_research_instruments
+        bind_research_instruments(session, record, ids)
+        context = record.context_json
+        dossier = next(d for d in context["research_dossiers"] if d["instrument_id"] == ids[0])
         try:
             result = dossier_source(dossier, request.source_id) if request.source_id else dossier_outline(dossier)
         except ValueError as error:
@@ -350,20 +423,24 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
         result = review_workspace(session, **scope)
     elif request.tool == "comparison":
         start, end = request.start_date, request.end_date
-        if not start or not end or start >= end or end > date.today():
+        cutoff_date = datetime.fromisoformat(context["cutoff"]).date()
+        if not start or not end or start >= end or end > cutoff_date:
             raise HTTPException(422, "比较需要已发生的有效起止日期")
         series = {}
+        cutoff = datetime.fromisoformat(context["cutoff"])
         for iid in ids:
             chart = session.get(InstrumentChartReadModel, iid)
-            series[iid] = (chart.payload_json.get("research_returns") or {}) if chart else {}
+            known = chart.last_recalculated_at if chart else None
+            known = known.replace(tzinfo=known.tzinfo or UTC) if known else None
+            series[iid] = (chart.payload_json.get("research_returns") or {}) if known and known <= cutoff else {}
         result = compare_series(series, start, end, request.target_id, request.benchmark_id)
     elif request.tool == "portfolio":
         if not context.get("portfolio_id"):
             result = {"available": False, "reason": "尚未关联组合，请用户在对话中选择组合后继续。"}
         else:
             try:
-                from urllib.parse import urlencode
-                result = external_json("portfolio", "/workspace/holdings?" + urlencode({"portfolio_id": context["portfolio_id"]}))
+                from watchlist_app.services.research_workbench import portfolio_page_evidence
+                result = portfolio_page_evidence(context["portfolio_id"], context.get("page_context"))
             except (OSError, ValueError):
                 result = {"available": False, "reason": "未取得组合持仓，不能推断权重或实际持仓。"}
     elif request.tool in {"search", "source"}:
@@ -383,7 +460,13 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
             result = {"available": False, "reason": "尚未取得市场状态，本次没有实时宏观证据。"}
     source_id = f"{request.tool}:{uuid4().hex[:12]}"
     evidence = serialize_payload({"source_id": source_id, "tool": request.tool, "request": request.model_dump(exclude={"public_result"}), "retrieved_at": now(), "result": result})
-    record.context_json = {**context, "tool_evidence": [*context.get("tool_evidence", []), evidence]}
+    context = {**context, "tool_evidence": [*context.get("tool_evidence", []), evidence]}
+    if request.tool == "comparison":
+        metric = {"source_id": source_id, "source_type": "computed_metric", "scope": "public_market",
+            "title": "已登记标的共同观察区间比较", "as_of": context["cutoff"], "data": result,
+            "methodology": result["method"], "input_series": series}
+        context["computed_metrics"] = [*context.get("computed_metrics", []), metric]
+    record.context_json = context
     session.commit()
     return evidence
 

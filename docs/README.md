@@ -7,8 +7,9 @@
 | 需要解决的问题 | 权威文档 |
 | --- | --- |
 | 第一次接手项目、定位代码和评估修改影响 | [Developer Guide](./DEVELOPER_GUIDE.md) |
-| 主页、后台维护、Watchlist、Portfolio 的职责和数据流 | [Architecture](./ARCHITECTURE.md) |
-| 同事如何使用三个应用 | [User Manual](./USER_MANUAL.md) |
+| 主页、共享数据与四个业务 App 的职责和数据流 | [Architecture](./ARCHITECTURE.md) |
+| 同事如何使用四个业务应用 | [User Manual](./USER_MANUAL.md) |
+| 公共数值、资讯包、PIT 与日报周报运行 | [Market Data Pipeline](./MARKET_DATA_PIPELINE.md) |
 | 数据库拓扑、迁移、重建、恢复与 PostgreSQL 测试 | [Database Workflow](./DATABASE_WORKFLOW.md) |
 | macOS 常驻服务、定时刷新、日志和卸载 | [macOS Local Service](./LOCAL_MACOS_SERVICE.md) |
 | Linux/systemd 部署、网络和访问控制 | [Server Deployment](./SERVER_DEPLOYMENT.md) |
@@ -27,6 +28,8 @@
 | CLI 数据维护 | [shared-data/README.md](../shared-data/README.md) |
 | Watchlist | [apps/watchlist/README.md](../apps/watchlist/README.md) |
 | Portfolio | [apps/portfolio/README.md](../apps/portfolio/README.md) 与 [Portfolio 文档索引](../apps/portfolio/docs/README.md) |
+| Briefing 日报周报 | [apps/briefing/README.md](../apps/briefing/README.md) |
+| Regime | [apps/regime/README.md](../apps/regime/README.md) |
 | Instrument Core | [shared-data/instruments/README.md](../shared-data/instruments/README.md) 与 [Instrument Core Contract](../shared-data/instruments/INSTRUMENT_CORE_CONTRACT.md) |
 | Shared UI | [packages/ui/README.md](../packages/ui/README.md) |
 | Instrument Data migrations | [shared-data/instruments/MIGRATIONS.md](../shared-data/instruments/MIGRATIONS.md) |
@@ -54,3 +57,6 @@ infra/scripts/verify_repository.sh static
 ```bash
 infra/scripts/verify_repository.sh all-local
 ```
+
+
+多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。启用新的权限接口前必须先迁移身份库并配置真实会话与后台服务身份。

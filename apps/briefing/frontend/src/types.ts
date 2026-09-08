@@ -1,0 +1,9 @@
+export type ReportType = 'daily' | 'weekly'
+export type ReportStatus = 'queued' | 'running' | 'completed' | 'failed'
+export type ReportSummary = { report_id: string; report_type: ReportType; report_date: string; title: string; version: number; status: ReportStatus; cutoff: string; created_at: string; completed_at: string | null; error: string | null; source_count: number; edition_role: 'preview' | 'publisher' }
+export type MarketRow = { symbol: string; label: string; start_date: string; end_date: string; start_close: number; end_close: number; return_pct: number; source_ids: string[]; return_basis?: string; price_field?: string; asset_type?: string }
+export type MacroRow = { symbol: string; label: string; date: string; value: number | string; unit?: string; source_ids: string[] }
+export type Source = { source_id: string; source_type: string; title?: string; source_name?: string; url?: string; published_at?: string; occurred_at?: string; observed_at?: string; received_at?: string; symbol?: string; date?: string; content_completeness?: string; content_text?: string; [key: string]: unknown }
+export type CitedItem = { title: string; tags?: string[]; source_ids: string[]; related_market_symbols: string[]; summary?: string; analysis?: string; angle?: string; why_now?: string; debate?: string; clue?: string; this_week?: string; possible_opportunity?: string }
+export type Section = { kind: 'takeaway_section' | 'topic_recommendations' | 'opportunity_leads'; title: string; groups?: { title: string; items: CitedItem[] }[]; items?: CitedItem[] }
+export type ReportDetail = ReportSummary & { window: { period_start: string; period_end: string; timezone: string; period_label: string }; market_rows: MarketRow[]; macro_rows: MacroRow[]; coverage: { text: Record<string, unknown>; numeric: unknown; documents?: { current?: number; late_received?: number; by_completeness?: Record<string, number> } }; sources: Source[]; report: { sections: Section[] } | null }

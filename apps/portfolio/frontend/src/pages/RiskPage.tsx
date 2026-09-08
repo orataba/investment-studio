@@ -6,6 +6,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import InfoHint from '../components/InfoHint'
 import RollingRiskMetricChart, {
   type RiskChartDisplayStyle,
   type RollingRiskMetricPoint,
@@ -2985,7 +2986,6 @@ export default function RiskPage() {
       <section className="portfolio-detail-surface risk-page-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {workspaceSupportError ? <div className="inline-notice inline-notice-error">{workspaceSupportError}</div> : null}
-        <QualityWarningsNotice warnings={holdingsWorkspace?.quality_warnings} />
 
         {workspaceLoading ? (
           <CalculationStatus />
@@ -3000,7 +3000,10 @@ export default function RiskPage() {
             <section className="portfolio-section-block" aria-label="Risk health">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
-                  <div className="panel-title">Risk Health</div>
+                  <div className="panel-title portfolio-title-with-hint">
+                    <span>Risk Health</span>
+                    <QualityWarningsNotice warnings={holdingsWorkspace.quality_warnings} />
+                  </div>
                   <div
                     className="portfolio-detail-meta"
                     title={riskHealthDetail}
@@ -3231,6 +3234,18 @@ export default function RiskPage() {
                     }}
                     placeholder="Compare benchmark..."
                   />
+                  {benchmarkBasisAssessment.message ? (
+                    <>
+                      {benchmarkBasisAssessment.blocking ? (
+                        <span className="portfolio-detail-meta">Benchmark unavailable</span>
+                      ) : null}
+                      <InfoHint
+                        label="Benchmark comparison"
+                        detail={benchmarkBasisAssessment.message}
+                        tone="warning"
+                      />
+                    </>
+                  ) : null}
                 </div>
                 <div className="risk-section-actions">
                   <RiskSettingsMenu
@@ -3243,17 +3258,6 @@ export default function RiskPage() {
               </div>
               {benchmarkLoading ? <div className="portfolio-detail-meta">Loading</div> : null}
               {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
-              {benchmarkBasisAssessment.message ? (
-                <div
-                  className={
-                    benchmarkBasisAssessment.blocking
-                      ? 'inline-notice inline-notice-error'
-                      : 'inline-notice'
-                  }
-                >
-                  {benchmarkBasisAssessment.message}
-                </div>
-              ) : null}
               <div className="risk-rolling-grid">
                 <RollingRiskMetricChart
                   title="Annualized Volatility"

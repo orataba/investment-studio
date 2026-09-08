@@ -1,5 +1,6 @@
 """Portfolio uses Watchlist's instrument-risk records, rather than a second ledger."""
 import json
+from studio_identity import principal_headers
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -12,7 +13,7 @@ router = APIRouter()
 
 def watchlist_risk(path: str, method: str = "GET", payload: dict | None = None):
     base = get_settings().watchlist_api_url.rstrip("/")
-    request = Request(base + "/risk" + path, method=method, headers={"Content-Type": "application/json"}, data=json.dumps(payload).encode() if payload is not None else None)
+    request = Request(base + "/risk" + path, method=method, headers={"Content-Type": "application/json", **principal_headers()}, data=json.dumps(payload).encode() if payload is not None else None)
     try:
         with urlopen(request, timeout=15) as response:
             return json.load(response)

@@ -26,6 +26,7 @@ BATCH_ID_ENV = "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID"
 MODEL_NAME_ENV = "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME"
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8001/api"
 API_TIMEOUT_SECONDS = 30
+RUN_TOKEN_ENV = "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN"
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 DRAFT_WRITE = ToolAnnotations(
@@ -87,7 +88,7 @@ def _portfolio_path(portfolio_id: str, suffix: str) -> str:
 
 
 def _api_request(path: str, *, method: str = "GET", payload: object | None = None):
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "Authorization": "Bearer " + _required_scope_value(RUN_TOKEN_ENV, "run credential")}
     body = None
     if payload is not None:
         headers["Content-Type"] = "application/json"

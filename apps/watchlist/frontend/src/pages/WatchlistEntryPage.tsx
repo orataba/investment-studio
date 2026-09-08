@@ -1,4 +1,5 @@
 import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
@@ -19,6 +20,7 @@ function isSystemWatchlist(watchlist: WatchlistRecord) {
 }
 
 export default function WatchlistEntryPage() {
+  const canWriteTeam = useCanWriteTeam()
   const navigate = useNavigate()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -295,6 +297,7 @@ export default function WatchlistEntryPage() {
                   <button
                     type="button"
                     className="watchlist-menu-trigger"
+                    disabled={!canWriteTeam}
                     onClick={() =>
                       setMenuOpenId((current) =>
                         current === watchlist.watchlist_id ? null : watchlist.watchlist_id,
@@ -365,6 +368,7 @@ export default function WatchlistEntryPage() {
           <button
             type="button"
             className="watchlist-create-link"
+            disabled={!canWriteTeam}
             onClick={() => {
               resetCreateWatchlistForm()
               setCreateError(null)

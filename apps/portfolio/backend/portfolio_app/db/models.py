@@ -548,6 +548,7 @@ class TransactionRecordModel(Base):
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     asset_deliveries_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    settlement_cashflows_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     lot_selections_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     derivative_contract_id: Mapped[str | None] = mapped_column(String)
     quantity: Mapped[float | None]
@@ -665,6 +666,8 @@ class TransactionChangeLogModel(Base):
     after_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     request_idempotency_key: Mapped[str | None] = mapped_column(String)
     changed_at: Mapped[str] = mapped_column(String, nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(String)
+    actor_name: Mapped[str | None] = mapped_column(String)
 
 
 class TransactionIdempotencyRecordModel(Base):
@@ -1512,3 +1515,40 @@ class ResearchRunRecordModel(Base):
     error_message: Mapped[str | None] = mapped_column(String)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="research_runs")
+
+
+class PortfolioAccessStateModel(Base):
+    __tablename__ = "portfolio_access_state"
+    portfolio_id: Mapped[str] = mapped_column(ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True)
+    team_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
+class PortfolioMembershipModel(Base):
+    __tablename__ = "portfolio_membership"
+    __table_args__ = (CheckConstraint("role IN ('manager', 'editor', 'viewer')", name="ck_portfolio_membership_role"),)
+    portfolio_id: Mapped[str] = mapped_column(ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    granted_by: Mapped[str] = mapped_column(String, nullable=False)
+    granted_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioAccessAuditModel(Base):
+    __tablename__ = "portfolio_access_audit"
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Retained after a portfolio is deleted, unlike its membership rows.
+    portfolio_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String)
+    actor_name: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioUserPreferenceModel(Base):
+    __tablename__ = "portfolio_user_preference"
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    preference_key: Mapped[str] = mapped_column(String, primary_key=True)
+    value_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)

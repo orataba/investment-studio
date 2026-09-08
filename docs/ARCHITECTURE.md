@@ -2,7 +2,7 @@
 
 ## Current Topology
 
-`Investment Studio` 是统一入口、按业务组组织代码与运行的工作区，不是全应用共用数据库的平台：
+`Investment Studio` 包含四个业务 App。公开市场数据统一采集、留存和分发，业务判断与私人账本由各应用持有：
 
 - `home/`
   登录与导航主页，不是业务 App，也不连接业务数据库。
@@ -13,17 +13,25 @@
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 - `apps/regime`
-  Git 子模块，独立代码仓、依赖、数据库、更新任务与发布流程；不导入 `shared-data`。
+  Git 子模块；保留独立模型、输入物化快照、结果数据库与发布流程，供应商采集由 `studio_market` 提供。
+- `apps/briefing`
+  日报／周报；读取公共数值与原始资讯，使用 DeepSeek Harness 生成版本化报告。
 
 Watchlist/Portfolio 共用 `investment_studio` 数据库，包含：
 
+- `identity` schema：账号、团队、会话、服务凭证与身份审计
 - `instrument_data` schema
 - `data_ingestion` schema
 - `watchlist` schema
 - `portfolio` schema
+- `market_data` schema：公开数值数据目录、批次、最新投影与不可变 Parquet 索引
+- `market_text` schema：资讯版本、原文索引、来源健康与数据包收件记录
+- `briefing` schema：报告、绑定输入和生成任务
 
-Regime 独立使用 `market_data` 数据库。即使同在一台 PostgreSQL 服务器，也不跨库引用，
-不共用行情更新事务；重复使用 FMP 数据是有意保留的业务隔离。
+Regime 的独立 `market_data` 数据库保存模型私有输入与运行事实，区别于 Studio 的同名 schema。
+两者不共用业务事务；Regime 来源适配器读取共享 `studio_market` 数据后物化自己的输入。
+云端是公开数值采集主端，本地复制公开数据；两端的账户、交易、研究判断与私有材料分别维护。
+外部 Market Intelligence 只提供文本／事件包。其他项目的数据库和源代码不是运行依赖。
 
 ## 文件与运行归属
 
@@ -31,6 +39,7 @@ Regime 独立使用 `market_data` 数据库。即使同在一台 PostgreSQL 服�
 | --- | --- | --- |
 | Studio 源码 | `~/Projects/investment-studio` | `/opt/investment-studio/current` |
 | 共享数据库 | PostgreSQL `investment_studio`，集群 `/opt/homebrew/var/postgresql@17` | `investment-studio-postgres` 容器，`investment-studio-postgres-data-v1` 卷 |
+| 公开数值历史与资讯原文 | `~/.local/share/investment-studio/market-data` | `market.env` 中配置的本项目数据目录 |
 | Watchlist 上传文件 | `~/.local/share/investment-studio/watchlist-documents` | 服务用户同名相对路径 |
 | Portfolio 计算产物 | `~/.local/share/investment-studio/portfolio-research-outputs` | 服务用户同名相对路径 |
 | 更新状态与锁 | `~/.local/state/investment-studio` | 服务用户同名相对路径 |
@@ -53,12 +62,14 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 ### Home
 
 - 只处理登录、会话、业务入口地址和自身健康检查
-- 不导入 `studio_data` 或 `instrument-core`，不读取数据库或供应商密钥
+- 只读写 `identity` 账号、团队与凭证；不导入 `studio_data` 或 `instrument-core`，不读取业务账本或供应商密钥
 - `home.env` 与后台维护的 `data.env` 分开
 - `home/apps.json` 定义导航项，`INVESTMENT_STUDIO_HOME_APP_URLS` 只覆盖运行地址；导航目录不承担服务发现或数据状态管理
 
 ### Data
 
+- `shared-data/market` 统一接入 FMP、DataHub／Tushare、权威网站等公开数据与 MI 文本包；PG 管理目录，Parquet 保存数值历史，原始响应独立留存
+- 公开全市场采集不以是否加入 Watchlist 为前提；分析师预期、修订财报和成份快照保留观察时钟与完整快照范围
 - 直接读写 `instrument_data` 中的共享资产事实
 - 直接读写 `data_ingestion` 中的邮件抓取、原始证据、解析、重试和候选路由状态
 - 共享数据维护只能经 CLI 与定时任务执行，不提供 HTTP 服务
@@ -73,7 +84,15 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 维护研究对话、标的资料档案、持续研究底稿、原始证据及其日期、助手运行快照和风险跟进；沿用 ResearchTopic / ResearchEntry，PM 观点与自动研究分别保存
 - 每日研究与列表、可访问组合的风控研判复用既有 08:30 worker，单标的风控按需运行；研究助手可读取档案和风控结论，底稿按实际完成逐步积累，不宣称全部登记标的均已深研
 - 研究工具通过显式配置的只读 API 取得 Portfolio 持仓与 Regime 状态；不取得交易写权限，不跨 schema 复制这些事实
-- 美股行业 ETF 的完整持仓、公司资料、年度及季度预期、近期价格由 shared-data 直接向 FMP 采集，存入本项目 `instrument_reference_snapshot.sections.sector_market_data`。每次参考资料采集在同一事务追加 `instrument_reference_observation`，按标的与采集时间索引，用于 PIT 查询和预期变化比较；最新快照供页面快速读取，研究记录保留分析时使用的证据。三者职责独立，历史不依赖是否运行研究，也不把采集时间当成供应商发布日期。本地与云端均用项目 PostgreSQL，不依赖其他项目的数据库；普通概况接口省略完整公司预期明细。每日检查与来源时间边界见 [Watchlist README](../apps/watchlist/README.md)。
+- 研究读取共享数值库的 ETF 成份、公司资料、年度／季度预期和价格，并比较完整历史采集批次；不再把全套公司明细嵌入 ETF 参考资料 JSON。历史预期不以当前报价币种推断计价币种。
+- 资讯研究优先检索 `market_text` 并读取绑定版本原文，必要时定向搜索补充。研究记录保存原文引用与时钟，缺少覆盖、日期不明、获取失败明确留存；发布时间、事件时间、观察时间和本地接收时间分别解释。
+
+### Briefing
+
+- 云端生成正式日报／周报，本地生成预览；角色由外部配置明确指定
+- 数值变化由代码计算，报告保留各市场实际截止日；模型只能解释绑定输入
+- 周报重新读取整周资讯和数值，不拼接日报；迟到资讯按观察／接收时钟进入后续报告
+- 使用固定版本 DeepSeek Harness 和受限 MCP 工具；不调用 Codex CLI
 
 ### Portfolio
 
@@ -91,6 +110,7 @@ Harness 只负责模型循环和受限 MCP 工具调用；数据库事实、计�
 | --- | --- | --- |
 | 页面研究助手 | Watchlist；页面标的、观察列表或组合必须与对话关联一致 | 对话草稿及引用，不发布研究事件或交易 |
 | 标的研究追踪 | Watchlist；本轮绑定的标的、档案快照及取得的原始证据 | 结构化草稿经独立事实核证后发布底稿和研究事件 |
+| 日报／周报 | Briefing；绑定的共享数值、资讯原文版本、覆盖与截止时间 | 结构化报告及引用；正式版仅由配置为 publisher 的实例生成 |
 | 风控研判 | Watchlist；绑定的研究、价格风险与 Portfolio 只读风险上下文 | 结构化研判及原有 case_id 引用，不写 Portfolio 账本 |
 | 交易截图 Copilot | Portfolio；限定组合和导入批次的证据 | 分析修订和导入预览；交易确认仍由 Portfolio 自己执行 |
 
@@ -115,7 +135,12 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 ## Shared Layer
 
-当前共享层分成三部分：
+当前共享层包括：
+
+### `shared-data/market`
+
+公开数值与文本的采集、版本留存、查询、数据包和复制；详细口径、迁移范围及运行命令见
+[Market Data Pipeline](MARKET_DATA_PIPELINE.md)。大规模历史仅保存一套 Parquet，不再建立完整持久化 DuckDB 副本。
 
 ### `shared-data/instruments`
 
@@ -248,6 +273,7 @@ unavailable。Watchlist-local `nav_fact` 只用于审计，不是行情计算输
 
 如果未来再新增功能，默认遵守这条判断：
 
-- 如果是共享资产身份、共享市场事实，或这些事实的非秘密 provenance / 到达日程合同，优先放 `instrument-core + instrument_data`
-- 如果是 后台抓取、证据、解析、重试或候选工作流，放入 `data_ingestion` schema
+- 如果是公开市场采集、数值历史、文本事件或公开数据包，放入 `studio_market`
+- 如果是登记资产身份、经资产口径处理的行情／净值／FX，放入 `instrument-core + instrument_data`
+- 如果是邮件、私有附件、净值候选解析工作流，放入 `data_ingestion` schema
 - 如果是某个 app 的工作流、派生读模型、研究判断、展示状态，必须留在 app 私域

@@ -16,9 +16,9 @@ def event(key="oil-rsi", **changes):
 
 def draft(events=None):
     return {"reviews": [
-        {"instrument_id": "xle", "summary": "XLE出现过热风险。", "coverage": ["XLE RSI>70，需继续关注。"],
+        {"instrument_id": "xle", "summary": "XLE出现过热风险。", "change_kind": "none", "coverage": ["XLE RSI>70，需继续关注。"],
          "events": [event()] if events is None else events, "research": None},
-        {"instrument_id": "xlk", "summary": "未发现经核实的重大新增事件。",
+        {"instrument_id": "xlk", "summary": "未发现经核实的重大新增事件。", "change_kind": "none",
          "coverage": ["社媒覆盖有限"], "events": [], "research": None},
     ]}
 
@@ -38,8 +38,8 @@ def retained_run(monkeypatch):
         "cutoff": "2026-09-06T00:00:00+00:00",
         "sector_inputs": [{"instrument_id": "xle", "holdings": [{"holding_symbol": "XOM"}]},
                           {"instrument_id": "xlk", "holdings": [{"holding_symbol": "MSFT"}]}],
-        "instrument_inputs": [{"instrument_id": "xle", "analyst_focus": "Use actual disclosed exposure.",
-                               "holdings": {"report_period": "2026-06-30"}}, {"instrument_id": "xlk"}],
+        "instrument_inputs": [{"instrument_id": "xle", "name": "XLE", "analyst_focus": "Use actual disclosed exposure.",
+                               "holdings": {"report_period": "2026-06-30"}}, {"instrument_id": "xlk", "name": "XLK"}],
         "prior_events": [],
         "web_evidence": [
             {"operation": "search", "sources": [{"source_id": "search-only", "excerpt": "Not original text"}]},
@@ -52,7 +52,7 @@ def retained_run(monkeypatch):
     def api(run_id, suffix, payload=None):
         assert run_id == "test-run"
         calls.append((suffix, deepcopy(payload)))
-        if suffix == "context":
+        if suffix == "context?originals=true":
             return deepcopy(context)
         if suffix == "sector-company/xle/XOM":
             return {"source_id": "fmp:test-run:xle:XOM", "company": {"symbol": "XOM", "annual_estimates": []}}
@@ -84,9 +84,11 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     assert "window_start" not in packets[0]
     assert packets[0]["draft_reviews"][0]["events"][0]["recording_type"] == "backfill"
     assert [row["instrument_id"] for row in packets[0]["sector_inputs"]] == ["xle"]
-    assert packets[0]["instrument_inputs"] == [{"instrument_id": "xle", "analyst_focus": "Use actual disclosed exposure.",
+    assert packets[0]["instrument_inputs"] == [{"instrument_id": "xle", "name": "XLE", "analyst_focus": "Use actual disclosed exposure.",
                                                "holdings": {"report_period": "2026-06-30"}}]
-    assert {s["source_id"] for s in packets[0]["sources"]} == {"source-1", "fmp:test-run:xle:XOM"}
+    assert {s["source_id"] for s in packets[0]["sources"]} == {
+        "source-1", "fmp:test-run:xle:XOM", "instrument:test-run:xle", "instrument:test-run:xlk",
+        "sector:test-run:xle", "sector:test-run:xlk"}
     receipts = [payload for suffix, payload in retained_run if suffix == "sector-evidence"]
     assert receipts == [
         {"operation": "review", "review": {"draft": original}},
@@ -122,7 +124,7 @@ def test_archived_original_is_loaded_before_event_eligibility_check(monkeypatch)
     calls, packets = [], []
     def api(run_id, suffix, payload=None):
         calls.append((suffix, payload))
-        if suffix == "context": return context
+        if suffix == "context?originals=true": return context
         if suffix.startswith("dossier/xle?"): return original
         return payload
     monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "archive-run")
@@ -139,7 +141,7 @@ def test_ineligible_sources_remove_all_candidates_before_model_and_replace_cover
 
     def with_compilation(run_id, suffix, payload=None):
         value = api(run_id, suffix, payload)
-        if suffix == "context":
+        if suffix == "context?originals=true":
             value["cutoff"] = "2026-09-06T01:00:00+00:00"
             sources = value["web_evidence"][1]["sources"]
             sources[0].update(published_at="2026-09-06T00:29:19+00:00", text=(
@@ -152,12 +154,12 @@ def test_ineligible_sources_remove_all_candidates_before_model_and_replace_cover
     monkeypatch.setattr(review, "_call_reviewer", lambda _: pytest.fail("Ineligible candidates must not call the model"))
     original = draft([event(source_ids=["source-1", "fmp:test-run:xle:XOM"])])
     output = review.review_output(json.dumps(original))
-    assert output["reviews"][0] == {"instrument_id": "xle", "events": [],
+    assert output["reviews"][0] == {"instrument_id": "xle", "events": [], "change_kind": "none",
         "summary": "本轮未能核实候选所述的重大风险或机会。", "coverage": [review._EXCLUSION_NOTE], "research": None}
     assert output["reviews"][1] == original["reviews"][1]
     assert "XLE RSI" not in json.dumps(output, ensure_ascii=False)
     assert retained_run == [
-        ("context", None),
+        ("context?originals=true", None),
         ("sector-evidence", {"operation": "review", "review": {"draft": original}}),
         ("sector-evidence", {"operation": "review", "review": {"evidence_exclusions": [{
             "instrument_id": "xle", "event_key": "oil-rsi", "source_ids": original["reviews"][0]["events"][0]["source_ids"],
@@ -199,7 +201,7 @@ def test_cli_retains_raw_draft_before_validation_and_prints_only_safe_error(monk
     with pytest.raises(SystemExit) as error:
         review.main()
     assert error.value.code == 1
-    assert retained_run == [("sector-evidence", {"operation": "review", "review": {"raw_draft": raw}}), ("context", None)]
+    assert retained_run == [("context?originals=true", None), ("sector-evidence", {"operation": "review", "review": {"raw_draft": raw}})]
     captured = capsys.readouterr()
     assert captured.out == "" and "private-sentinel" not in captured.err
     details = json.loads(captured.err.removeprefix("SECTOR_REVIEW_ERROR "))
@@ -210,7 +212,7 @@ def test_cli_uses_accepted_structured_draft_instead_of_model_prose(monkeypatch, 
     submitted = draft()
     monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "submitted-run")
     monkeypatch.setattr(review.sys, "stdin", StringIO('已提交；不应解析这段文字中的 { 未转义引号。'))
-    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None: {"submitted_draft": submitted} if suffix == "context" else payload)
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None: {"sector_run": True, "submitted_draft": submitted} if suffix == "context?originals=true" else payload)
     received = []
     monkeypatch.setattr(review, "review_output", lambda raw: received.append(json.loads(raw)) or submitted)
     review.main()
@@ -250,7 +252,8 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch):
     schema = json.loads(payload["messages"][1]["content"])["response_schema"]
     assert "$ref" not in json.dumps(schema) and "$defs" not in schema
     item = schema["properties"]["reviews"]["items"]
-    assert set(item["required"]) == {"instrument_id", "summary", "coverage", "decisions"}
+    assert set(item["required"]) == {"instrument_id", "coverage", "decisions"}
+    assert item["properties"]["summary"]["default"] == ""
     decision = item["properties"]["decisions"]["items"]
     assert set(decision["required"]) == {"event_key", "decision", "reason", "event"}
     assert decision["properties"]["decision"]["enum"] == ["keep", "remove"]
@@ -314,7 +317,7 @@ def test_quiet_day_working_paper_is_reviewed_against_original_material(monkeypat
     material = {"source_id": "material:m1", "title": "管理人月报", "body": "管理人介绍策略，未给出验证样本。", "metadata": {"published_at": "2026-09-01"}}
     receipts, packets = [], []
     def api(run_id, suffix, payload=None):
-        if suffix == "context":
+        if suffix == "context?originals=true":
             return context
         if suffix.startswith("dossier/fund?"):
             return material
@@ -329,10 +332,110 @@ def test_quiet_day_working_paper_is_reviewed_against_original_material(monkeypat
     assert len(packets) == 1
     assert any(s.get("body") == material["body"] for s in packets[0]["sources"])
     assert output["reviews"][0]["events"] == []
-    assert output["reviews"][0]["research"] == corrected
+    assert output["reviews"][0]["research"] == {key: value for key, value in corrected.items() if key in paper}
     result["reviews"][0]["research"] = None
-    with pytest.raises(ValueError, match="working paper"):
-        review.review_output(json.dumps(document))
+    assert review.review_output(json.dumps(document))["reviews"][0]["research"] is None
     result["reviews"][0]["research"] = {**corrected, "source_ids": ["invented-method-proof"]}
     with pytest.raises(ValueError, match="依据"):
         review.review_output(json.dumps(document))
+
+
+@pytest.mark.parametrize("submitted", [False, True])
+def test_chat_cli_preserves_answer_and_wraps_only_requested_shared_research(monkeypatch, capsys, submitted):
+    answer = "当前讨论仍保留条件判断。"
+    paper = {"reviews": [{"instrument_id": "stock", "research": {"next_research": ["核实竞争变化"]},
+                           "change_kind": "knowledge"}]}
+    context = {"research_run": True, **({"submitted_draft": paper} if submitted else {})}
+    received, receipts = [], []
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "chat-run")
+    monkeypatch.setattr(review.sys, "stdin", StringIO(answer))
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None:
+        context if suffix == "context?originals=true" else receipts.append(payload) or payload)
+    monkeypatch.setattr(review, "review_output", lambda raw: received.append(json.loads(raw)) or paper)
+    review.main()
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["answer"] == answer and captured.err == ""
+    assert result["research_result"] == (paper if submitted else None)
+    assert received == ([paper] if submitted else [])
+    if not submitted:
+        assert result["research_publication"]["status"] == "not_requested" and receipts == []
+
+
+def test_chat_review_failure_preserves_answer_without_publishing_or_exposing_exception(monkeypatch, capsys):
+    answer = "这是一项仍待验证的看法。"
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "chat-run")
+    monkeypatch.setattr(review.sys, "stdin", StringIO(answer))
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None:
+        {"research_run": True, "submitted_draft": {"reviews": []}} if suffix == "context?originals=true" else payload)
+    def fail(raw):
+        raise ValueError("provider-private-diagnostic")
+    monkeypatch.setattr(review, "review_output", fail)
+    review.main()
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["answer"] == answer and result["research_result"] is None
+    assert result["research_publication"]["status"] == "failed"
+    assert "provider-private-diagnostic" not in captured.out + captured.err
+
+
+def test_supported_forward_judgment_remains_active_and_sparse_research_is_not_expanded(monkeypatch):
+    forecast = {"key": "demand-repair", "claim": "若订单恢复，下一季度收入有望改善", "horizon": "下一季度披露",
+                "assumptions": ["订单转化保持正常"], "status": "active", "source_ids": ["issuer"]}
+    paper = {"forecasts": [forecast], "investment_view": {"direction": "有条件看好", "risk": "订单转化仍不确定",
+                                                         "source_ids": ["issuer"]}}
+    document = {"reviews": [{"instrument_id": "stock", "change_kind": "knowledge", "research": paper}]}
+    context = {"research_run": True, "instrument_ids": ["stock", "other"], "cutoff": "2026-09-08T00:00:00+00:00",
+        "web_evidence": [{"operation": "fetch", "sources": [{"source_id": "issuer", "source_type": "public_source",
+            "text": "公司披露在手订单增加，未来收入尚未公布。", "published_at": "2026-09-07"}]}]}
+    reviewed = {"reviews": [{"instrument_id": "stock", "change_kind": "knowledge", "coverage": [], "decisions": [], "research": paper}]}
+    packets = []
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "chat-run")
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None:
+        context if suffix == "context?originals=true" else payload)
+    monkeypatch.setattr(review, "_call_reviewer", lambda packet: packets.append(packet) or reviewed)
+    result = review.review_output(json.dumps(document))["reviews"][0]
+    assert result["summary"] == "" and result["events"] == []
+    assert result["research"] == paper
+    assert result["research"]["forecasts"][0]["status"] == "active"
+    assert "fundamental_view" not in result["research"] and "valuation_view" not in result["research"]
+    assert {source["source_id"] for source in packets[0]["sources"]} == {"issuer"}
+    assert [item["instrument_id"] for item in packets[0]["draft_reviews"]] == ["stock"]
+
+
+def test_chat_context_read_failure_preserves_already_generated_answer(monkeypatch, capsys):
+    monkeypatch.setenv('INVESTMENT_STUDIO_RESEARCH_RUN_ID', 'chat')
+    monkeypatch.setattr(review.sys, 'argv', ['sector_fact_review', '--conversation'])
+    monkeypatch.setattr(review.sys, 'stdin', StringIO('已生成的研究讨论。'))
+    monkeypatch.setattr(review, '_api_request', lambda *args, **kwargs: (_ for _ in ()).throw(OSError('local unavailable')))
+    review.main()
+    result = json.loads(capsys.readouterr().out)
+    assert result['answer'] == '已生成的研究讨论。'
+    assert result['research_result'] is None and result['research_publication']['status'] == 'failed'
+
+
+def test_reviewer_defaults_cannot_clear_unrequested_knowledge_or_expand_a_forecast_update():
+    paper = {'investment_view': {'risk': '短期波动升高'}, 'forecasts': [{
+        'key': 'demand', 'claim': '需求支持仍可能持续', 'horizon': '未来一季', 'status': 'active'}]}
+    original = {'reviews': [{'instrument_id': 'gold', 'events': [], 'change_kind': 'knowledge', 'research': paper}]}
+    # A model may fill schema defaults even though only two sparse changes were requested.
+    full = review.ResearchNotebook.model_validate(paper).model_dump(mode='json')
+    result = {'reviews': [{'instrument_id': 'gold', 'coverage': [], 'decisions': [],
+        'change_kind': 'investment', 'summary': '没有新增依据的重复报告', 'research': full}]}
+    corrected = review._apply_checks(original, result, [])['reviews'][0]
+    assert corrected['research'] == paper
+    assert corrected['change_kind'] == 'knowledge'
+
+
+def test_reviewer_can_drop_unsupported_research_without_clearing_the_previous_view():
+    original = {'reviews': [{'instrument_id': 'gold', 'events': [], 'change_kind': 'investment',
+        'research': {'investment_view': {'direction': '缺少证据的看涨结论'}}}]}
+    result = {'reviews': [{'instrument_id': 'gold', 'coverage': [], 'decisions': [],
+        'change_kind': 'none', 'research': None}]}
+    corrected = review._apply_checks(original, result, [])['reviews'][0]
+    assert corrected['research'] is None and corrected['change_kind'] == 'none'
+    # Null inside a corrected patch must not accidentally withdraw the saved view either.
+    result['reviews'][0]['research'] = {'investment_view': None}
+    assert review._apply_checks(original, result, [])['reviews'][0]['research'] == {}
+    original['reviews'][0]['research'] = {'investment_view': None}
+    assert review._apply_checks(original, result, [])['reviews'][0]['research'] == {'investment_view': None}

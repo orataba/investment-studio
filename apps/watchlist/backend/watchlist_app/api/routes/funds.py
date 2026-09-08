@@ -4,6 +4,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
+from studio_identity import current_principal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -432,7 +433,7 @@ def upsert_fund_people_profile(
         session,
         instrument_id=instrument_id,
         people_payload_json=payload.payload,
-        updated_by=payload.updated_by,
+        updated_by=current_principal().user_id,
     )
     session.commit()
     return serialize_payload(record.people_payload_json)
@@ -460,7 +461,7 @@ def upsert_fund_strategy_profile(
         session,
         instrument_id=instrument_id,
         strategy_payload_json=payload.payload,
-        updated_by=payload.updated_by,
+        updated_by=current_principal().user_id,
     )
     session.commit()
     return serialize_payload(record.strategy_payload_json)
@@ -488,7 +489,7 @@ def upsert_fund_price_profile(
         session,
         instrument_id=instrument_id,
         price_payload_json=_normalize_price_payload(payload.payload),
-        updated_by=payload.updated_by,
+        updated_by=current_principal().user_id,
     )
     session.commit()
     return serialize_payload(record.price_payload_json)
@@ -516,7 +517,7 @@ def upsert_fund_documents_profile(
         session,
         instrument_id=instrument_id,
         documents_payload_json=payload.payload,
-        updated_by=payload.updated_by,
+        updated_by=current_principal().user_id,
     )
     session.commit()
     return serialize_payload(record.documents_payload_json)
@@ -592,7 +593,7 @@ async def upload_fund_document(
             session,
             instrument_id=instrument_id,
             documents_payload_json=next_payload,
-            updated_by=updated_by,
+            updated_by=current_principal().user_id,
         )
         session.commit()
     except Exception:
@@ -680,7 +681,7 @@ def upsert_fund_nav_settings(
         session,
         instrument_id=instrument_id,
         nav_settings_json=_normalize_nav_settings_payload(next_payload),
-        updated_by=payload.updated_by,
+        updated_by=current_principal().user_id,
     )
     if _normalize_nav_settings_payload(next_payload) != current_payload:
         canonical_recalc_service.execute_recalc(

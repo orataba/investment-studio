@@ -171,7 +171,7 @@ describe('Overview rendered page contract', () => {
       '/portfolios/:portfolioId/overview',
     )
 
-    const hint = await screen.findByRole('note', { name: /Operational performance basis:/ })
+    const hint = await screen.findByRole('button', { name: /Operational performance basis:/ })
     expect(hint).toHaveAttribute('title', expect.stringContaining('NAV reconciliation'))
     expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
   })
@@ -408,6 +408,7 @@ describe('Overview rendered page contract', () => {
   })
 
   it('renders and deduplicates shared actionable quality warnings', async () => {
+    const user = userEvent.setup()
     const warning =
       'Corporate action review required: equity-1 effective 2026-07-01 remains unconfirmed; confirm issuer evidence.'
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
@@ -416,7 +417,12 @@ describe('Overview rendered page contract', () => {
     const performance = performanceFixture()
     apiMocks.getPortfolioPerformance.mockResolvedValue({
       ...performance,
-      summary: { ...performance.summary, quality_warnings: [warning] },
+      summary: {
+        ...performance.summary,
+        quality_warnings: [warning],
+        effective_end_date: '2026-07-14',
+        as_of_clamp_reason: 'requested_end_after_latest_reliable_endpoint',
+      },
     })
 
     renderPortfolioPage(
@@ -425,10 +431,15 @@ describe('Overview rendered page contract', () => {
       '/portfolios/:portfolioId/overview',
     )
 
-    const warningStatus = await screen.findByRole('status', { name: /Data quality warning/ })
-    expect(warningStatus).toHaveTextContent('Data quality warning')
-    expect(warningStatus).toHaveAttribute('title', warning)
+    const warningHint = await screen.findByRole('button', { name: /Data quality warning/ })
+    expect(warningHint).toHaveAttribute('title', warning)
+    expect(warningHint.closest('.overview-chart-controls')).not.toBeNull()
+    const cutoffHint = await screen.findByRole('button', { name: /Performance data cutoff:/ })
+    expect(cutoffHint.closest('.overview-chart-controls')).not.toBeNull()
+    expect(cutoffHint).toHaveAttribute('title', expect.stringContaining('Performance shown through 2026-07-14'))
     expect(screen.queryByText(warning)).not.toBeInTheDocument()
+    await user.click(warningHint)
+    expect(within(screen.getByRole('tooltip')).getAllByText(warning)).toHaveLength(1)
   })
 
   it('does not treat a foreign local value as base currency when FX conversion is missing', async () => {
@@ -559,7 +570,7 @@ describe('Overview rendered page contract', () => {
     await user.type(benchmarkSearch, 'Market')
     await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
 
-    const benchmarkHint = await screen.findByRole('note', {
+    const benchmarkHint = await screen.findByRole('button', {
       name: /Benchmark comparison: Exploratory comparator/,
     })
     expect(benchmarkHint).toHaveAttribute(
@@ -623,9 +634,13 @@ describe('Overview rendered page contract', () => {
 
     const benchmarkSearch = await screen.findByRole('searchbox', { name: 'Compare benchmark' })
     await user.type(benchmarkSearch, 'Market')
-    await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
+    const benchmarkOption = await screen.findByRole('button', { name: /Market Benchmark/ })
+    await user.tab()
+    await user.tab()
+    expect(benchmarkOption).toHaveFocus()
+    await user.keyboard('{Enter}')
 
-    const benchmarkHint = await screen.findByRole('note', {
+    const benchmarkHint = await screen.findByRole('button', {
       name: /Benchmark comparison: Price-return comparator/,
     })
     expect(benchmarkHint).toHaveAttribute(

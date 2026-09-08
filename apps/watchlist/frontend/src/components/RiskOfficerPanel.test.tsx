@@ -31,6 +31,17 @@ function deferred<T>() {
 }
 const load = async () => { await act(async () => {}) }
 
+it('shows existing officer conclusions but does not submit for a team reader', async () => {
+  const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: completed('a') }))
+  render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" canRun={false} />)
+  await load()
+  expect(screen.getByText('a 的既有研判结论。')).toBeTruthy()
+  const button = screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement
+  expect(button.disabled).toBe(true)
+  fireEvent.click(button)
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})
+
 it('isolates late reads and submissions when the scope changes', async () => {
   const oldRead = deferred<RiskOfficerReview>()
   const oldPost = deferred<{ run_id: string; status: string }>()

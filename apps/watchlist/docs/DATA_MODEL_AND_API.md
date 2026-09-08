@@ -70,6 +70,20 @@ shared instruments / local evidence / holdings ingest
 - custom view id 会做 path-safe slug 化
 - 复制 watchlist 时会按相同规则规范化源 custom view id
 
+列表显示列、筛选和分组由
+[`watchlist_query_contract.py`](../backend/watchlist_app/services/watchlist_query_contract.py)
+定义固定产品合同，不按当天数据非空比例动态开放。完整字段注册继续服务详情和内部分类，
+与列表菜单分开返回。
+
+- 显示列分为基本信息、收益表现、风险与状态；名称固定，其余按账号保存。
+- 筛选支持分类体系、资产类别、币种、投资状态、风险关注和新鲜度；分组支持分类、币种和投资状态。
+- Overview 默认显示名称、资产类别、分类、近一月走势图、今年收益、当前回撤、最新值日期和指标截至日，默认不分组、不筛选。
+- 列表收益窗口为 1W、1M、3M、YTD、1Y，走势图为 1M；其他窗口、年化收益和历史风险统计在详情结合期间及覆盖解释。
+- 最大回撤、波动率和 Sharpe 使用各标的自己的有效历史，不能当作同区间风险排名。当前回撤表示距离可用历史峰值的跌幅，同样保留历史起点差异。
+- 最新值日期与指标截至日分别来自实际报价和计算序列；新鲜状态或没有风险触发不代表完成了研究。
+- 风险关注只从当前 RiskCase 投影，普通列表查询不依赖旧研究档案和笔记表。
+- 旧个人视图中的已停用列、简单筛选和排序在规范化后保存；分类树保留内部层级字段。退出菜单不删除原始属性、研究记录或计算能力。
+
 ### 4.2 Instrument Product Framework
 
 这一层负责 `public_fund / private_fund / etf / equity / index` 各自的分类，以及适用的研究标签和监控评估：
@@ -262,7 +276,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 ### 6.5 Field Registry
 
-- `GET /api/field-registry`
+- `GET /api/field-registry`：`fields`保留完整内部字段定义；`column_field_keys`与`filter_field_keys`分别返回经过审查的全局列表显示列、筛选字段目录。列表菜单使用这两个目录，不按成员类型或当日非空比例推导。
 
 ### 6.6 Taxonomies
 

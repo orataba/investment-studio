@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session
 from watchlist_app.api.presenters import present_field_category, present_field_registry
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyFieldRegistryRepository
+from watchlist_app.services.watchlist_query_contract import (
+    WATCHLIST_COLUMN_FIELD_KEYS,
+    WATCHLIST_FILTER_FIELD_KEYS,
+)
 
 
 router = APIRouter()
@@ -54,8 +58,11 @@ def get_field_registry(
             for item in fields
             if needle in item["label"].lower() or needle in item["field_key"].lower()
         ]
+    available_field_keys = {str(item["field_key"]) for item in fields}
     return {
         "categories": categories,
         "fields": fields,
+        "column_field_keys": [key for key in WATCHLIST_COLUMN_FIELD_KEYS if key in available_field_keys],
+        "filter_field_keys": [key for key in WATCHLIST_FILTER_FIELD_KEYS if key in available_field_keys],
         "total_fields": len(fields),
     }

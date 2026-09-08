@@ -39,7 +39,8 @@ SCHEDULE_TIMEZONE="${INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE:-}"
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 investment_studio_reject_repository_env_files "$PROJECT_ROOT"
 ENV_FILE="$(investment_studio_runtime_env_file data "$EXTERNAL_ENV_ROOT")"
-investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_DATA_
+investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_AUTH_
+investment_studio_load_env_file "$EXTERNAL_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
 
 DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
 if [[ -z "$DATABASE_URL" ]]; then
@@ -120,7 +121,7 @@ mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$RUN_STATE_FILE")"
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="$BACKEND_ROOT:$PROJECT_ROOT/shared-data/instruments/python"
+export PYTHONPATH="$PROJECT_ROOT/packages/identity:$BACKEND_ROOT:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market"
 export INVESTMENT_STUDIO_DATA_ENVIRONMENT=local
 export INVESTMENT_STUDIO_DATA_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data

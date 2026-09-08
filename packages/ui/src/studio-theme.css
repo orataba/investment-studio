@@ -6,31 +6,31 @@
   );
 
   /* Restrained institutional palette shared by every workspace. */
-  --studio-bg: #f4f5f6;
+  --studio-bg: #ffffff;
   --studio-surface: #ffffff;
-  --studio-surface-soft: #f7f8f9;
-  --studio-surface-tint: #eef3f4;
-  --studio-ink: #17212b;
-  --studio-muted: #525f6b;
-  --studio-faint: #77818b;
-  --studio-line: #e1e5e8;
-  --studio-line-strong: #c8d0d5;
-  --studio-accent: #176b78;
-  --studio-accent-strong: #11545f;
-  --studio-accent-soft: #edf5f5;
+  --studio-surface-soft: #f8fafc;
+  --studio-surface-tint: #f1f5f9;
+  --studio-ink: #111827;
+  --studio-muted: #3f4652;
+  --studio-faint: #667085;
+  --studio-line: #e5e7eb;
+  --studio-line-strong: #cbd5e1;
+  --studio-accent: #0b66b2;
+  --studio-accent-strong: #084f8c;
+  --studio-accent-soft: #f8fafc;
   --studio-positive: #24745b;
   --studio-negative: #a64643;
   --studio-warning: #94672f;
   --studio-info: #4f6f8a;
 
   /* One visual grammar for NAV, price, risk and research charts. */
-  --studio-chart-primary: #176b78;
+  --studio-chart-primary: var(--studio-accent);
   --studio-chart-secondary: #86545e;
   --studio-chart-tertiary: #607080;
   --studio-chart-grid: #e1e5e8;
   --studio-chart-grid-strong: #c8d0d5;
   --studio-chart-axis: #66717c;
-  --studio-chart-area: rgba(23, 107, 120, 0.09);
+  --studio-chart-area: rgba(11, 102, 178, 0.09);
   --studio-chart-band: rgba(23, 33, 43, 0.035);
   --studio-chart-positive: #24745b;
   --studio-chart-negative: #a64643;
@@ -70,6 +70,10 @@
 
 * {
   scrollbar-color: #aab4bb transparent;
+}
+
+:root:has([role='dialog'][aria-modal='true']) {
+  overflow: hidden;
 }
 
 body {
@@ -202,7 +206,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background: rgba(23, 107, 120, 0.035);
+  background: var(--studio-surface-soft);
 }
 
 .watchlists-modal,

@@ -6,9 +6,10 @@ import { getHoldingsWorkspace, type HoldingsWorkspaceResponse } from '../lib/api
 import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
 import './portfolio-risk-drawer.css'
 
-export default function PortfolioRiskDrawer({ portfolioId, onClose }: {
+export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssistant }: {
   portfolioId: string
   onClose: () => void
+  onAskAssistant: (instrumentId: string, question: string) => void
 }) {
   const { language } = useLanguage()
   const zh = language === 'zh-Hans'
@@ -35,7 +36,7 @@ export default function PortfolioRiskDrawer({ portfolioId, onClose }: {
       </header>
       <div className="portfolio-risk-body">
         {error ? <p role="alert">{error}</p> : workspace
-          ? <PortfolioInstrumentRisk portfolioId={portfolioId} workspace={workspace} />
+          ? <PortfolioInstrumentRisk portfolioId={portfolioId} workspace={workspace} onAskAssistant={onAskAssistant} />
           : <p role="status">{zh ? '正在整理组合风险…' : 'Loading portfolio risks…'}</p>}
       </div>
     </div>

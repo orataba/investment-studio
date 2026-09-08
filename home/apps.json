@@ -1,5 +1,6 @@
 [
   {"app_id":"watchlist","name":"Watchlist","url":"http://127.0.0.1:5173","eyebrow":"Research and monitoring","description":"Review funds, indexes, watchlists, and instrument research."},
   {"app_id":"portfolio","name":"Portfolio","url":"http://127.0.0.1:5174","eyebrow":"Portfolio management","description":"Manage holdings, transactions, performance, risk, and research."},
-  {"app_id":"regime","name":"Regime","url":"http://127.0.0.1:3011","eyebrow":"Market regime","description":"Review current market regimes, signals, and release evidence."}
+  {"app_id":"regime","name":"Regime","url":"http://127.0.0.1:3011","eyebrow":"Market regime","description":"Review current market regimes, signals, and release evidence."},
+  {"app_id":"briefing","name":"Market Briefing","url":"http://127.0.0.1:5175","eyebrow":"Daily and weekly research","description":"Read market briefings, source evidence, and changes in expectations."}
 ]

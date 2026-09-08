@@ -21,6 +21,7 @@ prepare_case() {
     "$project_root/home/frontend/dist" \
     "$project_root/apps/watchlist/frontend/dist" \
     "$project_root/apps/portfolio/frontend/dist" \
+    "$project_root/apps/briefing/frontend/dist" \
     "$project_root/shared-data/scripts" \
     "$project_root/apps/portfolio/backend/scripts" \
     "$mock_bin" \
@@ -34,16 +35,21 @@ prepare_case() {
   chmod 600 "$env_root/home.env"
   : > "$env_root/data.env"
   chmod 600 "$env_root/data.env"
+  touch "$env_root/briefing.env" "$env_root/market.env"
+  chmod 600 "$env_root/briefing.env" "$env_root/market.env"
   touch \
     "$project_root/home/frontend/dist/index.html" \
     "$project_root/apps/watchlist/frontend/dist/index.html" \
-    "$project_root/apps/portfolio/frontend/dist/index.html"
+    "$project_root/apps/portfolio/frontend/dist/index.html" \
+    "$project_root/apps/briefing/frontend/dist/index.html"
   cp "$REPOSITORY_ROOT/infra/postgres/project_schema_backup.sh" \
     "$project_root/infra/postgres/project_schema_backup.sh"
+  cp "$REPOSITORY_ROOT/infra/scripts/install_market_pipeline.py" \
+    "$project_root/infra/scripts/install_market_pipeline.py"
 
   for service in \
-    home-api watchlist-api portfolio-api \
-    home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+    home-api watchlist-api portfolio-api briefing-api \
+    home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     printf 'old-%s\n' "$service" > "$plist_root/test.investment-studio.$service.plist"
     chmod 600 "$plist_root/test.investment-studio.$service.plist"
   done
@@ -197,8 +203,8 @@ assert_old_plists_restored() {
   local case_root="$1"
   local service
   for service in \
-    home-api watchlist-api portfolio-api \
-    home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+    home-api watchlist-api portfolio-api briefing-api \
+    home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
     [[ "$(cat "$case_root/LaunchAgents/test.investment-studio.$service.plist")" == "old-$service" ]]
   done
 }

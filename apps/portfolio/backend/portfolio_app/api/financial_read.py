@@ -18,8 +18,10 @@ class FinancialReadRoute(APIRoute):
             portfolio_id = request.path_params.get("portfolio_id") or request.query_params.get("portfolio_id")
             if request.method != "GET" or not portfolio_id:
                 return await handler(request)
-            before = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
+            # Capture the opening generation only after authentication and ACLs.
+            request.state.check_financial_generation = True
             response = await handler(request)
+            before = getattr(request.state, "financial_read_generation", None)
             if response.status_code < 400 and before is not None:
                 after = await run_in_threadpool(portfolio_financial_read_generation, str(portfolio_id))
                 if before != after:

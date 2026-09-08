@@ -420,6 +420,9 @@ def _validate_portfolio_fact_boundary(
         portfolio=portfolio,
         trade_date=payload.trade_date,
     )
+    for flow in payload.settlement_cashflows:
+        if flow.recognition_date is not None:
+            _validate_portfolio_trade_date(portfolio=portfolio, trade_date=flow.recognition_date)
     if payload.transaction_type not in {"opening_balance", "option_opening_balance", "short_opening_balance"}:
         return
     settlement_date = payload.settlement_date or payload.trade_date
@@ -908,6 +911,7 @@ def _validate_fx_conversion(
 
 def _prepare_asset_deliveries(portfolio_id: str, payload: TransactionCreateRequest) -> list[dict[str, object]]:
     deliveries = []
+    economic_date = payload.position_effective_date or payload.trade_date
     for delivery in payload.asset_deliveries:
         account = get_account(portfolio_id, delivery.account_id)
         instrument = _load_instrument_ref(delivery.instrument_id)
@@ -919,9 +923,43 @@ def _prepare_asset_deliveries(portfolio_id: str, payload: TransactionCreateReque
             raise HTTPException(status_code=400, detail="Delivery currency must match the security and receiving account.")
         if delivery.currency == payload.currency and delivery.fx_rate_to_contract != 1:
             raise HTTPException(status_code=400, detail="Same-currency delivery requires FX rate 1.")
-        _validate_account_fact_window(account, event_dates=[payload.trade_date, payload.settlement_date or payload.trade_date], role_label="Delivery account")
+        if delivery.delivery_date is not None and delivery.delivery_date < economic_date:
+            raise HTTPException(status_code=400, detail="Actual delivery must not precede the economic position date.")
+        if delivery.fee_settlement_date is not None and delivery.fee_settlement_date < economic_date:
+            raise HTTPException(status_code=400, detail="Delivery charge settlement must not precede the economic position date.")
+        if delivery.settlement_cash_account_id:
+            cash_account = get_account(portfolio_id, delivery.settlement_cash_account_id)
+            if cash_account is None or cash_account.get("account_category") != "cash" or cash_account.get("currency") != delivery.currency:
+                raise HTTPException(status_code=400, detail="Delivery charges require a cash account in the delivered security currency.")
+            _validate_account_fact_window(cash_account, event_dates=[economic_date, delivery.fee_settlement_date or economic_date], role_label="Delivery charge account")
+        _validate_account_fact_window(account, event_dates=[economic_date, delivery.delivery_date or economic_date], role_label="Delivery account")
         deliveries.append({**delivery.model_dump(mode="json"), "instrument_ref": instrument})
     return deliveries
+
+
+def _prepare_settlement_cashflows(
+    portfolio_id: str, payload: TransactionCreateRequest, derivative_contract: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    if not payload.settlement_cashflows:
+        return []
+    if not derivative_contract or derivative_contract.get("contract_type") != "fcn":
+        raise HTTPException(status_code=400, detail="Settlement cashflows require an FCN contract.")
+    result = []
+    for flow in payload.settlement_cashflows:
+        account = get_account(portfolio_id, flow.cash_account_id)
+        if account is None or account.get("account_category") != "cash" or account.get("currency") != flow.currency:
+            raise HTTPException(status_code=400, detail="Settlement cashflow currency must match its cash account.")
+        if flow.kind == "coupon" and flow.currency != payload.currency:
+            raise HTTPException(status_code=400, detail="FCN coupon must use the contract currency.")
+        recognition_date = flow.recognition_date or payload.position_effective_date or payload.trade_date
+        settlement_date = flow.settlement_date or recognition_date
+        if flow.kind == "coupon" and recognition_date < date.fromisoformat(str(derivative_contract["terms"]["issue_date"])):
+            raise HTTPException(status_code=400, detail="Coupon recognition must not precede FCN issuance.")
+        if settlement_date < recognition_date:
+            raise HTTPException(status_code=400, detail="Settlement cashflow payment must not precede recognition.")
+        _validate_account_fact_window(account, event_dates=[recognition_date, settlement_date], role_label="Settlement cashflow account")
+        result.append({**flow.model_dump(mode="json"), "recognition_date": recognition_date.isoformat(), "settlement_date": settlement_date.isoformat()})
+    return result
 
 
 def _prepare_import_transaction_values(
@@ -1169,6 +1207,7 @@ def _prepare_import_transaction_values(
     return {
         "transaction_type": transaction_type,
         "asset_deliveries": _prepare_asset_deliveries(portfolio_id, payload),
+        "settlement_cashflows": _prepare_settlement_cashflows(portfolio_id, payload, derivative_contract_ref),
         "lot_selections": [item.model_dump(mode="json") for item in payload.lot_selections],
         "_record_reference": payload.record_reference,
         "lifecycle_event_type": lifecycle_event_type,
@@ -1849,7 +1888,10 @@ def amend_contract_terms(portfolio_id: str, contract_id: str, payload: Derivativ
         if payload.terms.strike_currency != underlying.get("currency"):
             raise HTTPException(status_code=400, detail="Strike currency must match the underlying quote currency; no contractual FX conversion model is configured.")
     try:
-        return amend_derivative_contract(portfolio_id, contract_id, **payload.model_dump(mode="json"))
+        from studio_identity import current_principal
+        values = payload.model_dump(mode="json")
+        values["reviewed_by"] = current_principal().display_name
+        return amend_derivative_contract(portfolio_id, contract_id, **values)
     except (ValueError, TransactionRowVersionConflictError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -3417,6 +3459,7 @@ def _persist_transaction_record(
     transaction_values = {
         "transaction_type": transaction_type,
         "asset_deliveries": _prepare_asset_deliveries(portfolio_id, payload),
+        "settlement_cashflows": _prepare_settlement_cashflows(portfolio_id, payload, derivative_contract_ref),
         "lot_selections": [item.model_dump(mode="json") for item in payload.lot_selections],
         "lifecycle_event_type": lifecycle_event_type,
         "trade_date": payload.trade_date,

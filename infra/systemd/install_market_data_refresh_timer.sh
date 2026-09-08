@@ -74,18 +74,27 @@ ENV_FILE="$ENV_ROOT/data.env"
 investment_studio_validate_env_file \
   "$ENV_FILE" \
   INVESTMENT_STUDIO_DATA_ \
-  INVESTMENT_STUDIO_INSTRUMENT_DATA_
+  INVESTMENT_STUDIO_INSTRUMENT_DATA_ \
+  INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
 (
   unset \
     INVESTMENT_STUDIO_DATA_DATABASE_URL \
     INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA \
-    INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA
+    INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA \
+    INVESTMENT_STUDIO_MARKET_DATABASE_URL
   investment_studio_load_env_file \
     "$ENV_FILE" \
     INVESTMENT_STUDIO_DATA_ \
-    INVESTMENT_STUDIO_INSTRUMENT_DATA_
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_ \
+  INVESTMENT_STUDIO_AUTH_
+  investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
   if [[ -z "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then
     echo "External data environment is missing INVESTMENT_STUDIO_DATA_DATABASE_URL." >&2
+    exit 1
+  fi
+  if [[ -z "${INVESTMENT_STUDIO_MARKET_DATABASE_URL:-}" ]]; then
+    echo "External market environment is missing INVESTMENT_STUDIO_MARKET_DATABASE_URL." >&2
     exit 1
   fi
   if [[ -n "${INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA:-}" \
@@ -115,6 +124,13 @@ if parsed.password is not None or query.get("password"):
     raise SystemExit(
         "INVESTMENT_STUDIO_DATA_DATABASE_URL must not contain a password; use a 0600 passfile."
     )
+market = urlsplit(os.environ["INVESTMENT_STUDIO_MARKET_DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1))
+if market.scheme != "postgresql" or not market.username or not market.path.removeprefix("/"):
+    raise SystemExit("INVESTMENT_STUDIO_MARKET_DATABASE_URL must be an explicit PostgreSQL URL.")
+if market.password is not None or parse_qs(market.query).get("password"):
+    raise SystemExit("INVESTMENT_STUDIO_MARKET_DATABASE_URL must not contain a password; use a 0600 passfile.")
+if (market.hostname, market.port or 5432, market.path) != (parsed.hostname, parsed.port or 5432, parsed.path):
+    raise SystemExit("Market and application data must use the same PostgreSQL target.")
 PY
 )
 if [[ ! "$RETRY_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
@@ -130,9 +146,9 @@ for boolean_name in FAIL_ON_ITEM_FAILURE REQUIRE_DOWNSTREAM_SUCCESS RESTART_ON_F
 done
 
 PROJECT_INSTRUMENT_CORE="$PROJECT_ROOT/shared-data/instruments/python"
-PYTHONPATH_VALUE="$BACKEND_ROOT"
+PYTHONPATH_VALUE="$BACKEND_ROOT:$PROJECT_ROOT/shared-data/market"
 if [[ -d "$PROJECT_INSTRUMENT_CORE" ]]; then
-  PYTHONPATH_VALUE="$BACKEND_ROOT:$PROJECT_INSTRUMENT_CORE"
+  PYTHONPATH_VALUE="$BACKEND_ROOT:$PROJECT_INSTRUMENT_CORE:$PROJECT_ROOT/shared-data/market"
 fi
 
 USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -166,7 +182,8 @@ restart_policy="no"
 if [[ "$RESTART_ON_FAILURE" == "true" ]]; then
   restart_policy="on-failure"
 fi
-environment_file_line="EnvironmentFile=$(printf '%q' "$ENV_FILE")"
+environment_file_line="EnvironmentFile=$(printf '%q' "$ENV_FILE")
+EnvironmentFile=$(printf '%q' "$ENV_ROOT/market.env")"
 schedule_condition=""
 if [[ "$CHANNEL" == "market" && ( "$MARKET_SCOPE" == "hk" || "$MARKET_SCOPE" == "us" ) ]]; then
   if [[ ! -f "$PROJECT_ROOT/infra/scripts/market_close_schedule.py" ]]; then

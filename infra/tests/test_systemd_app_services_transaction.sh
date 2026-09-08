@@ -13,10 +13,12 @@ mkdir -p \
   "$PROJECT_ROOT/shared-data/scripts" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
+  "$PROJECT_ROOT/apps/briefing/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend/scripts" \
   "$PROJECT_ROOT/home/frontend/dist" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist" \
   "$PROJECT_ROOT/deploy" \
   "$PROJECT_ROOT/infra/launchd" \
   "$PROJECT_ROOT/infra/postgres" \
@@ -28,6 +30,7 @@ touch \
   "$PROJECT_ROOT/home/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist/index.html" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist/index.html" \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
@@ -158,23 +161,31 @@ printf '%s\n' "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/watchlist.env"
 printf '%s\n' "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/portfolio.env"
-chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env"
-  : > "$ENV_ROOT/home.env"
+printf '%s\n' "INVESTMENT_STUDIO_BRIEFING_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/briefing.env"
+printf '%s\n' "INVESTMENT_STUDIO_MARKET_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env" "$ENV_ROOT/briefing.env" "$ENV_ROOT/market.env"
+  printf '%s\n' "INVESTMENT_STUDIO_HOME_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/home.env"
   chmod 600 "$ENV_ROOT/home.env"
 
 MANAGED_UNITS=(
   investment-studio-home-api.service
   investment-studio-watchlist-api.service
   investment-studio-portfolio-api.service
+  investment-studio-briefing-api.service
   investment-studio-home-web.service
   investment-studio-watchlist-web.service
   investment-studio-portfolio-web.service
+  investment-studio-briefing-web.service
 )
 ORIGINAL_ACTIVE_UNITS=(
   investment-studio-home-api.service
   investment-studio-market-data-refresh.timer
   investment-studio-us-reference-data-refresh.timer
   investment-studio-us-reference-data-refresh.service
+  investment-studio-market-sync.timer
+  investment-studio-market-sync.service
+  investment-studio-market-daily.timer
+  investment-studio-briefing-daily.timer
 )
 ORIGINAL_ENABLED_UNITS=(
   investment-studio-home-api.service
@@ -236,7 +247,7 @@ SUCCESS_CASE="$TEST_ROOT/success"
 prepare_case "$SUCCESS_CASE"
 run_case "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 diff -u \
-  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service | sort) \
+  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service investment-studio-market-sync.timer investment-studio-market-sync.service investment-studio-market-daily.timer investment-studio-briefing-daily.timer | sort) \
   <(sort "$SUCCESS_CASE/active")
 diff -u \
   <(printf '%s\n' "${MANAGED_UNITS[@]}" | sort) \

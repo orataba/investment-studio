@@ -26,8 +26,8 @@ def get_shared_reference_data(instrument_id: str, *, as_of: datetime | None = No
             ).order_by(InstrumentReferenceObservation.collected_at.desc(),
                        InstrumentReferenceObservation.observation_id.desc()).limit(1))
         if snapshot is not None:
-            # Sector research reads this heavy constituent packet directly and
-            # binds it once per run; normal detail/assistant views need the core sections.
+            # Historical reference observations can still contain the former
+            # embedded packet. Current research reads canonical numeric batches.
             return {**snapshot.value_json, "sections": {key: value for key, value in
                 (snapshot.value_json.get("sections") or {}).items() if key != "sector_market_data"}}
     return {

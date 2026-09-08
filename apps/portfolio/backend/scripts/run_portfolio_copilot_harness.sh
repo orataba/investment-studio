@@ -64,6 +64,7 @@ copilot_exec_env=(
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL=${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL:-http://127.0.0.1:8001/api}"
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID=$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID"
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID=$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID"
+  "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN=${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN:?A scoped analysis run credential is required}"
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME=$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME"
 )
 for copilot_optional_env in \
@@ -80,7 +81,7 @@ do
 done
 
 exec /usr/bin/env -i "${copilot_exec_env[@]}" \
-  "$copilot_pnpm" dlx @deepseek-ai/dsh@0.1.1-rc.2 \
+  "$copilot_pnpm" dlx --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs @deepseek-ai/dsh@0.1.1-rc.2 \
   --profile headless \
   --patch "$copilot_patch" \
   "$copilot_task"

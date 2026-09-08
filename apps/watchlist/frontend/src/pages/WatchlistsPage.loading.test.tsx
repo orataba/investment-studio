@@ -62,6 +62,8 @@ describe('WatchlistsPage loading', () => {
     apiMocks.getFieldRegistry.mockResolvedValue({
       categories: [],
       total_fields: 2,
+      column_field_keys: ['instrument_name', 'attr.risk_attention'],
+      filter_field_keys: ['attr.risk_attention'],
       fields: [
         {
           field_key: 'instrument_name',
@@ -210,6 +212,8 @@ describe('WatchlistsPage loading', () => {
     apiMocks.getFieldRegistry.mockResolvedValue({
       categories: [],
       total_fields: 1,
+      column_field_keys: ['instrument_name'],
+      filter_field_keys: [],
       fields: [
         {
           field_key: 'instrument_name',
@@ -267,7 +271,6 @@ describe('WatchlistsPage loading', () => {
         { code: 'taxonomy', label: 'Taxonomy' },
         { code: 'currency', label: 'Currency' },
         { code: 'attr.coverage_status', label: 'Investment Status' },
-        { code: 'attr.manual_rating', label: 'Research Rating' },
       ],
       default_filters_summary: {},
     })
@@ -312,9 +315,139 @@ describe('WatchlistsPage loading', () => {
     expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Currency' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Investment Status' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Research Rating' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Research Rating' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Instrument Type' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Freshness' })).toBeNull()
+  })
+
+  it.each([
+    ['fund', ['public_fund']],
+    ['equity', ['equity']],
+    ['mixed', ['public_fund', 'equity']],
+    ['empty', []],
+  ] as const)('keeps the shared column and filter catalog in a %s watchlist', async (_name, instrumentTypes) => {
+    const fields = [
+      { field_key: 'instrument_name', label: 'Instrument', instrument_scope_json: [], filter_mode: 'text' },
+      { field_key: 'instrument_type', label: 'Instrument Type', instrument_scope_json: [], filter_mode: 'multi_select' },
+      { field_key: 'attr.coverage_status', label: 'Investment Status', instrument_scope_json: ['public_fund', 'private_fund', 'equity'], filter_mode: 'multi_select' },
+      { field_key: 'attr.research_stage', label: 'Research Stage', instrument_scope_json: [], filter_mode: 'multi_select' },
+      { field_key: 'latest_quote', label: 'Latest Quote', description: 'Fund NAV, market price, or index level as applicable.', instrument_scope_json: [], filter_mode: 'none' },
+      { field_key: 'return_chart_1m', label: 'Return 1M', instrument_scope_json: [], filter_mode: 'none' },
+    ].map((field) => ({
+      category_code: 'general', data_type: 'string', formatter_code: 'text',
+      sort_mode: 'alpha', group_mode: 'none', product_scope_json: [],
+      availability_rule_json: {}, source_domain: 'read_model', source_metric_code: field.field_key,
+      default_width: 160, default_visible: false, ...field,
+    }))
+    const record = {
+      watchlist_id: 'shared-catalog', name: 'Shared Catalog', description: null,
+      item_count: instrumentTypes.length, owner_type: 'team', owner_id: 'investment-team',
+      is_default: false, is_shared: false, default_view_id: 'overview',
+    }
+    const detail: WatchlistDetail = {
+      ...record, instrument_types: [...instrumentTypes],
+      views: [{
+        view_id: 'overview', view_key: 'overview', name: 'Overview', description: null, kind: 'custom',
+        default_group_by: 'none', default_sort: [{ field: 'attr.research_stage', direction: 'asc' }],
+        default_filters: { 'attr.research_stage': ['watching'] }, default_advanced_filters: null,
+        columns: ['instrument_name', 'attr.coverage_status', 'attr.research_stage'],
+      }],
+      available_group_bys: [{ code: 'none', label: 'None' }, { code: 'currency', label: 'Currency' }],
+      default_filters_summary: {},
+    }
+    apiMocks.getWatchlists.mockResolvedValue([record])
+    apiMocks.getWatchlistDetail.mockResolvedValue(detail)
+    apiMocks.getFieldRegistry.mockResolvedValue({
+      categories: [{ category_code: 'general', label: 'Investment research', display_order: 0, parent_category_code: null }],
+      total_fields: fields.length, fields,
+      column_field_keys: ['instrument_name', 'instrument_type', 'attr.coverage_status', 'latest_quote', 'return_chart_1m'],
+      filter_field_keys: ['instrument_type', 'attr.coverage_status'],
+    })
+    apiMocks.getInstrumentTaxonomyTree.mockResolvedValue({
+      instrument_types: ['public_fund'], max_depth: 2,
+      nodes: [
+        { node_id: 'fund-allocation', label: 'Fund allocation', instrument_type: 'public_fund', parent_node_id: null, level_index: 0, display_order: 0, is_leaf: false, path_labels: ['Fund allocation'], path_node_ids: ['fund-allocation'] },
+        { node_id: 'balanced', label: 'Balanced', instrument_type: 'public_fund', parent_node_id: 'fund-allocation', level_index: 1, display_order: 0, is_leaf: true, path_labels: ['Fund allocation', 'Balanced'], path_node_ids: ['fund-allocation', 'balanced'] },
+        { node_id: 'unused', label: 'Unused classification', instrument_type: 'public_fund', parent_node_id: 'fund-allocation', level_index: 1, display_order: 1, is_leaf: true, path_labels: ['Fund allocation', 'Unused classification'], path_node_ids: ['fund-allocation', 'unused'] },
+      ],
+    })
+    apiMocks.updateWatchlistView.mockImplementation(async (_watchlistId, _viewId, payload) => ({
+      ...detail.views[0], columns: payload.columns.map((column: { field_key: string }) => column.field_key),
+      default_sort: payload.default_sort, default_filters: payload.default_filters,
+    }))
+    apiMocks.runScreenerQuery.mockResolvedValue({
+      rows: instrumentTypes.map((type) => ({
+        instrument_id: type, instrument_name: type, instrument_type: type,
+        ...(type === 'public_fund' ? { 'attr.instrument_taxonomy_level_1': 'Fund allocation', 'attr.instrument_taxonomy_level_2': 'Balanced' } : {}),
+      })),
+      groups: [], total_rows: instrumentTypes.length, stale_row_count: 0, sparklines: {},
+    })
+
+    render(
+      <LanguageProvider enableDomTranslation={false}>
+        <MemoryRouter initialEntries={['/watchlists/shared-catalog']}>
+          <Routes><Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} /></Routes>
+        </MemoryRouter>
+      </LanguageProvider>,
+    )
+    await waitFor(() => expect(apiMocks.runScreenerQuery).toHaveBeenCalledWith(expect.objectContaining({
+      selected_fields: expect.arrayContaining(['attr.coverage_status']),
+      sort: [], filters: {},
+    })))
+    await waitFor(() => expect(apiMocks.updateWatchlistView).toHaveBeenCalledWith(
+      'shared-catalog', 'overview', expect.objectContaining({
+        columns: [expect.objectContaining({ field_key: 'instrument_name' }), expect.objectContaining({ field_key: 'attr.coverage_status' })],
+        default_filters: {}, default_sort: [],
+      }),
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+    let dialog = screen.getByRole('dialog', { name: 'Choose columns' })
+    expect(within(dialog).getAllByRole('checkbox').map((item) => item.closest('label')?.textContent)).toEqual([
+      'Instrument Type', 'Latest price / NAV', '1-month return chart', 'Investment Status',
+    ])
+    expect(within(dialog).getAllByRole('heading').map((item) => item.textContent)).toEqual([
+      'Basic information', 'Returns', 'Risk and status',
+    ])
+    expect(within(dialog).queryByText('Investment research')).toBeNull()
+    expect(within(dialog).queryByText('Fund NAV, market price, or index level as applicable.')).toBeNull()
+    const quoteHelp = within(dialog).getByRole('button', { name: 'Latest price / NAV: Fund NAV, market price, or index level as applicable.' })
+    expect(quoteHelp.getAttribute('title')).toBe('Fund NAV, market price, or index level as applicable.')
+    fireEvent.click(quoteHelp)
+    expect(screen.getByRole('tooltip').textContent).toContain('Fund NAV, market price, or index level as applicable.')
+    expect((within(dialog).getByLabelText('Latest price / NAV') as HTMLInputElement).checked).toBe(false)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.change(within(dialog).getByPlaceholderText('Search columns'), { target: { value: '1-month' } })
+    expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1)
+    expect(within(dialog).getByLabelText('1-month return chart')).toBeTruthy()
+    fireEvent.change(within(dialog).getByPlaceholderText('Search columns'), { target: { value: '' } })
+    expect((within(dialog).getByLabelText('Investment Status') as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
+    expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Investment Status' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Instrument Type' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Research Stage' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Unused classification/ })).toBeNull()
+    if (instrumentTypes.some((type) => type === 'public_fund')) {
+      expect(screen.getByRole('button', { name: /^Fund allocation\s*1$/ })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /^Balanced\s*1$/ })).toBeTruthy()
+    } else {
+      expect(screen.getByText('No classified instruments in this watchlist.')).toBeTruthy()
+    }
+
+    if (_name === 'mixed') {
+      fireEvent.click(screen.getByRole('button', { name: 'Instrument Type' }))
+      fireEvent.click(screen.getByRole('checkbox', { name: 'equity' }))
+      await waitFor(() => expect(apiMocks.runScreenerQuery).toHaveBeenCalledWith(expect.objectContaining({
+        selected_fields: expect.arrayContaining(['attr.coverage_status']),
+        filters: { instrument_type: ['equity'] },
+        sort: [],
+      })))
+      fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+      dialog = screen.getByRole('dialog', { name: 'Choose columns' })
+      expect((within(dialog).getByLabelText('Investment Status') as HTMLInputElement).checked).toBe(true)
+    }
   })
 
   it('updates the active Overview view directly from the Columns dialog', async () => {
@@ -342,6 +475,8 @@ describe('WatchlistsPage loading', () => {
         },
       ],
       total_fields: 2,
+      column_field_keys: ['instrument_name', 'currency'],
+      filter_field_keys: ['currency'],
       fields: [
         {
           field_key: 'instrument_name',

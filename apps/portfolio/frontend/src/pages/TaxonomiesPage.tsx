@@ -1,3 +1,4 @@
+import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
@@ -685,6 +686,7 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
 }
 
 export default function TaxonomiesPage() {
+  const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -1859,7 +1861,7 @@ export default function TaxonomiesPage() {
     .filter(Boolean)
     .join(' ')
   const hasTargetsConfigurationChanges = hasDefaultTargetChanges || (hasTargetScope && (saaDraftChanged || taaDraftChanged))
-  const canSaveTargetsConfiguration = hasTargetsConfigurationChanges && !targetSaveBlockedReason
+  const canSaveTargetsConfiguration = canEditPortfolio && hasTargetsConfigurationChanges && !targetSaveBlockedReason
 
   function preventTargetEditorDrag(event: ReactDragEvent<HTMLInputElement | HTMLSelectElement>) {
     event.preventDefault()
@@ -1868,7 +1870,7 @@ export default function TaxonomiesPage() {
 
   function renderDefaultTargetCell(node: PortfolioTaxonomyNodeRecord) {
     const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id] ?? (node.default_target_dimension as DefaultTargetDimension)
-    if (!targetEditMode || !selectedTaxonomy?.planning_enabled) {
+    if (!canEditPortfolio || !targetEditMode || !selectedTaxonomy?.planning_enabled) {
       return <span className="taxonomy-default-target-label">{draftValue === 'risk_budget' ? 'Risk Budget' : 'Weight'}</span>
     }
     return (
@@ -1918,7 +1920,7 @@ export default function TaxonomiesPage() {
       target_risk_share: '',
       notes: '',
     }
-    if (editable) {
+    if (canEditPortfolio && editable) {
       if (dimension === 'weight') {
         if (!draft.weight_enabled) {
           return '—'
@@ -2246,6 +2248,7 @@ export default function TaxonomiesPage() {
   }
 
   async function handleSaveTargetsConfiguration() {
+    if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
@@ -2337,6 +2340,7 @@ export default function TaxonomiesPage() {
 
   async function handleSaveAnalyticsPolicy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy || !effectiveDate) {
       return
     }
@@ -2377,6 +2381,7 @@ export default function TaxonomiesPage() {
 
   async function handleCreateTaxonomy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (!portfolioId) {
       return
     }
@@ -2407,6 +2412,7 @@ export default function TaxonomiesPage() {
 
   async function handleRenameTaxonomy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     const taxonomy = taxonomyRenameId ? taxonomies.find((item) => item.taxonomy_id === taxonomyRenameId) ?? null : null
     const nextName = taxonomyRenameName.trim()
     if (!portfolioId || !taxonomy || !nextName) {
@@ -2436,7 +2442,7 @@ export default function TaxonomiesPage() {
     const taxonomy = taxonomies.find((item) => item.taxonomy_id === taxonomyId) ?? null
     setTaxonomyPickerOpen(false)
     handleTaxonomySelection(taxonomyId)
-    if (!portfolioId || !taxonomy) {
+    if (!canEditPortfolio || !portfolioId || !taxonomy) {
       return
     }
     setActionPending(`default-taxonomy-${taxonomyId}`)
@@ -2480,6 +2486,7 @@ export default function TaxonomiesPage() {
 
   async function handleCreateNode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
@@ -2514,6 +2521,7 @@ export default function TaxonomiesPage() {
 
   async function handleSaveNodeEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy || !editingNode) {
       return
     }
@@ -2551,6 +2559,7 @@ export default function TaxonomiesPage() {
   }
 
   async function assignEntitiesToNode(targetNode: PortfolioTaxonomyNodeRecord, entityIds: string[]) {
+    if (!canEditPortfolio) return
     if (targetEditMode) {
       setContextMenuState(null)
       setActionError(TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE)
@@ -2623,6 +2632,7 @@ export default function TaxonomiesPage() {
 
   async function handleAddRegistryInstrumentToUniverse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
@@ -2668,6 +2678,7 @@ export default function TaxonomiesPage() {
   }
 
   async function handleConfirmedDelete() {
+    if (!canEditPortfolio) return
     const target = pendingDelete
     if (!target || actionPending) {
       return
@@ -2737,7 +2748,7 @@ export default function TaxonomiesPage() {
 
   function renderEntityTreeRow(entity: CoverageEntity, depth: number) {
     const lockedCashEntity = isSystemCashEntity(entity)
-    const assignmentDragEnabled = canDragTaxonomyEntity({
+    const assignmentDragEnabled = canEditPortfolio && canDragTaxonomyEntity({
       targetEditMode,
       lockedEntity: lockedCashEntity,
       ambiguousEntity: entity.coverage_state === 'ambiguous',
@@ -2772,7 +2783,7 @@ export default function TaxonomiesPage() {
         title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
         onDragStart={assignmentDragEnabled ? (event) => handleEntityDragStart(event, entity) : undefined}
         onDragEnd={assignmentDragEnabled ? () => setDragTargetNodeId(null) : undefined}
-        onContextMenu={!lockedCashEntity && !targetEditMode ? (event) => handleEntityContextMenu(event, entity) : undefined}
+        onContextMenu={canEditPortfolio && !lockedCashEntity && !targetEditMode ? (event) => handleEntityContextMenu(event, entity) : undefined}
       >
         <td className="holding-name-cell">
           <div className="taxonomy-node-row taxonomy-hierarchy-row">
@@ -2997,7 +3008,7 @@ export default function TaxonomiesPage() {
       const isTargetScopeChild = currentScopeMemberKeySet.has(nodeTargetMember.member_key)
       const isEditableInTree =
         targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[parentScopeKey])
-      const assignmentDropEnabled = canDropTaxonomyEntity({
+      const assignmentDropEnabled = canEditPortfolio && canDropTaxonomyEntity({
         targetEditMode,
         terminalNode: node.is_terminal,
         actionPending: Boolean(actionPending),
@@ -3021,7 +3032,7 @@ export default function TaxonomiesPage() {
           className={rowClassName || undefined}
           data-assignment-drop={assignmentDropEnabled ? 'enabled' : 'disabled'}
           aria-describedby={targetEditMode ? 'taxonomy-target-edit-lock-message' : undefined}
-          onContextMenu={targetEditMode ? undefined : (event) => handleNodeContextMenu(event, node)}
+          onContextMenu={!canEditPortfolio || targetEditMode ? undefined : (event) => handleNodeContextMenu(event, node)}
           onDragOver={assignmentDropEnabled ? (event) => handleNodeDragOver(event, node) : undefined}
           onDragLeave={assignmentDropEnabled ? () => setDragTargetNodeId((current) => (current === node.taxonomy_node_id ? null : current)) : undefined}
           onDrop={assignmentDropEnabled ? (event) => void handleNodeDrop(event, node) : undefined}
@@ -3112,7 +3123,7 @@ export default function TaxonomiesPage() {
           <section className="panel taxonomy-strip-section">
             <div className="taxonomy-topbar">
               <div className="taxonomy-topbar-field" ref={taxonomyPickerRef}>
-                <span>Default Taxonomy:</span>
+                <span>{canEditPortfolio ? 'Default Taxonomy:' : 'Taxonomy:'}</span>
                 <div className="taxonomy-picker">
                   <button
                     type="button"
@@ -3138,7 +3149,7 @@ export default function TaxonomiesPage() {
                               taxonomy.taxonomy_id === resolvedSelectedTaxonomyId ? 'taxonomy-picker-option-active' : ''
                             }`}
                             onClick={() => void handleDefaultTaxonomySelection(taxonomy.taxonomy_id)}
-                            onContextMenu={(event) => {
+                            onContextMenu={canEditPortfolio ? (event) => {
                               event.preventDefault()
                               setContextMenuState({
                                 kind: 'taxonomy',
@@ -3146,7 +3157,7 @@ export default function TaxonomiesPage() {
                                 x: event.clientX,
                                 y: event.clientY,
                               })
-                            }}
+                            } : undefined}
                           >
                             {taxonomy.name}
                           </button>
@@ -3179,7 +3190,7 @@ export default function TaxonomiesPage() {
                     setContextMenuState(null)
                     setShowTaxonomyCreate(true)
                   }}
-                  disabled={targetEditMode}
+                  disabled={!canEditPortfolio || targetEditMode}
                 >
                   Add Taxonomy
                 </button>
@@ -3194,7 +3205,7 @@ export default function TaxonomiesPage() {
                       setTaxonomyPickerOpen(false)
                       setContextMenuState(null)
                     }}
-                    disabled={targetEditMode}
+                    disabled={!canEditPortfolio || targetEditMode}
                   >
                     Add Instrument
                   </button>
@@ -3226,6 +3237,7 @@ export default function TaxonomiesPage() {
                   <input
                     type="checkbox"
                     checked={policyRiskEligible}
+                    disabled={!canEditPortfolio}
                     onChange={(event) => {
                       setPolicyRiskEligible(event.target.checked)
                       if (!event.target.checked) {
@@ -3239,7 +3251,7 @@ export default function TaxonomiesPage() {
                   <input
                     type="checkbox"
                     checked={policyRiskBudgetEligible}
-                    disabled={!policyRiskEligible}
+                    disabled={!canEditPortfolio || !policyRiskEligible}
                     onChange={(event) => setPolicyRiskBudgetEligible(event.target.checked)}
                   />
                   <span>Risk Budget</span>
@@ -3248,6 +3260,7 @@ export default function TaxonomiesPage() {
                   <span>Performance Scope</span>
                   <select
                     value={policyPerformanceScope}
+                    disabled={!canEditPortfolio}
                     onChange={(event) =>
                       setPolicyPerformanceScope(
                         event.target.value as typeof policyPerformanceScope,
@@ -3264,6 +3277,7 @@ export default function TaxonomiesPage() {
                   <span>Valuation</span>
                   <select
                     value={policyValuationBasis}
+                    disabled={!canEditPortfolio}
                     onChange={(event) =>
                       setPolicyValuationBasis(event.target.value as typeof policyValuationBasis)
                     }
@@ -3281,6 +3295,7 @@ export default function TaxonomiesPage() {
                   <span>Exclusion Reason</span>
                   <input
                     value={policyExclusionReason}
+                    disabled={!canEditPortfolio}
                     onChange={(event) => setPolicyExclusionReason(event.target.value)}
                     required={!policyRiskEligible || policyPerformanceScope !== 'ordinary'}
                   />
@@ -3291,13 +3306,14 @@ export default function TaxonomiesPage() {
                     type="date"
                     min={effectiveDate}
                     value={policyEffectiveTo}
+                    disabled={!canEditPortfolio}
                     onChange={(event) => setPolicyEffectiveTo(event.target.value)}
                   />
                 </label>
                 <button
                   type="submit"
                   className="toolbar-link button-primary"
-                  disabled={actionPending === 'analytics-policy-save'}
+                  disabled={!canEditPortfolio || actionPending === 'analytics-policy-save'}
                 >
                   {actionPending === 'analytics-policy-save' ? 'Saving...' : 'Save Policy'}
                 </button>
@@ -3340,7 +3356,7 @@ export default function TaxonomiesPage() {
                         setContextMenuState(null)
                         setTargetEditMode(true)
                       }}
-                      disabled={!hasTargetScope && !selectedTaxonomyNodes.length}
+                      disabled={!canEditPortfolio || (!hasTargetScope && !selectedTaxonomyNodes.length)}
                     >
                       Edit Targets
                     </button>
@@ -3439,7 +3455,7 @@ export default function TaxonomiesPage() {
                                   type="button"
                                   className="table-inline-button"
                                   onClick={() => startNodeCreate('root')}
-                                  disabled={targetEditMode}
+                                  disabled={!canEditPortfolio || targetEditMode}
                                 >
                                   Add Root
                                 </button>
@@ -3496,7 +3512,7 @@ export default function TaxonomiesPage() {
             </section>
           ) : null}
           <TaxonomyModal
-            open={showTaxonomyCreate}
+            open={canEditPortfolio && showTaxonomyCreate}
             title="New Taxonomy"
             onClose={() => setShowTaxonomyCreate(false)}
           >
@@ -3520,7 +3536,7 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showTaxonomyRename && Boolean(taxonomyRenameId)}
+            open={canEditPortfolio && showTaxonomyRename && Boolean(taxonomyRenameId)}
             title="Rename Taxonomy"
             onClose={() => setShowTaxonomyRename(false)}
           >
@@ -3548,7 +3564,7 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showInstrumentAdd && selectedTaxonomy !== null}
+            open={canEditPortfolio && showInstrumentAdd && selectedTaxonomy !== null}
             title="Add Instrument"
             onClose={() => setShowInstrumentAdd(false)}
             modalClassName="taxonomy-instrument-picker-modal"
@@ -3636,7 +3652,7 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showNodeCreate}
+            open={canEditPortfolio && showNodeCreate}
             title={nodeCreateContextLabel}
             onClose={() => setShowNodeCreate(false)}
           >
@@ -3660,7 +3676,7 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showNodeEdit && Boolean(editingNode)}
+            open={canEditPortfolio && showNodeEdit && Boolean(editingNode)}
             title="Rename Node"
             onClose={() => setShowNodeEdit(false)}
           >
@@ -3689,7 +3705,7 @@ export default function TaxonomiesPage() {
               </form>
             ) : null}
           </TaxonomyModal>
-          {contextMenuState ? (
+          {canEditPortfolio && contextMenuState ? (
             <div
               className="taxonomy-context-menu"
               style={contextMenuStyle}
@@ -3730,7 +3746,7 @@ export default function TaxonomiesPage() {
                     <button
                       type="button"
                       className="taxonomy-context-menu-item"
-                      disabled={targetEditMode || selectedEntityCount === 0}
+                      disabled={!canEditPortfolio || targetEditMode || selectedEntityCount === 0}
                       title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
                       onClick={() => {
                         setContextMenuState(null)
@@ -3766,7 +3782,7 @@ export default function TaxonomiesPage() {
                   <button
                     type="button"
                     className="taxonomy-context-menu-item"
-                    disabled={targetEditMode || !selectedNode?.is_terminal}
+                    disabled={!canEditPortfolio || targetEditMode || !selectedNode?.is_terminal}
                     title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
                     onClick={() => {
                       const entityIds = selectedEntityIds.has(contextMenuEntity.entity_id)
@@ -3801,7 +3817,7 @@ export default function TaxonomiesPage() {
       ) : null}
       </div>
       <ConfirmDialog
-        open={Boolean(pendingDeleteDialog)}
+        open={canEditPortfolio && Boolean(pendingDeleteDialog)}
         title={pendingDeleteDialog?.title ?? 'Confirm Delete'}
         description={pendingDeleteDialog?.description ?? ''}
         confirmLabel={pendingDeleteDialog?.label ?? 'Delete'}

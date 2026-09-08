@@ -1780,9 +1780,14 @@ th {
 }
 
 .watchlists-columns-modal {
-  width: min(720px, calc(100vw - 48px));
-  height: min(520px, calc(100vh - 48px));
+  width: min(760px, calc(100vw - 48px));
+  height: min(680px, calc(100vh - 48px));
   overflow: hidden;
+}
+
+.watchlists-columns-modal .watchlists-modal-header button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .watchlists-add-modal {
@@ -1907,92 +1912,85 @@ th {
   white-space: nowrap;
 }
 
-.watchlists-modal-grid {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 12px;
-  padding: 0 16px 12px;
-}
-
-.watchlists-columns-modal .watchlists-modal-grid {
+.watchlists-column-sections {
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.watchlists-modal-categories,
-.watchlists-modal-fields {
-  min-height: 420px;
-  border: 1px solid var(--line);
-  background: transparent;
-}
-
-.watchlists-modal-categories {
-  display: grid;
-  align-content: start;
-}
-
-.watchlists-columns-modal .watchlists-modal-categories,
-.watchlists-columns-modal .watchlists-modal-fields {
-  min-height: 0;
   overflow: auto;
+  padding: 0 16px 16px;
 }
 
-.watchlists-category-item {
-  padding: 9px 12px;
-  border: none;
-  border-left: 3px solid transparent;
-  background: transparent;
-  color: #111111;
-  text-align: left;
+.watchlists-column-section-title {
+  margin: 14px 0 4px;
+  color: var(--ink);
   font-size: 13px;
+  font-weight: 600;
 }
 
-.watchlists-category-item-active {
-  border-left-color: #0b72d7;
-  background: var(--accent-soft);
+.watchlists-column-sections section:first-child .watchlists-column-section-title {
+  margin-top: 0;
 }
 
-.watchlists-modal-fields {
+.watchlists-column-options {
   display: grid;
-  align-content: start;
-  gap: 0;
-  padding: 0 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
 }
 
 .watchlists-field-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
+  display: flex;
+  gap: 6px;
   align-items: center;
-  min-height: 32px;
-  padding: 6px 0;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
 }
 
-.watchlists-field-item > div {
+.watchlists-field-item label {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
+  cursor: pointer;
+}
+
+.watchlists-field-item input {
+  flex-shrink: 0;
 }
 
 .watchlists-field-label {
-  overflow: hidden;
   font-size: 13px;
   color: #111111;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
-.watchlists-field-meta {
-  margin-top: 0;
-  overflow: hidden;
+.watchlists-field-help {
+  flex-shrink: 0;
+  color: #6b7280;
+  font-size: 14px;
+  cursor: help;
+  border-radius: 50%;
+}
+
+.watchlists-field-help:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.watchlists-columns-help {
+  margin: 6px 0 0;
   color: #6b7280;
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.6;
+}
+
+@media (max-width: 600px) {
+  .watchlists-column-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 .watchlists-modal-actions {
@@ -2545,8 +2543,7 @@ th {
   .detail-grid,
   .metric-grid,
   .detail-summary-grid,
-  .quote-metrics,
-  .watchlists-modal-grid {
+  .quote-metrics {
     grid-template-columns: 1fr;
   }
 
@@ -7682,8 +7679,7 @@ input[type='checkbox'] {
 .watchlists-menu-item,
 .watchlist-menu button,
 .watchlists-filter-field,
-.watchlists-taxonomy-node,
-.watchlists-category-item {
+.watchlists-taxonomy-node {
   border-radius: 0;
 }
 
@@ -7691,15 +7687,12 @@ input[type='checkbox'] {
 .watchlists-menu-item-active,
 .watchlist-menu button:hover,
 .watchlists-filter-field-active,
-.watchlists-taxonomy-node-active,
-.watchlists-category-item-active {
+.watchlists-taxonomy-node-active {
   background: var(--accent-soft);
 }
 
 .watchlists-filter-fields,
 .watchlists-filter-values,
-.watchlists-modal-categories,
-.watchlists-modal-fields,
 .watchlists-move-summary,
 .watchlists-move-note,
 .watchlists-registry-selected {
@@ -8084,7 +8077,7 @@ input[type='checkbox'] {
   box-shadow: none;
 }
 
-.instrument-chart-compare-search-box > button {
+.instrument-chart-compare-search-box > button:not(.investment-studio-info-hint) {
   position: absolute;
   top: 3px;
   right: 5px;
@@ -8103,7 +8096,7 @@ input[type='checkbox'] {
   line-height: 1;
 }
 
-.instrument-chart-compare-search-box > button:hover {
+.instrument-chart-compare-search-box > button:not(.investment-studio-info-hint):hover {
   border-color: #cbd5e1;
   background: #f8fafc;
   color: #1f6fbc;

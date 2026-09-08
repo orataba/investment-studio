@@ -66,7 +66,7 @@ def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, m
     import watchlist_app.services.research_runner as runner
     original_run = runner.run_analysis
     monkeypatch.setattr(runner, 'harness_available', lambda: True)
-    monkeypatch.setattr(runner, 'run_analysis', lambda run_id: None)
+    monkeypatch.setattr(runner, 'run_analysis', lambda run_id, token=None: None)
     topic = client.post('/api/research/topics', json={'title': '基金研究', 'instrument_ids': ['sxv264']}).json()
     path = f"/api/research/topics/{topic['topic_id']}/analysis"
     response = client.post(path, json={'question': '有哪些风险待核查？', 'watchlist_id': wid})
@@ -89,8 +89,10 @@ def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, m
     class HeadlessProcess:
         returncode = 0
         def communicate(self, timeout):
-            return '需要补充底层风险证据。', None
+            return '{"answer":"需要补充底层风险证据。","research_result":null}', None
     monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: HeadlessProcess())
+    # Inputs were bound by the preceding tools; exercise completion without preparing twice.
+    monkeypatch.setattr('watchlist_app.services.sector_research.prepare_run', lambda _: None)
     original_run(run_id)
     result = client.get(f"/api/research/topics/{topic['topic_id']}").json()['entries'][0]
     assert result['status'] == 'draft' and result['body'] == '需要补充底层风险证据。'
@@ -113,6 +115,68 @@ def test_risk_workspace_scope_never_expands_an_empty_portfolio(client):
     assert all(x['instrument_id'] == 'sxv264' for x in narrow['cases'])
     assert client.get('/api/risk?instrument_ids=').json() == {'instruments': [], 'cases': []}
     assert client.get('/api/risk?watchlist_id=unknown').status_code == 404
+
+
+def test_portfolio_assistant_binds_selected_holding_account_and_valuation_day(client, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import research_runner, research_workbench
+    calls = []
+    def external(service, path):
+        assert service == "portfolio"
+        parsed = urlsplit(path)
+        query = parse_qs(parsed.query)
+        calls.append((parsed.path, query))
+        if parsed.path == "/capabilities":
+            return {"research_enabled": True}
+        if parsed.path == "/portfolios":
+            return [{"portfolio_id": "portfolio-a", "portfolio_name": "组合 A"}]
+        if parsed.path == "/portfolios/portfolio-a/access":
+            return {"role": "reader"}
+        assert query["as_of_date"] == ["2026-08-31"]
+        if parsed.path == "/workspace/holdings":
+            assert query["include_details"] == ["true"] and "account_id" not in query
+            return {"portfolio_id": "portfolio-a", "portfolio_nav": 1000, "holdings": [{"holding_id": "fcn-local"}]}
+        if parsed.path == "/workspace/holdings/position":
+            assert query["position_reference_id"] == ["fcn-local"]
+            return {"position_reference_id": "fcn-local", "instrument_id": None, "instrument_type": "fcn"}
+        if parsed.path == "/portfolios/portfolio-a/accounts/workspace":
+            assert query["account_id"] == ["account-a"]
+            return {"account_id": "account-a", "nav": 250}
+        if parsed.path == "/portfolios/portfolio-a/risk-context":
+            return {"as_of_date": "2026-08-31", "risk_note": "当前模型重算历史持仓"}
+        raise AssertionError(path)
+    monkeypatch.setattr(research_workbench, "external_json", external)
+    monkeypatch.setattr(research_runner, "harness_available", lambda: True)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None: None)
+    topic = client.post("/api/research/topics", json={"title": "持仓讨论", "portfolio_id": "portfolio-a"}).json()
+    page = {"surface": "portfolio", "portfolio_id": "portfolio-a", "holding_id": "fcn-local",
+            "account_id": "account-a", "as_of_date": "2026-08-31", "tab": "risk"}
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json={"question": "这笔FCN的风险是什么？", "page_context": page})
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert run["context_json"]["page_context"] == page
+    assert run["context_json"]["as_of_date"] == "2026-08-31"
+    assert run["context_json"]["instrument_ids"] == []  # A local contract never enters the registry catalogue.
+    tool = client.post(f"/api/research/runs/{run['entry_id']}/tools", json={"tool": "portfolio"})
+    assert tool.status_code == 200, tool.text
+    evidence = tool.json()["result"]
+    assert evidence["portfolio_nav"] == 1000 and evidence["selected_account"]["nav"] == 250
+    assert evidence["selected_holding"]["position_reference_id"] == "fcn-local"
+    assert evidence["risk_context"]["as_of_date"] == "2026-08-31"
+    with get_session_factory()() as session:
+        saved = session.get(ResearchEntry, run["entry_id"])
+        assert saved.context_json["tool_evidence"][0]["result"] == evidence
+
+
+def test_portfolio_page_fields_cannot_relabel_an_instrument_conversation(client, monkeypatch):
+    from watchlist_app.services import research_runner
+    monkeypatch.setattr(research_runner, "harness_available", lambda: True)
+    topic = client.post("/api/research/topics", json={"title": "讨论"}).json()
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json={
+        "question": "这个资产如何？", "page_context": {"surface": "instrument", "holding_id": "private-contract"}})
+    assert response.status_code == 422
 
 
 def test_common_sample_math_never_fills_or_mixes_currency():

@@ -41,7 +41,7 @@ printf '%s\n' \
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
+  'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
     "$INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL" \
     "$INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL" \
     "$INVESTMENT_STUDIO_DATA_DATABASE_URL" \
@@ -51,7 +51,10 @@ printf '%s\n' \
     "$INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL" \
     "$INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL" \
     "$INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL" \
-    "$INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL" > "$MIGRATION_ENV"' \
+    "$INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_MARKET_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_BRIEFING_DATABASE_URL" \
+    "$INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL" > "$MIGRATION_ENV"' \
   'printf "migrate\n" >> "$EVENT_LOG"' \
   '[[ "${MIGRATION_FAIL:-false}" != "true" ]]' \
   > "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
@@ -109,7 +112,11 @@ grep -q -- '--set|ON_ERROR_STOP=1' "$EVENT_LOG"
 grep -q -- '--single-transaction' "$EVENT_LOG"
 grep -q 'DROP SCHEMA IF EXISTS platform CASCADE' "$EVENT_LOG"
 grep -q 'CREATE SCHEMA platform' "$EVENT_LOG"
-expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_data|data_ingestion|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
+for schema in market_data market_text briefing; do
+  grep -q "DROP SCHEMA IF EXISTS $schema CASCADE" "$EVENT_LOG"
+  grep -q "CREATE SCHEMA $schema" "$EVENT_LOG"
+done
+expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_data|data_ingestion|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
 [[ "$(cat "$MIGRATION_ENV")" == "$expected_migration_env" ]]
 
 : > "$EVENT_LOG"

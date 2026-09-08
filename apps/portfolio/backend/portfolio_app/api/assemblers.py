@@ -200,6 +200,7 @@ def serialize_transaction(
             {key: value for key, value in leg.items() if key != "instrument_ref"}
             for leg in record.get("asset_deliveries") or []
         ],
+        settlement_cashflows=record.get("settlement_cashflows") or [],
         lot_selections=record.get("lot_selections") or [],
         external_reference=(
             str(record.get("external_reference"))

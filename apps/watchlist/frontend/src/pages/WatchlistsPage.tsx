@@ -1,11 +1,11 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { useCanWriteTeam } from '../components/AccountBoundary'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { LanguageSelector, matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
 
 import {
   copyWatchlistItems,
   copyWatchlist,
-  type FieldCategory,
   type FieldRegistryRecord,
   type ReturnSparklineSeries,
   type InstrumentTaxonomyTreeNode,
@@ -40,13 +40,13 @@ import {
   isMetricAsOfSensitiveField,
   summarizeMetricAsOfDates,
 } from '../lib/watchlistMetricSemantics'
-import { fieldSupportsAllInstrumentTypes } from '../lib/watchlistFieldScope'
 import LoadingOverlay from '../components/LoadingOverlay'
 import ResearchPage from './ResearchPage'
 import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
 import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
@@ -146,6 +146,36 @@ const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
 const WATCHLIST_SELECT_COLUMN_WIDTH = 44
 const WATCHLIST_DEFAULT_COLUMN_WIDTH = 140
 const WATCHLIST_VIEW_AUTOSAVE_DELAY_MS = 250
+// Full names in the chooser distinguish return values from small trend charts.
+const COLUMN_CHOOSER_LABELS: Record<string, [string, string]> = {
+  ticker_or_isin: ['标的代码 / ISIN', 'Code / ISIN'],
+  'attr.instrument_taxonomy_path': ['分类', 'Classification'],
+  latest_quote: ['最新价格 / 净值', 'Latest price / NAV'],
+  latest_quote_date: ['价格 / 净值日期', 'Price / NAV date'],
+  return_1w: ['近一周收益率', '1-week return'],
+  return_1m: ['近一月收益率', '1-month return'],
+  return_3m: ['近三月收益率', '3-month return'],
+  return_ytd: ['今年以来收益率', 'Year-to-date return'],
+  return_1y: ['近一年收益率', '1-year return'],
+  return_chart_1m: ['近一月收益走势', '1-month return chart'],
+}
+const COLUMN_CHOOSER_DESCRIPTIONS: Record<string, [string, string]> = {
+  'attr.risk_attention': [
+    '当前风险事项的状态：重点关注、监测受限或暂无触发。暂无触发不代表已完成全面风险评估。',
+    'Current risk cases: attention, limited monitoring, or no trigger. No trigger does not mean a full risk assessment is complete.',
+  ],
+  data_freshness_status: [
+    '当前指标数据的更新状态；请结合价格 / 净值日期与指标截至日期判断。',
+    'Update status of the current metrics. Read alongside the price / NAV date and metric as-of date.',
+  ],
+  return_chart_1m: [
+    '近一个月的累计收益走势，以一个月前或之前最近的有效观测为起点。低频净值可能只有少量观测点。',
+    'Cumulative return over the past month, starting at the last valid observation on or before the one-month boundary. Infrequent NAVs may provide only a few points.',
+  ],
+}
+const COLUMN_STATUS_FIELDS = new Set([
+  'attr.current_drawdown', 'attr.coverage_status', 'attr.risk_attention', 'data_freshness_status',
+])
 const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   field_key: TAXONOMY_FILTER_FIELD_KEY,
   label: 'Taxonomy',
@@ -730,7 +760,8 @@ function parseJsonSearchParam<T>(value: string | null, fallback: T): T {
 }
 
 export default function WatchlistsPage() {
-  const { language } = useLanguage()
+  const canWriteTeam = useCanWriteTeam()
+  const { language, t } = useLanguage()
   const zh = language === 'zh-Hans'
   const primaryDisplayColumn = 'instrument_name'
   const requiredColumns = [primaryDisplayColumn]
@@ -738,8 +769,9 @@ export default function WatchlistsPage() {
   const { watchlistId = '' } = useParams()
   const [watchlistSearchParams, setWatchlistSearchParams] = useSearchParams()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
-  const [fieldCategories, setFieldCategories] = useState<FieldCategory[]>([])
   const [fieldRegistry, setFieldRegistry] = useState<FieldRegistryRecord[]>([])
+  const [columnFieldKeys, setColumnFieldKeys] = useState<string[]>([])
+  const [filterFieldKeys, setFilterFieldKeys] = useState<string[]>([])
   const [instrumentTaxonomy, setInstrumentTaxonomy] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [activeViewId, setActiveViewId] = useState(
     () => watchlistSearchParams.get('view') || '',
@@ -763,7 +795,6 @@ export default function WatchlistsPage() {
       parseJsonSearchParam<Record<string, unknown>>(watchlistSearchParams.get('filters'), {}),
     ),
   )
-  const [selectedFieldCategory, setSelectedFieldCategory] = useState('')
   const [fieldSearch, setFieldSearch] = useState('')
   const [watchlistSearch, setWatchlistSearch] = useState(
     () => watchlistSearchParams.get('q') || '',
@@ -804,8 +835,10 @@ export default function WatchlistsPage() {
         )
       : []
   })
-  const [notice, setNotice] = useState<string | null>(null)
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
+  function setNotice(message: string | null) {
+    setViewToast(message ? { id: Date.now(), message } : null)
+  }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [modalError, setModalError] = useState<string | null>(null)
@@ -861,44 +894,40 @@ export default function WatchlistsPage() {
       })),
     [fieldRegistry, activeInstrumentTypes],
   )
-  const scopedFieldRegistry = useMemo(
-    () =>
-      displayFieldRegistry.filter((field) =>
-        fieldSupportsAllInstrumentTypes(field, activeInstrumentTypes),
-      ),
-    [displayFieldRegistry, activeInstrumentTypes],
+  const fieldKeys = useMemo(
+    () => new Set(fieldRegistry.map((field) => field.field_key)),
+    [fieldRegistry],
   )
-  const scopedFieldKeys = useMemo(
-    () => new Set(scopedFieldRegistry.map((field) => field.field_key)),
-    [scopedFieldRegistry],
+  const columnKeys = useMemo(() => new Set(columnFieldKeys), [columnFieldKeys])
+  const filterKeys = useMemo(
+    () => new Set([...filterFieldKeys, ...TAXONOMY_GROUP_FIELD_KEYS, TAXONOMY_FILTER_FIELD_KEY]),
+    [filterFieldKeys],
+  )
+  const columnFieldRegistry = useMemo(
+    () => columnFieldKeys
+      .map((key) => fieldRegistry.find((field) => field.field_key === key))
+      .filter((field): field is FieldRegistryRecord => Boolean(field)),
+    [fieldRegistry, columnFieldKeys],
   )
   const availableGroupByCodes = useMemo(
     () => new Set((watchlistDetail?.available_group_bys || []).map((item) => item.code)),
     [watchlistDetail?.available_group_bys],
   )
 
-  useEffect(() => {
-    if (!notice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [notice])
-
   const baseScreenerPayload = useMemo(() => {
-    if (!watchlistId || watchlistDetailOwnerId !== watchlistId) {
+    if (!watchlistId || watchlistDetailOwnerId !== watchlistId || !columnFieldKeys.length) {
       return null
     }
 
     const requestedFields = (workingColumns.length ? [...workingColumns] : [primaryDisplayColumn])
-      .filter((fieldKey) => scopedFieldKeys.has(fieldKey))
-    if (scopedFieldKeys.has('attr.risk_attention') && !requestedFields.includes('attr.risk_attention')) {
+      .filter((fieldKey) => columnKeys.has(fieldKey))
+    if (fieldKeys.has('attr.risk_attention') && !requestedFields.includes('attr.risk_attention')) {
       requestedFields.push('attr.risk_attention')
     }
     const effectiveGroupBy = availableGroupByCodes.has(workingGroupBy) ? workingGroupBy : 'none'
     if (effectiveGroupBy === TAXONOMY_GROUP_BY_CODE) {
       TAXONOMY_ASSIGNMENT_FIELD_KEYS.forEach((fieldKey) => {
-        if (scopedFieldKeys.has(fieldKey) && !requestedFields.includes(fieldKey)) {
+        if (fieldKeys.has(fieldKey) && !requestedFields.includes(fieldKey)) {
           requestedFields.push(fieldKey)
         }
       })
@@ -908,10 +937,10 @@ export default function WatchlistsPage() {
 
     const effectiveFilters = Object.fromEntries(
       Object.entries(workingFilters).filter(
-        ([fieldKey]) => fieldKey === TAXONOMY_FILTER_FIELD_KEY || scopedFieldKeys.has(fieldKey),
+        ([fieldKey]) => filterKeys.has(fieldKey),
       ),
     )
-    const effectiveSortRules = sortRules.filter((rule) => scopedFieldKeys.has(rule.field))
+    const effectiveSortRules = sortRules.filter((rule) => columnKeys.has(rule.field))
 
     return {
       watchlist_id: watchlistId,
@@ -921,7 +950,7 @@ export default function WatchlistsPage() {
       sort: effectiveSortRules,
       group_by: effectiveGroupBy,
     }
-  }, [activeViewId, availableGroupByCodes, primaryDisplayColumn, scopedFieldKeys, sortRules, watchlistDetailOwnerId, watchlistId, workingColumns, workingFilters, workingGroupBy])
+  }, [activeViewId, availableGroupByCodes, primaryDisplayColumn, fieldKeys, columnKeys, columnFieldKeys.length, filterKeys, sortRules, watchlistDetailOwnerId, watchlistId, workingColumns, workingFilters, workingGroupBy])
   const screenerCriteriaKey = useMemo(
     () => JSON.stringify(baseScreenerPayload || {}),
     [baseScreenerPayload],
@@ -965,8 +994,9 @@ export default function WatchlistsPage() {
         }
 
         setWatchlists(watchlistData)
-        setFieldCategories(fieldRegistryData.categories)
         setFieldRegistry(fieldRegistryData.fields)
+        setColumnFieldKeys(fieldRegistryData.column_field_keys)
+        setFilterFieldKeys(fieldRegistryData.filter_field_keys)
         setInstrumentTaxonomy(taxonomyData)
       } catch (loadError) {
         if (!cancelled) {
@@ -1485,11 +1515,11 @@ export default function WatchlistsPage() {
   }, [mergedFieldRegistry])
   const visibleColumns = ensureRequiredColumns(
     (workingColumns.length ? workingColumns : [primaryDisplayColumn]).filter((fieldKey) =>
-      scopedFieldKeys.has(fieldKey),
+      columnKeys.has(fieldKey),
     ),
   )
   const baseColumns = ensureRequiredColumns(
-    (activeView?.columns || []).filter((fieldKey) => scopedFieldKeys.has(fieldKey)),
+    (activeView?.columns || []).filter((fieldKey) => fieldKeys.has(fieldKey)),
   )
   const baseGroupBy = activeView?.default_group_by || 'none'
   const baseSort = activeView?.default_sort || []
@@ -1658,95 +1688,59 @@ export default function WatchlistsPage() {
     setCollapsedGroupKeys(new Set())
   }, [activeGroupBy, screenerCriteriaKey])
 
-  const availableCategoryList = useMemo(() => {
-    if (fieldCategories.length) {
-      return [...fieldCategories]
-        .filter((category) =>
-          scopedFieldRegistry.some((field) => field.category_code === category.category_code),
-        )
-        .sort((left, right) => left.display_order - right.display_order)
-    }
-    const byCode = new Map<string, FieldCategory>()
-    scopedFieldRegistry.forEach((field, index) => {
-      if (!byCode.has(field.category_code)) {
-        byCode.set(field.category_code, {
-          category_code: field.category_code,
-          label: formatLabel(field.category_code),
-          display_order: index,
-          parent_category_code: null,
-        })
-      }
-    })
-    return [...byCode.values()]
-  }, [fieldCategories, scopedFieldRegistry])
-
-  useEffect(() => {
-    if (
-      selectedFieldCategory &&
-      !availableCategoryList.some((category) => category.category_code === selectedFieldCategory)
-    ) {
-      setSelectedFieldCategory(availableCategoryList[0]?.category_code || '')
-      return
-    }
-    if (!selectedFieldCategory && availableCategoryList.length) {
-      setSelectedFieldCategory(availableCategoryList[0].category_code)
-    }
-  }, [availableCategoryList, selectedFieldCategory])
-
-  const filteredFieldRegistry = scopedFieldRegistry.filter((field) => {
-    if (field.field_key === primaryDisplayColumn) {
-      return false
-    }
-    const matchesCategory = !selectedFieldCategory || field.category_code === selectedFieldCategory
-    const matchesSearch =
-      !fieldSearch.trim() ||
-      matchesSystemLabel(field.label, fieldSearch) ||
-      field.field_key.toLowerCase().includes(fieldSearch.trim().toLowerCase())
-    return matchesCategory && matchesSearch
-  })
+  const filteredFieldRegistry = columnFieldRegistry
+    .filter((field) => field.field_key !== primaryDisplayColumn)
+    .map((field) => ({
+      ...field,
+      label: COLUMN_CHOOSER_LABELS[field.field_key]?.[zh ? 0 : 1] || t(field.label),
+      description: COLUMN_CHOOSER_DESCRIPTIONS[field.field_key]?.[zh ? 0 : 1] || t(field.description || ''),
+      section: COLUMN_STATUS_FIELDS.has(field.field_key)
+        ? 'status'
+        : field.field_key.startsWith('return_') ? 'returns' : 'identity',
+    }))
+    .filter((field) => !fieldSearch.trim()
+      || matchesSystemLabel(field.label, fieldSearch)
+      || field.field_key.toLowerCase().includes(fieldSearch.trim().toLowerCase()))
+  const columnSections = [
+    { key: 'identity', label: zh ? '基本信息' : 'Basic information' },
+    { key: 'returns', label: zh ? '收益表现' : 'Returns' },
+    { key: 'status', label: zh ? '风险与状态' : 'Risk and status' },
+  ]
   const availableGroupByOptions = watchlistDetail?.available_group_bys || []
 
   useEffect(() => {
-    if (!detailIsCurrent || !watchlistDetail) {
+    if (!detailIsCurrent || !watchlistDetail || !columnFieldKeys.length) {
       return
     }
-    const scopeColumns = (columns: string[]) =>
-      ensureRequiredColumns(columns.filter((fieldKey) => scopedFieldKeys.has(fieldKey)))
+    const selectedColumns = (columns: string[]) =>
+      ensureRequiredColumns(columns.filter((fieldKey) => columnKeys.has(fieldKey)))
     setWorkingColumns((current) => {
-      const next = scopeColumns(current)
+      const next = selectedColumns(current)
       return JSON.stringify(next) === JSON.stringify(current) ? current : next
     })
     setColumnDraft((current) => {
-      const next = scopeColumns(current)
+      const next = selectedColumns(current)
       return JSON.stringify(next) === JSON.stringify(current) ? current : next
     })
     setWorkingFilters((current) => {
       const next = Object.fromEntries(
-        Object.entries(current).filter(
-          ([fieldKey]) =>
-            scopedFieldKeys.has(fieldKey) ||
-            (fieldKey === TAXONOMY_FILTER_FIELD_KEY && activeInstrumentTypes.length > 0),
-        ),
+        Object.entries(current).filter(([fieldKey]) => filterKeys.has(fieldKey)),
       )
       return JSON.stringify(next) === JSON.stringify(current) ? current : next
     })
     setSortRules((current) => {
-      const next = current.filter((rule) => scopedFieldKeys.has(rule.field))
+      const next = current.filter((rule) => columnKeys.has(rule.field))
       return JSON.stringify(next) === JSON.stringify(current) ? current : next
     })
     setWorkingGroupBy((current) => (availableGroupByCodes.has(current) ? current : 'none'))
-  }, [activeInstrumentTypes.length, availableGroupByCodes, detailIsCurrent, scopedFieldKeys, watchlistDetail])
+  }, [availableGroupByCodes, detailIsCurrent, columnFieldKeys.length, columnKeys, filterKeys, watchlistDetail])
 
   const filterableFields = useMemo(
-    () => {
-      const fields = scopedFieldRegistry
-        .filter((field) => field.filter_mode === 'multi_select' && ['instrument_type', 'currency', 'management_firm_name', 'attr.research_stage', 'attr.risk_attention', 'attr.primary_geographic_exposure', 'attr.fund_vehicle'].includes(field.field_key))
-        .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
-      return fieldSupportsAllInstrumentTypes(TAXONOMY_FILTER_FIELD, activeInstrumentTypes)
-        ? [TAXONOMY_FILTER_FIELD, ...fields]
-        : fields
-    },
-    [scopedFieldRegistry, activeInstrumentTypes],
+    () => [
+      TAXONOMY_FILTER_FIELD,
+      ...fieldRegistry.filter((field) => filterFieldKeys.includes(field.field_key)),
+    ],
+    [fieldRegistry, filterFieldKeys],
   )
   const optionFilterFields = useMemo(
     () => filterableFields.filter((field) => field.field_key !== TAXONOMY_FILTER_FIELD_KEY),
@@ -1766,7 +1760,7 @@ export default function WatchlistsPage() {
   )
 
   useEffect(() => {
-    if (!watchlistId || !filterableFields.length) {
+    if (!watchlistId || !fieldRegistry.length) {
       setFilterOptionRows([])
       return
     }
@@ -1799,7 +1793,7 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [watchlistId, filterFieldKeySignature, reloadToken, optionFilterFields])
+  }, [watchlistId, fieldRegistry.length, filterFieldKeySignature, reloadToken, optionFilterFields])
 
   const filterOptionsByField = useMemo(() => {
     const options = new Map<string, FilterOption[]>()
@@ -1881,6 +1875,13 @@ export default function WatchlistsPage() {
     })
     return counts
   }, [filterOptionRows])
+  function isVisibleTaxonomyFilterNode(node: InstrumentTaxonomyTreeNode) {
+    return taxonomyFilterCountByPath.has(`${node.instrument_type}::${taxonomyPathKey(node.path_labels)}`)
+      || Boolean(activeTaxonomyFilterNode?.path_node_ids.includes(node.node_id))
+  }
+  const taxonomyFilterInstrumentTypes = taxonomyInstrumentTypes.filter((instrumentType) =>
+    applicableTaxonomyNodes.some((node) => node.instrument_type === instrumentType && isVisibleTaxonomyFilterNode(node)),
+  )
   const selectedFilterFieldRecord =
     filterableFields.find((field) => field.field_key === selectedFilterField) || null
   const selectedFilterOptions = selectedFilterField
@@ -2245,10 +2246,11 @@ export default function WatchlistsPage() {
         return {
           ...current,
           views: current.views.map((view) =>
-            view.view_id === updated.view_id ? updated : view,
+            view.view_id === viewId || view.view_id === updated.view_id ? updated : view,
           ),
         }
       })
+      if (updated.view_id !== viewId) setActiveViewId(updated.view_id)
       setError(null)
     } catch (saveError) {
       if (
@@ -2261,7 +2263,7 @@ export default function WatchlistsPage() {
   }
 
   useEffect(() => {
-    if (!detailIsCurrent || !activeView || columnResizing || !viewEdited) {
+    if (loading || !detailIsCurrent || !activeView || columnResizing || !viewEdited) {
       return undefined
     }
     const settings: WatchlistViewSettings = {
@@ -2276,7 +2278,7 @@ export default function WatchlistsPage() {
       WATCHLIST_VIEW_AUTOSAVE_DELAY_MS,
     )
     return () => window.clearTimeout(timeoutId)
-  }, [activeView?.view_id, columnResizing, detailIsCurrent, viewEdited, workingViewSignature])
+  }, [activeView?.view_id, columnResizing, detailIsCurrent, loading, viewEdited, workingViewSignature])
 
   async function handleDownloadCurrentView(format: TableExportFormat) {
     if (!baseScreenerPayload || !screenerResult?.total_rows) {
@@ -2379,7 +2381,8 @@ export default function WatchlistsPage() {
     rootInstrumentType?: string,
   ): React.ReactNode {
     const nodes = (taxonomyNodesByParent.get(parentNodeId) || []).filter(
-      (node) => parentNodeId !== null || !rootInstrumentType || node.instrument_type === rootInstrumentType,
+      (node) => (parentNodeId !== null || !rootInstrumentType || node.instrument_type === rootInstrumentType)
+        && isVisibleTaxonomyFilterNode(node),
     )
     if (!nodes.length) {
       return null
@@ -2575,6 +2578,7 @@ export default function WatchlistsPage() {
                 <button type="button" onClick={openColumns}>{zh ? '列设置' : 'Column settings'}</button>
                 <button
                   type="button"
+                  disabled={!canWriteTeam}
                   onClick={async () => {
                     try {
                       const copied = await copyWatchlist(activeWatchlist.watchlist_id)
@@ -2592,6 +2596,7 @@ export default function WatchlistsPage() {
                 {!activeWatchlistIsSystem ? (
                   <button
                     type="button"
+                    disabled={!canWriteTeam}
                     onClick={() => {
                       setConfirmError(null)
                       setPendingDeleteWatchlist(activeWatchlist)
@@ -2640,6 +2645,7 @@ export default function WatchlistsPage() {
           <button
             type="button"
             className="watchlist-create-link"
+            disabled={!canWriteTeam}
             onClick={() => {
               resetCreateWatchlistForm()
               setModalKind('create-watchlist')
@@ -2673,7 +2679,7 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="watchlists-toolbar-button"
-                disabled={!detailIsCurrent}
+                disabled={!canWriteTeam || !detailIsCurrent}
                 onClick={() => {
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])
@@ -2803,8 +2809,9 @@ export default function WatchlistsPage() {
                     <div>
                       <div className="watchlists-filter-title">Filters</div>
                       <div className="watchlists-filter-subtitle">
-                        Filter the current assets by taxonomy, workflow state, and
-                        asset-appropriate research fields.
+                        {zh
+                          ? '所有列表使用相同的筛选字段，具体值来自当前列表。'
+                          : 'Filter fields are shared across watchlists; values come from the current list.'}
                       </div>
                     </div>
                     <button
@@ -2882,8 +2889,8 @@ export default function WatchlistsPage() {
                                   <span className="watchlists-taxonomy-node-label">All Taxonomy</span>
                                   <span className="watchlists-taxonomy-node-count">{filterOptionRows.length}</span>
                                 </button>
-                                {applicableTaxonomyNodes.length ? (
-                                  taxonomyInstrumentTypes.map((instrumentType) => (
+                                {taxonomyFilterInstrumentTypes.length ? (
+                                  taxonomyFilterInstrumentTypes.map((instrumentType) => (
                                     <div key={instrumentType} className="watchlists-taxonomy-type-section">
                                       <div className="watchlists-taxonomy-type-heading">
                                         {instrumentTypeLabel(instrumentType)}
@@ -2892,7 +2899,9 @@ export default function WatchlistsPage() {
                                     </div>
                                   ))
                                 ) : (
-                                  <div className="watchlists-filter-empty">No taxonomy tree is available.</div>
+                                  <div className="watchlists-filter-empty">
+                                    {zh ? '当前列表暂无已分类标的。' : 'No classified instruments in this watchlist.'}
+                                  </div>
                                 )}
                               </div>
                             ) : (
@@ -2948,7 +2957,7 @@ export default function WatchlistsPage() {
               }}
               onSelect={(format) => void handleDownloadCurrentView(format)}
             />
-            {selectedRows.length && rowsAreCurrent ? (
+            {canWriteTeam && selectedRows.length && rowsAreCurrent ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2964,7 +2973,7 @@ export default function WatchlistsPage() {
                 Copy
               </button>
             ) : null}
-            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
+            {canWriteTeam && selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2980,7 +2989,7 @@ export default function WatchlistsPage() {
                 Move
               </button>
             ) : null}
-            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
+            {canWriteTeam && selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button watchlists-danger"
@@ -3025,7 +3034,6 @@ export default function WatchlistsPage() {
           </div>
         ) : null}
 
-        {notice ? <div className="inline-notice">{notice}</div> : null}
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
 
         <div className="table-shell" ref={tableShellRef}>
@@ -3387,6 +3395,11 @@ export default function WatchlistsPage() {
               <div>
                 <div className="panel-title">Columns</div>
                 <div className="section-heading">Manage Columns</div>
+                <div className="watchlists-columns-help">
+                  {zh
+                    ? '所有列表共用这些字段，勾选只影响当前视图。标的名称固定显示；详细分析可打开标的查看。'
+                    : 'All watchlists share these fields; selections apply to this view. Name is always shown. Open an instrument for detailed analysis.'}
+                </div>
               </div>
               <button type="button" onClick={closeActiveModal}>
                 Close
@@ -3402,51 +3415,42 @@ export default function WatchlistsPage() {
               />
             </div>
 
-            <div className="watchlists-modal-grid">
-              <div className="watchlists-modal-categories">
-                {availableCategoryList.map((category) => (
-                  <button
-                    key={category.category_code}
-                    type="button"
-                    className={
-                      category.category_code === selectedFieldCategory
-                        ? 'watchlists-category-item watchlists-category-item-active'
-                        : 'watchlists-category-item'
-                    }
-                    onClick={() => setSelectedFieldCategory(category.category_code)}
-                  >
-                    {category.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="watchlists-modal-fields">
-                {filteredFieldRegistry.map((field) => {
-                  const checked = columnDraft.includes(field.field_key)
-                  return (
-                    <label key={field.field_key} className="watchlists-field-item">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(event) =>
-                          setColumnDraft((current) =>
-                            event.target.checked
-                              ? [...current, field.field_key]
-                              : current.filter((item) => item !== field.field_key),
-                          )
-                        }
-                      />
-                      <div>
-                        <div className="watchlists-field-label">{field.label}</div>
-                        {field.description && <div className="watchlists-field-meta">
-                          {field.description}
-                        </div>}
-                      </div>
-                    </label>
-                  )
-                })}
-              </div>
-
+            <div className="watchlists-column-sections">
+              {columnSections.map((section) => {
+                const fields = filteredFieldRegistry.filter((field) => field.section === section.key)
+                if (!fields.length) return null
+                return (
+                  <section key={section.key} aria-labelledby={`columns-${section.key}`}>
+                    <h3 id={`columns-${section.key}`} className="watchlists-column-section-title">{section.label}</h3>
+                    <div className="watchlists-column-options">
+                      {fields.map((field) => (
+                        <div key={field.field_key} className="watchlists-field-item">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={columnDraft.includes(field.field_key)}
+                              onChange={(event) =>
+                                setColumnDraft((current) =>
+                                  event.target.checked
+                                    ? [...current, field.field_key]
+                                    : current.filter((item) => item !== field.field_key),
+                                )
+                              }
+                            />
+                            <span className="watchlists-field-label">{field.label}</span>
+                          </label>
+                          {field.description && (
+                            <InfoHint label={field.label} detail={field.description} />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+              {!filteredFieldRegistry.length && <p className="watchlists-columns-help">
+                {zh ? '没有匹配的字段。' : 'No matching fields.'}
+              </p>}
             </div>
 
             <div className="watchlists-modal-actions watchlists-modal-actions-sticky">

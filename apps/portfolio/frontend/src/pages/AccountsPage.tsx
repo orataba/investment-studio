@@ -1,8 +1,10 @@
+import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 
-import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import InfoHint from '../components/InfoHint'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import {
   SUPPORTED_PORTFOLIO_CURRENCIES,
   createPortfolioAccount,
@@ -105,17 +107,32 @@ function accountTransactionHref(portfolioId: string, accountId: string, transact
   return `/portfolios/${portfolioId}/transactions?${params.toString()}`
 }
 
+function AccountDetailLoading() {
+  return (
+    <div className="account-detail-loading" aria-busy="true">
+      <span className="account-detail-loading-status" role="status" aria-live="polite">Loading</span>
+      <div className="account-detail-skeleton" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+    </div>
+  )
+}
+
 export default function AccountsPage() {
+  const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedAccountId = searchParams.get('account_id') ?? ''
   const accountDetailTab = parseAccountDetailTab(searchParams.get('account_tab'))
-  const [workspace, setWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
+  const [loadedWorkspace, setWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
+  const workspace = loadedWorkspace?.portfolio_id === portfolioId ? loadedWorkspace : null
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editorMode, setEditorMode] = useState<'create' | 'edit'>('create')
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null)
   const [pendingCostMethodChange, setPendingCostMethodChange] = useState<PendingCostMethodChange | null>(null)
   const [savingCostMethodChange, setSavingCostMethodChange] = useState(false)
@@ -129,7 +146,7 @@ export default function AccountsPage() {
   const loadedWorkspaceResourceRef = useRef<string | null>(null)
   const inFlightWorkspaceResourceRef = useRef<string | null>(null)
   const unmountInvalidationTimerRef = useRef<number | null>(null)
-  const drawerDialogRef = useModalDialog(drawerOpen, () => setDrawerOpen(false))
+  const editorDialogRef = useModalDialog(editorOpen, () => setEditorOpen(false))
 
   requestedAccountIdRef.current = requestedAccountId
   currentWorkspaceResourceRef.current = accountWorkspaceResourceId(portfolioId, requestedAccountId)
@@ -160,6 +177,7 @@ export default function AccountsPage() {
     inFlightWorkspaceResourceRef.current = targetResourceId
     const request = beginRequest(workspaceRequestSequenceRef, targetResourceId)
     setLoading(true)
+    setError(null)
 
     try {
       const response = await getPortfolioAccountsWorkspace(targetPortfolioId, targetAccountId || undefined)
@@ -254,6 +272,7 @@ export default function AccountsPage() {
     )) {
       if (loadedWorkspaceResourceRef.current === resourceId) {
         setLoading(false)
+        setError(null)
       }
       return
     }
@@ -272,14 +291,6 @@ export default function AccountsPage() {
       }, 0)
     }
   }, [])
-
-  useEffect(() => {
-    if (!notice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [notice])
 
   const accountRecords = useMemo(
     () => workspace?.accounts.map((item) => item.account) ?? [],
@@ -349,19 +360,21 @@ export default function AccountsPage() {
 
   const visibleAccounts = workspace?.accounts ?? []
   const resolvedSelectedAccountId =
-    workspace?.selected_account_id ?? visibleAccounts[0]?.account.account_id ?? ''
+    requestedAccountId || workspace?.selected_account_id || visibleAccounts[0]?.account.account_id || ''
   const selectedAccount =
-    visibleAccounts.find((item) => item.account.account_id === resolvedSelectedAccountId) ?? visibleAccounts[0] ?? null
+    visibleAccounts.find((item) => item.account.account_id === resolvedSelectedAccountId) ?? null
+  const hasSelectedDetails = Boolean(workspace && workspace.selected_account_id === resolvedSelectedAccountId)
+  const detailBusy = loading || Boolean(resolvedSelectedAccountId && !error && !hasSelectedDetails)
   const editingAccount =
     visibleAccounts.find((item) => item.account.account_id === editingAccountId)?.account ?? null
   const editingAccountRow =
     visibleAccounts.find((item) => item.account.account_id === editingAccountId) ?? null
   const accountCategoryLocked =
-    drawerMode === 'edit' && Boolean(editingAccountRow?.linked_transaction_count)
+    editorMode === 'edit' && Boolean(editingAccountRow?.linked_transaction_count)
 
-  const visibleLedgerPostings = workspace?.ledger_postings ?? []
-  const visiblePositions = workspace?.positions ?? []
-  const directTransactions = workspace?.linked_transactions ?? []
+  const visibleLedgerPostings = hasSelectedDetails ? workspace?.ledger_postings ?? [] : []
+  const visiblePositions = hasSelectedDetails ? workspace?.positions ?? [] : []
+  const directTransactions = hasSelectedDetails ? workspace?.linked_transactions ?? [] : []
   const displayedDirectTransactions = showAllDirectTransactions
     ? directTransactions
     : directTransactions.slice(0, 8)
@@ -370,13 +383,13 @@ export default function AccountsPage() {
     : visibleLedgerPostings.slice(0, 12)
   const accountDetailTabs = [
     { key: 'overview', label: 'Overview', meta: 'Setup' },
-    { key: 'positions', label: 'Positions', meta: String(visiblePositions.length) },
+    { key: 'positions', label: 'Positions', meta: String(hasSelectedDetails ? visiblePositions.length : selectedAccount?.position_line_count ?? 0) },
     {
       key: 'transactions',
       label: 'Transactions',
-      meta: String(workspace?.linked_transactions_summary?.total_transactions ?? directTransactions.length),
+      meta: String(hasSelectedDetails ? workspace?.linked_transactions_summary?.total_transactions ?? directTransactions.length : selectedAccount?.linked_transaction_count ?? 0),
     },
-    { key: 'ledger', label: 'Ledger', meta: String(visibleLedgerPostings.length) },
+    { key: 'ledger', label: 'Ledger', meta: String(hasSelectedDetails ? visibleLedgerPostings.length : selectedAccount?.linked_posting_count ?? 0) },
   ] as const
 
   useEffect(() => {
@@ -408,8 +421,8 @@ export default function AccountsPage() {
   async function applyAccountUpdate(accountId: string, payload: PortfolioAccountUpdatePayload) {
     const updated = await updatePortfolioAccount(portfolioId, accountId, payload)
     setPendingCostMethodChange(null)
-    setDrawerOpen(false)
-    setNotice(`Updated ${updated.account_name}.`)
+    setEditorOpen(false)
+    setNotice({ id: Date.now(), message: `Updated ${updated.account_name}.`, tone: 'success' })
     await refreshWorkspace(updated.account_id)
   }
 
@@ -448,7 +461,7 @@ export default function AccountsPage() {
     const payload = accountPayloadFromForm()
 
     try {
-      if (drawerMode === 'edit') {
+      if (editorMode === 'edit') {
         if (!editingAccountId) {
           setFormError('Select an account to edit.')
           return
@@ -487,8 +500,8 @@ export default function AccountsPage() {
       }
 
       const created = await createPortfolioAccount(portfolioId, payload)
-      setDrawerOpen(false)
-      setNotice(`Added ${accountCategoryLabel(created.account_category)} ${created.account_name}.`)
+      setEditorOpen(false)
+      setNotice({ id: Date.now(), message: `Added ${accountCategoryLabel(created.account_category)} ${created.account_name}.`, tone: 'success' })
       setForm(buildInitialAccountForm(accountRecords))
       await refreshWorkspace(created.account_id)
     } catch (requestError) {
@@ -504,6 +517,7 @@ export default function AccountsPage() {
     currentWorkspaceResourceRef.current = accountWorkspaceResourceId(portfolioId, accountId)
     inFlightWorkspaceResourceRef.current = null
     invalidateRequests(workspaceRequestSequenceRef)
+    setError(null)
     const next = new URLSearchParams(searchParams)
     next.set('account_id', accountId)
     setSearchParams(next, { replace: true })
@@ -521,21 +535,21 @@ export default function AccountsPage() {
     }, { replace: true })
   }
 
-  function openCreateAccountDrawer() {
-    setDrawerMode('create')
+  function openCreateAccountModal() {
+    setEditorMode('create')
     setEditingAccountId(null)
-    setDrawerOpen(true)
+    setEditorOpen(true)
     setFormError(null)
     setForm(buildInitialAccountForm(accountRecords))
   }
 
-  function openEditAccountDrawer() {
+  function openEditAccountModal() {
     if (!selectedAccount) {
       return
     }
-    setDrawerMode('edit')
+    setEditorMode('edit')
     setEditingAccountId(selectedAccount.account.account_id)
-    setDrawerOpen(true)
+    setEditorOpen(true)
     setFormError(null)
     setForm(buildAccountFormFromRecord(selectedAccount.account))
   }
@@ -543,14 +557,13 @@ export default function AccountsPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Accounts"
-      busy={loading}
+      busy={loading && !workspace}
     >
       <section className="portfolio-detail-surface account-page">
         <header className="account-page-heading">
           <div className="account-page-title-stack">
             <span className="account-page-eyebrow">Custody</span>
             <h1>Accounts</h1>
-            <p>Custody accounts and their transaction-derived balances.</p>
           </div>
           <div className="account-page-heading-actions">
             {workspace ? (
@@ -561,17 +574,17 @@ export default function AccountsPage() {
                 {countLabel(workspace.summary.open_option_obligation_count, 'open option obligation')}
               </span>
             ) : null}
-            <button type="button" className="toolbar-link button-primary" onClick={openCreateAccountDrawer}>
+            <button type="button" className="toolbar-link button-primary" disabled={!canEditPortfolio} onClick={openCreateAccountModal}>
               Add Account
             </button>
           </div>
         </header>
 
-        {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
-        {loading ? <CalculationStatus /> : null}
+        <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
+        {loading && !workspace ? <AccountDetailLoading /> : null}
         {error ? <div className="error-state">{error}</div> : null}
 
-        {!loading && !error && workspace ? (
+        {workspace ? (
           <section className="accounts-workbench">
             <aside className="account-directory-panel">
               <div className="account-directory-header">
@@ -626,7 +639,7 @@ export default function AccountsPage() {
               </nav>
             </aside>
 
-            <section className="account-detail-panel">
+            <section className="account-detail-panel" aria-label="Selected account" aria-busy={detailBusy}>
               {selectedAccount ? (
                 <>
                   <header className="account-detail-header">
@@ -650,7 +663,7 @@ export default function AccountsPage() {
                       >
                         Transaction Workbench
                       </Link>
-                      <button type="button" className="toolbar-link" onClick={openEditAccountDrawer}>
+                      <button type="button" className="toolbar-link" disabled={!canEditPortfolio} onClick={openEditAccountModal}>
                         Edit Account
                       </button>
                     </div>
@@ -742,6 +755,9 @@ export default function AccountsPage() {
                     })}
                   </div>
 
+                  {!hasSelectedDetails && !error ? <AccountDetailLoading /> : null}
+
+                  {hasSelectedDetails ? <>
                   {accountDetailTab === 'overview' ? (
                     <div
                       id="account-detail-panel-overview"
@@ -778,11 +794,11 @@ export default function AccountsPage() {
                             <dd>{accountCategoryLabel(selectedAccount.account.account_category)}</dd>
                           </div>
                           <div>
-                            <dt>Opened</dt>
+                            <dt>Account Opening Date</dt>
                             <dd>{selectedAccount.account.opened_at || '—'}</dd>
                           </div>
                           <div>
-                            <dt>Closed</dt>
+                            <dt>Account Closing Date</dt>
                             <dd>{selectedAccount.account.closed_at || '—'}</dd>
                           </div>
                         </dl>
@@ -794,11 +810,8 @@ export default function AccountsPage() {
                             <span className="account-section-kicker">Accounting basis</span>
                             <h3>Transaction-derived</h3>
                           </div>
+                          <InfoHint label="Transaction-derived balances" detail="Balances, positions, and postings are read-only outputs. Correct the source transaction when an accounting fact is wrong." />
                         </div>
-                        <p>
-                          Balances, positions, and postings are read-only outputs. Correct the source
-                          transaction when an accounting fact is wrong.
-                        </p>
                         <div className="account-activity-counts">
                           <div>
                             <strong>{formatNumber(selectedAccount.position_line_count, 0)}</strong>
@@ -975,31 +988,32 @@ export default function AccountsPage() {
                       )}
                     </section>
                   ) : null}
+                  </> : null}
                 </>
               ) : (
-                <div className="empty-state">No account.</div>
+                detailBusy ? <AccountDetailLoading /> : <div className="empty-state">No account.</div>
               )}
             </section>
           </section>
         ) : null}
       </section>
 
-      {drawerOpen ? (
-        <div className="transaction-drawer-backdrop" role="presentation" onClick={() => setDrawerOpen(false)}>
-          <aside
-            ref={drawerDialogRef}
-            className="transaction-drawer"
+      {editorOpen ? (
+        <div className="transaction-entry-backdrop account-editor-backdrop" role="presentation" onClick={() => setEditorOpen(false)}>
+          <div
+            ref={editorDialogRef}
+            className="transaction-entry-modal account-editor-modal"
             role="dialog"
             aria-modal="true"
-            aria-label={drawerMode === 'edit' ? 'Edit account' : 'Add account'}
+            aria-label={editorMode === 'edit' ? 'Edit account' : 'Add account'}
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="transaction-drawer-header">
+            <div className="transaction-entry-modal-header">
               <div>
-                <div className="panel-title">{drawerMode === 'edit' ? 'Edit Account' : 'Add Account'}</div>
+                <div className="panel-title">{editorMode === 'edit' ? 'Edit Account' : 'Add Account'}</div>
               </div>
-              <button type="button" className="toolbar-link" onClick={() => setDrawerOpen(false)}>
+              <button type="button" className="toolbar-link" onClick={() => setEditorOpen(false)}>
                 Close
               </button>
             </div>
@@ -1043,7 +1057,7 @@ export default function AccountsPage() {
                   <span>Currency</span>
                   <select
                     value={form.currency}
-                    disabled={drawerMode === 'edit'}
+                    disabled={editorMode === 'edit'}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -1073,7 +1087,7 @@ export default function AccountsPage() {
                 </label>
 
                 <label>
-                  <span>Opened At</span>
+                  <span>Account Opening Date</span>
                   <input
                     type="date"
                     value={form.opened_at}
@@ -1107,7 +1121,7 @@ export default function AccountsPage() {
                     <option value="operating">普通结算现金</option><option value="margin">券商保证金账户（可有融资借方）</option><option value="collateral">已抵押现金（不可自由使用）</option><option value="financing">独立融资负债</option>
                   </select></label>
                   {form.cash_purpose === 'collateral' ? <label><span>抵押对象及券商确认依据</span><input value={form.collateral_reference} onChange={(event) => setForm((current) => ({ ...current, collateral_reference: event.target.value }))} placeholder="合约号、业务号及分配说明" /></label> : null}
-                  <p className="field-help">借款与还款、抵押与释放用账户间内部现金划转记录，不是入金或收益；融资利息和融券费按实际账单记费用。本系统不推算券商购买力或保证金许可。</p>
+                  {form.cash_purpose !== 'operating' ? <p className="field-help account-cash-purpose-help">借款与还款、抵押与释放用账户间内部现金划转记录，不是入金或收益；融资利息和融券费按实际账单记费用。本系统不推算券商购买力或保证金许可。</p> : null}
                 </> : null}
                 {form.account_category !== 'cash' ? (
                   <label>
@@ -1155,7 +1169,7 @@ export default function AccountsPage() {
 
                 {form.status === 'closed' ? (
                   <label>
-                    <span>Closed At</span>
+                    <span>Account Closing Date</span>
                     <input
                       type="date"
                       value={form.closed_at}
@@ -1181,29 +1195,32 @@ export default function AccountsPage() {
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
 
               <div className="transaction-form-footer">
+                <button type="button" className="toolbar-link" onClick={() => setEditorOpen(false)}>
+                  Cancel
+                </button>
                 <button
                   type="button"
                   className="toolbar-link button-primary"
                   disabled={form.account_category !== 'cash' && compatibleDepositAccounts.length === 0}
                   onClick={() => void handleSaveAccount()}
                 >
-                  {drawerMode === 'edit' ? 'Update Account' : 'Save Account'}
+                  {editorMode === 'edit' ? 'Update Account' : 'Save Account'}
                 </button>
               </div>
             </div>
-          </aside>
+          </div>
         </div>
       ) : null}
 
       {pendingCostMethodChange ? (
         <div
-          className="transaction-entry-backdrop"
+          className="transaction-entry-backdrop account-editor-backdrop"
           role="presentation"
           onClick={closeCostMethodDialog}
         >
           <div
             ref={costMethodDialogRef}
-            className="transaction-entry-modal"
+            className="transaction-entry-modal account-editor-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Confirm cost method change"

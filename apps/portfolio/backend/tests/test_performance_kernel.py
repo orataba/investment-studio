@@ -1521,7 +1521,13 @@ def test_materialized_contribution_outside_snapshot_range_preserves_request_meta
     assert summary["coverage_state"] == "unavailable"
 
 
-def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(client):
+def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(client, monkeypatch):
+    # Registry notifications are an authenticated maintenance service operation.
+    from studio_identity import Principal
+    from portfolio_app.api.authorization import authenticated_principal
+    async def maintenance_identity():
+        return Principal(None, "Test valuation service", "default", kind="service", service_id="test-maintenance", scopes=["portfolio:maintain"])
+    monkeypatch.setitem(client.app.dependency_overrides, authenticated_principal, maintenance_identity)
     initial_response = client.get("/api/portfolios/investment-studio/snapshots/daily")
     assert initial_response.status_code == 200
 
@@ -8937,12 +8943,19 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     fund_children = {item["item_key"]: item for item in groups["public_fund"]["children"]}
     assert fund_children["fund-us-test"]["item_label"] == "Test Fund"
     assert isclose(fund_children["fund-us-test"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
+    for group in groups.values():
+        assert sum(child["linked_period_contribution"] for child in group["children"]) == pytest.approx(
+            group["linked_period_contribution"]
+        )
+    assert payload["summary"]["total_linked_period_contribution"] == pytest.approx(0.0)
     assert singleton_detail_calls == []
 
 
+@pytest.mark.parametrize("missing_total_return_series", [False, True])
 def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
     client,
     monkeypatch,
+    missing_total_return_series,
 ):
     daily_detail = _test_instrument_detail(
         instrument_id="equity-us-daily-risk-test",
@@ -8989,17 +9002,13 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
         "equity-us-daily-risk-test": daily_detail,
         "fund-us-daily-risk-test": fund_detail,
     }
-    # This kernel fixture supplies provider NAV points without a persisted fund
-    # projection ledger. Feed the same observations to the route's risk reader.
-    monkeypatch.setattr(
-        performance_routes,
-        "calculation_frequency_profile_from_registry",
-        lambda instrument_ids, *, end_date: performance.calculation_frequency_profile_for_instruments(
-            instrument_ids,
-            end_date=end_date,
-            detail_loader=lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-        ),
-    )
+    if missing_total_return_series:
+        # Performance consumes its published valuation/P&L slices. A separate
+        # NAV reinvestment series is not a prerequisite for realized risk.
+        fund_detail["market_data"] = [
+            point for point in fund_detail["market_data"]
+            if point["quote_basis"] != "total_return_nav"
+        ]
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
@@ -9154,6 +9163,9 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
     ] == pytest.approx(11 / 15 * period_metrics.DAYS_PER_YEAR)
     assert groups["equity-us-daily-risk-test"]["annualized_volatility"] is not None
     assert groups["fund-us-daily-risk-test"]["annualized_volatility"] is not None
+    assert groups["fund-us-daily-risk-test"]["correlation_to_portfolio"] is not None
+    assert groups["fund-us-daily-risk-test"]["beta_to_portfolio"] is not None
+    assert sum(item["realized_risk_contribution"] or 0 for item in groups.values()) == pytest.approx(1)
 
     taxonomy_response = client.get(
         f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
@@ -9185,6 +9197,13 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
     )
     assert performance_response.status_code == 200
     daily_series = performance_response.json()["daily_series"]
+    expected_twr = performance_response.json()["summary"]["cumulative_twr"]
+    for calculation_payload in (payload, taxonomy_payload):
+        assert calculation_payload["summary"]["total_linked_period_contribution"] == pytest.approx(expected_twr)
+        assert sum(group["linked_period_contribution"] for group in calculation_payload["groups"]) == pytest.approx(expected_twr)
+        for group in calculation_payload["groups"]:
+            if group["children"]:
+                assert sum(child["linked_period_contribution"] for child in group["children"]) == pytest.approx(group["linked_period_contribution"])
     by_date = {item["as_of_date"]: item for item in daily_series}
     assert by_date["2026-01-07"]["market_risk_return_observation_eligible"] is True
     assert by_date["2026-01-08"]["market_risk_daily_return"] == pytest.approx(209 / 207 - 1)
@@ -9291,6 +9310,8 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     assert isclose(summary["total_delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert groups["cash"]["group_label"] == "Cash"
+    assert groups["cash"]["linked_period_contribution"] == pytest.approx(0.0)
+    assert summary["total_linked_period_contribution"] == pytest.approx(10 / 150)
     assert isclose(groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["cash"]["beginning_weight"], 50.0 / 150.0, rel_tol=0.0, abs_tol=1e-12)
@@ -9321,6 +9342,8 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     assert explicit_groups_response.status_code == 200
     explicit_groups_payload = explicit_groups_response.json()
     explicit_groups = {item["group_key"]: item for item in explicit_groups_payload["groups"]}
+    assert explicit_groups_payload["summary"]["total_linked_period_contribution"] == pytest.approx(0.0)
+    assert all(group["linked_period_contribution"] == 0.0 for group in explicit_groups.values())
     assert isclose(
         explicit_groups_payload["summary"]["total_initial_value"],
         160.0,

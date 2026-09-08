@@ -34,6 +34,37 @@ def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     assert 'investment-studio-home-api.service' not in command
 
 
+def test_market_and_briefing_stop_writers_but_start_only_schedules(monkeypatch):
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 1000)
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    for group in ('market', 'briefing'):
+        names = module.GROUPS[group] if group == 'market' else ('briefing-daily', 'briefing-weekly')
+        module.manage(group, 'stop')
+        stopped = execute.call_args.args[0]
+        module.manage(group, 'start')
+        started = execute.call_args.args[0]
+        for name in names:
+            assert f'investment-studio-{name}.service' in stopped
+            assert f'investment-studio-{name}.timer' in stopped
+            assert f'investment-studio-{name}.service' not in started
+            assert f'investment-studio-{name}.timer' in started
+
+
+def test_mac_market_controls_sync_and_does_not_kickstart_a_loaded_schedule(monkeypatch):
+    monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
+    query = Mock(return_value=Mock(returncode=0))
+    monkeypatch.setattr(module.subprocess, 'run', query)
+    execute = Mock()
+    monkeypatch.setattr(module, 'run', execute)
+    module.manage('market', 'restart')
+    execute.assert_not_called()
+    assert query.call_args.args[0][-1].endswith('.market-sync')
+    module.manage('market', 'stop')
+    assert execute.call_args.args[0][1] == 'bootout'
+
+
 def test_regime_mac_delegates_its_own_control(monkeypatch):
     monkeypatch.setattr(module.platform, 'system', lambda: 'Darwin')
     execute = Mock()
