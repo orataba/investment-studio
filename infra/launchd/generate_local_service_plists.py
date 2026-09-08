@@ -105,7 +105,7 @@ def main() -> int:
             "StandardOutPath": str(log_dir / f"{service}.log"),
             "StandardErrorPath": str(log_dir / f"{service}.error.log"),
         }
-        if service in {"watchlist-api", "portfolio-api", "briefing-api"}:
+        if service in {"home-api", "watchlist-api", "portfolio-api", "briefing-api"}:
             payload["EnvironmentVariables"] = {
                 "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": database_url,
             }

@@ -391,5 +391,5 @@ for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
   [[ $attempt -eq $HEALTH_ATTEMPTS ]] || sleep 1
 done
 
-echo "Services were installed, but one or more health checks did not become ready." >&2
+echo "Services were installed, but a health check did not become ready: $url" >&2
 exit 1
