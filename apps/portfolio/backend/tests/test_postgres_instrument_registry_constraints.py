@@ -88,53 +88,43 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_instrument_registry_upgrade("20260902_0029")
-    _run_portfolio_upgrade(database_url)
-    _run_instrument_registry_upgrade()
-
-    session_factory = session_module.get_session_factory()
-    identifier_value = f"PORTFK{uuid4().hex[:8].upper()}"
-    instrument = shared_store.create_instrument(
-        session_factory,
-        instrument_name="Portfolio FK Integration Asset",
-        instrument_type="public_fund",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "ticker",
-                "identifier_value": identifier_value,
-                "is_primary": True,
-            }
-        ],
-    )
-
-    yield {
-        "database_url": database_url,
-        "database_schema": "portfolio",
-        "instrument_id": str(instrument["instrument_id"]),
-    }
-
-    cleanup_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
+    engine = session_module.get_engine()
     try:
-        with cleanup_engine.begin() as connection:
-            connection.execute(
-                text(
-                    """
-                    SELECT pg_terminate_backend(pid)
-                    FROM pg_stat_activity
-                    WHERE datname = :database_name
-                      AND pid <> pg_backend_pid()
-                    """
-                ),
-                {"database_name": database_name},
-            )
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-    finally:
-        cleanup_engine.dispose()
+        _run_instrument_registry_upgrade("20260902_0029")
+        _run_portfolio_upgrade(database_url)
+        _run_instrument_registry_upgrade()
 
-    settings_module.get_settings.cache_clear()
-    session_module.get_engine.cache_clear()
-    session_module.get_session_factory.cache_clear()
+        instrument = shared_store.create_instrument(
+            session_module.get_session_factory(),
+            instrument_name="Portfolio FK Integration Asset",
+            instrument_type="public_fund",
+            currency="USD",
+            identifiers=[
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": f"PORTFK{uuid4().hex[:8].upper()}",
+                    "is_primary": True,
+                }
+            ],
+        )
+
+        yield {
+            "database_url": database_url,
+            "database_schema": "portfolio",
+            "instrument_id": str(instrument["instrument_id"]),
+        }
+    finally:
+        # Close our pool; ordinary DROP exposes leaked client connections and
+        # leaves autovacuum shutdown to PostgreSQL instead of signaling it.
+        engine.dispose()
+        session_module.get_session_factory.cache_clear()
+        session_module.get_engine.cache_clear()
+        settings_module.get_settings.cache_clear()
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f'DROP DATABASE "{database_name}"'))
+        finally:
+            admin_engine.dispose()
 
 
 def test_transaction_record_instrument_registry_fk_is_enforced(

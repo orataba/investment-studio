@@ -81,34 +81,22 @@ def postgres_reconciliation_database(
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_registry_upgrade()
-    command.upgrade(_portfolio_config(database_url), "20260715_0038")
-
-    yield database_url
-
-    cleanup_engine = sa.create_engine(
-        _admin_database_url(base_database_url),
-        isolation_level="AUTOCOMMIT",
-    )
+    engine = session_module.get_engine()
     try:
-        with cleanup_engine.begin() as connection:
-            connection.execute(
-                sa.text(
-                    """
-                    SELECT pg_terminate_backend(pid)
-                    FROM pg_stat_activity
-                    WHERE datname = :database_name
-                      AND pid <> pg_backend_pid()
-                    """
-                ),
-                {"database_name": database_name},
-            )
-            connection.execute(sa.text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+        _run_registry_upgrade()
+        command.upgrade(_portfolio_config(database_url), "20260715_0038")
+
+        yield database_url
     finally:
-        cleanup_engine.dispose()
-        settings_module.get_settings.cache_clear()
-        session_module.get_engine.cache_clear()
+        engine.dispose()
         session_module.get_session_factory.cache_clear()
+        session_module.get_engine.cache_clear()
+        settings_module.get_settings.cache_clear()
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(sa.text(f'DROP DATABASE "{database_name}"'))
+        finally:
+            admin_engine.dispose()
 
 
 def _set_search_path(connection: sa.Connection) -> None:

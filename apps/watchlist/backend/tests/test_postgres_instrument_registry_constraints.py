@@ -265,8 +265,8 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         with admin_engine.connect() as connection:
             connection.execute(text("SELECT 1"))
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-    except Exception as exc:  # pragma: no cover - environment-dependent skip
-        pytest.skip(f"PostgreSQL is not available for integration test: {exc}")
+    except Exception as exc:  # pragma: no cover - depends on configured service
+        pytest.fail(f"Configured PostgreSQL integration target is unavailable: {exc}")
     finally:
         admin_engine.dispose()
 
@@ -283,53 +283,43 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    command.upgrade(_instrument_registry_config(), "20260902_0029")
-    _seed_instrument_ids_required_by_watchlist_baseline(database_url)
-    command.upgrade(_instrument_registry_config(), "head")
-
-    session_factory = session_module.get_session_factory()
-    identifier_value = f"WATCHFK{uuid4().hex[:8].upper()}"
-    instrument = shared_store.create_instrument(
-        session_factory,
-        instrument_name="Watchlist FK Integration Asset",
-        instrument_type="public_fund",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "ticker",
-                "identifier_value": identifier_value,
-                "is_primary": True,
-            }
-        ],
-    )
-
-    yield {
-        "database_url": database_url,
-        "database_schema": "watchlist",
-        "instrument_id": str(instrument["instrument_id"]),
-    }
-
-    cleanup_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
+    engine = session_module.get_engine()
     try:
-        with cleanup_engine.begin() as connection:
-            connection.execute(
-                text(
-                    """
-                    SELECT pg_terminate_backend(pid)
-                    FROM pg_stat_activity
-                    WHERE datname = :database_name
-                      AND pid <> pg_backend_pid()
-                    """
-                ),
-                {"database_name": database_name},
-            )
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-    finally:
-        cleanup_engine.dispose()
+        command.upgrade(_instrument_registry_config(), "20260902_0029")
+        _seed_instrument_ids_required_by_watchlist_baseline(database_url)
+        command.upgrade(_instrument_registry_config(), "head")
 
-    settings_module.get_settings.cache_clear()
-    session_module.get_engine.cache_clear()
-    session_module.get_session_factory.cache_clear()
+        instrument = shared_store.create_instrument(
+            session_module.get_session_factory(),
+            instrument_name="Watchlist FK Integration Asset",
+            instrument_type="public_fund",
+            currency="USD",
+            identifiers=[
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": f"WATCHFK{uuid4().hex[:8].upper()}",
+                    "is_primary": True,
+                }
+            ],
+        )
+
+        yield {
+            "database_url": database_url,
+            "database_schema": "watchlist",
+            "instrument_id": str(instrument["instrument_id"]),
+        }
+    finally:
+        # Close our pool before dropping the fixture database. Killing every
+        # pg_stat_activity row also targets superuser-owned autovacuum workers.
+        engine.dispose()
+        session_module.get_session_factory.cache_clear()
+        session_module.get_engine.cache_clear()
+        settings_module.get_settings.cache_clear()
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f'DROP DATABASE "{database_name}"'))
+        finally:
+            admin_engine.dispose()
 
 
 def test_watchlist_instrument_registry_foreign_keys_are_enforced(
