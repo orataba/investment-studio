@@ -36,10 +36,15 @@ def require_instrument(session, instrument_id):
 
 
 @router.get("/research/instruments/{instrument_id}/dossier")
-def dossier(instrument_id: str, include_history: bool = False, session: Session = Depends(get_db_session)):
+def dossier(instrument_id: str, include_history: bool = False, source_id: str | None = None,
+            session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
-        return service.read_dossier(session, instrument_id, include_history=include_history)
+        result = service.read_dossier(session, instrument_id, include_history=include_history)
+        if source_id:
+            from watchlist_app.services.research_notebook import dossier_source
+            return dossier_source(result, source_id)
+        return result
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
@@ -70,3 +75,39 @@ async def upload_material(instrument_id: str, file: UploadFile = File(...), titl
     entry = await _save_uploaded_material(topic, file, session, title=title,
         metadata=serialize_payload({"source": source, "published_at": published_at, "effective_date": effective_date}))
     return service.material_record(entry, instrument_id)
+
+
+from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme, themes_view
+
+
+@router.get("/research/instruments/{instrument_id}/themes")
+def themes(instrument_id: str, session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    return themes_view(session, instrument_id)
+
+
+@router.post("/research/instruments/{instrument_id}/themes", status_code=201)
+def create_theme(instrument_id: str, request: ThemeInput, session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    result = save_theme(session, instrument_id, request)
+    session.commit()
+    return result
+
+
+@router.patch("/research/instruments/{instrument_id}/themes/{theme_id}")
+def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    try:
+        result = save_theme(session, instrument_id, request, theme_id=theme_id)
+        session.commit()
+        return result
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.get("/research/members")
+def members():
+    from studio_identity import current_principal, team_directory
+    return team_directory(current_principal())

@@ -54,6 +54,18 @@ def isolated_equity_store(
     _upgrade(database_url, root=BACKEND_ROOT)
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT)
 
+    from studio_market.config import MarketSettings
+    from studio_market.numeric import NumericStore
+    from datetime import UTC, datetime
+    market_url = f"sqlite+pysqlite:///{tmp_path / 'shared-market.db'}"
+    market_root = tmp_path / "market"
+    monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATABASE_URL", market_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_MARKET_DATA_ROOT", str(market_root))
+    market = NumericStore(MarketSettings(market_url, market_root))
+    market.create_schema_for_testing()
+    market.ingest("raw_eod_daily", [[{"symbol": row["symbol"], "date": "2026-08-15", "open": 200, "high": 204, "low": 199, "close": 203, "adjusted_close": 202.5, "volume": 123456} for row in _CATALOG_ROWS.values()]], source="fixture", observed_at=datetime(2026, 8, 16, tzinfo=UTC))
+    market.close()
+
     yield
 
     settings_module.get_settings.cache_clear()
@@ -100,35 +112,6 @@ class FakeFmpClient:
                 ),
                 "sector": "Technology",
                 "industry": "Software",
-            }
-        ]
-
-    def historical_eod(
-        self,
-        symbol: str,
-        *,
-        adjusted: bool,
-        start_date: str,
-        end_date: str,
-    ) -> list[dict[str, object]]:
-        self.eod_calls.append(
-            {
-                "symbol": symbol,
-                "adjusted": adjusted,
-                "start_date": start_date,
-                "end_date": end_date,
-            }
-        )
-        if adjusted:
-            return [{"date": "2026-08-15", "adjClose": 202.5}]
-        return [
-            {
-                "date": "2026-08-15",
-                "open": 200,
-                "high": 204,
-                "low": 199,
-                "close": 203,
-                "volume": 123456,
             }
         ]
 
@@ -263,10 +246,7 @@ def test_first_materialization_loads_history_then_refreshes_incrementally(
     assert first["instrument_type"] == "equity"
     assert first["exchange_code"] == "XNAS"
     assert len(list_instruments(instrument_type="equity", limit=None)) == 1
-    assert [call["adjusted"] for call in client.eod_calls] == [False, True, False, True]
-    assert client.eod_calls[0]["start_date"] == "1900-01-01"
-    expected_incremental_start = (date(2026, 8, 15) - timedelta(days=7)).isoformat()
-    assert client.eod_calls[2]["start_date"] == expected_incremental_start
+    assert client.eod_calls == []
     coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
     assert coverage["latest_date"] == "2026-08-15"
     assert coverage["adjustment_factor_count"] == 1
@@ -319,7 +299,7 @@ def test_london_equity_verifies_gbp_and_normalizes_pence_prices(
     assert close["value"] == "2.03"
 
 
-def test_fmp_eod_fetch_continues_before_a_full_5000_row_response() -> None:
+def test_fmp_fx_fetch_continues_before_a_full_5000_row_response() -> None:
     recent_start = date(2000, 1, 1)
     recent_rows = [
         {"date": (recent_start + timedelta(days=offset)).isoformat(), "close": 1}
@@ -360,9 +340,8 @@ def test_fmp_eod_fetch_continues_before_a_full_5000_row_response() -> None:
 
     session = Session()
     client = FmpClient(settings=Settings(), session=session)  # type: ignore[arg-type]
-    rows = client.historical_eod(
-        "AAPL",
-        adjusted=False,
+    rows = client.historical_fx(
+        "EURUSD",
         start_date="1900-01-01",
         end_date="2026-08-18",
     )

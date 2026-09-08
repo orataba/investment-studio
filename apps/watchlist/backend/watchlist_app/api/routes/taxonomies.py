@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from studio_identity import current_principal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -111,7 +112,7 @@ def update_instrument_taxonomy_assignment(
         instrument_id=instrument_id,
         taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
         node_id=node_id,
-        source_record_id=str(payload.updated_by or "terminal_ui"),
+        source_record_id=str(current_principal().user_id or current_principal().service_id),
     )
     taxonomy_context = _taxonomy_context_for_asset(session, instrument_id=instrument_id)
     execution = canonical_recalc_service.execute_recalc(

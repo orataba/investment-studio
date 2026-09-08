@@ -6,9 +6,11 @@ import * as researchDossierApi from '../lib/researchDossierApi'
 import ResearchDossierPanel from './ResearchDossierPanel'
 import SectorResearchPanel from './SectorResearchPanel'
 import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { announceResearchPublication } from '../lib/researchUpdates'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request, API_BASE_URL: '' }))
+vi.mock('./ResearchThemesPanel', () => ({ default: () => null }))
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers() })
 const question = { key: 'cloud-cash', question: '云投入能否转化为现金回报？', assessment: '收入已有改善，现金回收仍待验证。', evidence_for: ['新增合同增长。'], evidence_against: ['折旧负担仍在增加。'], next_check: '对照下一期现金流及资本开支。', status: 'open' as const, source_ids: ['original-1'] }
 const notebook: SavedResearchNotebook = { run_id: 'completed-1', checked_at: '2026-09-06T08:00:00+08:00', fundamental_view: '底层需求仍在增长，需要核实回报质量。', key_drivers: ['客户现金回报'], valuation_view: '当前估值需要收入兑现。', questions: [question], important_changes: ['新合同提高了下一季收入可见度。'], next_research: ['核实新增合同转化情况。'], source_ids: ['original-1'], sources: [{ source_id: 'original-1', title: '公司原始报告', url: 'https://example.com/original', published_at: '2026-09-05', retrieved_at: '2026-09-06T07:00:00+08:00' }] }
@@ -23,6 +25,101 @@ async function expandArchive() {
   await act(async () => { fireEvent.click(screen.getByText('研究档案', { selector: 'summary' })) })
   await screen.findByRole('region', { name: '研究材料' })
 }
+
+it('presents independent investment dimensions and binds forecast follow-ups to the original version', async () => {
+  const oldDate = '2026-09-01T08:00:00+08:00'
+  const forecast = { key: 'reserve-demand', version_id: 'forecast-original', created_at: oldDate, updated_at: oldDate, claim: '储备需求可能在下一季度增强。', variable: '储备需求', horizon: '下一季度', observation_condition: '', assumptions: ['持续披露可比口径。'], invalidation: '披露显示持续净卖出。', status: 'active' as const, source_ids: ['original-1'] }
+  const investmentView = { version_id: 'view-1', updated_at: oldDate, direction: '中期偏多', horizon: '未来三个月', attractiveness: '上涨后吸引力减弱', risk: '短期波动风险上升', conviction: '', assumptions: [], source_ids: ['original-1'] }
+  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, version_id: 'notebook-2', investment_view: { ...investmentView, versions: [{ ...investmentView, version_id: 'view-old', direction: '此前偏多', attractiveness: '', risk: '', assumptions: ['此前假设融资约束维持。'] }] }, forecasts: [{ ...forecast, version_id: 'forecast-updated', claim: '储备需求可能更早增强。', updated_at: notebook.checked_at, versions: [forecast] }] } })
+  const ask = vi.fn()
+  render(<ResearchDossierPanel instrumentId="gold-etf" onAskAssistant={ask} />)
+  const view = await screen.findByRole('region', { name: '当前投资判断' })
+  expect(within(view).getByText('中期偏多')).toBeTruthy()
+  expect(within(view).getByText('上涨后吸引力减弱')).toBeTruthy()
+  expect(within(view).getByText('短期波动风险上升')).toBeTruthy()
+  expect(within(view).queryByText('判断把握程度')).toBeNull()
+  expect(view.querySelector('time')?.dateTime).toBe(oldDate)
+  fireEvent.click(within(view).getByText('观点修订历史 · 1 次'))
+  expect(within(view).getByText('此前假设融资约束维持。')).toBeTruthy()
+  fireEvent.click(within(view).getByRole('button', { name: '追问当前观点' }))
+  expect(ask.mock.calls[0][1]).toEqual({ instrument_id: 'gold-etf', notebook_version_id: 'notebook-2' })
+  const predictions = screen.getByRole('region', { name: '持续预测' })
+  fireEvent.click(within(predictions).getByText('预测修订历史 · 1 次'))
+  fireEvent.click(within(predictions).getByRole('button', { name: '追问当时的预测' }))
+  expect(ask.mock.calls[1][1]).toEqual({ instrument_id: 'gold-etf', notebook_version_id: 'notebook-2', forecast_key: forecast.key, forecast_version_id: 'forecast-original' })
+  expect(ask.mock.calls[1][0]).toContain(forecast.claim)
+  expect(within(predictions).getAllByText(forecast.invalidation)).toHaveLength(2)
+})
+
+it('refreshes the same instrument dossier after a shared research publication', async () => {
+  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  await screen.findByRole('region', { name: '正在研究的问题' })
+  await act(async () => announceResearchPublication(['other']))
+  expect(request).toHaveBeenCalledTimes(1)
+  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, questions: [{ ...question, assessment: '新证据已修订当前判断。' }] } })
+  await act(async () => announceResearchPublication(['fund-1']))
+  expect(await screen.findByText('新证据已修订当前判断。')).toBeTruthy()
+})
+
+it('reloads a completed notebook when the same research run finishes', async () => {
+  request.mockResolvedValue({ ...dossier(), notebook: null })
+  const { rerender } = render(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="run-1" reviewStatus="running" />)
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  request.mockResolvedValue(dossier())
+  rerender(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="run-1" reviewStatus="completed" />)
+  expect(await screen.findByRole('region', { name: '正在研究的问题' })).toBeTruthy()
+  expect(request).toHaveBeenCalledTimes(2)
+})
+
+it('opens the retained source version on demand instead of treating the public URL as an immutable original', async () => {
+  const source = { ...notebook.sources![0], document_id: 'document-1', version_id: 'original-version-1' }
+  request.mockImplementation(async (path: string) => path.includes('?source_id=') ? { text: '这是该次研究保存的原文版本。' } : { ...dossier(), prior_sources: [source] })
+  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  await screen.findByRole('region', { name: '正在研究的问题' })
+  await expandArchive()
+  fireEvent.click(screen.getByText('已取得的公开原文 · 1'))
+  expect(request.mock.calls.some(([path]) => path.includes('?source_id='))).toBe(false)
+  await act(async () => { fireEvent.click(screen.getByText('查看已保存的原文')) })
+  expect(await screen.findByText('这是该次研究保存的原文版本。')).toBeTruthy()
+  expect(request).toHaveBeenCalledWith('/api/research/instruments/fund-1/dossier?source_id=original-1', expect.anything())
+})
+
+it('shows saved numeric evidence under an investment view without inventing publication dates', async () => {
+  const source = { source_id: 'computed:vol', source_type: 'computed_metric', title: '价格波动研究', as_of: '2026-09-06T08:00:00+08:00' }
+  const saved = { ...source, data: { current: { date: '2026-09-04', volatility_pct: 24.5 }, previous: { date: '2026-09-03', volatility_pct: 22 }, change_pp: 2.5, limitations: ['波动变化不等同于未来下跌。'] }, methodology: { half_life_sessions: 21, annualization: 252 } }
+  request.mockImplementation(async (path: string) => path.includes('?source_id=') ? saved : { ...dossier(), notebook: { ...notebook, sources: [source, { source_id: 'instrument-snapshot', source_type: 'instrument_snapshot', title: '已披露资料与指标', run_cutoff: source.as_of }], investment_view: { direction: '中期偏多', horizon: '三个月', attractiveness: '', risk: '短期波动上升', conviction: '', assumptions: [], source_ids: [source.source_id, 'instrument-snapshot'], updated_at: source.as_of } } })
+  render(<ResearchDossierPanel instrumentId="gold-etf" />)
+  const view = await screen.findByRole('region', { name: '当前投资判断' })
+  fireEvent.click(within(view).getByText('关键假设与依据'))
+  const record = within(view).getByText('价格波动研究').closest('li')!
+  expect(within(record).getByText(/计算截至/)).toBeTruthy()
+  expect(within(record).queryByText(/发布/)).toBeNull()
+  const snapshot = within(view).getByText('已披露资料与指标').closest('li')!
+  expect(within(snapshot).getByText(/研究快照截至/)).toBeTruthy()
+  expect(within(snapshot).queryByText(/发布/)).toBeNull()
+  await act(async () => { fireEvent.click(within(record).getByText('查看已保存的计算依据')) })
+  expect(await within(record).findByText(/当前波动率 24.5%/)).toBeTruthy()
+  expect(within(record).getByText('较前次 +2.5 个百分点')).toBeTruthy()
+  expect(within(record).getByText('波动变化不等同于未来下跌。')).toBeTruthy()
+  expect(request).toHaveBeenCalledWith('/api/research/instruments/gold-etf/dossier?source_id=computed%3Avol', expect.anything())
+})
+
+it('labels archived investment views as historical and carries their notebook version into a follow-up', async () => {
+  const past = { ...notebook, run_id: 'past-run', version_id: 'past-notebook', investment_view: { direction: '当时偏多', horizon: '未来一季', attractiveness: '', risk: '', conviction: '', assumptions: ['当时需求改善'], source_ids: [], updated_at: '2026-09-01T08:00:00+08:00' } }
+  request.mockResolvedValue({ ...dossier(), notebook_history: [{ run_id: past.run_id, checked_at: past.checked_at, important_changes: [], notebook: past }] })
+  const ask = vi.fn()
+  render(<ResearchDossierPanel instrumentId="fund-1" onAskAssistant={ask} />)
+  await screen.findByRole('region', { name: '正在研究的问题' })
+  await expandArchive()
+  fireEvent.click(screen.getByText('以往底稿变化 · 1 次'))
+  const historical = screen.getByRole('region', { name: '当时投资判断' })
+  expect(within(historical).getByText('当时偏多')).toBeTruthy()
+  expect(within(historical).queryByText('当前投资判断')).toBeNull()
+  fireEvent.click(within(historical).getByText('关键假设与依据'))
+  expect(within(historical).getByText('当时需求改善')).toBeTruthy()
+  fireEvent.click(within(historical).getByRole('button', { name: '追问当时的观点' }))
+  expect(ask.mock.calls[0][1]).toEqual({ instrument_id: 'fund-1', notebook_version_id: 'past-notebook' })
+})
 
 it('shows saved research questions and important changes while leaving long materials and history folded away', async () => {
   const ask = vi.fn()
@@ -110,6 +207,29 @@ it('edits the instrument research mandate through its own API while preserving r
   expect(within(screen.getByRole('region', { name: '正在研究的问题' })).getByText(question.assessment)).toBeTruthy()
   fireEvent.click(screen.getByText(material.title, { selector: 'summary' }))
   expect(within(screen.getByRole('region', { name: '研究材料' })).getByText(material.body)).toBeTruthy()
+})
+
+it('keeps user instructions distinct from the analyst focus when editing another mandate field', async () => {
+  const mandate: ResearchMandate = {
+    instrument_id: 'fund-1', entry_id: 'mandate-1', role: 'research_method', updated_at: notebook.checked_at,
+    title: '持续研究', background: '原背景', mechanisms: [], research_approach: [],
+    focus: ['研究员新增的盈利问题'], user_focus: ['用户指定的现金回报问题'], author: { origin: 'research' }, source_plan: [], gaps: [],
+  }
+  request.mockImplementation(async (_path: string, init?: RequestInit) => init?.method === 'PUT' ? { ...mandate, background: '修订背景' } : { ...dossier(), mandate })
+  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  await screen.findByRole('region', { name: '正在研究的问题' })
+  await expandArchive()
+  const task = screen.getByRole('region', { name: '标的研究任务' })
+  expect(within(task).getByRole('heading', { name: '用户指定重点' })).toBeTruthy()
+  expect(within(task).getByText('研究员新增的盈利问题')).toBeTruthy()
+  expect(within(task).getByText('更新来源：研究员')).toBeTruthy()
+  fireEvent.click(within(task).getByRole('button', { name: '编辑研究任务' }))
+  expect((within(task).getByLabelText('重点关注（每行一项）') as HTMLTextAreaElement).value).toBe('用户指定的现金回报问题')
+  fireEvent.change(within(task).getByLabelText('背景与研究边界'), { target: { value: '修订背景' } })
+  fireEvent.click(within(task).getByRole('button', { name: '保存研究任务' }))
+  await within(task).findByText('修订背景')
+  const [, options] = request.mock.calls.find(([, init]) => init?.method === 'PUT')!
+  expect(JSON.parse(options.body).focus).toEqual(['用户指定的现金回报问题'])
 })
 
 it('uploads the actual file and retains an explicit unread-body state and original link', async () => {

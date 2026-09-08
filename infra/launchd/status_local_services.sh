@@ -9,7 +9,7 @@ LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/investment-studio}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 domain="gui/$UID"
 
-for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web; do
+for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web; do
   label="$LABEL_PREFIX.$service"
   if details="$(launchctl print "$domain/$label" 2>/dev/null)"; then
     state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
@@ -21,7 +21,7 @@ for service in home-api watchlist-api portfolio-api home-web watchlist-web portf
 done
 
 for refresh_service in market-data-refresh cn-market-data-refresh hk-market-data-refresh \
-  us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+  us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
 refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
 refresh_schedule=unavailable
@@ -34,7 +34,9 @@ with open(sys.argv[1], "rb") as source:
     plist = plistlib.load(source)
 environment = plist.get("EnvironmentVariables", {})
 timezone = environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE", "Asia/Shanghai system time")
-if environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL") == "market" and environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE") in {"hk", "us"}:
+if "StartInterval" in plist:
+    print(f"every {plist['StartInterval']} seconds, including login")
+elif environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL") == "market" and environment.get("INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE") in {"hk", "us"}:
     print(f"session close + 30 minutes {timezone} (hourly calendar checks)")
 elif "INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE" in environment:
     hour = int(environment["INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR"])
@@ -60,6 +62,19 @@ if details="$(launchctl print "$domain/$refresh_label" 2>/dev/null)"; then
     "$refresh_service" "${state:-idle}" "${pid:--}" "${runs:-0}" "${last_exit:--}" "$refresh_schedule"
 else
   printf '%-20s not installed (schedule=%s)\n' "$refresh_service" "$refresh_schedule"
+fi
+
+if [[ "$refresh_service" == market-sync ]]; then
+  if [[ -f "$refresh_plist" && -x "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" - "$refresh_plist" <<'PY_SYNC_LOGS'
+import plistlib
+import sys
+with open(sys.argv[1], "rb") as source:
+    definition = plistlib.load(source)
+print(f"  log: {definition['StandardOutPath']} (errors: {definition['StandardErrorPath']})")
+PY_SYNC_LOGS
+  fi
+  continue
 fi
 
 refresh_summary="${INVESTMENT_STUDIO_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/investment-studio}/$refresh_service-summary.json"
@@ -101,9 +116,11 @@ for url in \
   http://127.0.0.1:8002/api/health \
   http://127.0.0.1:8000/api/health \
   http://127.0.0.1:8001/api/health \
+  http://127.0.0.1:8010/health \
   http://127.0.0.1:5172/ \
   http://127.0.0.1:5173/ \
-  http://127.0.0.1:5174/; do
+  http://127.0.0.1:5174/ \
+  http://127.0.0.1:5175/; do
   if curl --noproxy '*' --max-time 2 --fail --silent --output /dev/null "$url"; then
     printf 'ok      %s\n' "$url"
   else

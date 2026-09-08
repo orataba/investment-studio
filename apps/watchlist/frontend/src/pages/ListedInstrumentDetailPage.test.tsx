@@ -207,6 +207,11 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect(screen.queryAllByText('Total Return Index').length).toBeGreaterThan(0)
     expect(screen.queryAllByText('108.00').length).toBeGreaterThan(0)
     expect(screen.queryByText('999.00')).toBeNull()
+    const basisHint = screen.getByRole('button', { name: /Index chart basis|指数图表口径/ })
+    expect(basisHint.closest('.listed-chart-toolbar')).not.toBeNull()
+    fireEvent.click(basisHint)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape' })
 
     expect(screen.queryByRole('button', { name: /Details|资料与明细/ })).toBeNull()
     expect(apiMocks.getInstrumentReferenceData).not.toHaveBeenCalled()

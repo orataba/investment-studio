@@ -10,11 +10,12 @@ SERVICE="$1"
 PROJECT_ROOT="$(cd "$2" && pwd)"
 PYTHON_BIN="$3"
 NODE_BIN="$4"
+export PATH="$(dirname "$NODE_BIN"):$PATH"
 EXTERNAL_ENV_ROOT="$5"
 DATABASE_URL=""
 
 case "$SERVICE" in
-  watchlist-api|portfolio-api)
+  home-api|watchlist-api|portfolio-api|briefing-api)
     DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"
     if [[ -z "$DATABASE_URL" ]]; then
       echo "INVESTMENT_STUDIO_LOCAL_DATABASE_URL is required for API services." >&2
@@ -35,7 +36,7 @@ esac
 # syntax contained in a value.
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 case "$SERVICE" in
-  watchlist-api|portfolio-api)
+  home-api|watchlist-api|portfolio-api|briefing-api)
     investment_studio_require_password_free_database_url "$DATABASE_URL"
     DATABASE_URL="$(investment_studio_sqlalchemy_database_url "$DATABASE_URL")"
     investment_studio_reject_repository_env_files "$PROJECT_ROOT"
@@ -45,29 +46,38 @@ case "$SERVICE" in
   home-api)
     investment_studio_reject_repository_env_files "$PROJECT_ROOT"
     ENV_FILE="$(investment_studio_runtime_env_file home "$EXTERNAL_ENV_ROOT")"
-    investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_HOME_
+    investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_HOME_
     ;;
   watchlist-api)
+    investment_studio_load_env_file "$EXTERNAL_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
     ENV_FILE="$(investment_studio_runtime_env_file watchlist "$EXTERNAL_ENV_ROOT")"
     if [[ -f "$ENV_FILE" ]]; then
-      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
+      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_WATCHLIST_
     fi
     ;;
   portfolio-api)
+    investment_studio_load_env_file "$EXTERNAL_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
     ENV_FILE="$(investment_studio_runtime_env_file portfolio "$EXTERNAL_ENV_ROOT")"
     if [[ -f "$ENV_FILE" ]]; then
-      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
+      investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_PORTFOLIO_
     fi
+    ;;
+  briefing-api)
+    ENV_FILE="$(investment_studio_runtime_env_file briefing "$EXTERNAL_ENV_ROOT")"
+    investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_AUTH_ INVESTMENT_STUDIO_BRIEFING_
+    MARKET_ENV_FILE="$(investment_studio_runtime_env_file market "$EXTERNAL_ENV_ROOT")"
+    investment_studio_load_env_file "$MARKET_ENV_FILE" INVESTMENT_STUDIO_MARKET_
     ;;
 esac
 
 export PYTHONUNBUFFERED=1
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="$PROJECT_ROOT/shared-data/instruments/python"
+export PYTHONPATH="$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/market:$PROJECT_ROOT/shared-data/instruments/python"
 
 case "$SERVICE" in
   home-api)
     export PYTHONPATH="$PROJECT_ROOT/home/backend"
+    export INVESTMENT_STUDIO_HOME_DATABASE_URL="$DATABASE_URL"
     export INVESTMENT_STUDIO_HOME_ENVIRONMENT=local
     export INVESTMENT_STUDIO_HOME_FRONTEND_URL=http://127.0.0.1:5172
     cd "$PROJECT_ROOT/home/backend"
@@ -100,6 +110,23 @@ case "$SERVICE" in
       --host 127.0.0.1 --port 5172 \
       --dist "$PROJECT_ROOT/home/frontend/dist" \
       --api-target http://127.0.0.1:8002
+    ;;
+  briefing-api)
+    export PYTHONPATH="$PROJECT_ROOT/apps/briefing/backend:$PROJECT_ROOT/shared-data/market:$PYTHONPATH"
+    export INVESTMENT_STUDIO_BRIEFING_DATABASE_URL="$DATABASE_URL"
+    export INVESTMENT_STUDIO_BRIEFING_API_BASE_URL=http://127.0.0.1:8010/api/briefing
+    export INVESTMENT_STUDIO_BRIEFING_FRONTEND_URL=http://127.0.0.1:5175
+    export INVESTMENT_STUDIO_BRIEFING_EDITION_ROLE=preview
+    export INVESTMENT_STUDIO_BRIEFING_CORS_ORIGINS='["http://127.0.0.1:5175","http://localhost:5175"]'
+    export INVESTMENT_STUDIO_SECRET_ROOT="$EXTERNAL_ENV_ROOT"
+    cd "$PROJECT_ROOT/apps/briefing/backend"
+    exec "$PYTHON_BIN" -m uvicorn briefing_app.main:app --host 127.0.0.1 --port 8010
+    ;;
+  briefing-web)
+    exec "$NODE_BIN" "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs" \
+      --host 127.0.0.1 --port 5175 \
+      --dist "$PROJECT_ROOT/apps/briefing/frontend/dist" \
+      --api-target http://127.0.0.1:8010
     ;;
   watchlist-web)
     exec "$NODE_BIN" "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs" \

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LOADER = Path('infra/launchd/load_runtime_env.sh')
 
 
-@pytest.mark.parametrize('app', ['portfolio', 'watchlist'])
+@pytest.mark.parametrize('app', ['portfolio', 'watchlist', 'briefing'])
 def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app):
     if app == 'portfolio':
         runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
@@ -20,19 +20,35 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         prefix = 'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_'
         api_key = prefix + 'API_BASE_URL'
         api_url = 'http://127.0.0.1:8101/api'
-    else:
+    elif app == 'watchlist':
         runner = Path('apps/watchlist/backend/scripts/run_research_harness.sh')
         patch_path = Path('apps/watchlist/backend/config/research_harness.patch.yml')
         args = ['run-test']
         prefix = 'INVESTMENT_STUDIO_RESEARCH_'
         api_key = 'INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL'
         api_url = 'http://127.0.0.1:8100/api'
+    else:
+        runner = Path('apps/briefing/backend/scripts/run_briefing_harness.sh')
+        patch_path = Path('apps/briefing/backend/config/briefing_harness.patch.yml')
+        args = ['report-test', 'write']
+        prefix = 'INVESTMENT_STUDIO_BRIEFING_'
+        api_key = prefix + 'API_BASE_URL'
+        api_url = 'http://127.0.0.1:8110/api/briefing'
     project = tmp_path / 'relocated studio'
     for relative in (runner, patch_path, LOADER):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)
 
+    if app == 'watchlist':
+        core = Path('apps/watchlist/backend/config/research_core.md')
+        shutil.copy2(ROOT / core, project / core)
+        # The review process consumes the harness reply. This relocation test inspects
+        # the launch environment only; publication is covered by Watchlist API tests.
+        python = project / '.venv/bin/python'
+        python.parent.mkdir(parents=True)
+        python.write_text('#!/bin/sh\ncat\n')
+        python.chmod(0o700)
     secret = tmp_path / 'portfolio-copilot.env'
     secret.write_text('DEEPSEEK_API_KEY=test-key\n', encoding='utf-8')
     secret.chmod(0o600)
@@ -51,6 +67,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME': str(tmp_path / 'harness'),
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PROJECT_ROOT': '/obsolete/project',
         api_key: api_url,
+        prefix + 'RUN_TOKEN': 'scoped-task-token',
+        'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN': 'private-backend-token',
+        'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE': '/private/backend-token-file',
         'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL': 'private-database',
         'FMP_API_KEY': 'private-market-key',
     }
@@ -65,8 +84,14 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     if app == 'portfolio':
         assert runtime_env[prefix + 'PORTFOLIO_ID'] == 'portfolio-test'
         assert runtime_env[prefix + 'BATCH_ID'] == 'batch-test'
-    else:
+    elif app == 'watchlist':
         assert runtime_env[prefix + 'RUN_ID'] == 'run-test'
+        assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
+    else:
+        assert runtime_env[prefix + 'REPORT_ID'] == 'report-test'
+    assert runtime_env[prefix + 'RUN_TOKEN'] == 'scoped-task-token'
+    assert 'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN' not in runtime_env
+    assert 'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE' not in runtime_env
     assert runtime_env['DEEPSEEK_API_KEY'] == 'test-key'
     assert 'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL' not in runtime_env
     assert 'FMP_API_KEY' not in runtime_env

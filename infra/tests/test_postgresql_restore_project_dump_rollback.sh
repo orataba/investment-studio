@@ -10,6 +10,8 @@ DATABASE_USER="${INVESTMENT_STUDIO_TEST_DB_USER:-$(id -un)}"
 DATABASE_PASSWORD="${INVESTMENT_STUDIO_TEST_DB_PASSWORD:-}"
 TARGET_DATABASE="investment_studio_restore_target_$$"
 SOURCE_DATABASE="investment_studio_restore_source_$$"
+READER_ROLE="studio_restore_reader_$$"
+WRITER_ROLE="studio_restore_writer_$$"
 TARGET_DATABASE_URL="postgresql+psycopg://$DATABASE_USER@$DATABASE_HOST:$DATABASE_PORT/$TARGET_DATABASE"
 escaped_database_password="${DATABASE_PASSWORD//\\/\\\\}"
 escaped_database_password="${escaped_database_password//:/\\:}"
@@ -23,12 +25,18 @@ unset PGPASSWORD
 cleanup() {
   dropdb --if-exists --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$TARGET_DATABASE" >/dev/null 2>&1 || true
   dropdb --if-exists --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$SOURCE_DATABASE" >/dev/null 2>&1 || true
+  dropuser --if-exists --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$READER_ROLE" >/dev/null 2>&1 || true
+  dropuser --if-exists --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$WRITER_ROLE" >/dev/null 2>&1 || true
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
 
 createdb --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$TARGET_DATABASE"
 createdb --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" "$SOURCE_DATABASE"
+createuser --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+  --no-login --no-superuser --no-createdb --no-createrole "$READER_ROLE"
+createuser --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+  --no-login --no-superuser --no-createdb --no-createrole "$WRITER_ROLE"
 
 psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" --set ON_ERROR_STOP=1 <<'SQL'
 CREATE SCHEMA instrument_registry;
@@ -38,6 +46,40 @@ CREATE SCHEMA watchlist;
 CREATE TABLE portfolio.restore_sentinel (value text PRIMARY KEY);
 INSERT INTO portfolio.restore_sentinel VALUES ('original-data');
 SQL
+
+psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
+  --set ON_ERROR_STOP=1 --set reader="$READER_ROLE" --set writer="$WRITER_ROLE" --set operator="$DATABASE_USER" <<'SQL'
+GRANT :"reader", :"writer" TO :"operator" WITH INHERIT FALSE, SET TRUE;
+CREATE SCHEMA market_data;
+GRANT USAGE ON SCHEMA market_data TO :"reader", :"writer";
+ALTER DEFAULT PRIVILEGES IN SCHEMA market_data GRANT SELECT ON TABLES TO :"reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA market_data GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"writer";
+ALTER DEFAULT PRIVILEGES IN SCHEMA market_data GRANT USAGE, SELECT ON SEQUENCES TO :"writer";
+CREATE TABLE market_data.permission_sentinel (id bigserial PRIMARY KEY, value text NOT NULL);
+INSERT INTO market_data.permission_sentinel (value) VALUES ('original-public-data');
+SQL
+
+# Compare ownership and sorted ACL entries, not just data or effective access
+# through the administrator used to operate this disposable database.
+cat > "$TEST_ROOT/permission-catalog.sql" <<'SQL'
+SELECT permission::text FROM (
+  SELECT jsonb_build_array('schema', nspname, pg_get_userbyid(nspowner),
+    ARRAY(SELECT a::text FROM unnest(nspacl) a ORDER BY a::text)) AS permission
+  FROM pg_namespace WHERE nspname IN ('market_data', 'portfolio')
+  UNION ALL
+  SELECT jsonb_build_array('relation', n.nspname, c.relname, c.relkind, pg_get_userbyid(c.relowner),
+    ARRAY(SELECT a::text FROM unnest(c.relacl) a ORDER BY a::text))
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname IN ('market_data', 'portfolio') AND c.relkind IN ('r', 'S')
+  UNION ALL
+  SELECT jsonb_build_array('default', n.nspname, pg_get_userbyid(d.defaclrole), d.defaclobjtype,
+    ARRAY(SELECT a::text FROM unnest(d.defaclacl) a ORDER BY a::text))
+  FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+  WHERE n.nspname IN ('market_data', 'portfolio')
+) permissions ORDER BY permission::text;
+SQL
+psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
+  --set ON_ERROR_STOP=1 --tuples-only --no-align --file "$TEST_ROOT/permission-catalog.sql" > "$TEST_ROOT/permissions-before"
 
 psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$SOURCE_DATABASE" --set ON_ERROR_STOP=1 <<'SQL'
 CREATE SCHEMA instrument_registry;
@@ -139,6 +181,37 @@ replacement="$(
 
 test "$sentinel" = "original-data"
 test "$replacement" = "t"
+psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
+  --set ON_ERROR_STOP=1 --tuples-only --no-align --file "$TEST_ROOT/permission-catalog.sql" > "$TEST_ROOT/permissions-after"
+cmp "$TEST_ROOT/permissions-before" "$TEST_ROOT/permissions-after"
+
+as_actor() {
+  local actor="$1" statement="$2"
+  printf 'SET ROLE :"actor";\n%s\n' "$statement" | \
+    psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
+      --set ON_ERROR_STOP=1 --set actor="$actor" --tuples-only --no-align
+}
+assert_actor_denied() {
+  if as_actor "$1" "$2" > "$TEST_ROOT/actor-denied.out" 2>&1; then
+    echo "Rollback incorrectly granted access outside the actor's original scope." >&2
+    return 1
+  fi
+  grep -q 'permission denied' "$TEST_ROOT/actor-denied.out"
+}
+as_actor "$READER_ROLE" 'SELECT value FROM market_data.permission_sentinel;' | grep -qx 'original-public-data'
+as_actor "$WRITER_ROLE" "INSERT INTO market_data.permission_sentinel (value) VALUES ('writer-access');"
+assert_actor_denied "$READER_ROLE" "INSERT INTO market_data.permission_sentinel (value) VALUES ('forbidden');"
+assert_actor_denied "$WRITER_ROLE" 'CREATE TABLE market_data.forbidden_ddl (id integer);'
+assert_actor_denied "$READER_ROLE" 'SELECT * FROM portfolio.restore_sentinel;'
+assert_actor_denied "$WRITER_ROLE" "INSERT INTO portfolio.restore_sentinel VALUES ('forbidden');"
+
+# Schema-scoped default grants must also survive for tables and sequences that
+# the normal migration owner creates after rollback.
+psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
+  --set ON_ERROR_STOP=1 --command 'CREATE TABLE market_data.after_rollback (id bigserial PRIMARY KEY, value text);'
+as_actor "$WRITER_ROLE" "INSERT INTO market_data.after_rollback (value) VALUES ('default-grants');"
+as_actor "$READER_ROLE" 'SELECT value FROM market_data.after_rollback;' | grep -qx 'default-grants'
+assert_actor_denied "$READER_ROLE" "INSERT INTO market_data.after_rollback (value) VALUES ('forbidden');"
 test -n "$(find "$TEST_ROOT/backups" -name '*.pgdump' -type f -print -quit)"
 test -n "$(find "$TEST_ROOT/backups" -name '*.pgdump.sha256' -type f -print -quit)"
 test -n "$(find "$TEST_ROOT/backups" -name '*.schemas.sha256' -type f -print -quit)"
@@ -158,7 +231,7 @@ printf '%s\n' \
   'platform_alembic_status=missing' \
   'if [[ -n "${INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL:-}" && "$INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL" == "${INVESTMENT_STUDIO_DATA_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
   'printf "%s|%s\n" "$platform_alembic_status" "${INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA:-}" > "$MIGRATION_ENV"' \
-  'psql "${INVESTMENT_STUDIO_DATA_DATABASE_URL/+psycopg/}" --no-password --set ON_ERROR_STOP=1 --command "ALTER SCHEMA platform RENAME TO data_ingestion; ALTER SCHEMA instrument_registry RENAME TO instrument_data"' \
+  'psql "${INVESTMENT_STUDIO_DATA_DATABASE_URL/+psycopg/}" --no-password --set ON_ERROR_STOP=1 --command "ALTER SCHEMA platform RENAME TO data_ingestion; ALTER SCHEMA instrument_registry RENAME TO instrument_data; CREATE SCHEMA IF NOT EXISTS market_data; CREATE SCHEMA IF NOT EXISTS market_text; CREATE SCHEMA IF NOT EXISTS briefing; CREATE SCHEMA IF NOT EXISTS identity"' \
   > "$SUCCESSFUL_MIGRATION_RUNNER"
 chmod +x "$SUCCESSFUL_MIGRATION_RUNNER"
 export MIGRATION_ENV

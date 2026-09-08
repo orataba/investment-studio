@@ -23,6 +23,8 @@
   跨 app 的确认弹窗、焦点管理和嵌套弹窗栈。
 - `NoticeToast`
   统一的非阻塞操作结果通知。
+- `InfoHint` / `info-hint.css`
+  标题或指标旁的说明图标：悬浮摘要、点击浮层、Escape / 外点关闭，不改变页面布局。Portfolio、Watchlist、Briefing 共用；Regime 以原生页面实现相同交互。
 - `DownloadFormatMenu` / `tableExport`
   下载格式选择与表格导出基础能力。
 - `requestIdentity` / `serialTaskQueue`

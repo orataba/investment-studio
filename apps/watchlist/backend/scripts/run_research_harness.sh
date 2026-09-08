@@ -49,9 +49,10 @@ export DSH_TELEMETRY_DISABLED=1
 export INVESTMENT_STUDIO_RESEARCH_RUN_ID="$research_run_id"
 export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="deepseek-v4-flash-vision-exp"
 
-copilot_task="Read the current Watchlist conversation. Choose research tools as needed to answer the latest user question in context, then reply in Chinese with evidence citations. The application saves your final response automatically."
+copilot_research_persona="$(< "$copilot_project_root/apps/watchlist/backend/config/research_core.md")"
+copilot_task="Read the shared research context and answer the current question in Chinese with evidence. Use the same instrument dossier and tools as research tracking. This conversation is private. Publish a durable research increment only when this user explicitly asks to save it to team research: record that instruction with authorize_team_research before submit_research_review. Never publish portfolio-derived discussion to team research. The application saves your answer and separately reports the common factual review/publication result."
 if [[ "${2:-}" == "sector" ]]; then
-  copilot_task="Read the research context, maintained dossiers and each instrument's actual asset type. Continue the prior research questions, use supplied methods, and read relevant original materials or historical cases with read_research_dossier. Use search_sector_information and read_sector_source to check material developments and opposing evidence. Prepare a supported working paper even with no new events; preserve stable question keys and track material scheduled catalysts before and after release. Present a concise PM summary with separate coverage gaps. Compare prior events and retain publication/occurrence timing. Call submit_research_review with one complete result for every selected instrument, correct any tool validation error, then acknowledge acceptance without repeating JSON."
+  copilot_task="Read the shared context and bound dossiers for every requested instrument. Investigate meaningful new information and follow the instrument's current research agenda with suitable tools. Form or revise forward judgments only when warranted. Submit one review per requested instrument through submit_research_review, using change_kind none, knowledge or investment. A quiet check may have empty summary/events and research=null. Research fields are sparse deltas, not mandatory chapters. Correct real validation errors and briefly acknowledge draft acceptance."
 elif [[ "${2:-}" == "risk" ]]; then
   copilot_task="Read read_research_context for the scope index, then read_risk_instrument for every instrument in that index. Analyze only these bound retained snapshots. For portfolio scope, also read every portfolio risk module and each derivative holding with read_portfolio_risk. Aggregate researcher risk reports, actual performance and comparisons, quantitative triggers, portfolio allocation/risk/correlation changes and FCN/Option settlement obligations; distinguish unavailable monitoring from safety. Submit the complete concise Chinese risk assessment with submit_risk_review, using shared case IDs and evidence references. Correct tool validation errors, then acknowledge acceptance without reprinting JSON. Do not search or trade."
 fi
@@ -71,6 +72,8 @@ copilot_exec_env=(
   "INVESTMENT_STUDIO_RESEARCH_PROJECT_ROOT=$copilot_project_root"
   "INVESTMENT_STUDIO_RESEARCH_API_BASE_URL=${INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL:-http://127.0.0.1:8000/api}"
   "INVESTMENT_STUDIO_RESEARCH_RUN_ID=$research_run_id"
+  "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN=${INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN:?research run credential is required}"
+  "INVESTMENT_STUDIO_RESEARCH_PERSONA=$copilot_research_persona"
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME=$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME"
 )
 for copilot_optional_env in \
@@ -87,13 +90,17 @@ do
 done
 
 copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
-  "$copilot_pnpm" dlx @deepseek-ai/dsh@0.1.1-rc.2 \
+  "$copilot_pnpm" dlx --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs @deepseek-ai/dsh@0.1.1-rc.2 \
   --profile headless \
   --patch "$copilot_patch" \
   "$copilot_task")
-if [[ "${2:-}" == "sector" ]]; then
+if [[ "${2:-}" != "risk" ]]; then
+  copilot_review_args=()
+  if [[ "${2:-}" != "sector" ]]; then
+    copilot_review_args+=(--conversation)
+  fi
   "${copilot_command[@]}" | /usr/bin/env -i "${copilot_exec_env[@]}" \
-    "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review
+    "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review "${copilot_review_args[@]}"
 else
   exec "${copilot_command[@]}"
 fi

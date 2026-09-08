@@ -13,9 +13,11 @@ mkdir -p \
   "$PROJECT_ROOT/shared-data" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
+  "$PROJECT_ROOT/apps/briefing/backend" \
   "$PROJECT_ROOT/home/frontend/dist" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist" \
   "$PROJECT_ROOT/deploy" \
   "$PROJECT_ROOT/infra/launchd" \
   "$PROJECT_ROOT/infra/scripts" \
@@ -26,6 +28,7 @@ touch \
   "$PROJECT_ROOT/home/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist/index.html" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist/index.html" \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
@@ -58,8 +61,10 @@ write_env_files() {
     > "$ENV_ROOT/watchlist.env"
   printf '%s\n' "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL=$portfolio_url" \
     > "$ENV_ROOT/portfolio.env"
-  chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env"
-  : > "$ENV_ROOT/home.env"
+  printf '%s\n' "INVESTMENT_STUDIO_BRIEFING_DATABASE_URL=$platform_url" > "$ENV_ROOT/briefing.env"
+  printf '%s\n' "INVESTMENT_STUDIO_MARKET_DATABASE_URL=$platform_url" > "$ENV_ROOT/market.env"
+  chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env" "$ENV_ROOT/briefing.env" "$ENV_ROOT/market.env"
+  printf '%s\n' "INVESTMENT_STUDIO_HOME_DATABASE_URL=$platform_url" > "$ENV_ROOT/home.env"
   chmod 600 "$ENV_ROOT/home.env"
 }
 
@@ -161,7 +166,7 @@ SUCCESS_CONFIG_ROOT="$TEST_ROOT/config-success"
 run_installer "$SUCCESS_CONFIG_ROOT" "$ENV_ROOT"
 
 UNIT_ROOT="$SUCCESS_CONFIG_ROOT/systemd/user"
-for app in home watchlist portfolio; do
+for app in home watchlist portfolio briefing; do
   api_unit="$UNIT_ROOT/investment-studio-$app-api.service"
   web_unit="$UNIT_ROOT/investment-studio-$app-web.service"
   test -f "$api_unit"
@@ -173,6 +178,9 @@ for app in home watchlist portfolio; do
     exit 1
   fi
 done
+grep -Fq 'market.env' "$UNIT_ROOT/investment-studio-briefing-api.service"
+grep -Fq -- '--port 8110' "$UNIT_ROOT/investment-studio-briefing-api.service"
+grep -Fq -- '--port 3103' "$UNIT_ROOT/investment-studio-briefing-web.service"
 if grep -Eq 'INVESTMENT_STUDIO_DATA_|DATABASE|/data([/:]|$)' \
   "$UNIT_ROOT/investment-studio-home-api.service"; then
   echo "Home API must not carry database or data-maintenance configuration." >&2

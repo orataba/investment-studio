@@ -37,15 +37,18 @@ services=(
   home-api
   watchlist-api
   portfolio-api
+  briefing-api
   home-web
   watchlist-web
   portfolio-web
+  briefing-web
   market-data-refresh
   cn-market-data-refresh
   hk-market-data-refresh
   us-market-data-refresh
   cn-hk-reference-data-refresh
   us-reference-data-refresh
+  market-sync
 )
 
 for executable in "$PYTHON_BIN" "$NODE_BIN"; do
@@ -70,6 +73,7 @@ for required_file in \
   "$MARKET_DATA_REFRESH_RUNNER" \
   "$SNAPSHOT_REFRESH_RUNNER" \
   "$SCRIPT_DIR/generate_local_service_plists.py" \
+  "$PROJECT_ROOT/infra/scripts/install_market_pipeline.py" \
   "$SCRIPT_DIR/load_runtime_env.sh" \
   "$BACKUP_HELPER"; do
   if [[ ! -f "$required_file" ]]; then
@@ -131,12 +135,18 @@ for env_spec in \
   home:INVESTMENT_STUDIO_HOME_ \
   data:INVESTMENT_STUDIO_DATA_ \
   watchlist:INVESTMENT_STUDIO_WATCHLIST_ \
-  portfolio:INVESTMENT_STUDIO_PORTFOLIO_; do
+  portfolio:INVESTMENT_STUDIO_PORTFOLIO_ \
+  briefing:INVESTMENT_STUDIO_BRIEFING_ \
+  market:INVESTMENT_STUDIO_MARKET_; do
   app="${env_spec%%:*}"
   prefix="${env_spec#*:}"
   runtime_env_file="$(investment_studio_runtime_env_file "$app" "$ENV_ROOT")"
-  if [[ "$app" == "home" || "$app" == "data" || -f "$runtime_env_file" ]]; then
-    investment_studio_validate_env_file "$runtime_env_file" "$prefix"
+  if [[ "$app" == "home" || "$app" == "data" || "$app" == "briefing" || "$app" == "market" || -f "$runtime_env_file" ]]; then
+    if [[ "$app" == "data" ]]; then
+      investment_studio_validate_env_file "$runtime_env_file" "$prefix" INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
+    else
+      investment_studio_validate_env_file "$runtime_env_file" "$prefix" INVESTMENT_STUDIO_AUTH_
+    fi
   fi
 done
 
@@ -269,6 +279,7 @@ investment_studio_create_project_schema_backup \
   "investment-studio-pre-launchd-install"
 backup_ready="true"
 
+export INVESTMENT_STUDIO_HOME_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
@@ -282,13 +293,17 @@ export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
 export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export INVESTMENT_STUDIO_BRIEFING_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_MARKET_DATABASE_URL="$DATABASE_URL"
 
 database_mutated="true"
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
 data_env_file="$(investment_studio_runtime_env_file data "$ENV_ROOT")"
-investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_
-PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
+investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
+investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
+PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$MARKET_DATA_REFRESH_RUNNER" \
     --channel fmp \
     --updated-by launchd-install \
@@ -300,13 +315,13 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$PYTHON_BIN" "$AUDIT_RUNNER" --fail-on-warning
 
 if [[ "$BUILD_FRONTENDS" == "true" ]]; then
-  for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend"; do
+  for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend" "$PROJECT_ROOT/apps/briefing/frontend"; do
     "$NPM_BIN" --prefix "$frontend_root" ci
     "$NPM_BIN" --prefix "$frontend_root" run build
   done
 fi
 
-for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend"; do
+for frontend_root in "$PROJECT_ROOT/home/frontend" "$PROJECT_ROOT/apps/watchlist/frontend" "$PROJECT_ROOT/apps/portfolio/frontend" "$PROJECT_ROOT/apps/briefing/frontend"; do
   if [[ ! -f "$frontend_root/dist/index.html" ]]; then
     echo "Missing frontend build: $frontend_root/dist/index.html" >&2
     exit 1
@@ -328,6 +343,11 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   --refresh-retry-hour "$REFRESH_RETRY_HOUR" \
   --refresh-retry-minute "$REFRESH_RETRY_MINUTE"
 
+"$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/install_market_pipeline.py" \
+  --scheduler launchd --role replica --project-root "$PROJECT_ROOT" \
+  --env-root "$ENV_ROOT" --python "$PYTHON_BIN" \
+  --output-dir "$LAUNCH_AGENTS_DIR" --label-prefix "$LABEL_PREFIX"
+
 domain="gui/$UID"
 for service in "${services[@]}"; do
   label="$LABEL_PREFIX.$service"
@@ -337,7 +357,7 @@ for service in "${services[@]}"; do
   launchctl enable "$domain/$label"
 done
 
-for service in home-api watchlist-api portfolio-api home-web watchlist-web portfolio-web; do
+for service in home-api watchlist-api portfolio-api briefing-api home-web watchlist-web portfolio-web briefing-web; do
   launchctl kickstart -k "$domain/$LABEL_PREFIX.$service"
 done
 
@@ -345,9 +365,11 @@ health_urls=(
   http://127.0.0.1:8002/api/health
   http://127.0.0.1:8000/api/health
   http://127.0.0.1:8001/api/health
+  http://127.0.0.1:8010/health
   http://127.0.0.1:5172/
   http://127.0.0.1:5173/
   http://127.0.0.1:5174/
+  http://127.0.0.1:5175/
 )
 for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
   healthy="true"
@@ -369,5 +391,5 @@ for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
   [[ $attempt -eq $HEALTH_ATTEMPTS ]] || sleep 1
 done
 
-echo "Services were installed, but one or more health checks did not become ready." >&2
+echo "Services were installed, but a health check did not become ready: $url" >&2
 exit 1

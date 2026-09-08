@@ -28,6 +28,9 @@ FLAT_TABLE_RELATIONS = {
     ("portfolio", "target_set_line_record"),
     ("portfolio", "taxonomy_record"),
     ("portfolio", "taxonomy_assignment_record"),
+    *{("market_data", name) for name in ("datasets", "batches", "files", "current", "snapshots")},
+    *{("market_text", name) for name in ("document_version", "import_receipt", "entity", "document_entity", "document_event")},
+    ("briefing", "report"),
 }
 
 
@@ -47,10 +50,13 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
+        "identity": "20260908_0001",
         "instrument_data": "20260907_0034",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260906_0060",
-        "watchlist": "20260905_0054",
+        "portfolio": "20260908_0062",
+        "watchlist": "20260908_0056",
+        "market_data": "studio_market_0002",
+        "briefing": "20260908_0003",
     }
     monkeypatch.setattr(
         audit_module,
@@ -83,10 +89,13 @@ def test_flat_table_profile_accepts_only_final_heads(
 
 def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
     migration_roots = {
+        "identity": "home/backend/alembic",
         "instrument_data": "shared-data/instruments/alembic",
         "data_ingestion": "shared-data/alembic",
         "portfolio": "apps/portfolio/backend/alembic",
         "watchlist": "apps/watchlist/backend/alembic",
+        "market_data": "shared-data/market/alembic",
+        "briefing": "apps/briefing/backend/alembic",
     }
     for component, path in migration_roots.items():
         migrations = ScriptDirectory(str(REPOSITORY_ROOT / path))
@@ -96,7 +105,10 @@ def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 45
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 53
+    assert {"numeric_publication_catalog_contract", "numeric_complete_snapshot_contract",
+            "numeric_dataset_clock_contract", "market_text_version_contract",
+            "briefing_frozen_source_contract"} <= set(audit_module.AUDIT_CHECK_NAMES)
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "instrument_type_listed_security_identity_contract"
@@ -187,7 +199,7 @@ def test_migration_source_heads_are_unsupported_after_cutover(
         "_version_state",
         lambda _cursor, component: {
             "row_count": 1,
-            "version": versions[component],
+            "version": versions.get(component, audit_module.FINAL_FLAT_TABLE_HEADS[component]),
             "table_present": True,
         },
     )
@@ -220,7 +232,7 @@ def test_failed_overhaul_head_and_shape_are_unsupported(
         "_version_state",
         lambda _cursor, component: {
             "row_count": 1,
-            "version": failed_heads[component],
+            "version": failed_heads.get(component, audit_module.FINAL_FLAT_TABLE_HEADS[component]),
             "table_present": True,
         },
     )

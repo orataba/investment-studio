@@ -1,5 +1,6 @@
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
 import { fetchJson } from '../lib/api'
+import { useCanWriteTeam } from './AccountBoundary'
 const request = <T,>(path: string, init?: RequestInit) =>
   fetchJson<T>(`/api${path}`, init)
 export default function InstrumentRiskPanel({
@@ -21,8 +22,10 @@ export default function InstrumentRiskPanel({
   onChanged?: () => void
   mode?: 'attention' | 'price'
 }) {
+  const canWrite = useCanWriteTeam()
   return (
       <RiskPanel
+        canWrite={canWrite}
         caseScope={mode === 'price' ? 'traditional' : 'all'}
         attentionLabel="重点关注"
         instrumentId={instrumentId}

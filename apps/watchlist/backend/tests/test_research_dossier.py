@@ -108,7 +108,8 @@ def test_save_updates_one_owned_mandate_without_turning_it_into_material(dossier
     assert first.json()["entry_id"] == second.json()["entry_id"] == "dossier-mandate:xlk"
     assert second.json()["updated_at"] >= first.json()["updated_at"]
     current = dossier_client.get(url()).json()
-    assert current["mandate"]["focus"] == payload["focus"]
+    assert current["mandate"]["user_focus"] == payload["focus"]
+    assert current["mandate"]["focus"] == initial["focus"]
     assert [item["entry_id"] for item in current["materials"]] == [material["entry_id"]]
     assert "source_id" not in current["mandate"]
     assert dossier_client.get(url("xlf")).json()["mandate"]["entry_id"] is None
@@ -133,7 +134,7 @@ def test_initialization_and_review_updates_share_callers_transaction(dossier_cli
         # SQLite drops timezone metadata; ensure initialization did not change the timestamp.
         assert datetime.fromisoformat(retained["updated_at"]).replace(tzinfo=None) == datetime.fromisoformat(first["updated_at"]).replace(tzinfo=None)
         payload = service.ResearchMandateInput.model_validate({**_mandate_payload(first), "focus": ["本轮待复核更新"]})
-        service.save_mandate(session, "stock", payload, commit=False)
+        service.save_mandate(session, "stock", payload, commit=False, origin="research")
         session.rollback()
     assert dossier_client.get(url("stock")).json()["mandate"]["focus"] == first["focus"]
 
@@ -172,7 +173,7 @@ def test_materials_preserve_three_clocks_and_reuse_stable_topic(dossier_client):
     assert dossier_client.get(url("xlf")).json()["materials"] == []
 
 
-def test_only_uploaded_evidence_from_single_instrument_nonportfolio_topics_is_reused(dossier_client):
+def test_private_conversation_evidence_is_not_automatically_shared(dossier_client):
     with get_session_factory()() as session:
         for topic_id, ids, portfolio in [("single", ["xlk"], None), ("multi", ["xlk", "xlf"], None),
                                          ("portfolio", ["xlk"], "private-account"), ("other", ["xlf"], None)]:
@@ -185,7 +186,7 @@ def test_only_uploaded_evidence_from_single_instrument_nonportfolio_topics_is_re
         session.add(ResearchEntry(entry_id="note", topic_id="single", kind="evidence", title="聊天记录", body="没有上传文件"))
         session.commit()
     materials = dossier_client.get(url()).json()["materials"]
-    assert [item["entry_id"] for item in materials] == ["single"]
+    assert materials == []
 
 
 def test_fund_directory_reads_real_owned_files_and_keeps_unread_records_explicit(dossier_client, tmp_path):
@@ -249,3 +250,127 @@ def test_notebook_uses_completed_instrument_research_and_preserves_original_sour
     assert [item["run_id"] for item in dossier["notebook_history"]] == ["run-1", "run-0"]
     assert dossier["notebook_history"][1]["important_changes"] == ["变化0"]
     assert dossier_client.get(url()).json()["notebook_history"] == []
+
+
+def test_mandate_history_records_changes_and_quiet_save_keeps_version_and_date(dossier_client):
+    payload = _mandate_payload(dossier_client.get(url("stock")).json()["mandate"])
+    first = dossier_client.put(url("stock") + "/mandate", json=payload).json()
+    quiet = dossier_client.put(url("stock") + "/mandate", json=payload).json()
+    assert quiet["version_id"] == first["version_id"]
+    assert datetime.fromisoformat(quiet["updated_at"]).replace(tzinfo=None) == datetime.fromisoformat(first["updated_at"]).replace(tzinfo=None)
+    revised = dossier_client.put(url("stock") + "/mandate", json={**payload, "focus": ["新增竞争假设"]}).json()
+    assert revised["version_id"] != first["version_id"]
+    assert revised["versions"][0]["version_id"] == first["version_id"]
+    assert revised["versions"][0]["focus"] == first["focus"]
+    with get_session_factory()() as session:
+        old = service.read_dossier_version(session, "stock", first["version_id"])
+    assert old["kind"] == "mandate" and old["value"]["focus"] == first["focus"]
+    assert "registration" not in old["value"]
+
+
+def test_mandate_keeps_user_focus_while_research_evolves_its_own_document(dossier_client):
+    with get_session_factory()() as session:
+        initial = service.ensure_mandate(session, "stock")
+        assert initial["author"]["origin"] == "initial" and initial["user_focus"] == []
+        payload = service.ResearchMandateInput.model_validate({**_mandate_payload(initial), "focus": ["用户要求检验资本开支回报"]})
+        manual = service.save_mandate(session, "stock", payload)
+        assert manual["author"]["origin"] == "user"
+        assert manual["author"]["user_id"] == "pm-one" and initial["author"]["user_id"] is None
+        assert manual["focus"] == initial["focus"] and manual["user_focus"] == payload.focus
+        revised = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate({
+            **payload.model_dump(), "background": "研究补充的待验证背景", "focus": ["研究员继续核对需求"]}), origin="research")
+        assert revised["author"]["user_id"] is None and revised["author"]["display_name"] == "研究员"
+        assert revised["focus"] == ["研究员继续核对需求"]
+        assert revised["user_focus"] == manual["user_focus"] and revised["author"]["origin"] == "research"
+        assert revised["versions"][-1]["author"] == manual["author"]
+        assert revised["versions"][-1]["user_focus"] == manual["user_focus"]
+        old = service.read_dossier_version(session, "stock", manual["version_id"])
+        assert old["value"]["user_focus"] == manual["user_focus"]
+        # An explicit human save can change the instruction even when document text is unchanged.
+        accepted = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate(_mandate_payload(revised)))
+        assert accepted["version_id"] != revised["version_id"]
+        assert accepted["user_focus"] == revised["focus"] and accepted["author"]["origin"] == "user"
+        cleared = service.save_mandate(session, "stock", service.ResearchMandateInput.model_validate({**_mandate_payload(accepted), "focus": []}))
+        assert cleared["user_focus"] == [] and cleared["focus"] == revised["focus"]
+
+
+def test_quiet_checks_keep_latest_clock_without_duplicating_notebook_versions(dossier_client):
+    from watchlist_app.services.research_notebook import ResearchNotebook, retain_notebook
+    first = retain_notebook(ResearchNotebook(next_research=["继续核对需求"]), None, {}, "first", "2026-09-01T00:00:00+00:00")
+    quiet = retain_notebook(ResearchNotebook(), first, {}, "quiet", "2026-09-02T00:00:00+00:00")
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="instrument-events:stock", title="追踪", instrument_ids=["stock"]))
+        session.flush()
+        for index, (run_id, research) in enumerate([("first", first), ("quiet", quiet)]):
+            session.add(ResearchEntry(entry_id=run_id, topic_id="instrument-events:stock", kind="analysis", status="completed", title="研究",
+                completed_at=datetime.now(UTC) + timedelta(hours=index), context_json={"sector_run": True,
+                    "instrument_ids": ["stock"], "cutoff": f"2026-09-0{index + 1}T00:00:00+00:00",
+                    "reviews": {"stock": {"status": "completed", "research": research}}}))
+        session.commit()
+        current = service.read_dossier(session, "stock", include_history=True)
+        assert current["notebook"]["run_id"] == "quiet"
+        assert current["notebook"]["checked_at"] == "2026-09-02T00:00:00+00:00"
+        assert len(current["notebook_history"]) == 1
+        assert current["notebook_history"][0]["run_id"] == "first"
+        assert current["notebook_history"][0]["version_id"] == first["version_id"]
+        assert service.read_dossier_version(session, "stock", first["version_id"])["information_cutoff"] == "2026-09-01T00:00:00+00:00"
+
+
+def test_published_chat_research_and_forecast_history_share_dossier_without_later_evidence(dossier_client):
+    from watchlist_app.services.research_notebook import ResearchNotebook, retain_notebook, research_sources
+    cutoff = "2026-09-07T00:00:00+00:00"
+    original = {"source_id": "original:first", "source_type": "public_source", "text": "当时披露的原文", "published_at": "2026-09-06"}
+    later = {**original, "source_id": "original:later", "text": "后来披露的结果", "published_at": "2026-09-08"}
+    first = retain_notebook(ResearchNotebook(forecasts=[{"key": "demand", "claim": "需求可能改善", "horizon": "下次披露",
+        "source_ids": [original["source_id"]]}]), None, {original["source_id"]: original}, "first", cutoff)
+    forecast_version = first["forecasts"][0]["version_id"]
+    second = retain_notebook(ResearchNotebook(forecast_reviews=[{"key": "demand-review", "forecast_key": "demand",
+        "forecast_version_id": forecast_version, "outcome": "需求改善，价格上涨", "mechanism_assessment": "价格也可能受到其他因素推动",
+        "source_ids": [later["source_id"]]}]), first, {original["source_id"]: original, later["source_id"]: later}, "chat", "2026-09-09T00:00:00+00:00")
+    with get_session_factory()() as session:
+        session.add_all([ResearchTopic(topic_id="instrument-events:stock", title="追踪", instrument_ids=["stock"]),
+                         ResearchTopic(topic_id="shared-chat", title="用户讨论", instrument_ids=["stock"])])
+        session.flush()
+        for run_id, topic, status, marker, body, delta in [
+            ("first", "instrument-events:stock", "completed", "sector_run", first, 0),
+            ("chat", "shared-chat", "draft", "research_run", second, 1),
+            ("unpublished", "shared-chat", "draft", "research_run", {"fundamental_view": "未发布回答"}, 2),
+        ]:
+            session.add(ResearchEntry(entry_id=run_id, topic_id=topic, kind="analysis", status=status, title="研究",
+                completed_at=datetime.now(UTC) + timedelta(hours=delta), context_json={marker: True,
+                    "instrument_ids": ["stock"], "cutoff": cutoff if delta == 0 else "2026-09-09T00:00:00+00:00",
+                    "reviews": {"stock": {"status": "pending" if run_id == "unpublished" else "completed", "research": body}}}))
+        session.commit()
+        current = service.read_dossier(session, "stock", include_history=True)
+        version = service.read_dossier_version(session, "stock", forecast_version)
+        full_first = service.read_dossier_version(session, "stock", first["version_id"])
+        assert current["notebook"]["run_id"] == "chat"
+        assert current["notebook_history"][1]["notebook"]["forecasts"][0]["claim"] == "需求可能改善"
+        assert version["value"]["claim"] == "需求可能改善"
+        assert version["sources"] == [original]
+        assert full_first["sources"] == [original]
+        assert version["information_cutoff"] == cutoff
+        cases = current["historical_cases"]
+        assert len(cases) == 1 and cases[0]["source_type"] == "research_review"
+        assert cases[0]["instrument_id"] == "stock" and cases[0]["forecast_version_id"] == forecast_version
+        sources = research_sources({"cutoff": "2026-09-09T00:00:00+00:00", "research_dossiers": [current]}, "next")
+        assert cases[0]["source_id"] not in sources
+        with pytest.raises(LookupError):
+            service.read_dossier_version(session, "xlf", forecast_version)
+
+
+def test_historical_atlas_is_owned_by_each_instrument_not_a_default_xlk_template(dossier_client, tmp_path, monkeypatch):
+    import json
+    from shutil import copyfile
+    (tmp_path / "historical_cases").mkdir()
+    for name in ("frameworks.json", "mandate_seeds.json"):
+        copyfile(service.DATA_ROOT / name, tmp_path / name)
+    (tmp_path / "historical_cases" / "stock.json").write_text(json.dumps({
+        "metadata": {"atlas_id": "stock-history"}, "reuse_limitations": ["背景不同不能直接类比"],
+        "cases": [{"case_id": "stock-case", "source_id": "historical:stock-case", "case_title": "该公司的历史案例",
+                   "role": "historical_research", "sources": [{"url": "https://issuer.example/history"}]}]}))
+    monkeypatch.setattr(service, "DATA_ROOT", tmp_path)
+    stock = dossier_client.get(url("stock")).json()
+    assert stock["historical_cases"][0]["instrument_id"] == "stock"
+    assert stock["historical_cases"][0]["atlas_id"] == "stock-history"
+    assert dossier_client.get(url("xlf")).json()["historical_cases"] == []

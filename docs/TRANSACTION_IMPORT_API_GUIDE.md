@@ -166,6 +166,7 @@ Idempotency-Key: screenshot-batch-20260821-001
 | `record_reference` | string | 否 | 本文件/批次内唯一批次引用，供后续 lot_selections 使用；不是券商业务号 |
 | `lot_selections` | array | 否 | FIFO 处置的开仓记录引用及数量；期权实物行权时选择的是期权多头批次，不是股票批次 |
 | `asset_deliveries` | array | 条件 | FCN 实物兑付的接收账户、证券、数量、确认价值、币种与合约折算汇率 |
+| `settlement_cashflows` | array | 条件 | FCN 关闭绑定的票息、合约费用税费，各自记录现金账户、币种、确认日和结算日 |
 | `option_delivery` | object | 条件 | physical_long / physical_written 必填；交付账户及股票腿的费用、费用分类、税费和 allow_stock_short |
 | `quantity` | decimal string | 条件 | 证券份额、基金份额、FCN 数量或期权张数；方向由动作决定，值本身不使用负号 |
 | `price` | decimal string | 条件 | 每单位成交价；Option 为每份标的单位的权利金，不是整张合约权利金 |
@@ -295,7 +296,10 @@ CSV/Excel 对应 `physical_long` / `physical_written`，通过 `option_delivery_
 
 ### FCN 实物兑付、指定批次和账户用途
 
-- FCN `knock_in_close` / `maturity_close` 可带 `asset_deliveries`（CSV/Excel 列 `asset_deliveries_json`）。每腿填写接收账户、Registry 标的、quantity、该腿原币总 fair_value、currency 和 fx_rate_to_contract。汇率含义为一单位证券币种折合多少合约币种；同币种必须为 1。`gross_amount` 只记录实际现金尾差，可为零。合约处置损益 = 确认收股折算价值 + 实际现金 − 费用 − 所处置合约账面成本；收到证券以本币确认价值建 lot，不制造现金买卖。
+- FCN `knock_in_close` / `maturity_close` 可带 `asset_deliveries`（CSV/Excel 列 `asset_deliveries_json`）。每腿填写接收账户、Registry 标的、quantity、该腿原币总 fair_value、currency 和 fx_rate_to_contract。汇率含义为一单位证券币种折合多少合约币种；同币种必须为 1。`gross_amount` 只记录实际现金尾差，可为零。合约处置损益 = 确认收股折算价值 + 实际现金 − 合约处置费用 − 所处置合约账面成本；收到证券以本币确认价值加取得费用税费建 lot，不制造本金现金买卖。
+- 每腿可填 `delivery_date`（实际到账）、`fees`、`taxes`、`fee_category`、`settlement_cash_account_id` 和 `fee_settlement_date`。非零取得费用要求同证券币种 Cash 账户；费用仅扣现金一次，并资本化到股票成本。经济生效日取母记录 `position_effective_date` 或 `trade_date`；实际到账日、扣费日不能早于经济生效日，扣费日默认经济生效日。未填实际到账日保持未知。`quantity_fx_rate` 为证券币种/合约币种的数量换算条款 FX；`fractional_quantity` 和 `fractional_reference_price` 只保留碎股回单依据，不生成换汇或自动推算现金尾差。
+- FCN `knock_in_close` / `maturity_close` / `knock_out_close` 可带 `settlement_cashflows`（文件列 `settlement_cashflows_json`）：每项为 `{kind, cash_account_id, currency, amount, recognition_date?, settlement_date?, fee_category?, note?}`，kind 为 `coupon` / `fee` / `tax`，amount 为正数。票息使用合约币种，费用可使用其他币种；现金账户须匹配币种。确认日默认经济生效日，结算日默认确认日且不能更早。必须提供母记录 note 作为结算依据，已录独立票息不得重复添加。所有明细随母记录原子写入、修改及删除。
+- `GET /api/portfolios/{portfolio_id}/positions/{position_reference_id}/fcn-lifecycles?as_of_date=YYYY-MM-DD` 从 FCN 合约或接票证券查看来源收益及交付状态；缺少必要行情/FX 或来源不完整时收益为 null，不能解释为零。
 - `short_sell` / `buy_to_cover` / `short_opening_balance` 只支持股票及 ETF。期初空头填正数量和剩余净账面负债，不重复收取现金。
 - FIFO 账户卖出、买回、兑付可传 `lot_selections=[{opening_transaction_id, quantity}]`，数量之和必须等于处置量；缺少可用批次拒绝整笔。移动平均账户不能选择单批成本。文件列 `lot_selections_json` 可引用本文件唯一 `record_reference`，导入和组合复制会重绑到新记录，不沿用旧组合 ID。
 - Cash 账户 `cash_purpose` 为 operating、margin、collateral 或 financing。融资借还、抵押释放用内部现金划转；抵押账户可保存 `collateral_reference` 确认依据。借款本金不是收益或外部入金。实际利息、借券费和空头股息补偿分别用 fee_category financing_interest、borrow_fee、payment_in_lieu。

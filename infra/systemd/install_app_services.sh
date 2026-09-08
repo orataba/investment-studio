@@ -10,10 +10,13 @@ WEB_HOST="${WEB_HOST:-$HOST}"
 HOME_API_PORT="${HOME_API_PORT:-8102}"
 WATCHLIST_API_PORT="${WATCHLIST_API_PORT:-8100}"
 PORTFOLIO_API_PORT="${PORTFOLIO_API_PORT:-8101}"
+BRIEFING_API_PORT="${BRIEFING_API_PORT:-8110}"
 HOME_WEB_PORT="${HOME_WEB_PORT:-3100}"
 WATCHLIST_WEB_PORT="${WATCHLIST_WEB_PORT:-3101}"
 PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
+BRIEFING_WEB_PORT="${BRIEFING_WEB_PORT:-3103}"
 START_SERVICES="${START_SERVICES:-true}"
+HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-60}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 ENV_ROOT="${ENV_ROOT:-}"
 RUNTIME_ENV_HELPER="$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
@@ -26,9 +29,11 @@ MANAGED_UNITS=(
   "$UNIT_PREFIX-home-api.service"
   "$UNIT_PREFIX-watchlist-api.service"
   "$UNIT_PREFIX-portfolio-api.service"
+  "$UNIT_PREFIX-briefing-api.service"
   "$UNIT_PREFIX-home-web.service"
   "$UNIT_PREFIX-watchlist-web.service"
   "$UNIT_PREFIX-portfolio-web.service"
+  "$UNIT_PREFIX-briefing-web.service"
 )
 
 DEFAULT_PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
@@ -84,16 +89,22 @@ HOME_ENV_FILE="$ENV_ROOT/home.env"
 DATA_ENV_FILE="$ENV_ROOT/data.env"
 WATCHLIST_ENV_FILE="$ENV_ROOT/watchlist.env"
 PORTFOLIO_ENV_FILE="$ENV_ROOT/portfolio.env"
+BRIEFING_ENV_FILE="$ENV_ROOT/briefing.env"
+MARKET_ENV_FILE="$ENV_ROOT/market.env"
 investment_studio_validate_env_file \
   "$DATA_ENV_FILE" \
   INVESTMENT_STUDIO_DATA_ \
-  INVESTMENT_STUDIO_INSTRUMENT_DATA_
-investment_studio_validate_env_file "$HOME_ENV_FILE" INVESTMENT_STUDIO_HOME_
-investment_studio_validate_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
-investment_studio_validate_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
+  INVESTMENT_STUDIO_INSTRUMENT_DATA_ \
+  INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$HOME_ENV_FILE" INVESTMENT_STUDIO_HOME_ INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_ INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_ INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$BRIEFING_ENV_FILE" INVESTMENT_STUDIO_BRIEFING_ INVESTMENT_STUDIO_AUTH_
+investment_studio_validate_env_file "$MARKET_ENV_FILE" INVESTMENT_STUDIO_MARKET_
 
 validate_database_contract() {
   unset \
+    INVESTMENT_STUDIO_HOME_DATABASE_URL \
     INVESTMENT_STUDIO_DATA_DATABASE_URL \
     INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL \
     INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA \
@@ -103,20 +114,30 @@ validate_database_contract() {
     INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
     INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL \
     INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL \
-    INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL
+    INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL \
+    INVESTMENT_STUDIO_BRIEFING_DATABASE_URL \
+    INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL \
+    INVESTMENT_STUDIO_MARKET_DATABASE_URL
+  investment_studio_load_env_file "$HOME_ENV_FILE" INVESTMENT_STUDIO_HOME_ INVESTMENT_STUDIO_AUTH_
   investment_studio_load_env_file \
     "$DATA_ENV_FILE" \
     INVESTMENT_STUDIO_DATA_ \
-    INVESTMENT_STUDIO_INSTRUMENT_DATA_
-  investment_studio_load_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_
-  investment_studio_load_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_
+    INVESTMENT_STUDIO_INSTRUMENT_DATA_ \
+  INVESTMENT_STUDIO_AUTH_
+  investment_studio_load_env_file "$WATCHLIST_ENV_FILE" INVESTMENT_STUDIO_WATCHLIST_ INVESTMENT_STUDIO_AUTH_
+  investment_studio_load_env_file "$PORTFOLIO_ENV_FILE" INVESTMENT_STUDIO_PORTFOLIO_ INVESTMENT_STUDIO_AUTH_
+  investment_studio_load_env_file "$BRIEFING_ENV_FILE" INVESTMENT_STUDIO_BRIEFING_ INVESTMENT_STUDIO_AUTH_
+  investment_studio_load_env_file "$MARKET_ENV_FILE" INVESTMENT_STUDIO_MARKET_
 
   local required_variable required_value
   for required_variable in \
+    INVESTMENT_STUDIO_HOME_DATABASE_URL \
     INVESTMENT_STUDIO_DATA_DATABASE_URL \
     INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL \
     INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL \
-    INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL; do
+    INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL \
+    INVESTMENT_STUDIO_BRIEFING_DATABASE_URL \
+    INVESTMENT_STUDIO_MARKET_DATABASE_URL; do
     required_value="${!required_variable-}"
     if [[ -z "$required_value" ]]; then
       echo "External runtime environment is missing $required_variable." >&2
@@ -143,16 +164,20 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 
 REQUIRED_URLS = (
+    "INVESTMENT_STUDIO_HOME_DATABASE_URL",
     "INVESTMENT_STUDIO_DATA_DATABASE_URL",
     "INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL",
     "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL",
     "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL",
+    "INVESTMENT_STUDIO_BRIEFING_DATABASE_URL",
+    "INVESTMENT_STUDIO_MARKET_DATABASE_URL",
 )
 OPTIONAL_URLS = (
     "INVESTMENT_STUDIO_DATA_ALEMBIC_DATABASE_URL",
     "INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL",
     "INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL",
     "INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL",
+    "INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL",
 )
 
 
@@ -227,6 +252,14 @@ for refresh_name in market-data-refresh cn-market-data-refresh hk-market-data-re
   REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-$refresh_name.service")
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-$refresh_name.timer")
 done
+for briefing_period in daily weekly; do
+  REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.service")
+  REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.timer")
+done
+for market_action in daily weekly publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
+  REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-market-$market_action.service")
+  REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-market-$market_action.timer")
+done
 WRITER_UNITS=(
   "${REFRESH_TIMER_UNITS[@]}"
   "${REFRESH_SERVICE_UNITS[@]}"
@@ -248,11 +281,16 @@ write_api_service() {
   local backend_root="$PROJECT_ROOT/$backend_rel"
   local env_file="$ENV_ROOT/$app.env"
   local service_file="$UNIT_OUTPUT_DIR/$UNIT_PREFIX-$app-api.service"
-  local pythonpath_value="$backend_root:$PROJECT_ROOT/shared-data/instruments/python"
-  local escaped_env_file schema_environment_lines="" exec_start_prefix=""
+  local pythonpath_value="$PROJECT_ROOT/packages/identity:$backend_root:$PROJECT_ROOT/shared-data/instruments/python"
+  local escaped_env_file schema_environment_lines="" exec_start_prefix="" market_environment_line=""
   escaped_env_file="$(printf '%q' "$env_file")"
   if [[ "$app" == "home" ]]; then
     pythonpath_value="$backend_root"
+  fi
+  if [[ "$app" == "briefing" || "$app" == "watchlist" || "$app" == "portfolio" ]]; then
+    pythonpath_value="$pythonpath_value:$PROJECT_ROOT/shared-data/market"
+    market_environment_line="EnvironmentFile=$(printf '%q' "$MARKET_ENV_FILE")"
+    schema_environment_lines="Environment=INVESTMENT_STUDIO_SECRET_ROOT=$(printf '%q' "$ENV_ROOT")"
   fi
 
   cat > "$service_file" <<EOF
@@ -268,6 +306,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONNOUSERSITE=1
 Environment=PYTHONPATH=$pythonpath_value
 EnvironmentFile=$escaped_env_file
+$market_environment_line
 $schema_environment_lines
 ExecStart=$exec_start_prefix$PYTHON_BIN -m uvicorn $module --host $API_HOST --port $port
 Restart=always
@@ -484,9 +523,11 @@ trap 'exit 143' TERM
 write_api_service "home" "home/backend" "home_api.main:app" "$HOME_API_PORT"
 write_api_service "watchlist" "apps/watchlist/backend" "watchlist_app.main:app" "$WATCHLIST_API_PORT"
 write_api_service "portfolio" "apps/portfolio/backend" "portfolio_app.main:app" "$PORTFOLIO_API_PORT"
+write_api_service "briefing" "apps/briefing/backend" "briefing_app.main:app" "$BRIEFING_API_PORT"
 write_web_service "home" "home/frontend" "$HOME_WEB_PORT" "$HOME_API_PORT"
 write_web_service "watchlist" "apps/watchlist/frontend" "$WATCHLIST_WEB_PORT" "$WATCHLIST_API_PORT"
 write_web_service "portfolio" "apps/portfolio/frontend" "$PORTFOLIO_WEB_PORT" "$PORTFOLIO_API_PORT"
+write_web_service "briefing" "apps/briefing/frontend" "$BRIEFING_WEB_PORT" "$BRIEFING_API_PORT"
 
 capture_previous_state
 
@@ -533,6 +574,32 @@ if [[ "$START_SERVICES" == "true" ]]; then
       exit 1
     fi
   done
+  health_urls=(
+    "http://127.0.0.1:$HOME_API_PORT/api/health"
+    "http://127.0.0.1:$WATCHLIST_API_PORT/api/health"
+    "http://127.0.0.1:$PORTFOLIO_API_PORT/api/health"
+    "http://127.0.0.1:$BRIEFING_API_PORT/health"
+    "http://127.0.0.1:$HOME_WEB_PORT/"
+    "http://127.0.0.1:$WATCHLIST_WEB_PORT/"
+    "http://127.0.0.1:$PORTFOLIO_WEB_PORT/"
+    "http://127.0.0.1:$BRIEFING_WEB_PORT/"
+  )
+  healthy=false
+  for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
+    healthy=true
+    for url in "${health_urls[@]}"; do
+      if ! curl --noproxy '*' --max-time 2 --fail --silent --output /dev/null "$url"; then
+        healthy=false
+        break
+      fi
+    done
+    [[ "$healthy" == false ]] || break
+    [[ $attempt -eq $HEALTH_ATTEMPTS ]] || sleep 1
+  done
+  if [[ "$healthy" == false ]]; then
+    echo "Managed systemd service failed its readiness gate: $url" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$RUN_MIGRATIONS" == "true" ]]; then

@@ -1517,6 +1517,10 @@ def build_contribution_report_from_daily_slices_core(
     portfolio_daily_series = [
         {
             "as_of_date": snapshot["as_of_date"],
+            "daily_twr": _safe_float(snapshot.get("daily_twr")),
+            "_is_initial_valuation_anchor": bool(
+                snapshot.get("_is_initial_valuation_anchor")
+            ),
             "market_risk_daily_return": _safe_float(
                 snapshot.get("market_risk_daily_return")
             ),
@@ -1614,6 +1618,51 @@ def build_contribution_report_from_daily_slices_core(
         "_portfolio_daily_series": portfolio_daily_series,
     }
     return filter_contribution_report_by_group_key(report, group_key=group_key)
+
+
+def linked_return_contributions_by_group(
+    daily_slices: list[dict[str, object]],
+    portfolio_daily_series: list[dict[str, object]],
+) -> dict[str, float | None]:
+    """Link each daily contribution with the portfolio's preceding TWR growth."""
+    slices_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
+    for daily_slice in daily_slices:
+        as_of_date = _parse_iso_date(daily_slice.get("as_of_date"))
+        if as_of_date is not None:
+            slices_by_date[as_of_date].append(daily_slice)
+    points_by_date = {
+        as_of_date: point
+        for point in portfolio_daily_series
+        if (as_of_date := _parse_iso_date(point.get("as_of_date"))) is not None
+    }
+
+    contributions: dict[str, float | None] = {}
+    growth: float | None = 1.0
+    for as_of_date in sorted(slices_by_date.keys() | points_by_date.keys()):
+        point = points_by_date.get(as_of_date, {})
+        slices = slices_by_date.get(as_of_date, [])
+        is_anchor = bool(point.get("_is_initial_valuation_anchor"))
+        daily_twr = _safe_float(point.get("daily_twr"))
+        if not is_anchor and (daily_twr is None or not isfinite(daily_twr)):
+            # An unknown portfolio return breaks the linking chain, not a zero return.
+            growth = None
+        for daily_slice in slices:
+            group_key = str(daily_slice.get("group_key") or "")
+            contributions.setdefault(group_key, 0.0)
+            if is_anchor:
+                continue
+            daily_contribution = _safe_float(daily_slice.get("daily_contribution"))
+            if (
+                growth is None
+                or daily_contribution is None
+                or not isfinite(daily_contribution)
+            ):
+                contributions[group_key] = None
+            elif contributions[group_key] is not None:
+                contributions[group_key] += daily_contribution * growth
+        if not is_anchor and growth is not None and daily_twr is not None:
+            growth *= 1.0 + daily_twr
+    return contributions
 
 
 def merge_calculation_detail_daily_slices(
@@ -1945,9 +1994,6 @@ def bucketed_realized_contribution_matrix(
             not group_key
             or as_of_date is None
             or as_of_date not in eligible_portfolio_dates
-            or not bool(
-                daily_slice.get("market_risk_return_observation_eligible")
-            )
         ):
             continue
         bucket_date = period_end_date(
@@ -1956,7 +2002,15 @@ def bucketed_realized_contribution_matrix(
         daily_contribution = _safe_float(
             daily_slice.get("market_risk_daily_contribution")
         )
-        if daily_contribution is None or not isfinite(daily_contribution):
+        # Own-return sampling and additive P&L attribution are different:
+        # a closed market/cash can have a known zero contribution, while an
+        # active row with unknown contribution must invalidate the common day.
+        if (
+            daily_contribution is None
+            or not isfinite(daily_contribution)
+            or daily_slice.get("market_risk_return_coverage_state")
+            in {"partial", "unavailable"}
+        ):
             invalid_bucket_dates.add(bucket_date)
             continue
         group_daily_contributions[group_key][as_of_date] = (

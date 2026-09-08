@@ -282,9 +282,11 @@ describe('Holdings rendered page contract', () => {
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [holdingFixture(), fcnHolding(), writtenOptionHolding(), cashHolding()],
+        quality_warnings: ['Quote coverage needs review.'],
       }),
     )
     await waitForHoldings()
+    expect(screen.getByRole('button', { name: /Data quality warning: Quote coverage needs review/ }).closest('.holdings-filter-actions')).not.toBeNull()
 
     expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'FCN' })).toBeInTheDocument()
@@ -506,9 +508,10 @@ describe('Holdings rendered page contract', () => {
 
     render(<OptionOutcomePrompt portfolioId="3" />)
 
-    const status = await screen.findByRole('status')
-    expect(status).toHaveTextContent('Option action check failed')
+    const status = await screen.findByRole('button', { name: /Option action check failed:/ })
     expect(status).toHaveAttribute('title', 'Option action service unavailable')
+    await userEvent.setup().click(status)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Option action service unavailable')
   })
 
   it('opens details only from the instrument name, not an ordinary table cell', async () => {

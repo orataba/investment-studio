@@ -3,6 +3,24 @@ from __future__ import annotations
 from studio_data.services.securities import service
 
 
+def test_sync_security_catalogs_uses_one_client_for_both_catalogs(monkeypatch) -> None:
+    client = object()
+    seen = []
+
+    def sync(*, client):
+        seen.append(client)
+        return {"active_count": 2}
+
+    monkeypatch.setattr(service, "FmpClient", lambda: client)
+    monkeypatch.setattr(service, "sync_equity_catalog", sync)
+    monkeypatch.setattr(service, "sync_etf_catalog", sync)
+
+    result = service.sync_security_catalogs()
+
+    assert result["active_count"] == 4
+    assert seen == [client, client]
+
+
 def test_fmp_index_refresh_uses_the_index_contract(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -20,25 +38,25 @@ def test_fmp_index_refresh_uses_the_index_contract(monkeypatch) -> None:
         *,
         instrument_type: str,
         full_history: bool,
-        client: object,
+        store: object,
     ) -> dict[str, object]:
         captured.update(
             {
                 "instrument_id": instrument_id,
                 "instrument_type": instrument_type,
                 "full_history": full_history,
-                "client": client,
+                "store": store,
             }
         )
         return {"instrument_id": instrument_id}
 
     monkeypatch.setattr(service, "refresh_fmp_eod", fake_refresh_fmp_eod)
-    client = object()
+    store = object()
 
     result = service.refresh_security_eod(
         "fmp-index",
         full_history=True,
-        client=client,  # type: ignore[arg-type]
+        store=store,  # type: ignore[arg-type]
     )
 
     assert result == {"instrument_id": "fmp-index"}
@@ -46,7 +64,7 @@ def test_fmp_index_refresh_uses_the_index_contract(monkeypatch) -> None:
         "instrument_id": "fmp-index",
         "instrument_type": "index",
         "full_history": True,
-        "client": client,
+        "store": store,
     }
 
 

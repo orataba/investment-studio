@@ -532,7 +532,7 @@ def test_snapshot_endpoint_returns_requested_and_effective_as_of(client, monkeyp
     )
 
     response = client.get(
-        "/api/portfolios/snapshot-as-of-test/snapshots/daily",
+        "/api/portfolios/investment-studio/snapshots/daily",
         params={"start_date": "2026-01-01", "end_date": "2026-01-03"},
     )
 

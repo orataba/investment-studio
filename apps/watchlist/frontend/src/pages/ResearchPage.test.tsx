@@ -12,6 +12,7 @@ import {
 import { MemoryRouter, useLocation } from 'react-router'
 import ResearchPage from './ResearchPage'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
+import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   write: vi.fn(),
@@ -91,8 +92,29 @@ it('sends a free-form question from the current Watchlist without fixed analysis
   expect(mocks.saveNote).not.toHaveBeenCalled()
 })
 
+it('carries the selected prediction version into shared research and reports its publication', async () => {
+  const reference = { instrument_id: 'fund-a', notebook_version_id: 'notebook-1', forecast_key: 'cash-return', forecast_version_id: 'forecast-1' }
+  const updated = vi.fn()
+  window.addEventListener(RESEARCH_UPDATED, updated)
+  render(<MemoryRouter><InstrumentAssistantDrawer instrumentId="fund-a" question="这项预测有什么变化？" researchReference={reference} onClose={vi.fn()} /></MemoryRouter>)
+  const send = screen.getByRole('button', { name: '发送' })
+  await waitFor(() => expect(send.hasAttribute('disabled')).toBe(false))
+  mocks.write.mockImplementation(async (path: string) => {
+    if (path === '/research/topics') return topic
+    entries = [{ ...answer, context_json: { research_publication: { status: 'published', instrument_ids: ['fund-a'], message: '已修订预测依据。' } } }]
+    return {}
+  })
+  fireEvent.click(send)
+  await waitFor(() => expect(mocks.write).toHaveBeenCalledWith('/research/topics/chat-1/analysis', expect.objectContaining({ page_context: expect.objectContaining({ research_reference: reference }) })))
+  expect(await screen.findByText('已更新共同研究记录。 已修订预测依据。')).toBeTruthy()
+  expect(updated).toHaveBeenCalledOnce()
+  expect((updated.mock.calls[0][0] as CustomEvent).detail).toEqual(['fund-a'])
+  expect(mocks.saveNote).not.toHaveBeenCalled()
+  window.removeEventListener(RESEARCH_UPDATED, updated)
+})
+
 it('continues an existing conversation and saves a reply as a note only after editing and submission', async () => {
-  entries = [answer]
+  entries = [{ ...answer, context_json: { page_context: { research_reference: { instrument_id: 'fund-a', theme_id: 'theme-original', pm_note_id: 'pm-original', pm_note_revision: 2 } } } }]
   render(
     <MemoryRouter initialEntries={['/assistant?topic=chat-1']}>
       <ResearchPage />
@@ -109,7 +131,10 @@ it('continues an existing conversation and saves a reply as a note only after ed
     expect(mocks.saveNote).toHaveBeenCalledWith(
       'fund-a',
       expect.objectContaining({
+        source_entry_id: 'reply-1',
         note: expect.objectContaining({
+          note_type: 'thesis_update',
+          research_context: { theme_id: 'theme-original', relationship: 'update', related_note_id: 'pm-original', related_revision: 2 },
           body: '人工核查后仍待补充底层敞口。',
           source_refs: 'Watchlist 助手对话 chat-1 / 回复 reply-1',
         }),
@@ -232,6 +257,7 @@ it('shows readable public links and source dates, including incomplete searches'
   expect(screen.getByText('原文发布 2026-09-05')).toBeTruthy()
   expect(screen.getByText('公开信息检索 · 读取未完成')).toBeTruthy()
   expect(screen.getByText('未能覆盖最新公开信息')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: /^对话说明:/ }))
   expect(screen.getByText('已保存的答复反映当时查阅的资料，并非实时更新。')).toBeTruthy()
 })
 
@@ -292,4 +318,20 @@ it('resets a new conversation to page scope instead of retaining a historical co
   await waitFor(() => expect(mocks.write).toHaveBeenCalledWith('/research/topics', expect.objectContaining({
     instrument_ids: ['fund-b'], portfolio_id: null,
   })))
+})
+
+
+it('shows committed user records and refreshes their instrument even when the later answer fails', async () => {
+  const updated = vi.fn()
+  window.addEventListener(RESEARCH_UPDATED, updated)
+  entries = [{ ...answer, status: 'failed', body: '后续分析未完成', context_json: {
+    user_records: [{ kind: 'investment_view', instrument_id: 'fund-a', id: 'pm-1', title: '我的流动性判断' }],
+  } }]
+  render(<MemoryRouter initialEntries={['/assistant?topic=chat-1']}><ResearchPage /></MemoryRouter>)
+  expect(await screen.findByText('已保存你的投资观点：我的流动性判断')).toBeTruthy()
+  expect(screen.getByText('后续分析未完成')).toBeTruthy()
+  expect(updated).toHaveBeenCalledOnce()
+  expect((updated.mock.calls[0][0] as CustomEvent).detail).toEqual(['fund-a'])
+  expect(mocks.saveNote).not.toHaveBeenCalled()
+  window.removeEventListener(RESEARCH_UPDATED, updated)
 })

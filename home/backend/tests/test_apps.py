@@ -13,7 +13,7 @@ def test_home_uses_catalog_and_deployment_url_overrides(monkeypatch):
     monkeypatch.setattr(apps, "get_settings", lambda: settings)
     payload = TestClient(app).get("/api/apps").json()
     assert payload["product_name"] == "Investment Studio"
-    assert [item["app_id"] for item in payload["apps"]] == ["watchlist", "portfolio", "regime"]
+    assert [item["app_id"] for item in payload["apps"]] == ["watchlist", "portfolio", "regime", "briefing"]
     assert payload["apps"][2]["url"] == "https://regime.example.test"
 
 
@@ -31,3 +31,14 @@ def test_apps_can_be_added_and_removed_without_route_changes(tmp_path, monkeypat
     assert [item["app_id"] for item in client.get("/api/apps").json()["apps"]] == ["research"]
     catalog.write_text("[]")
     assert client.get("/api/apps").json()["apps"] == []
+
+
+def test_legacy_workspace_paths_use_the_current_catalog(monkeypatch):
+    from home_api.api.routes import apps
+    settings = Settings(app_urls={"watchlist": "https://watch.example.test", "portfolio": "https://portfolio.example.test"})
+    monkeypatch.setattr(apps, "get_settings", lambda: settings)
+    client = TestClient(app)
+    for path, destination in (("/watchlist", "https://watch.example.test"), ("/portfolio", "https://portfolio.example.test")):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == destination

@@ -83,7 +83,16 @@ describe('Holding detail investment semantics', () => {
     expect(await screen.findByText('Expected gross amount')).toBeInTheDocument()
     expect(screen.getByText('2026-07-01')).toBeInTheDocument()
     expect(screen.getByText('View transaction')).toHaveAttribute('href', '/portfolios/3/transactions?transaction_id=div-1')
-    expect(screen.getByText(/Source notices and expected entitlements/)).toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /Current review status: Source notices/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Source notices and expected entitlements are not booked income.')
+  })
+
+  it('does not reserve a distribution review section when there are no notices', async () => {
+    render(<HoldingEventsPanel portfolioId="3" holdingId="asset-1" asOfDate="2026-07-15" currency="USD" security transactions={[]} lots={[]} loading={false} error={null} />)
+    await waitFor(() => expect(api.getPortfolioInstrumentEventTasks).toHaveBeenCalled())
+    expect(screen.queryByRole('heading', { name: 'Distribution review' })).not.toBeInTheDocument()
+    expect(screen.getByText('No booked events in this date range.')).toBeInTheDocument()
   })
 
   it('counts only settled coupon cash and keeps missing FCN terms blank', async () => {

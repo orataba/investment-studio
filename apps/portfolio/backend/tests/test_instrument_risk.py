@@ -3,7 +3,14 @@ import json
 from urllib.error import HTTPError, URLError
 import pytest
 from fastapi import HTTPException
+from studio_identity import Principal, principal_context
 from portfolio_app.api.routes import instrument_risk
+
+
+@pytest.fixture(autouse=True)
+def request_identity():
+    with principal_context(Principal("test-manager", "Test Manager", "default", credential="test-session")):
+        yield
 
 
 def test_risk_bridge_keeps_scope_and_forwards_followup_to_same_store(monkeypatch):
@@ -18,6 +25,7 @@ def test_risk_bridge_keeps_scope_and_forwards_followup_to_same_store(monkeypatch
     assert calls[-1].full_url.endswith('instrument_ids=fund-a%2Cfund-b')
     result = instrument_risk.follow_up('original', {'status': 'investigating', 'note': '已联系管理人'})
     assert result['case_id'] == 'original'
+    assert calls[-1].get_header('Authorization') == 'Bearer test-session'
     assert calls[-1].method == 'PUT'
     assert calls[-1].full_url.endswith('/risk/cases/original')
     assert json.loads(calls[-1].data)['note'] == '已联系管理人'

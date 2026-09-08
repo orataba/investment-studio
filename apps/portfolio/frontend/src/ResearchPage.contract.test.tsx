@@ -334,6 +334,10 @@ describe('Research rendered page contract', () => {
   })
 
   it('keeps governance controls off the research page and renders short-history metrics honestly', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({
+      ...workbenchFixture,
+      current_context: { ...workbenchFixture.current_context, quality_warnings: ['Quote coverage needs review.'] },
+    })
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
@@ -341,6 +345,7 @@ describe('Research rendered page contract', () => {
     )
 
     await screen.findByText('Solved Result')
+    expect(screen.getByRole('button', { name: /Data quality warning: Quote coverage needs review/ }).closest('.research-command-meta')).not.toBeNull()
     expect(screen.queryByText('Research Eligibility')).not.toBeInTheDocument()
     expect(screen.queryByText('PM Approval')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve for research' })).not.toBeInTheDocument()

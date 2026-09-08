@@ -13,10 +13,12 @@ mkdir -p \
   "$PROJECT_ROOT/shared-data/scripts" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
+  "$PROJECT_ROOT/apps/briefing/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend/scripts" \
   "$PROJECT_ROOT/home/frontend/dist" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist" \
   "$PROJECT_ROOT/deploy" \
   "$PROJECT_ROOT/infra/launchd" \
   "$PROJECT_ROOT/infra/postgres" \
@@ -28,6 +30,7 @@ touch \
   "$PROJECT_ROOT/home/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/watchlist/frontend/dist/index.html" \
   "$PROJECT_ROOT/apps/portfolio/frontend/dist/index.html" \
+  "$PROJECT_ROOT/apps/briefing/frontend/dist/index.html" \
   "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" \
   "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
@@ -148,6 +151,11 @@ printf '%s\n' \
   > "$MOCK_BIN/systemctl"
 chmod +x "$MOCK_BIN/systemctl"
 
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "health:%s\n" "${@: -1}" >> "$EVENT_LOG"' \
+  '[[ "${HEALTH_FAIL:-false}" != true ]]' > "$MOCK_BIN/curl"
+chmod +x "$MOCK_BIN/curl"
+
 chmod 700 "$ENV_ROOT"
 CANONICAL_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio'
 printf '%s\n' \
@@ -158,23 +166,31 @@ printf '%s\n' "INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/watchlist.env"
 printf '%s\n' "INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL=$CANONICAL_URL" \
   > "$ENV_ROOT/portfolio.env"
-chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env"
-  : > "$ENV_ROOT/home.env"
+printf '%s\n' "INVESTMENT_STUDIO_BRIEFING_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/briefing.env"
+printf '%s\n' "INVESTMENT_STUDIO_MARKET_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/data.env" "$ENV_ROOT/watchlist.env" "$ENV_ROOT/portfolio.env" "$ENV_ROOT/briefing.env" "$ENV_ROOT/market.env"
+  printf '%s\n' "INVESTMENT_STUDIO_HOME_DATABASE_URL=$CANONICAL_URL" > "$ENV_ROOT/home.env"
   chmod 600 "$ENV_ROOT/home.env"
 
 MANAGED_UNITS=(
   investment-studio-home-api.service
   investment-studio-watchlist-api.service
   investment-studio-portfolio-api.service
+  investment-studio-briefing-api.service
   investment-studio-home-web.service
   investment-studio-watchlist-web.service
   investment-studio-portfolio-web.service
+  investment-studio-briefing-web.service
 )
 ORIGINAL_ACTIVE_UNITS=(
   investment-studio-home-api.service
   investment-studio-market-data-refresh.timer
   investment-studio-us-reference-data-refresh.timer
   investment-studio-us-reference-data-refresh.service
+  investment-studio-market-sync.timer
+  investment-studio-market-sync.service
+  investment-studio-market-daily.timer
+  investment-studio-briefing-daily.timer
 )
 ORIGINAL_ENABLED_UNITS=(
   investment-studio-home-api.service
@@ -211,6 +227,7 @@ run_case() {
   ENV_ROOT="$ENV_ROOT" \
   RUN_MIGRATIONS=true \
   START_SERVICES=true \
+  HEALTH_ATTEMPTS=1 \
   INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
     "$REPOSITORY_ROOT/infra/systemd/install_app_services.sh"
 }
@@ -236,7 +253,7 @@ SUCCESS_CASE="$TEST_ROOT/success"
 prepare_case "$SUCCESS_CASE"
 run_case "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 diff -u \
-  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service | sort) \
+  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service investment-studio-market-sync.timer investment-studio-market-sync.service investment-studio-market-daily.timer investment-studio-briefing-daily.timer | sort) \
   <(sort "$SUCCESS_CASE/active")
 diff -u \
   <(printf '%s\n' "${MANAGED_UNITS[@]}" | sort) \
@@ -362,6 +379,16 @@ if [[ -z "$restart_line" || -z "$database_restore_line" || -z "$restored_api_lin
 fi
 
 ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
+HEALTH_CASE="$TEST_ROOT/health-failure"
+prepare_case "$HEALTH_CASE"
+if HEALTH_FAIL=true run_case "$HEALTH_CASE" > "$HEALTH_CASE/output" 2>&1; then
+  echo "The systemd installer accepted an active service with a failed HTTP health check." >&2
+  exit 1
+fi
+assert_original_state_restored "$HEALTH_CASE"
+grep -q '^database-restore$' "$HEALTH_CASE/events"
+grep -q 'failed its readiness gate: http://127.0.0.1:8102/api/health' "$HEALTH_CASE/output"
+
 prepare_case "$ROLLBACK_CASE"
 set +e
 ROLLBACK_FAIL=true \

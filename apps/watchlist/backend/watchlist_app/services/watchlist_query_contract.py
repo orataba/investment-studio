@@ -11,12 +11,40 @@ SYSTEM_QUERY_FIELDS = {
     "metric_quote_basis",
     "metric_series_type",
 }
+# The list menus expose a reviewed subset; the full registry also supports
+# instrument detail and research queries.
+WATCHLIST_COLUMN_FIELD_KEYS = (
+    "instrument_name",
+    "ticker_or_isin",
+    "instrument_type",
+    "currency",
+    "attr.instrument_taxonomy_path",
+    "latest_quote",
+    "latest_quote_date",
+    "return_1w",
+    "return_1m",
+    "return_3m",
+    "return_ytd",
+    "return_1y",
+    "attr.current_drawdown",
+    "return_chart_1m",
+    "metric_as_of_date",
+    "attr.coverage_status",
+    "attr.risk_attention",
+    "data_freshness_status",
+)
+WATCHLIST_FILTER_FIELD_KEYS = (
+    "instrument_type",
+    "currency",
+    "attr.coverage_status",
+    "attr.risk_attention",
+    "data_freshness_status",
+)
 WATCHLIST_GROUP_BY_OPTIONS = (
     ("none", "None"),
     ("taxonomy", "Taxonomy"),
     ("currency", "Currency"),
     ("attr.coverage_status", "Investment Status"),
-    ("attr.manual_rating", "Research Rating"),
 )
 WATCHLIST_GROUP_BY_CODES = frozenset(code for code, _label in WATCHLIST_GROUP_BY_OPTIONS)
 SYNTHETIC_GROUP_BY_FIELDS = {"none", "taxonomy"}

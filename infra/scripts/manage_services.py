@@ -13,6 +13,9 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 GROUPS = {
     "home": ("home-api", "home-web"),
+    "briefing": ("briefing-api", "briefing-web", "briefing-daily", "briefing-weekly"),
+    "market": tuple(f"market-{action}" for action in (
+        "daily", "weekly", "publish", "sync", "registered-prices-cn", "registered-prices-hk", "registered-prices-us", "registered-prices-eu")),
     "investments": (
         "watchlist-api", "watchlist-web", "portfolio-api", "portfolio-web",
         "market-data-refresh", "cn-market-data-refresh",
@@ -51,6 +54,11 @@ def manage(group: str, action: str) -> None:
         return
 
     services = GROUPS[group]
+    if mac and group == "briefing":
+        services = ("briefing-api", "briefing-web")
+    if mac and group == "market":
+        services = ("market-sync",)
+    scheduled = lambda service: service.endswith("-data-refresh") or service in GROUPS["market"] or service in {"briefing-daily", "briefing-weekly"}
     if mac:
         domain = f"gui/{os.getuid()}"
         for service in services:
@@ -66,7 +74,7 @@ def manage(group: str, action: str) -> None:
                 print(f"{service}: {status}", flush=True)
                 continue
             if action == "restart" and loaded:
-                if not service.endswith("-data-refresh"):
+                if not scheduled(service):
                     run(["launchctl", "kickstart", "-k", target])
                 continue
             if action == "stop" and loaded:
@@ -80,7 +88,7 @@ def manage(group: str, action: str) -> None:
 
     units = [f"investment-studio-{name}.service" for name in services]
     for service in services:
-        if not service.endswith("-data-refresh"):
+        if not scheduled(service):
             continue
         timer = f"investment-studio-{service}.timer"
         # Starting a group enables its schedule, not an unsolicited data refresh.

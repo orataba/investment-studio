@@ -1,9 +1,12 @@
 """Compare retained FMP estimate observations without rolling fiscal periods."""
 from datetime import UTC, datetime
 
-from investment_studio_instrument_core.db_models import InstrumentReferenceObservation
 from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKERS
-from sqlalchemy import func, select
+from copy import deepcopy
+
+from watchlist_app.services.sector_market_data import (
+    all_rows, enrich_estimate, numeric_store, read_sector_market_data, reporting_statements,
+)
 
 
 _METRICS = {"revenue_avg": ("num_analysts_revenue", "currency"), "eps_avg": ("num_analysts_eps", "currency_per_share")}
@@ -34,25 +37,12 @@ def _rows(companies):
             for row in company.get(field, [])}
 
 
-def _sector(observation):
-    return observation.value_json["sections"].get("sector_market_data", {})
-
-
 def _companies(observation):
-    return {holding["holding_symbol"]: {
-                "name": holding["holding_name"], "weight_percent": holding["weight_percent"],
-                "reporting_currency_source": (holding.get("company_profile") or {}).get("reporting_currency_source"),
-                "annual_estimates": holding["annual_estimates"], "quarterly_estimates": holding["quarterly_estimates"],
-            } for holding in _sector(observation).get("holdings", []) if holding["holding_type"] == "equity"}
+    return observation["companies"]
 
 
 def _descriptor(observation):
-    holdings = _sector(observation).get("holdings", [])
-    times = sorted({row["collected_at"] for row in _rows(_companies(observation)).values() if row.get("collected_at")})
-    return {"observation_id": observation.observation_id, "collected_at": observation.value_json["fetched_at"],
-            "holdings_as_of": max((str(h.get("as_of_date") or "") for h in holdings), default="") or None,
-            "holdings_observed_on": max((str(h.get("snapshot_date") or "") for h in holdings), default="") or None,
-            "collected_at_min": times[0] if times else None, "collected_at_max": times[-1] if times else None}
+    return {key: value for key, value in observation.items() if key != "companies"}
 
 
 def compare_estimate_snapshots(iid, current, previous=None):
@@ -85,8 +75,8 @@ def compare_estimate_snapshots(iid, current, previous=None):
                     "frequency": frequency, "target_period_end": period, "metric": metric, "unit": unit,
                     "currency": currency, "previous_currency": before.get("currency") if before else None,
                     "current_currency_status": row.get("currency_status"), "previous_currency_status": before.get("currency_status") if before else None,
-                    "current_currency_source": company.get("reporting_currency_source"),
-                    "previous_currency_source": old_companies.get(symbol, {}).get("reporting_currency_source"),
+                    "current_currency_source": row.get("currency_source") or company.get("reporting_currency_source"),
+                    "previous_currency_source": (before or {}).get("currency_source") or old_companies.get(symbol, {}).get("reporting_currency_source"),
                     "current_value": row[metric], "previous_value": before.get(metric) if before else None,
                     "current_collected_at": row.get("collected_at"), "previous_collected_at": before.get("collected_at") if before else None,
                     "current_num_analysts": row.get(analyst_field), "previous_num_analysts": before.get(analyst_field) if before else None,
@@ -148,7 +138,7 @@ def compare_estimate_snapshots(iid, current, previous=None):
         gaps.add("current_estimates_missing")
     return {"instrument_id": iid, "supported": True, "provider": "FMP",
         "company_symbols": sorted(set(companies) | set(old_companies)),
-        "source_id": f"estimates:{current.observation_id}:{iid}", "source_type": "analyst_estimate_changes",
+        "source_id": f"estimates:{current['observation_id']}:{iid}", "source_type": "analyst_estimate_changes",
         "title": f"FMP · {iid.upper()}成分公司预期观测对照",
         "status": "baseline" if previous is None else "comparable" if any(row["comparable_company_count"] for row in metrics) else "limited",
         "current_snapshot": _descriptor(current), "previous_snapshot": _descriptor(previous) if previous else None,
@@ -175,20 +165,52 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
     cutoff = as_of if as_of is not None else datetime.now(UTC)
     if cutoff.tzinfo is None:
         raise ValueError("Estimate history cutoff must include a timezone.")
-    observations = list(session.scalars(select(InstrumentReferenceObservation).where(
-        InstrumentReferenceObservation.instrument_id == iid,
-        InstrumentReferenceObservation.collected_at <= cutoff,
-    ).order_by(InstrumentReferenceObservation.collected_at.desc(), InstrumentReferenceObservation.observation_id.desc()).limit(2)))
-    if not observations:
-        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚未采集该ETF的公司预期快照；首次采集后建立历史基线。"]}
-    result = compare_estimate_snapshots(iid, observations[0], observations[1] if len(observations) > 1 else None)
-    first_collected_at = session.scalar(select(func.min(InstrumentReferenceObservation.collected_at)).where(
-        InstrumentReferenceObservation.instrument_id == iid, InstrumentReferenceObservation.collected_at <= cutoff,
-    ))
-    # SQLite's test adapter returns naive timestamps; stored observations are UTC.
-    if first_collected_at.tzinfo is None:
-        first_collected_at = first_collected_at.replace(tzinfo=UTC)
-    return {**result, "history_available_from": first_collected_at.astimezone(UTC).isoformat(), "as_of": cutoff.astimezone(UTC).isoformat()}
+    market = read_sector_market_data(session, iid.upper(), as_of=cutoff)
+    if market is None:
+        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的ETF共享持仓及公司预期观测。"]}
+    companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
+        "annual_estimates": [], "quarterly_estimates": []} for row in market["holdings"] if row["holding_type"] == "equity"}
+    store = numeric_store()
+    captures = store.observations("analyst_estimates", symbols=list(companies), as_of=cutoff, limit=2)["observations"]
+    if not captures:
+        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚未采集这些公司的分析师预期；首次采集后建立历史基线。"]}
+    current_companies, previous_companies = deepcopy(companies), deepcopy(companies)
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for capture in captures:
+        grouped[(capture["symbol"], capture["estimate_period"])].append(capture)
+    current_clocks, previous_clocks, source_ids = [], [], []
+    scopes_by_clock = defaultdict(set)
+    for (symbol, _), history in grouped.items():
+        history.sort(key=lambda row: row["observed_at"], reverse=True)
+        for capture in history[:2]:
+            scopes_by_clock[capture["observed_at"]].add(symbol)
+    # Full-market captures share clocks across companies. Read each capture once,
+    # rather than rescanning long histories for every ETF constituent.
+    captured_rows = {}
+    for clock, symbols in scopes_by_clock.items():
+        statements = reporting_statements(store, list(symbols), clock)
+        rows = defaultdict(list)
+        for row in all_rows(store, "analyst_estimates", symbols=list(symbols), as_of=cutoff, observed_at=clock):
+            rows[(row["symbol"], row["estimate_period"])].append(enrich_estimate(row, statements.get(row["symbol"])))
+        captured_rows[clock] = rows
+    for (symbol, frequency), history in grouped.items():
+        for index, capture in enumerate(history[:2]):
+            selected = captured_rows[capture["observed_at"]][(symbol, frequency)]
+            target = current_companies if index == 0 else previous_companies
+            target[symbol][_FREQUENCIES[frequency]] = selected
+            (current_clocks if index == 0 else previous_clocks).append(capture["observed_at"])
+            source_ids.extend(row["source_id"] for row in selected)
+    def observation(items, clocks, label):
+        return {"observation_id": label + ":" + cutoff.isoformat(), "companies": items,
+            "collected_at": max(clocks), "collected_at_min": min(clocks), "collected_at_max": max(clocks),
+            "holdings_as_of": max((str(row.get("as_of_date") or "") for row in market["holdings"]), default="") or None,
+            "holdings_observed_on": max((str(row.get("snapshot_date") or "") for row in market["holdings"]), default="") or None}
+    current = observation(current_companies, current_clocks, "current")
+    previous = observation(previous_companies, previous_clocks, "previous") if previous_clocks else None
+    result = compare_estimate_snapshots(iid, current, previous)
+    return {**result, "as_of": cutoff.isoformat(), "source_ids": sorted(set(source_ids)),
+            "comparison_basis": "Latest two complete source captures for each company and forecast frequency; current ETF weights."}
 
 
 def retained_estimate_sources(context):

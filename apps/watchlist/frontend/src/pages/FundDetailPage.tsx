@@ -1,3 +1,4 @@
+import { accountStorageKey, useCanWriteTeam } from '../components/AccountBoundary'
 import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import {
   startTransition,
@@ -13,6 +14,7 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import LoadingOverlay from '../components/LoadingOverlay'
 import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
+import type { ResearchReference } from '../lib/researchDossierApi'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
@@ -78,6 +80,7 @@ import { fundDetailTabLabel, fundDetailTabs, resolveFundDetailLocation, type Fun
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import {
   beginDetailRequest,
   completeDetailRequest,
@@ -323,7 +326,7 @@ function loadWatchlistRollingRiskSettings(): WatchlistRollingRiskSettings {
   }
 
   try {
-    const rawValue = window.localStorage.getItem(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY)
+    const rawValue = window.localStorage.getItem(accountStorageKey(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY))
     const record = rawValue ? (JSON.parse(rawValue) as Record<string, unknown>) : {}
     return {
       windowMonths: normalizeRollingRiskWindowMonths(
@@ -346,7 +349,7 @@ function saveWatchlistRollingRiskSettings(settings: WatchlistRollingRiskSettings
   }
 
   try {
-    window.localStorage.setItem(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+    window.localStorage.setItem(accountStorageKey(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY), JSON.stringify(settings))
   } catch {
     // Ignore storage failures; the UI still works with in-memory state.
   }
@@ -2789,6 +2792,7 @@ export default function FundDetailPage({
   watchlistContext = null,
   corporateActions = [],
 }: FundDetailPageProps) {
+  const canWriteTeam = useCanWriteTeam()
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
   const [detailSearchParams, setDetailSearchParams] = useSearchParams()
@@ -2799,11 +2803,11 @@ export default function FundDetailPage({
   })
   const [archiveSection, setArchiveSection] = useState<FundArchiveSection>(() =>
     resolveFundDetailLocation(detailSearchParams.get('tab'), detailSearchParams.get('section'), fundType).section)
-  const [assistant, setAssistant] = useState<{ instrumentId: string; question: string } | null>(null)
+  const [assistant, setAssistant] = useState<{ instrumentId: string; question: string; researchReference?: ResearchReference } | null>(null)
   const [riskOpen, setRiskOpen] = useState<string | null>(null)
-  function openAssistant(question = '') {
+  function openAssistant(question = '', researchReference?: ResearchReference) {
     setRiskOpen(null)
-    setAssistant({ instrumentId: fundId, question })
+    setAssistant({ instrumentId: fundId, question, researchReference })
   }
   function openRisk() {
     setAssistant(null)
@@ -2885,7 +2889,9 @@ export default function FundDetailPage({
   const [documentUploadNotes, setDocumentUploadNotes] = useState('')
   const [uploadingDocument, setUploadingDocument] = useState(false)
   const [savingSection, setSavingSection] = useState<string | null>(null)
-  const [sectionNotice, setSectionNotice] = useState<string | null>(null)
+  function setSectionNotice(message: string | null) {
+    setQuoteActionNotice(message ? { id: Date.now(), message, tone: 'success' } : null)
+  }
   const [sectionError, setSectionError] = useState<string | null>(null)
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
@@ -2967,14 +2973,6 @@ export default function FundDetailPage({
     selectedCurrency,
     setDetailSearchParams,
   ])
-
-  useEffect(() => {
-    if (!sectionNotice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setSectionNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [sectionNotice])
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -3697,6 +3695,7 @@ export default function FundDetailPage({
     }
     setSavingDefaultBenchmark(true)
     setQuoteActionNotice(null)
+    setSectionError(null)
     try {
       await updateInstrumentNavSettings(fundId, {
         default_benchmark_instrument_id: benchmarkFundId,
@@ -3720,7 +3719,7 @@ export default function FundDetailPage({
       )
       setQuoteActionNotice({ id: Date.now(), message: '默认基准已保存。', tone: 'success' })
     } catch (saveError) {
-      setQuoteActionNotice({ id: Date.now(), message: saveError instanceof Error ? saveError.message : '默认基准保存失败。', tone: 'error' })
+      setSectionError(saveError instanceof Error ? saveError.message : '默认基准保存失败。')
     } finally {
       setSavingDefaultBenchmark(false)
     }
@@ -5340,20 +5339,20 @@ export default function FundDetailPage({
               aria-label={savingDefaultBenchmark ? '正在保存默认基准' : savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
               title={savedDefaultBenchmarkId === benchmarkFundId && selectedBenchmark ? '已是默认基准' : '设置为默认基准'}
               aria-pressed={Boolean(selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId)}
-              disabled={!selectedBenchmark || savingDefaultBenchmark || benchmarkLoading || Boolean(benchmarkLoadError) || savedDefaultBenchmarkId === benchmarkFundId}
+              disabled={!canWriteTeam || !selectedBenchmark || savingDefaultBenchmark || benchmarkLoading || Boolean(benchmarkLoadError) || savedDefaultBenchmarkId === benchmarkFundId}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => void handleSetDefaultBenchmark()}
             >
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9Z" fill={selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" /></svg>
             </button>
-            {hasBenchmarkSelection && (
+            {hasBenchmarkSelection && (benchmarkHasIssue || benchmarkLoading ? (
               <div className={`instrument-benchmark-status${benchmarkHasIssue ? ' instrument-benchmark-status-error' : ''}`}>
                 <button type="button" aria-label={statusText} onClick={() => { if (benchmarkLoadError) setBenchmarkLoadRetryToken((value) => value + 1) }}>
                   {benchmarkLoading ? '…' : benchmarkHasIssue ? '!' : 'i'}
                 </button>
                 <span role="status">{statusText}</span>
               </div>
-            )}
+            ) : <InfoHint label="基准比较口径" detail={statusText} />)}
             {showBenchmarkResults ? (
               <div className="instrument-chart-compare-results">
                 {filteredBenchmarkOptions.length ? (
@@ -5678,7 +5677,7 @@ export default function FundDetailPage({
 
   return (
     <div className="terminal-page instrument-detail-page">
-      {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} onClose={() => setAssistant(null)} />}
+      {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
       {riskOpen === fundId && <InstrumentRiskDrawer instrumentId={fundId} instrumentName={summary.instrument_name} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} onClose={() => setRiskOpen(null)} onAskAssistant={openAssistant} />}
       <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
       <section className="panel instrument-detail-shell">
@@ -5720,7 +5719,7 @@ export default function FundDetailPage({
                 {summary.instrument_name} <span>{summary.ticker_or_isin}</span>
               </h1>
               <WorkspaceTools
-                settings={{ label: language === 'zh-Hans' ? '标的设置' : 'Instrument settings', onClick: () => {
+                settings={{ label: language === 'zh-Hans' ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam, onClick: () => {
                   setCoverageStatusDraft(currentCoverageStatus)
                   setTaxonomyDraftNodeId(currentTaxonomyNodeId)
                   setSectionError(null)
@@ -5757,6 +5756,9 @@ export default function FundDetailPage({
                 onClick={() => setActiveTab(tab)}
               >
                 {fundDetailTabLabel(fundType, tab, language, localize(language, TAB_LABELS[tab]))}
+                {tab === activeTab && loadingSectionKeys.has(`${detailBundleKey}:${activeDataSection}`) ? (
+                  <span className="fund-section-loading" role="status" aria-label={`Loading ${localize(language, TAB_LABELS[tab]).toLowerCase()} data…`}>…</span>
+                ) : null}
               </button>
             ))}
           </div>
@@ -5765,7 +5767,6 @@ export default function FundDetailPage({
 
         {productFrameworkLoadError ? <p role="alert" className="fund-overview-date-note">{language === 'zh-Hans' ? '标的分类暂时无法读取：' : 'Instrument classification unavailable: '}{productFrameworkLoadError}</p> : null}
         {sectionError ? <div className="inline-notice inline-notice-error">{sectionError}</div> : null}
-        {sectionNotice ? <div className="inline-notice inline-notice-success">{sectionNotice}</div> : null}
         {sectionLoadErrors[activeTab] ? (
           <div className="inline-notice inline-notice-error instrument-section-load-error" role="alert">
             <span>{sectionLoadErrors[activeTab]}</span>
@@ -5775,11 +5776,6 @@ export default function FundDetailPage({
             >
               {language === 'zh-Hans' ? '重试' : 'Retry'}
             </button>
-          </div>
-        ) : null}
-        {loadingSectionKeys.has(`${detailBundleKey}:${activeDataSection}`) ? (
-          <div className="inline-notice" role="status">
-            Loading {localize(language, TAB_LABELS[activeTab]).toLowerCase()} data…
           </div>
         ) : null}
       </section>
@@ -7027,6 +7023,7 @@ export default function FundDetailPage({
                 ) : (
                   <button
                     type="button"
+                    disabled={!canWriteTeam}
                     onClick={() => {
                       setPriceDraft(toEditablePriceDraft(bundle.price))
                       setEditingPriceSection('table')
@@ -7289,6 +7286,7 @@ export default function FundDetailPage({
                 ) : (
                   <button
                     type="button"
+                    disabled={!canWriteTeam}
                     onClick={() => {
                       setPeopleDraft(toEditablePeopleDraft(bundle!.people))
                       setEditingPeople(true)
@@ -7404,6 +7402,7 @@ export default function FundDetailPage({
                 ) : (
                   <button
                     type="button"
+                    disabled={!canWriteTeam}
                     onClick={() => {
                       setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
                       setEditingStrategy(true)
@@ -7545,6 +7544,7 @@ export default function FundDetailPage({
                   <input
                     key={documentUploadFile ? 'document-header-upload-selected' : 'document-header-upload-empty'}
                     type="file"
+                    disabled={!canWriteTeam}
                     onChange={(event) => {
                       const nextFile = event.target.files?.[0] || null
                       setDocumentUploadFile(nextFile)
@@ -7736,6 +7736,7 @@ export default function FundDetailPage({
 
       {activeTab === 'research' ? (
         <InvestmentOpinionTimeline
+          onAskAssistant={openAssistant}
           instrumentId={fundId}
           research={research}
           language={language}

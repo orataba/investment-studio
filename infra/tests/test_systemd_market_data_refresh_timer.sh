@@ -20,6 +20,10 @@ printf '%s\n' \
   'INVESTMENT_STUDIO_DATA_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   > "$ENV_ROOT/data.env"
 chmod 600 "$ENV_ROOT/data.env"
+printf '%s\n' \
+  'INVESTMENT_STUDIO_MARKET_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
+  > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/market.env"
 
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -97,6 +101,7 @@ grep -Fq -- '--require-downstream-success' "$SERVICE_FILE"
 grep -Fq -- '--json' "$SERVICE_FILE"
 grep -Fq 'EnvironmentFile=' "$SERVICE_FILE"
 grep -Fq 'data.env' "$SERVICE_FILE"
+grep -Fq 'market.env' "$SERVICE_FILE"
 grep -Fxq 'Environment=INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data' "$SERVICE_FILE"
 grep -Fxq 'Environment=INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion' "$SERVICE_FILE"
 grep -Fq 'INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=' "$SERVICE_FILE"
@@ -135,5 +140,15 @@ for schedule in \
   fi
   grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
 done
+
+: > "$SYSTEMCTL_CALLS"
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" START_TIMERS=false \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+if grep -Fq 'start investment-studio-market-data-refresh.timer' "$SYSTEMCTL_CALLS"; then
+  echo "A staged timer started before the caller restored its prior state." >&2
+  exit 1
+fi
 
 echo "systemd market close, pre-open reference and settlement timer tests passed."

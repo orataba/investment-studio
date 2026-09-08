@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from threading import Event, Lock, Thread
+from studio_identity import IdentityError, service_principal, principal_context
 
 from portfolio_app.services.daily_snapshots import (
     _next_daily_snapshot_recalculation_candidate,
@@ -103,18 +104,22 @@ class DailySnapshotRecalculationWorker:
         consecutive_failures = 0
         while not self._stop_requested.is_set():
             try:
-                processed, self._reconciliation_cursor = (
-                    _run_daily_snapshot_recalculation_worker_once(
-                        reconciliation_after_portfolio_id=(
-                            self._reconciliation_cursor
-                        ),
-                        reconciliation_batch_size=(
-                            self._reconciliation_batch_size
-                        ),
-                        claim_observer=self._record_active_claim,
-                        stop_requested=self._stop_requested.is_set,
+                principal = service_principal("portfolio")
+                if "portfolio:maintain" not in principal.scopes or principal.resource_scope:
+                    raise IdentityError(403, "估值维护线程需要全量维护服务权限")
+                with principal_context(principal):
+                    processed, self._reconciliation_cursor = (
+                        _run_daily_snapshot_recalculation_worker_once(
+                            reconciliation_after_portfolio_id=(
+                                self._reconciliation_cursor
+                            ),
+                            reconciliation_batch_size=(
+                                self._reconciliation_batch_size
+                            ),
+                            claim_observer=self._record_active_claim,
+                            stop_requested=self._stop_requested.is_set,
+                        )
                     )
-                )
             except Exception:
                 # The synchronous kernel records a failed generation before
                 # re-raising.  Keep the worker alive for unrelated portfolios.

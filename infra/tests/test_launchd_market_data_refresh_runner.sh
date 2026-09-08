@@ -28,9 +28,13 @@ printf '%s\n' 'raise SystemExit(0)' > "$PROJECT_ROOT/infra/scripts/market_close_
 printf '%s\n' \
   'INVESTMENT_STUDIO_DATA_DATAHUB_API_KEY=test-key-loaded' \
   'INVESTMENT_STUDIO_DATA_EMAIL_SYNC_ENABLED=true' \
+  'INVESTMENT_STUDIO_AUTH_MODE=local' \
+  'INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data' \
   'INVESTMENT_STUDIO_DATA_EMAIL_IMAP_PASSWORD=$(touch "'$SENTINEL_PATH'")' \
   > "$ENV_ROOT/data.env"
 chmod 600 "$ENV_ROOT/data.env"
+printf '%s\n' 'INVESTMENT_STUDIO_MARKET_DATABASE_URL=postgresql://explicit/local' > "$ENV_ROOT/market.env"
+chmod 600 "$ENV_ROOT/market.env"
 
 printf '%s\n' \
   'from __future__ import annotations' \
@@ -119,8 +123,10 @@ assert "postgresql+psycopg://explicit/local" not in audit_arguments
 assert "--json" in audit_arguments
 normalized_project_root = os.path.normpath(os.environ["PROJECT_ROOT"])
 assert payload["pythonpath"] == (
+    f"{normalized_project_root}/packages/identity:"
     f"{normalized_project_root}/shared-data:"
-    f"{normalized_project_root}/shared-data/instruments/python"
+    f"{normalized_project_root}/shared-data/instruments/python:"
+    f"{normalized_project_root}/shared-data/market"
 )
 run_state = json.loads(Path(os.environ["RUN_STATE_PATH"]).read_text(encoding="utf-8"))
 assert run_state["status"] == "succeeded"

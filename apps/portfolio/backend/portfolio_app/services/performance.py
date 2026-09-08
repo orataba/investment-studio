@@ -67,7 +67,6 @@ from portfolio_app.services.market_data import (
     resolve_quote_point,
     resolve_quote_series,
 )
-from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.transaction_dates import (
     transaction_cash_activity_date,
     transaction_external_flow_date,
@@ -627,7 +626,7 @@ def _build_period_start_boundary_transactions(
 ) -> list[dict[str, object]]:
     start_iso = start_date.isoformat()
     boundary_transactions: list[dict[str, object]] = []
-    for transaction in sorted(transactions, key=transaction_sort_key):
+    for transaction in sorted(expand_asset_deliveries(transactions), key=transaction_sort_key):
         effective_date = transaction_performance_effective_date(transaction)
         effective_date_iso = effective_date.isoformat() if effective_date is not None else ""
         if effective_date_iso < start_iso:
@@ -649,7 +648,7 @@ def _transactions_in_period(
     end_iso = end_date.isoformat()
     return [
         transaction
-        for transaction in sorted(transactions, key=transaction_sort_key)
+        for transaction in sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
         if (
             (effective_date := transaction_performance_effective_date(transaction)) is not None
             and (
@@ -669,7 +668,7 @@ def _transactions_as_of_end_date(
     end_iso = end_date.isoformat()
     return [
         transaction
-        for transaction in sorted(transactions, key=transaction_sort_key)
+        for transaction in sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
         if (
             (effective_date := transaction_performance_effective_date(transaction)) is not None
             and effective_date.isoformat() <= end_iso
@@ -685,7 +684,7 @@ def _transactions_with_ledger_activity_as_of_end_date(
     end_iso = end_date.isoformat()
     return [
         transaction
-        for transaction in sorted(transactions, key=transaction_sort_key)
+        for transaction in sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
         if (
             (activity_date := transaction_ledger_activity_date(transaction))
             is not None
@@ -1612,7 +1611,7 @@ def _period_unrealized_capital_gains_by_group(
                 result[key] = sorted(set(result[key]) | set(short[key]))
             return result
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     start_boundary_date = (
         start_date
         if start_is_close_boundary
@@ -2271,7 +2270,7 @@ def build_daily_portfolio_snapshots(
         return []
 
     resolved_start_date, resolved_end_date = window
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     option_delivery_stock_transactions = (
         _physical_option_delivery_stock_transactions(
             str(portfolio.get("portfolio_id") or ""), sorted_transactions
@@ -4513,7 +4512,7 @@ def build_period_calculation_report(
         return report
     if reliable_end_date is not None:
         resolved_end_date = reliable_end_date
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     initial_boundary_date = _initial_boundary_date(
         resolved_start_date,
         start_date,
@@ -5379,7 +5378,7 @@ def build_holdings_report(
     )
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
         end_date=as_of_date,
@@ -5669,7 +5668,7 @@ def build_period_boundary_holdings_report(
         for account in accounts
         if str(account.get("account_id") or "")
     }
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     initial_boundary_date = _initial_boundary_date(
         resolved_start_date,
         start_date,
@@ -7241,6 +7240,12 @@ def _build_contribution_daily_events(
             add_transfer_flow(source_group_key=source_group_key, source_group_label=source_group_label,
                               target_group_key=group_key, target_group_label=group_label,
                               amount=gross_amount, trade_date=as_of_date, currency=currency)
+            # Only acquisition charges consume cash; the shares themselves
+            # arrive as non-cash consideration from the FCN.
+            cash_group_key, cash_group_label = cash_group(settlement_cash_account_id, currency)
+            add_transfer_flow(source_group_key=cash_group_key, source_group_label=cash_group_label,
+                              target_group_key=group_key, target_group_label=group_label,
+                              amount=fee_amount + tax_amount, trade_date=as_of_date, currency=currency)
         elif transaction_type in {"buy", "buy_to_cover"} and is_position_cash_transfer_date:
             source_group_key, source_group_label = cash_group(settlement_cash_account_id, currency)
             add_transfer_flow(
@@ -8168,7 +8173,7 @@ def build_contribution_report(
 
     resolved_start_date, resolved_end_date = window
     requested_resolved_end_date = end_date or resolved_end_date
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     boundary_start_date = resolved_start_date - timedelta(days=1)
     portfolio_view = deepcopy(portfolio)
     portfolio_view["as_of_date"] = resolved_end_date.isoformat()
@@ -9193,6 +9198,9 @@ def _build_period_calculation_child_records(
         list(detail_report.get("daily_slices") or [])
     )
     detail_daily_slices = list(detail_report.get("daily_slices") or [])
+    child_linked_contributions = attribution.linked_return_contributions_by_group(
+        detail_daily_slices, portfolio_daily_series
+    )
     child_risk_metrics = attribution.realized_risk_attribution_by_group(
         detail_daily_slices,
         portfolio_daily_series,
@@ -9334,6 +9342,7 @@ def _build_period_calculation_child_records(
                 "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": child_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
+                "linked_period_contribution": child_linked_contributions.get(candidate_child_key),
                 **child_risk_metrics.get(
                     candidate_child_key,
                     attribution.risk_metric_defaults(risk_calculation_frequency),
@@ -9464,6 +9473,10 @@ def _build_period_calculation_cash_parent_group(
         "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
         "total_pnl": group_total_pnl,
         "period_contribution": _safe_float(line.get("period_contribution")),
+        "linked_period_contribution": attribution.linked_return_contributions_by_group(
+            parent_daily_slices,
+            list(cash_detail_report.get("_portfolio_daily_series") or []),
+        ).get("cash"),
         **attribution.risk_metric_defaults(risk_calculation_frequency),
     }
 
@@ -9484,7 +9497,6 @@ def build_period_calculation_groups_report(
     contribution_report: dict[str, object] | None = None,
     detail_contribution_report: dict[str, object] | None = None,
     calculation_inputs: PeriodCalculationInputs | None = None,
-    prebuilt_risk_frequency_profile: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if contribution_report is None:
         if axis == "taxonomy":
@@ -9602,77 +9614,38 @@ def build_period_calculation_groups_report(
     period_return_contracts = attribution.period_return_contracts_by_group(
         contribution_daily_slices
     )
-    risk_basis_end_date = resolved_end_date or date.today()
-    if prebuilt_risk_frequency_profile is not None:
-        risk_instrument_ids = calculation_inputs.risk_instrument_ids if calculation_inputs is not None else []
-        risk_frequency_profile = deepcopy(prebuilt_risk_frequency_profile)
-        instrument_detail_cache = {}
-    else:
-        risk_instrument_ids = _instrument_ids_for_calculation_risk_basis(
-            portfolio,
-            accounts,
-            transactions,
-            start_date=resolved_start_date,
-            end_date=risk_basis_end_date,
-        )
-        instrument_detail_cache = _get_calculation_instrument_details(risk_instrument_ids)
-
-        def risk_instrument_detail(instrument_id: str) -> dict[str, object] | None:
-            detail = instrument_detail_cache.get(instrument_id)
-            if isinstance(detail, dict):
-                return detail
-            detail = get_registry_instrument_detail(instrument_id)
-            instrument_detail_cache[instrument_id] = detail
-            return detail
-
-        risk_frequency_profile = calculation_frequency_profile_for_instruments(
-            risk_instrument_ids,
-            end_date=risk_basis_end_date,
-            detail_loader=risk_instrument_detail,
-        )
-    has_non_security_market_risk_observation = bool(
-        not risk_instrument_ids
-        and any(
-            bool(point.get("market_risk_return_observation_eligible"))
-            for point in portfolio_daily_series
+    instrument_detail_cache = (
+        {} if calculation_inputs is not None
+        else _get_calculation_instrument_details(
+            _instrument_ids_for_calculation_risk_basis(
+                portfolio, accounts, transactions,
+                start_date=resolved_start_date, end_date=resolved_end_date,
+            )
         )
     )
-    if has_non_security_market_risk_observation:
-        risk_frequency_profile["coverage_state"] = "complete"
-        risk_frequency_profile["status_label"] = (
-            "Daily risk basis - non-base-currency cash FX observations"
-        )
-    risk_calculation_frequency = cast(
-        CalculationFrequency,
-        str(risk_frequency_profile.get("resolved_frequency") or "daily"),
-    )
-    risk_basis_complete = (
-        str(risk_frequency_profile.get("coverage_state") or "") == "complete"
-    )
+    risk_calculation_frequency: CalculationFrequency = "daily"
     risk_start_boundary_date = _period_risk_start_boundary_date(
         resolved_start_date,
         contribution_daily_slices,
     )
-    risk_metrics_by_group = (
-        attribution.realized_risk_attribution_by_group(
-            contribution_daily_slices,
-            portfolio_daily_series,
-            calculation_frequency=risk_calculation_frequency,
-            start_date=risk_start_boundary_date,
-            final_date=resolved_end_date,
-        )
-        if risk_basis_complete
-        else {}
+    linked_contributions = attribution.linked_return_contributions_by_group(
+        contribution_daily_slices, portfolio_daily_series
     )
-    portfolio_risk_summary = (
-        attribution.portfolio_realized_risk_summary(
-            portfolio_daily_series,
-            calculation_frequency=risk_calculation_frequency,
-            start_date=risk_start_boundary_date,
-            final_date=resolved_end_date,
-        )
-        if risk_basis_complete
-        else attribution.risk_metric_defaults(risk_calculation_frequency)
+    # Realized metrics use the selected period's accounting return slices.
+    # Source-history diagnostics must not suppress unrelated groups or the
+    # portfolio's valid observations (e.g. a pre-subscription NAV gap).
+    risk_metrics_by_group = attribution.realized_risk_attribution_by_group(
+        contribution_daily_slices,
+        portfolio_daily_series,
+        calculation_frequency=risk_calculation_frequency,
+        start_date=risk_start_boundary_date,
+        final_date=resolved_end_date,
+    )
+    portfolio_risk_summary = attribution.portfolio_realized_risk_summary(
+        portfolio_daily_series,
+        calculation_frequency=risk_calculation_frequency,
+        start_date=risk_start_boundary_date,
+        final_date=resolved_end_date,
     )
     direct_fx_instruments = (
         {} if calculation_inputs is not None
@@ -9801,6 +9774,7 @@ def build_period_calculation_groups_report(
                 "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": group_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
+                "linked_period_contribution": linked_contributions.get(candidate_group_key),
                 **risk_metrics_by_group.get(
                     candidate_group_key,
                     attribution.risk_metric_defaults(risk_calculation_frequency),
@@ -9878,15 +9852,18 @@ def build_period_calculation_groups_report(
     total_final_value = 0.0
     total_pnl = 0.0
     total_period_contribution = 0.0
+    total_linked_period_contribution = 0.0
     initial_value_complete = True
     final_value_complete = True
     total_pnl_complete = True
     total_period_contribution_complete = True
+    total_linked_period_contribution_complete = True
     for item in groups:
         initial_value = _safe_float(item.get("initial_value"))
         final_value = _safe_float(item.get("final_value"))
         group_total_pnl = _safe_float(item.get("total_pnl"))
         group_period_contribution = _safe_float(item.get("period_contribution"))
+        group_linked_contribution = _safe_float(item.get("linked_period_contribution"))
         if initial_value is None:
             initial_value_complete = False
         else:
@@ -9903,6 +9880,10 @@ def build_period_calculation_groups_report(
             total_period_contribution_complete = False
         else:
             total_period_contribution += group_period_contribution
+        if group_linked_contribution is None:
+            total_linked_period_contribution_complete = False
+        else:
+            total_linked_period_contribution += group_linked_contribution
 
     total_delta = total_final_value - total_initial_value if initial_value_complete and final_value_complete else None
     total_residual_delta = total_delta - total_pnl if total_delta is not None and total_pnl_complete else None
@@ -9960,6 +9941,7 @@ def build_period_calculation_groups_report(
     if not groups and summary.get("coverage_state") == "unavailable":
         initial_value_complete = final_value_complete = total_pnl_complete = False
         total_period_contribution_complete = False
+        total_linked_period_contribution_complete = False
         total_delta = total_residual_delta = None
     return {
         "portfolio_id": contribution_report["portfolio_id"],
@@ -9992,18 +9974,12 @@ def build_period_calculation_groups_report(
             "total_period_contribution": (
                 total_period_contribution if total_period_contribution_complete else None
             ),
+            "total_linked_period_contribution": (
+                total_linked_period_contribution if total_linked_period_contribution_complete else None
+            ),
             "contribution_residual": contribution_residual,
             "risk_calculation_frequency": portfolio_risk_summary.get("risk_calculation_frequency"),
-            "risk_frequency_status_label": risk_frequency_profile.get("status_label"),
-            "risk_basis_coverage_state": risk_frequency_profile.get(
-                "coverage_state"
-            ),
-            "risk_basis_requested_instrument_count": risk_frequency_profile.get(
-                "requested_instrument_count"
-            ),
-            "risk_basis_resolved_instrument_count": risk_frequency_profile.get(
-                "resolved_instrument_count"
-            ),
+            "risk_frequency_status_label": "Daily risk basis",
             "risk_return_observation_count": portfolio_risk_summary.get("risk_return_observation_count"),
             "risk_annualization_periods_per_year": portfolio_risk_summary.get(
                 "risk_annualization_periods_per_year"
@@ -10612,7 +10588,7 @@ def build_contribution_entries_report(
         }
 
     resolved_start_date, resolved_end_date = window
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     raw_start_snapshot = _raw_period_start_snapshot(
         portfolio,
         accounts,
@@ -11125,7 +11101,7 @@ def build_period_calculation_entries_report(
         }
 
     resolved_start_date, resolved_end_date = window
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(expand_asset_deliveries(transactions), key=transaction_sort_key)
     raw_start_snapshot = _raw_period_start_snapshot(
         portfolio,
         accounts,

@@ -269,15 +269,7 @@ export default function OptionOutcomePrompt({
   }
 
   if (!actions.length && !open) {
-    return error ? (
-      <span
-        className="coverage-pill coverage-pill-warning"
-        title={error}
-        role="status"
-      >
-        Option action check failed
-      </span>
-    ) : null
+    return error ? <InfoHint label="Option action check failed" detail={error} tone="warning" /> : null
   }
 
   return (

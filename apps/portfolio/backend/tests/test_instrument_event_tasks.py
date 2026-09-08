@@ -185,6 +185,7 @@ def test_human_transaction_resolves_task_and_registry_correction_reopens_it(clie
     )
     assert review_response.status_code == 200
     assert review_response.json()["status"] == "processed"
+    assert review_response.json()["resolved_by"] == "Test Manager"
     assert review_response.json()["linked_transactions"][0]["transaction_id"] == (
         transaction_id
     )

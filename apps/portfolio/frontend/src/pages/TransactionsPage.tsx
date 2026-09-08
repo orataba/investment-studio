@@ -1,3 +1,4 @@
+import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 
@@ -65,8 +66,10 @@ import {
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import {
   countActiveTransactionFilters,
@@ -109,6 +112,7 @@ import {
 } from '../lib/derivativeContractDraft'
 import { DerivativeSettlementFields } from '../components/DerivativeSettlementFields'
 import { ContractAmendmentEditor } from '../components/ContractAmendmentEditor'
+import { FcnSettlementReview } from '../components/FcnSettlementReview'
 import { TransactionDeliveryReview } from '../components/TransactionDeliveryReview'
 import {
   resolveTransactionAction,
@@ -865,6 +869,7 @@ function quantityDeltaForPreview(
 type TransactionFormState = {
   lot_selections: NonNullable<PortfolioTransactionCreatePayload['lot_selections']>
   asset_deliveries: NonNullable<PortfolioTransactionCreatePayload['asset_deliveries']>
+  settlement_cashflows: NonNullable<PortfolioTransactionCreatePayload['settlement_cashflows']>
   asset_domain: TransactionAssetDomain
   transaction_type: string
   lifecycle_event_type: string
@@ -909,6 +914,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 
   return {
     asset_deliveries: [],
+    settlement_cashflows: [],
     lot_selections: [],
     asset_domain: 'security',
     transaction_type: 'buy',
@@ -945,6 +951,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord): TransactionFormState {
   return {
     asset_deliveries: transaction.asset_deliveries ?? [],
+    settlement_cashflows: transaction.settlement_cashflows ?? [],
     lot_selections: transaction.lot_selections ?? [],
     asset_domain: transaction.asset_domain,
     transaction_type: transaction.transaction_type,
@@ -1052,7 +1059,10 @@ function resolvePositionLotImpactKinds(
 }
 
 export default function TransactionsPage() {
+  const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
+  const { language } = useLanguage()
+  const fcnLabel = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
   const entryKindControlRef = useRef<HTMLButtonElement | null>(null)
@@ -1078,7 +1088,10 @@ export default function TransactionsPage() {
   const [metadataError, setMetadataError] = useState<string | null>(null)
   const [ledgerError, setLedgerError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNoticeMessage] = useState<NoticeToastMessage | null>(null)
+  function setNotice(message: string | null) {
+    setNoticeMessage(message ? { id: Date.now(), message, tone: 'success' } : null)
+  }
   const [activeEventTask, setActiveEventTask] = useState<PortfolioInstrumentEventTaskRecord | null>(null)
   const [activeEventTaskReviewer, setActiveEventTaskReviewer] = useState('')
   const [eventTasksRefreshKey, setEventTasksRefreshKey] = useState(0)
@@ -1184,14 +1197,6 @@ export default function TransactionsPage() {
     }
     setSearchParams(next, { replace: true })
   }
-
-  useEffect(() => {
-    if (!notice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [notice])
 
   useEffect(() => {
     transactionCaptureDraftFilesRef.current = captureDraftFiles
@@ -1462,7 +1467,8 @@ export default function TransactionsPage() {
   const shouldRequireAsset = form.asset_domain !== 'cash'
   const shouldAllowRegistryInstrument = form.asset_domain === 'security'
   const shouldAllowDerivativeContract = form.asset_domain === 'derivative'
-  const canDeliverFcn = form.transaction_type === 'maturity_redemption' && ['fcn_knock_in', 'fcn_maturity'].includes(form.lifecycle_event_type)
+  const canSettleFcn = form.transaction_type === 'maturity_redemption' && ['fcn_knock_in', 'fcn_knock_out', 'fcn_maturity'].includes(form.lifecycle_event_type)
+  const canDeliverFcn = canSettleFcn && form.lifecycle_event_type !== 'fcn_knock_out'
   const activeAssetDeliveries = canDeliverFcn ? form.asset_deliveries : []
   const shouldRequireSettlement = requiresSettlement(
     form.transaction_type,
@@ -2702,6 +2708,7 @@ export default function TransactionsPage() {
   }
 
   async function handleTransactionCaptures() {
+    if (!canEditPortfolio) return
     const files = captureDraftFiles.map((draft) => draft.file)
     if (!files.length || uploadingCapture || !portfolioId) {
       return
@@ -2765,6 +2772,7 @@ export default function TransactionsPage() {
   }
 
   async function handleScreenshotAnalysis(batch: PortfolioTransactionCaptureBatchRecord) {
+    if (!canEditPortfolio) return
     if (
       !portfolioId
       || startingCaptureBatchId
@@ -2877,6 +2885,7 @@ export default function TransactionsPage() {
     batch: PortfolioTransactionCaptureBatchRecord,
     analysisOverride?: PortfolioTransactionCaptureAnalysisRevision,
   ) {
+    if (!canEditPortfolio) return false
     const analysis = analysisOverride ?? batch.latest_analysis
     if (
       batch.ledger_status !== 'unrecorded'
@@ -2945,6 +2954,7 @@ export default function TransactionsPage() {
   }
 
   async function confirmAndRecordTransactionCaptureReview() {
+    if (!canEditPortfolio) return
     const draft = captureReviewDraft
     const batch = transactionCaptureBatches.find((item) => item.batch_id === draft?.batchId)
     const latestAnalysis = batch?.latest_analysis
@@ -3027,6 +3037,7 @@ export default function TransactionsPage() {
   }
 
   async function handleTransactionFile(file: File | null) {
+    if (!canEditPortfolio) return
     const targetPortfolioId = portfolioId
     if (!file || importingFile || !targetPortfolioId) {
       return
@@ -3064,6 +3075,7 @@ export default function TransactionsPage() {
   }
 
   async function confirmTransactionFileImport() {
+    if (!canEditPortfolio) return
     const pendingImport = pendingFileImport
     const targetPortfolioId = portfolioId
     if (
@@ -3119,6 +3131,7 @@ export default function TransactionsPage() {
     ?? latestCaptureBatch
 
   function openCreateDrawer() {
+    if (!canEditPortfolio) return
     transactionRequestRef.current = null
     setEditingTransactionId(null)
     setActiveEventTask(null)
@@ -3137,6 +3150,7 @@ export default function TransactionsPage() {
   }
 
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
+    if (!canEditPortfolio) return
     transactionRequestRef.current = null
     setEditingTransactionId(transaction.transaction_id)
     setActiveEventTask(null)
@@ -3166,6 +3180,7 @@ export default function TransactionsPage() {
     transactionType: 'dividend' | 'dividend_reinvestment',
     reviewedBy: string,
   ) {
+    if (!canEditPortfolio) return
     transactionRequestRef.current = null
     const initial = buildInitialFormState(accounts)
     const account = accounts.find((item) => item.account_id === task.account_id)
@@ -3224,6 +3239,7 @@ export default function TransactionsPage() {
 
   async function handleCreateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!canEditPortfolio) return
     if (submittingTransactionRef.current) {
       return
     }
@@ -3609,6 +3625,7 @@ export default function TransactionsPage() {
 
     const payload: PortfolioTransactionCreatePayload = {
       asset_deliveries: activeAssetDeliveries,
+      settlement_cashflows: canSettleFcn ? form.settlement_cashflows : [],
       lot_selections: ['sell', 'buy_to_cover', 'maturity_redemption'].includes(form.transaction_type) ? form.lot_selections : [],
       transaction_type: form.transaction_type,
       lifecycle_event_type: form.lifecycle_event_type || null,
@@ -3727,6 +3744,7 @@ export default function TransactionsPage() {
   }
 
   async function handleDeleteTransaction() {
+    if (!canEditPortfolio) return
     const transaction = pendingDeleteTransaction
     const targetPortfolioId = portfolioId
     if (!transaction || !targetPortfolioId || deletingTransaction) {
@@ -3966,7 +3984,9 @@ export default function TransactionsPage() {
   const amountField = (
     <label className="transaction-ticket-field">
       <span>
-        {isFundTrade
+        {activeAssetDeliveries.length
+          ? fcnLabel('Actual residual cash', '实际现金尾差')
+          : isFundTrade
           ? 'Confirmed Amount'
           : grossAmountLabel(form.transaction_type, form.lifecycle_event_type)}
       </span>
@@ -3975,7 +3995,9 @@ export default function TransactionsPage() {
         min="0"
         step="0.01"
         aria-label={
-          isFundTrade
+          activeAssetDeliveries.length
+            ? fcnLabel('Actual residual cash', '实际现金尾差')
+            : isFundTrade
             ? 'Confirmed Amount'
             : grossAmountLabel(form.transaction_type, form.lifecycle_event_type)
         }
@@ -4001,15 +4023,17 @@ export default function TransactionsPage() {
       busy={metaLoading || loadingTransactions}
     >
       <section className="portfolio-detail-surface">
-        <FundDistributionTasksPanel
-          portfolioId={portfolioId}
-          accountNames={accountNameById}
-          refreshKey={eventTasksRefreshKey}
-          onRecord={openEventTaskDrawer}
-        />
         <div className="portfolio-detail-toolbar transaction-activity-toolbar">
           <div>
-            <div className="panel-title">Activity</div>
+            <div className="transaction-activity-title">
+              <div className="panel-title">Activity</div>
+              <FundDistributionTasksPanel
+                portfolioId={portfolioId}
+                accountNames={accountNameById}
+                refreshKey={eventTasksRefreshKey}
+                onRecord={openEventTaskDrawer}
+              />
+            </div>
             <div className="portfolio-detail-meta">
               {`${displayedTransactions.length} ${activeFilterCount ? 'matching ' : ''}${displayedTransactions.length === 1 ? 'activity' : 'activities'}`}
               {latestTradeDate ? ` · latest trade ${latestTradeDate}` : ''}
@@ -4029,7 +4053,7 @@ export default function TransactionsPage() {
               <button
                 type="button"
                 className="toolbar-link transaction-toolbar-button"
-                disabled={importingFile || metaLoading}
+                disabled={!canEditPortfolio || importingFile || metaLoading}
                 title="Import and check a transaction CSV or Excel file"
                 onClick={() => transactionFileInputRef.current?.click()}
               >
@@ -4068,7 +4092,7 @@ export default function TransactionsPage() {
               <button
                 type="button"
                 className="toolbar-link transaction-toolbar-button"
-                disabled={metaLoading}
+                disabled={!canEditPortfolio || metaLoading}
                 title="Create an editable transaction draft from screenshots"
                 onClick={() => openCaptureAssistant('new')}
               >
@@ -4077,7 +4101,7 @@ export default function TransactionsPage() {
               <button
                 type="button"
                 className="toolbar-link button-primary"
-                disabled={metaLoading || accounts.length === 0}
+                disabled={!canEditPortfolio || metaLoading || accounts.length === 0}
                 onClick={openCreateDrawer}
               >
                 Record Transaction
@@ -4283,7 +4307,7 @@ export default function TransactionsPage() {
           </div>
         ) : null}
 
-        {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
+        <NoticeToast notice={notice} onDismiss={() => setNoticeMessage(null)} />
         {captureError && !captureAssistantOpen ? <div className="error-state">{captureError}</div> : null}
         {pageError ? <div className="error-state">{pageError}</div> : null}
         {deleteError ? <div className="error-state">{deleteError}</div> : null}
@@ -4384,6 +4408,9 @@ export default function TransactionsPage() {
                               ) : (
                                 <span className="holding-secondary">{formatLabel(transaction.flow_scope)} cash</span>
                               )}
+                              {(transaction.asset_deliveries ?? []).map((leg, index) => <span key={index} className="holding-secondary" translate="no">
+                                {fcnLabel('FCN delivery', 'FCN 接票')} · {instruments.find(item => item.instrument_id === leg.instrument_id)?.instrument_name ?? leg.instrument_id} · {formatQuantity(Number(leg.quantity))} · {accountNameById[leg.account_id] ?? leg.account_id}
+                              </span>)}
                               {deliveryLink?.option_transaction_id === transaction.transaction_id ? (
                                 <span className="holding-secondary">
                                   Stock delivery · {formatLabel(linkedStockTransaction?.transaction_type ?? 'stock')} ·{' '}
@@ -4514,7 +4541,7 @@ export default function TransactionsPage() {
                         type="button"
                         className="toolbar-link"
                         disabled={
-                          selectedTransactionIsPaired ||
+                          !canEditPortfolio || selectedTransactionIsPaired ||
                           !canEditTransaction(selectedTransaction)
                         }
                         onClick={() => openEditDrawer(selectedTransaction)}
@@ -4524,6 +4551,7 @@ export default function TransactionsPage() {
                       <button
                         type="button"
                         className="toolbar-link transaction-danger-action"
+                        disabled={!canEditPortfolio}
                         onClick={() => {
                           setDeleteError(null)
                           setPendingDeleteTransaction(selectedTransaction)
@@ -4639,7 +4667,12 @@ export default function TransactionsPage() {
                         </div>
                       ))}
                       {selectedTransaction.derivative_contract ? <ContractAmendmentEditor key={`${selectedTransaction.derivative_contract_id}:${selectedTransaction.derivative_contract.row_version}`} contract={selectedTransaction.derivative_contract} onSaved={() => refreshTransactions(filters, selectedTransaction.transaction_id)} /> : null}
-                      {(selectedTransaction.asset_deliveries ?? []).map((leg, index) => <p key={index} translate="no">{accountNameById[leg.account_id] ?? leg.account_id} · {leg.instrument_id} · {leg.quantity} · {leg.fair_value} {leg.currency}</p>)}
+                      {selectedTransaction.asset_deliveries?.length || selectedTransaction.settlement_cashflows?.length ? <FcnSettlementReview
+                        record={selectedTransaction} accounts={accounts} instruments={instruments} currency={selectedTransaction.currency}
+                        terms={selectedTransaction.derivative_contract?.contract_type === 'fcn' ? selectedTransaction.derivative_contract.terms : undefined}
+                        economicDate={selectedTransaction.economic_date} settlementDate={selectedTransaction.settlement_date}
+                        residualCash={selectedTransaction.gross_amount} residualAccountId={selectedTransaction.settlement_cash_account?.account_id}
+                      /> : null}
                       <dl className="transaction-fact-list">
                         <div>
                           <dt>
@@ -4874,7 +4907,7 @@ export default function TransactionsPage() {
 
       {captureAssistantOpen ? (
         <div
-          className="transaction-drawer-backdrop"
+          className="portfolio-settings-modal-backdrop transaction-entry-backdrop"
           role="presentation"
           onClick={() => {
             if (!uploadingCapture && !savingCaptureReview && !committingCapture) {
@@ -4886,14 +4919,14 @@ export default function TransactionsPage() {
         >
           <aside
             ref={captureAssistantDialogRef}
-            className="transaction-drawer transaction-capture-assistant-drawer"
+            className="portfolio-settings-modal transaction-capture-assistant-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Screenshot assistant"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <header className="transaction-capture-assistant-header">
+            <header className="portfolio-settings-modal-header transaction-capture-assistant-header">
               <div>
                 <span>AI-assisted entry</span>
                 <div className="panel-title">Transactions from Screenshots</div>
@@ -6195,10 +6228,12 @@ export default function TransactionsPage() {
                                             </label>
                                           </div>
                                           <TransactionDeliveryReview
+                                            portfolioId={portfolioId} contracts={derivativeContracts}
                                             record={record}
                                             accounts={accounts}
                                             instruments={instruments}
                                             requireOptionDelivery={['physical_long', 'physical_written'].includes(record.transaction_action)}
+                                            canSettleFcn={record.asset_type === 'fcn' && ['knock_in_close', 'knock_out_close', 'maturity_close'].includes(record.transaction_action)}
                                             canAddAssetDelivery={record.asset_type === 'fcn' && ['knock_in_close', 'maturity_close'].includes(record.transaction_action)}
                                             canSelectLots={accounts.find(account => account.account_id === record.account_id)?.cost_basis_method === 'fifo' && ['sell', 'buy_to_cover', 'sell_to_close', 'early_exit', 'knock_in_close', 'knock_out_close', 'maturity_close', 'expire_long', 'cash_settle_long', 'physical_long'].includes(record.transaction_action)}
                                             onChange={changes => updateTransactionCaptureReviewRecord(recordIndex, current => ({ ...current, ...changes }))}
@@ -6288,7 +6323,7 @@ export default function TransactionsPage() {
                                     <button
                                       type="button"
                                       className="button-primary"
-                                      disabled={committingCapture}
+                                      disabled={!canEditPortfolio || committingCapture}
                                       onClick={() => void recordTransactionCaptureProposal(selectedCaptureBatch)}
                                     >
                                       {committingCapture ? 'Recording…' : 'Confirm & record'}
@@ -6297,7 +6332,7 @@ export default function TransactionsPage() {
                                     <button
                                       type="button"
                                       className="toolbar-link"
-                                      disabled={metaLoading || savingCaptureReview}
+                                      disabled={!canEditPortfolio || metaLoading || savingCaptureReview}
                                       onClick={() => beginTransactionCaptureReview(selectedCaptureBatch)}
                                     >
                                       {selectedCaptureBatch.latest_analysis.source === 'human'
@@ -6394,9 +6429,9 @@ export default function TransactionsPage() {
         </div>
       ) : null}
 
-      {drawerOpen ? (
+      {canEditPortfolio && drawerOpen ? (
         <div
-          className="transaction-entry-backdrop"
+          className="portfolio-settings-modal-backdrop transaction-entry-backdrop"
           role="presentation"
           onClick={() => {
             if (submittingTransaction) {
@@ -6410,14 +6445,14 @@ export default function TransactionsPage() {
         >
           <aside
             ref={drawerDialogRef}
-            className="transaction-entry-modal"
+            className={`portfolio-settings-modal transaction-entry-modal${formEntryKind === 'fcn' ? ' transaction-entry-modal-wide' : ''}`}
             role="dialog"
             aria-modal="true"
             aria-label={isEditingTransaction ? 'Correct transaction' : 'Record transaction'}
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="transaction-entry-modal-header">
+            <div className="portfolio-settings-modal-header transaction-entry-modal-header">
               <div>
                 <div className="panel-title">
                   {isEditingTransaction ? 'Correct Transaction' : 'Record Transaction'}
@@ -7396,6 +7431,18 @@ export default function TransactionsPage() {
                 )}
               </div>
 
+              {canSettleFcn ? <>
+                <FcnSettlementReview
+                  record={{ asset_deliveries: activeAssetDeliveries, settlement_cashflows: form.settlement_cashflows }} accounts={accounts} instruments={instruments} currency={resolvedTransactionCurrency}
+                  allowAssetDelivery={canDeliverFcn}
+                  portfolioId={portfolioId} contractId={selectedDerivativeContract?.derivative_contract_id} excludedTransactionId={editingTransactionId}
+                  terms={selectedDerivativeContract?.contract_type === 'fcn' ? selectedDerivativeContract.terms : undefined}
+                  economicDate={form.position_effective_date || form.trade_date} settlementDate={form.settlement_date}
+                  residualCash={form.gross_amount} residualAccountId={form.settlement_cash_account_id}
+                  onChange={changes => setForm(current => ({ ...current, ...changes }))}
+                />
+              </> : null}
+
               <details className="transaction-entry-additional-details">
                 <summary>
                   <strong>Additional details</strong>
@@ -7442,27 +7489,6 @@ export default function TransactionsPage() {
                     </div>)}
                     <button type="button" onClick={() => setForm(current => ({ ...current, lot_selections: [...current.lot_selections, { opening_transaction_id: '', quantity: '' }] }))}>添加指定批次</button>
                   </fieldset> : null}
-                  {canDeliverFcn ? (
-                    <fieldset>
-                      <legend>Actual asset delivery</legend>
-                      <p>Enter confirmed total fair value for each delivered security. Gross amount records only actual cash in lieu, not the shares.</p>
-                      {form.asset_deliveries.map((leg, index) => {
-                        const updateLeg = (changes: Partial<typeof leg>) => setForm(current => ({ ...current, asset_deliveries: current.asset_deliveries.map((item, row) => row === index ? { ...item, ...changes } : item) }))
-                        return <div className="transaction-form-grid" key={index}>
-                          <label><span>Receiving account</span><select value={leg.account_id} onChange={event => {
-                            const account = accounts.find(item => item.account_id === event.target.value)
-                            updateLeg({ account_id: event.target.value, currency: account?.currency ?? leg.currency, fx_rate_to_contract: account?.currency === resolvedTransactionCurrency ? 1 : '' })
-                          }}><option value="">Select account</option>{accounts.filter(item => item.account_category === 'security').map(item => <option key={item.account_id} value={item.account_id}>{item.account_name}</option>)}</select></label>
-                          <RegistryInstrumentPicker label="Delivered security" value={leg.instrument_id} instruments={instruments} onSelect={instrument_id => updateLeg({ instrument_id })} />
-                          <label><span>Delivered quantity</span><input type="number" step="any" min="0" value={leg.quantity} onChange={event => updateLeg({ quantity: event.target.value })} /></label>
-                          <label><span>Confirmed total fair value</span><input type="number" step="any" min="0" value={leg.fair_value} onChange={event => updateLeg({ fair_value: event.target.value })} /></label>
-                          <label><span>FX: contract currency per delivery currency</span><input type="number" step="any" min="0" value={leg.fx_rate_to_contract} onChange={event => updateLeg({ fx_rate_to_contract: event.target.value })} /></label>
-                          <button type="button" onClick={() => setForm(current => ({ ...current, asset_deliveries: current.asset_deliveries.filter((_, row) => row !== index) }))}>Remove delivery</button>
-                        </div>
-                      })}
-                      <button type="button" onClick={() => setForm(current => ({ ...current, asset_deliveries: [...current.asset_deliveries, { account_id: '', instrument_id: '', quantity: '', fair_value: '', currency: resolvedTransactionCurrency, fx_rate_to_contract: 1 }] }))}>Add delivered security</button>
-                    </fieldset>
-                  ) : null}
                   <label className="transaction-notes-field">
                     <span>Note</span>
                     <textarea
@@ -7525,6 +7551,18 @@ export default function TransactionsPage() {
                       </strong>
                     </div>
                   </>
+                ) : canSettleFcn ? (
+                  <div translate="no">
+                    <div className="transaction-ticket-summary-row"><span>{fcnLabel('FCN contracts closed', '关闭 FCN 合约')}</span><strong>{ticketQuantity == null ? '—' : formatQuantity(ticketQuantity)}</strong></div>
+                    {activeAssetDeliveries.map((leg, index) => <div key={index}>
+                      <div className="transaction-ticket-summary-row"><span>{instruments.find(item => item.instrument_id === leg.instrument_id)?.instrument_name ?? leg.instrument_id}</span><strong>+{formatQuantity(Number(leg.quantity) || 0)}</strong></div>
+                      <div className="transaction-ticket-summary-row"><span>{fcnLabel('Confirmed stock value', '证券公允确认价值')}</span><strong>{leg.fair_value !== '' && leg.currency ? formatCurrency(Number(leg.fair_value), leg.currency) : '—'}</strong></div>
+                      {Number(leg.fees) || Number(leg.taxes) ? <div className="transaction-ticket-summary-row"><span>{fcnLabel('Stock charges', '股票费用税费')} · {accountNameById[leg.settlement_cash_account_id ?? '']}</span><strong>−{formatCurrency(Number(leg.fees || 0) + Number(leg.taxes || 0), leg.currency)}</strong></div> : null}
+                    </div>)}
+                    <div className="transaction-ticket-summary-row"><span>{activeAssetDeliveries.length ? fcnLabel('Residual cash after contract charges', '尾差扣除合约费用后的现金') : fcnLabel('Cash redemption after contract charges', '现金兑付扣除合约费用后的金额')}</span><strong>{formatSignedCurrency((ticketGrossAmount ?? 0) - ticketFeeAmount - ticketTaxAmount, resolvedTransactionCurrency)}</strong></div>
+                    {form.settlement_cashflows.map((flow, index) => <div className="transaction-ticket-summary-row" key={index}><span>{flow.kind === 'coupon' ? fcnLabel('Final coupon', '末期票息') : fcnLabel('Contract charge', '合约费用税费')} · {accountNameById[flow.cash_account_id]}</span><strong>{flow.currency ? formatSignedCurrency(Number(flow.amount) * (flow.kind === 'coupon' ? 1 : -1), flow.currency) : '—'}</strong></div>)}
+                    <p>{fcnLabel('The principal is not debited again. Stock receipt and cash entries are recorded together.', '本金不会再次扣除。收到证券与各币种现金明细一起入账。')}</p>
+                  </div>
                 ) : isFxConversion ? (
                   <>
                     <div className="transaction-ticket-summary-row">
@@ -7620,7 +7658,7 @@ export default function TransactionsPage() {
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
               </aside>
 
-              <div className="transaction-form-footer">
+              <footer className="portfolio-settings-modal-actions transaction-form-footer">
                 <button
                   type="button"
                   className="toolbar-link"
@@ -7637,7 +7675,7 @@ export default function TransactionsPage() {
                 <button
                   type="submit"
                   className="toolbar-link button-primary"
-                  disabled={submittingTransaction || !selectedAccount}
+                  disabled={!canEditPortfolio || submittingTransaction || !selectedAccount}
                 >
                   {submittingTransaction
                     ? 'Saving…'
@@ -7649,13 +7687,13 @@ export default function TransactionsPage() {
                           : 'Record Exercise'
                         : 'Record Transaction'}
                 </button>
-              </div>
+              </footer>
             </form>
           </aside>
         </div>
       ) : null}
       <ConfirmDialog
-        open={Boolean(activePendingFileImport)}
+        open={canEditPortfolio && Boolean(activePendingFileImport)}
         title="Review Transaction File"
         description={
           activePendingFileImport ? (

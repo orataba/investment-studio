@@ -5,6 +5,7 @@ import { getPortfolioInstrumentEventTasks, type PortfolioInstrumentEventTaskReco
 import { formatCurrency, formatLabel, formatQuantity, formatSignedCurrency, signedValueClass } from '../lib/format'
 import { buildPortfolioHoldingDetailPath, buildPortfolioSectionPath } from '../lib/navigation'
 import { transactionActivityLabel } from '../lib/transactionPresentation'
+import InfoHint from './InfoHint'
 
 export default function HoldingEventsPanel({ portfolioId, holdingId, asOfDate, currency, security, transactions, lots, loading, error }: {
   portfolioId: string
@@ -47,7 +48,7 @@ export default function HoldingEventsPanel({ portfolioId, holdingId, asOfDate, c
 
   return <section aria-label={t('Income and events')}>
     <div className="portfolio-security-panel-head">
-      <div><span className="portfolio-security-section-kicker">{t('Position lifecycle')}</span><h2>{t('Income and events')}</h2><p>{t('Booked dividends, coupons, contract outcomes and applied share changes.')}</p></div>
+      <div><span className="portfolio-security-section-kicker">{t('Position lifecycle')}</span><h2 className="portfolio-title-with-hint">{t('Income and events')}<InfoHint label={t('Income and events')} detail={t('Booked dividends, coupons, contract outcomes and applied share changes.')} /></h2></div>
     </div>
     <div className="holding-period-dates">
       <label>{t('Event date from')}<input type="date" value={start} max={end} onChange={(event) => setStart(event.target.value)} /></label>
@@ -75,9 +76,8 @@ export default function HoldingEventsPanel({ portfolioId, holdingId, asOfDate, c
         {!bookedEvents.length && !corporateLots.length && <div className="empty-state">{t('No booked events in this date range.')}</div>}
       </div>
     )}
-    {security && <section className="holding-event-reviews">
-      <div className="portfolio-security-section-head"><h2>{t('Distribution review')}</h2><span>{t('Current review status')}</span></div>
-      <p className="holding-detail-note">{t('Source notices and expected entitlements are not booked income. Review status is current, not a historical snapshot.')}</p>
+    {security && (visibleTasks.length > 0 || taskError) && <section className="holding-event-reviews">
+      <div className="portfolio-security-section-head"><h2 className="portfolio-title-with-hint">{t('Distribution review')}<InfoHint label={t('Current review status')} detail={t('Source notices and expected entitlements are not booked income. Review status is current, not a historical snapshot.')} /></h2></div>
       {taskLoading ? <div className="empty-state">{t('Loading')}</div> : taskError ? <div className="error-state">{taskError}</div> : visibleTasks.length ? <div className="holding-event-list">{visibleTasks.map((task) => <article key={task.instrument_event_task_id}>
         <time>{task.effective_date}</time>
         <div><strong>{t(formatLabel(task.event_type))}</strong><span translate="no">{task.account_id}</span><span className={task.attention_required ? 'negative-cell' : ''}>{t(formatLabel(task.status))}</span>{task.resolution_note && <p translate="no">{task.resolution_note}</p>}</div>

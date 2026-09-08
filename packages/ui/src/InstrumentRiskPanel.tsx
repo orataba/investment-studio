@@ -40,6 +40,7 @@ function evidenceHref(value: unknown) {
 
 function CaseRow({
   record,
+  canWrite,
   asset,
   refresh,
   request,
@@ -48,10 +49,11 @@ function CaseRow({
   onAskAssistant,
 }: {
   record: RiskCase
+  canWrite: boolean
   asset: RiskAsset
   refresh: () => Promise<void>
   request: RiskRequest
-  assistantHref: (id: string, question: string) => string
+  assistantHref?: (id: string, question: string) => string
   instrumentHref: (id: string, signal?: string) => string
   onAskAssistant?: (id: string, question: string) => void
 }) {
@@ -75,6 +77,7 @@ function CaseRow({
           : '核实价格影响与实际敞口，记录判断和下次跟进时间。',
   )
   async function update(status: string, clear = false) {
+    if (!canWrite) return
     setBusy(true)
     setError('')
     try {
@@ -171,9 +174,9 @@ function CaseRow({
           >
             问助手
           </button>
-        ) : (
+        ) : assistantHref ? (
           <a href={assistantHref(record.instrument_id, question)}>问助手</a>
-        )}
+        ) : null}
       </div>
       <details className="risk-follow-up">
         <summary>跟进与证据</summary>
@@ -212,6 +215,7 @@ function CaseRow({
             ))}
           </p>
         )}
+        {canWrite && <>
         <label>
           处理记录
           <textarea
@@ -252,6 +256,7 @@ function CaseRow({
         <p className="research-muted">
           {sectorEvent ? '已处理表示完成本次跟进；事项仍需关注时，提醒会保留。' : '已处理表示完成本次跟进；风险条件仍存在时，提醒会保留。'}
         </p>
+        </>}
         {error && <p role="alert">{error}</p>}
         <ul className="risk-history">
           {record.history_json.map((item, i) => (
@@ -404,6 +409,7 @@ const pricePeriods: Array<[PriceRiskPeriod, string]> = [
 ]
 
 function PriceRiskSettings({
+  canWrite,
   asset,
   request,
   onSaved,
@@ -411,6 +417,7 @@ function PriceRiskSettings({
   asset: RiskAsset
   request: RiskRequest
   onSaved: () => Promise<void>
+  canWrite: boolean
 }) {
   const initial = () => ({
     drawdown: asset.drawdown_limit?.toString() || '',
@@ -438,6 +445,7 @@ function PriceRiskSettings({
       <form
         onSubmit={async (event) => {
           event.preventDefault()
+          if (!canWrite) return
           setBusy(true)
           setMessage('')
           setFailed(false)
@@ -471,6 +479,7 @@ function PriceRiskSettings({
             <label key={key}>
               {label}（%）
               <input
+                disabled={!canWrite}
                 aria-label={`${asset.name} ${label}复核线`}
                 type="number"
                 min="0.01"
@@ -486,7 +495,7 @@ function PriceRiskSettings({
           ))}
         </div>
         <div className="risk-settings-save">
-          <button disabled={busy}>{busy ? '保存中…' : '保存提醒设置'}</button>
+          {canWrite && <button disabled={busy}>{busy ? '保存中…' : '保存提醒设置'}</button>}
           <span role={failed ? 'alert' : 'status'}>{message}</span>
         </div>
       </form>
@@ -507,6 +516,8 @@ function PriceRiskSettings({
 }
 
 export default function InstrumentRiskPanel({
+  canWrite = true,
+  canRun = canWrite,
   portfolioId,
   instrumentId,
   focusInstrumentId,
@@ -523,13 +534,15 @@ export default function InstrumentRiskPanel({
   instrumentContext,
   heading = '近期风险与跟进',
 }: {
+  canWrite?: boolean
+  canRun?: boolean
   portfolioId?: string
   instrumentId?: string
   focusInstrumentId?: string
   query?: string
   request: RiskRequest
   instrumentHref: (id: string, signal?: string) => string
-  assistantHref: (id: string, question: string) => string
+  assistantHref?: (id: string, question: string) => string
   onAskAssistant?: (id: string, question: string) => void
   onChanged?: () => void
   caseScope?: 'all' | 'traditional'
@@ -652,7 +665,7 @@ export default function InstrumentRiskPanel({
   ]
   return (
     <section className="research-workbench risk-workbench">
-      {officerScope && <RiskOfficerPanel request={request} scopeQuery={officerScope} refreshToken={officerRefresh}
+      {officerScope && <RiskOfficerPanel canRun={canRun} request={request} scopeQuery={officerScope} refreshToken={officerRefresh}
         onCompleted={() => { void refresh(false).catch((failure) => setError(failure instanceof Error ? failure.message : '风险事项读取失败')) }} />}
       <div className="research-page-heading">
         <div>
@@ -662,7 +675,7 @@ export default function InstrumentRiskPanel({
             {data ? ` · ${data.instruments.length} 个标的` : ''}
           </p>
         </div>
-        <button
+        {canWrite && <button
           className="risk-text-button"
           onClick={() => {
             setEventInstrument(
@@ -674,7 +687,7 @@ export default function InstrumentRiskPanel({
           }}
         >
           {manual ? '取消记录' : '补充记录'}
-        </button>
+        </button>}
       </div>
       {scopeNote && <div className="risk-scope-note">{scopeNote}</div>}
       {error && (
@@ -713,7 +726,7 @@ export default function InstrumentRiskPanel({
             {data.instruments.filter((i) => !coverageFor(i)).length}/
             {data.instruments.length} 数据可计算
           </p>
-          {manual && (
+          {manual && canWrite && (
             <form
               className="risk-event-form"
               onSubmit={(e) => {
@@ -837,6 +850,7 @@ export default function InstrumentRiskPanel({
                 {records.map((c) => (
                   <CaseRow
                     key={c.case_id}
+                    canWrite={canWrite}
                     record={c}
                     asset={asset}
                     refresh={refresh}
@@ -890,6 +904,7 @@ export default function InstrumentRiskPanel({
                 </summary>
                 <Readings asset={asset} />
                 <PriceRiskSettings
+                  canWrite={canWrite}
                   asset={asset}
                   request={request}
                   onSaved={refresh}

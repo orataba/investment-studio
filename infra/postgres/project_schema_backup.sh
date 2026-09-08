@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 
 # Shared, source-only primitives for taking and restoring a verified snapshot of
-# the four project-owned PostgreSQL schemas. Callers remain responsible for
-# stopping writers before invoking either function.
+# the project-owned PostgreSQL schemas. Callers remain responsible for
+# stopping writers before invoking either function. These snapshots return to
+# the same database with its existing roles and project owner: retain ACLs so a
+# rollback restores application access, including schema-scoped default grants.
 
 # Include the former schema for pre-0008 backups and exact migration rollback.
-INVESTMENT_STUDIO_PROJECT_SCHEMAS=(instrument_data instrument_registry data_ingestion platform portfolio watchlist)
+INVESTMENT_STUDIO_PROJECT_SCHEMAS=(identity instrument_data instrument_registry data_ingestion platform portfolio watchlist market_data market_text briefing)
 
 investment_studio_find_postgres_binary() {
   if [[ $# -ne 1 ]]; then
@@ -290,7 +292,7 @@ investment_studio_create_project_schema_backup() {
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist')
+      WHERE nspname IN ('identity', 'instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist', 'market_data', 'market_text', 'briefing')
       ORDER BY nspname;
     " > "$schemas_path"; then
     rm -rf "$work_dir"
@@ -310,7 +312,7 @@ investment_studio_create_project_schema_backup() {
   while IFS= read -r schema || [[ -n "$schema" ]]; do
     [[ -n "$schema" ]] || continue
     case "$schema" in
-      instrument_data|instrument_registry|data_ingestion|platform|portfolio|watchlist) ;;
+      identity|instrument_data|instrument_registry|data_ingestion|platform|portfolio|watchlist|market_data|market_text|briefing) ;;
       *)
         echo "Database returned an unexpected project schema name: $schema" >&2
         rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
@@ -331,7 +333,6 @@ investment_studio_create_project_schema_backup() {
       --dbname "$libpq_url" \
       --format=custom \
       --no-owner \
-      --no-acl \
       "${schema_args[@]}" \
       --file "$backup_path"; then
       rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
@@ -455,6 +456,10 @@ investment_studio_restore_project_schema_backup() (
 
   if ! (
     printf '%s\n' '
+        DROP SCHEMA IF EXISTS identity CASCADE;
+        DROP SCHEMA IF EXISTS briefing CASCADE;
+        DROP SCHEMA IF EXISTS market_text CASCADE;
+        DROP SCHEMA IF EXISTS market_data CASCADE;
         DROP SCHEMA IF EXISTS watchlist CASCADE;
         DROP SCHEMA IF EXISTS portfolio CASCADE;
         DROP SCHEMA IF EXISTS data_ingestion CASCADE;
@@ -466,7 +471,6 @@ investment_studio_restore_project_schema_backup() (
       exec "$pg_restore_bin" \
         --file - \
         --no-owner \
-        --no-acl \
         "$backup_path"
     fi
     exit 0
@@ -488,7 +492,7 @@ investment_studio_restore_project_schema_backup() (
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist')
+      WHERE nspname IN ('identity', 'instrument_data', 'instrument_registry', 'data_ingestion', 'platform', 'portfolio', 'watchlist', 'market_data', 'market_text', 'briefing')
       ORDER BY nspname;
     " > "$restored_schemas"; then
     rm -f "$restored_schemas"

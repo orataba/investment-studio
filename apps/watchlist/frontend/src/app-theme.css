@@ -1,5 +1,5 @@
 .page-shell {
-  padding: 20px clamp(16px, 2.6vw, 40px) 48px;
+  padding: 20px 18px 48px;
 }
 
 .terminal-page,
@@ -663,3 +663,6 @@
     width: 100%;
   }
 }
+
+.studio-account-bar { display: flex; justify-content: flex-end; gap: 16px; padding: 8px 24px; font-size: 12px; color: #60706b; border-bottom: 1px solid #e3e8e5; }
+.studio-account-message { padding: 48px; }

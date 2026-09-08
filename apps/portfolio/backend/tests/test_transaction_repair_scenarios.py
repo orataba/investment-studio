@@ -504,6 +504,7 @@ def test_contract_amendment_is_audited_and_cannot_invalidate_existing_outcome(cl
     assert response.status_code == 200, response.text
     assert response.json()["row_version"] == 2
     assert response.json()["amendments"][0]["before"]["settlement_type"] is None
+    assert response.json()["amendments"][0]["reviewed_by"] == "Test Manager"
     assert client.patch(f"{BASE}/derivative-contracts/scenario-option", json=payload).status_code == 409
     response = client.patch(f"{BASE}/derivative-contracts/scenario-option", json={
         **payload, "expected_row_version": 2, "terms": {**payload["terms"], "settlement_type": "physical"},

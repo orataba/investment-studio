@@ -5,8 +5,10 @@ PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   printf '%s\n' \
     'Investment Studio' \
-    '  investment-studio services <start|stop|restart|status> <home|investments|regime|all>' \
+    '  investment-studio services <start|stop|restart|status> <home|investments|regime|briefing|all>' \
     '  investment-studio data <group> <action> [arguments]' \
+    '  investment-studio market <numeric|text|pipeline> <action> [arguments]' \
+    '  investment-studio briefing <action> [arguments]' \
     'Use investment-studio data --help for private data maintenance commands.'
   exit 0
 fi
@@ -16,8 +18,20 @@ if [[ "${1:-}" == "services" ]]; then
 fi
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 RUNTIME_ENV_ROOT="${ENV_ROOT:-$HOME/.config/orataba/secrets/investment-studio}"
-investment_studio_load_env_file "$RUNTIME_ENV_ROOT/data.env" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_
+if [[ "${1:-}" == "market" || "${1:-}" == "briefing" ]]; then
+  module="$1"
+  shift
+  investment_studio_load_env_file "$RUNTIME_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
+  export PYTHONPATH="$PROJECT_ROOT/shared-data/market:$PROJECT_ROOT/apps/briefing/backend${PYTHONPATH:+:$PYTHONPATH}"
+  if [[ "$module" == "briefing" ]]; then
+    investment_studio_load_env_file "$RUNTIME_ENV_ROOT/briefing.env" INVESTMENT_STUDIO_BRIEFING_ INVESTMENT_STUDIO_AUTH_
+    exec "$PYTHON_BIN" -m briefing_app.cli "$@"
+  fi
+  exec "$PYTHON_BIN" -m studio_market.cli "$@"
+fi
+investment_studio_load_env_file "$RUNTIME_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
+investment_studio_load_env_file "$RUNTIME_ENV_ROOT/data.env" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
 export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
 export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
-export PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PROJECT_ROOT/shared-data/market:$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PYTHON_BIN" -m studio_data.cli "$@"

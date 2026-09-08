@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 import logging
+import json
 import re
 from threading import Event, Thread
 from uuid import uuid4
@@ -9,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
-from sqlalchemy import select
+from sqlalchemy import func, select
 from investment_studio_instrument_core.db_models import Instrument
 from investment_studio_instrument_core.listing_contract import (
     MARKET_SCOPE_CALENDARS, MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
@@ -45,6 +46,10 @@ class ReviewInProgress(ValueError):
     pass
 
 
+class ResearchVersionConflict(ValueError):
+    pass
+
+
 def scoped_ids(session, instrument_id=None, watchlist_id=None):
     query = select(InstrumentDetail.instrument_id).where(InstrumentDetail.is_active.is_(True))
     if instrument_id:
@@ -67,22 +72,45 @@ def instrument_label(session, iid):
 
 
 def latest_reviews(session, *, completed_only=False):
-    result = {}
-    runs = session.scalars(select(ResearchEntry).where(
-        (ResearchEntry.topic_id == TOPIC_ID) | ResearchEntry.topic_id.startswith(INSTRUMENT_TOPIC_PREFIX))
-                          .order_by(ResearchEntry.created_at.desc()))
+    from studio_identity import current_principal
+    from watchlist_app.services.research_access import topic_portfolio_ids
+    result, current_views = {}, {}
+    principal = current_principal()
+    team_id = principal.team_id
+    runs = session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis", True if principal.local_unrestricted else ResearchEntry.team_id == team_id)
+                          .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
     for run in runs:
         context = run.context_json or {}
-        if not context.get("sector_run") or (completed_only and run.status != "completed"):
+        topic = session.get(ResearchTopic, run.topic_id)
+        if not topic or (not principal.local_unrestricted and topic.team_id != team_id) or topic_portfolio_ids(session, topic):
             continue
+        if not (context.get("sector_run") or context.get("research_run")):
+            continue
+        published = run.status in {"completed", "draft"}
         for iid in context.get("instrument_ids", []):
-            if iid not in result:
-                review = context.get("reviews", {}).get(iid, {})
-                if completed_only and review.get("status") not in {"completed", "limited"}:
-                    continue
-                result[iid] = {"run_id": run.entry_id, "status": review.get("status", run.status),
-                    "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
-                    "coverage": review.get("coverage", []), "research": review.get("research")}
+            review = context.get("reviews", {}).get(iid, {})
+            accepted = published and review.get("status") in {"completed", "limited"}
+            # A conversation is not a daily check until it actually publishes research.
+            if not context.get("sector_run") and not accepted:
+                continue
+            if accepted and iid not in current_views and review.get("summary"):
+                current_views[iid] = {"summary": review["summary"],
+                    "view_updated_at": review.get("view_updated_at", context.get("cutoff")),
+                    "view_run_id": review.get("view_run_id", run.entry_id)}
+            if iid in result or (completed_only and not accepted):
+                continue
+            result[iid] = {"run_id": run.entry_id, "status": review.get("status", run.status),
+                "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
+                "view_updated_at": review.get("view_updated_at"),
+                "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),
+                "coverage": review.get("coverage", []), "research": review.get("research")}
+    for iid, review in result.items():
+        view = current_views.get(iid, {})
+        review["current_summary"] = view.get("summary", "")
+        if review["status"] != "failed":
+            review["summary"] = view.get("summary", "")
+        review["view_updated_at"] = view.get("view_updated_at")
+        review["view_run_id"] = view.get("view_run_id")
     return result
 
 
@@ -132,7 +160,11 @@ def sector_snapshot(iid, session, *, as_of=None):
 
 
 def begin_run(session, ids, *, scheduled=False):
+    from watchlist_app.services.research_identity import research_identity
     ids = list(dict.fromkeys(ids))
+    if any((asset := session.get(InstrumentDetail, iid)) is not None
+           and asset.instrument_type in {"public_fund", "private_fund"} for iid in ids):
+        raise ValueError("普通公募和私募暂缓主动深研，已有档案与研究记录仍可查阅。")
     sector_scope = bool(ids) and set(ids).issubset(scoped_ids(session))
     if not sector_scope and (len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0])):
         raise ValueError("请选择一个已登记的股票、基金、ETF或指数；批量每日检查仅支持美股行业ETF")
@@ -151,7 +183,7 @@ def begin_run(session, ids, *, scheduled=False):
     title = "美股行业ETF每日观察" if len(ids) > 1 else f"{instrument_label(session, ids[0])} · 研究追踪"
     topic = session.get(ResearchTopic, topic_id)
     if topic is None:
-        topic = ResearchTopic(topic_id=topic_id, title=title, question="风险、机会与重要不确定性", instrument_ids=ids, status="active", conclusion="")
+        topic = ResearchTopic(topic_id=topic_id, title=title, question="风险、机会与重要不确定性", instrument_ids=ids, status="active", conclusion="", visibility="team")
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
@@ -161,6 +193,7 @@ def begin_run(session, ids, *, scheduled=False):
             raise ReviewInProgress("其他行业检查正在运行，请稍后再检查当前范围")
         return latest, False
     cutoff = datetime.now(UTC)
+    incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
         # Existing batch checks still count for each sector's daily attempt.
@@ -172,54 +205,92 @@ def begin_run(session, ids, *, scheduled=False):
             if _research_dates(session, ids, checked) != research_dates:
                 continue
             if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
-                return prior, False
+                from watchlist_app.services.research_triggers import research_trigger
+                from watchlist_app.services.research_dossier import read_dossier
+                # A later conversation may have added a forecast or observation date.
+                trigger_context = {**prior.context_json, "reviews": {},
+                    "research_dossiers": [read_dossier(session, iid) for iid in ids]}
+                incremental_trigger = {iid: trigger for iid in ids if (
+                    trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
+                if not incremental_trigger:
+                    return prior, False
+                break
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="行业ETF每日检查" if sector_scope else title,
-        body="", source="Investment Studio 标的资料 / DeepSeek",
+        body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
         status="queued", context_json={"sector_run": True, "event_scope": "daily_sector" if sector_scope else "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
+        "research_actor": research_identity(),
+        "incremental_trigger": incremental_trigger,
         "web_evidence": [], "reviews": {}})
     session.add(run)
     session.commit()
     return run, True
 
 
-def prepare_run(run_id):
+def bind_research_instruments(session, run, ids):
+    """Both entrances retain the same instrument inputs, dossier versions and originals."""
     from watchlist_app.services.research_workbench import instrument_evidence
     from watchlist_app.services.research_dossier import ensure_mandate, read_dossier
+    from watchlist_app.services.research_identity import run_identity
+    context = dict(run.context_json)
+    known = {row["instrument_id"] for row in context.get("catalogue", [])}
+    if not set(ids).issubset(known):
+        raise ValueError("请使用本轮目录中的标的编码")
+    bound = {row["instrument_id"] for row in context.get("instrument_inputs", [])}
+    added = [iid for iid in dict.fromkeys(ids) if iid not in bound]
+    if not added:
+        return
+    cutoff = datetime.now(UTC)
+    assets = instrument_evidence(session, added, include_dossier=False, as_of=cutoff)["assets"]
+    inputs = list(context.get("sector_inputs", []))
+    company_data = dict(context.get("sector_company_data", {}))
+    dossiers = list(context.get("research_dossiers", []))
+    estimates = list(context.get("sector_estimate_evidence", []))
+    gaps = list(context.get("data_gaps", []))
+    for asset in assets:
+        iid = asset["instrument_id"]
+        asset["source_id"] = f"instrument:{run.entry_id}:{iid}"
+        asset["snapshot_cutoff"] = cutoff.isoformat()
+        ensure_mandate(session, iid)
+        dossiers.append(read_dossier(session, iid, actor=run_identity(context)))
+        if iid.upper() in SECTORS:
+            snapshot = sector_snapshot(iid, session, as_of=cutoff)
+            if snapshot is None:
+                gaps.append(f"{iid.upper()}尚无本项目留存的成分公司与分析师预期快照。")
+            else:
+                _, evidence, companies = snapshot
+                inputs.append({**evidence, "source_id": f"sector:{run.entry_id}:{iid}", "snapshot_cutoff": cutoff.isoformat()})
+                company_data[iid] = companies
+                estimates.append(read_estimate_evidence(session, iid, as_of=cutoff))
+    prior = session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(added), RiskCase.signal.like("sector:%")))
+    context.update(instrument_inputs=[*context.get("instrument_inputs", []), *assets],
+        sector_inputs=inputs, sector_company_data=company_data, research_dossiers=dossiers,
+        sector_estimate_evidence=estimates, data_gaps=gaps,
+        prior_events=[*context.get("prior_events", []), *[{**event_record(c), "evidence": c.evidence_json} for c in prior]])
+    # Automatic runs retain their requested publication scope; comparisons may read peers.
+    if not context.get("sector_run"):
+        context["instrument_ids"] = list(dict.fromkeys([*context.get("instrument_ids", []), *added]))
+    # A first read can occur later in a conversation. Its inputs retain their own clock;
+    # the run's knowledge horizon advances without relabeling earlier snapshots.
+    context["cutoff"] = datetime.now(UTC).isoformat()
+    run.context_json = context
+    session.flush()
+
+
+def prepare_run(run_id):
+    from watchlist_app.services.research_workbench import catalogue
+    from watchlist_app.services.market_evidence import text_store
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         context = dict(run.context_json)
-        context["cutoff"] = datetime.now(UTC).isoformat()
-        cutoff = datetime.fromisoformat(context["cutoff"])
-        inputs, company_data = [], {}
-        instrument_inputs = instrument_evidence(session, context["instrument_ids"], include_dossier=False, as_of=cutoff)["assets"]
-        for iid in context["instrument_ids"]:
-            ensure_mandate(session, iid)
-        dossiers = [read_dossier(session, iid) for iid in context["instrument_ids"]]
-        sector_scope = all(iid.upper() in SECTORS for iid in context["instrument_ids"])
-        if sector_scope:
-            for iid in context["instrument_ids"]:
-                snapshot = sector_snapshot(iid, session, as_of=cutoff)
-                if snapshot is None:
-                    context.setdefault("data_gaps", []).append(f"{iid.upper()}尚无本项目留存的成分公司与分析师预期快照。")
-                    continue
-                _, evidence, companies = snapshot
-                inputs.append(evidence)
-                company_data[iid] = companies
-        catalogue = [{key: asset[key] for key in ("instrument_id", "name", "instrument_type")} for asset in instrument_inputs]
-        prior = session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(context["instrument_ids"]), RiskCase.signal.like("sector:%")))
-        for asset in instrument_inputs:
-            asset["source_id"] = f"instrument:{run_id}:{asset['instrument_id']}"
-        for asset in inputs:
-            asset["source_id"] = f"sector:{run_id}:{asset['instrument_id']}"
-        context.update(sector_inputs=inputs, sector_company_data=company_data, instrument_inputs=instrument_inputs,
-            catalogue=catalogue, research_dossiers=dossiers, run_id=run_id,
-            tool_evidence=[],
-            prior_events=[{**event_record(c), "evidence": c.evidence_json} for c in prior])
+        cutoff = datetime.now(UTC).isoformat()
+        context.update(research_run=True, run_id=run_id, cutoff=cutoff, input_snapshot_cutoff=cutoff,
+            catalogue=catalogue(session), instrument_inputs=[], research_dossiers=[],
+            sector_inputs=[], sector_company_data={}, sector_estimate_evidence=[], prior_events=[],
+            tool_evidence=[], web_evidence=[], market_text_sources=[], market_queries=[],
+            market_coverage=text_store().get_coverage())
         run.context_json = context
-        context["sector_estimate_evidence"] = [read_estimate_evidence(session, iid,
-            as_of=cutoff) for iid in company_data]
-        run.context_json = dict(context)
+        bind_research_instruments(session, run, context.get("instrument_ids", []))
         session.commit()
 
 
@@ -252,7 +323,8 @@ class SectorEvent(BaseModel):
 
 class SectorReview(BaseModel):
     instrument_id: str
-    summary: str = Field(max_length=2000)
+    summary: str = Field(default="", max_length=2000)
+    change_kind: Literal["none", "knowledge", "investment"] = "none"
     coverage: list[str] = Field(default_factory=list)
     events: list[SectorEvent] = Field(default_factory=list)
     research: ResearchNotebook | None = None
@@ -260,6 +332,27 @@ class SectorReview(BaseModel):
 
 class ReviewResult(BaseModel):
     reviews: list[SectorReview]
+
+
+def draft_payload(result: ReviewResult):
+    """Keep research deltas sparse: omitted fields retain the existing knowledge."""
+    payload = result.model_dump(mode="json")
+    for model, row in zip(result.reviews, payload["reviews"]):
+        if model.research is not None:
+            row["research"] = model.research.model_dump(mode="json", exclude_unset=True)
+    return payload
+
+
+def usable_computed(source: dict, cutoff: datetime, iid: str) -> bool:
+    """Only retained application calculations establish a numeric observation, not a cause."""
+    if source.get("source_type") != "computed_metric" or source.get("scope") != "public_market":
+        return False
+    if source.get("instrument_id") not in {None, iid} or not source.get("as_of"):
+        return False
+    observed = datetime.fromisoformat(source["as_of"].replace("Z", "+00:00"))
+    data = source.get("data") or {}
+    return observed <= cutoff and (data.get("status") == "available" or any(
+        row.get("observations", 0) > 1 for row in data.get("series", [])) or bool(data.get("rows")))
 
 
 def usable_original(source: dict, cutoff: datetime) -> bool:
@@ -278,10 +371,14 @@ def usable_original(source: dict, cutoff: datetime) -> bool:
 
 
 def _source_views(sources):
-    fields = ("source_id", "url", "title", "published_at", "published_at_raw", "retrieved_at", "discovered_at", "time_status")
+    fields = ("source_id", "document_id", "version_id", "url", "title", "source_type", "as_of", "published_at", "published_at_raw",
+              "occurred_at", "observed_at", "received_at", "retrieved_at", "discovered_at", "time_status")
     return [{**{key: source.get(key) for key in fields}, **({"source_type": source["source_type"],
                 "changes": source["changes"], "current_snapshot": source["current_snapshot"],
-                "previous_snapshot": source["previous_snapshot"]} if source.get("source_type") == "analyst_estimate_changes" else {})}
+                "previous_snapshot": source["previous_snapshot"]} if source.get("source_type") == "analyst_estimate_changes" else {}),
+             **({"measurement": {key: source.get("data", {}).get(key) for key in
+                    ("current", "previous", "change_pp", "five_session_change_pp", "historical_reference")},
+                 "methodology": source.get("methodology")} if source.get("source_type") == "computed_metric" else {})}
             for source in sources]
 
 
@@ -319,12 +416,23 @@ def _same_progress(case, item, sources):
     fields = ("direction", "information_type", "confidence", "published_at", "occurred_at")
     # Fetch IDs and collection times change every run; the cited publication does not.
     def identities(rows):
-        publications = {(row.get("url"), row.get("published_at")) for row in rows if row.get("url")}
+        publications = {(row.get("document_id") or row.get("url"), row.get("version_id") or row.get("published_at"))
+                        for row in rows if row.get("url") or row.get("document_id")}
         estimate_points = {("estimate", change["symbol"], change["frequency"], change["target_period_end"],
             change["metric"], change["currency"], change["previous_value"], change["current_value"],
             change["previous_collected_at"], change["current_collected_at"])
             for row in rows if row.get("source_type") == "analyst_estimate_changes" for change in row["changes"]}
-        return publications | estimate_points
+        def observations(value):
+            if isinstance(value, list):
+                return [observations(item) for item in value]
+            if isinstance(value, dict):
+                return {key: observations(item) for key, item in value.items() if key not in {
+                    "source_id", "batch_id", "observed_at", "available_at", "availability_precision", "input_points", "limitations"}}
+            return value
+        computed = {("computed", row.get("instrument_id"),
+                     json.dumps(observations(row.get("data", {})), sort_keys=True, ensure_ascii=False))
+                    for row in rows if row.get("source_type") == "computed_metric"}
+        return publications | estimate_points | computed
     previous = [{**evidence, "body": case.body},
                 *(entry["snapshot"] for entry in case.history_json or [] if entry.get("snapshot"))]
     return any(" ".join(row["body"].split()) == " ".join(item.body.split())
@@ -335,7 +443,20 @@ def _same_progress(case, item, sources):
 def validate_result(session, run, parsed: ReviewResult):
     """Check the full draft against retained evidence without publishing research or events."""
     context = run.context_json
-    if len(parsed.reviews) != len(context["instrument_ids"]) or {r.instrument_id for r in parsed.reviews} != set(context["instrument_ids"]):
+    from studio_identity import current_principal
+    principal = current_principal()
+    topic = session.get(ResearchTopic, run.topic_id)
+    from watchlist_app.services.research_access import require_team_publication_scope
+    require_team_publication_scope(session, run)
+    if not principal.local_unrestricted and principal.kind == "user" and principal.team_role == "reader":
+        raise ValueError("只读成员可以个人讨论，不能发布团队研究")
+    requested = [r.instrument_id for r in parsed.reviews]
+    if topic and topic.visibility == "private" and not set(requested).issubset(context.get("team_publication_instructions", {})):
+        raise ValueError("个人对话不会自动发布团队研究；请先取得当前用户明确的保存指令")
+    scope = set(context["instrument_ids"])
+    if len(requested) != len(set(requested)) or not set(requested).issubset(scope):
+        raise ValueError("研究更新重复或超出本轮绑定的标的范围")
+    if context.get("sector_run") and set(requested) != scope:
         raise ValueError("事件检查结果未覆盖本轮全部标的")
     sources = {s["source_id"]: s for evidence in context.get("web_evidence", []) for s in evidence.get("sources", [])}
     for iid, companies in context.get("sector_company_data", {}).items():
@@ -344,15 +465,31 @@ def validate_result(session, run, parsed: ReviewResult):
                 "title": f"FMP · {symbol} 公司资料与分析师预期", "time_status": "background", "company": company}
     sources.update(retained_estimate_sources(context))
     notebook_evidence = research_sources(context, run.entry_id)
-    sources.update({sid: source for sid, source in notebook_evidence.items() if source.get("source_type") == "public_source"})
+    sources.update({sid: source for sid, source in notebook_evidence.items() if source.get("source_type") in {"public_source", "computed_metric"}})
     cutoff = datetime.fromisoformat(context["cutoff"])
     seen = set()
     # Validate the full reply before changing any persistent event.
     for review in parsed.reviews:
-        if context.get("research_dossiers") and review.research is None:
-            raise ValueError("本轮研究没有提交标的研究底稿，不能只保存事件摘要")
         if review.research is not None:
             validate_notebook(review.research, review.instrument_id, notebook_evidence)
+            dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+            themes = {item["theme_id"]: item for item in dossier.get("themes", [])}
+            notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
+            for question in review.research.questions:
+                if question.theme_id and question.theme_id not in themes:
+                    raise ValueError("研究判断关联了本轮未读取的关注主题")
+                if context.get("sector_run") and question.theme_id and themes[question.theme_id]["status"] != "active":
+                    raise ValueError("已暂停或结束的关注主题不再自动更新")
+                if question.pm_note_id:
+                    note = notes.get(question.pm_note_id)
+                    revisions = {item["revision_number"] for item in (note or {}).get("versions", [])}
+                    if not note or question.pm_note_revision not in revisions:
+                        raise ValueError("请关联本轮已读取的投资经理观点及其原始版本")
+                    note_theme = (note.get("research_context") or {}).get("theme_id")
+                    if question.theme_id and note_theme != question.theme_id:
+                        raise ValueError("研究判断的主题与投资经理原观点不一致")
+                    if context.get("sector_run") and note_theme and themes.get(note_theme, {}).get("status") != "active":
+                        raise ValueError("已暂停或结束主题下的观点不再自动复核")
         for item in review.events:
             key = (review.instrument_id, item.event_key)
             if key in seen:
@@ -362,7 +499,8 @@ def validate_result(session, run, parsed: ReviewResult):
                 raise ValueError("事件引用了未取得的来源")
             originals = [sources[s] for s in item.source_ids if usable_original(sources[s], cutoff)]
             estimate_changes = [sources[s] for s in item.source_ids if usable_estimate_change(sources[s], cutoff, review.instrument_id)]
-            if not originals and not estimate_changes:
+            computed = [sources[s] for s in item.source_ids if usable_computed(sources[s], cutoff, review.instrument_id)]
+            if not originals and not estimate_changes and not computed:
                 raise ValueError("事件缺少截至检查时可核对的原文或可比较预期变动；未来首发或自动汇编不能独立支撑事件")
             if item.published_at is not None and item.published_at not in {
                 SectorEvent.retain_time_precision(source.get("published_at")) for source in originals
@@ -382,13 +520,30 @@ def apply_result(session, run, reply):
     parsed = ReviewResult.model_validate_json(reply)
     sources, notebook_evidence = validate_result(session, run, parsed)
     context = run.context_json
-    searched = any(e.get("operation") == "search" for e in context.get("web_evidence", []))
+    # Both entrances can update the same instrument while a model is running.
+    # Publish only against the versions actually studied; preserve a stale draft for review.
+    from watchlist_app.services.research_dossier import read_dossier
+    ids = [review.instrument_id for review in parsed.reviews]
+    list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
+                        .order_by(InstrumentDetail.instrument_id).with_for_update()))
+    for review in parsed.reviews:
+        if review.research is None and not review.events and review.change_kind != "investment":
+            continue
+        bound = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+        current = read_dossier(session, review.instrument_id)
+        for key in ("notebook", "mandate"):
+            before = bound.get(key) or {}
+            after = current.get(key) or {}
+            if before.get("version_id", before.get("run_id")) != after.get("version_id", after.get("run_id")):
+                raise ResearchVersionConflict("研究记录在本轮分析期间已有更新，本轮草稿已保留；请基于最新版本继续研究。")
+    previous_reviews = latest_reviews(session, completed_only=True)
     acquisition_gaps = [gap for e in context.get("web_evidence", []) for gap in e.get("coverage", [])]
+    if context.get("sector_run") and not context.get("market_queries") and not any(e.get("operation") == "search" for e in context.get("web_evidence", [])):
+        acquisition_gaps.append("本轮未检索共享资讯或补充来源，不能据此认定无重大新增。")
     reviews = {}
     for review in parsed.reviews:
-        coverage = list(dict.fromkeys([*review.coverage, "尚未接入X专用数据源；公开搜索不代表完整社媒覆盖。",
-            *(["部分公开资料获取失败或检索结果被截断；详细原因已保留在检查证据中。"] if acquisition_gaps else []),
-            *(["本次未成功执行公开资讯检索，不能据此判断没有重大事件。"] if not searched else [])]))
+        coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps]))
+        changed_events = False
         for item in review.events:
             signal = f"sector:{item.event_key}"
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal == signal).order_by(RiskCase.created_at.desc()))
@@ -397,7 +552,8 @@ def apply_result(session, run, reply):
                 continue
             discovered_at = datetime.now(UTC).isoformat()
             action = "new" if case is None else "resolved" if item.action == "resolved" else "updated"
-            snapshot = {**item.model_dump(mode="json"), "action": action, "sources": item_sources,
+            from watchlist_app.services.market_evidence import source_reference
+            snapshot = {**item.model_dump(mode="json"), "action": action, "sources": [source_reference(source) for source in item_sources],
                 "coverage": coverage, "discovered_at": discovered_at, "run_id": run.entry_id,
                 "checked_at": context["cutoff"]}
             first_discovered = ((case.evidence_json or {}).get("discovered_at") or
@@ -418,15 +574,27 @@ def apply_result(session, run, reply):
                 case.status = "resolved"
             case.history_json = [*(case.history_json or []), {"at": discovered_at, "action": action,
                 "detail": item.body, "snapshot": {**snapshot, "status": case.status, "trigger_active": case.trigger_active}}]
+            changed_events = True
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
-        notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"]) if review.research is not None and searched else None
+        notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"]) if review.research is not None else None
         if notebook and review.research.mandate_update is not None:
             from watchlist_app.services.research_dossier import save_mandate
-            save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False)
-        reviews[review.instrument_id] = {"status": "limited" if searched else "failed", "summary": review.summary if searched else "本次未完成公开资讯检索。", "coverage": coverage, "research": notebook}
+            save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False, origin="research")
+        prior = previous_reviews.get(review.instrument_id) or {}
+        publishes = review.change_kind == "investment" or changed_events
+        # An explicit quiet/knowledge update cannot turn a paraphrase into a new PM article.
+        summary = review.summary if publishes and review.summary.strip() else prior.get("summary", "")
+        changed = publishes and bool(review.summary.strip()) and review.summary != prior.get("summary")
+        reviews[review.instrument_id] = {"status": "limited" if coverage else "completed", "summary": summary,
+            "view_updated_at": context["cutoff"] if changed else prior.get("view_updated_at"),
+            "view_run_id": run.entry_id if changed else prior.get("view_run_id"),
+            "change_kind": "investment" if publishes else "knowledge" if notebook and (
+                notebook.get("version_id") != (dossier.get("notebook") or {}).get("version_id") or review.research.mandate_update) else "none",
+            "coverage": coverage, "market_coverage": context.get("market_coverage"), "research": notebook}
     run.context_json = {**context, "reviews": reviews}
     run.body = "\n\n".join(f"{iid.upper()} · {instrument_label(session, iid)}\n{review['summary']}" for iid, review in reviews.items())
-    run.status = "completed" if searched else "failed"
+    run.status = "completed"
+    run.completed_at = datetime.now(UTC)
 
 
 def _research_market(session, instrument_id):
@@ -461,7 +629,7 @@ def _research_due(market, now):
 
 def daily_review_groups(session, *, now=None):
     from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
-    registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
+    registered = set(list_shared_active_instrument_ids(instrument_types={"equity", "etf", "index"}))
     statuses = {}
     for value in session.scalars(select(InstrumentAttributeValue).where(
         InstrumentAttributeValue.attribute_key == "coverage_status", InstrumentAttributeValue.instrument_id.in_(registered))
@@ -470,7 +638,7 @@ def daily_review_groups(session, *, now=None):
     selected = [iid for iid, status in statuses.items() if status in {"Proposed", "Invested"}]
     ids = sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
-        InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
+        InstrumentDetail.instrument_type.in_(("equity", "etf", "index")))))
     now = now or datetime.now(UTC)
     groups = [[iid] for iid in ids if _research_due(_research_market(session, iid), now)]
     reviews = latest_reviews(session)
@@ -479,6 +647,12 @@ def daily_review_groups(session, *, now=None):
 
 
 def run_daily_reviews(stop):
+    from studio_identity import principal_context, service_principal
+    with principal_context(service_principal("watchlist")):
+        _run_daily_reviews(stop)
+
+
+def _run_daily_reviews(stop):
     from watchlist_app.services.research_runner import run_analysis
     from watchlist_app.services.research_workbench import portfolio_options
     from watchlist_app.services.risk_officer import begin_run as begin_risk_run, read_snapshot as read_risk_snapshot
@@ -491,6 +665,11 @@ def run_daily_reviews(stop):
     risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
 
     def review_group(ids):
+        from studio_identity import principal_context, service_principal
+        with principal_context(service_principal("watchlist")):
+            return review_group_authenticated(ids)
+
+    def review_group_authenticated(ids):
         if stop.is_set():
             return False
         try:

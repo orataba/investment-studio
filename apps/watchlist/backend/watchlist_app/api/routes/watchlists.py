@@ -4,6 +4,7 @@ from datetime import datetime
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -61,6 +62,27 @@ from watchlist_app.services.watchlist_query_contract import (
     WatchlistQueryContractError,
     validate_watchlist_query_contract,
 )
+
+
+from studio_identity import current_principal
+from watchlist_app.db.models.watchlists import WatchlistUserSettings, WatchlistView
+
+
+def _personal_views(session, watchlist_id):
+    user_id = current_principal().user_id
+    rows = [row for row in watchlist_repository.list_views(session, watchlist_id)
+            if current_principal().local_unrestricted or row.author_user_id in {None, user_id}]
+    overridden = {row.base_view_id for row in rows if row.author_user_id == user_id and row.base_view_id}
+    return [row for row in rows if row.watchlist_view_id not in overridden]
+
+
+def _personal_order(session, records):
+    user_id = current_principal().user_id
+    row = session.get(WatchlistUserSettings, user_id) if user_id else None
+    order = row.ordered_watchlist_ids if row else []
+    rank = {value: index for index, value in enumerate(order)}
+    return sorted(records, key=lambda row: (row.watchlist_id not in SYSTEM_WATCHLIST_IDS,
+        rank.get(row.watchlist_id, len(rank)), row.sort_order))
 
 
 router = APIRouter()
@@ -133,26 +155,6 @@ def _require_watchlist(session: Session, watchlist_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="Watchlist not found")
     return record
-
-
-def _field_supports_instrument_types(
-    instrument_scope: list[str] | None,
-    instrument_types: set[str],
-    *,
-    require_all: bool,
-) -> bool:
-    normalized_scope = {
-        str(value).strip().lower()
-        for value in (instrument_scope or [])
-        if str(value).strip()
-    }
-    if not normalized_scope:
-        return True
-    if not instrument_types:
-        return False
-    return normalized_scope.issuperset(instrument_types) if require_all else bool(
-        normalized_scope.intersection(instrument_types)
-    )
 
 
 def _primary_shared_identifier(
@@ -316,7 +318,8 @@ def _create_watchlist_with_retry(
                 name=name,
                 description=description,
                 owner_type="team",
-                owner_id="investment-team",
+                owner_id="default",
+                is_shared=True,
                 default_view_id=default_view_id,
             )
         except IntegrityError as error:
@@ -369,7 +372,7 @@ def _create_watchlist_view_with_retry(
     for _ in range(MAX_WATCHLIST_ID_ATTEMPTS):
         if any(
             item.name.strip().casefold() == name.casefold()
-            for item in watchlist_repository.list_views(session, watchlist_id)
+            for item in _personal_views(session, watchlist_id)
         ):
             raise HTTPException(
                 status_code=409,
@@ -641,7 +644,7 @@ def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str
         )
     session.commit()
     records = list(watchlist_repository.list(session))
-    return [present_watchlist(item) for item in records]
+    return [present_watchlist(item) for item in _personal_order(session, records)]
 
 
 @router.post("")
@@ -680,12 +683,17 @@ def reorder_watchlist_records(
             if watchlist_id not in SYSTEM_WATCHLIST_IDS
         ],
     ]
-    records = watchlist_repository.reorder(
-        session,
-        watchlist_ids=ordered_watchlist_ids,
-    )
+    records = list(watchlist_repository.list(session))
+    if set(ordered_watchlist_ids) != {record.watchlist_id for record in records} or len(ordered_watchlist_ids) != len(records):
+        raise HTTPException(422, "排序须包含当前可见的全部观察列表且不能重复")
+    user_id = current_principal().user_id
+    row = session.get(WatchlistUserSettings, user_id)
+    if row is None:
+        row = WatchlistUserSettings(user_id=user_id)
+        session.add(row)
+    row.ordered_watchlist_ids = ordered_watchlist_ids
     session.commit()
-    return [present_watchlist(item) for item in records]
+    return [present_watchlist(item) for item in _personal_order(session, records)]
 
 
 @router.post("/{watchlist_id}/copy")
@@ -705,9 +713,9 @@ def copy_watchlist_record(
         raise HTTPException(status_code=404, detail="Watchlist not found")
     if _is_system_watchlist(watchlist_id):
         record.owner_type = "team"
-        record.owner_id = "investment-team"
+        record.owner_id = "default"
         record.is_default = False
-        record.is_shared = False
+        record.is_shared = True
 
     try:
         _materialize_watchlist_rows(
@@ -758,21 +766,18 @@ def get_watchlist(
         for row in watchlist_rows
         if str(row.instrument_type or "").strip()
     }
-    scoped_fields = [
-        field
-        for field in fields
-        if _field_supports_instrument_types(
-            field.instrument_scope_json,
-            active_instrument_types,
-            require_all=True,
-        )
-    ]
+    views = _personal_views(session, watchlist_id)
+    summary = present_watchlist(record)
+    base_key = f"{watchlist_id}::{summary['default_view_id']}"
+    personal_default = next((view for view in views if view.base_view_id == base_key), None)
+    if personal_default:
+        summary["default_view_id"] = present_watchlist_view(personal_default)["view_id"]
     return {
-        **present_watchlist(record),
+        **summary,
         "instrument_types": sorted(active_instrument_types),
-        "views": [present_watchlist_view(item) for item in watchlist_repository.list_views(session, watchlist_id)],
+        "views": [present_watchlist_view(item) for item in views],
         "available_group_bys": present_group_by_options(fields),
-        "default_filters_summary": present_default_filter_summary(scoped_fields),
+        "default_filters_summary": present_default_filter_summary(fields),
     }
 
 
@@ -784,7 +789,7 @@ def list_watchlist_views_for_watchlist(
     _require_watchlist(session, watchlist_id)
     return [
         present_watchlist_view(item)
-        for item in watchlist_repository.list_views(session, watchlist_id)
+        for item in _personal_views(session, watchlist_id)
     ]
 
 
@@ -857,7 +862,7 @@ def add_items_to_watchlist(
         session,
         watchlist_id=watchlist_id,
         instrument_ids=canonical_instrument_ids,
-        added_by="api",
+        added_by=current_principal().user_id,
     )
     created_instrument_ids = [item.instrument_id for item in created]
     try:
@@ -946,7 +951,7 @@ def move_items_to_watchlist(
         session,
         watchlist_id=target_watchlist_id,
         instrument_ids=instrument_ids,
-        added_by="api",
+        added_by=current_principal().user_id,
     )
     try:
         _materialize_watchlist_rows(
@@ -1007,7 +1012,7 @@ def copy_items_to_watchlist(
         session,
         watchlist_id=target_watchlist_id,
         instrument_ids=instrument_ids,
-        added_by="api",
+        added_by=current_principal().user_id,
     )
     try:
         _materialize_watchlist_rows(
@@ -1053,6 +1058,7 @@ def create_view_for_watchlist(
         else {},
         columns=columns,
     )
+    record.author_user_id = current_principal().user_id
     session.commit()
     return present_watchlist_view(record)
 
@@ -1074,12 +1080,28 @@ def update_view_for_watchlist(
         watchlist_id=watchlist_id,
         view_id=view_id,
     )
-    if existing_view is None:
+    if existing_view is None or (not current_principal().local_unrestricted and existing_view.author_user_id not in {None, current_principal().user_id}):
         raise HTTPException(status_code=404, detail="Watchlist view not found")
+    if existing_view.author_user_id is None:
+        personal = session.scalar(select(WatchlistView).where(WatchlistView.base_view_id == existing_view.watchlist_view_id,
+                                  WatchlistView.author_user_id == current_principal().user_id))
+        if personal:
+            existing_view = personal
+            view_id = present_watchlist_view(personal)["view_id"]
+    if existing_view.author_user_id is None:
+        from uuid import uuid4
+        record = watchlist_repository.create_view(session, watchlist_id=watchlist_id, view_id="personal-" + uuid4().hex,
+            name=view_name, description=payload.description, kind="custom", default_group_by=payload.default_group_by,
+            default_sort=[item.model_dump() for item in (payload.default_sort or [])], default_filters=payload.default_filters,
+            default_advanced_filter=payload.default_advanced_filters.model_dump() if payload.default_advanced_filters else {},
+            columns=_ensure_required_columns([item.model_dump() for item in payload.columns]))
+        record.author_user_id, record.base_view_id = current_principal().user_id, existing_view.watchlist_view_id
+        session.commit()
+        return present_watchlist_view(record)
     if any(
         item.watchlist_view_id != existing_view.watchlist_view_id
         and item.name.strip().casefold() == view_name.casefold()
-        for item in watchlist_repository.list_views(session, watchlist_id)
+        for item in _personal_views(session, watchlist_id)
     ):
         raise HTTPException(status_code=409, detail="Watchlist view name already exists")
     try:

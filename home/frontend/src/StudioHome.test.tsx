@@ -19,7 +19,7 @@ describe('StudioHome', () => {
     expect(resolveWorkspaceUrl('http://127.0.0.1:3011', 'regime')).toBe('http://192.168.1.20:3011')
     expect(resolveWorkspaceUrl('/studio/', 'home')).toBe('/studio')
   })
-  it('renders the three workspace entrances on Home', () => {
+  it('renders the four workspace entrances on Home', () => {
     vi.stubGlobal('window', {
       location: {
         hostname: '127.0.0.1',
@@ -41,19 +41,34 @@ describe('StudioHome', () => {
     expect(markup).toContain('Watchlist')
     expect(markup).toContain('Portfolio')
     expect(markup).toContain('Regime')
+    expect(markup).toContain('Market Briefing')
+    expect(markup).toContain('href="http://127.0.0.1:5175"')
     expect(markup).not.toContain('Email NAV')
     expect(markup).not.toContain('operational status')
     expect(markup).not.toContain('/api/dashboard')
   })
 
+  it.each([
+    { language: 'zh-Hans', name: '市场简报', eyebrow: '日报与周报', description: '阅读市场日报与周报、查阅来源依据、跟踪预期变化。', other: 'Market Briefing' },
+    { language: 'en', name: 'Market Briefing', eyebrow: 'Daily and weekly research', description: 'Read market briefings, source evidence, and changes in expectations.', other: '市场简报' },
+  ])('renders the complete Briefing entry in $language with the public workspace URL', ({ language, name, eyebrow, description, other }) => {
+    vi.stubGlobal('window', { location: { hostname: 'yunguyungu.com', protocol: 'https:', port: '', search: `?lang=${language}` } })
+    const markup = renderToStaticMarkup(<LanguageProvider><StudioLinks apps={appCatalog} /></LanguageProvider>)
+    expect(markup).toContain(name)
+    expect(markup).toContain(eyebrow)
+    expect(markup).toContain(description)
+    expect(markup).not.toContain(other)
+    expect(markup).toContain('href="https://briefing.yunguyungu.com"')
+  })
+
   it('renders an added app and removes entries absent from the catalog', () => {
-    const markup = renderToStaticMarkup(<StudioLinks apps={[{
+    const markup = renderToStaticMarkup(<LanguageProvider><StudioLinks apps={[{
       app_id: 'research', name: 'Research', url: 'https://research.example.test',
       eyebrow: 'Research', description: 'Independent research app',
-    }]} />)
+    }]} /></LanguageProvider>)
     expect(markup).toContain('https://research.example.test')
     expect(markup).not.toContain('Watchlist')
-    expect(renderToStaticMarkup(<StudioLinks apps={[]} />)).not.toContain('<a ')
+    expect(renderToStaticMarkup(<LanguageProvider><StudioLinks apps={[]} /></LanguageProvider>)).not.toContain('<a ')
   })
 
   it('shows a loading message before the entry list is available', () => {

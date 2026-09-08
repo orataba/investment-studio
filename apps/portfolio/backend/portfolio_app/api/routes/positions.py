@@ -21,10 +21,33 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
     summarize_positions,
 )
-from portfolio_app.services.portfolio_store import get_portfolio, list_accounts, list_transactions
+from portfolio_app.services.portfolio_store import get_portfolio, list_accounts, list_derivative_contracts, list_transactions
+from portfolio_app.services.fcn_lifecycle import build_fcn_lifecycles
 
 
 router = APIRouter()
+
+
+@router.get("/{portfolio_id}/positions/{position_reference_id}/fcn-lifecycles")
+def get_portfolio_fcn_lifecycles(
+    portfolio_id: str,
+    position_reference_id: str,
+    as_of_date: date | None = None,
+) -> dict:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    resolved_date = as_of_date or (
+        date.fromisoformat(str(portfolio["as_of_date"])) if portfolio.get("as_of_date") else date.today()
+    )
+    try:
+        return build_fcn_lifecycles(
+            portfolio_id=portfolio_id, position_reference_id=position_reference_id,
+            accounts=list_accounts(portfolio_id), transactions=list_transactions(portfolio_id),
+            contracts=list_derivative_contracts(portfolio_id), as_of_date=resolved_date,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @router.get("/{portfolio_id}/positions", response_model=PositionListResponse)

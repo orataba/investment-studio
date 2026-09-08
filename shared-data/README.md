@@ -1,8 +1,8 @@
 # Investment Studio Data
 
-这里集中管理 Watchlist/Portfolio 业务组的共享资产数据、数据接入、解析、导入、修正和更新。Regime 的数据由 `apps/regime` 自己管理，不接入此数据库。对外只提供 CLI 和定时作业，不提供网页、HTTP 服务或公开端口；系统部署和服务运维属于 `infra/`。
+这里管理 Studio 公共数值、文本、共享资产事实，以及私有数据接入、解析、导入、修正和更新。四个业务 App 使用公共市场资料；Regime 自有模型数据库仍独立。对外只提供 CLI 和定时作业，不提供网页、HTTP 服务或公开端口；系统部署和服务运维属于 `infra/`。
 
-配置前缀为 `INVESTMENT_STUDIO_DATA_`。登录与导航独立放在 [Home](../home/README.md)，两者没有运行时依赖。
+私有摄取与资产维护配置前缀为 `INVESTMENT_STUDIO_DATA_`，公共市场层为 `INVESTMENT_STUDIO_MARKET_`。登录与导航独立放在 [Home](../home/README.md)，两者没有运行时依赖。
 
 ## 代码组织
 
@@ -11,6 +11,7 @@ shared-data/
   studio_data/      数据接入、解析、数据操作与 CLI
   scripts/          数据导入与定时更新入口
   alembic/          data_ingestion 接入状态迁移
+  market/           全市场数值、PIT、文本原文版本与数据包
   instruments/
     python/         共享资产模型、存储与数据合同
     ts/             前端共享数据类型
@@ -26,14 +27,16 @@ shared-data/
 | --- | --- |
 | `data_ingestion`（数据接入） | 供应商目录、邮件游标、附件、解析、候选路由、原始证据 |
 | `instrument_data`（资产数据） | 资产身份、identifier、price/NAV/FX、公司行动、资产资料快照及数据血缘 |
+| `market_data` / `market_text` | 公共数值目录、当前投影、PIT、文本版本及来源；历史 Parquet/raw 文件独立保存 |
+| `briefing` | 日报周报、冻结输入与引用版本 |
 | `watchlist` | 观察列表、分类、研究、监控及计算结果 |
 | `portfolio` | 账户、交易、FCN/Option 合约、账本、持仓及组合计算 |
 
-四个分区属于 Investment Studio 的同一数据库，写入所有权仍独立。Regime 使用自己的项目与数据库。Watchlist 和 Portfolio 直接读取共享资产事实；新增市场资产、改价、净值导入、数据源配置均由后台维护。新增 FCN/Option 合约和记账仍是 Portfolio 的业务操作。
+七个分区属于 Studio 同一数据库，写入所有权独立。Regime 使用 Studio 公共市场层，保留自身模型与运行数据库。完整数据流、时钟和文件恢复范围见 [Market Data Pipeline](../docs/MARKET_DATA_PIPELINE.md)。Watchlist 和 Portfolio 直接读取共享资产事实；新增市场资产、改价、净值导入、数据源配置均由后台维护。新增 FCN/Option 合约和记账仍是 Portfolio 的业务操作。
 
 ## CLI 维护
 
-从仓库根目录调用 `bin/investment-studio`。它读取仓库外 `data.env`，无需启动主页或任何 HTTP 服务。默认配置目录为 `~/.config/orataba/secrets/investment-studio`；服务器可通过 `ENV_ROOT` 指定配置目录。数据库密码、FMP/DataHub/邮箱密钥不进入仓库。
+从仓库根目录调用 `bin/investment-studio`。`data` 命令读取仓库外 `data.env` 与 `market.env`，无需启动主页或任何 HTTP 服务。默认配置目录为 `~/.config/orataba/secrets/investment-studio`；服务器可通过 `ENV_ROOT` 指定配置目录。数据库密码、FMP/DataHub/邮箱密钥不进入仓库。
 
 ```bash
 bin/investment-studio data --help
@@ -91,6 +94,6 @@ bin/investment-studio data reference refresh INSTRUMENT_ID --apply
 
 ## 迁移与运行
 
-共享事实的迁移位于 `shared-data/instruments`；接入状态迁移位于 `shared-data/alembic`。统一使用 `infra/scripts/migrate_all.sh`；保留已有迁移链和版本标识，目录改名不复制或删除数据。
+共享资产事实迁移位于 `shared-data/instruments`；私有接入状态位于 `shared-data/alembic`；公共数值和文本共用 `shared-data/market/alembic` 迁移链。统一使用 `infra/scripts/migrate_all.sh`；保留已有迁移链和版本标识，目录改名不复制或删除数据。
 
 部署与本地服务分别见 [Server Deployment](../docs/SERVER_DEPLOYMENT.md) 和 [Local Service](../docs/LOCAL_MACOS_SERVICE.md)。价格、净值与收益语义仍遵循 [Fund NAV Event Model](../docs/FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)。

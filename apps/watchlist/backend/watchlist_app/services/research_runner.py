@@ -5,7 +5,11 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+from datetime import UTC, datetime
+from fastapi import HTTPException
 from sqlalchemy import select
+from studio_identity import (IdentityError, current_principal, issue_delegation, principal_context,
+                             resolve_token, revoke_delegation, service_principal)
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.session import get_session_factory
 
@@ -28,11 +32,47 @@ def interrupt_incomplete_runs():
         session.commit()
 
 
-def run_analysis(run_id: str):
+def run_analysis(run_id: str, token: str | None = None):
+    try:
+        if token is None:
+            token = authorize_run(service_principal("watchlist"), run_id)
+        with principal_context(resolve_token(token, "watchlist")):
+            _run_analysis(run_id)
+    except (IdentityError, HTTPException):
+        _fail_authorization(run_id)
+    finally:
+        if token:
+            try:
+                revoke_delegation(token)
+            except IdentityError:
+                pass  # Credentials also expire server-side; never publish on an auth failure.
+
+
+def _fail_authorization(run_id):
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id, with_for_update=True)
+        if run and run.status in {"queued", "running"}:
+            run.status, run.body = "failed", "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
+            run.completed_at = datetime.now(UTC)
+            session.commit()
+
+
+def authorize_run(principal, run_id):
+    """A persisted queue item must reach a terminal state if dispatch is rejected."""
+    try:
+        return issue_delegation(principal, audience="watchlist", resource_scope={"kind": "run", "id": run_id})
+    except (IdentityError, HTTPException):
+        _fail_authorization(run_id)
+        raise
+
+
+def _run_analysis(run_id: str):
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
         if not run or run.status != "queued":
             return
+        from watchlist_app.services.research_access import require_entry_access
+        require_entry_access(session, run)
         run.status = "running"
         sector_run = bool(run.context_json.get("sector_run"))
         risk_run = bool(run.context_json.get("risk_run"))
@@ -43,7 +83,7 @@ def run_analysis(run_id: str):
     runtime_error = None
     rejected_reply = None
     try:
-        if sector_run:
+        if not risk_run:
             from watchlist_app.services.sector_research import prepare_run
             prepare_run(run_id)
         elif risk_run:
@@ -52,8 +92,9 @@ def run_analysis(run_id: str):
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []
-        process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-        reply, errors = process.communicate(timeout=1800 if sector_run else 900)
+        process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+            env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential})
+        reply, errors = process.communicate(timeout=1800 if not risk_run else 900)
         if process.returncode:
             runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": process.returncode}
             for line in (errors or "").splitlines():
@@ -96,13 +137,38 @@ def run_analysis(run_id: str):
         import logging
         logging.getLogger(__name__).exception("Research input preparation failed")
         outcome = "研究资料读取失败，本次没有完成检查。"
-    with get_session_factory()() as session:
+    with principal_context(resolve_token(current_principal().credential, "watchlist")), get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id)
         if run and run.status == "running":
+            require_entry_access(session, run)
             if runtime_error:
                 run.context_json = {**run.context_json, "runtime_error": runtime_error}
             if rejected_reply:
                 run.context_json = {**run.context_json, "rejected_reply": rejected_reply}
+            if not sector_run and not risk_run and completed:
+                from watchlist_app.services.sector_research import apply_result, ResearchVersionConflict
+                try:
+                    document = json.loads(outcome)
+                    answer = document["answer"]
+                    if not isinstance(answer, str):
+                        raise ValueError("研究助手回复格式不正确")
+                    publication = document.get("research_publication") or {"status": "not_requested"}
+                    result = document.get("research_result")
+                    if result is not None:
+                        try:
+                            apply_result(session, run, json.dumps(result, ensure_ascii=False))
+                            publication = {"status": "published", "instrument_ids": list(run.context_json.get("reviews", {})),
+                                           "message": "已更新共同研究记录，研究追踪与助手将使用同一版本。"}
+                        except ValueError as error:
+                            session.rollback()
+                            run = session.get(ResearchEntry, run_id)
+                            publication = {"status": "conflict" if isinstance(error, ResearchVersionConflict) else "failed",
+                                           "message": str(error)}
+                    run.context_json = {**run.context_json, "research_publication": publication}
+                    outcome = answer
+                except (ValueError, KeyError, TypeError):
+                    completed = False
+                    outcome = "研究助手未返回完整回复，本轮草稿已保留，未发布研究更新。"
             if (sector_run or risk_run) and completed:
                 if sector_run:
                     from watchlist_app.services.sector_research import apply_result
@@ -110,6 +176,7 @@ def run_analysis(run_id: str):
                     from watchlist_app.services.risk_officer import apply_result
                 try:
                     apply_result(session, run, run.context_json["submitted_risk_review"] if risk_run else outcome)
+                    run.completed_at = datetime.now(UTC)
                     session.commit()
                     return
                 except (ValueError, KeyError) as error:
@@ -120,4 +187,5 @@ def run_analysis(run_id: str):
                     outcome = "风控未提交符合当前范围与证据的完整研判。" if risk_run else "研究追踪未提交有效的完整结果或时间证据，未发布新的风险与机会。"
             run.status = "draft" if completed else "failed"
             run.body = outcome
+            run.completed_at = datetime.now(UTC)
             session.commit()

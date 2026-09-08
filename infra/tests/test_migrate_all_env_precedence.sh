@@ -10,12 +10,16 @@ mkdir -p \
   "$TEST_ROOT/shared-data" \
   "$TEST_ROOT/apps/portfolio/backend" \
   "$TEST_ROOT/apps/watchlist/backend" \
-  "$TEST_ROOT/shared-data/instruments/python"
+  "$TEST_ROOT/shared-data/instruments/python" \
+  "$TEST_ROOT/shared-data/market" \
+  "$TEST_ROOT/apps/briefing/backend"
 touch \
   "$TEST_ROOT/shared-data/instruments/alembic.ini" \
   "$TEST_ROOT/shared-data/alembic.ini" \
   "$TEST_ROOT/apps/portfolio/backend/alembic.ini" \
-  "$TEST_ROOT/apps/watchlist/backend/alembic.ini"
+  "$TEST_ROOT/apps/watchlist/backend/alembic.ini" \
+  "$TEST_ROOT/shared-data/market/alembic.ini" \
+  "$TEST_ROOT/apps/briefing/backend/alembic.ini"
 
 for app in data portfolio watchlist; do
   backend_root="$TEST_ROOT/apps/$app/backend"
@@ -46,6 +50,9 @@ printf '%s\n' \
 chmod +x "$FAKE_PYTHON"
 
 export CAPTURE_PATH
+export INVESTMENT_STUDIO_HOME_DATABASE_URL="postgresql://identity@explicit/investment_studio"
+export INVESTMENT_STUDIO_MARKET_DATABASE_URL="postgresql://market@explicit/investment_studio"
+export INVESTMENT_STUDIO_BRIEFING_DATABASE_URL="postgresql://briefing@explicit/investment_studio"
 export COMMAND_CAPTURE_PATH
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="postgresql://instrument@explicit/investment_studio"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="postgresql://instrument-alembic@explicit/investment_studio"
@@ -68,6 +75,8 @@ grep -q 'postgresql://platform@explicit/investment_studio' "$CAPTURE_PATH"
 grep -q 'postgresql://portfolio@explicit/investment_studio' "$CAPTURE_PATH"
 grep -q 'postgresql://portfolio-alembic@explicit/investment_studio' "$CAPTURE_PATH"
 grep -q 'postgresql://watchlist@explicit/investment_studio' "$CAPTURE_PATH"
+
+grep -q -- "-m home_api.cli migrate" "$COMMAND_CAPTURE_PATH"
 
 prerequisite_line="$(grep -n '/shared-data|-m alembic upgrade 20260823_0007' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"
 registry_prerequisite_line="$(grep -n '/shared-data/instruments|-m alembic upgrade 20260902_0029' "$COMMAND_CAPTURE_PATH" | cut -d: -f1)"

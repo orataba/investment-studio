@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useSearchParams } from 'react-router'
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
 import {
   type RiskWorkspace,
@@ -11,18 +10,22 @@ import {
   type HoldingsWorkspaceResponse,
 } from '../lib/api'
 import {
-  WATCHLIST_URL,
   buildWatchlistInstrumentDetailUrl,
 } from '../lib/navigation'
+import { usePortfolioAccess } from './PortfolioAccessProvider'
+import { usePortfolioSession } from './PortfolioSessionProvider'
 
 export default function PortfolioInstrumentRisk({
   portfolioId,
   workspace,
+  onAskAssistant,
 }: {
   portfolioId: string
   workspace: HoldingsWorkspaceResponse
+  onAskAssistant: (instrumentId: string, question: string) => void
 }) {
-  const [pageParams] = useSearchParams()
+  const access = usePortfolioAccess()
+  const session = usePortfolioSession()
   const [coverage, setCoverage] = useState<string[] | null>(null)
   const rows = workspace.rows.filter(
     (row) =>
@@ -54,6 +57,8 @@ export default function PortfolioInstrumentRisk({
   return (
     <section className="portfolio-section-block" aria-label="持仓风险关注">
       <RiskPanel
+        canWrite={Boolean(session?.can_write_team_research)}
+        canRun={Boolean(access?.can_read)}
         portfolioId={portfolioId}
         request={request}
         query={query}
@@ -61,14 +66,7 @@ export default function PortfolioInstrumentRisk({
         instrumentHref={(id) =>
           buildWatchlistInstrumentDetailUrl(id, { tab: 'risk' })
         }
-        assistantHref={(id, question) => {
-          const params = new URLSearchParams({ instruments: id, question, portfolio: portfolioId })
-          for (const key of ['tab', 'currency', 'benchmark', 'start', 'end']) {
-            const value = pageParams.get(key)
-            if (value !== null) params.set(key, value)
-          }
-          return `${WATCHLIST_URL}/assistant?${params}`
-        }}
+        onAskAssistant={onAskAssistant}
         scopeLabel="当前组合持仓"
         scopeNote={
           <>

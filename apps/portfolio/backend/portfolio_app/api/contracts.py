@@ -682,6 +682,35 @@ class AssetDelivery(BaseModel):
     fair_value: Decimal = Field(ge=0, lt=Decimal("1e20"))
     currency: SupportedCurrency
     fx_rate_to_contract: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    delivery_date: date | None = None
+    settlement_cash_account_id: str | None = Field(default=None, min_length=1)
+    fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_category: FeeCategory = "unknown"
+    fee_settlement_date: date | None = None
+    quantity_fx_rate: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
+    fractional_quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    fractional_reference_price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+
+    @model_validator(mode="after")
+    def validate_delivery_charges(self) -> "AssetDelivery":
+        if (self.fees or self.taxes) and not self.settlement_cash_account_id:
+            raise ValueError("Delivery charges require their actual settlement cash account.")
+        return self
+
+
+class FCNSettlementCashflow(BaseModel):
+    """Actual coupon or contract expense attached to the final FCN settlement."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["coupon", "fee", "tax"]
+    cash_account_id: str = Field(min_length=1)
+    currency: SupportedCurrency
+    amount: Decimal = Field(gt=0, lt=Decimal("1e20"))
+    recognition_date: date | None = None
+    settlement_date: date | None = None
+    fee_category: FeeCategory = "unknown"
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class TransactionRecord(BaseModel):
@@ -736,6 +765,7 @@ class TransactionRecord(BaseModel):
     external_reference: str | None = None
     net_cash_effect: float | None = None
     asset_deliveries: list[AssetDelivery] = Field(default_factory=list)
+    settlement_cashflows: list[FCNSettlementCashflow] = Field(default_factory=list)
     lot_selections: list[LotSelection] = Field(default_factory=list)
     note: str | None = None
     created_at: str | None = None
@@ -1069,6 +1099,8 @@ class PositionLotListResponse(BaseModel):
 
 
 class TransactionChangeLogRecord(BaseModel):
+    actor_user_id: str | None = None
+    actor_name: str | None = None
     change_id: str
     portfolio_id: str
     transaction_id: str
@@ -3300,6 +3332,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
+    linked_period_contribution: float | None = None
     risk_calculation_frequency: PortfolioCalculationFrequency
     risk_return_observation_count: int
     risk_annualization_periods_per_year: float | None
@@ -3336,6 +3369,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
+    linked_period_contribution: float | None = None
     risk_calculation_frequency: PortfolioCalculationFrequency
     risk_return_observation_count: int
     risk_annualization_periods_per_year: float | None
@@ -3369,12 +3403,10 @@ class PeriodCalculationGroupsSummary(BaseModel):
     total_residual_delta: float | None = None
     total_pnl: float | None = None
     total_period_contribution: float | None = None
+    total_linked_period_contribution: float | None = None
     contribution_residual: float | None = None
     risk_calculation_frequency: PortfolioCalculationFrequency
     risk_frequency_status_label: str | None
-    risk_basis_coverage_state: CoverageState = "unavailable"
-    risk_basis_requested_instrument_count: int = 0
-    risk_basis_resolved_instrument_count: int = 0
     risk_return_observation_count: int
     risk_annualization_periods_per_year: float | None
     annualized_volatility: float | None
@@ -3665,6 +3697,7 @@ class TransactionCreateRequest(BaseModel):
     derivative_contract_id: str | None = None
     derivative_contract: DerivativeContractCreate | None = None
     asset_deliveries: list[AssetDelivery] = Field(default_factory=list, max_length=20)
+    settlement_cashflows: list[FCNSettlementCashflow] = Field(default_factory=list, max_length=20)
     lot_selections: list[LotSelection] = Field(default_factory=list, max_length=100)
     option_delivery: PhysicalOptionDelivery | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
@@ -3748,6 +3781,11 @@ class TransactionCreateRequest(BaseModel):
     def validate_amount_contract(self) -> "TransactionCreateRequest":
         if self.option_delivery and self.lifecycle_event_type not in {"option_long_exercise", "option_writer_assignment"}:
             raise ValueError("Option delivery details require an exercise or assignment outcome.")
+        if self.settlement_cashflows:
+            if self.transaction_type != "maturity_redemption" or self.lifecycle_event_type not in {"fcn_knock_in", "fcn_maturity", "fcn_knock_out"}:
+                raise ValueError("Settlement cashflows require an FCN final settlement.")
+            if not self.note or not self.note.strip():
+                raise ValueError("FCN settlement requires confirmation evidence in note.")
         if self.asset_deliveries:
             if self.transaction_type != "maturity_redemption" or not self.derivative_contract_id:
                 raise ValueError("Asset deliveries require an FCN redemption.")
@@ -4291,6 +4329,7 @@ class TransactionImportCommand(BaseModel):
     derivative_contract_id: str | None = None
     derivative_contract: DerivativeContractCreate | None = None
     asset_deliveries: list[AssetDelivery] = Field(default_factory=list, max_length=20)
+    settlement_cashflows: list[FCNSettlementCashflow] = Field(default_factory=list, max_length=20)
     lot_selections: list[LotSelection] = Field(default_factory=list, max_length=100)
     option_delivery: PhysicalOptionDelivery | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))

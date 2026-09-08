@@ -49,8 +49,9 @@ export async function uploadTopicFile(
   body.append('file', file)
   const response = await fetch(
     `${API_BASE_URL}/api/research/topics/${topicId}/files`,
-    { method: 'POST', body },
+    { method: 'POST', body, credentials: 'include' },
   )
+  if (response.status === 401) window.dispatchEvent(new Event('studio:unauthorized'))
   if (!response.ok)
     throw new Error('材料上传失败，请检查文件格式和大小（最多 25 MB）')
   return response.json()

@@ -51,12 +51,12 @@ def main(arguments: list[str]) -> int:
             )
 
     if violations:
-        print("PostgreSQL integration test gate failed:", file=sys.stderr)
+        print("Integration test gate failed:", file=sys.stderr)
         for violation in violations:
             print(f"- {violation}", file=sys.stderr)
         return 1
 
-    print(f"PostgreSQL integration suites executed {total} tests with zero skips.")
+    print(f"Integration suites executed {total} tests with zero skips.")
     return 0
 
 

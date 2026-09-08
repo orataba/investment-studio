@@ -15,15 +15,18 @@ services=(
   home-api
   watchlist-api
   portfolio-api
+  briefing-api
   home-web
   watchlist-web
   portfolio-web
+  briefing-web
   market-data-refresh
   cn-market-data-refresh
   hk-market-data-refresh
   us-market-data-refresh
   cn-hk-reference-data-refresh
   us-reference-data-refresh
+  market-sync
 )
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -47,7 +50,7 @@ is_known_service() {
 }
 
 is_scheduled_service() {
-  [[ "$1" == *-data-refresh ]]
+  [[ "$1" == *-data-refresh || "$1" == market-sync ]]
 }
 
 stop_services() {

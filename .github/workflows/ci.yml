@@ -68,6 +68,7 @@ jobs:
             home/frontend/package-lock.json
             apps/portfolio/frontend/package-lock.json
             apps/watchlist/frontend/package-lock.json
+            apps/briefing/frontend/package-lock.json
             shared-data/instruments/ts/package-lock.json
 
       - name: Install locked frontend dependencies
@@ -75,6 +76,7 @@ jobs:
           npm --prefix home/frontend ci
           npm --prefix apps/portfolio/frontend ci
           npm --prefix apps/watchlist/frontend ci
+          npm --prefix apps/briefing/frontend ci
           npm --prefix shared-data/instruments/ts ci
 
       - name: Run frontend suites and production builds
@@ -120,7 +122,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: requirements/python.lock
 
-      - name: Install PostgreSQL 17 client
+      - name: Install PostgreSQL 17 client and ACL tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes curl ca-certificates
@@ -139,12 +141,20 @@ jobs:
             'Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc' \
             | sudo tee /etc/apt/sources.list.d/pgdg.sources >/dev/null
           sudo apt-get update
-          sudo apt-get install --yes postgresql-client-17
+          sudo apt-get install --yes postgresql-client-17 acl
           /usr/lib/postgresql/17/bin/psql --version | grep -Eq 'PostgreSQL\) 17\.'
           echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
 
       - name: Synchronize locked Python environment
         run: infra/scripts/sync_python_env.sh
+
+      - name: Verify public objects across collector identities
+        run: |
+          sudo env PYTHONDONTWRITEBYTECODE=1 \
+            "$PWD/.venv/bin/python" -m pytest -p no:cacheprovider \
+            shared-data/market/tests/test_public_object_permissions.py::test_linux_default_acl_allows_bidirectional_public_object_reads \
+            --junitxml=/tmp/studio-public-object-acl.xml
+          .venv/bin/python infra/scripts/assert_junit_no_skips.py /tmp/studio-public-object-acl.xml
 
       - name: Create isolated CI roles and migration database
         env:
@@ -171,6 +181,7 @@ jobs:
 
       - name: Upgrade every migration chain to head
         env:
+          INVESTMENT_STUDIO_HOME_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
           INVESTMENT_STUDIO_MIGRATION_EXPECTED_DATABASE: investment_studio_ci
           INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
           INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
@@ -185,6 +196,9 @@ jobs:
           INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
           INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
           INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA: watchlist
+          INVESTMENT_STUDIO_MARKET_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_BRIEFING_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
+          INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL: postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio_ci
         run: infra/scripts/verify_repository.sh migration-heads
 
       - name: Run PostgreSQL integration suites with zero skips

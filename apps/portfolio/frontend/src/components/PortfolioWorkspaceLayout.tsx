@@ -23,7 +23,6 @@ import {
 import {
   buildPortfolioSectionPath,
   HOME_URL,
-  WATCHLIST_URL,
 } from '../lib/navigation'
 import { workspacePrimaryNavigation } from '../lib/portfolioIa'
 import { preloadPortfolioSection } from '../lib/preload'
@@ -31,6 +30,9 @@ import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
 import PortfolioRiskDrawer from './PortfolioRiskDrawer'
+import PortfolioAssistantDrawer from './PortfolioAssistantDrawer'
+import { usePortfolioAccess } from './PortfolioAccessProvider'
+import PortfolioMembersSettings from './PortfolioMembersSettings'
 import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
 
 type WorkspaceTab = {
@@ -86,16 +88,12 @@ export default function PortfolioWorkspaceLayout({
   busy = false,
 }: PortfolioWorkspaceLayoutProps) {
   const { language } = useLanguage()
+  const access = usePortfolioAccess()
   const { research_enabled } = usePortfolioCapabilities()
   const visiblePortfolioTabs = portfolioTabs.filter((item) => item.href !== '/research' || research_enabled)
   const navigate = useNavigate()
-  const { portfolioId = '' } = useParams()
+  const { portfolioId = '', holdingId } = useParams()
   const [pageParams] = useSearchParams()
-  const assistantParams = new URLSearchParams({ portfolio: portfolioId, tab: activeSection })
-  for (const key of ['currency', 'benchmark', 'start', 'end']) {
-    const value = pageParams.get(key)
-    if (value !== null) assistantParams.set(key, value)
-  }
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [summaryRevision, setSummaryRevision] = useState(0)
   const [summaryLoading, setSummaryLoading] = useState(true)
@@ -108,6 +106,7 @@ export default function PortfolioWorkspaceLayout({
   const [deletePortfolioError, setDeletePortfolioError] = useState<string | null>(null)
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [riskDrawerOpen, setRiskDrawerOpen] = useState(false)
+  const [assistantParams, setAssistantParams] = useState<URLSearchParams | null>(null)
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
   const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
@@ -223,6 +222,7 @@ export default function PortfolioWorkspaceLayout({
   useEffect(() => {
     setRiskSettingsOpen(false)
     setRiskDrawerOpen(false)
+    setAssistantParams(null)
     setRiskSettingsError(null)
   }, [portfolioId])
 
@@ -416,6 +416,18 @@ export default function PortfolioWorkspaceLayout({
     }
   }
 
+  function openAssistant(instrumentId?: string, question?: string) {
+    const next = new URLSearchParams({ portfolio: resolvedPortfolioId, tab: activeSection })
+    for (const key of ['currency', 'benchmark', 'start', 'end', 'as_of_date', 'account_id']) {
+      const value = pageParams.get(key) ?? (key === 'start' || key === 'end' ? pageParams.get(`${key}_date`) : null)
+      if (value !== null) next.set(key, value)
+    }
+    if (holdingId) next.set('holding_id', holdingId)
+    if (instrumentId) next.set('instruments', instrumentId)
+    if (question) next.set('question', question)
+    setAssistantParams(next)
+  }
+
   return (
     <section
       className="terminal-page portfolio-workspace-page"
@@ -476,6 +488,7 @@ export default function PortfolioWorkspaceLayout({
                     <button
                       type="button"
                       className="workspace-selector-menu-trigger workspace-selector-menu-trigger-active"
+                      disabled={!access?.can_manage}
                       onClick={() => setSelectorMenuOpen((current) => !current)}
                       aria-label="Portfolio actions"
                     >
@@ -565,20 +578,21 @@ export default function PortfolioWorkspaceLayout({
               </div>
             </div>
             <div className="portfolio-header-actions">
-              {resolvedPortfolioId ? (
+              {resolvedPortfolioId && access?.can_edit ? (
                 <OptionOutcomePrompt
                   portfolioId={resolvedPortfolioId}
                   onRecorded={handleOptionOutcomeRecorded}
                 />
               ) : null}
               <WorkspaceTools
-                settings={{ label: language === 'zh-Hans' ? '组合设置' : 'Portfolio Settings', onClick: () => void handleOpenRiskSettings(), disabled: !resolvedPortfolioId || summaryBusy }}
+                settings={{ label: language === 'zh-Hans' ? '组合设置' : 'Portfolio Settings', onClick: () => void handleOpenRiskSettings(), disabled: !access?.can_edit || !resolvedPortfolioId || summaryBusy }}
                 risk={{ onClick: () => setRiskDrawerOpen(true), disabled: !resolvedPortfolioId || summaryBusy }}
-                assistant={{ href: `${WATCHLIST_URL}/assistant?${assistantParams}` }}
+                assistant={{ onClick: () => openAssistant(), disabled: !resolvedPortfolioId || summaryBusy }}
               />
             </div>
           </div>
-          {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={resolvedPortfolioId} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} /> : null}
+          {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
+          {assistantParams && resolvedPortfolioId ? <PortfolioAssistantDrawer key={`assistant:${resolvedPortfolioId}:${assistantParams.toString()}`} initialParams={assistantParams} onClose={() => setAssistantParams(null)} /> : null}
           {riskSettingsOpen ? (
             <div
               className="portfolio-settings-modal-backdrop"
@@ -724,6 +738,7 @@ export default function PortfolioWorkspaceLayout({
                     </div>
                   </form>
                 )}
+                {access?.can_manage && <PortfolioMembersSettings portfolioId={portfolioId} />}
               </div>
             </div>
           ) : null}

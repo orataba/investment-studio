@@ -20,6 +20,8 @@ def submission(client):
         session.commit()
         run, _ = service.begin_run(session, ["xlk"])
         run.context_json = {**run.context_json, "cutoff": "2026-09-07T00:00:00+00:00",
+            "catalogue": [{"instrument_id": "xlk", "name": "XLK", "instrument_type": "etf"}],
+            "instrument_inputs": [{"instrument_id": "xlk", "name": "XLK", "instrument_type": "etf"}],
             "research_dossiers": [{"instrument_id": "xlk"}],
             "web_evidence": [{"operation": "search", "sources": []}, {"operation": "fetch", "sources": [{
                 "source_id": "original", "url": "https://example.com/disclosure", "title": "Disclosure",
@@ -52,7 +54,7 @@ def test_submission_retains_structured_quotes_without_publishing(client, submiss
 
 
 @pytest.mark.parametrize("invalid, message", [
-    ("scope", "全部标的"), ("notebook", "研究底稿"), ("event_source", "未取得的来源"),
+    ("scope", "标的范围"), ("event_source", "未取得的来源"),
     ("notebook_source", "原始依据"), ("publication", "发布时间"),
 ])
 def test_invalid_submission_can_be_corrected_without_saving(client, submission, invalid, message):
@@ -61,8 +63,6 @@ def test_invalid_submission_can_be_corrected_without_saving(client, submission, 
     review = broken["reviews"][0]
     if invalid == "scope":
         review["instrument_id"] = "xlf"
-    elif invalid == "notebook":
-        review.pop("research")
     elif invalid == "event_source":
         review["events"][0]["source_ids"] = ["missing"]
     elif invalid == "notebook_source":
@@ -86,12 +86,31 @@ def test_finished_run_does_not_accept_a_draft(client, submission):
     assert client.post(f"/api/research/runs/{rid}/sector-draft", json=draft).status_code == 409
 
 
-@pytest.mark.parametrize("tool", ["instruments", "comparison", "portfolio", "market", "dossier", "risk_review"])
-def test_research_tracking_cannot_bypass_its_snapshot_through_conversation_tools(client, submission, tool):
+@pytest.mark.parametrize("tool", ["portfolio", "risk_review"])
+def test_instrument_research_does_not_gain_private_portfolio_scope(client, submission, tool):
     rid, _ = submission
     response = client.post(f"/api/research/runs/{rid}/tools", json={"tool": tool, "instrument_ids": ["xlk"]})
     assert response.status_code == 422
     assert "已绑定" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("tool", ["instruments", "dossier"])
+def test_both_entrances_read_the_bound_snapshot_with_common_tools(client, submission, tool):
+    rid, _ = submission
+    response = client.post(f"/api/research/runs/{rid}/tools", json={"tool": tool, "instrument_ids": ["xlk"]})
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert (result["assets"][0] if tool == "instruments" else result)["instrument_id"] == "xlk"
+
+
+def test_quiet_submission_does_not_require_a_working_paper(client, submission):
+    rid, _ = submission
+    response = client.post(f"/api/research/runs/{rid}/sector-draft", json={"reviews": [
+        {"instrument_id": "xlk", "change_kind": "none"}]})
+    assert response.status_code == 200
+    with get_session_factory()() as session:
+        row = session.get(ResearchEntry, rid).context_json["submitted_draft"]["reviews"][0]
+        assert row["summary"] == "" and row["events"] == [] and row["research"] is None
 
 
 def test_mandate_draft_is_persisted_only_with_accepted_research(client, submission):
@@ -178,7 +197,8 @@ def test_mcp_stdio_submission_without_database_credentials(client, submission):
     class LocalAPI(BaseHTTPRequestHandler):
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            response = client.post(self.path, json=payload)
+            assert self.headers["Authorization"] == "Bearer fixture-run"
+            response = client.post(self.path, json=payload, headers={"Authorization": self.headers["Authorization"]})
             self.send_response(response.status_code)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -196,7 +216,7 @@ def test_mcp_stdio_submission_without_database_credentials(client, submission):
         params = StdioServerParameters(command=sys.executable, args=["-m", "watchlist_app.research_mcp"],
             cwd=str(Path(__file__).resolve().parents[1]), env={
                 "INVESTMENT_STUDIO_RESEARCH_API_BASE_URL": f"http://127.0.0.1:{server.server_port}/api",
-                "INVESTMENT_STUDIO_RESEARCH_RUN_ID": rid, "DEEPSEEK_API_KEY": "unused-smoke-key"})
+                "INVESTMENT_STUDIO_RESEARCH_RUN_ID": rid, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": "fixture-run", "DEEPSEEK_API_KEY": "unused-smoke-key"})
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()

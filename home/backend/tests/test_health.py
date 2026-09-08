@@ -8,13 +8,14 @@ from home_api.core.settings import Settings
 from home_api.main import app
 
 
-def test_home_has_no_database_or_maintenance_dependency():
-    assert not any("database" in name or "fmp" in name or "email" in name for name in Settings.model_fields)
+def test_home_owns_identity_without_business_data_or_maintenance_dependency():
+    assert "database_url" in Settings.model_fields
+    assert not any("fmp" in name or "email" in name for name in Settings.model_fields)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("INVESTMENT_STUDIO_")}
     subprocess.run([
         sys.executable, "-c",
         "import sys; from home_api.main import app; "
-        "assert not any(name.split('.')[0] in {'sqlalchemy', 'studio_data', 'investment_studio_instrument_core'} for name in sys.modules)",
+        "assert not any(name.split('.')[0] in {'studio_data', 'investment_studio_instrument_core'} for name in sys.modules)",
     ], env=environment, check=True)
 
 

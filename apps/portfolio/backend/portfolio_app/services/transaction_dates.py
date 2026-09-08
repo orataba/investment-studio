@@ -226,6 +226,11 @@ def transaction_ledger_activity_date(
         )
         if candidate is not None
     ]
+    candidate_dates.extend(
+        day
+        for cashflow in transaction.get("settlement_cashflows") or []
+        if (day := _parse_date(cashflow.get("recognition_date"))) is not None
+    )
     return min(candidate_dates) if candidate_dates else None
 
 
@@ -247,6 +252,8 @@ def transaction_position_cash_transfer_date(
         return None
 
     position_effective_date = transaction_position_effective_date(transaction)
+    if transaction.get("noncash_delivery"):
+        return position_effective_date
     settlement_cash_account_id = str(
         transaction.get("settlement_cash_account_id") or ""
     ).strip()
@@ -288,12 +295,16 @@ def transaction_cash_activity_date(
 def transaction_affected_dates(transaction: dict[str, object]) -> frozenset[date]:
     """Return every canonical date that can change a materialized result."""
 
-    candidates = (
+    candidates = [
         transaction_economic_date(transaction),
         transaction_external_flow_date(transaction),
         transaction_ledger_activity_date(transaction),
         transaction_position_cash_transfer_date(transaction),
         transaction_position_effective_date(transaction),
         transaction_cash_activity_date(transaction),
-    )
+    ]
+    for delivery in transaction.get("asset_deliveries") or []:
+        candidates.extend(_parse_date(delivery.get(field)) for field in ("delivery_date", "fee_settlement_date"))
+    for cashflow in transaction.get("settlement_cashflows") or []:
+        candidates.extend(_parse_date(cashflow.get(field)) for field in ("recognition_date", "settlement_date"))
     return frozenset(candidate for candidate in candidates if candidate is not None)

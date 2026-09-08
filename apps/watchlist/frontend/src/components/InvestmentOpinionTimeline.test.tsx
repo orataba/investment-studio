@@ -4,25 +4,33 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import InvestmentOpinionTimeline, { latestInvestmentOpinion } from './InvestmentOpinionTimeline'
 import { emptyInstrumentResearchResponse, type InstrumentResearchNote, type InstrumentResearchResponse } from '../lib/api'
+import { announceResearchPublication } from '../lib/researchUpdates'
 
-const api = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn() }))
+const api = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn(), get: vi.fn(), themes: vi.fn() }))
 vi.mock('../lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/api')>(),
   createInstrumentResearchNote: api.create,
   updateInstrumentResearchNote: api.update,
   deleteInstrumentResearchNote: api.remove,
+  getInstrumentResearch: api.get,
 }))
+vi.mock('../lib/researchDossierApi', async importOriginal => ({ ...await importOriginal<typeof import('../lib/researchDossierApi')>(), getResearchThemes: api.themes }))
 
 function note(overrides: Partial<InstrumentResearchNote> = {}): InstrumentResearchNote {
   return {
     note_id: 'view-1', note_date: '2026-09-06', note_type: 'thesis_update', title: '等待需求验证', summary: '', body: '盈利改善尚需订单确认。',
-    importance: 'high', tags: ['需求'], source_refs: 'https://example.com/report', people: '研究讨论', author: 'Shaw', follow_up_date: '2026-10-01',
+    importance: 'high', tags: ['需求'], source_refs: 'https://example.com/report', people: '研究讨论', author: 'Shaw', author_user_id: 'user-shaw', follow_up_date: '2026-10-01',
     completed_at: null, created_at: '2026-09-06T08:00:00Z', updated_at: '2026-09-06T08:00:00Z', updated_by: 'terminal_ui', revision_number: 1,
     ...overrides,
   }
 }
 
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  api.themes.mockResolvedValue({ identity: { user_id: 'user-shaw', display_name: 'Shaw', mode: 'account', team_role: 'member' }, themes: [] })
+  // Publication refresh runs after the same canonical write; keep it pending unless a test supplies a response.
+  api.get.mockImplementation(() => new Promise(() => {}))
+})
 afterEach(cleanup)
 
 it('adds a new dated view without requiring a title or fixed research fields and leaves previous views intact', async () => {
@@ -34,6 +42,7 @@ it('adds a new dated view without requiring a title or fixed research fields and
     return <InvestmentOpinionTimeline instrumentId="xlk" research={value} onChange={setValue} />
   }
   render(<Parent />)
+  await waitFor(() => expect(screen.getByRole('button', { name: '新增观点' })).toHaveProperty('disabled', false))
   fireEvent.click(screen.getByRole('button', { name: '新增观点' }))
   fireEvent.change(screen.getByLabelText('日期'), { target: { value: '2026-09-06' } })
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '订单开始改善，继续观察现金流。' } })
@@ -76,6 +85,7 @@ it('corrects or deletes the selected note through existing APIs while preserving
   api.update.mockResolvedValue(research)
   api.remove.mockResolvedValue(emptyInstrumentResearchResponse())
   render(<InvestmentOpinionTimeline instrumentId="xlk" research={research} onChange={onChange} />)
+  await waitFor(() => expect(screen.getByRole('button', { name: /更正观点/ })).toHaveProperty('disabled', false))
   fireEvent.click(screen.getByRole('button', { name: /更正观点/ }))
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '订单确认仍需两个季度。' } })
   fireEvent.change(screen.getByRole('textbox', { name: '来源（可选）' }), { target: { value: '季度业绩说明会' } })
@@ -89,6 +99,7 @@ it('corrects or deletes the selected note through existing APIs while preserving
     },
   }))
   await waitFor(() => expect(onChange).toHaveBeenCalledWith(research))
+  await waitFor(() => expect(screen.getByRole('button', { name: /更正观点/ })).toHaveProperty('disabled', false))
   fireEvent.click(screen.getByRole('button', { name: /更正观点/ }))
   fireEvent.click(screen.getByRole('button', { name: '删除记录' }))
   await waitFor(() => expect(api.remove).toHaveBeenCalledWith('xlk', 'view-1'))
@@ -99,6 +110,7 @@ it('retains the draft and shows an error when saving fails', async () => {
   api.create.mockRejectedValue(new Error('暂时无法保存'))
   const onChange = vi.fn()
   render(<InvestmentOpinionTimeline instrumentId="xlk" research={emptyInstrumentResearchResponse()} onChange={onChange} />)
+  await waitFor(() => expect(screen.getByRole('button', { name: '新增观点' })).toHaveProperty('disabled', false))
   fireEvent.click(screen.getByRole('button', { name: '新增观点' }))
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '等待新的订单数据。' } })
   fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
@@ -119,4 +131,54 @@ it('starts a new view at the requested chart date and can return an existing vie
   expect(openChart).toHaveBeenCalledWith('2026-09-06')
   expect(api.create).not.toHaveBeenCalled()
   expect(api.update).not.toHaveBeenCalled()
+})
+
+it('preserves PM provenance on correction and links an explicitly edited context without submitting identity fields', async () => {
+  const original = note({ author_user_id: 'user-shaw', research_context: { theme_id: 'gold-credit', background: '当时名义收益率上升。', horizon: '中期', verification: '观察美元与长债。', outcome: '尚待验证', author_role: 'pm', recorded_via: 'assistant', source_run_id: 'chat-1', source_quote: '中期偏多，短期没判断。', research_snapshot: { notebook_version_id: 'notebook-1' }, information_cutoff: '2026-09-05T12:00:00Z' } })
+  const research = { ...emptyInstrumentResearchResponse(), notes: [original] }
+  api.themes.mockResolvedValue({ identity: { user_id: 'user-shaw', display_name: 'Shaw', mode: 'account', team_role: 'member' }, themes: [{ theme_id: 'gold-credit', title: '美元信用', status: 'active' }] })
+  api.update.mockResolvedValue(research)
+  render(<InvestmentOpinionTimeline instrumentId="gold" research={research} onChange={vi.fn()} />)
+  await waitFor(() => expect(screen.getByRole('button', { name: /更正观点/ })).toHaveProperty('disabled', false))
+  fireEvent.click(screen.getByRole('button', { name: /更正观点/ }))
+  fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '文字更正。' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
+  await waitFor(() => expect(api.update).toHaveBeenCalledOnce())
+  expect(api.update.mock.calls[0][2].note).not.toHaveProperty('research_context')
+  expect(api.update.mock.calls[0][2].note).not.toHaveProperty('author_user_id')
+  await screen.findByRole('status')
+  await waitFor(() => expect(screen.getByRole('button', { name: /更正观点/ })).toHaveProperty('disabled', false))
+  fireEvent.click(screen.getByRole('button', { name: /更正观点/ }))
+  fireEvent.click(screen.getByText('关联主题与验证条件（可选）'))
+  fireEvent.change(screen.getByRole('textbox', { name: '判断期限' }), { target: { value: '未来三个月' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
+  await waitFor(() => expect(api.update).toHaveBeenCalledTimes(2))
+  expect(api.update.mock.calls[1][2].note.research_context).toEqual({ theme_id: 'gold-credit', background: '当时名义收益率上升。', horizon: '未来三个月', verification: '观察美元与长债。', outcome: '尚待验证' })
+})
+
+it('adds a related judgment as a new record and binds assistant review to the original revision', async () => {
+  const original = note({ research_context: { theme_id: 'demand' }, revision_number: 3 })
+  const research = { ...emptyInstrumentResearchResponse(), notes: [original] }
+  api.create.mockResolvedValue(research)
+  const ask = vi.fn()
+  render(<InvestmentOpinionTimeline instrumentId="xlk" research={research} onChange={vi.fn()} onAskAssistant={ask} />)
+  fireEvent.click(screen.getByRole('button', { name: '与助手讨论 / 复盘' }))
+  expect(ask).toHaveBeenCalledWith(expect.any(String), { instrument_id: 'xlk', pm_note_id: 'view-1', pm_note_revision: 3, theme_id: 'demand' })
+  await waitFor(() => expect(screen.getByRole('button', { name: '补充判断' })).toHaveProperty('disabled', false))
+  fireEvent.click(screen.getByRole('button', { name: '补充判断' }))
+  fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '新证据使我调整原判断。' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
+  await waitFor(() => expect(api.create).toHaveBeenCalledWith('xlk', expect.objectContaining({ note: expect.objectContaining({ research_context: { relationship: 'update', related_note_id: 'view-1', related_revision: 3, theme_id: 'demand' } }) })))
+  expect(api.update).not.toHaveBeenCalled()
+})
+
+it('refreshes canonical PM notes after the assistant publishes to this instrument', async () => {
+  const next = { ...emptyInstrumentResearchResponse(), notes: [note({ body: '助手按我的明确要求记录的新判断。' })] }
+  api.get.mockResolvedValue(next)
+  const change = vi.fn()
+  render(<InvestmentOpinionTimeline instrumentId="xlk" research={emptyInstrumentResearchResponse()} onChange={change} />)
+  announceResearchPublication(['gold'])
+  expect(api.get).not.toHaveBeenCalled()
+  announceResearchPublication(['xlk'])
+  await waitFor(() => expect(change).toHaveBeenCalledWith(next))
 })

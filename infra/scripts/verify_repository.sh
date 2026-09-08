@@ -12,12 +12,12 @@ Usage: verify_repository.sh COMMAND [APP]
 
 Commands:
   static
-  backend [all|home|data|portfolio|watchlist]
-  frontend [all|home|portfolio|watchlist]
+  backend [all|home|data|market|portfolio|watchlist|briefing]
+  frontend [all|home|portfolio|watchlist|briefing]
   shared-typescript
   infra [all|portable|postgresql]
   migration-heads
-  postgres-integration [all|data|portfolio|watchlist]
+  postgres-integration [all|home|data|market|portfolio|watchlist|briefing]
   all-local
 
 Dependency installation is intentionally separate. Run
@@ -43,9 +43,9 @@ selected_apps() {
   local selection="${1:-all}"
   case "$selection" in
     all)
-      printf '%s\n' home data portfolio watchlist
+      printf '%s\n' home data market portfolio watchlist briefing
       ;;
-    home|data|portfolio|watchlist)
+    home|data|market|portfolio|watchlist|briefing)
       printf '%s\n' "$selection"
       ;;
     *)
@@ -58,6 +58,7 @@ selected_apps() {
 backend_root() {
   case "$1" in
     home) printf '%s\n' "$PROJECT_ROOT/home/backend" ;;
+    market) printf '%s\n' "$PROJECT_ROOT/shared-data/market" ;;
     data) printf '%s\n' "$PROJECT_ROOT/shared-data" ;;
     *) printf '%s\n' "$PROJECT_ROOT/apps/$1/backend" ;;
   esac
@@ -86,6 +87,9 @@ run_backend() {
   require_python
   local selected app_name
   selected="$(selected_apps "${1:-all}")"
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "home" ]]; then
+    "$PYTHON_BIN" -m pytest "$PROJECT_ROOT/packages/identity/tests" -q
+  fi
   while IFS= read -r app_name; do
     echo "Running $app_name backend tests without PostgreSQL integration cases."
     (
@@ -104,7 +108,7 @@ run_frontend() {
     run_shared_typescript
   fi
   while IFS= read -r app_name; do
-    [[ "$app_name" == "data" ]] && continue
+    [[ "$app_name" == "data" || "$app_name" == "market" ]] && continue
     local frontend_root="$PROJECT_ROOT/apps/$app_name/frontend"
     [[ "$app_name" == "home" ]] && frontend_root="$PROJECT_ROOT/home/frontend"
     if [[ ! -d "$frontend_root/node_modules" ]]; then
@@ -165,6 +169,11 @@ run_migration_heads() {
 
   echo "Verifying every Alembic chain is at all heads."
   (
+    cd "$PROJECT_ROOT/home/backend"
+    PYTHONPATH="$PROJECT_ROOT/home/backend${PYTHONPATH:+:$PYTHONPATH}" \
+      "$PYTHON_BIN" -m alembic current --check-heads
+  )
+  (
     cd "$PROJECT_ROOT/shared-data/instruments"
     PYTHONPATH="$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
@@ -184,6 +193,13 @@ run_migration_heads() {
     PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
+  for migration_root in "$PROJECT_ROOT/shared-data/market" "$PROJECT_ROOT/apps/briefing/backend"; do
+    (
+      cd "$migration_root"
+      "$PYTHON_BIN" -m alembic current --check-heads
+    )
+  done
+
 }
 
 run_postgres_integration() {
@@ -198,7 +214,6 @@ run_postgres_integration() {
 
   local reports=()
   while IFS= read -r app_name; do
-    [[ "$app_name" == "home" ]] && continue
     report="$JUNIT_DIR/$app_name-postgres.xml"
     rm -f "$report"
     (

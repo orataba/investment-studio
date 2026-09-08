@@ -1,5 +1,5 @@
 .studio-shell {
-  padding: 20px clamp(18px, 3vw, 48px) 64px;
+  padding: 20px 18px 64px;
 }
 
 .home-shell::before,
@@ -145,6 +145,16 @@
 .login-form input,
 .login-form button {
   border-radius: 0;
+}
+
+@media (min-width: 761px) and (max-width: 1100px) {
+  .home-primary-links > a:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .home-primary-links > a:nth-child(n + 3) {
+    border-top: 1px solid var(--studio-line);
+  }
 }
 
 @media (max-width: 760px) {

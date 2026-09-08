@@ -1,10 +1,12 @@
 """Dated analyst working papers, distinct from the investment manager's views."""
-from datetime import date, datetime
+from copy import deepcopy
+from datetime import UTC, date, datetime
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from watchlist_app.services.research_dossier import ResearchMandateInput
+from watchlist_app.services.market_evidence import hydrate_source, retained_sources, source_reference
 
 
 class ResearchCatalyst(BaseModel):
@@ -34,6 +36,16 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources
 
 
 class ResearchQuestion(BaseModel):
+    theme_id: str | None = None
+    pm_note_id: str | None = None
+    pm_note_revision: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def pm_reference(self):
+        if bool(self.pm_note_id) != bool(self.pm_note_revision):
+            raise ValueError("研究员复核投资经理观点须同时关联原观点和版本")
+        return self
+
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     question: str = Field(min_length=1, max_length=1000)
     assessment: str = Field(max_length=4000)
@@ -55,10 +67,66 @@ class ResearchFact(BaseModel):
     source_ids: list[str] = Field(min_length=1)
 
 
+class InvestmentView(BaseModel):
+    """The analyst's current judgment, separate from the portfolio manager's views."""
+    direction: str = Field(default="", max_length=3000)
+    horizon: str = Field(default="", max_length=1000)
+    attractiveness: str = Field(default="", max_length=3000)
+    risk: str = Field(default="", max_length=3000)
+    conviction: str = Field(default="", max_length=1000)
+    assumptions: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchForecast(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    claim: str = Field(min_length=1, max_length=4000)
+    variable: str = Field(default="", max_length=1000)
+    horizon: str = Field(default="", max_length=1000)
+    observation_condition: str = Field(default="", max_length=2000)
+    review_on: date | None = Field(default=None, description="明确安排复核的日期；到期只表示需要检查，不代表预测已兑现。")
+    assumptions: list[str] = Field(default_factory=list)
+    invalidation: str = Field(default="", max_length=2000)
+    status: Literal["active", "confirmed", "refuted", "expired", "withdrawn"] = "active"
+    source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def observable_forecast(self):
+        if not self.claim.strip() or not (self.horizon.strip() or self.observation_condition.strip()):
+            raise ValueError("预测需要明确主张，以及期限或可观察的检验条件")
+        return self
+
+
+class ForecastReview(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    forecast_key: str = Field(min_length=1)
+    forecast_version_id: str = Field(min_length=1)
+    outcome: str = Field(min_length=1, max_length=4000)
+    mechanism_assessment: str = Field(default="", max_length=4000)
+    alternative_explanations: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchLesson(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    lesson: str = Field(min_length=1, max_length=4000)
+    applicability: str = Field(default="", max_length=3000)
+    limitations: str = Field(default="", max_length=3000)
+    forecast_key: str | None = None
+    forecast_version_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def forecast_reference(self):
+        if bool(self.forecast_key) != bool(self.forecast_version_id):
+            raise ValueError("经验关联预测时须同时给出预测标识和原始版本")
+        return self
+
+
 class ResearchNotebook(BaseModel):
-    fundamental_view: str = Field(max_length=6000)
+    fundamental_view: str = Field(default="", max_length=6000)
     key_drivers: list[str] = Field(default_factory=list)
-    valuation_view: str = Field(max_length=4000)
+    valuation_view: str = Field(default="", max_length=4000)
     questions: list[ResearchQuestion] = Field(default_factory=list)
     important_changes: list[str] = Field(default_factory=list)
     next_research: list[str] = Field(default_factory=list)
@@ -66,19 +134,46 @@ class ResearchNotebook(BaseModel):
     catalysts: list[ResearchCatalyst] = Field(default_factory=list)
     facts: list[ResearchFact] = Field(default_factory=list)
     mandate_update: ResearchMandateInput | None = None
+    investment_view: InvestmentView | None = None
+    forecasts: list[ResearchForecast] = Field(default_factory=list)
+    forecast_reviews: list[ForecastReview] = Field(default_factory=list)
+    lessons: list[ResearchLesson] = Field(default_factory=list)
+
+
+def notebook_source_ids(notebook: ResearchNotebook | dict) -> set[str]:
+    """Collect evidence for current research and its retained original versions."""
+    value = notebook.model_dump(mode="json") if isinstance(notebook, BaseModel) else notebook
+    refs = set()
+
+    def collect(item):
+        if isinstance(item, dict):
+            refs.update(item.get("source_ids", []))
+            for key, child in item.items():
+                if key != "sources":
+                    collect(child)
+        elif isinstance(item, list):
+            for child in item:
+                collect(child)
+
+    collect(value)
+    return refs
 
 
 def retained_public_sources(session, instrument_id: str) -> list[dict]:
     """Keep fetched originals usable even when the associated AI draft was rejected."""
     from sqlalchemy import select
-    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
     records = session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis").order_by(ResearchEntry.created_at.desc()))
     by_url = {}
     for record in records:
         context = record.context_json or {}
+        topic = session.get(ResearchTopic, record.topic_id)
+        if context.get("portfolio_id") or not topic or topic.portfolio_id or topic.visibility != "team":
+            continue
         scope = context.get("instrument_ids", [])
-        if (not context.get("sector_run") or instrument_id not in scope
-                or record.topic_id not in {f"instrument-events:{instrument_id}", "us-sector-daily-review"}):
+        if (not (context.get("sector_run") or context.get("research_run")) or instrument_id not in scope
+                or (not context.get("research_run") and record.topic_id not in {
+                    f"instrument-events:{instrument_id}", "us-sector-daily-review"})):
             continue
         # Batch fetches have no instrument attribution: use explicit draft/review references.
         references = set()
@@ -88,29 +183,50 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
             if review.get("instrument_id") != instrument_id:
                 continue
             research = review.get("research") or {}
-            references.update(research.get("source_ids", []))
-            for row in [*review.get("events", []), *research.get("questions", []),
-                        *research.get("catalysts", []), *research.get("facts", [])]:
+            references.update(notebook_source_ids(research))
+            for row in review.get("events", []):
                 references.update(row.get("source_ids", []))
         for capture in reversed(context.get("web_evidence", [])):
             if capture.get("operation") != "fetch":
                 continue
             for source in capture.get("sources", []):
+                source = hydrate_source(source)
                 if len(scope) != 1 and source.get("source_id") not in references:
                     continue
                 original = {**source, "source_type": "public_source", "source_run_id": record.entry_id,
                     "instrument_id": instrument_id, "role": "retained_original",
                     "verification_note": "已取得的原文，不代表其主张已核实；须重读正文及原始日期。所属报告的模型结论不作为依据。"}
                 if _original_source(original, instrument_id):
-                    by_url.setdefault(source.get("url") or source["source_id"], original)
-    return list(by_url.values())
+                    by_url.setdefault(source.get("version_id") or source["source_id"], original)
+        for source in context.get("market_text_sources", []):
+            if len(scope) != 1 and source.get("source_id") not in references:
+                continue
+            original = {**hydrate_source(source), "instrument_id": instrument_id,
+                        "source_run_id": record.entry_id, "role": "retained_original"}
+            by_url.setdefault(source["version_id"], original)
+    return [source_reference(source) for source in by_url.values()]
 
 
 def dossier_outline(dossier: dict) -> dict:
     """Read the working view first; retrieve long original materials and cases on demand."""
-    notebook = dossier.get("notebook")
+    def index_versions(record):
+        if "versions" not in record:
+            return record
+        return {**record, "versions": [{key: version[key] for key in
+            ("version_id", "created_at", "updated_at", "source_run_id", "author") if key in version}
+            for version in record["versions"]]}
+
+    notebook = dict(dossier["notebook"]) if dossier.get("notebook") else None
+    if notebook:
+        if notebook.get("investment_view"):
+            notebook["investment_view"] = index_versions(notebook["investment_view"])
+        for field in ("forecasts", "forecast_reviews", "lessons"):
+            if field in notebook:
+                notebook[field] = [index_versions(item) for item in notebook[field]]
     return {**dossier,
-        "prior_sources": [{k: s.get(k) for k in ("source_id", "title", "url", "published_at", "retrieved_at", "source_run_id")} | {"body_available": bool(s.get("text"))}
+        **({"mandate": index_versions(dossier["mandate"])} if dossier.get("mandate") else {}),
+        "version_history_note": "旧版本仅列版本与保存时间；需要当时的完整观点、预测、复盘或方法时，调用read_research_dossier(instrument_id=当前标的, version_id=所选版本)。当前正文保持完整，旧版本不补入后来资料。",
+        "prior_sources": [{k: s.get(k) for k in ("source_id", "document_id", "version_id", "title", "url", "published_at", "retrieved_at", "source_run_id")} | {"body_available": s.get("body_available", bool(s.get("text")))}
                           for s in dossier.get("prior_sources", [])],
         "prior_sources_note": "已取得原文的索引，不表示已核实其主张。按source_id重读正文与日期；原报告失败或撤回不影响原文留存。",
         "materials": [{k: v for k, v in m.items() if k != "body"} | {"body_available": bool(m.get("body"))}
@@ -128,9 +244,10 @@ def dossier_source(dossier: dict, source_id: str) -> dict:
                    *(dossier.get("notebook") or {}).get("sources", [])]:
         if source.get("source_id") == source_id:
             if source.get("instrument_id") != dossier["instrument_id"] and not (
-                    source.get("source_type") == "public_source" and source.get("instrument_id") is None):
+                    (source.get("source_type") == "public_source" and source.get("instrument_id") is None)
+                    or (source.get("source_type") == "computed_metric" and source.get("scope") == "public_market")):
                 raise ValueError("这份依据不属于当前标的研究档案")
-            return source
+            return hydrate_source(source)
     raise ValueError("当前研究档案没有这份材料或历史依据")
 
 
@@ -150,12 +267,14 @@ def _original_source(source: dict, iid: str, cutoff: datetime | None = None) -> 
     else:
         payload_key = {"historical_case": "sources", "instrument_snapshot": "snapshot",
                        "sector_snapshot": "snapshot", "company_snapshot": "company",
-                       "analyst_estimate_changes": "current_snapshot"}.get(kind)
+                       "analyst_estimate_changes": "current_snapshot", "computed_metric": "data"}.get(kind)
         readable = bool(payload_key and source.get(payload_key))
-        scope_matches = source.get("instrument_id") == iid
+        scope_matches = source.get("instrument_id") == iid or (kind == "computed_metric" and source.get("scope") == "public_market")
+        if kind == "computed_metric":
+            readable = readable and bool(source.get("methodology") and source.get("as_of"))
     if not readable or not scope_matches or source.get("time_status") == "future":
         return False
-    published = source.get("published_at") or (source.get("metadata") or {}).get("published_at")
+    published = source.get("as_of") if kind == "computed_metric" else source.get("published_at") or (source.get("metadata") or {}).get("published_at")
     if cutoff is not None and published:
         try:
             if len(published) == 10:
@@ -164,7 +283,11 @@ def _original_source(source: dict, iid: str, cutoff: datetime | None = None) -> 
             if stamp.tzinfo is not None:
                 return stamp <= cutoff
         except ValueError:
+            if kind == "computed_metric":
+                return False
             pass  # Unknown publication precision does not become an invented timestamp.
+        if kind == "computed_metric":
+            return False
     return True
 
 
@@ -175,6 +298,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     for dossier in context.get("research_dossiers", []):
         iid = dossier["instrument_id"]
         for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", [])]:
+            source = hydrate_source(source, cutoff=cutoff)
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
         for material in dossier.get("materials", []):
@@ -182,7 +306,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
         for case in dossier.get("historical_cases", []):
-            source = {**case, "source_type": "historical_case"}
+            source = {**case, "source_type": case.get("source_type", "historical_case")}
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
     # A current, successfully read material supersedes its earlier retained copy.
@@ -191,7 +315,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
         sid = f"instrument:{run_id}:{iid}"
         sources[sid] = {"source_id": sid, "instrument_id": iid, "source_run_id": run_id,
             "source_type": "instrument_snapshot", "title": f"{asset['name']} · 已披露资料与指标",
-            "run_cutoff": context["cutoff"], "snapshot": {k: v for k, v in asset.items()
+            "run_cutoff": asset.get("snapshot_cutoff", context["cutoff"]), "snapshot": {k: v for k, v in asset.items()
                 if k not in {"research", "research_tracking", "research_tracking_note", "research_dossier",
                              "risk_cases", "analyst_focus", "materials", "materials_note"}}}
     for asset in context.get("sector_inputs", []):
@@ -199,7 +323,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
         sid = f"sector:{run_id}:{iid}"
         sources[sid] = {"source_id": sid, "instrument_id": iid, "source_run_id": run_id,
             "source_type": "sector_snapshot", "title": f"{iid.upper()} · 成份与预期快照",
-            "run_cutoff": context["cutoff"], "snapshot": {k: v for k, v in asset.items() if k != "research_focus"}}
+            "run_cutoff": asset.get("snapshot_cutoff", context["cutoff"]), "snapshot": {k: v for k, v in asset.items() if k != "research_focus"}}
     for iid, companies in context.get("sector_company_data", {}).items():
         for symbol, company in companies.items():
             sid = f"fmp:{run_id}:{iid}:{symbol}"
@@ -209,13 +333,22 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     for capture in context.get("web_evidence", []):
         if capture.get("operation") == "fetch":
             for source in capture.get("sources", []):
+                source = hydrate_source(source, cutoff=cutoff)
                 original = {**source, "source_run_id": run_id, "source_type": "public_source"}
                 if _original_source(original, source.get("instrument_id"), cutoff):
                     sources[source["source_id"]] = original
+    sources.update(retained_sources(context))
+    for source in context.get("computed_metrics", []):
+        if _original_source(source, source.get("instrument_id"), cutoff):
+            sources[source["source_id"]] = source
     return sources
 
 
 def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, dict]):
+    for field in ("forecasts", "forecast_reviews", "lessons"):
+        keys = [row.key for row in getattr(notebook, field)]
+        if len(set(keys)) != len(keys):
+            raise ValueError("同一预测、复盘或经验在本轮重复出现")
     keys = [q.key for q in notebook.questions]
     if len(set(keys)) != len(keys):
         raise ValueError("同一研究问题在本轮重复出现")
@@ -225,30 +358,85 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
     for catalyst in notebook.catalysts:
         if not any(sources.get(sid, {}).get("source_type") in {"public_source", "research_material"} for sid in catalyst.source_ids):
             raise ValueError("预定事件必须有已取得的日程或披露原文，历史案例和模型判断不能证明日程")
-    refs = (set(notebook.source_ids) | {sid for q in notebook.questions for sid in q.source_ids}
-            | {sid for fact in notebook.facts for sid in fact.source_ids}
-            | {sid for c in notebook.catalysts for sid in c.source_ids})
+    refs = notebook_source_ids(notebook)
     for sid in refs:
         source = sources.get(sid)
         if source is None:
             raise ValueError("研究底稿引用了未取得的原始依据")
-        if source.get("instrument_id") not in {None, iid}:
+        if source.get("instrument_id") not in {None, iid} and not (
+                source.get("source_type") == "computed_metric" and source.get("scope") == "public_market"):
             raise ValueError("研究底稿引用了其他标的的私有资料或快照")
         if not _original_source(source, iid):
             raise ValueError("研究底稿依据不是已取得的原文、资料或真实快照")
 
 
+def _versioned(value: dict, previous: dict | None, model: type[BaseModel], version_id: str, run_id: str, recorded_at: str) -> dict:
+    if previous and {key: previous.get(key, field.get_default(call_default_factory=True))
+                     for key, field in model.model_fields.items()} == value:
+        return deepcopy(previous)
+    versions = deepcopy((previous or {}).get("versions", []))
+    if previous:
+        versions.append({key: deepcopy(item) for key, item in previous.items() if key != "versions"})
+    return {**value, "version_id": version_id, "created_at": (previous or {}).get("created_at") or recorded_at,
+            "updated_at": recorded_at, "source_run_id": run_id, "versions": versions}
+
+
+def _forecast_versions(previous: dict) -> dict[tuple[str, str], dict]:
+    return {(forecast["key"], version["version_id"]): version
+            for forecast in previous.get("forecasts", [])
+            for version in [forecast, *forecast.get("versions", [])] if version.get("version_id")}
+
+
+def _merge_partial(item: BaseModel, previous: dict | None) -> dict:
+    value = item.model_dump(mode="json")
+    if previous:
+        for key in value:
+            if key not in item.model_fields_set and key in previous:
+                value[key] = deepcopy(previous[key])
+    return type(item).model_validate(value).model_dump(mode="json")
+
+
 def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: dict[str, dict], run_id: str, cutoff: str):
+    previous = previous or {}
+    recorded_at = datetime.now(UTC).isoformat()
     value = notebook.model_dump(mode="json")
+    # A knowledge-only submission leaves the existing working view intact.
+    for field in ("fundamental_view", "valuation_view", "key_drivers", "next_research", "source_ids", "facts"):
+        if field not in notebook.model_fields_set and field in previous:
+            value[field] = deepcopy(previous[field])
+    # A same-key update changes only supplied fields, including explicit empty values.
+    for field in ("questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+        old = {row["key"]: row for row in previous.get(field, [])}
+        value[field] = [_merge_partial(item, old.get(item.key)) for item in getattr(notebook, field)]
     updated = {q["key"] for q in value["questions"]}
     # Silence is not resolution. Unmentioned questions keep their original assessment and evidence.
-    value["questions"] += [q for q in (previous or {}).get("questions", []) if q["key"] not in updated]
+    value["questions"] += [deepcopy(q) for q in previous.get("questions", []) if q["key"] not in updated]
     updated_catalysts = {c["key"] for c in value["catalysts"]}
-    value["catalysts"] += [c for c in (previous or {}).get("catalysts", []) if c["key"] not in updated_catalysts]
-    refs = (set(value["source_ids"]) | {sid for q in value["questions"] for sid in q["source_ids"]}
-            | {sid for fact in value["facts"] for sid in fact["source_ids"]}
-            | {sid for c in value["catalysts"] for sid in c["source_ids"]})
+    value["catalysts"] += [deepcopy(c) for c in previous.get("catalysts", []) if c["key"] not in updated_catalysts]
+    prior_forecasts = _forecast_versions(previous)
+    for item in [*value["forecast_reviews"], *value["lessons"]]:
+        if item.get("forecast_key") and (item["forecast_key"], item.get("forecast_version_id")) not in prior_forecasts:
+            raise ValueError("复盘或经验必须关联此前已保存的预测原版本，不能将事后新建预测作为事前记录")
+    for field, model in (("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson)):
+        old = {row["key"]: row for row in previous.get(field, [])}
+        incoming = {row["key"] for row in value[field]}
+        value[field] = [_versioned(row, old.get(row["key"]), model, f"{run_id}:{field}:{row['key']}", run_id, recorded_at)
+                        for row in value[field]]
+        value[field] += [deepcopy(row) for key, row in old.items() if key not in incoming]
+    if notebook.investment_view is not None:
+        view = _merge_partial(notebook.investment_view, previous.get("investment_view"))
+        value["investment_view"] = _versioned(view, previous.get("investment_view"), InvestmentView,
+            f"{run_id}:investment-view", run_id, recorded_at)
+    elif "investment_view" not in notebook.model_fields_set:
+        value["investment_view"] = deepcopy(previous.get("investment_view"))
+    refs = notebook_source_ids(value)
     # research_sources already includes admissible older originals. Do not restore rejected
     # method/summary/future-publication records through a second unfiltered history path.
-    value["sources"] = [sources[sid] for sid in sorted(refs) if sid in sources]
-    return {**value, "run_id": run_id, "checked_at": cutoff}
+    value["sources"] = [source_reference(sources[sid]) for sid in sorted(refs) if sid in sources]
+    stable_fields = set(ResearchNotebook.model_fields) - {"important_changes", "mandate_update"}
+    changed = not previous or any(value[key] != previous.get(key, ResearchNotebook.model_fields[key].get_default(call_default_factory=True))
+                                  for key in stable_fields)
+    return {**value, "run_id": run_id, "checked_at": cutoff,
+            "version_id": run_id if changed else previous.get("version_id", previous.get("run_id", run_id)),
+            "created_at": previous.get("created_at") or recorded_at,
+            "updated_at": recorded_at if changed else previous.get("updated_at", recorded_at)}

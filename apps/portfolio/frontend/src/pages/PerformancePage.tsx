@@ -40,10 +40,7 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
-import {
-  assessBenchmarkComparisonGuard,
-  normalizeBenchmarkCurrency,
-} from '../lib/benchmarkComparisonGuard'
+import { assessBenchmarkComparisonGuard } from '../lib/benchmarkComparisonGuard'
 import { buildPerformanceHistoryReliability } from '../lib/performanceHistoryReliability'
 import usePerformanceResource from '../hooks/usePerformanceResource'
 import {
@@ -141,6 +138,7 @@ type CalculationColumnKey =
   | 'pending_settlement_fx'
   | 'period_return'
   | 'return_contribution'
+  | 'arithmetic_return_contribution'
   | 'own_vol'
   | 'own_sharpe'
   | 'own_corr'
@@ -236,7 +234,7 @@ const FULL_CALCULATION_COLUMNS: CalculationColumnKey[] = [
 ]
 
 const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColumnKey[] }> = [
-  { label: 'Core', columns: ['line', 'begin_weight', 'avg_weight', 'end_weight', 'period_return', 'return_contribution'] },
+  { label: 'Core', columns: ['line', 'begin_weight', 'avg_weight', 'end_weight', 'period_return', 'return_contribution', 'arithmetic_return_contribution'] },
   {
     label: 'P&L',
     columns: [
@@ -270,6 +268,7 @@ const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
   'pending_settlement_fx',
   'period_return',
   'return_contribution',
+  'arithmetic_return_contribution',
   'own_corr',
   'beta',
   'risk_contribution',
@@ -291,7 +290,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   fx_pnl: 'Position & Cash FX',
   pending_settlement_fx: 'Pending Settlement FX',
   period_return: 'Period Return',
-  return_contribution: 'Arithmetic Return Contribution',
+  return_contribution: 'Linked Return Contribution',
+  arithmetic_return_contribution: 'Arithmetic Return Contribution',
   own_vol: 'Vol',
   own_sharpe: 'Sharpe',
   own_corr: 'Corr to Portfolio',
@@ -302,6 +302,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
   return_contribution:
+    'Each daily contribution is multiplied by the portfolio growth before that day. Top-level contributions sum to period TWR; child contributions sum to their parent.',
+  arithmetic_return_contribution:
     'Sum of daily return contributions. The TWR linking difference reconciles this arithmetic sum to the geometrically linked period TWR.',
   fx_pnl:
     'Daily path attribution from currency translation on positions and settled cash; this is not an accounting realized/unrealized classification.',
@@ -505,6 +507,8 @@ function calculationDisplayMetricValue(source: CalculationDisplayRow, column: Ca
     case 'period_return':
       return finiteNumber(source.period_return)
     case 'return_contribution':
+      return finiteNumber(source.linked_period_contribution)
+    case 'arithmetic_return_contribution':
       return finiteNumber(source.period_contribution)
     case 'own_vol':
       return finiteNumber(source.annualized_volatility)
@@ -592,8 +596,8 @@ function defaultCalculationGroupCompare(
   if (mode === 'risk_attribution') {
     const leftRisk = Math.abs(finiteNumber(left.realized_risk_contribution) ?? 0)
     const rightRisk = Math.abs(finiteNumber(right.realized_risk_contribution) ?? 0)
-    const leftContribution = Math.abs(finiteNumber(left.period_contribution) ?? 0)
-    const rightContribution = Math.abs(finiteNumber(right.period_contribution) ?? 0)
+    const leftContribution = Math.abs(finiteNumber(left.linked_period_contribution) ?? 0)
+    const rightContribution = Math.abs(finiteNumber(right.linked_period_contribution) ?? 0)
     return (
       rightRisk - leftRisk ||
       rightContribution - leftContribution ||
@@ -601,16 +605,16 @@ function defaultCalculationGroupCompare(
     )
   }
 
-  const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
-  const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
+  const leftMagnitude = Math.abs(finiteNumber(left.linked_period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
+  const rightMagnitude = Math.abs(finiteNumber(right.linked_period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
   return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label, 'zh-Hans-CN')
 }
 
 function defaultCalculationChildCompare(left: CalculationGroupChildRow, right: CalculationGroupChildRow) {
   const leftKindOrder = left.item_kind === 'instrument' ? 0 : 1
   const rightKindOrder = right.item_kind === 'instrument' ? 0 : 1
-  const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
-  const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
+  const leftMagnitude = Math.abs(finiteNumber(left.linked_period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
+  const rightMagnitude = Math.abs(finiteNumber(right.linked_period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
   return (
     leftKindOrder - rightKindOrder ||
     rightMagnitude - leftMagnitude ||
@@ -2274,7 +2278,6 @@ function PerformancePage() {
       reportEndDate,
     ],
   )
-  const benchmarkCurrencyMismatch = benchmarkGuard?.reason === 'benchmark_currency_mismatch'
   const benchmarkComparisonDetail = benchmarkGuard
     ? `${
         benchmarkGuard.mode === 'canonical'
@@ -2377,14 +2380,15 @@ function PerformancePage() {
   const portfolioFees = expenseImpact(calculationSummary?.fees)
   const portfolioTaxes = expenseImpact(calculationSummary?.taxes)
   const portfolioPeriodPnl = calculationSummary?.delta ?? summary?.delta ?? summary?.total_pnl ?? null
-  const portfolioContribution = calculationGroupsSummary?.total_period_contribution ?? summary?.cumulative_twr ?? null
+  const portfolioContribution = calculationGroupsSummary?.total_linked_period_contribution ?? null
+  const portfolioArithmeticContribution = calculationGroupsSummary?.total_period_contribution ?? null
   const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
   const twrLinkingDifference = summary?.cumulative_twr != null &&
     calculationGroupsSummary?.total_period_contribution != null
     ? summary.cumulative_twr - calculationGroupsSummary.total_period_contribution
     : null
-  const showTwrLinkingDifference = visibleCalculationColumns.includes('return_contribution') && twrLinkingDifference != null
-  const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
+  const showTwrLinkingDifference = visibleCalculationColumns.includes('arithmetic_return_contribution') && twrLinkingDifference != null
+  const showContributionResidual = visibleCalculationColumns.includes('arithmetic_return_contribution') && contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationRiskStatusLabel = calculationGroupsSummary?.risk_frequency_status_label ?? null
   const calculationMeta =
@@ -2410,7 +2414,13 @@ function PerformancePage() {
   const performancePanelDetail = [
     performanceMetricsMeta,
     summary ? `Basis: ${formatLabel(summary.performance_basis)}` : null,
-    performanceIsOperational ? operationalPerformanceDetail : null,
+    `Currency: ${baseCurrency}; Recorded fees and taxes deducted`,
+    performanceIsOperational
+      ? operationalPerformanceDetail
+      : 'Market-value time-weighted return',
+    'Risk: daily observations, annualized by actual period length; risk-free rate and minimum acceptable return = 0',
+    summary ? `${summary.risk_return_observation_count} risk observations` : null,
+    performanceIsOperational ? null : 'Derivatives and base-currency cash modeled at zero return',
   ]
     .filter(Boolean)
     .join('. ')
@@ -2419,6 +2429,12 @@ function PerformancePage() {
     calculationRiskStatusLabel,
     realizedRiskEstimateLowSample && showsRealizedRiskEstimate
       ? realizedRiskEstimateDetail
+      : null,
+    visibleCalculationColumns.includes('return_contribution')
+      ? 'Linked contributions sum to period TWR; child contributions sum to their parent.'
+      : null,
+    visibleCalculationColumns.includes('arithmetic_return_contribution')
+      ? 'Arithmetic contributions + TWR linking difference = period TWR.'
       : null,
   ]
     .filter(Boolean)
@@ -2566,9 +2582,6 @@ function PerformancePage() {
   }
 
   function calculationTableMetricValue(row: CalculationTableRow, column: CalculationColumnKey): number | null {
-    if (['own_corr', 'beta', 'risk_contribution'].includes(column) && !riskMetricsAvailable) {
-      return null
-    }
     if (column === 'line') {
       return null
     }
@@ -2584,9 +2597,9 @@ function PerformancePage() {
         case 'withdrawals':
           return column === 'pnl_flow' ? finiteNumber(expenseImpact(calculationSummary?.withdrawals)) : null
         case 'contribution_residual':
-          return column === 'return_contribution' ? finiteNumber(contributionResidual) : null
+          return column === 'arithmetic_return_contribution' ? finiteNumber(contributionResidual) : null
         case 'twr_linking_difference':
-          return column === 'return_contribution' ? finiteNumber(twrLinkingDifference) : null
+          return column === 'arithmetic_return_contribution' ? finiteNumber(twrLinkingDifference) : null
         case 'risk_contribution_residual':
           return column === 'risk_contribution' ? finiteNumber(riskContributionResidual) : null
         case 'portfolio_total':
@@ -2619,6 +2632,8 @@ function PerformancePage() {
               return finiteNumber(summary?.cumulative_twr)
             case 'return_contribution':
               return finiteNumber(portfolioContribution)
+            case 'arithmetic_return_contribution':
+              return finiteNumber(portfolioArithmeticContribution)
             case 'own_vol':
               return summary?.risk_result_status === 'available'
                 ? finiteNumber(calculationGroupsSummary?.annualized_volatility ?? summary?.annualized_volatility)
@@ -2679,6 +2694,7 @@ function PerformancePage() {
         return formatPercent(value)
       case 'period_return':
       case 'return_contribution':
+      case 'arithmetic_return_contribution':
       case 'risk_contribution':
         return signedPercent(value)
       case 'own_sharpe':
@@ -2749,7 +2765,7 @@ function PerformancePage() {
       ['Fees and taxes', 'Recorded fees and taxes deducted'],
       ['Risk method', 'Daily observations; annualized by actual period length; risk-free rate and minimum acceptable return = 0'],
       ['Return units', 'Decimal fractions: 0.01 = 1%'],
-      ['Contribution method', 'Sum of daily return contributions; add TWR Linking Difference to reconcile to period TWR'],
+      ['Contribution method', 'Linked contribution = sum of daily contributions multiplied by preceding portfolio TWR growth; top-level rows sum to period TWR, children sum to their parent. Arithmetic contribution is the unlinked daily sum.'],
       [],
       header,
       ...calculationTableRows.map((row) =>
@@ -2884,6 +2900,16 @@ function PerformancePage() {
               tone={benchmarkGuard?.mode === 'canonical' ? 'info' : 'warning'}
             />
           ) : null}
+          {summary?.as_of_clamp_reason ? (
+            <InfoHint
+              label="Performance data cutoff"
+              detail={`Performance requested through ${summary.requested_end_date ?? effectiveEndDate}; reliable results end on ${
+                summary.effective_end_date ?? summary.end_date ?? '—'
+              } (${performanceUnavailableReason(summary.as_of_clamp_reason)}).`}
+              tone="warning"
+            />
+          ) : null}
+          <QualityWarningsNotice warnings={summary?.quality_warnings} />
         </div>
         {windowError || (windowDraftChanged && draftWindowError) ? (
           <div className="inline-notice inline-notice-error" role="alert">
@@ -2897,20 +2923,7 @@ function PerformancePage() {
             {calculationTableViewStoreError}
           </div>
         ) : null}
-        {summary?.as_of_clamp_reason ? (
-          <div className="inline-notice inline-notice-warning" role="status">
-            Performance requested through {summary.requested_end_date ?? effectiveEndDate}; reliable results end on{' '}
-            {summary.effective_end_date ?? summary.end_date ?? '—'} ({performanceUnavailableReason(summary.as_of_clamp_reason)}).
-          </div>
-        ) : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
-        {!benchmarkError && benchmarkCurrencyMismatch ? (
-          <div className="inline-notice inline-notice-error">
-            Benchmark currency {normalizeBenchmarkCurrency(benchmarkChart?.currency)} does not match portfolio base{' '}
-            {normalizeBenchmarkCurrency(baseCurrency)}.
-          </div>
-        ) : null}
-        <QualityWarningsNotice warnings={summary?.quality_warnings} />
         {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
         {!waitingForDefaultEndDate && !loading && !workspace && !error ? (
@@ -2929,15 +2942,6 @@ function PerformancePage() {
                     tone={performanceIsOperational ? 'warning' : 'info'}
                   />
                 </div>
-              </div>
-              <div className="portfolio-detail-meta">
-                <span>Currency</span>: {baseCurrency} · <span>Recorded fees and taxes deducted</span> ·{' '}
-                <span>{performanceIsOperational ? 'Operational carrying-basis return; incomplete fair-value performance' : 'Market-value time-weighted return'}</span>
-              </div>
-              <div className="portfolio-detail-meta">
-                <span>Risk: daily observations, annualized by actual period length; risk-free rate and minimum acceptable return = 0</span>
-                {' · '}{summary.risk_return_observation_count} <span>risk observations</span>
-                {' · '}<span>Derivatives and base-currency cash modeled at zero return</span>
               </div>
               {summary.risk_result_status !== 'available' ? (
                 <div className="inline-notice inline-notice-warning" role="status">
@@ -3003,11 +3007,6 @@ function PerformancePage() {
                   </div>
                 </div>
               </div>
-              {visibleCalculationColumns.includes('return_contribution') ? (
-                <div className="portfolio-detail-meta">
-                  Arithmetic contributions + TWR linking difference = period TWR.
-                </div>
-              ) : null}
               {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>

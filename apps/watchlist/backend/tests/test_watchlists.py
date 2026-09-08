@@ -1044,8 +1044,8 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     )
     assert overview_view["columns"] == [
         "instrument_name", "instrument_type", "attr.instrument_taxonomy_path",
-        "attr.research_stage", "return_chart_1m", "return_ytd",
-        "attr.current_drawdown", "attr.risk_attention", "attr.research_updated_at", "latest_quote_date",
+        "return_chart_1m", "return_ytd",
+        "attr.current_drawdown", "latest_quote_date", "metric_as_of_date",
     ]
     classification_view = next(
         item
@@ -1067,7 +1067,6 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         "instrument_name",
         "instrument_type",
         "attr.instrument_taxonomy_path",
-        "attr.instrument_taxonomy_leaf",
         "latest_quote",
         "latest_quote_date",
         "data_freshness_status",
@@ -1075,7 +1074,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     ]
 
 
-def test_empty_watchlist_does_not_claim_an_asset_specific_field_scope(
+def test_watchlist_options_and_queries_do_not_depend_on_list_members(
     client: TestClient,
 ) -> None:
     created = client.post(
@@ -1096,9 +1095,29 @@ def test_empty_watchlist_does_not_claim_an_asset_specific_field_scope(
         "taxonomy",
         "currency",
         "attr.coverage_status",
-        "attr.manual_rating",
     ]
-    assert "attr.coverage_status" not in payload["default_filters_summary"]
+    assert "attr.coverage_status" in payload["default_filters_summary"]
+    for group in payload["available_group_bys"]:
+        query = client.post(
+            "/api/screener/query",
+            json={
+                "watchlist_id": watchlist_id,
+                "selected_fields": ["instrument_name", "attr.investment_edge_quality"],
+                "group_by": group["code"],
+            },
+        )
+        assert query.status_code == 200
+        assert query.json()["rows"] == []
+
+    for instrument_id in ("sxv264", "fund-us-agg"):
+        added = client.post(
+            f"/api/watchlists/{watchlist_id}/items",
+            json={"instrument_ids": [instrument_id]},
+        )
+        assert added.status_code == 200
+        populated = client.get(f"/api/watchlists/{watchlist_id}").json()
+        assert populated["available_group_bys"] == payload["available_group_bys"]
+        assert populated["default_filters_summary"] == payload["default_filters_summary"]
 
 
 def test_adding_shared_registry_instrument_to_created_watchlist_materializes_rows(
@@ -4116,14 +4135,13 @@ def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
         "taxonomy",
         "currency",
         "attr.coverage_status",
-        "attr.manual_rating",
     ]
     assert "instrument_type" not in public_group_by_codes
     overview_view = next(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
     assert overview_view["default_group_by"] == "none"
-    assert "attr.risk_attention" in overview_view["columns"]
+    assert "attr.current_drawdown" in overview_view["columns"]
 
     screener = client.post(
         "/api/screener/query",
@@ -4406,7 +4424,6 @@ def test_default_index_watchlist_syncs_active_shared_indexes(
         "taxonomy",
         "currency",
         "attr.coverage_status",
-        "attr.manual_rating",
     ]
 
     screener = client.post(
@@ -5279,6 +5296,81 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
 
 
+def test_watchlist_menu_catalog_is_reviewed_and_keeps_detail_fields_queryable(client: TestClient) -> None:
+    from watchlist_app.services.watchlist_query_contract import (
+        WATCHLIST_COLUMN_FIELD_KEYS,
+        WATCHLIST_FILTER_FIELD_KEYS,
+    )
+
+    response = client.get("/api/field-registry")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["column_field_keys"] == list(WATCHLIST_COLUMN_FIELD_KEYS)
+    assert len(payload["column_field_keys"]) == 18
+    assert payload["filter_field_keys"] == list(WATCHLIST_FILTER_FIELD_KEYS)
+    assert len(payload["filter_field_keys"]) == 5
+    assert set(payload["filter_field_keys"]).issubset(payload["column_field_keys"])
+    fields = {item["field_key"] for item in payload["fields"]}
+    detail_fields = {
+        "attr.style_profile", "attr.research_current_view", "attr.research_note_count",
+        "attr.manual_rating", "attr.peer_return_1y_percentile", "avg_credit_rating",
+        "latest_cumulative_nav", "return_chart_1d", "attr.instrument_taxonomy_leaf",
+        "return_6m", "return_mtd", "return_3y", "return_5y", "annualized_return",
+        "max_drawdown", "volatility", "sharpe_ratio", "return_chart_1y",
+    }
+    assert detail_fields.issubset(fields)
+    assert detail_fields.isdisjoint(payload["column_field_keys"])
+
+    narrowed = client.get("/api/field-registry", params={"search": "return_1m"})
+    assert narrowed.status_code == 200
+    narrowed_payload = narrowed.json()
+    assert narrowed_payload["column_field_keys"] == ["return_1m"]
+    assert narrowed_payload["filter_field_keys"] == []
+
+
+def test_risk_only_watchlist_query_does_not_read_legacy_research(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
+
+    created = client.post("/api/watchlists", json={"name": "Risk Projection"})
+    assert created.status_code == 200
+    watchlist_id = created.json()["watchlist_id"]
+    added = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264", "fund-us-agg"]},
+    )
+    assert added.status_code == 200
+    with get_session_factory()() as session:
+        session.add(RiskCase(
+            case_id="risk-only-projection", instrument_id="sxv264", signal="manual",
+            title="需关注", body="已确认的风险事项", severity="attention", status="open",
+            trigger_active=True, evidence_json={"direction": "risk"}, history_json=[],
+        ))
+        session.commit()
+
+    def unexpected_research_read(*args, **kwargs):
+        raise AssertionError("Risk-only queries must not read legacy research tables")
+
+    monkeypatch.setattr(SQLAlchemyInstrumentResearchRepository, "list_profiles", unexpected_research_read)
+    monkeypatch.setattr(SQLAlchemyInstrumentResearchRepository, "list_notes_for_instruments", unexpected_research_read)
+    response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["instrument_name", "attr.risk_attention"],
+            "group_by": "none",
+        },
+    )
+    assert response.status_code == 200
+    assert {
+        row["instrument_id"]: row["attr.risk_attention"]
+        for row in response.json()["rows"]
+    } == {"sxv264": "attention", "fund-us-agg": "limited"}
+
+
 def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
@@ -5305,7 +5397,6 @@ def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client:
         "taxonomy",
         "currency",
         "attr.coverage_status",
-        "attr.manual_rating",
     ]
 
     screener_response = client.post(
@@ -5348,7 +5439,13 @@ def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client:
     assert removed_group_response.status_code == 422
     assert "not available" in removed_group_response.json()["detail"].lower()
 
-    invalid_fund_field = client.post(
+    edge_update = client.post(
+        "/api/instrument-attributes/instruments/sxv264",
+        json={"values": [{"attribute_key": "investment_edge_quality", "value": "清晰且可持续"}]},
+    )
+    assert edge_update.status_code == 200
+
+    fund_field = client.post(
         "/api/screener/query",
         json={
             "watchlist_id": watchlist_id,
@@ -5356,8 +5453,24 @@ def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client:
             "group_by": "none",
         },
     )
-    assert invalid_fund_field.status_code == 422
-    assert "not available for every instrument type" in invalid_fund_field.json()["detail"]
+    assert fund_field.status_code == 200
+    assert {
+        row["instrument_id"]: row["attr.investment_edge_quality"]
+        for row in fund_field.json()["rows"]
+    } == {"sxv264": "清晰且可持续", "fund-us-agg": None}
+
+    filtered_fund_field = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["instrument_name", "attr.investment_edge_quality"],
+            "filters": {"attr.investment_edge_quality": ["清晰且可持续"]},
+            "sort": [{"field": "attr.investment_edge_quality", "direction": "asc"}],
+            "group_by": "none",
+        },
+    )
+    assert filtered_fund_field.status_code == 200
+    assert [row["instrument_id"] for row in filtered_fund_field.json()["rows"]] == ["sxv264"]
 
 
 def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:
@@ -5471,7 +5584,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     assert payload["profile"]["manual_rating"] == 4
     assert payload["profile"]["thesis"].startswith("Repeatable")
     assert payload["profile"]["next_review_date"] == "2026-05-15"
-    assert payload["profile"]["updated_by"] == "test"
+    assert payload["profile"]["updated_by"] == "pm-one"
     assert payload["profile"]["revision_number"] == 1
 
     no_op_profile_response = client.put(
@@ -5480,7 +5593,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     )
     assert no_op_profile_response.status_code == 200
     assert no_op_profile_response.json()["profile"]["revision_number"] == 1
-    assert no_op_profile_response.json()["profile"]["updated_by"] == "test"
+    assert no_op_profile_response.json()["profile"]["updated_by"] == "pm-one"
 
     revised_profile_response = client.put(
         "/api/instruments/sxv264/research",
@@ -5544,6 +5657,10 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     assert len(note_payload["notes"]) == 1
     note = note_payload["notes"][0]
     assert note["note_type"] == "meeting"
+    from watchlist_app.services.research_identity import research_identity
+    actor = research_identity()
+    assert note["author"] == actor["display_name"]
+    assert note["author_user_id"] == actor["user_id"]
     assert note["people"] == "CIO, COO"
     assert note["source_refs"].startswith("Manager call")
     assert note["created_at"]
@@ -5556,7 +5673,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     )
     assert no_op_note_response.status_code == 200
     assert no_op_note_response.json()["notes"][0]["revision_number"] == 1
-    assert no_op_note_response.json()["notes"][0]["updated_by"] == "test"
+    assert no_op_note_response.json()["notes"][0]["updated_by"] == actor["user_id"]
 
     screener_response = client.post(
         "/api/screener/query",
@@ -5574,7 +5691,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
                 "attr.research_updated_at",
             ],
             "sort": [],
-            "group_by": "attr.manual_rating",
+            "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
         },
     )
@@ -5591,9 +5708,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     assert research_row["attr.research_note_count"] == 1
     assert research_row["attr.research_next_follow_up_date"] == "2026-05-15"
     assert research_row["attr.research_updated_at"]
-    assert {
-        group["group_value"] for group in screener_response.json()["groups"]
-    } == {"4", "Unspecified"}
+    assert screener_response.json()["groups"] == []
 
     update_note_response = client.put(
         f"/api/instruments/sxv264/research/notes/{note_id}",
@@ -5609,7 +5724,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     )
     assert update_note_response.status_code == 200
     assert update_note_response.json()["notes"][0]["note_type"] == "review"
-    assert update_note_response.json()["notes"][0]["updated_by"] == "reviewer"
+    assert update_note_response.json()["notes"][0]["updated_by"] == actor["user_id"]
     assert update_note_response.json()["notes"][0]["revision_number"] == 2
 
     delete_note_response = client.delete(
@@ -5623,7 +5738,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
         (revision["revision_number"], revision["change_type"])
         for revision in note_history.json()["note_revisions"]
     ] == [(3, "delete"), (2, "update"), (1, "create")]
-    assert note_history.json()["note_revisions"][0]["recorded_by"] == "deleter"
+    assert note_history.json()["note_revisions"][0]["recorded_by"] == actor["user_id"]
 
     listed_response = client.get("/api/instruments/fund-us-agg/research")
     assert listed_response.status_code == 200
@@ -5842,7 +5957,6 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
         "taxonomy",
         "currency",
         "attr.coverage_status",
-        "attr.manual_rating",
     ]
 
     screener_response = client.post(

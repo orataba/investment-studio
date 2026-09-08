@@ -406,6 +406,73 @@ def test_contribution_report_core_and_filter_golden_contract() -> None:
     assert unfiltered["lines"]
 
 
+@pytest.mark.parametrize(
+    ("start_day", "expected"),
+    [(1, {"asset": -0.013, "cash": 0.003}),
+     (2, {"asset": -0.08, "cash": -0.02}),
+     (3, {"asset": 0.0, "cash": 0.0})],
+)
+def test_linked_contributions_reconcile_twr_and_reset_at_selected_close(
+    start_day: int, expected: dict[str, float]
+) -> None:
+    # Deposit 100 on day 2, withdraw 50 on day 3. Linking uses the flow-neutral
+    # operational return, including cash P&L on days without a market-risk return.
+    snapshots = [
+        {"as_of_date": date(2026, 1, day), "nav": nav, "ending_nav": nav,
+         "beginning_nav": beginning, "daily_twr": daily_twr,
+         "external_cash_in": cash_in, "external_cash_out": cash_out,
+         "coverage_state": "complete", "market_risk_daily_return": 0.0}
+        for day, beginning, nav, daily_twr, cash_in, cash_out in [
+            (1, 80, 100, 0.25, 0, 0),
+            (2, 100, 220, 0.1, 100, 0),
+            (3, 220, 148, -0.1, 0, 50),
+        ]
+    ]
+    slices = [
+        _complete_slice(
+            as_of_date=date(2026, 1, day), group_key=key, group_label=key,
+            beginning_value=50, ending_value=50, pnl=contribution * denominator,
+            contribution=contribution,
+        )
+        for day, denominator, asset_contribution, cash_contribution in [
+            (1, 80, 0.2, 0.05), (2, 200, 0.075, 0.025), (3, 220, -0.08, -0.02)
+        ]
+        for key, contribution in [("asset", asset_contribution), ("cash", cash_contribution)]
+    ]
+    report = attribution.build_contribution_report_from_daily_slices_core(
+        portfolio_id="linked", base_currency="USD", valuation_timezone="UTC",
+        valuation_cutoff_policy="close", snapshots=snapshots, daily_slices=slices,
+        start_date=date(2026, 1, start_day), end_date=date(2026, 1, 3),
+        start_is_close_boundary=True,
+    )
+    linked = attribution.linked_return_contributions_by_group(
+        report["daily_slices"], report["_portfolio_daily_series"]
+    )
+    assert linked == pytest.approx(expected)
+    assert sum(linked.values()) == pytest.approx(report["summary"]["portfolio_cumulative_twr"])
+    grouped = [{**item, "group_key": "all"} for item in report["daily_slices"]]
+    assert attribution.linked_return_contributions_by_group(
+        grouped, report["_portfolio_daily_series"]
+    )["all"] == pytest.approx(sum(expected.values()))
+
+
+@pytest.mark.parametrize("missing_field", ["daily_twr", "daily_contribution"])
+def test_linked_contributions_do_not_zero_fill_unknown_returns(missing_field: str) -> None:
+    points = [{"as_of_date": date(2026, 1, day), "daily_twr": 0.1} for day in (1, 2)]
+    slices = [{"as_of_date": point["as_of_date"], "group_key": "asset",
+               "daily_contribution": 0.1} for point in points]
+    (points if missing_field == "daily_twr" else slices)[0][missing_field] = None
+    assert attribution.linked_return_contributions_by_group(slices, points) == {"asset": None}
+
+
+def test_linked_contributions_support_zero_period_twr() -> None:
+    points = [{"as_of_date": date(2026, 1, day), "daily_twr": daily_twr}
+              for day, daily_twr in [(1, 0.1), (2, -1 / 11)]]
+    slices = [{"as_of_date": point["as_of_date"], "group_key": "asset",
+               "daily_contribution": point["daily_twr"]} for point in points]
+    assert attribution.linked_return_contributions_by_group(slices, points)["asset"] == pytest.approx(0.0)
+
+
 def test_average_group_weights_zero_fill_dates_when_group_is_absent() -> None:
     snapshots = [
         {
@@ -615,7 +682,38 @@ def test_realized_risk_attribution_does_not_report_portfolio_observations_for_ca
         final_date=date(2026, 1, 7),
     )
 
-    assert "cash" not in metrics
+    assert metrics["cash"]["risk_return_observation_count"] == 0
+    assert metrics["cash"]["annualized_volatility"] is None
+    assert metrics["cash"]["correlation_to_portfolio"] is None
+    assert metrics["cash"]["realized_risk_contribution"] == 0
+
+
+def test_unknown_active_contribution_excludes_common_day_without_hiding_own_risk():
+    dates = [date(2026, 1, day) for day in (5, 6, 7)]
+    portfolio = [
+        {"as_of_date": day, "market_risk_daily_return": value,
+         "market_risk_return_observation_eligible": True}
+        for day, value in zip(dates, [0.01, 0.20, -0.01])
+    ]
+    slices = [
+        {"as_of_date": point["as_of_date"], "group_key": group,
+         "market_risk_daily_return": point["market_risk_daily_return"],
+         "market_risk_daily_contribution": point["market_risk_daily_return"] * weight,
+         "market_risk_return_observation_eligible": True}
+        for point in portfolio for group, weight in [("a", 0.6), ("b", 0.4)]
+    ]
+    slices[3].update(market_risk_daily_return=None,
+                     market_risk_daily_contribution=None,
+                     market_risk_return_observation_eligible=False)
+    metrics = attribution.realized_risk_attribution_by_group(
+        slices, portfolio, calculation_frequency="daily", final_date=dates[-1],
+    )
+    assert metrics["a"]["risk_return_observation_count"] == 3
+    assert metrics["b"]["risk_return_observation_count"] == 2
+    assert metrics["a"]["annualized_volatility"] is not None
+    assert metrics["b"]["correlation_to_portfolio"] == pytest.approx(1)
+    assert metrics["a"]["realized_risk_contribution"] == pytest.approx(0.6)
+    assert metrics["b"]["realized_risk_contribution"] == pytest.approx(0.4)
 
 
 def test_realized_risk_attribution_keeps_non_base_cash_fx_contribution() -> None:

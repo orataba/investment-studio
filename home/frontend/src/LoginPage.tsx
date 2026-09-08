@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { withLanguage } from '../../../packages/ui/src/navigation'
 
@@ -39,8 +39,17 @@ export default function LoginPage() {
   const { language } = useLanguage()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [otp, setOtp] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [local, setLocal] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(account => { if (account?.local_unrestricted) setLocal(true) })
+      .catch(() => undefined)
+  }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -51,15 +60,16 @@ export default function LoginPage() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, otp: otp || undefined }),
       })
       if (!response.ok) {
         setError(response.status === 401
-          ? 'Incorrect username or password.'
+          ? '用户名、密码或二步验证码不正确。'
           : 'Sign-in is temporarily unavailable. Please try again later.')
         return
       }
-      window.location.assign(withLanguage(destinationAfterLogin(), language))
+      const account = await response.json()
+      window.location.assign(withLanguage(account.mfa_required ? '/account' : destinationAfterLogin(), language))
     } catch {
       setError('Unable to connect. Check your connection and try again.')
     } finally {
@@ -76,10 +86,10 @@ export default function LoginPage() {
         </div>
         <div className="login-copy">
           <span>Private workspace</span>
-          <h1 id="login-title">Sign in</h1>
-          <p>Enter your username and password to access Investment Studio.</p>
+          <h1 id="login-title">{local ? '本机全权限' : 'Sign in'}</h1>
+          <p>{local ? '本机工作台无需登录。' : 'Enter your username and password to access Investment Studio.'}</p>
         </div>
-        <form className="login-form" onSubmit={handleSubmit}>
+        {local ? <a href={withLanguage(destinationAfterLogin(), language)}>进入工作台</a> : <form className="login-form" onSubmit={handleSubmit}>
           <label>
             <span>Username</span>
             <input
@@ -102,11 +112,12 @@ export default function LoginPage() {
               required
             />
           </label>
+          <label><span>二步验证码（已启用时填写）</span><input name="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={event => setOtp(event.target.value)} /></label>
           {error ? <p className="login-error" role="alert">{error}</p> : null}
           <button disabled={submitting} type="submit">
             {submitting ? 'Signing in…' : 'Enter Investment Studio'}
           </button>
-        </form>
+        </form>}
       </section>
     </main>
   )

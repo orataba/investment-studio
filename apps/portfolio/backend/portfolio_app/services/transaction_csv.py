@@ -63,6 +63,7 @@ IMPORT_COLUMNS = (
     "fcn_underlyings_json",
     "derivative_additional_terms_json",
     "asset_deliveries_json",
+    "settlement_cashflows_json",
     "lot_selections_json",
     "record_reference",
     "option_delivery_json",
@@ -376,6 +377,9 @@ def parse_transaction_csv(
             if values.get("asset_deliveries_json"):
                 values["asset_deliveries"] = json.loads(str(values["asset_deliveries_json"]))
             values.pop("asset_deliveries_json", None)
+            if values.get("settlement_cashflows_json"):
+                values["settlement_cashflows"] = json.loads(str(values["settlement_cashflows_json"]))
+            values.pop("settlement_cashflows_json", None)
         except (ValueError, TypeError):
             parsed_rows.append(ParsedTransactionCsvRow(row_number=row_number, transaction=None, internal_transfer=None, errors=("Delivery and lot-selection fields must contain valid JSON.",)))
             continue
@@ -657,6 +661,9 @@ def transaction_export_rows(
             if column == "asset_deliveries_json":
                 deliveries = [{key: value for key, value in leg.items() if key != "instrument_ref"} for leg in record.get("asset_deliveries") or []]
                 row[column] = json.dumps(deliveries, ensure_ascii=False, separators=(",", ":")) if deliveries else ""
+                continue
+            if column == "settlement_cashflows_json":
+                row[column] = json.dumps(record["settlement_cashflows"], ensure_ascii=False, separators=(",", ":")) if record.get("settlement_cashflows") else ""
                 continue
             if column == "asset_type":
                 row[column] = asset_type

@@ -15,9 +15,9 @@ from portfolio_app.services.portfolio_store import (
     create_portfolio,
     delete_portfolio,
     list_portfolios,
-    reorder_portfolios,
     update_portfolio_base_currency,
 )
+from portfolio_app.services.portfolio_access import visible_ids, require_access, get_preference, save_preference, actor
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, update_portfolio_risk_policy
 
 
@@ -45,23 +45,38 @@ class PortfolioSettingsUpdateRequest(BaseModel):
     base_currency: SupportedCurrency
 
 
+@router.get("/session")
+def current_session():
+    principal = actor()
+    return {"user_id": principal.user_id, "display_name": principal.display_name, "session_id": principal.session_id, "can_create": principal.local_unrestricted or (principal.kind == "user" and principal.team_role != "reader"), "can_write_team_research": principal.local_unrestricted or (principal.kind == "user" and principal.team_role in {"admin", "member"}), "is_team_owner": principal.is_team_owner, "local_unrestricted": principal.local_unrestricted}
+
+
 @router.get("")
 def list_portfolio_records() -> list[dict[str, object]]:
-    return list_portfolios()
+    records = list_portfolios(portfolio_ids=visible_ids())
+    order = (get_preference("portfolio-order") or {}).get("portfolio_ids", [])
+    order_index = {value: index for index, value in enumerate(order)}
+    records.sort(key=lambda row: order_index.get(row["portfolio_id"], len(order)))
+    return [{**record, "sort_order": index, "access": require_access(str(record["portfolio_id"]))} for index, record in enumerate(records)]
 
 
 @router.post("")
 def create_portfolio_record(payload: PortfolioCreateRequest) -> dict[str, object]:
-    return create_portfolio(
+    record = create_portfolio(
         payload.name,
         base_currency=payload.base_currency,
         inception_date=payload.inception_date,
     )
+    return {**record, "sort_order": 0, "access": require_access(str(record["portfolio_id"]))}
 
 
 @router.post("/reorder")
 def reorder_portfolio_records(payload: PortfolioReorderRequest) -> list[dict[str, object]]:
-    return reorder_portfolios(payload.portfolio_ids)
+    visible = set(visible_ids())
+    if len(set(payload.portfolio_ids)) != len(payload.portfolio_ids) or not set(payload.portfolio_ids) <= visible:
+        raise HTTPException(422, "排序只能包含有权访问的组合且不能重复")
+    save_preference("portfolio-order", {"portfolio_ids": payload.portfolio_ids})
+    return list_portfolio_records()
 
 
 @router.post("/{portfolio_id}/copy")
@@ -72,7 +87,7 @@ def copy_portfolio_record(portfolio_id: str) -> dict[str, object]:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    return record
+    return {**record, "sort_order": 0, "access": require_access(str(record["portfolio_id"]))}
 
 
 @router.patch("/{portfolio_id}")

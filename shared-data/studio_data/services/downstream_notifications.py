@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 
 from studio_data.core.settings import get_settings
+from studio_identity import IdentityError, service_principal, principal_headers
 
 
 logger = logging.getLogger(__name__)
@@ -59,13 +60,18 @@ def _post_json(
     url: str,
     payload: dict[str, object] | None = None,
     *,
+    audience: str,
     timeout: float = 2.0,
     validate_response: Callable[[object], str | None] | None = None,
 ) -> DownstreamRequestFailure | None:
+    try:
+        headers = principal_headers(service_principal(audience))
+    except IdentityError as error:
+        return DownstreamRequestFailure(url=url, message=error.detail)
     request = Request(
         url,
         data=json.dumps(payload or {}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
     try:
@@ -149,6 +155,7 @@ def _request_portfolio_daily_snapshot_refresh(
         },
         timeout=request_timeout_seconds,
         validate_response=validate_recalculation_acknowledgement,
+        audience="portfolio",
     )
     return DownstreamRefreshResult(
         request_count=1,
@@ -190,6 +197,7 @@ def _request_watchlist_instrument_recalc(
         },
         timeout=request_timeout_seconds,
         validate_response=validate_bulk_acknowledgement,
+        audience="watchlist",
     )
     return DownstreamRefreshResult(
         request_count=1,

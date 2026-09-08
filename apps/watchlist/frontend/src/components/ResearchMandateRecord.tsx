@@ -1,3 +1,4 @@
+import { useStudioAccount } from './AccountBoundary'
 import { useState, type FormEvent } from 'react'
 import { saveResearchMandate, type ResearchMandate, type ResearchMandateInput } from '../lib/researchDossierApi'
 
@@ -5,10 +6,12 @@ const fields = [
   ['mechanisms', '价格与基本面传导'], ['research_approach', '研究思路'], ['focus', '重点关注'],
   ['source_plan', '资料与日程来源'], ['gaps', '尚待补齐'],
 ] as const
+const originLabels = { user: '用户', research: '研究员', initial: '初始方法' }
 
 export default function ResearchMandateRecord({ instrumentId, mandate, onSaved }: {
   instrumentId: string; mandate: ResearchMandate; onSaved: (value: ResearchMandate) => void
 }) {
+  const canWrite = useStudioAccount()?.team_role !== 'reader'
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<ResearchMandateInput>(mandate)
   const [saving, setSaving] = useState(false)
@@ -29,7 +32,7 @@ export default function ResearchMandateRecord({ instrumentId, mandate, onSaved }
   }
   return <section aria-label="标的研究任务">
     <div className="research-dossier-section-heading"><h4>标的研究任务</h4>
-      {!editing && <button type="button" onClick={() => { setDraft(mandate); setEditing(true); setError('') }}>编辑研究任务</button>}
+      {!editing && <button type="button" disabled={!canWrite} onClick={() => { setDraft({ ...mandate, focus: mandate.user_focus ?? [] }); setEditing(true); setError('') }}>编辑研究任务</button>}
     </div>
     <p className="sector-research-note">这是该标的持续研究的背景与方法。已核实判断和依据记录在研究底稿中。</p>
     {editing ? <form className="research-material-form" onSubmit={event => void save(event)}>
@@ -40,7 +43,16 @@ export default function ResearchMandateRecord({ instrumentId, mandate, onSaved }
       <div className="sector-research-actions research-material-wide"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : '保存研究任务'}</button><button type="button" disabled={saving} onClick={() => setEditing(false)}>取消</button></div>
     </form> : <>
       <p><strong translate="no">{mandate.title}</strong></p><p className="research-dossier-text" translate="no">{mandate.background}</p>
+      {Boolean(mandate.user_focus?.length) && <div><h4>用户指定重点</h4><ul className="research-dossier-list">{mandate.user_focus!.map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></div>}
       {fields.map(([key, label]) => mandate[key].length > 0 && <details className="research-dossier-record" key={key} open={key === 'focus'}><summary>{label}</summary><ul className="research-dossier-list">{mandate[key].map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></details>)}
+      {Boolean(mandate.versions?.length) && <details className="research-dossier-record"><summary>研究框架修订历史 · {mandate.versions!.length} 次</summary>
+        {mandate.versions!.map(version => <article key={version.version_id}><h4>{version.updated_at ? new Date(version.updated_at).toLocaleString('zh-CN') : '初始版本'} · {version.title}</h4><p className="research-dossier-text" translate="no">{version.background}</p>
+          {version.author && <p className="sector-research-note">更新来源：{originLabels[version.author.origin]}</p>}
+          {Boolean(version.user_focus?.length) && <div><h4>用户指定重点</h4><ul className="research-dossier-list">{version.user_focus!.map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></div>}
+          {fields.map(([key, label]) => version[key].length > 0 && <div key={key}><h4>{label}</h4><ul className="research-dossier-list">{version[key].map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></div>)}
+        </article>)}
+      </details>}
+      {mandate.author && <p className="sector-research-note">更新来源：{originLabels[mandate.author.origin]}</p>}
       <p className="sector-research-note">{mandate.updated_at ? `更新于 ${new Date(mandate.updated_at).toLocaleString('zh-CN')}` : '初始研究任务，背景材料仍需持续核实和补齐。'}</p>
     </>}
   </section>

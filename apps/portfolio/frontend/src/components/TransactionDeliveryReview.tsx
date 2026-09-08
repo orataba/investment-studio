@@ -1,41 +1,35 @@
-import type { PortfolioAccountRecord, PortfolioFeeCategory, PortfolioTransactionCreatePayload, SharedInstrumentRecord } from '../lib/api'
+import type { PortfolioAccountRecord, PortfolioDerivativeContractRecord, PortfolioFeeCategory, PortfolioTransactionCreatePayload, SharedInstrumentRecord } from '../lib/api'
 import { formatLabel } from '../lib/format'
-import RegistryInstrumentPicker from './RegistryInstrumentPicker'
+import { FcnSettlementReview } from './FcnSettlementReview'
 
-type DeliveryFields = Pick<PortfolioTransactionCreatePayload, 'asset_deliveries' | 'option_delivery' | 'lot_selections'>
+type DeliveryFields = Pick<PortfolioTransactionCreatePayload, 'asset_deliveries' | 'settlement_cashflows' | 'option_delivery' | 'lot_selections'> & Partial<Pick<PortfolioTransactionCreatePayload, 'currency' | 'trade_date' | 'position_effective_date' | 'settlement_date' | 'settlement_cash_account_id' | 'derivative_contract_id'>> & { gross_amount?: string | number | null }
 
-export function TransactionDeliveryReview({ record, accounts, instruments = [], canAddAssetDelivery = false, canSelectLots = false, requireOptionDelivery = false, onChange }: {
+export function TransactionDeliveryReview({ record, accounts, instruments = [], contracts = [], portfolioId, canAddAssetDelivery = false, canSettleFcn = false, canSelectLots = false, requireOptionDelivery = false, onChange }: {
   record: DeliveryFields
+  portfolioId?: string
+  contracts?: PortfolioDerivativeContractRecord[]
   accounts: PortfolioAccountRecord[]
   instruments?: SharedInstrumentRecord[]
   canAddAssetDelivery?: boolean
+  canSettleFcn?: boolean
   canSelectLots?: boolean
   requireOptionDelivery?: boolean
   onChange?: (changes: DeliveryFields) => void
 }) {
+  const fcnContract = contracts.find(contract => contract.derivative_contract_id === record.derivative_contract_id && contract.contract_type === 'fcn')
   const optionDelivery = record.option_delivery ?? (requireOptionDelivery ? { stock_account_id: '', settlement_cash_account_id: '' } : undefined)
-  const accountName = (id: string) => accounts.find(account => account.account_id === id)?.account_name ?? id
-  if (!record.asset_deliveries?.length && !optionDelivery && !record.lot_selections?.length && !(onChange && (canAddAssetDelivery || canSelectLots))) return null
+  if (!record.asset_deliveries?.length && !record.settlement_cashflows?.length && !optionDelivery && !record.lot_selections?.length && !(onChange && (canAddAssetDelivery || canSettleFcn || canSelectLots))) return null
   return <fieldset className="transaction-capture-review-wide">
     <legend>关联交付与指定批次</legend>
-    {(record.asset_deliveries ?? []).map((leg, index) => {
-      const update = (changes: Partial<typeof leg>) => onChange?.({ asset_deliveries: record.asset_deliveries?.map((item, row) => row === index ? { ...item, ...changes } : item) })
-      return <div key={index} className="transaction-capture-review-grid">
-        {onChange ? <>
-          <label><span>交付 {index + 1} 接收账户</span><select value={leg.account_id} onChange={event => update({ account_id: event.target.value })}>
-            <option value="">选择账户</option>
-            {accounts.filter(account => account.account_category === 'security').map(account => <option key={account.account_id} value={account.account_id}>{account.account_name} · {account.currency}</option>)}
-          </select></label>
-          <RegistryInstrumentPicker label={`交付 ${index + 1} 证券`} value={leg.instrument_id} instruments={instruments.filter(instrument => ['equity', 'etf'].includes(instrument.instrument_type))} onSelect={instrument_id => update({ instrument_id })} />
-        </> : <strong>{accountName(leg.account_id)} · {leg.instrument_id}</strong>}
-        {(['quantity', 'fair_value', 'currency', 'fx_rate_to_contract'] as const).map(field => <label key={field}>
-          <span>{{ quantity: '收股数量', fair_value: '该腿总公允价值', currency: '证券币种', fx_rate_to_contract: '合约币种 / 证券币种汇率' }[field]}</span>
-          <input value={leg[field]} readOnly={!onChange} onChange={event => update({ [field]: event.target.value })} />
-        </label>)}
-        {onChange && <button type="button" onClick={() => onChange({ asset_deliveries: record.asset_deliveries?.filter((_, row) => row !== index) })}>移除交付 {index + 1}</button>}
-      </div>
-    })}
-    {onChange && canAddAssetDelivery && <button type="button" onClick={() => onChange({ asset_deliveries: [...(record.asset_deliveries ?? []), { account_id: '', instrument_id: '', quantity: '', fair_value: '', currency: '', fx_rate_to_contract: '' }] })}>添加交付证券</button>}
+    {(canAddAssetDelivery || canSettleFcn || record.asset_deliveries?.length || record.settlement_cashflows?.length) ? <FcnSettlementReview
+      allowAssetDelivery={canAddAssetDelivery}
+      record={record} accounts={accounts} instruments={instruments} currency={record.currency}
+      portfolioId={portfolioId} contractId={record.derivative_contract_id}
+      terms={fcnContract?.contract_type === 'fcn' ? fcnContract.terms : undefined}
+      economicDate={record.position_effective_date || record.trade_date} settlementDate={record.settlement_date ?? undefined}
+      residualCash={record.gross_amount ?? undefined} residualAccountId={record.settlement_cash_account_id}
+      onChange={onChange}
+    /> : null}
     {optionDelivery ? <div className="transaction-capture-review-grid">
       <strong>期权与股票腿将一起入账；不另记股票交付。</strong>
       {(['stock_account_id', 'settlement_cash_account_id'] as const).map(field => <label key={field}><span>{field === 'stock_account_id' ? '交付证券账户' : '交付现金账户'}</span>

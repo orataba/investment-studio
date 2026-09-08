@@ -28,14 +28,14 @@ export type RiskOfficerReview = {
   latest_run: null | (StartedRun & { created_at: string; completed_at: string | null; message: string })
 }
 
-type Props = { request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
+type Props = { canRun?: boolean; request: RiskRequest; scopeQuery: string; refreshToken?: number; onCompleted?: () => void }
 const running = (status: RunStatus | undefined) => status === 'queued' || status === 'running'
 const completedTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 const frequencyLabels: Record<string, string> = { daily: '日度', weekly: '周度', monthly: '月度' }
 const portfolioHref = (path: string | null | undefined) => path?.startsWith('/portfolios/')
   ? `${resolveWorkspaceUrl(import.meta.env.VITE_PORTFOLIO_URL, 'portfolio')}${path}` : undefined
 
-function ScopedRiskOfficer({ request, scopeQuery, refreshToken, onCompleted }: Props) {
+function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, onCompleted }: Props) {
   const [data, setData] = useState<RiskOfficerReview | null>(null)
   const [error, setError] = useState('')
   const [posting, setPosting] = useState(false)
@@ -89,6 +89,7 @@ function ScopedRiskOfficer({ request, scopeQuery, refreshToken, onCompleted }: P
   }, [request, scopeQuery, refresh, refreshToken])
 
   async function update() {
+    if (!canRun) return
     setPosting(true)
     setError('')
     const controller = new AbortController()
@@ -144,7 +145,7 @@ function ScopedRiskOfficer({ request, scopeQuery, refreshToken, onCompleted }: P
   return <section className="risk-officer" aria-label="风险研判">
     <header className="risk-officer-heading">
       <div><h2>风险研判</h2>{data && <p translate="no">{data.scope.name}</p>}</div>
-      <button type="button" disabled={!data?.available || busy} onClick={() => void update()}>
+      <button type="button" disabled={!canRun || !data?.available || busy} onClick={() => void update()}>
         {busy ? '研判进行中…' : '更新研判'}
       </button>
     </header>

@@ -35,6 +35,116 @@ from investment_studio_instrument_core import instrument_store as shared_store
 
 pytestmark = pytest.mark.postgresql_integration
 
+
+def test_dossier_writer_waits_for_publication_and_preserves_new_user_focus(postgres_watchlist_env):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+    from sqlalchemy import select
+    from studio_identity import current_principal, principal_context
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.research_dossier import read_mandate, save_mandate, ResearchMandateInput
+    iid = postgres_watchlist_env["instrument_id"]
+    actor = current_principal()
+    factory = get_session_factory()
+    def payload_from(value, **updates):
+        return ResearchMandateInput.model_validate({
+            **{key: value[key] for key in ResearchMandateInput.model_fields}, **updates})
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
+            instrument_name="Concurrent Research", metadata_json={}))
+        session.commit()
+        initial = payload_from(read_mandate(session, iid), focus=["原用户重点"])
+        save_mandate(session, iid, initial)
+    entered = Event()
+    def research_writer():
+        with principal_context(actor), factory() as session:
+            before = read_mandate(session, iid)  # An object cached before the other writer commits.
+            payload = payload_from(before, background="本轮研究补充")
+            entered.set()
+            return save_mandate(session, iid, payload, origin="research")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with factory() as session:
+            session.execute(select(InstrumentDetail.instrument_id).where(InstrumentDetail.instrument_id == iid).with_for_update())
+            future = pool.submit(research_writer)
+            assert entered.wait(5)
+            try:
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=0.2)
+                updated = payload_from(read_mandate(session, iid), focus=["新用户重点"])
+                save_mandate(session, iid, updated)
+            finally:
+                session.rollback()
+        result = future.result(timeout=5)
+    assert result["user_focus"] == ["新用户重点"]
+    assert result["version_id"].endswith(":v3")
+    assert [row["user_focus"] for row in result["versions"]] == [["原用户重点"], ["新用户重点"]]
+
+
+def test_pm_note_write_lock_refreshes_cached_revision_before_edit(postgres_watchlist_env):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from datetime import date
+    from threading import Event
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
+    iid = postgres_watchlist_env["instrument_id"]
+    repo, factory = SQLAlchemyInstrumentResearchRepository(), get_session_factory()
+    values = {"note_date": date(2026, 9, 8), "note_type": "thesis_update", "title": "原观点", "importance": "medium"}
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
+            instrument_name="Concurrent PM", metadata_json={}))
+        session.flush()
+        repo.create_note(session, instrument_id=iid, note_id="shared-note", values=values, updated_by="pm-one")
+        session.commit()
+    entered = Event()
+    def edit_second():
+        with factory() as session:
+            cached = repo.get_note(session, iid, "shared-note")
+            assert cached.revision_number == 1
+            entered.set()
+            record = repo.get_note(session, iid, "shared-note", for_update=True)
+            repo.update_note(session, record=record, values={**values, "title": "第三版本"}, updated_by="pm-one")
+            session.commit()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with factory() as session:
+            record = repo.get_note(session, iid, "shared-note", for_update=True)
+            future = pool.submit(edit_second)
+            assert entered.wait(5)
+            try:
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=0.2)
+                repo.update_note(session, record=record, values={**values, "title": "第二版本"}, updated_by="pm-one")
+                session.commit()
+            finally:
+                session.rollback()
+        future.result(timeout=5)
+    with factory() as session:
+        assert repo.get_note(session, iid, "shared-note").revision_number == 3
+        assert {r.revision_number: r.title for r in repo.list_note_revisions(session, iid)} == {
+            1: "原观点", 2: "第二版本", 3: "第三版本"}
+
+
+def test_first_risk_requests_share_one_durable_run(postgres_watchlist_env):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import select
+    from studio_identity import current_principal, principal_context
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.risk_officer import begin_run
+    actor, ready, factory = current_principal(), Barrier(2), get_session_factory()
+    def start():
+        with principal_context(actor), factory() as session:
+            ready.wait(timeout=5)
+            run, created = begin_run(session, watchlist_id="first-risk-scope")
+            return run.entry_id, created
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: start(), range(2)))
+    assert results[0][0] == results[1][0]
+    assert sorted(created for _, created in results) == [False, True]
+    with factory() as session:
+        assert len(list(session.scalars(select(ResearchEntry).where(ResearchEntry.entry_id == results[0][0])))) == 1
+        assert session.get(ResearchTopic, "risk-officer:watchlist:first-risk-scope") is not None
+
 def _instrument_registry_config() -> Config:
     config = Config(str(WORKSPACE_ROOT / "shared-data" / "instruments" / "alembic.ini"))
     config.set_main_option(
@@ -155,8 +265,8 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         with admin_engine.connect() as connection:
             connection.execute(text("SELECT 1"))
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-    except Exception as exc:  # pragma: no cover - environment-dependent skip
-        pytest.skip(f"PostgreSQL is not available for integration test: {exc}")
+    except Exception as exc:  # pragma: no cover - depends on configured service
+        pytest.fail(f"Configured PostgreSQL integration target is unavailable: {exc}")
     finally:
         admin_engine.dispose()
 
@@ -173,53 +283,43 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    command.upgrade(_instrument_registry_config(), "20260902_0029")
-    _seed_instrument_ids_required_by_watchlist_baseline(database_url)
-    command.upgrade(_instrument_registry_config(), "head")
-
-    session_factory = session_module.get_session_factory()
-    identifier_value = f"WATCHFK{uuid4().hex[:8].upper()}"
-    instrument = shared_store.create_instrument(
-        session_factory,
-        instrument_name="Watchlist FK Integration Asset",
-        instrument_type="public_fund",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "ticker",
-                "identifier_value": identifier_value,
-                "is_primary": True,
-            }
-        ],
-    )
-
-    yield {
-        "database_url": database_url,
-        "database_schema": "watchlist",
-        "instrument_id": str(instrument["instrument_id"]),
-    }
-
-    cleanup_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
+    engine = session_module.get_engine()
     try:
-        with cleanup_engine.begin() as connection:
-            connection.execute(
-                text(
-                    """
-                    SELECT pg_terminate_backend(pid)
-                    FROM pg_stat_activity
-                    WHERE datname = :database_name
-                      AND pid <> pg_backend_pid()
-                    """
-                ),
-                {"database_name": database_name},
-            )
-            connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
-    finally:
-        cleanup_engine.dispose()
+        command.upgrade(_instrument_registry_config(), "20260902_0029")
+        _seed_instrument_ids_required_by_watchlist_baseline(database_url)
+        command.upgrade(_instrument_registry_config(), "head")
 
-    settings_module.get_settings.cache_clear()
-    session_module.get_engine.cache_clear()
-    session_module.get_session_factory.cache_clear()
+        instrument = shared_store.create_instrument(
+            session_module.get_session_factory(),
+            instrument_name="Watchlist FK Integration Asset",
+            instrument_type="public_fund",
+            currency="USD",
+            identifiers=[
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": f"WATCHFK{uuid4().hex[:8].upper()}",
+                    "is_primary": True,
+                }
+            ],
+        )
+
+        yield {
+            "database_url": database_url,
+            "database_schema": "watchlist",
+            "instrument_id": str(instrument["instrument_id"]),
+        }
+    finally:
+        # Close our pool before dropping the fixture database. Killing every
+        # pg_stat_activity row also targets superuser-owned autovacuum workers.
+        engine.dispose()
+        session_module.get_session_factory.cache_clear()
+        session_module.get_engine.cache_clear()
+        settings_module.get_settings.cache_clear()
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f'DROP DATABASE "{database_name}"'))
+        finally:
+            admin_engine.dispose()
 
 
 def test_watchlist_instrument_registry_foreign_keys_are_enforced(

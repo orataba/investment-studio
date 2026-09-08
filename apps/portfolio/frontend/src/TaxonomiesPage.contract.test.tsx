@@ -12,6 +12,9 @@ import {
 } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
+const accessState = vi.hoisted(() => ({ can_edit: true }))
+vi.mock('./components/PortfolioAccessProvider', () => ({ usePortfolioAccess: () => accessState }))
+
 const apiMocks = vi.hoisted(() => ({
   getPortfolioTaxonomyCatalog: vi.fn(),
   getHoldingsWorkspace: vi.fn(),
@@ -166,6 +169,7 @@ const taxonomyCatalog = {
 
 describe('Taxonomies rendered page contract', () => {
   beforeEach(() => {
+    accessState.can_edit = true
     vi.clearAllMocks()
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
     apiMocks.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture())
@@ -216,6 +220,32 @@ describe('Taxonomies rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
     apiMocks.updatePortfolioTaxonomy.mockResolvedValue({})
     apiMocks.updatePortfolioTargetSet.mockResolvedValue({})
+  })
+
+  it('lets readers browse taxonomies while blocking assignment shortcuts and shared changes', async () => {
+    accessState.can_edit = false
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'taxonomy-2', name: 'Alternative View' }],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    const node = await screen.findByRole('button', { name: 'Risk Assets' })
+    expect(screen.getByRole('button', { name: 'Add Taxonomy' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Add Instrument' })).toBeDisabled()
+    await user.click(node)
+    await user.click(screen.getByRole('checkbox', { name: /Select .*Alpha Fund/ }))
+    fireEvent.keyDown(node, { key: 'Enter', ctrlKey: true })
+    expect(apiMocks.createPortfolioTaxonomyAssignment).not.toHaveBeenCalled()
+    expect(apiMocks.updatePortfolioTaxonomyAssignment).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-assignment-drag="enabled"]')).toBeNull()
+    expect(document.querySelector('[data-assignment-drop="enabled"]')).toBeNull()
+    const picker = document.querySelector('.taxonomy-picker') as HTMLElement
+    await user.click(within(picker).getByRole('button', { name: 'Policy Allocation' }))
+    await user.click(screen.getByRole('button', { name: 'Alternative View' }))
+    expect(within(picker).getByRole('button', { name: 'Alternative View' })).toBeEnabled()
+    expect(apiMocks.updatePortfolioDefaultPlanningTaxonomy).not.toHaveBeenCalled()
+    expect(apiMocks.updatePortfolioTaxonomy).not.toHaveBeenCalled()
   })
 
   it('withholds derived zero-state taxonomy panels until the workspace request settles', () => {

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import contextmanager
 from datetime import date, timedelta
 
 import requests
@@ -23,30 +22,10 @@ class FmpClient:
         session: requests.Session | None = None,
     ) -> None:
         resolved_settings = settings or get_settings()
-        self._settings = resolved_settings
         self._base_url = resolved_settings.fmp_api_url.rstrip("/")
         self._api_key = resolved_settings.resolved_fmp_api_key()
         self._timeout = resolved_settings.fmp_timeout_seconds
         self._session = session or requests.Session()
-
-    @contextmanager
-    def independent_session(self):
-        """Use an isolated HTTP session for concurrent constituent collection."""
-        with requests.Session() as session:
-            yield FmpClient(self._settings, session=session)
-
-    def analyst_estimates(self, symbol: str, *, period: str) -> list[dict[str, object]]:
-        return self._get_list(
-            "analyst-estimates",
-            params={"symbol": symbol.strip().upper(), "period": period,
-                    "page": 0, "limit": 20},
-        )
-
-    def split_adjusted_eod(self, symbol: str, *, start_date: str, end_date: str) -> list[dict[str, object]]:
-        return self._historical_eod_endpoint(
-            "historical-price-eod/full", symbol=symbol,
-            start_date=start_date, end_date=end_date,
-        )
 
     def _get_list(
         self,
@@ -93,83 +72,6 @@ class FmpClient:
             )
         return matches[0]
 
-    def index_info(self, symbol: str) -> dict[str, object]:
-        normalized_symbol = symbol.strip().upper()
-        if not normalized_symbol:
-            raise ValueError("FMP index symbol must not be blank.")
-        matches = [
-            row
-            for row in self._get_list("index-list", params={})
-            if str(row.get("symbol") or "").strip().upper() == normalized_symbol
-        ]
-        if len(matches) != 1:
-            raise FmpApiError(
-                f"FMP index list returned {len(matches)} exact rows for {normalized_symbol}."
-            )
-        return matches[0]
-
-    def fund_info(self, symbol: str) -> dict[str, object]:
-        normalized_symbol = symbol.strip().upper()
-        rows = self._get_list("etf/info", params={"symbol": normalized_symbol})
-        matches = [
-            row
-            for row in rows
-            if str(row.get("symbol") or "").strip().upper() == normalized_symbol
-        ]
-        if len(matches) != 1:
-            raise FmpApiError(
-                f"FMP fund info returned {len(matches)} exact rows for {normalized_symbol}."
-            )
-        return matches[0]
-
-    def fund_holdings(self, symbol: str) -> list[dict[str, object]]:
-        return self._get_list(
-            "etf/holdings",
-            params={"symbol": symbol.strip().upper()},
-        )
-
-    def fund_sector_weights(self, symbol: str) -> list[dict[str, object]]:
-        return self._get_list(
-            "etf/sector-weightings",
-            params={"symbol": symbol.strip().upper()},
-        )
-
-    def fund_country_weights(self, symbol: str) -> list[dict[str, object]]:
-        return self._get_list(
-            "etf/country-weightings",
-            params={"symbol": symbol.strip().upper()},
-        )
-
-    def income_statements(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
-        return self._get_list(
-            "income-statement",
-            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
-        )
-
-    def key_metrics(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
-        return self._get_list(
-            "key-metrics",
-            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
-        )
-
-    def financial_ratios(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
-        return self._get_list(
-            "ratios",
-            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
-        )
-
-    def dividends(self, symbol: str, *, limit: int = 20) -> list[dict[str, object]]:
-        return self._get_list(
-            "dividends",
-            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 100))},
-        )
-
-    def splits(self, symbol: str, *, limit: int = 20) -> list[dict[str, object]]:
-        return self._get_list(
-            "splits",
-            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 100))},
-        )
-
     def _active_listings(
         self,
         exchange: str,
@@ -185,26 +87,6 @@ class FmpClient:
                 "isActivelyTrading": "true",
                 "limit": 10000,
             },
-        )
-
-    def historical_eod(
-        self,
-        symbol: str,
-        *,
-        adjusted: bool,
-        start_date: str,
-        end_date: str,
-    ) -> list[dict[str, object]]:
-        endpoint = (
-            "historical-price-eod/dividend-adjusted"
-            if adjusted
-            else "historical-price-eod/non-split-adjusted"
-        )
-        return self._historical_eod_endpoint(
-            endpoint,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
         )
 
     def historical_fx(

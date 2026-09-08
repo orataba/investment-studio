@@ -40,9 +40,11 @@ expected_services = {
     "home-api",
     "watchlist-api",
     "portfolio-api",
+    "briefing-api",
     "home-web",
     "watchlist-web",
     "portfolio-web",
+    "briefing-web",
     "market-data-refresh",
     "cn-market-data-refresh",
     "hk-market-data-refresh",
@@ -63,7 +65,9 @@ assert api["RunAtLoad"] is True
 assert api["Umask"] == 0o077
 assert api["ProgramArguments"][2] == project_root
 assert api["ProgramArguments"][5] == env_root
-assert "EnvironmentVariables" not in api
+assert api["EnvironmentVariables"] == {
+    "INVESTMENT_STUDIO_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test"
+}
 with (plist_root / "test.investment-studio.watchlist-api.plist").open("rb") as source:
     watchlist_api = plistlib.load(source)
 assert watchlist_api["EnvironmentVariables"] == {

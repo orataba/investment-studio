@@ -112,7 +112,12 @@ export type PortfolioWorkspaceSummary = {
   sections: WorkspaceSection[]
 }
 
+export type PortfolioRole = 'manager' | 'editor' | 'viewer'
+export type PortfolioAccess = { portfolio_id: string; team_id: string; role: PortfolioRole; can_read: boolean; can_edit: boolean; can_manage: boolean; local_unrestricted?: boolean }
+export type PortfolioMember = { user_id: string; display_name: string; role: PortfolioRole; granted_by: string; granted_at: string }
+
 export type PortfolioEntryRecord = {
+  access?: PortfolioAccess
   portfolio_id: string
   portfolio_name: string
   base_currency: string
@@ -544,6 +549,7 @@ export type PortfolioPeriodCalculationGroupMetrics = {
   instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
+  linked_period_contribution: number | null
   risk_calculation_frequency: PortfolioCalculationFrequency
   risk_return_observation_count: number
   risk_annualization_periods_per_year: number | null
@@ -593,12 +599,10 @@ export type PortfolioPeriodCalculationGroupsSummary = {
   total_residual_delta: number | null
   total_pnl: number | null
   total_period_contribution: number | null
+  total_linked_period_contribution: number | null
   contribution_residual: number | null
   risk_calculation_frequency: PortfolioCalculationFrequency
   risk_frequency_status_label: string | null
-  risk_basis_coverage_state: PortfolioPerformanceCoverageState
-  risk_basis_requested_instrument_count: number
-  risk_basis_resolved_instrument_count: number
   risk_return_observation_count: number
   risk_annualization_periods_per_year: number | null
   annualized_volatility: number | null
@@ -2219,11 +2223,32 @@ export type PortfolioAssetDelivery = {
   fair_value: string | number
   currency: string
   fx_rate_to_contract: string | number
+  delivery_date?: string | null
+  settlement_cash_account_id?: string | null
+  fees?: string | number
+  taxes?: string | number
+  fee_category?: PortfolioFeeCategory
+  fee_settlement_date?: string | null
+  quantity_fx_rate?: string | number | null
+  fractional_quantity?: string | number | null
+  fractional_reference_price?: string | number | null
+}
+
+export type PortfolioSettlementCashflow = {
+  kind: 'coupon' | 'fee' | 'tax'
+  cash_account_id: string
+  currency: string
+  amount: string | number
+  recognition_date?: string | null
+  settlement_date?: string | null
+  fee_category?: PortfolioFeeCategory
+  note?: string | null
 }
 
 export type PortfolioTransactionRecord = {
   lot_selections?: { opening_transaction_id: string; quantity: number | string }[]
   asset_deliveries?: PortfolioAssetDelivery[]
+  settlement_cashflows?: PortfolioSettlementCashflow[]
   transaction_id: string
   transaction_sequence: number
   portfolio_id: string
@@ -2668,6 +2693,7 @@ export type PortfolioTransactionCreatePayload = {
   option_delivery?: { stock_account_id: string; settlement_cash_account_id: string; fees?: number | string; fee_category?: PortfolioFeeCategory; taxes?: number | string; allow_stock_short?: boolean; stock_record_reference?: string | null }
   lot_selections?: { opening_transaction_id: string; quantity: number | string }[]
   asset_deliveries?: PortfolioAssetDelivery[]
+  settlement_cashflows?: PortfolioSettlementCashflow[]
   transaction_type: string
   lifecycle_event_type?: string | null
   trade_date: string
@@ -2836,6 +2862,7 @@ export type PortfolioTransactionImportDerivativeContract =
 
 export type PortfolioTransactionImportCommand = {
   asset_deliveries?: PortfolioAssetDelivery[]
+  settlement_cashflows?: PortfolioSettlementCashflow[]
   option_delivery?: PortfolioTransactionCreatePayload['option_delivery']
   lot_selections?: PortfolioTransactionCreatePayload['lot_selections']
   record_reference?: string | null
@@ -3070,7 +3097,7 @@ function fetchJson<T>(
   cacheInvalidation: 'all' | 'resource' = 'all',
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
-  const cacheKey = method === 'GET' ? `${baseUrl}${path}` : null
+  const cacheKey = method === 'GET' && !path.endsWith('/access') && !path.endsWith('/session') && !path.endsWith('/access-recovery') ? `${baseUrl}${path}` : null
   const now = Date.now()
 
   if (cacheKey) {
@@ -3096,6 +3123,7 @@ function fetchJson<T>(
         controller?.signal.throwIfAborted()
         const response = await fetch(`${baseUrl}${path}`, {
           ...init,
+          credentials: 'include',
           ...(controller ? { signal: controller.signal } : {}),
           headers: {
             ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
@@ -3106,6 +3134,10 @@ function fetchJson<T>(
           return (await response.json()) as T
         }
 
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+          clearPortfolioApiCache()
+          if (response.status === 401 && !path.endsWith('/session')) window.dispatchEvent(new Event('studio-auth-changed'))
+        }
         const body = await response.text()
         let detail: string | { code?: string; message?: string } | undefined
         try {
@@ -3162,6 +3194,8 @@ function fetchJson<T>(
     )
     return request
   }
+
+  if (method === 'GET') return request
 
   return request.then((value) => {
     if (cacheInvalidation === 'resource') {
@@ -4177,3 +4211,19 @@ export function getPortfolioOptionObligations(
 export function requestInstrumentRisk<T>(path: string, init?: RequestInit) {
   return fetchJson<T>(API_BASE_URL, `/api/instrument-risk${path.slice('/risk'.length)}`, init)
 }
+
+export function getPortfolioFcnLifecycles(portfolioId: string, positionReferenceId: string, asOfDate: string) {
+  return fetchJson<import('./fcnLifecycleApi').FcnLifecyclesResponse>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionReferenceId)}/fcn-lifecycles${buildQuery({ as_of_date: asOfDate })}`)
+}
+
+export function getPortfolioAccess(portfolioId: string) { return fetchJson<PortfolioAccess>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/access`) }
+export function getPortfolioMembers(portfolioId: string) { return fetchJson<{ members: PortfolioMember[] }>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members`) }
+export function getPortfolioMemberCandidates(portfolioId: string) { return fetchJson<{ members: Array<{ user_id: string; display_name: string }> }>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/member-candidates`) }
+export function setPortfolioMember(portfolioId: string, userId: string, role: PortfolioRole) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify({ role }) }) }
+export function removePortfolioMember(portfolioId: string, userId: string) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members/${encodeURIComponent(userId)}`, { method: 'DELETE' }) }
+
+export type PortfolioSession = { user_id: string; display_name: string; session_id: string; can_create: boolean; can_write_team_research: boolean; is_team_owner: boolean; local_unrestricted?: boolean }
+export function getPortfolioSession() { return fetchJson<PortfolioSession>(API_BASE_URL, '/api/portfolios/session') }
+
+export function getPortfolioAccessRecovery() { return fetchJson<{ portfolios: Array<{ portfolio_id: string; portfolio_name: string; has_active_manager: boolean }>; members: Array<{ user_id: string; display_name: string }> }>(API_BASE_URL, '/api/portfolios/access-recovery') }
+export function recoverPortfolioAccess(portfolioId: string, userId: string, reason: string) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/recover-access`, { method: 'POST', body: JSON.stringify({ user_id: userId, reason }) }) }

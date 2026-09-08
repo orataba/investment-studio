@@ -9,6 +9,9 @@ from watchlist_app.db.models.common import TimestampMixin
 class ResearchTopic(TimestampMixin, Base):
     __tablename__ = "research_topic"
     topic_id: Mapped[str] = mapped_column(primary_key=True)
+    team_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", server_default="default")
+    created_by_user_id: Mapped[str | None] = mapped_column(Text, index=True)
+    visibility: Mapped[str] = mapped_column(Text, nullable=False, default="private", server_default="private")
     title: Mapped[str]
     question: Mapped[str] = mapped_column(Text, default="")
     instrument_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -21,6 +24,9 @@ class ResearchEntry(TimestampMixin, Base):
     __tablename__ = "research_entry"
     entry_id: Mapped[str] = mapped_column(primary_key=True)
     topic_id: Mapped[str] = mapped_column(ForeignKey("research_topic.topic_id", ondelete="CASCADE"), index=True)
+    team_id: Mapped[str] = mapped_column(Text, nullable=False, default="default", server_default="default")
+    author_user_id: Mapped[str | None] = mapped_column(Text, index=True)
+    responsible_user_id: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str]
     title: Mapped[str]
     body: Mapped[str] = mapped_column(Text, default="")

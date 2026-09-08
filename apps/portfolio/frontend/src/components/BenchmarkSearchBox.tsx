@@ -105,7 +105,13 @@ export default function BenchmarkSearchBox({
   }, [deferredSearch, instruments])
 
   return (
-    <div className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined} ref={rootRef}>
+    <div
+      className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined}
+      ref={rootRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
+      }}
+    >
       <div className="overview-benchmark-search-box">
         <input
           ref={inputRef}
@@ -114,7 +120,6 @@ export default function BenchmarkSearchBox({
           placeholder={placeholder}
           value={inputValue}
           onFocus={() => setFocused(true)}
-          onBlur={() => window.setTimeout(() => setFocused(false), 140)}
           onChange={(event) => {
             const nextValue = event.target.value
             if (selectedInstrument && nextValue !== selectedLabel) {

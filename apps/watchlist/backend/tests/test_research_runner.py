@@ -8,6 +8,63 @@ from watchlist_app.services import research_runner as runner
 from watchlist_app.services import sector_research
 
 
+@pytest.mark.parametrize("surface", ["conversation", "sector", "risk"])
+def test_rejected_dispatch_does_not_leave_a_permanently_queued_run(client, monkeypatch, surface):
+    from studio_identity import IdentityError
+    from sqlalchemy import select
+    from watchlist_app.db.models import InstrumentDetail
+    from watchlist_app.api.routes import sector_research as sector_routes, risk_officer as risk_routes
+    with get_session_factory()() as session:
+        session.add(InstrumentDetail(instrument_id="dispatch-asset", instrument_type="etf",
+            detail_view_type="etf", instrument_name="Dispatch Asset", metadata_json={}))
+        session.commit()
+    for module in (runner, sector_routes, risk_routes):
+        monkeypatch.setattr(module, "harness_available", lambda: True)
+    def reject(*args, **kwargs):
+        raise IdentityError(503, "账号服务暂不可用")
+    monkeypatch.setattr(runner, "issue_delegation", reject)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("A rejected dispatch must not start a model"))
+    if surface == "conversation":
+        topic = client.post("/api/research/topics", json={"title": "讨论", "instrument_ids": ["dispatch-asset"]}).json()
+        path, body = f"/api/research/topics/{topic['topic_id']}/analysis", {"question": "当前风险如何？"}
+    elif surface == "sector":
+        path, body = "/api/sector-research/runs", {"instrument_ids": ["dispatch-asset"]}
+    else:
+        path, body = "/api/risk/review/runs", {"instrument_id": "dispatch-asset"}
+    for _ in range(2):
+        response = client.post(path, json=body)
+        assert response.status_code == 503, response.text
+    with get_session_factory()() as session:
+        runs = list(session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis")))
+        assert len(runs) == 2
+        assert all(run.status == "failed" and run.completed_at is not None for run in runs)
+        assert all("授权" in run.body for run in runs)
+
+
+@pytest.mark.parametrize("failure_point", ["service_identity", "delegation"])
+def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch, failure_point):
+    from studio_identity import IdentityError
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="dispatch-topic", title="研究"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="dispatch-run", topic_id="dispatch-topic", kind="analysis",
+                                 title="研究", status="queued", context_json={"sector_run": True}))
+        session.commit()
+    def reject(*args, **kwargs):
+        raise IdentityError(503, "后台研究授权暂不可用")
+    monkeypatch.setattr(runner, "service_principal" if failure_point == "service_identity" else "issue_delegation", reject)
+    runner.run_analysis("dispatch-run")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "dispatch-run")
+        assert run.status == "failed" and run.completed_at is not None
+
+
+def test_every_harness_explicitly_delegates_the_single_run_credential():
+    for name in ("research", "sector", "risk"):
+        patch = (runner.ROOT / f"apps/watchlist/backend/config/{name}_harness.patch.yml").read_text()
+        assert "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN" in patch
+
+
 def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monkeypatch, tmp_path):
     env_file = tmp_path / "research.env"
     env_file.write_text("DEEPSEEK_API_KEY=fixture\n")
@@ -93,3 +150,73 @@ def test_insufficient_balance_is_explained_without_retaining_provider_stderr(cli
         assert "余额不足" in run.body
         assert "事实核证失败" not in run.body
         assert "private-provider-data" not in json.dumps(run.context_json) + run.body
+
+
+@pytest.mark.parametrize("publication_state", ["published", "failed", "conflict"])
+def test_chat_runner_keeps_answer_and_shared_publication_outcome_independent(client, monkeypatch, publication_state):
+    answer = "中期判断保持，当前风险有所增加。"
+    payload = {"reviews": [{"instrument_id": "stock", "change_kind": "investment", "research": {
+        "investment_view": {"risk": "波动上升"}}}]}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="shared-chat", title="研究讨论", instrument_ids=["stock"]))
+        session.flush()
+        session.add(ResearchEntry(entry_id="chat-run", topic_id="shared-chat", kind="analysis", title="当前怎么看",
+            status="queued", context_json={"research_run": True, "instrument_ids": ["stock"], "retained": "original-context"}))
+        session.commit()
+    calls = []
+    monkeypatch.setattr(sector_research, "prepare_run", lambda run_id: calls.append(("prepare", run_id)))
+
+    class CompletedProcess:
+        returncode = 0
+        def communicate(self, timeout):
+            assert timeout == 1800
+            return json.dumps({"answer": answer, "research_result": payload}), ""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    def publish(session, run, raw):
+        assert calls == [("prepare", "chat-run")]
+        assert json.loads(raw) == payload
+        run.context_json = {**run.context_json, "reviews": {"stock": {"status": "completed", "research": payload["reviews"][0]["research"]}}}
+        run.body = "共同研究发布的摘要，不应替代对话回答"
+        session.flush()
+        if publication_state != "published":
+            error_type = sector_research.ResearchVersionConflict if publication_state == "conflict" else ValueError
+            raise error_type("研究版本已更新" if publication_state == "conflict" else "本轮来源引用不完整")
+        run.status = "completed"
+    monkeypatch.setattr(sector_research, "apply_result", publish)
+    runner.run_analysis("chat-run")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "chat-run")
+        assert run.status == "draft" and run.body == answer
+        assert run.completed_at is not None
+        assert run.context_json["research_publication"]["status"] == publication_state
+        assert run.context_json["retained"] == "original-context"
+        if publication_state == "published":
+            assert run.context_json["reviews"]["stock"]["status"] == "completed"
+            assert run.context_json["research_publication"]["instrument_ids"] == ["stock"]
+        else:
+            assert "reviews" not in run.context_json  # Failed publication rolls back partial research writes.
+
+
+def test_chat_runner_retains_answer_when_independent_reviewer_declines_publication(client, monkeypatch):
+    answer = "先保留这个工作假设，尚不能把它当作已核实结论。"
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="review-failed-chat", title="研究讨论"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="review-failed-chat", topic_id="review-failed-chat", kind="analysis", title="讨论",
+            status="queued", context_json={"research_run": True}))
+        session.commit()
+    monkeypatch.setattr(sector_research, "prepare_run", lambda run_id: None)
+    monkeypatch.setattr(sector_research, "apply_result", lambda *args: pytest.fail("A rejected review must not publish"))
+    class CompletedProcess:
+        returncode = 0
+        def communicate(self, timeout):
+            return json.dumps({"answer": answer, "research_result": None,
+                "research_publication": {"status": "failed", "message": "核证未完成，研究记录未更新。"}}), ""
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    runner.run_analysis("review-failed-chat")
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "review-failed-chat")
+        assert run.status == "draft" and run.body == answer
+        assert run.context_json["research_publication"]["status"] == "failed"
+        assert "reviews" not in run.context_json

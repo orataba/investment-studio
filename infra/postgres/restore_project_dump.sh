@@ -35,6 +35,12 @@ SYSTEMD_UNITS=(
   "$SYSTEMD_UNIT_PREFIX-home-web.service"
   "$SYSTEMD_UNIT_PREFIX-watchlist-web.service"
   "$SYSTEMD_UNIT_PREFIX-portfolio-web.service"
+  "$SYSTEMD_UNIT_PREFIX-briefing-api.service"
+  "$SYSTEMD_UNIT_PREFIX-briefing-web.service"
+  "$SYSTEMD_UNIT_PREFIX-briefing-daily.timer"
+  "$SYSTEMD_UNIT_PREFIX-briefing-daily.service"
+  "$SYSTEMD_UNIT_PREFIX-briefing-weekly.timer"
+  "$SYSTEMD_UNIT_PREFIX-briefing-weekly.service"
   "$SYSTEMD_UNIT_PREFIX-market-data-refresh.timer"
   "$SYSTEMD_UNIT_PREFIX-market-data-refresh.service"
   "$SYSTEMD_UNIT_PREFIX-cn-market-data-refresh.timer"
@@ -48,6 +54,9 @@ SYSTEMD_UNITS=(
   "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.timer"
   "$SYSTEMD_UNIT_PREFIX-us-reference-data-refresh.service"
 )
+for market_action in daily weekly publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
+  SYSTEMD_UNITS+=("$SYSTEMD_UNIT_PREFIX-market-$market_action.timer" "$SYSTEMD_UNIT_PREFIX-market-$market_action.service")
+done
 
 PSQL_BIN=""
 PG_RESTORE_BIN=""
@@ -152,32 +161,15 @@ start_managed_services() {
       [[ -f "$SERVICE_STATE_FILE" ]] || return 0
       while IFS= read -r unit || [[ -n "$unit" ]]; do
         [[ -n "$unit" ]] || continue
-        case "$unit" in
-          "$SYSTEMD_UNIT_PREFIX"-home-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-watchlist-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-portfolio-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-home-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-watchlist-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-portfolio-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.service|\
-          "$SYSTEMD_UNIT_PREFIX"-cn-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-cn-market-data-refresh.service|\
-          "$SYSTEMD_UNIT_PREFIX"-hk-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-hk-market-data-refresh.service|\
-          "$SYSTEMD_UNIT_PREFIX"-us-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-us-market-data-refresh.service|\
-          "$SYSTEMD_UNIT_PREFIX"-cn-hk-reference-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-cn-hk-reference-data-refresh.service|\
-          "$SYSTEMD_UNIT_PREFIX"-us-reference-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-us-reference-data-refresh.service)
-            active_units+=("$unit")
-            ;;
-          *)
-            echo "Invalid systemd unit in restore state: $unit" >&2
-            return 1
-            ;;
-        esac
+        local known=false candidate
+        for candidate in "${SYSTEMD_UNITS[@]}"; do
+          if [[ "$unit" == "$candidate" ]]; then known=true; break; fi
+        done
+        if [[ "$known" != true ]]; then
+          echo "Invalid systemd unit in restore state: $unit" >&2
+          return 1
+        fi
+        active_units+=("$unit")
       done < "$SERVICE_STATE_FILE"
       if [[ ${#active_units[@]} -gt 0 ]]; then
         systemctl --user start "${active_units[@]}"
@@ -194,8 +186,8 @@ stop_all_managed_services() {
       ;;
     launchd)
       for service in \
-        home-api watchlist-api portfolio-api \
-        home-web watchlist-web portfolio-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh; do
+        home-api watchlist-api portfolio-api briefing-api \
+        home-web watchlist-web portfolio-web briefing-web market-data-refresh cn-market-data-refresh hk-market-data-refresh us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
         launchctl bootout \
           "gui/$UID/${LABEL_PREFIX:-com.orataba.investment-studio}.$service" \
           >/dev/null 2>&1 || true
@@ -334,7 +326,7 @@ if ! is_local_database_host; then
   expected_confirmation="$DATABASE_NAME@$DATABASE_HOST:$DATABASE_PORT"
 fi
 if [[ "${CONFIRM_RESTORE:-}" != "$expected_confirmation" ]]; then
-  echo "Restore replaces instrument_registry, data_ingestion (formerly platform), portfolio, and watchlist." >&2
+  echo "Restore replaces the identity, instrument, ingestion, portfolio, watchlist, market_data, market_text and briefing schemas." >&2
   echo "Verified target: $DATABASE_USER@$DATABASE_HOST:$DATABASE_PORT/$DATABASE_NAME" >&2
   echo "Re-run with CONFIRM_RESTORE=$expected_confirmation after confirming the target." >&2
   exit 64
@@ -372,6 +364,11 @@ if [[ -z "$incoming_ingestion_schema" ]]; then
   exit 1
 fi
 incoming_schemas+=("$incoming_ingestion_schema")
+for schema in identity market_data market_text briefing; do
+  if grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$DUMP_LIST_PATH"; then
+    incoming_schemas+=("$schema")
+  fi
+done
 for schema in "${incoming_schemas[@]}"; do
   if ! grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$DUMP_LIST_PATH"; then
     echo "Incoming dump is missing required schema: $schema" >&2
@@ -449,6 +446,10 @@ done
 destructive_started="true"
 (
   printf '%s\n' '
+    DROP SCHEMA IF EXISTS identity CASCADE;
+    DROP SCHEMA IF EXISTS briefing CASCADE;
+    DROP SCHEMA IF EXISTS market_text CASCADE;
+    DROP SCHEMA IF EXISTS market_data CASCADE;
     DROP SCHEMA IF EXISTS watchlist CASCADE;
     DROP SCHEMA IF EXISTS portfolio CASCADE;
     DROP SCHEMA IF EXISTS data_ingestion CASCADE;
@@ -469,6 +470,7 @@ destructive_started="true"
     --set ON_ERROR_STOP=1 \
     --single-transaction
 
+export INVESTMENT_STUDIO_HOME_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data
@@ -479,6 +481,9 @@ export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
 export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export INVESTMENT_STUDIO_MARKET_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_BRIEFING_DATABASE_URL="$DATABASE_URL"
+export INVESTMENT_STUDIO_BRIEFING_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA=watchlist
@@ -496,11 +501,11 @@ schema_count="$(
     --command "
       SELECT count(*)
       FROM pg_namespace
-      WHERE nspname IN ('instrument_data', 'data_ingestion', 'portfolio', 'watchlist');
+      WHERE nspname IN ('identity', 'instrument_data', 'data_ingestion', 'portfolio', 'watchlist', 'market_data', 'market_text', 'briefing');
     "
 )"
-if [[ "$schema_count" != "4" ]]; then
-  echo "Post-restore validation failed: expected 4 project schemas, found $schema_count." >&2
+if [[ "$schema_count" != "8" ]]; then
+  echo "Post-restore validation failed: expected 8 project schemas, found $schema_count." >&2
   exit 1
 fi
 

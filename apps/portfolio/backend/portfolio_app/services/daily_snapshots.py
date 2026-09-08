@@ -68,6 +68,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-strict-session-valuation-reinvestment-fifo-option-risk-v1"
     "-initial-purchase-transaction-valuation-v2"
     "-period-calculation-boundary-state-v2-fifo-acquisition-order"
+    "-fcn-settlement-cashflow-recognition-v1"
 )
 
 

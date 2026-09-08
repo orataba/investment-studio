@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { LanguageSelector } from '../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
 import { appPath } from './appPath'
 
@@ -13,17 +13,18 @@ export type StudioApp = {
 }
 
 export function StudioLinks({ apps }: { apps: StudioApp[] }) {
+  const { t } = useLanguage()
   return (
-    <nav className="home-primary-links" aria-label="Investment workspaces">
+    <nav className="home-primary-links" aria-label={t('Investment workspaces')}>
       {apps.map((app, index) => (
-        <a data-workspace-link href={['watchlist', 'portfolio', 'regime'].includes(app.app_id)
-          ? resolveWorkspaceUrl(app.url, app.app_id as 'watchlist' | 'portfolio' | 'regime')
+        <a data-workspace-link href={['watchlist', 'portfolio', 'regime', 'briefing'].includes(app.app_id)
+          ? resolveWorkspaceUrl(app.url, app.app_id as 'watchlist' | 'portfolio' | 'regime' | 'briefing')
           : app.url} key={app.app_id}>
           <span className="home-link-number">{String(index + 1).padStart(2, '0')}</span>
           <span className="home-link-copy">
-            <small>{app.eyebrow}</small>
-            <strong>{app.name}</strong>
-            <span>{app.description}</span>
+            <small>{t(app.eyebrow)}</small>
+            <strong>{t(app.name)}</strong>
+            <span>{t(app.description)}</span>
           </span>
           <span className="home-link-arrow" aria-hidden="true">↗</span>
         </a>
@@ -35,9 +36,13 @@ export function StudioLinks({ apps }: { apps: StudioApp[] }) {
 export default function StudioHome() {
   const [apps, setApps] = useState<StudioApp[] | null>(null)
   const [error, setError] = useState('')
+  const [account, setAccount] = useState<{ display_name: string, local_unrestricted?: boolean } | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
+    fetch('/api/auth/session', { signal: controller.signal, credentials: 'same-origin' })
+      .then(response => response.ok ? response.json() : null)
+      .then(setAccount).catch(() => undefined)
     fetch('/api/apps', { signal: controller.signal })
       .then(async (response): Promise<{ apps: StudioApp[] }> => {
         if (!response.ok) throw new Error('Unable to load workspaces. Please refresh the page.')
@@ -64,7 +69,10 @@ export default function StudioHome() {
         <a className="home-brand" href={appPath('/')}><strong>Investment Studio</strong></a>
         <div className="home-actions">
           <LanguageSelector />
-          <button className="home-logout" type="button" onClick={logout}>Sign out</button>
+          {account ? <>
+            <a href={appPath('/account')}>{account.display_name} · 账号与团队</a>
+            {account.local_unrestricted ? <span>本机全权限</span> : <button className="home-logout" type="button" onClick={logout}>Sign out</button>}
+          </> : <a href={appPath('/login')}>登录</a>}
         </div>
       </header>
       <section className="home-intro">

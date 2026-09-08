@@ -1,3 +1,4 @@
+import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
@@ -5,6 +6,7 @@ import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/Benc
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import {
   beginRequest,
   invalidateRequests,
@@ -974,6 +976,7 @@ function ActualBacktestMetricTable({
 }
 
 export default function ResearchPage() {
+  const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const [workbench, setWorkbench] = useState<PortfolioResearchWorkbenchResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -981,7 +984,7 @@ export default function ResearchPage() {
   const [runDetailError, setRunDetailError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [actionPending, setActionPending] = useState<'run' | null>(null)
   const [frozenMenuOpen, setFrozenMenuOpen] = useState(false)
   const [boundsMenuOpen, setBoundsMenuOpen] = useState(false)
@@ -1145,14 +1148,6 @@ export default function ResearchPage() {
     window.addEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
     return () => window.removeEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
   }, [portfolioId])
-
-  useEffect(() => {
-    if (!notice) {
-      return undefined
-    }
-    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
-    return () => window.clearTimeout(timeoutId)
-  }, [notice])
 
     useEffect(() => {
       function handleClick(event: MouseEvent) {
@@ -1682,7 +1677,7 @@ export default function ResearchPage() {
       if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
         return
       }
-      setNotice('Research run completed.')
+      setNotice({ id: Date.now(), message: 'Research run completed.', tone: 'success' })
       await reloadWorkbench(targetPortfolioId)
     } catch (error) {
       if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
@@ -1774,10 +1769,9 @@ export default function ResearchPage() {
       activeSection="Research"
       busy={loading || runDetailLoading}
     >
-      {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
+      <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
-      <QualityWarningsNotice warnings={workbench?.current_context.quality_warnings} />
       {loading && !workbench ? <CalculationStatus /> : null}
 
       {!loading && !workbench && !workspaceError ? <div className="empty-state">No data.</div> : null}
@@ -1789,6 +1783,7 @@ export default function ResearchPage() {
               <div className="research-command-copy">
                 <div className="panel-title">Research Configuration</div>
                 <div className="research-command-meta">
+                  <QualityWarningsNotice warnings={workbench.current_context.quality_warnings} />
                   <span>{planningTaxonomyName}</span>
                   <span>{asOfMode === 'dynamic' ? `Latest · ${workbench.as_of_date}` : `Pinned · ${asOfDate || '-'}`}</span>
                   <span>{capitalModeLabel}</span>
@@ -1799,7 +1794,7 @@ export default function ResearchPage() {
                 type="button"
                 className="toolbar-link button-primary research-run-button"
                 onClick={() => void handleRunResearch()}
-                disabled={actionPending === 'run' || scopeActionBlocked}
+                disabled={!canEditPortfolio || actionPending === 'run' || scopeActionBlocked}
               >
                 {actionPending === 'run' ? 'Running...' : 'Run Research'}
               </button>
@@ -1814,7 +1809,7 @@ export default function ResearchPage() {
                 aria-busy={actionPending === 'run'}
                 onSubmit={(event) => event.preventDefault()}
               >
-                <fieldset className="research-settings-fieldset" disabled={actionPending === 'run'}>
+                <fieldset className="research-settings-fieldset" disabled={!canEditPortfolio || actionPending === 'run'}>
                   <div className="research-settings-bar">
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>

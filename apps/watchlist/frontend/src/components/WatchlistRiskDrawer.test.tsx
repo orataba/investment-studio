@@ -10,12 +10,15 @@ import {
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
 import InstrumentRiskDrawer from './InstrumentRiskDrawer'
 const request = vi.hoisted(() => vi.fn())
+const permission = vi.hoisted(() => ({ canWrite: true }))
+vi.mock('./AccountBoundary', () => ({ useCanWriteTeam: () => permission.canWrite }))
 vi.mock('../lib/api', () => ({ fetchJson: request }))
 vi.mock('./SectorResearchPanel', () => ({ default: () => null }))
-vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery }: { scopeQuery: string }) => <span data-testid="officer-scope">{scopeQuery}</span> }))
+vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery, canRun }: { scopeQuery: string; canRun: boolean }) => <span data-testid="officer-scope" data-can-run={String(canRun)}>{scopeQuery}</span> }))
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  permission.canWrite = true
 })
 const caseFor = (id: string, severity = 'attention') => ({
   case_id: id,
@@ -32,6 +35,18 @@ const caseFor = (id: string, severity = 'attention') => ({
   follow_up_date: null,
   evidence_json: {},
   history_json: [],
+})
+it('lets team readers inspect evidence and ask privately without shared risk mutations', async () => {
+  permission.canWrite = false
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [caseFor('a')] })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByText('a 风险事项')
+  expect(screen.getByRole('button', { name: '问助手' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '补充记录' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '保存跟进' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '保存提醒设置' })).toBeNull()
+  expect(screen.getByTestId('officer-scope').getAttribute('data-can-run')).toBe('false')
+  expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })
 it('scopes instrument detail risk to the instrument even when opened from a list', async () => {
   request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [caseFor('a')] })

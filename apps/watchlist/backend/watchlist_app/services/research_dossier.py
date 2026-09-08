@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import re
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from watchlist_app.db.models import InstrumentDetail, InstrumentManualProfile
@@ -152,19 +153,55 @@ def read_mandate(session: Session, instrument_id: str, *, frameworks: list[dict]
     return serialize_payload({**payload.model_dump(), "instrument_id": instrument_id,
         "role": "research_method", "registration": registration,
         "entry_id": entry.entry_id if entry else None, "updated_at": entry.updated_at if entry else None,
+        "created_at": entry.created_at if entry else None,
+        "version_id": f"{entry.entry_id}:v{entry.context_json.get('revision', 1)}" if entry else None,
+        "author": deepcopy(entry.context_json.get("author")) if entry else {"origin": "initial"},
+        "user_focus": deepcopy(entry.context_json.get("user_focus", [])) if entry else [],
+        "versions": deepcopy(entry.context_json.get("versions", [])) if entry else [],
         "usage_note": "专属方法与工作假设不是独立事实依据；背景中的事实仍须引用原文。登记资料和来源计划不代表已读或已核实。"})
 
 
-def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateInput, *, commit: bool = True) -> dict:
+def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateInput, *, commit: bool = True,
+                 origin: Literal["user", "research", "initial"] = "user") -> dict:
+    from watchlist_app.services.research_identity import research_identity
+    research_actor = research_identity()
     topic = dossier_topic(session, instrument_id)
     entry = _mandate_entry(session, instrument_id)
-    if entry is None:
+    if entry is not None:
+        # dossier_topic holds the instrument lock shared with research publication.
+        # Refresh an identity-map entry read before waiting for that lock.
+        session.refresh(entry)
+    value = payload.model_dump(mode="json")
+    user_focus = deepcopy(value["focus"] if origin == "user" else (entry.context_json.get("user_focus", []) if entry else []))
+    if origin == "user":
+        # The editor's focus field is the user's instruction; the researcher owns
+        # the evolving focus in the mandate document.
+        value["focus"] = deepcopy(entry.context_json["mandate"].get("focus", []) if entry else read_mandate(session, instrument_id)["focus"])
+    versions = []
+    revision = 1
+    if entry is not None:
+        previous = ResearchMandateInput.model_validate(entry.context_json["mandate"]).model_dump(mode="json")
+        if previous == value and user_focus == entry.context_json.get("user_focus", []):
+            return read_mandate(session, instrument_id)
+        revision = entry.context_json.get("revision", 1) + 1
+        versions = [*deepcopy(entry.context_json.get("versions", [])), serialize_payload({
+            **previous, "version_id": f"{entry.entry_id}:v{revision - 1}",
+            "author": deepcopy(entry.context_json.get("author")),
+            "user_focus": deepcopy(entry.context_json.get("user_focus", [])),
+            "created_at": entry.created_at, "updated_at": entry.updated_at})]
+    else:
         entry = ResearchEntry(entry_id=f"dossier-mandate:{instrument_id}", topic_id=topic.topic_id,
                               kind="note", title=payload.title, status="recorded")
         session.add(entry)
     entry.title, entry.body = payload.title, payload.background
+    entry.team_id = research_actor["team_id"]
+    entry.author_user_id = research_actor["user_id"] if origin == "user" else None
+    author = {"origin": origin, "user_id": entry.author_user_id,
+              "display_name": research_actor["display_name"] if origin == "user" else ("研究员" if origin == "research" else "系统初始化"),
+              "requested_by_user_id": research_actor["user_id"], "service_id": research_actor.get("service_id")}
     entry.context_json = {"role": "research_mandate", "instrument_id": instrument_id,
-                          "mandate": payload.model_dump(mode="json")}
+                          "mandate": value, "revision": revision, "versions": versions,
+                          "author": author, "user_focus": user_focus}
     entry.updated_at = topic.updated_at = datetime.now(UTC)
     session.flush()
     if commit:
@@ -178,7 +215,7 @@ def ensure_mandate(session: Session, instrument_id: str) -> dict:
     if current["entry_id"] is not None:
         return current
     payload = ResearchMandateInput.model_validate({key: current[key] for key in ResearchMandateInput.model_fields})
-    return save_mandate(session, instrument_id, payload, commit=False)
+    return save_mandate(session, instrument_id, payload, commit=False, origin="initial")
 
 
 def require_instrument(session: Session, instrument_id: str) -> InstrumentDetail:
@@ -192,12 +229,15 @@ def require_instrument(session: Session, instrument_id: str) -> InstrumentDetail
 
 def dossier_topic(session: Session, instrument_id: str) -> ResearchTopic:
     instrument = require_instrument(session, instrument_id)
+    # Serialize creation and revisions with automatic/interactive publication.
+    # The instrument exists even before the first dossier or mandate does.
+    session.refresh(instrument, with_for_update=True)
     topic_id = f"dossier:{instrument_id}"
     topic = session.get(ResearchTopic, topic_id)
     if topic is None:
         topic = ResearchTopic(topic_id=topic_id, title=f"{instrument.instrument_name} · 研究档案",
                               question="原始材料与资料沿革", instrument_ids=[instrument_id],
-                              portfolio_id=None, status="active", conclusion="")
+                              portfolio_id=None, status="active", conclusion="", visibility="team")
         session.add(topic)
         session.flush()
     elif topic.instrument_ids != [instrument_id] or topic.portfolio_id is not None:
@@ -219,8 +259,10 @@ def material_record(entry: ResearchEntry, instrument_id: str) -> dict:
 
 def add_material(session: Session, instrument_id: str, *, title: str, body: str, source: str,
                  published_at=None, effective_date=None) -> dict:
+    from studio_identity import current_principal
+    principal = current_principal()
     topic = dossier_topic(session, instrument_id)
-    record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic.topic_id, kind="evidence",
+    record = ResearchEntry(author_user_id=principal.user_id, team_id=principal.team_id, entry_id=uuid4().hex, topic_id=topic.topic_id, kind="evidence",
         title=title.strip(), body=body.strip(), source=source.strip(), status="recorded",
         context_json=serialize_payload({"published_at": published_at, "effective_date": effective_date,
                                        "extraction": "用户提供的材料正文", "extraction_status": "provided"}))
@@ -281,27 +323,109 @@ def _document_materials(session: Session, instrument_id: str) -> list[dict]:
     return result
 
 
-def _notebooks(session: Session, instrument_id: str, include_history: bool):
+def _research_records(session: Session, instrument_id: str):
+    from studio_identity import current_principal
+    from watchlist_app.services.research_access import topic_portfolio_ids
+    principal = current_principal()
+    team_id = principal.team_id
     records = session.scalars(select(ResearchEntry).where(
-        ResearchEntry.kind == "analysis", ResearchEntry.status == "completed",
-        (ResearchEntry.topic_id == "us-sector-daily-review") |
-        (ResearchEntry.topic_id == f"instrument-events:{instrument_id}")
-    ).order_by(ResearchEntry.created_at.desc()))
-    notebook, history = None, []
+        ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]), True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
+    ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
     for record in records:
         context = record.context_json or {}
+        topic = session.get(ResearchTopic, record.topic_id)
+        if not topic or (not principal.local_unrestricted and topic.team_id != team_id) or topic_portfolio_ids(session, topic):
+            continue
         review = context.get("reviews", {}).get(instrument_id, {})
         research = review.get("research")
-        if (not context.get("sector_run") or instrument_id not in context.get("instrument_ids", [])
+        if (not (context.get("sector_run") or context.get("research_run"))
+                or instrument_id not in context.get("instrument_ids", [])
+                or (not context.get("research_run") and (record.status != "completed" or record.topic_id not in {
+                    "us-sector-daily-review", f"instrument-events:{instrument_id}"}))
                 or review.get("status") not in {"completed", "limited"} or not isinstance(research, dict) or not research):
             continue
-        stamp = {"run_id": record.entry_id, "checked_at": context.get("cutoff")}
+        yield record, research
+
+
+def _notebooks(session: Session, instrument_id: str, include_history: bool):
+    notebook, history = None, {}
+    for record, research in _research_records(session, instrument_id):
+        stamp = {"run_id": record.entry_id, "checked_at": record.context_json.get("cutoff"),
+                 "version_id": research.get("version_id", record.entry_id),
+                 "created_at": research.get("created_at") or record.completed_at or record.created_at,
+                 "updated_at": research.get("updated_at") or record.completed_at or record.created_at}
         if notebook is None:
             notebook = {**deepcopy(research), **stamp}
         if not include_history:
             break
-        history.append({**stamp, "important_changes": research.get("important_changes", [])})
-    return notebook, history
+        # Preserve the original saved snapshot of each actual revision; later quiet
+        # checks still supply the current notebook's checked_at above.
+        history[stamp["version_id"]] = {**stamp, "important_changes": research.get("important_changes", []),
+                                      "notebook": {**deepcopy(research), **stamp}}
+    return notebook, list(history.values())
+
+
+def read_dossier_version(session: Session, instrument_id: str, version_id: str, *, actor=None) -> dict:
+    """Read saved research and its own information set, never reconstruct a past forecast."""
+    from watchlist_app.services.research_notebook import notebook_source_ids
+    from watchlist_app.services.market_evidence import hydrate_source
+    require_instrument(session, instrument_id)
+    if version_id.startswith("pm:"):
+        from watchlist_app.services.research_views import note_version
+        from watchlist_app.api.routes.research import _serialize_note_revision
+        try:
+            _, note_id, revision = version_id.split(":")
+            record = note_version(session, instrument_id, note_id, int(revision), actor=actor)
+        except (TypeError, ValueError) as error:
+            raise LookupError("当前标的没有这个投资经理观点版本") from error
+        value = _serialize_note_revision(record)
+        return {"instrument_id": instrument_id, "version_id": version_id, "kind": "pm_view", "value": value,
+                "information_cutoff": (value.get("research_context") or {}).get("information_cutoff") or value["recorded_at"],
+                "recorded_at": value["recorded_at"], "sources": [],
+                "usage_note": "投资经理当时保存的观点及出处；结果与机制需分别验证，不能作为已经核实的事实。"}
+    # Read oldest first: a quiet later run may retain the same version and add newer sources.
+    records = list(_research_records(session, instrument_id))
+    for record, research in reversed(records):
+        candidates = [("notebook", {**research, "version_id": research.get("version_id", record.entry_id)})]
+        view = research.get("investment_view")
+        if view:
+            candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
+        for field in ("forecasts", "forecast_reviews", "lessons"):
+            for item in research.get(field, []):
+                candidates += [(field, version) for version in [*item.get("versions", []), item]]
+        for kind, value in candidates:
+            if value.get("version_id") != version_id:
+                continue
+            value = {key: deepcopy(item) for key, item in value.items() if key != "versions"}
+            refs = notebook_source_ids(value)
+            cutoff = record.context_json.get("cutoff")
+            sources = [hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None)
+                       for source in research.get("sources", []) if source.get("source_id") in refs]
+            return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": kind,
+                "value": value, "sources": sources, "information_cutoff": cutoff,
+                "usage_note": "这是当时保存的研究及其引用依据，不补入后来资料；预测与复盘均不是独立原始事实证据。"})
+    mandate = read_mandate(session, instrument_id)
+    for value in [*mandate.get("versions", []), mandate]:
+        if value.get("version_id") == version_id:
+            return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": "mandate",
+                "value": {key: deepcopy(item) for key, item in value.items() if key not in {"versions", "registration"}},
+                "sources": [], "information_cutoff": value.get("updated_at"),
+                "usage_note": "这是保存的研究方法与背景版本，登记资料没有按当前值回填；方法和AI判断不是原始证据。"})
+    raise LookupError("当前标的没有这个已保存的研究版本")
+
+
+def _review_cases(instrument_id: str, notebook: dict | None) -> list[dict]:
+    """Instrument-owned learning records remain analyst work, not original sources."""
+    notebook = notebook or {}
+    records = []
+    for field in ("forecast_reviews", "lessons"):
+        for item in notebook.get(field, []):
+            records.append({**deepcopy(item), "source_id": f"research-review:{instrument_id}:{field}:{item['key']}",
+                "case_id": item["key"], "case_title": item.get("lesson") or item.get("outcome"),
+                "instrument_id": instrument_id, "source_type": "research_review", "role": "historical_research",
+                "current_use": {"applicability": item.get("applicability", ""), "limitations": item.get("limitations", "")},
+                "reuse_limitations": ["这是已保存的研究复盘或经验，不是原始事实；按关联预测版本和原文检查，价格吻合不证明因果。"]})
+    return records
 
 
 def _frameworks(instrument: InstrumentDetail) -> list[dict]:
@@ -311,28 +435,44 @@ def _frameworks(instrument: InstrumentDetail) -> list[dict]:
             (not item.get("tickers") or instrument.instrument_id.upper() in item["tickers"])]
 
 
-def read_dossier(session: Session, instrument_id: str, include_history: bool = False) -> dict:
+def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None) -> dict:
     """Read materials, methods and completed notebooks without creating records."""
     from watchlist_app.services.research_notebook import retained_public_sources
+    from watchlist_app.services.research_themes import theme_index
+    from watchlist_app.services.research_identity import research_identity
+    from watchlist_app.api.routes.research import _serialize_note, research_repository
+    actor = actor or research_identity()
+    from studio_identity import current_principal
+    local_unrestricted = current_principal().local_unrestricted
     instrument = require_instrument(session, instrument_id)
     frameworks = _frameworks(instrument)
+    versions = research_repository.list_note_revisions(session, instrument_id)
+    pm_views = [{**_serialize_note(note), "versions": [
+        {"revision_number": v.revision_number, "version_id": f"pm:{v.note_id}:{v.revision_number}",
+         "recorded_at": v.recorded_at} for v in versions if v.note_id == note.note_id]}
+        for note in research_repository.list_notes(session, instrument_id)
+        if local_unrestricted or note.team_id == actor["team_id"]]
     entries = session.execute(select(ResearchEntry, ResearchTopic).join(ResearchTopic).where(
-        ResearchEntry.kind == "evidence", ResearchTopic.portfolio_id.is_(None)
+        ResearchEntry.kind == "evidence", ResearchTopic.portfolio_id.is_(None),
+        ResearchTopic.visibility == "team", True if local_unrestricted else ResearchTopic.team_id == actor["team_id"]
     ).order_by(ResearchEntry.created_at.desc()))
     materials = [material_record(entry, instrument_id) for entry, topic in entries
-                 if topic.instrument_ids == [instrument_id] and
-                 (topic.topic_id == f"dossier:{instrument_id}" or (entry.context_json or {}).get("file_name"))]
+                 if topic.instrument_ids == [instrument_id]]
     materials.extend(_document_materials(session, instrument_id))
     cases, history_limitations = [], []
-    if instrument_id == "xlk" and instrument.instrument_type == "etf":
-        atlas = json.loads((DATA_ROOT / "historical_cases" / "xlk.json").read_text(encoding="utf-8"))
+    atlas_path = DATA_ROOT / "historical_cases" / f"{instrument_id}.json"
+    if Path(instrument_id).name == instrument_id and atlas_path.is_file():
+        atlas = json.loads(atlas_path.read_text(encoding="utf-8"))
         history_limitations = atlas["reuse_limitations"]
         cases = [{**case, "instrument_id": instrument_id, "atlas_id": atlas["metadata"]["atlas_id"],
                   "reuse_limitations": history_limitations} for case in atlas["cases"]]
     notebook, notebook_history = _notebooks(session, instrument_id, include_history)
+    cases.extend(_review_cases(instrument_id, notebook))
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
         "instrument_type": instrument.instrument_type, "frameworks": frameworks,
         "mandate": read_mandate(session, instrument_id, frameworks=frameworks), "materials": materials,
         "prior_sources": retained_public_sources(session, instrument_id),
         "historical_cases": cases, "historical_case_limitations": history_limitations,
-        "notebook": notebook, "notebook_history": notebook_history})
+        "notebook": notebook, "notebook_history": notebook_history,
+        "themes": theme_index(session, instrument_id, actor=actor), "pm_views": pm_views,
+        "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

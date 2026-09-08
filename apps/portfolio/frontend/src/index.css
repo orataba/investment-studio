@@ -2731,35 +2731,6 @@ input[type='checkbox'] {
   gap: 6px;
 }
 
-.portfolio-info-hint {
-  display: inline-flex;
-  box-sizing: border-box;
-  width: 15px;
-  height: 15px;
-  flex: 0 0 15px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 50%;
-  color: var(--portfolio-muted);
-  cursor: help;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 600;
-  line-height: 1;
-  text-transform: none;
-}
-
-.portfolio-info-hint-warning {
-  border-color: #d8ad52;
-  color: #8a5f12;
-}
-
-.portfolio-info-hint:focus-visible {
-  outline: 2px solid var(--portfolio-accent);
-  outline-offset: 2px;
-}
-
 .transaction-filter-bar {
   display: block;
   padding: 14px 0 4px;
@@ -5129,8 +5100,9 @@ input[type='checkbox'] {
   color: #b91c1c;
 }
 
-.transaction-drawer.transaction-capture-assistant-drawer {
-  width: min(840px, 100vw);
+.transaction-capture-assistant-modal {
+  width: min(1080px, 100%);
+  max-height: min(86dvh, 860px);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
@@ -5141,10 +5113,8 @@ input[type='checkbox'] {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding: 18px 20px 16px;
-  border-top: 2px solid var(--portfolio-ink);
-  border-bottom: 1px solid var(--portfolio-line);
-  background: #ffffff;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
 .transaction-capture-assistant-header > div {
@@ -6237,6 +6207,72 @@ input[type='checkbox'] {
 
 .account-page {
   min-width: 0;
+}
+
+.transaction-entry-backdrop.account-editor-backdrop {
+  align-items: center;
+}
+
+.transaction-entry-modal.account-editor-modal {
+  width: min(720px, calc(100vw - 32px));
+  height: auto;
+  max-height: min(780px, calc(100dvh - 32px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.account-editor-modal .transaction-form {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto;
+  gap: 18px;
+  min-height: 0;
+  padding: 18px 20px 24px;
+  overflow-y: auto;
+}
+
+.account-editor-modal .transaction-form-footer {
+  margin: 0 -20px -24px;
+}
+
+.account-editor-modal .transaction-form-grid {
+  align-items: start;
+}
+
+.account-editor-modal input[type='date'] {
+  width: 100%;
+}
+
+.account-editor-modal .account-cash-purpose-help {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.account-detail-loading {
+  min-height: 280px;
+  padding: 20px 0;
+}
+
+.account-detail-loading-status {
+  color: var(--portfolio-muted);
+  font-size: 13px;
+}
+
+.account-detail-skeleton {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.account-detail-skeleton span {
+  display: block;
+  width: 100%;
+  height: 36px;
+  background: var(--portfolio-band);
+}
+
+.account-detail-skeleton span:last-child {
+  width: 60%;
 }
 
 .account-page-heading {
@@ -9169,18 +9205,20 @@ input[type='checkbox'] {
 .transaction-entry-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 1200;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
   background: rgba(17, 17, 17, 0.24);
-  z-index: 40;
 }
 
 .transaction-entry-modal {
-  width: min(860px, calc(100vw - 48px));
-  max-height: min(88vh, 860px);
-  overflow-y: auto;
+  width: min(960px, 100%);
+  max-height: min(86dvh, 860px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   background: #ffffff;
   border: 1px solid var(--portfolio-line-strong);
   border-top: 2px solid var(--portfolio-ink);
@@ -9188,13 +9226,17 @@ input[type='checkbox'] {
   box-shadow: 0 18px 42px rgba(17, 17, 17, 0.12);
 }
 
+.transaction-entry-modal-wide {
+  width: min(1120px, 100%);
+}
+
 .transaction-entry-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--portfolio-line);
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
 .transaction-entry-modal-header button,
@@ -9876,13 +9918,13 @@ td b {
   }
 
   .transaction-entry-backdrop {
-    align-items: stretch;
     padding: 12px;
   }
 
-  .transaction-entry-modal {
+  .transaction-entry-modal,
+  .transaction-capture-assistant-modal {
     width: 100%;
-    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
   }
 }
 .performance-surface {
@@ -11345,140 +11387,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   color: var(--portfolio-ink);
 }
 
-.fund-distribution-task-panel {
-  display: grid;
-  gap: 14px;
-  margin-bottom: 18px;
-  padding: 16px;
-  border: 1px solid color-mix(in srgb, var(--portfolio-warning) 38%, var(--portfolio-line));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--portfolio-warning) 7%, #ffffff);
-}
-
-.fund-distribution-task-header,
-.fund-distribution-task-card {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.fund-distribution-task-count {
-  flex: none;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--portfolio-warning) 15%, transparent);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.fund-distribution-task-header-actions {
-  display: flex;
-  flex: 0 1 520px;
-  align-items: flex-end;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.fund-distribution-reviewer-field {
-  display: grid;
-  flex: 1 1 280px;
-  gap: 4px;
-  color: var(--portfolio-muted);
-  font-size: 12px;
-}
-
-.fund-distribution-reviewer-field input {
-  width: 100%;
-  min-width: 220px;
-}
-
-.fund-distribution-task-list {
-  display: grid;
-  gap: 10px;
-}
-
-.fund-distribution-task-card {
-  padding-top: 12px;
-  border-top: 1px solid var(--portfolio-line);
-}
-
-.fund-distribution-task-copy {
-  min-width: 0;
-}
-
-.fund-distribution-task-title {
-  margin-bottom: 4px;
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.fund-distribution-task-values {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-top: 8px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.fund-distribution-task-reason {
-  margin-top: 8px;
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.fund-distribution-task-actions {
-  display: flex;
-  flex: 0 0 min(390px, 42%);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.fund-distribution-dismiss-form {
-  display: flex;
-  width: 100%;
-  gap: 8px;
-}
-
-.fund-distribution-dismiss-form input {
-  min-width: 0;
-  flex: 1;
-}
-
-@media (max-width: 900px) {
-  .fund-distribution-task-header,
-  .fund-distribution-task-card {
-    flex-direction: column;
-  }
-
-  .fund-distribution-task-header-actions {
-    flex: none;
-    align-items: flex-end;
-    justify-content: flex-start;
-    width: 100%;
-  }
-
-  .fund-distribution-task-actions {
-    flex-basis: auto;
-    justify-content: flex-start;
-    width: 100%;
-  }
-}
-
-@media (max-width: 560px) {
-  .fund-distribution-task-header-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .fund-distribution-reviewer-field input {
-    min-width: 0;
-  }
-}
-
 .transaction-workbench-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 332px;
@@ -11790,18 +11698,8 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 /* Transaction entry ticket */
-.transaction-entry-modal {
-  width: min(1080px, calc(100vw - 32px));
-  height: min(900px, calc(100dvh - 32px));
-  max-height: none;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
 .transaction-entry-modal-header {
   z-index: 5;
-  background: #ffffff;
 }
 
 .transaction-form {
@@ -12081,6 +11979,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-form input[readonly] {
   background: color-mix(in srgb, var(--portfolio-band) 72%, #ffffff);
   color: var(--portfolio-ink);
+}
+
+.transaction-entry-modal .transaction-form input[type='date'] {
+  width: 100%;
+  min-width: 0;
 }
 
 .transaction-ticket-review .transaction-ticket-summary {
@@ -12922,4 +12825,57 @@ input[type='date']::-webkit-calendar-picker-indicator {
   .transaction-ticket-field-wide {
     grid-column: span 1;
   }
+}
+
+
+.fcn-settlement-review,
+.fcn-settlement-review > fieldset {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--portfolio-line-strong);
+}
+
+.fcn-settlement-review {
+  background: color-mix(in srgb, var(--portfolio-band) 45%, #ffffff);
+}
+
+.fcn-settlement-review > fieldset {
+  background: #ffffff;
+}
+
+.fcn-settlement-review legend {
+  padding: 0 5px;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fcn-settlement-review p,
+.fcn-settlement-review small {
+  margin: 0;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.fcn-settlement-review details > summary {
+  cursor: pointer;
+  color: var(--portfolio-ink);
+  font-size: 11px;
+}
+
+.fcn-settlement-review details[open] > summary {
+  margin-bottom: 10px;
+}
+
+.fcn-settlement-review button {
+  justify-self: start;
+}
+
+.fcn-settlement-review .transaction-capture-review-grid > label {
+  align-content: start;
 }

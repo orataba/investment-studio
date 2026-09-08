@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from studio_identity import current_principal, issue_delegation, revoke_delegation
+
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -233,20 +235,25 @@ def start_portfolio_transaction_capture_analysis(
 ) -> TransactionCaptureBatchRecord:
     """Queue the restricted DeepSeek harness without waiting for model completion."""
 
+    _capture_batch_or_404(portfolio_id, batch_id)
+    run_token = issue_delegation(current_principal(), "portfolio", {"kind": "capture", "id": batch_id})
     try:
         batch = queue_transaction_capture_analysis_run(
             portfolio_id=portfolio_id,
             batch_id=batch_id,
         )
     except TransactionCaptureBatchNotFoundError as error:
+        revoke_delegation(run_token)
         raise HTTPException(status_code=404, detail=str(error)) from error
     except TransactionCaptureAnalysisRunConflictError as error:
+        revoke_delegation(run_token)
         raise HTTPException(status_code=409, detail=str(error)) from error
     background_tasks.add_task(
         run_transaction_capture_analysis,
         portfolio_id=portfolio_id,
         batch_id=batch_id,
         attempt=int(batch["analysis_run_attempt"]),
+        run_token=run_token,
     )
     return TransactionCaptureBatchRecord.model_validate(batch)
 
@@ -346,6 +353,10 @@ def create_portfolio_transaction_capture_analysis_revision(
 ) -> TransactionCaptureAnalysisResponse:
     """Persist a harness result and run Preview without exposing Commit."""
 
+    if payload.source == "assistant" and (current_principal().resource_scope or {}).get("kind") != "capture":
+        raise HTTPException(403, "研究员提交必须使用当前截图任务的专用凭证")
+    if payload.source == "human" and current_principal().resource_scope:
+        raise HTTPException(403, "模型任务不能冒用人工署名")
     batch = _capture_batch_or_404(portfolio_id, batch_id)
     batch_capture_ids = {capture.capture_id for capture in batch.captures}
     document_capture_ids = {

@@ -3,7 +3,10 @@ from datetime import UTC, date, datetime
 import math
 from statistics import correlation, mean
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from fastapi import HTTPException
+from studio_identity import current_principal, principal_headers, issue_delegation, revoke_delegation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.core.settings import get_settings
@@ -27,9 +30,29 @@ def external_json(service: str, path: str):
     base = bridge_url(service)
     if not base:
         raise ValueError(f"{service} connection is not configured")
-    with urlopen(base + path, timeout=10) as response:
-        import json
-        return json.load(response)
+    principal = current_principal()
+    token = None
+    headers = principal_headers(principal)
+    if service == "portfolio" and principal.resource_scope:
+        from urllib.parse import parse_qs, urlsplit, unquote
+        parsed = urlsplit(path)
+        pieces = parsed.path.strip("/").split("/")
+        portfolio_id = unquote(pieces[1]) if len(pieces) > 1 and pieces[0] == "portfolios" else parse_qs(parsed.query).get("portfolio_id", [None])[0]
+        if not portfolio_id:
+            raise HTTPException(403, "组合研究任务必须绑定一个组合")
+        token = issue_delegation(principal, audience="portfolio", resource_scope={"kind": "portfolio", "id": portfolio_id}, ttl_seconds=120)
+        headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with urlopen(Request(base + path, headers=headers), timeout=10) as response:
+            import json
+            return json.load(response)
+    except HTTPError as error:
+        if error.code in {401, 403, 404}:
+            raise HTTPException(404, "所选组合或资料不可访问") from error
+        raise
+    finally:
+        if token:
+            revoke_delegation(token)
 
 
 def portfolio_options():
@@ -38,6 +61,27 @@ def portfolio_options():
         return {"available": True, "research_enabled": bool(capabilities.get("research_enabled")), "portfolios": external_json("portfolio", "/portfolios")}
     except (OSError, ValueError):
         return {"available": False, "research_enabled": False, "portfolios": []}
+
+
+def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
+    """Retain the portfolio denominator while reading the actual selected page."""
+    from urllib.parse import quote
+    page = page_context or {}
+    scope = {"portfolio_id": portfolio_id}
+    if page.get("as_of_date"):
+        scope["as_of_date"] = page["as_of_date"]
+    result = external_json("portfolio", "/workspace/holdings?" + urlencode({**scope, "include_details": "true"}))
+    if page.get("holding_id"):
+        result["selected_holding"] = external_json("portfolio", "/workspace/holdings/position?" + urlencode({
+            **scope, "position_reference_id": page["holding_id"]}))
+    if page.get("account_id"):
+        query = {"account_id": page["account_id"], **({"as_of_date": page["as_of_date"]} if page.get("as_of_date") else {})}
+        result["selected_account"] = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/accounts/workspace?" + urlencode(query))
+    if page.get("tab") == "risk":
+        suffix = "?" + urlencode({"as_of_date": page["as_of_date"]}) if page.get("as_of_date") else ""
+        result["risk_context"] = external_json("portfolio", f"/portfolios/{quote(portfolio_id, safe='')}/risk-context" + suffix)
+    return {**result, "page_scope": page,
+            "scope_note": "整体持仓保留组合口径；所选账户或持仓作为单独明细。持仓引用可能是组合本地合约，不等于共享标的编码。历史估值按选定日期读取，研究及解释仍是本轮形成。"}
 
 
 def catalogue(session: Session):
@@ -107,8 +151,11 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     entries = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic.topic_id).order_by(ResearchEntry.created_at)))
     if watchlist_id is None:
         watchlist_id = next((x.context_json.get("watchlist_id") for x in reversed(entries) if x.kind == "analysis"), None)
+    from watchlist_app.services.research_identity import research_identity
     return serialize_payload({
-        "topic_id": topic.topic_id, "question": question, "as_of_date": date.today(), "requested_at": datetime.now(UTC),
+        "research_actor": research_identity(),
+        "topic_id": topic.topic_id, "question": question, "as_of_date": (page_context or {}).get("as_of_date") or date.today(), "requested_at": datetime.now(UTC),
+        "research_run": True, "instrument_ids": list(topic.instrument_ids), "cutoff": datetime.now(UTC),
         "page_context": page_context,
         "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
                            "guidance": ANALYST_FOCUS.get(instrument.instrument_type)}
@@ -117,6 +164,7 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
         "watchlists": [{"watchlist_id": w.watchlist_id, "name": w.name} for w in session.scalars(select(Watchlist).order_by(Watchlist.sort_order))],
         "catalogue": catalogue(session), "selected_instrument_ids": topic.instrument_ids,
         "portfolio_id": topic.portfolio_id,
+        "team_id": topic.team_id, "visibility": topic.visibility,
         "history": [{"question": x.title, "answer": x.body, "recorded_at": x.created_at} for x in entries if x.kind == "analysis" and x.status == "draft"],
         "evidence": [{"source_id": x.entry_id, "title": x.title, "text": x.body, "source": x.source, "recorded_at": x.created_at, "metadata": x.context_json} for x in entries if x.kind != "analysis"],
         "tool_evidence": [],

@@ -1,4 +1,4 @@
-import { fetchJson } from './api'
+import { fetchJson, type InstrumentResearchNote } from './api'
 
 export type ResearchQuestion = {
   key: string
@@ -11,7 +11,35 @@ export type ResearchQuestion = {
   source_ids: string[]
 }
 
+export type ResearchReference = {
+  instrument_id: string; notebook_version_id?: string; investment_view_version_id?: string; forecast_key?: string; forecast_version_id?: string
+  theme_id?: string; pm_note_id?: string; pm_note_revision?: number
+}
+export type AskResearchAssistant = (question: string, reference?: ResearchReference) => void
+export type ResearchRevision = { version_id?: string; created_at?: string | null; updated_at?: string | null; source_run_id?: string }
+export type InvestmentView = ResearchRevision & {
+  direction: string; horizon: string; attractiveness: string; risk: string; conviction: string
+  assumptions: string[]; source_ids: string[]; versions?: InvestmentView[]
+}
+export type ResearchForecast = ResearchRevision & {
+  key: string; claim: string; variable: string; horizon: string; observation_condition: string
+  assumptions: string[]; invalidation: string; review_on?: string | null; status: 'active' | 'confirmed' | 'refuted' | 'expired' | 'withdrawn'
+  source_ids: string[]; versions?: ResearchForecast[]
+}
+export type ResearchForecastReview = ResearchRevision & {
+  key: string; forecast_key: string; forecast_version_id: string; outcome: string; mechanism_assessment: string
+  alternative_explanations: string[]; source_ids: string[]; versions?: ResearchForecastReview[]
+}
+export type ResearchLesson = ResearchRevision & {
+  key: string; lesson: string; applicability: string; limitations: string
+  forecast_key: string | null; forecast_version_id: string | null; source_ids: string[]; versions?: ResearchLesson[]
+}
+
 export type ResearchNotebook = {
+  investment_view?: InvestmentView | null
+  forecasts?: ResearchForecast[]
+  forecast_reviews?: ResearchForecastReview[]
+  lessons?: ResearchLesson[]
   fundamental_view: string
   key_drivers: string[]
   valuation_view: string
@@ -24,7 +52,10 @@ export type ResearchNotebook = {
 }
 
 export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[] }
-export type ResearchMandate = ResearchMandateInput & { instrument_id: string; role: 'research_method'; entry_id: string | null; updated_at: string | null }
+export type ResearchMandate = ResearchMandateInput & ResearchRevision & {
+  instrument_id: string; role: 'research_method'; entry_id: string | null; updated_at: string | null; versions?: ResearchMandate[]
+  readonly user_focus?: string[]; readonly author?: { origin: 'user' | 'research' | 'initial' } | null
+}
 
 export type ResearchCatalyst = {
   key: string; title: string; scheduled_at: string; status: 'scheduled' | 'released' | 'cancelled'
@@ -33,10 +64,12 @@ export type ResearchCatalyst = {
 
 export type NotebookSource = {
   source_id: string; title?: string; url?: string; source?: string
+  document_id?: string; version_id?: string; instrument_id?: string
+  source_type?: string; as_of?: string | null; run_cutoff?: string | null
   published_at?: string | null; retrieved_at?: string | null; recorded_at?: string | null
   metadata?: { published_at?: string | null; effective_date?: string | null }
 }
-export type SavedResearchNotebook = ResearchNotebook & { run_id: string; checked_at: string | null; sources?: NotebookSource[] }
+export type SavedResearchNotebook = ResearchNotebook & ResearchRevision & { run_id: string; checked_at: string | null; sources?: NotebookSource[] }
 export type ResearchMaterial = {
   source_id: string
   entry_id: string | null
@@ -63,14 +96,57 @@ export type ResearchDossier = {
   historical_cases: HistoricalResearchCase[]
   historical_case_limitations?: string[]
   notebook: SavedResearchNotebook | null
-  notebook_history: Array<{ run_id: string; checked_at: string | null; important_changes: string[] }>
+  notebook_history: Array<{ run_id: string; checked_at: string | null; important_changes: string[]; notebook?: SavedResearchNotebook }>
 }
 export type ResearchMaterialInput = { title: string; body: string; source: string; published_at?: string; effective_date?: string }
+
+export type ResearchThemeInput = {
+  title: string; question: string; background?: string; status?: 'active' | 'paused' | 'closed'; responsible_user_id?: string | null
+}
+export type ResearchThemeProgress = {
+  run_id: string; recorded_at: string; assessment: string; next_check: string; status: string; source_ids: string[]
+}
+export type ResearchTheme = ResearchThemeInput & {
+  theme_id: string; instrument_id: string; status: 'active' | 'paused' | 'closed'; author_user_id: string; author: string
+  created_at: string; updated_at: string; revision_number: number
+  notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
+}
+export type ResearchThemesResponse = {
+  identity: { user_id: string; display_name: string; mode: 'account'; local_unrestricted?: boolean; team_id?: string; team_role?: 'admin' | 'member' | 'reader' }
+  themes: ResearchTheme[]
+}
+const themesPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/themes`
+export function getResearchThemes(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<ResearchThemesResponse>(themesPath(instrumentId), { signal })
+}
+export function createResearchTheme(instrumentId: string, theme: ResearchThemeInput) {
+  return fetchJson<ResearchTheme>(themesPath(instrumentId), { method: 'POST', body: JSON.stringify(theme) })
+}
+export function updateResearchTheme(instrumentId: string, themeId: string, theme: Partial<ResearchThemeInput>) {
+  return fetchJson<ResearchTheme>(`${themesPath(instrumentId)}/${encodeURIComponent(themeId)}`, { method: 'PATCH', body: JSON.stringify(theme) })
+}
 
 const dossierPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/dossier`
 
 export function getResearchDossier(instrumentId: string, signal?: AbortSignal) {
   return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=true`, { signal })
+}
+
+export function getSavedResearchSource(instrumentId: string, sourceId: string, signal?: AbortSignal) {
+  return fetchJson<SavedResearchSource>(`${dossierPath(instrumentId)}?source_id=${encodeURIComponent(sourceId)}`, { signal })
+}
+
+export type SavedResearchSource = NotebookSource & {
+  text?: string; body?: string
+  data?: {
+    current?: { date: string; volatility_pct: number } | null
+    previous?: { date: string; volatility_pct: number } | null
+    change_pp?: number | null; five_session_change_pp?: number | null
+    limitations?: string[]
+    series?: Array<{ series_id: string; unit: string | null; currency: string | null; observations: number;
+      first: { date: string; value: number } | null; latest: { date: string; value: number } | null; change: number | null; change_unit: string | null }>
+  }
+  methodology?: { half_life_sessions?: number; annualization?: number } | string
 }
 
 export function saveResearchMandate(instrumentId: string, mandate: ResearchMandateInput) {

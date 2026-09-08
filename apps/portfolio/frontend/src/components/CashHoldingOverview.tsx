@@ -11,6 +11,7 @@ import {
   signedValueClass,
 } from '../lib/format'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
+import InfoHint from './InfoHint'
 
 type CashHoldingOverviewProps = {
   portfolioId: string
@@ -121,7 +122,11 @@ export default function CashHoldingOverview({
         <div className="portfolio-security-section-head">
           <div>
             <span className="portfolio-security-section-kicker">Operational state</span>
-            <h2>{isPending ? 'Settlement and recognition' : 'Cash availability'}</h2>
+            <div className="portfolio-title-with-hint"><h2>{isPending ? 'Settlement and recognition' : 'Cash availability'}</h2>
+              {isPending ? <InfoHint label="Settlement availability" detail="This amount contributes to NAV as a monetary receivable or payable, but it is not settled cash and cannot be traded." />
+                : isNegativeCash && isFinancing ? <InfoHint label="融资现金口径" detail="券商融资借方余额计入负债并扣减组合净资产。融资额度、维持保证金和可用购买力须以券商确认为准。" />
+                  : localCurrency !== baseCurrency ? <InfoHint label="Cash FX attribution" detail="FX translation is shown separately from the local cash balance so reporting-currency gains and losses are not confused with cash movement." /> : null}
+            </div>
           </div>
           <span>As of {asOfDate || '—'}</span>
         </div>
@@ -162,20 +167,11 @@ export default function CashHoldingOverview({
           </div>
         ) : null}
 
-        {isNegativeCash && isFinancing ? <p className="cash-detail-notice">券商融资借方余额计入负债并扣减组合净资产。融资额度、维持保证金和可用购买力须以券商确认为准。</p> : null}
         {isNegativeCash && !isFinancing ? (
           <div className="cash-detail-notice cash-detail-notice-critical" role="alert">
             Negative settled cash is not available capital. Record the missing funding or financing fact.
           </div>
-        ) : isPending ? (
-          <div className="cash-detail-notice">
-            This amount contributes to NAV as a monetary receivable or payable, but it is not settled cash and cannot be traded.
-          </div>
-        ) : (
-          <div className="cash-detail-notice">
-            FX translation is shown separately from the local cash balance so reporting-currency gains and losses are not confused with cash movement.
-          </div>
-        )}
+        ) : null}
       </section>
     </div>
   )

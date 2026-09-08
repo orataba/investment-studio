@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from investment_studio_instrument_core.db_models import Instrument, InstrumentReferenceObservation
+from investment_studio_instrument_core.db_models import Instrument
 import pytest
 from sqlalchemy import event
 
@@ -28,13 +28,9 @@ def company(*annual, weight=10, quarterly=(), currency_source=None):
 
 def snapshot(observation_id, companies, *, day=6):
     collected_at = datetime(2026, 9, day, 9, tzinfo=UTC)
-    return InstrumentReferenceObservation(observation_id=observation_id, instrument_id="xlk", collected_at=collected_at,
-        value_json={"fetched_at": collected_at.isoformat(), "sections": {"sector_market_data": {
-            "holdings": [{"holding_symbol": symbol, "holding_name": item["name"], "holding_type": "equity",
-                "company_profile": {"reporting_currency_source": item.get("reporting_currency_source")},
-                "weight_percent": item["weight_percent"], "as_of_date": "2026-09-04", "snapshot_date": collected_at.date().isoformat(),
-                "annual_estimates": item["annual_estimates"], "quarterly_estimates": item["quarterly_estimates"]}
-                for symbol, item in companies.items()]}}})
+    return {"observation_id": observation_id, "companies": companies,
+            "collected_at": collected_at.isoformat(), "holdings_as_of": "2026-09-04",
+            "holdings_observed_on": collected_at.date().isoformat()}
 
 
 def test_same_period_revisions_use_current_exposure_once_and_explain_analyst_changes():
@@ -122,60 +118,3 @@ def test_negative_and_zero_eps_bases_keep_absolute_change_without_percentage():
     assert len(changes) == 2 and {row["symbol"] for row in changes} == {"LOSS", "ZERO"}
     assert all(row["metric"] == "eps_avg" and row["delta"] == 1 and row["delta_pct"] is None
                and row["percent_change_status"] == "nonpositive_base" for row in changes)
-
-
-def read_without_writes(session, iid, **kwargs):
-    statements = []
-    def capture(connection, cursor, statement, parameters, context, executemany):
-        statements.append(statement)
-    engine = session.get_bind()
-    event.listen(engine, "before_cursor_execute", capture)
-    try:
-        result = read_estimate_evidence(session, iid, **kwargs)
-    finally:
-        event.remove(engine, "before_cursor_execute", capture)
-    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
-    assert not session.new and not session.dirty and not session.deleted
-    return result
-
-
-def test_two_collections_are_compared_without_research_and_as_of_excludes_future(client):
-    with get_session_factory()() as session:
-        session.add(Instrument(instrument_id="xlk", instrument_name="Technology ETF", instrument_type="etf",
-                               currency="USD", exchange_code="ARCX", quote_selection_policy_json={}))
-        session.add(ResearchTopic(topic_id="us-sector-daily-review", title="行业检查"))
-        session.flush()
-        session.add(ResearchEntry(entry_id="published-history", topic_id="us-sector-daily-review", kind="analysis",
-            title="已发布研究证据", context_json={"sector_company_data": {"xlk": {"AAA": company(estimate())}}}))
-        session.commit()
-    with get_session_factory()() as session:
-        # Published research remains evidence, but is never fabricated into a collection.
-        absent = read_without_writes(session, " XLK ")
-        assert absent["supported"] and absent["status"] == "no_snapshot"
-        unsupported = read_without_writes(session, "512880")
-        assert not unsupported["supported"] and unsupported["status"] == "unsupported"
-        old = snapshot("old-estimates", {"AAA": company(estimate(clock=OLD_CLOCK))}, day=5)
-        session.add(old)
-        session.commit()
-    with get_session_factory()() as session:
-        baseline = read_without_writes(session, "xlk")
-        assert baseline["status"] == "baseline" and baseline["changes"] == []
-        assert baseline["current_snapshot"]["observation_id"] == "old-estimates" and baseline["previous_snapshot"] is None
-        assert baseline["history_available_from"] == "2026-09-05T09:00:00+00:00"
-        session.add(snapshot("current-estimates", {"AAA": company(estimate(value=110))}))
-        session.add(snapshot("future-estimates", {"AAA": company(estimate(value=900, clock="2026-09-07T08:00:00+00:00"))}, day=7))
-        session.commit()
-    with get_session_factory()() as session:
-        observed = read_without_writes(session, " XLK ", as_of=datetime(2026, 9, 6, 9, tzinfo=UTC))
-        assert observed["status"] == "comparable" and len(observed["changes"]) == 1
-        assert observed["current_snapshot"]["observation_id"] == "current-estimates"
-        assert observed["previous_snapshot"]["observation_id"] == "old-estimates"
-        assert observed["changes"][0]["delta"] == 10
-        assert observed["source_id"] == "estimates:current-estimates:xlk"
-        explicit = read_without_writes(session, "xlk", as_of=datetime(2026, 9, 6, 8, tzinfo=UTC))
-        assert explicit["status"] == "baseline" and explicit["current_snapshot"]["observation_id"] == "old-estimates"
-        before_history = read_without_writes(session, "xlk", as_of=datetime(2026, 9, 5, 8, tzinfo=UTC))
-        assert before_history["status"] == "no_snapshot"
-        assert session.get(ResearchEntry, "published-history").context_json["sector_company_data"]["xlk"]["AAA"]["annual_estimates"][0]["revenue_avg"] == 100
-        with pytest.raises(ValueError, match="timezone"):
-            read_estimate_evidence(session, "xlk", as_of=datetime(2026, 9, 6))

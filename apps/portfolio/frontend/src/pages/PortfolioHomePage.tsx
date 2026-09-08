@@ -3775,6 +3775,7 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           <div className="holdings-filter-actions">
+            <QualityWarningsNotice warnings={workspace?.quality_warnings} />
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
               buttonClassName="portfolio-table-toolbar-button"
@@ -3807,7 +3808,6 @@ export default function PortfolioHomePage() {
             </button>
           </div>
         ) : null}
-        <QualityWarningsNotice warnings={workspace?.quality_warnings} />
         <HoldingsOperationalStatus alerts={workspace?.operational_alerts} />
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>

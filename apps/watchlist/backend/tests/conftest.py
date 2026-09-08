@@ -25,6 +25,7 @@ if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
 sys.path.insert(0, BACKEND_ROOT_STR)
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
+sys.path.insert(0, str(WORKSPACE_ROOT / "packages" / "identity"))
 INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "shared-data" / "instruments" / "python"
 INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
 if INSTRUMENT_CORE_PYTHON_STR in sys.path:
@@ -614,6 +615,18 @@ def _run_alembic_upgrade(database_url: str) -> None:
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
 
+@pytest.fixture(autouse=True)
+def research_test_actor(monkeypatch):
+    from studio_identity import Principal, principal_context
+    actor = Principal(user_id="pm-one", display_name="投资经理甲", team_id="default", team_role="admin", credential="fixture-session")
+    import studio_identity
+    service = Principal(user_id=None, display_name="研究测试服务", team_id="default", kind="service", service_id="test-research",
+                        scopes=["watchlist:research"], credential="fixture-service")
+    monkeypatch.setattr(studio_identity, "service_principal", lambda audience: service)
+    with principal_context(actor):
+        yield actor
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     database_path = tmp_path / "test.db"
@@ -648,15 +661,72 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             instrument,
         )
 
+    from studio_market.config import MarketSettings
+    from studio_market.numeric import NumericStore
+    from studio_market.text import TextStore
+    from studio_market.text.schema import metadata as text_metadata
+    from watchlist_app.services import market_evidence, sector_market_data
+    market_settings = MarketSettings(database_url=f"sqlite+pysqlite:///{tmp_path / 'market.db'}", data_root=tmp_path / "market-data")
+    numeric = NumericStore(market_settings)
+    numeric.create_schema_for_testing()
+    corpus = TextStore(market_settings)
+    text_metadata.create_all(corpus.engine)
+    monkeypatch.setattr(market_evidence, "text_store", lambda: corpus)
+    monkeypatch.setattr(sector_market_data, "numeric_store", lambda: numeric)
+    from watchlist_app.services import sector_estimates
+    monkeypatch.setattr(sector_estimates, "numeric_store", lambda: numeric)
+
     from watchlist_app.services import research_runner
     monkeypatch.setattr(research_runner, "harness_available", lambda: False)
 
     import watchlist_app.main as main_module
 
     main_module = importlib.reload(main_module)
+    from watchlist_app.api.routes import funds
+    monkeypatch.setattr(funds, "settings", settings_module.get_settings())
 
-    with TestClient(main_module.app) as test_client:
-        yield test_client
+    from dataclasses import replace
+    from studio_identity import Principal, current_principal
+    actor = current_principal()
+    def domain_identity(request, audience, **kwargs):
+        import re
+        match = re.fullmatch(r"/api/research/runs/([^/]+)(?:/.*)?", request.url.path)
+        subject = actor
+        if match:
+            from watchlist_app.db.models.workbench import ResearchEntry
+            with session_module.get_session_factory()() as session:
+                run = session.get(ResearchEntry, match[1])
+                saved = (run.context_json or {}).get("research_actor", {}) if run else {}
+            subject = replace(actor, user_id=saved.get("user_id", actor.user_id), display_name=saved.get("display_name", actor.display_name))
+        return replace(subject, resource_scope={"kind": "run", "id": match[1]} if match else None)
+    monkeypatch.setattr(main_module, "resolve_request", domain_identity)
+    monkeypatch.setattr(research_runner, "resolve_token", lambda token, audience: actor)
+    monkeypatch.setattr(research_runner, "service_principal", lambda audience: actor)
+    monkeypatch.setattr(research_runner, "issue_delegation", lambda *args, **kwargs: "fixture-run")
+    monkeypatch.setattr(research_runner, "revoke_delegation", lambda *args, **kwargs: None)
+    from watchlist_app.api.routes import workbench, sector_research, risk_officer
+    import studio_identity
+    monkeypatch.setattr(studio_identity, "issue_delegation", lambda *args, **kwargs: "fixture-run")
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN", "fixture-run")
+    # Tests that assemble historic topics directly must still identify their creator.
+    from sqlalchemy import event
+    from watchlist_app.db.models.workbench import ResearchTopic, ResearchEntry
+    def identify_test_entry(_mapper, _connection, entry):
+        if entry.kind == "analysis" and not (entry.context_json or {}).get("research_actor"):
+            entry.context_json = {**(entry.context_json or {}), "research_actor": actor.to_dict()}
+    def identify_test_topic(_mapper, _connection, topic):
+        if topic.created_by_user_id is None:
+            topic.created_by_user_id = actor.user_id
+        if workbench.managed_topic(topic.topic_id):
+            topic.visibility = "team"
+    event.listen(ResearchTopic, "before_insert", identify_test_topic)
+    event.listen(ResearchEntry, "before_insert", identify_test_entry)
+    try:
+        with TestClient(main_module.app) as test_client:
+            yield test_client
+    finally:
+        event.remove(ResearchTopic, "before_insert", identify_test_topic)
+        event.remove(ResearchEntry, "before_insert", identify_test_entry)
 
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()

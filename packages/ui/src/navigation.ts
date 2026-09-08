@@ -1,6 +1,6 @@
-type Workspace = 'home' | 'watchlist' | 'portfolio' | 'regime'
+type Workspace = 'home' | 'watchlist' | 'portfolio' | 'regime' | 'briefing'
 
-const ports: Record<Workspace, string> = { home: '5172', watchlist: '5173', portfolio: '5174', regime: '3011' }
+const ports: Record<Workspace, string> = { home: '5172', watchlist: '5173', portfolio: '5174', regime: '3011', briefing: '5175' }
 
 export function resolveWorkspaceUrl(configured: string | undefined, workspace: Workspace) {
   const value = configured?.trim().replace(/\/$/, '')
@@ -18,7 +18,7 @@ export function resolveWorkspaceUrl(configured: string | undefined, workspace: W
     }
   }
   if (!localHost && !location?.port) {
-    const rootHost = hostname.replace(/^(watchlist|portfolio|regime)\./, '')
+    const rootHost = hostname.replace(/^(watchlist|portfolio|regime|briefing)\./, '')
     return `${location?.protocol || 'https:'}//${workspace === 'home' ? '' : `${workspace}.`}${rootHost}`
   }
   const host = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname

@@ -1,6 +1,8 @@
 import { Suspense, lazy } from 'react'
 import { Navigate, Route, Routes } from 'react-router'
 import CalculationStatus from './components/CalculationStatus'
+import PortfolioSessionProvider from './components/PortfolioSessionProvider'
+import PortfolioAccessProvider from './components/PortfolioAccessProvider'
 import PortfolioCapabilitiesProvider, { usePortfolioCapabilities } from './components/PortfolioCapabilitiesProvider'
 
 const AccountsPage = lazy(() => import('./pages/AccountsPage'))
@@ -29,22 +31,22 @@ export default function App() {
   return (
     <div className="app-shell">
       <main className="page-shell page-shell-terminal">
-        <PortfolioCapabilitiesProvider>
+        <PortfolioSessionProvider><PortfolioCapabilitiesProvider>
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/" element={<Navigate replace to="/portfolios" />} />
               <Route path="/portfolios" element={<PortfoliosPage />} />
               <Route path="/portfolios/:portfolioId" element={<Navigate replace to="overview" />} />
               <Route path="/portfolios/:portfolioId/snapshot" element={<Navigate replace to="../overview" />} />
-              <Route path="/portfolios/:portfolioId/overview" element={<OverviewPage />} />
-              <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
-              <Route path="/portfolios/:portfolioId/holdings/:holdingId" element={<PortfolioHoldingDetailPage />} />
-              <Route path="/portfolios/:portfolioId/performance" element={<PerformancePage />} />
-              <Route path="/portfolios/:portfolioId/risk" element={<RiskPage />} />
-              <Route path="/portfolios/:portfolioId/transactions" element={<TransactionsPage />} />
-              <Route path="/portfolios/:portfolioId/accounts" element={<AccountsPage />} />
-              <Route path="/portfolios/:portfolioId/taxonomies" element={<TaxonomiesPage />} />
-              <Route path="/portfolios/:portfolioId/research" element={<ResearchRoute />} />
+              <Route path="/portfolios/:portfolioId/overview" element={<PortfolioAccessProvider><OverviewPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioAccessProvider><PortfolioHomePage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/holdings/:holdingId" element={<PortfolioAccessProvider><PortfolioHoldingDetailPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/performance" element={<PortfolioAccessProvider><PerformancePage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/risk" element={<PortfolioAccessProvider><RiskPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/transactions" element={<PortfolioAccessProvider><TransactionsPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/accounts" element={<PortfolioAccessProvider><AccountsPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/taxonomies" element={<PortfolioAccessProvider><TaxonomiesPage /></PortfolioAccessProvider>} />
+              <Route path="/portfolios/:portfolioId/research" element={<PortfolioAccessProvider><ResearchRoute /></PortfolioAccessProvider>} />
               <Route path="/snapshot" element={<Navigate replace to="/portfolios" />} />
               <Route path="/overview" element={<Navigate replace to="/portfolios" />} />
               <Route path="/holdings" element={<Navigate replace to="/portfolios" />} />
@@ -59,7 +61,7 @@ export default function App() {
               <Route path="*" element={<Navigate replace to="/portfolios" />} />
             </Routes>
           </Suspense>
-        </PortfolioCapabilitiesProvider>
+        </PortfolioCapabilitiesProvider></PortfolioSessionProvider>
       </main>
     </div>
   )
