@@ -24,13 +24,13 @@ if [[ "${1:-}" == "market" || "${1:-}" == "briefing" ]]; then
   investment_studio_load_env_file "$RUNTIME_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
   export PYTHONPATH="$PROJECT_ROOT/shared-data/market:$PROJECT_ROOT/apps/briefing/backend${PYTHONPATH:+:$PYTHONPATH}"
   if [[ "$module" == "briefing" ]]; then
-    investment_studio_load_env_file "$RUNTIME_ENV_ROOT/briefing.env" INVESTMENT_STUDIO_BRIEFING_
+    investment_studio_load_env_file "$RUNTIME_ENV_ROOT/briefing.env" INVESTMENT_STUDIO_BRIEFING_ INVESTMENT_STUDIO_AUTH_
     exec "$PYTHON_BIN" -m briefing_app.cli "$@"
   fi
   exec "$PYTHON_BIN" -m studio_market.cli "$@"
 fi
 investment_studio_load_env_file "$RUNTIME_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
-investment_studio_load_env_file "$RUNTIME_ENV_ROOT/data.env" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_
+investment_studio_load_env_file "$RUNTIME_ENV_ROOT/data.env" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
 export INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data
 export INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion
 export PYTHONPATH="$PROJECT_ROOT/shared-data/market:$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}"

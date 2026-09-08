@@ -142,7 +142,11 @@ for env_spec in \
   prefix="${env_spec#*:}"
   runtime_env_file="$(investment_studio_runtime_env_file "$app" "$ENV_ROOT")"
   if [[ "$app" == "home" || "$app" == "data" || "$app" == "briefing" || "$app" == "market" || -f "$runtime_env_file" ]]; then
-    investment_studio_validate_env_file "$runtime_env_file" "$prefix" INVESTMENT_STUDIO_AUTH_
+    if [[ "$app" == "data" ]]; then
+      investment_studio_validate_env_file "$runtime_env_file" "$prefix" INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
+    else
+      investment_studio_validate_env_file "$runtime_env_file" "$prefix" INVESTMENT_STUDIO_AUTH_
+    fi
   fi
 done
 
@@ -297,7 +301,7 @@ database_mutated="true"
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
 data_env_file="$(investment_studio_runtime_env_file data "$ENV_ROOT")"
-investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_
+investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
 investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
 PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$MARKET_DATA_REFRESH_RUNNER" \

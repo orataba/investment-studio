@@ -39,7 +39,7 @@ SCHEDULE_TIMEZONE="${INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE:-}"
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 investment_studio_reject_repository_env_files "$PROJECT_ROOT"
 ENV_FILE="$(investment_studio_runtime_env_file data "$EXTERNAL_ENV_ROOT")"
-investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_AUTH_
+investment_studio_load_env_file "$ENV_FILE" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
 investment_studio_load_env_file "$EXTERNAL_ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
 
 DATABASE_URL="${INVESTMENT_STUDIO_LOCAL_DATABASE_URL:-}"

@@ -28,6 +28,8 @@ printf '%s\n' 'raise SystemExit(0)' > "$PROJECT_ROOT/infra/scripts/market_close_
 printf '%s\n' \
   'INVESTMENT_STUDIO_DATA_DATAHUB_API_KEY=test-key-loaded' \
   'INVESTMENT_STUDIO_DATA_EMAIL_SYNC_ENABLED=true' \
+  'INVESTMENT_STUDIO_AUTH_MODE=local' \
+  'INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data' \
   'INVESTMENT_STUDIO_DATA_EMAIL_IMAP_PASSWORD=$(touch "'$SENTINEL_PATH'")' \
   > "$ENV_ROOT/data.env"
 chmod 600 "$ENV_ROOT/data.env"

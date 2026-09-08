@@ -33,7 +33,7 @@ prepare_case() {
   chmod 700 "$env_root" "$case_root/backups" "$case_root/tmp"
   : > "$env_root/home.env"
   chmod 600 "$env_root/home.env"
-  : > "$env_root/data.env"
+  printf '%s\n' 'INVESTMENT_STUDIO_AUTH_MODE=local' 'INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA=instrument_data' > "$env_root/data.env"
   chmod 600 "$env_root/data.env"
   touch "$env_root/briefing.env" "$env_root/market.env"
   chmod 600 "$env_root/briefing.env" "$env_root/market.env"
