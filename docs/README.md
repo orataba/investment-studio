@@ -29,7 +29,7 @@
 | Watchlist | [apps/watchlist/README.md](../apps/watchlist/README.md) |
 | Portfolio | [apps/portfolio/README.md](../apps/portfolio/README.md) 与 [Portfolio 文档索引](../apps/portfolio/docs/README.md) |
 | Briefing 日报周报 | [apps/briefing/README.md](../apps/briefing/README.md) |
-| Regime | [apps/regime/README.md](../apps/regime/README.md) |
+| Regime | [Regime README](https://github.com/cloudxyun/regime-dashboard/blob/main/README.md) |
 | Instrument Core | [shared-data/instruments/README.md](../shared-data/instruments/README.md) 与 [Instrument Core Contract](../shared-data/instruments/INSTRUMENT_CORE_CONTRACT.md) |
 | Shared UI | [packages/ui/README.md](../packages/ui/README.md) |
 | Instrument Data migrations | [shared-data/instruments/MIGRATIONS.md](../shared-data/instruments/MIGRATIONS.md) |
