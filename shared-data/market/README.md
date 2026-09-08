@@ -79,6 +79,9 @@ The daily pipeline collects whole-market US EOD increments, corporate actions,
 analyst PIT captures, changed financial statements, macro/market series, ETF
 holdings, events, and registered assets' typed supplements. Registered raw prices
 have separate market-close jobs and are published immediately after acquisition.
+They resume from each symbol's latest published raw observation when it predates
+the normal overlap window, filling missed closes and retaining an observed price
+for adjustment-change detection after downtime.
 Only symbols whose corporate actions changed require their adjusted price
 history to be refreshed. Whole-market EOD advances from the last successfully
 published bulk session, using provider session dates for holidays.

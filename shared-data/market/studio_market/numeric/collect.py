@@ -176,7 +176,12 @@ class Collector:
         for symbol in symbols:
             try:
                 stop=min(end,closed_symbol_date(symbol,datetime.now(UTC)))
-                self.symbol_prices([symbol],start,stop,raw=True)
+                if stop < start:continue
+                latest = self.store.latest('raw_eod_daily',symbols=[symbol],limit=1)['rows']
+                # Retain an observed overlap and fill every missed close after
+                # downtime; a rolling seven-day window alone can leave a gap.
+                begin = min(start,date.fromisoformat(latest[0]['date'])) if latest else start
+                self.symbol_prices([symbol],begin,stop,raw=True)
                 requests = pending_revisions(self.store, dataset='raw_eod_daily', symbols=[symbol], end=stop)
                 if requests:
                     self.symbol_prices([symbol],history_start(self.store, "raw_eod_daily", symbol),stop,raw=True,revision_requests=requests)

@@ -215,3 +215,20 @@ def test_legacy_range_metadata_without_retained_dates_is_not_a_completed_rebuild
     result=recover_legacy_revisions(store,since='2026-09-01T00:00:00+00:00',end=date(2026,9,8),symbols=['SPY'],apply=True)
     assert result['requests'][0]['completion_evidence']=={}
     assert 'SPY' in pending(store)
+
+
+def test_registered_raw_resumes_before_fixed_window_and_keeps_observed_overlap(store):
+    import json
+    from studio_market.numeric.providers.fmp import FmpResponse
+    store.ingest('raw_eod_daily',[[{'symbol':'SPY','date':'2026-08-03','close':100,'adjusted_close':100}]],source='fixture')
+    calls=[]
+    class Client:
+        def get_json(self,endpoint,params):
+            calls.append(params.copy())
+            rows=[{'symbol':'SPY','date':day,'adjOpen':100,'adjHigh':100,'adjLow':100,'adjClose':100,'volume':1}
+                  for day in ['2026-08-03','2026-08-14','2026-09-04'] if params['from']<=day<=params['to']]
+            return FmpResponse(endpoint,params,datetime(2026,9,8,tzinfo=UTC),json.dumps(rows).encode(),rows)
+    collector=Collector(store.settings,store=store,client=Client())
+    assert collector.raw_eod(date(2026,9,1),date(2026,9,4),['SPY'])['status']=='ready'
+    assert all(params['from']=='2026-08-03' for params in calls)
+    assert {row['date'] for row in store.query('raw_eod_daily')['rows']}=={'2026-08-03','2026-08-14','2026-09-04'}
