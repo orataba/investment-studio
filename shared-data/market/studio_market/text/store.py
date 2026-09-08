@@ -55,6 +55,11 @@ class TextStore:
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(payload)
+                handle.flush()
+                # Public text shares the numeric store's named-reader ACL
+                # contract; never change the mode of an existing object.
+                os.fchmod(handle.fileno(), 0o640)
+                os.fsync(handle.fileno())
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):

@@ -107,6 +107,16 @@ installer. Schema replacement and backup replay each execute in one PostgreSQL
 transaction, so a replay error preserves the pre-attempt schemas. A rollback
 failure leaves managed services stopped and retains the recovery state path.
 
+The pre-operation backup is a same-database rollback snapshot: it preserves
+original grants, revocations, and schema-scoped default privileges. Project
+schemas and objects belong to the database operator used for migration and
+rollback; existing actor roles remain available. No replacement permissions are
+inferred or granted to application actors. This differs from importing an
+external dump, which maps its objects to the target operator and does not import
+foreign ACLs. Older safety archives created with `--no-acl` cannot recover the
+permissions they omitted; retain their original role policy separately rather
+than treating a successful data replay as permission recovery.
+
 上述八个分区的数据库结构只由 Alembic migration 管理，不再保留 SQLite 业务库的 bootstrap、迁运或镜像脚本。Regime 自有模型状态与运行目录按子模块部署合同维护。
 
 ## Reset Local Schemas

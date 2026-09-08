@@ -19,7 +19,11 @@ def archive_response(settings: MarketSettings, provider: str, body: bytes) -> tu
         try:
             with os.fdopen(descriptor,"wb") as output:
                 output.write(gzip.compress(body,compresslevel=6,mtime=0))
-                output.flush();os.fsync(output.fileno())
+                output.flush()
+                # mkstemp's 0600 masks inherited named-reader ACL entries.
+                # Enable their read bit only on this new public object.
+                os.fchmod(output.fileno(), 0o640)
+                os.fsync(output.fileno())
             os.replace(temporary,target)
         finally:
             Path(temporary).unlink(missing_ok=True)

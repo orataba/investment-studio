@@ -124,9 +124,13 @@ def _import_bundle(store,source):
                 h=hashlib.sha256()
                 with os.fdopen(descriptor, "wb") as output, archive.open(relative) as incoming:
                     while chunk:=incoming.read(1024*1024):h.update(chunk);output.write(chunk)
-                    output.flush();os.fsync(output.fileno())
-                if h.hexdigest()!=item["sha256"]:
-                    raise ValueError("Numeric bundle object integrity mismatch")
+                    output.flush()
+                    if h.hexdigest()!=item["sha256"]:
+                        raise ValueError("Numeric bundle object integrity mismatch")
+                    # Preserve inherited named-reader ACLs across atomic linking;
+                    # the object's other writers need read access, not write.
+                    os.fchmod(output.fileno(), 0o640)
+                    os.fsync(output.fileno())
                 # A concurrent importer must never overwrite an immutable object
                 # or share our partially written staging file.
                 try:

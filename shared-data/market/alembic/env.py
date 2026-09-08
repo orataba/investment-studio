@@ -9,9 +9,10 @@ from studio_market.config import MarketSettings
 settings = MarketSettings.from_environment()
 database_url = settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-# Portable restores omit ACLs. Restore the configured Regime consumer's public
-# read access whenever migrations run, including an already-current schema.
-REGIME_READER_GRANTS = """
+# Reconcile the declared public-data actors after portable imports and schema
+# changes, including an already-current schema. Roles and credentials are
+# provisioned separately; neither actor receives private-schema or DDL access.
+REGIME_PUBLIC_GRANTS = """
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'studio_market_regime_reader') THEN
@@ -19,6 +20,15 @@ BEGIN
         GRANT SELECT ON ALL TABLES IN SCHEMA market_data TO studio_market_regime_reader;
         ALTER DEFAULT PRIVILEGES IN SCHEMA market_data
             GRANT SELECT ON TABLES TO studio_market_regime_reader;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'studio_market_regime_writer') THEN
+        GRANT USAGE ON SCHEMA market_data TO studio_market_regime_writer;
+        GRANT SELECT, INSERT, UPDATE ON TABLE market_data.datasets, market_data.batches
+            TO studio_market_regime_writer;
+        GRANT SELECT, INSERT ON TABLE market_data.files, market_data.snapshots
+            TO studio_market_regime_writer;
+        GRANT SELECT, INSERT, DELETE ON TABLE market_data.current
+            TO studio_market_regime_writer;
     END IF;
 END
 $$;
@@ -36,7 +46,7 @@ if context.is_offline_mode():
     with context.begin_transaction():
         context.execute("CREATE SCHEMA IF NOT EXISTS market_data")
         context.run_migrations()
-        context.execute(REGIME_READER_GRANTS)
+        context.execute(REGIME_PUBLIC_GRANTS)
 else:
     with create_engine(database_url, poolclass=NullPool).connect() as connection:
         connection.execute(text("CREATE SCHEMA IF NOT EXISTS market_data"))
@@ -44,4 +54,4 @@ else:
         configure(connection)
         with context.begin_transaction():
             context.run_migrations()
-            context.execute(REGIME_READER_GRANTS)
+            context.execute(REGIME_PUBLIC_GRANTS)
