@@ -16,6 +16,7 @@ WATCHLIST_WEB_PORT="${WATCHLIST_WEB_PORT:-3101}"
 PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
 BRIEFING_WEB_PORT="${BRIEFING_WEB_PORT:-3103}"
 START_SERVICES="${START_SERVICES:-true}"
+HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-60}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 ENV_ROOT="${ENV_ROOT:-}"
 RUNTIME_ENV_HELPER="$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
@@ -573,6 +574,32 @@ if [[ "$START_SERVICES" == "true" ]]; then
       exit 1
     fi
   done
+  health_urls=(
+    "http://127.0.0.1:$HOME_API_PORT/api/health"
+    "http://127.0.0.1:$WATCHLIST_API_PORT/api/health"
+    "http://127.0.0.1:$PORTFOLIO_API_PORT/api/health"
+    "http://127.0.0.1:$BRIEFING_API_PORT/health"
+    "http://127.0.0.1:$HOME_WEB_PORT/"
+    "http://127.0.0.1:$WATCHLIST_WEB_PORT/"
+    "http://127.0.0.1:$PORTFOLIO_WEB_PORT/"
+    "http://127.0.0.1:$BRIEFING_WEB_PORT/"
+  )
+  healthy=false
+  for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do
+    healthy=true
+    for url in "${health_urls[@]}"; do
+      if ! curl --noproxy '*' --max-time 2 --fail --silent --output /dev/null "$url"; then
+        healthy=false
+        break
+      fi
+    done
+    [[ "$healthy" == false ]] || break
+    [[ $attempt -eq $HEALTH_ATTEMPTS ]] || sleep 1
+  done
+  if [[ "$healthy" == false ]]; then
+    echo "Managed systemd service failed its readiness gate: $url" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$RUN_MIGRATIONS" == "true" ]]; then

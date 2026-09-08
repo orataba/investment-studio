@@ -151,6 +151,11 @@ printf '%s\n' \
   > "$MOCK_BIN/systemctl"
 chmod +x "$MOCK_BIN/systemctl"
 
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "health:%s\n" "${@: -1}" >> "$EVENT_LOG"' \
+  '[[ "${HEALTH_FAIL:-false}" != true ]]' > "$MOCK_BIN/curl"
+chmod +x "$MOCK_BIN/curl"
+
 chmod 700 "$ENV_ROOT"
 CANONICAL_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio'
 printf '%s\n' \
@@ -222,6 +227,7 @@ run_case() {
   ENV_ROOT="$ENV_ROOT" \
   RUN_MIGRATIONS=true \
   START_SERVICES=true \
+  HEALTH_ATTEMPTS=1 \
   INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT="$case_root/backups" \
     "$REPOSITORY_ROOT/infra/systemd/install_app_services.sh"
 }
@@ -373,6 +379,16 @@ if [[ -z "$restart_line" || -z "$database_restore_line" || -z "$restored_api_lin
 fi
 
 ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
+HEALTH_CASE="$TEST_ROOT/health-failure"
+prepare_case "$HEALTH_CASE"
+if HEALTH_FAIL=true run_case "$HEALTH_CASE" > "$HEALTH_CASE/output" 2>&1; then
+  echo "The systemd installer accepted an active service with a failed HTTP health check." >&2
+  exit 1
+fi
+assert_original_state_restored "$HEALTH_CASE"
+grep -q '^database-restore$' "$HEALTH_CASE/events"
+grep -q 'failed its readiness gate: http://127.0.0.1:8102/api/health' "$HEALTH_CASE/output"
+
 prepare_case "$ROLLBACK_CASE"
 set +e
 ROLLBACK_FAIL=true \
