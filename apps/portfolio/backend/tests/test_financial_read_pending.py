@@ -80,6 +80,22 @@ def test_entry_get_reads_facts_without_queuing_portfolio_materialization(raw_cli
     assert _state() == before
 
 
+@pytest.mark.parametrize("calculation_status", ["stale", "running", "failed"])
+def test_concentration_settings_read_does_not_depend_on_valuation(raw_client, calculation_status):
+    with get_session_factory()() as session:
+        state = daily_snapshots._state_for_portfolio(session, PORTFOLIO_ID)
+        state.daily_snapshot_status = calculation_status
+        state.refresh_request_id = "existing-calculation"
+        state.refresh_started_at = datetime.now(UTC).isoformat()
+        state.error_message = "Invalid accounting input." if calculation_status == "failed" else None
+        session.commit()
+    before = _state()
+    response = raw_client.get(f"/api/portfolios/{PORTFOLIO_ID}/concentration/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["rules"] == []
+    assert _state() == before
+
+
 def test_explicit_research_post_does_not_create_a_run_while_inputs_are_owned_by_another_worker(raw_client):
     with get_session_factory()() as session:
         state = daily_snapshots._state_for_portfolio(session, PORTFOLIO_ID)

@@ -163,4 +163,4 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 共用同一个 project-schema backup/rollback 原语。
 
 
-多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。本机免登录也须先迁移身份库、建立真实拥有者并配置后台服务身份；云端会话和权限独立配置。本文是运行配置说明，不代表本次实际启用已完成。
+多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。本机免登录也须先迁移身份库、建立真实拥有者并配置后台服务身份；云端会话和权限独立配置。

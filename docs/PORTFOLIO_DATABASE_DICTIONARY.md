@@ -272,6 +272,16 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 |---|
 | **PK** `taxonomy_configuration_revision_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `effective_from DATE`; `effective_to DATE?`; `configuration_version INTEGER`; `configuration_json JSON`; `superseded_by_revision_id VARCHAR?`; `created_at VARCHAR` |
 
+### `portfolio.concentration_policy_revision`
+
+Immutable, effective-dated concentration limits and FCN principal allocation settings owned by a portfolio. Each revision stores the complete policy document: direct security, single FCN and custom taxonomy default/entity limits, plus equal/custom linked-underlying principal allocations. No built-in financial limits are seeded. The editor uses an expected revision; a portfolio row lock serializes concurrent first saves as well as later saves. Historical reads choose the latest effective date not after the holding date, then the highest revision on that date.
+
+| Columns |
+|---|
+| **PK/FK** `portfolio_id → portfolio_record.portfolio_id` (cascade delete); **PK** `revision INTEGER > 0`; `effective_from DATE`; `settings_json JSON`; `created_by VARCHAR`; `created_at VARCHAR` |
+
+Index: `(portfolio_id, effective_from, revision)`. Taxonomy/node and portfolio-local FCN references in the document are validated on edits; unchanged archived references can remain for history. This does not change NAV, the production analytics taxonomy, or materialized valuation generation. Portfolio copy refuses effective-dated configuration history until explicit identity remapping exists. Downgrade refuses to erase saved policies.
+
 ### `portfolio.target_set_record`
 
 | Columns |

@@ -15,7 +15,7 @@ GROUPS = {
     "home": ("home-api", "home-web"),
     "briefing": ("briefing-api", "briefing-web", "briefing-daily", "briefing-weekly"),
     "market": tuple(f"market-{action}" for action in (
-        "daily", "weekly", "publish", "sync", "registered-prices-cn", "registered-prices-hk", "registered-prices-us", "registered-prices-eu")),
+        "daily", "weekly", "crypto", "publish", "sync", "registered-prices-cn", "registered-prices-hk", "registered-prices-us", "registered-prices-eu")),
     "investments": (
         "watchlist-api", "watchlist-web", "portfolio-api", "portfolio-web",
         "market-data-refresh", "cn-market-data-refresh",

@@ -16,7 +16,7 @@ from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.services.read_models import serialize_payload
 
 DATA_ROOT = Path(__file__).resolve().parents[5] / "data" / "research"
-SUPPORTED_TYPES = {"equity", "etf", "index", "public_fund", "private_fund"}
+SUPPORTED_TYPES = {"equity", "etf", "index", "crypto", "public_fund", "private_fund"}
 TEXT_LIMIT = 60000
 
 
@@ -75,7 +75,7 @@ def _registration(session: Session, instrument: InstrumentDetail) -> dict:
 
 def _initial_mandate(instrument: InstrumentDetail, registration: dict, frameworks: list[dict]) -> ResearchMandateInput:
     name, kind = instrument.instrument_name, instrument.instrument_type
-    labels = {"equity": "股票", "etf": "ETF", "index": "指数", "public_fund": "公募基金", "private_fund": "私募基金"}
+    labels = {"equity": "股票", "etf": "ETF", "index": "指数", "crypto": "加密资产现货", "public_fund": "公募基金", "private_fund": "私募基金"}
     facts = [f"{name}（{instrument.instrument_id}），登记类型为{labels[kind]}"]
     for key, label in (("currency", "币种"), ("exchange", "市场"), ("industry", "行业"),
                        ("benchmark", "登记基准"), ("manager", "登记管理人"), ("investment_type", "登记投资类型")):
@@ -86,7 +86,7 @@ def _initial_mandate(instrument: InstrumentDetail, registration: dict, framework
     approach = [f"先为{name}核对当前登记信息和适用口径，原始材料、工作假设与市场叙事分别记录。",
                 "重要数字按主体、单位、币种、预测或报告期、对照期和原文归属整理后，再判断机制与变化。",
                 "每次研究先更新本标的已有重点与反证；资料不足明确列出缺口，不用通用背景冒充专属研究。"]
-    focus, source_plan, gaps = [], [], ["这是依据登记资料和适用方法形成的初始研究任务，尚不代表已完成专属深度研究。"]
+    focus, source_plan, gaps = [], [], ["这是依据登记资料和适用方法形成的初始研究框架，尚不代表已完成专属深度研究。"]
     if kind == "equity":
         industry = registration.get("industry")
         focus.append(f"核实{name}{'在登记行业“' + industry + '”中' if industry else ''}的经营分部、需求、竞争及现金流驱动，并建立同财期比较。")
@@ -103,6 +103,7 @@ def _initial_mandate(instrument: InstrumentDetail, registration: dict, framework
             focus.append(f"依据{name}的正式文件及已登记投资类型“{registration.get('investment_type') or '未取得'}”，区分股票、债券、商品和跨境传导；再选用盈利、久期信用或供需等适用指标。")
         elif kind == "public_fund":
             focus.append(f"跟踪{name}的份额类别、经理与风格变化；将基金相对基准的回报与实际披露期持仓、费用分开。")
+            focus.append("先用有分红复投证据的总回报净值建立收益、回撤与修复路径；按真实披露频率和共同观察日比较同策略、同份额费率的产品。合同业绩基准、用户选用的比较指数与同类样本分别标注。")
         else:
             focus.append(f"跟踪{name}的选样、加权和调整机制；区分价格/全收益指数，不能套用基金经理或申赎条款。")
         manager = registration.get("manager")
@@ -110,6 +111,12 @@ def _initial_mandate(instrument: InstrumentDetail, registration: dict, framework
                        "按真实底层资产取得经营/利率信用/商品供需原始资料，保留报告期、币种和公告日期。"]
         if not benchmark:
             gaps.append("登记资料未给出具体基准或编制规则；必须取得正式文件后再确定研究敞口。")
+    elif kind == "crypto":
+        focus = [f"核实{name}的现货资产与报价币种；使用UTC完整日线和全年交易日历，区分现货、期货、永续合约和ETF。",
+                 "研究供给规则、流动性、杠杆清算、链上行为与市场结构；不能把地址视为个人，也不能将减半直接推导成价格上涨。"]
+        source_plan = ["协议与开发者原始文档、公开交易场所现货数据；衍生品和链上统计必须注明口径和覆盖。",
+                       "跟踪制度和基础设施变化的正式公告；现货没有公司盈利和分红，不套用股票DCF或ETF持仓分析。"]
+        gaps.append("尚未建立多交易场所成交量、链上实体调整与杠杆资金基线；价格相关性不能证明资金来源和因果机制。")
     else:
         strategy = registration.get("disclosed_strategy")
         focus = [f"核实{name}已登记策略资料的实际含义及适用环境。" if strategy else f"{name}尚无已登记策略正文；先取得该产品的管理人材料，不能由名称推断持仓、杠杆或对冲职责。",
@@ -118,6 +125,16 @@ def _initial_mandate(instrument: InstrumentDetail, registration: dict, framework
                        "公开检索只使用公开管理人/策略主题，不向外部查询发送本标的私有材料或账户内容。"]
         if not strategy:
             gaps.append("未取得该产品的策略正文，尚不能将公开市场事件映射为本产品的实际敞口。")
+    if kind in {"public_fund", "private_fund"}:
+        approach.extend([
+            "先核对单位净值、分红再投资总回报净值、币种、费用与披露频率；累计现金分红净值不能替代总回报净值，缺失观察不前填为零收益。",
+            "以已取得的真实净值区间建立历史基线：收益与回撤、修复时间、上涨/下跌环境表现；条件允许时检验同类与基准的共同样本。不同频率先对齐，短样本不证明完整周期能力。",
+            "滚动相关、贝塔与风格敏感性仅是样本内统计线索，不能还原实际持仓、杠杆、对冲或管理人操作；相对指数的超额也不自动等于选股能力。",
+            "管理人材料、费率、申赎和策略变更有证据时持续补充；没有新净值或新资料时可保持原判断，不为了日更重复改写底稿。",
+        ])
+        if kind == "private_fund":
+            focus.append("优先从已登记策略分类和可用净值判断比较对象；未取得合同策略时，将策略名称线索写成待核实假设，不据此配置确定的风险暴露。")
+        gaps.append("同类/基准统计只使用实际可访问的序列与共同期间；尚未配置、口径不一致或观察不足时保留缺口，不编造排名、超额或相关性。")
     value = {"title": f"{name} · 专属研究底稿", "background": "已登记资料（并非本轮原文核证）：" + "；".join(facts) + "。\n有原文支持的经营/策略背景及工作假设待研究后分别补充。",
              "mechanisms": methods, "research_approach": approach, "focus": focus,
              "source_plan": source_plan, "gaps": gaps}
@@ -247,12 +264,14 @@ def dossier_topic(session: Session, instrument_id: str) -> ResearchTopic:
 
 def material_record(entry: ResearchEntry, instrument_id: str) -> dict:
     metadata = dict(entry.context_json or {})
+    derived = (metadata.get("source_kind") in {"generated_source_summary", "internal_computed_summary"}
+               or metadata.get("extraction_status") in {"summary", "computed_summary"})
     body = entry.body
     if str(metadata.get("file_name", "")).lower().endswith(".pdf") and not re.sub(r"\[第 \d+ 页\]\s*", "", body).strip():
         body = ""
         metadata.update(extraction_status="empty", extraction="PDF未提取到文字正文；页码不代表已读原文，扫描件需补充文字")
     return serialize_payload({"source_id": f"material:{entry.entry_id}", "entry_id": entry.entry_id,
-        "instrument_id": instrument_id, "source_type": "instrument_material", "role": "source_material",
+        "instrument_id": instrument_id, "source_type": "instrument_material", "role": "derived_reference" if derived else "source_material",
         "title": entry.title, "body": body, "source": entry.source,
         "metadata": metadata, "recorded_at": entry.created_at})
 

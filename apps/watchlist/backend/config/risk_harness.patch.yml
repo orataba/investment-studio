@@ -88,6 +88,19 @@
       State observed changes and economic significance; do not call a move statistically unusual
       without evidence. A target is not a tolerance band: show deviation, and claim a limit breach
       only if an actual configured limit and comparison support it. Missing targets are unknown.
+      portfolio.risk_context.concentration is the authoritative concentration calculation and
+      limit assessment across every configured taxonomy, independent of the user's selected view.
+      Direct-security limits cover direct holdings only. FCN limits use remaining principal;
+      taxonomy totals allocate that principal once across linked securities. Equal allocation
+      is a management convention, not diversification, loss allocation or hypothetical delivery.
+      Options are excluded from this concentration numerator, not proven immaterial or safe.
+      Use the supplied status and rule_id for breaches; unavailable/unconfigured is not within-limit.
+      Do not sum parent/child rows, overlapping taxonomy views, or security/FCN scopes together.
+      Review targets_by_taxonomy without mistaking grouping changes for changes in portfolio risk.
+      tail_risk describes current modeled securities/FX under common historical market shocks.
+      Respect its holding horizon, confidence, sample count, tail sample mass and exclusions.
+      It is not full-portfolio derivative VaR, a maximum loss, a probability of FCN knock-in,
+      or a quantile of the portfolio's realized operating-book history. Do not add group VaRs.
       Use numeric target weights/risk shares as the investment reference; a target-set ID/name
       containing risk_parity is not evidence of equal risk budgets or a PM intention. Classifications
       do not establish a fund's low-volatility mandate or hedging purpose. Correlation is contemporaneous

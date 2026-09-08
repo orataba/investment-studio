@@ -31,6 +31,7 @@ describe('DOM translation context', () => {
         <span>3M</span>
         <button>3M</button>
         <span>All 公募</span>
+        <span>All Instruments</span>
         {expanded && <section>
           <h2>Settlement Cash Account</h2>
           <label>Fund vehicle<select defaultValue="场外开放式"><option value="场外开放式">场外开放式</option></select></label>
@@ -50,6 +51,7 @@ describe('DOM translation context', () => {
       expect(screen.getByRole('button', { name: '添加笔记' }).title).toBe('查看该日期笔记')
       expect(screen.getByRole('button', { name: '1 个月波动率：升序' })).toBeTruthy()
       expect(screen.getByText('日度风险口径：观测数据已对齐')).toBeTruthy()
+      expect(screen.getByText('全部标的')).toBeTruthy()
       expect(screen.getByText('业绩详情').title).not.toMatch(/[A-Za-z]/)
       expect((screen.getByLabelText('产品形态') as HTMLSelectElement).value).toBe('场外开放式')
       expect(screen.getByText('Risk')).toBeTruthy()
@@ -59,6 +61,7 @@ describe('DOM translation context', () => {
       expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep the original 研究 notes')
       fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
       await waitFor(() => expect(screen.getByRole('heading', { name: 'Settlement Cash Account' })).toBeTruthy())
+      expect(screen.getByText('All Instruments')).toBeTruthy()
       expect(screen.getByRole('option', { name: 'Off-exchange open-ended' })).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: 'Review' }))
     }

@@ -61,6 +61,33 @@ def test_topics_share_evidence_keep_conclusion_history_and_complete_followups(cl
     assert detail == client.get(f'/api/research/topics/{tid}').json()
 
 
+def test_research_pdf_without_text_does_not_turn_page_labels_into_evidence(client):
+    from io import BytesIO
+    from pypdf import PdfWriter
+
+    topic = client.post('/api/research/topics', json={'title': 'PDF materials', 'instrument_ids': []}).json()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    writer.write(buffer)
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/files",
+        files={'file': ('scan.pdf', buffer.getvalue(), 'application/pdf')})
+    assert response.status_code == 200, response.text
+    assert response.json()['body'] == ''
+    assert response.json()['context_json']['extraction_status'] == 'empty'
+    assert client.get(response.json()['source']).content == buffer.getvalue()
+
+
+def test_invalid_research_pdf_is_a_validation_error_and_leaves_no_file_or_entry(client):
+    from watchlist_app.core.settings import get_settings
+    topic = client.post('/api/research/topics', json={'title': 'PDF materials', 'instrument_ids': []}).json()
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/files",
+        files={'file': ('broken.pdf', b'not a PDF file', 'application/pdf')})
+    assert response.status_code == 422, response.text
+    assert client.get(f"/api/research/topics/{topic['topic_id']}").json()['entries'] == []
+    assert not list((get_settings().document_storage_root / 'research' / topic['topic_id']).iterdir())
+
+
 def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, monkeypatch):
     wid = seed(client)
     import watchlist_app.services.research_runner as runner

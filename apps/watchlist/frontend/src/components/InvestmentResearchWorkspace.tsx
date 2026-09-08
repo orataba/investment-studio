@@ -24,6 +24,7 @@ export type ResearchInstrumentType =
   | 'etf'
   | 'equity'
   | 'index'
+  | 'crypto'
 
 type Props = {
   instrumentId: string
@@ -77,6 +78,11 @@ function typeSpecificLabels(
     people: '管理层与治理分析',
   }
   const values = language === 'zh-Hans' ? chinese : english
+  if (instrumentType === 'crypto') {
+    return language === 'zh-Hans'
+      ? { edge: '网络、供给机制与采用', valuation: '流动性与定价框架', people: '协议治理、托管与市场结构' }
+      : { edge: 'Network, Supply & Adoption', valuation: 'Liquidity & Pricing Framework', people: 'Protocol Governance, Custody & Market Structure' }
+  }
   if (instrumentType === 'public_fund') {
     return language === 'zh-Hans'
       ? { edge: '投资流程与优势', valuation: '配置与估值考虑', people: '基金经理与投研团队分析' }

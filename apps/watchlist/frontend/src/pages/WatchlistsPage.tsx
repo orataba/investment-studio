@@ -116,6 +116,7 @@ const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = [
   'etf',
   'equity',
   'index',
+  'crypto',
 ] as const
 const INSTRUMENT_TYPE_LABELS: Record<string, string> = {
   public_fund: 'Public Fund',
@@ -123,6 +124,7 @@ const INSTRUMENT_TYPE_LABELS: Record<string, string> = {
   etf: 'ETF',
   equity: 'Equity',
   index: 'Index',
+  crypto: 'Crypto',
 }
 const EMPTY_INSTRUMENT_TYPES: string[] = []
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
@@ -1401,7 +1403,9 @@ export default function WatchlistsPage() {
       }
       setPendingDeleteItems(null)
       setNotice(
-        `Deleted ${pending.instrumentIds.length} instruments from "${pending.watchlistName}".`,
+        zh
+          ? `已从“${pending.watchlistName}”移除 ${pending.instrumentIds.length} 个标的。`
+          : `Removed ${pending.instrumentIds.length} instruments from "${pending.watchlistName}".`,
       )
     } catch (deleteError) {
       setConfirmError(
@@ -3006,7 +3010,7 @@ export default function WatchlistsPage() {
                   })
                 }}
               >
-                Delete
+                Remove From List
               </button>
             ) : null}
           </div>
@@ -4011,13 +4015,15 @@ export default function WatchlistsPage() {
       </div>
       <ConfirmDialog
         open={Boolean(pendingDeleteItems)}
-        title="Delete Instruments"
+        title="Remove From List"
         description={
           pendingDeleteItems
-            ? `Delete ${pendingDeleteItems.instrumentIds.length} selected instruments from "${pendingDeleteItems.watchlistName}"? Only this watchlist membership is removed; shared instruments and other watchlists are unchanged.`
+            ? zh
+              ? `从“${pendingDeleteItems.watchlistName}”移除 ${pendingDeleteItems.instrumentIds.length} 个标的？投资状态、设置和研究记录会保留，仍可从“全部标的”找到。`
+              : `Remove ${pendingDeleteItems.instrumentIds.length} instruments from "${pendingDeleteItems.watchlistName}"? Investment status, settings, and research remain with each instrument, accessible in All Instruments.`
             : ''
         }
-        confirmLabel="Delete Instruments"
+        confirmLabel="Remove From List"
         busy={deletingItems}
         busyLabel="Deleting…"
         error={confirmError}
@@ -4030,7 +4036,7 @@ export default function WatchlistsPage() {
       <ConfirmDialog
         open={Boolean(pendingDeleteWatchlist)}
         title="Delete Watchlist"
-        description="This permanently deletes the watchlist, its saved views, and its list membership. Shared instruments are not deleted. This action cannot be undone."
+        description="Delete this list and its saved views? Each instrument keeps its investment status, settings, and research, and remains accessible in All Instruments."
         confirmLabel="Delete Watchlist"
         confirmationText={pendingDeleteWatchlist?.name}
         busy={deletingWatchlist}

@@ -402,6 +402,7 @@ export default function PortfoliosPage() {
                     </button>
                     <button
                       type="button"
+                      disabled={!portfolio.access?.can_manage}
                       onClick={() => {
                         setDeleteError(null)
                         setPendingDelete(portfolio)

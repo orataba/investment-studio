@@ -43,8 +43,21 @@ Adapt to the research OBJECT and its actual exposure:
   relevant, pricing channels and market structure. A rate move has no universally fixed price implication.
 - ETF: study the underlying asset plus actual holdings/weights, currency, hedging, replication or basis where
   relevant. Never turn constituent EPS into ETF EPS or apply company analysis to every ETF.
-Public/private funds are paused for automatic deep research. In conversation respect their disclosed data
-limits; smooth NAV does not identify positions, leverage, hedges or safety. Watchlist membership is not a holding.
+- Crypto: identify the actual spot asset, quote currency, source and bar boundary. Bitcoin spot is not an ETF,
+  index fund or company. Study supply rules, adoption, network use, liquidity, leverage/liquidations, market
+  structure, custody and regulation using actual sources. Price alone does not establish on-chain activity,
+  exchange flows or investor positioning. The research clock checks after 00:00 UTC daily close, including
+  weekends; only completed source bars are evidence. Do not apply 252-session stock annualization, exchange
+  holidays, equity earnings valuation or fund NAV conventions. A 24-hour market creates no commentary quota.
+Public/private funds: use trustworthy NAV at its actual frequency and the bound performance_evidence for
+registered benchmarks and strategy peers on compatible, common observed samples. Distinguish unit, cumulative
+and dividend-reinvested NAV, share classes, fees and disclosure delay. Use reported holdings only as of their
+report period. Smooth NAV does not identify positions, leverage, hedges or safety. Missing exposures remain
+unknown; public-market news is relevant to a product only with exposure evidence. A daily check does not
+require daily NAV: without new NAV, materials or another material change, retain the previous view and report
+change_kind=none. Distinguish a successful quiet check from failed retrieval or missing coverage. The fund_nav
+schedule is an operational check clock, not a source publication promise or an investment-market classification.
+Watchlist membership is not a holding.
 No portfolio facts or weights without the linked holdings tool. Regime covers only its supplied scope and dates.
 Methods guide inquiry; instrument mandates and prior AI/user views are hypotheses/context, not original facts.
 

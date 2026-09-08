@@ -248,6 +248,85 @@ describe('Taxonomies rendered page contract', () => {
     expect(apiMocks.updatePortfolioTaxonomy).not.toHaveBeenCalled()
   })
 
+  it('lets editors change the displayed classification without changing portfolio planning', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'industry', name: 'Industry', planning_enabled: false }],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await screen.findByRole('button', { name: 'Risk Assets' })
+    const picker = document.querySelector('.taxonomy-picker') as HTMLElement
+    await user.click(within(picker).getByRole('button', { name: 'Policy Allocation' }))
+    await user.click(screen.getByRole('button', { name: 'Industry' }))
+    expect(apiMocks.updatePortfolioDefaultPlanningTaxonomy).not.toHaveBeenCalled()
+    expect(apiMocks.updatePortfolioTaxonomy).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Use for portfolio planning' })).toBeEnabled()
+  })
+
+  it('enables weight targets on a custom taxonomy without making it the production taxonomy', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      default_planning_taxonomy_id: null,
+      taxonomies: [{ ...taxonomyCatalog.taxonomies[0], planning_enabled: false, budgeting_level: null }],
+      target_sets: [], target_set_lines: [],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await user.click(await screen.findByRole('button', { name: 'Edit Targets' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
+    for (const [name, value] of [['Risk Assets', '80'], ['Cash', '20'], ['Derivatives', '0']]) {
+      await user.type(screen.getByRole('spinbutton', { name: `SAA target weight for ${name}` }), value)
+    }
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledTimes(1))
+    expect(apiMocks.updatePortfolioTaxonomy).toHaveBeenCalledWith('3', 'taxonomy-1', expect.objectContaining({ planning_enabled: true }))
+    expect(apiMocks.createPortfolioTargetSet.mock.calls[0][2]).toMatchObject({ weight_enabled: true, risk_budget_enabled: false })
+    expect(apiMocks.updatePortfolioDefaultPlanningTaxonomy).not.toHaveBeenCalled()
+  })
+
+  it('archives the existing target set when its final enabled dimension is turned off', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await user.click(await screen.findByRole('button', { name: 'Edit Targets' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAA risk contribution targets' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledTimes(1))
+    expect(apiMocks.updatePortfolioTargetSet.mock.calls[0]).toEqual(['3', 'taxonomy-1', 'saa-root', expect.objectContaining({ status: 'inactive' })])
+  })
+
+  it('saves target changes from multiple scopes together', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await user.click(await screen.findByRole('button', { name: 'Edit Targets' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAA risk contribution targets' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Target scope' }), 'risk-assets')
+    await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
+    await user.type(screen.getByRole('spinbutton', { name: /SAA target weight for .*Alpha Fund/ }), '100')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledTimes(1))
+    expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledWith('3', 'taxonomy-1', 'saa-root',
+      expect.objectContaining({ status: 'inactive' }))
+    expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledWith('3', 'taxonomy-1',
+      expect.objectContaining({ comparator_taxonomy_node_id: 'risk-assets', weight_enabled: true }))
+  })
+
+  it('shows FCN-only underlyings for classification without creating a direct holding or observed candidate', async () => {
+    const contract = fcnContractFixture()
+    contract.terms.underlyings[0].instrument_id = 'linked-only'
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [instrumentFixture({ instrument_id: 'linked-only', instrument_name: 'Linked stock' })] })
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ rows: [holdingFixture(), holdingFixture({
+      line_id: 'fcn-line', holding_category: 'derivatives', quantity: 1, instrument_core: null, derivative_contract: contract,
+    })] }))
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    const row = (await screen.findByText(/Linked stock/, { selector: '.taxonomy-level-label' })).closest('tr')!
+    expect(within(row).getByLabelText('Contract linked')).toBeInTheDocument()
+    expect(within(row).getByText('FCN: Alpha FCN')).toBeInTheDocument()
+    expect(within(row).getAllByText('—').length).toBeGreaterThanOrEqual(2)
+    expect(apiMocks.createPortfolioInstrumentUniverseRecord).not.toHaveBeenCalled()
+  })
+
   it('withholds derived zero-state taxonomy panels until the workspace request settles', () => {
     apiMocks.getPortfolioTaxonomyCatalog.mockReturnValue(new Promise(() => {}))
 

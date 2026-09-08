@@ -50,7 +50,7 @@ def run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict:
 def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict:
     role=os.environ.get('INVESTMENT_STUDIO_MARKET_ROLE','')
     if role not in {'collector','replica'}:raise ValueError('Configure INVESTMENT_STUDIO_MARKET_ROLE as collector or replica')
-    if action in {'daily','weekly','publish','registered-prices'} and role!='collector':raise ValueError('This Studio installation is a replica; public acquisition and publication run on the collector')
+    if action in {'daily','weekly','crypto','publish','registered-prices'} and role!='collector':raise ValueError('This Studio installation is a replica; public acquisition and publication run on the collector')
     now=now or datetime.now(timezone.utc)
     if now.tzinfo is None:raise ValueError('Pipeline now must include a timezone')
     end=now.astimezone(ZoneInfo('Asia/Shanghai')).date();results=[]
@@ -98,6 +98,13 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
             stage('cn_futures_daily_facts',lambda:collect(settings,groups=['cn_futures'],start=end-timedelta(days=7),end=end))
         # Ready batches from successful sources remain useful when another source fails.
         stage('publish_numeric_delta',lambda:publish_pending(settings))
+    elif action=='crypto':
+        # The US-market daily run is before UTC midnight. A small independent
+        # post-midnight capture supplies the newly completed BTC calendar day.
+        utc_end=now.astimezone(timezone.utc).date()-timedelta(days=1)
+        stage('market_series',lambda:collect(settings,groups=['market_series'],symbols=['BTCUSD'],
+                                            start=utc_end-timedelta(days=7),end=utc_end))
+        stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='publish':stage('publish_numeric_delta',lambda:publish_pending(settings))
     elif action=='registered-prices':
         registry=stage('registered_identities',lambda:registered_instruments(settings))
@@ -129,7 +136,7 @@ def _run(settings,action: str,*,now: datetime|None=None,market: str='all')->dict
 
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='studio-market pipeline')
-    parser.add_argument('action',choices=['daily','weekly','registered-prices','publish','sync','status'])
+    parser.add_argument('action',choices=['daily','weekly','crypto','registered-prices','publish','sync','status'])
     parser.add_argument('--market',choices=['cn','hk','us','eu','all'],default='all')
     args=parser.parse_args(argv);settings=MarketSettings.from_environment()
     if args.action=='status':

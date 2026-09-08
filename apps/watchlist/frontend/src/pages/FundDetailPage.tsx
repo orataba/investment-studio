@@ -3972,15 +3972,16 @@ export default function FundDetailPage({
   const benchmarkCalculationBasisLabel = benchmarkNavSeries?.return_kind
     ? returnKindLabels[benchmarkNavSeries.return_kind] : '收益口径待确认'
   const fundCalculationBasisLabel = navSeries.return_kind ? returnKindLabels[navSeries.return_kind] : '收益口径待确认'
+  const benchmarkReturnKindsMatch = Boolean(navSeries.return_kind && navSeries.return_kind === benchmarkNavSeries?.return_kind)
   const benchmarkRiskLabel = selectedBenchmark
     ? `${selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name} · ${benchmarkCalculationBasisLabel}`
     : null
-  const benchmarkStatusText = benchmarkLoading ? '正在加载基准数据…'
-    : benchmarkLoadError ? `基准加载失败：${benchmarkLoadError}。点击重试。`
+  const benchmarkStatusText = benchmarkLoading ? 'Loading'
+    : benchmarkLoadError ? `基准加载失败：${benchmarkLoadError}`
     : benchmarkCurrencyUnavailable ? `基准没有 ${effectiveCurrency || '当前币种'} 数据。`
     : benchmarkBasisUnavailable ? '基准没有可用的价格或净值序列。'
     : benchmarkCalculationUnavailable ? '基准没有可用的计算样本。'
-    : `标的：${fundCalculationBasisLabel}；基准：${benchmarkCalculationBasisLabel}。按共同观察区间计算收益和相对指标。${benchmarkNavSeries?.return_kind === 'price_return' ? '基准价格收益不含分红。' : ''}${navSeries.return_kind && navSeries.return_kind === benchmarkNavSeries?.return_kind ? '' : '分红及复权口径差异会反映在比较结果中。'}`
+    : `标的：${fundCalculationBasisLabel}；基准：${benchmarkCalculationBasisLabel}。按共同观察区间展示各自收益。${benchmarkNavSeries?.return_kind === 'price_return' ? '基准价格收益不含分红。' : ''}${benchmarkReturnKindsMatch ? '收益口径一致，可计算相对指标。' : '收益口径不同或未确认，未计算超额收益及相对风险指标。'}`
   const benchmarkHasIssue = Boolean(benchmarkLoadError || benchmarkCurrencyUnavailable || benchmarkBasisUnavailable || benchmarkCalculationUnavailable)
   const latestReturnSegmentBreak =
     navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
@@ -4798,8 +4799,11 @@ export default function FundDetailPage({
       ? commonObservationDateWindow(calculationBasisSeries, benchmarkCalculationSeries)
       : null
   const comparisonReferenceEndDate = comparisonReferenceWindow?.end || null
-  const fundPathRiskAvailable = calculationBasisSeries.length >= 2
-  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2
+  const fundPathRiskAvailable = calculationBasisSeries.length >= 2 &&
+    navSeries.calculation_frequency_profile.gap_count === 0 && !hasUnconfirmedReturnSegmentBreak
+  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2 &&
+    benchmarkNavSeries?.calculation_frequency_profile.gap_count === 0 &&
+    !benchmarkNavSeries.return_segment_breaks.length
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
     const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
     const comparisonWindowSpec =
@@ -4833,6 +4837,7 @@ export default function FundDetailPage({
           : null,
       relative:
         benchmarkWindow.length >= 2 &&
+        benchmarkReturnKindsMatch &&
         fundPathRiskAvailable &&
         benchmarkPathRiskAvailable
           ? buildPerformanceRelativeSnapshot(comparisonFundWindow, benchmarkWindow)
@@ -4979,12 +4984,12 @@ export default function FundDetailPage({
         const { benchmark } = period
         return {
         primary:
-          fund.periodReturn == null || benchmark?.periodReturn == null
+          !benchmarkReturnKindsMatch || fund.periodReturn == null || benchmark?.periodReturn == null
             ? '—'
             : formatPercent(fund.periodReturn - benchmark.periodReturn),
         secondary: null,
         tone:
-          fund.periodReturn == null || benchmark?.periodReturn == null
+          !benchmarkReturnKindsMatch || fund.periodReturn == null || benchmark?.periodReturn == null
             ? 'empty'
             : getSignedMetricTone(fund.periodReturn - benchmark.periodReturn),
         }
@@ -5345,14 +5350,12 @@ export default function FundDetailPage({
             >
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.5 4.4 1.1 6.2-5.7-3-5.7 3 1.1-6.2L3 9.6l6.2-.9Z" fill={selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" /></svg>
             </button>
-            {hasBenchmarkSelection && (benchmarkHasIssue || benchmarkLoading ? (
-              <div className={`instrument-benchmark-status${benchmarkHasIssue ? ' instrument-benchmark-status-error' : ''}`}>
-                <button type="button" aria-label={statusText} onClick={() => { if (benchmarkLoadError) setBenchmarkLoadRetryToken((value) => value + 1) }}>
-                  {benchmarkLoading ? '…' : benchmarkHasIssue ? '!' : 'i'}
-                </button>
-                <span role="status">{statusText}</span>
+            {hasBenchmarkSelection && (
+              <div className="instrument-benchmark-status">
+                {benchmarkLoading ? <span role="status" aria-label="Loading">…</span>
+                  : <InfoHint label="基准比较口径" detail={statusText} tone={benchmarkHasIssue ? 'warning' : 'info'} />}
               </div>
-            ) : <InfoHint label="基准比较口径" detail={statusText} />)}
+            )}
             {showBenchmarkResults ? (
               <div className="instrument-chart-compare-results">
                 {filteredBenchmarkOptions.length ? (
@@ -5383,6 +5386,10 @@ export default function FundDetailPage({
               </div>
             ) : null}
           </div>
+          {hasBenchmarkSelection && benchmarkLoadError && <div className="instrument-benchmark-error" role="alert">
+            <span>{benchmarkStatusText}</span>
+            <button type="button" onClick={() => setBenchmarkLoadRetryToken((value) => value + 1)}>{language === 'zh-Hans' ? '重试' : 'Retry'}</button>
+          </div>}
         </div>
       </div>
     )
@@ -6917,14 +6924,9 @@ export default function FundDetailPage({
             <div className="instrument-risk-section-body">
               {riskPathMetricsUnavailable ? (
                 <div className="instrument-placeholder">
-                  Path-dependent risk metrics require at least two canonical observations.
-                </div>
-              ) : null}
-              {!riskPathMetricsUnavailable && calculationFrequencyProfile.gap_count > 0 ? (
-                <div className="instrument-placeholder">
-                  {formatNumber(calculationFrequencyProfile.gap_count, 0)} expected observation(s) are
-                  missing. Metrics below use the available canonical observations; review data quality
-                  before making a decision.
+                  {language === 'zh-Hans'
+                    ? '路径风险至少需要两个有效观测，且不存在缺失观测或待确认的收益断点。区间收益仍可查看。'
+                    : 'Path risk needs at least two valid observations with no expected gaps or unconfirmed return breaks. Period returns remain available.'}
                 </div>
               ) : null}
               <div className="instrument-risk-visual-grid instrument-risk-rolling-grid">

@@ -172,7 +172,7 @@ describe('Overview rendered page contract', () => {
     )
 
     const hint = await screen.findByRole('button', { name: /Operational performance basis:/ })
-    expect(hint).toHaveAttribute('title', expect.stringContaining('NAV reconciliation'))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining('NAV reconciliation'))
     expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
   })
 
@@ -432,11 +432,11 @@ describe('Overview rendered page contract', () => {
     )
 
     const warningHint = await screen.findByRole('button', { name: /Data quality warning/ })
-    expect(warningHint).toHaveAttribute('title', warning)
+    expect(warningHint).toHaveAttribute('aria-label', expect.stringContaining(warning))
     expect(warningHint.closest('.overview-chart-controls')).not.toBeNull()
     const cutoffHint = await screen.findByRole('button', { name: /Performance data cutoff:/ })
     expect(cutoffHint.closest('.overview-chart-controls')).not.toBeNull()
-    expect(cutoffHint).toHaveAttribute('title', expect.stringContaining('Performance shown through 2026-07-14'))
+    expect(cutoffHint).toHaveAttribute('aria-label', expect.stringContaining('Performance shown through 2026-07-14'))
     expect(screen.queryByText(warning)).not.toBeInTheDocument()
     await user.click(warningHint)
     expect(within(screen.getByRole('tooltip')).getAllByText(warning)).toHaveLength(1)
@@ -574,7 +574,7 @@ describe('Overview rendered page contract', () => {
       name: /Benchmark comparison: Exploratory comparator/,
     })
     expect(benchmarkHint).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('Distribution treatment is unconfirmed'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
@@ -644,7 +644,7 @@ describe('Overview rendered page contract', () => {
       name: /Benchmark comparison: Price-return comparator/,
     })
     expect(benchmarkHint).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('Comparison uses the selected price-return series'),
     )
     const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })

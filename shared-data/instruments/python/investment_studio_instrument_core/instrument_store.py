@@ -69,6 +69,7 @@ SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
     "etf": ("daily", 0),
     "index": ("daily", 0),
     "equity": ("daily", 0),
+    "crypto": ("daily", 0),
     "fx": ("daily", 0),
     "cash": ("event_driven", 0),
     "other": ("event_driven", 0),
@@ -264,12 +265,12 @@ def _default_source_settings(
         "source_email_rules": [],
         "expected_frequency": expected_frequency,
         "market_calendar": (
-            _inferred_market_calendar(identifiers)
+            "24/7" if normalized_instrument_type == "crypto" else _inferred_market_calendar(identifiers)
             if expected_frequency != "event_driven"
             else None
         ),
         "release_lag_days": release_lag_days,
-        "return_semantics": "unknown",
+        "return_semantics": "price_return" if normalized_instrument_type == "crypto" else "unknown",
     }
 
 
@@ -365,6 +366,13 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         "valuation": ["close", "last"],
         "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
+        "reference": ["close", "last"],
+    },
+    "crypto": {
+        "trading": ["close", "last"],
+        "valuation": ["close", "last"],
+        "total_return": ["close", "last"],
+        "chart": ["close", "last"],
         "reference": ["close", "last"],
     },
     "cash": {
@@ -3497,6 +3505,18 @@ def upsert_market_data_points(
     advancing the registry watermark, and reloading the full instrument once per
     observation.
     """
+    with session_factory() as session:
+        changed_count = _upsert_market_data_points(session, instrument_id=instrument_id, rows=rows)
+        session.commit()
+    return changed_count
+
+
+def _upsert_market_data_points(
+    session: Session,
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> int | None:
     normalized_rows: list[
         tuple[tuple[str, str, date, str], dict[str, object]]
     ] = []
@@ -3603,143 +3623,141 @@ def upsert_market_data_points(
     if not normalized_rows:
         return 0
 
-    with session_factory() as session:
-        target = session.scalar(
-            select(Instrument)
-            .where(Instrument.instrument_id == instrument_id)
-            .with_for_update()
+    target = session.scalar(
+        select(Instrument)
+        .where(Instrument.instrument_id == instrument_id)
+        .with_for_update()
+    )
+    if target is None:
+        return None
+    normalized_by_key: dict[
+        tuple[str, str, date, str], dict[str, object]
+    ] = {}
+    for key, payload in normalized_rows:
+        metric_family, quote_basis, _, currency = key
+        price_unit, price_scale = canonical_price_contract(
+            instrument_type=target.instrument_type,
+            metric_family=metric_family,
+            quote_basis=quote_basis,
         )
-        if target is None:
-            return None
-        normalized_by_key: dict[
-            tuple[str, str, date, str], dict[str, object]
-        ] = {}
-        for key, payload in normalized_rows:
-            metric_family, quote_basis, _, currency = key
-            price_unit, price_scale = canonical_price_contract(
-                instrument_type=target.instrument_type,
-                metric_family=metric_family,
-                quote_basis=quote_basis,
+        try:
+            normalized_currency, normalized_status, normalized_value = (
+                _validated_market_data_observation(
+                    instrument_id=target.instrument_id,
+                    instrument_type=target.instrument_type,
+                    instrument_currency=target.currency,
+                    metric_family=metric_family,
+                    quote_basis=quote_basis,
+                    point_currency=currency,
+                    value=payload["value"],
+                    status=payload["status"],
+                )
             )
-            try:
-                normalized_currency, normalized_status, normalized_value = (
-                    _validated_market_data_observation(
-                        instrument_id=target.instrument_id,
-                        instrument_type=target.instrument_type,
-                        instrument_currency=target.currency,
-                        metric_family=metric_family,
-                        quote_basis=quote_basis,
-                        point_currency=currency,
-                        value=payload["value"],
-                        status=payload["status"],
-                    )
-                )
-            except ValueError as error:
-                raise ValueError(
-                    f'Market-data row {int(payload["row_index"])}: {error}'
-                ) from error
-            normalized_key = (metric_family, quote_basis, key[2], normalized_currency)
-            normalized_by_key[normalized_key] = {
-                "value": (
-                    _decimal_text(normalized_value)
-                    if normalize_instrument_type(target.instrument_type) == "fx"
-                    else str(payload["value_text"])
-                ),
-                "provider": payload["provider"],
-                "status": normalized_status,
-                "price_unit": price_unit,
-                "price_scale": price_scale,
-                **_nav_lineage_columns(
-                    payload["nav_lineage"]
-                    if isinstance(payload["nav_lineage"], NavLineage)
-                    else None
-                ),
-            }
-        relevant_dates = sorted({key[2] for key in normalized_by_key})
-        existing_by_key = {
-            (
-                point.metric_family,
-                point.quote_basis,
-                point.as_of_date,
-                point.currency,
-            ): point
-            for point in session.scalars(
-                select(InstrumentMarketData).where(
-                    InstrumentMarketData.instrument_id == instrument_id,
-                    InstrumentMarketData.as_of_date.in_(relevant_dates),
-                )
-            ).all()
+        except ValueError as error:
+            raise ValueError(
+                f'Market-data row {int(payload["row_index"])}: {error}'
+            ) from error
+        normalized_key = (metric_family, quote_basis, key[2], normalized_currency)
+        normalized_by_key[normalized_key] = {
+            "value": (
+                _decimal_text(normalized_value)
+                if normalize_instrument_type(target.instrument_type) == "fx"
+                else str(payload["value_text"])
+            ),
+            "provider": payload["provider"],
+            "status": normalized_status,
+            "price_unit": price_unit,
+            "price_scale": price_scale,
+            **_nav_lineage_columns(
+                payload["nav_lineage"]
+                if isinstance(payload["nav_lineage"], NavLineage)
+                else None
+            ),
         }
-        changed_count = 0
-        for (metric_family, quote_basis, point_date, currency), payload in normalized_by_key.items():
-            existing = existing_by_key.get(
-                (metric_family, quote_basis, point_date, currency)
+    relevant_dates = sorted({key[2] for key in normalized_by_key})
+    existing_by_key = {
+        (
+            point.metric_family,
+            point.quote_basis,
+            point.as_of_date,
+            point.currency,
+        ): point
+        for point in session.scalars(
+            select(InstrumentMarketData).where(
+                InstrumentMarketData.instrument_id == instrument_id,
+                InstrumentMarketData.as_of_date.in_(relevant_dates),
             )
-            if existing is None:
-                changed_count += 1
-                session.add(
-                    InstrumentMarketData(
-                        instrument_id=instrument_id,
-                        metric_family=metric_family,
-                        quote_basis=quote_basis,
-                        as_of_date=point_date,
-                        value=str(payload["value"]),
-                        currency=currency,
-                        price_unit=str(payload["price_unit"]),
-                        price_scale=payload["price_scale"],
-                        provider=payload["provider"],
-                        status=str(payload["status"]),
-                        nav_lineage_kind=payload["nav_lineage_kind"],
-                        nav_derivation_method_version=payload[
-                            "nav_derivation_method_version"
-                        ],
-                        nav_derivation_anchor_date=payload[
-                            "nav_derivation_anchor_date"
-                        ],
-                        nav_lineage_evidence_json=payload[
-                            "nav_lineage_evidence_json"
-                        ],
-                    )
+        ).all()
+    }
+    changed_count = 0
+    for (metric_family, quote_basis, point_date, currency), payload in normalized_by_key.items():
+        existing = existing_by_key.get(
+            (metric_family, quote_basis, point_date, currency)
+        )
+        if existing is None:
+            changed_count += 1
+            session.add(
+                InstrumentMarketData(
+                    instrument_id=instrument_id,
+                    metric_family=metric_family,
+                    quote_basis=quote_basis,
+                    as_of_date=point_date,
+                    value=str(payload["value"]),
+                    currency=currency,
+                    price_unit=str(payload["price_unit"]),
+                    price_scale=payload["price_scale"],
+                    provider=payload["provider"],
+                    status=str(payload["status"]),
+                    nav_lineage_kind=payload["nav_lineage_kind"],
+                    nav_derivation_method_version=payload[
+                        "nav_derivation_method_version"
+                    ],
+                    nav_derivation_anchor_date=payload[
+                        "nav_derivation_anchor_date"
+                    ],
+                    nav_lineage_evidence_json=payload[
+                        "nav_lineage_evidence_json"
+                    ],
                 )
-            else:
-                if (
-                    existing.value == str(payload["value"])
-                    and existing.price_unit == str(payload["price_unit"])
-                    and existing.price_scale == payload["price_scale"]
-                    and existing.provider == payload["provider"]
-                    and existing.status == str(payload["status"])
-                    and existing.nav_lineage_kind == payload["nav_lineage_kind"]
-                    and existing.nav_derivation_method_version
-                    == payload["nav_derivation_method_version"]
-                    and existing.nav_derivation_anchor_date
-                    == payload["nav_derivation_anchor_date"]
-                    and existing.nav_lineage_evidence_json
-                    == payload["nav_lineage_evidence_json"]
-                ):
-                    continue
-                changed_count += 1
-                existing.value = str(payload["value"])
-                existing.price_unit = str(payload["price_unit"])
-                existing.price_scale = payload["price_scale"]
-                existing.provider = payload["provider"]
-                existing.status = str(payload["status"])
-                existing.nav_lineage_kind = payload["nav_lineage_kind"]
-                existing.nav_derivation_method_version = payload[
-                    "nav_derivation_method_version"
-                ]
-                existing.nav_derivation_anchor_date = payload[
-                    "nav_derivation_anchor_date"
-                ]
-                existing.nav_lineage_evidence_json = payload[
-                    "nav_lineage_evidence_json"
-                ]
-        if changed_count:
-            target.market_data_updated_at = _next_market_data_watermark(session)
-        session.commit()
+            )
+        else:
+            if (
+                existing.value == str(payload["value"])
+                and existing.price_unit == str(payload["price_unit"])
+                and existing.price_scale == payload["price_scale"]
+                and existing.provider == payload["provider"]
+                and existing.status == str(payload["status"])
+                and existing.nav_lineage_kind == payload["nav_lineage_kind"]
+                and existing.nav_derivation_method_version
+                == payload["nav_derivation_method_version"]
+                and existing.nav_derivation_anchor_date
+                == payload["nav_derivation_anchor_date"]
+                and existing.nav_lineage_evidence_json
+                == payload["nav_lineage_evidence_json"]
+            ):
+                continue
+            changed_count += 1
+            existing.value = str(payload["value"])
+            existing.price_unit = str(payload["price_unit"])
+            existing.price_scale = payload["price_scale"]
+            existing.provider = payload["provider"]
+            existing.status = str(payload["status"])
+            existing.nav_lineage_kind = payload["nav_lineage_kind"]
+            existing.nav_derivation_method_version = payload[
+                "nav_derivation_method_version"
+            ]
+            existing.nav_derivation_anchor_date = payload[
+                "nav_derivation_anchor_date"
+            ]
+            existing.nav_lineage_evidence_json = payload[
+                "nav_lineage_evidence_json"
+            ]
+    if changed_count:
+        target.market_data_updated_at = _next_market_data_watermark(session)
     return changed_count
 
 
-PRICE_BAR_INSTRUMENT_TYPES = frozenset({"etf", "equity", "index"})
+PRICE_BAR_INSTRUMENT_TYPES = frozenset({"etf", "equity", "index", "crypto"})
 PRICE_BAR_STATUSES = frozenset({"complete", "partial"})
 
 
@@ -3777,6 +3795,18 @@ def upsert_price_bars(
 ) -> int | None:
     """Upsert raw daily OHLCV bars without changing valuation/return series."""
 
+    with session_factory() as session:
+        changed_count = _upsert_price_bars(session, instrument_id=instrument_id, rows=rows)
+        session.commit()
+    return changed_count
+
+
+def _upsert_price_bars(
+    session: Session,
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> int | None:
     normalized_rows: list[dict[str, object]] = []
     seen_dates: set[date] = set()
     for row_index, row in enumerate(rows, start=1):
@@ -3907,76 +3937,101 @@ def upsert_price_bars(
     if not normalized_rows:
         return 0
 
-    with session_factory() as session:
-        target = session.scalar(
-            select(Instrument)
-            .where(Instrument.instrument_id == instrument_id)
-            .with_for_update()
+    target = session.scalar(
+        select(Instrument)
+        .where(Instrument.instrument_id == instrument_id)
+        .with_for_update()
+    )
+    if target is None:
+        return None
+    instrument_type = normalize_instrument_type(target.instrument_type)
+    if instrument_type not in PRICE_BAR_INSTRUMENT_TYPES:
+        raise ValueError(
+            f'Instrument type "{instrument_type}" does not support OHLCV price bars.'
         )
-        if target is None:
-            return None
-        instrument_type = normalize_instrument_type(target.instrument_type)
-        if instrument_type not in PRICE_BAR_INSTRUMENT_TYPES:
+    target_currency = normalize_market_data_currency(target.currency)
+    for row_index, row in enumerate(normalized_rows, start=1):
+        if row["currency"] != target_currency:
             raise ValueError(
-                f'Instrument type "{instrument_type}" does not support OHLCV price bars.'
+                f'Price-bar row {row_index} currency "{row["currency"]}" does not '
+                f'match instrument currency "{target_currency}".'
             )
-        target_currency = normalize_market_data_currency(target.currency)
-        for row_index, row in enumerate(normalized_rows, start=1):
-            if row["currency"] != target_currency:
-                raise ValueError(
-                    f'Price-bar row {row_index} currency "{row["currency"]}" does not '
-                    f'match instrument currency "{target_currency}".'
-                )
 
-        relevant_dates = [row["as_of_date"] for row in normalized_rows]
-        existing_by_date = {
-            price_bar.as_of_date: price_bar
-            for price_bar in session.scalars(
-                select(InstrumentPriceBar).where(
-                    InstrumentPriceBar.instrument_id == instrument_id,
-                    InstrumentPriceBar.as_of_date.in_(relevant_dates),
-                )
-            ).all()
-        }
-        changed_count = 0
-        comparable_fields = (
-            "open_price",
-            "high_price",
-            "low_price",
-            "close_price",
-            "previous_close",
-            "volume",
-            "turnover",
-            "adjustment_factor",
-            "currency",
-            "volume_unit",
-            "turnover_unit",
-            "provider",
-            "status",
-        )
-        for row in normalized_rows:
-            point_date = row["as_of_date"]
-            assert isinstance(point_date, date)
-            existing = existing_by_date.get(point_date)
-            if existing is None:
-                changed_count += 1
-                session.add(
-                    InstrumentPriceBar(
-                        instrument_id=instrument_id,
-                        **row,
-                    )
-                )
-                continue
-            if all(getattr(existing, field) == row[field] for field in comparable_fields):
-                continue
+    relevant_dates = [row["as_of_date"] for row in normalized_rows]
+    existing_by_date = {
+        price_bar.as_of_date: price_bar
+        for price_bar in session.scalars(
+            select(InstrumentPriceBar).where(
+                InstrumentPriceBar.instrument_id == instrument_id,
+                InstrumentPriceBar.as_of_date.in_(relevant_dates),
+            )
+        ).all()
+    }
+    changed_count = 0
+    comparable_fields = (
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "previous_close",
+        "volume",
+        "turnover",
+        "adjustment_factor",
+        "currency",
+        "volume_unit",
+        "turnover_unit",
+        "provider",
+        "status",
+    )
+    for row in normalized_rows:
+        point_date = row["as_of_date"]
+        assert isinstance(point_date, date)
+        existing = existing_by_date.get(point_date)
+        if existing is None:
             changed_count += 1
-            for field in comparable_fields:
-                setattr(existing, field, row[field])
+            session.add(
+                InstrumentPriceBar(
+                    instrument_id=instrument_id,
+                    **row,
+                )
+            )
+            continue
+        if all(getattr(existing, field) == row[field] for field in comparable_fields):
+            continue
+        changed_count += 1
+        for field in comparable_fields:
+            setattr(existing, field, row[field])
 
-        if changed_count:
-            target.market_data_updated_at = _next_market_data_watermark(session)
-        session.commit()
+    if changed_count:
+        target.market_data_updated_at = _next_market_data_watermark(session)
     return changed_count
+
+
+def upsert_price_history(
+    session_factory: SessionFactory,
+    *,
+    instrument_id: str,
+    market_data_rows: list[dict[str, object]],
+    price_bar_rows: list[dict[str, object]],
+) -> tuple[int, int] | None:
+    """Publish one instrument's canonical prices and raw OHLC in one transaction.
+
+    Reuse the individual batch validators; a rejected bar or a database failure
+    rolls back both observation surfaces and their registry watermark.
+    """
+    with session_factory() as session:
+        changed_count = _upsert_market_data_points(
+            session, instrument_id=instrument_id, rows=market_data_rows,
+        )
+        if changed_count is None:
+            return None
+        bar_changed_count = _upsert_price_bars(
+            session, instrument_id=instrument_id, rows=price_bar_rows,
+        )
+        if bar_changed_count is None:
+            return None
+        session.commit()
+    return changed_count, bar_changed_count
 
 
 def get_price_bars(
@@ -4099,13 +4154,16 @@ def upsert_source_settings(
         if release_lag_days is not None:
             source_settings["release_lag_days"] = release_lag_days
         if return_semantics is not None:
+            if target.instrument_type == "crypto" and return_semantics not in {"unknown", "price_return"}:
+                raise ValueError("Crypto spot prices only support price_return or unknown return_semantics.")
             if return_semantics != "unknown" and target.instrument_type not in {
                 "index",
                 "equity",
                 "etf",
+                "crypto",
             }:
                 raise ValueError(
-                    "Explicit return_semantics is only supported for indexes and listed securities."
+                    "Explicit return_semantics is only supported for indexes and listed securities, or crypto spot prices."
                 )
             source_settings["return_semantics"] = return_semantics
         if source_provider_currency is not None:

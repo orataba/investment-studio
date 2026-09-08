@@ -1,6 +1,6 @@
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
@@ -48,6 +48,8 @@ import {
   formatPercentInput,
 } from '../lib/format'
 import { resolveResearchAsOfDraft, serializeResearchAsOf } from '../lib/researchAsOf'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import '../components/taxonomy-features.css'
 
 const CAPITAL_MODE_OPTIONS = [
   { value: 'unit_notional', label: 'Unit' },
@@ -63,6 +65,7 @@ const REBALANCE_OPTIONS: Array<{ value: PortfolioResearchBacktestRebalanceFreque
 ]
 
 type ResearchRunSetupDraft = {
+  planningTaxonomyId: string
   asOfMode: PortfolioResearchAsOfMode
   asOfDate: string
   notes: string | null
@@ -976,6 +979,7 @@ function ActualBacktestMetricTable({
 }
 
 export default function ResearchPage() {
+  const zh = useLanguage().language === 'zh-Hans'
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const [workbench, setWorkbench] = useState<PortfolioResearchWorkbenchResponse | null>(null)
@@ -1006,6 +1010,7 @@ export default function ResearchPage() {
   const currentPortfolioIdRef = useRef(portfolioId)
   const draftPortfolioIdRef = useRef('')
   const runSetupDraftRef = useRef<ResearchRunSetupDraft>({
+    planningTaxonomyId: '',
     asOfMode: 'dynamic',
     asOfDate: '',
     notes: null,
@@ -1028,6 +1033,7 @@ export default function ResearchPage() {
   })
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
+  const taxonomyChoiceRef = useRef<{ portfolioId: string; taxonomyId: string } | null>(null)
   const [asOfMode, setAsOfMode] = useState<PortfolioResearchAsOfMode>('dynamic')
   const [asOfDate, setAsOfDate] = useState('')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
@@ -1177,6 +1183,9 @@ export default function ResearchPage() {
       maxWeightPct: formatPercentInput(item.max_weight),
     }))
     const nextDraft: ResearchRunSetupDraft = {
+      planningTaxonomyId: taxonomyChoiceRef.current?.portfolioId === portfolioId
+        ? taxonomyChoiceRef.current.taxonomyId
+        : workbench.settings.planning_taxonomy_id ?? workbench.default_planning_taxonomy_id ?? '',
       ...nextAsOf,
       notes: workbench.settings.notes ?? null,
       capitalMode: nextCapitalMode,
@@ -1202,7 +1211,7 @@ export default function ResearchPage() {
       walkForwardTrainingMonths: String(workbench.settings.backtest_walk_forward_training_months),
       walkForwardTestMonths: String(workbench.settings.backtest_walk_forward_test_months),
     }
-    setPlanningTaxonomyId(workbench.default_planning_taxonomy_id ?? workbench.settings.planning_taxonomy_id ?? '')
+    setPlanningTaxonomyId(nextDraft.planningTaxonomyId)
     setAsOfMode(nextAsOf.asOfMode)
     setAsOfDate(nextAsOf.asOfDate)
     setCapitalMode(nextDraft.capitalMode)
@@ -1265,7 +1274,7 @@ export default function ResearchPage() {
           return
         }
         const taxonomy = catalog.taxonomies.find(
-          (item) => item.taxonomy_id === planningTaxonomyId && item.planning_enabled,
+          (item) => item.taxonomy_id === planningTaxonomyId && item.status === 'active',
         )
         if (!taxonomy) {
           throw new Error('Selected planning taxonomy is unavailable.')
@@ -1615,7 +1624,7 @@ export default function ResearchPage() {
       throw new Error('Select a pinned analysis date.')
     }
     return updatePortfolioResearchSettings(targetPortfolioId, {
-      planning_taxonomy_id: planningTaxonomyId || null,
+      planning_taxonomy_id: draft.planningTaxonomyId || null,
       comparator_taxonomy_node_id: null,
       ...researchAsOf,
       lookback_days: riskPolicy.lookback_days,
@@ -1709,7 +1718,8 @@ export default function ResearchPage() {
   const latestContributionReconciliation = contributionReconciliation.length
     ? contributionReconciliation[contributionReconciliation.length - 1]
     : null
-  const staleRun = latestRun?.status === 'completed' && latestRun.reliability_state === 'stale'
+  const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== planningTaxonomyId)
+  const staleRun = latestRun?.status === 'completed' && (latestRun.reliability_state === 'stale' || changedTaxonomy)
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
     ? latestRun?.detail?.scope_solve_events ?? []
     : latestRun?.detail?.solve_event
@@ -1811,6 +1821,24 @@ export default function ResearchPage() {
               >
                 <fieldset className="research-settings-fieldset" disabled={!canEditPortfolio || actionPending === 'run'}>
                   <div className="research-settings-bar">
+                <div className="research-taxonomy-choice">
+                  <label>
+                    <span>{zh ? '研究分类' : 'Research taxonomy'}</span>
+                    <select aria-label={zh ? '研究分类' : 'Research taxonomy'} value={planningTaxonomyId} onChange={(event) => {
+                      taxonomyChoiceRef.current = { portfolioId, taxonomyId: event.target.value }
+                      setPlanningTaxonomyId(event.target.value)
+                      setFrozenNodeIds([])
+                      setTopSleeveBounds([])
+                      updateRunSetupDraft({ planningTaxonomyId: event.target.value, frozenNodeIds: [], topSleeveBounds: [] })
+                    }}>
+                      {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value={planningTaxonomyId}>{zh ? '请选择已配置目标的分类' : 'Select a taxonomy with targets'}</option>}
+                      {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
+                    </select>
+                  </label>
+                  {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
+                    <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行研究前配置目标' : 'Configure targets before running Research'}</Link>
+                  )}
+                </div>
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
                     <span>Date Mode</span>
@@ -2261,6 +2289,10 @@ export default function ResearchPage() {
             </section>
           ) : (
             <>
+              <p className="portfolio-detail-meta" data-testid="research-result-taxonomy">
+                {zh ? '结果分类：' : 'Result taxonomy: '}{latestRun.planning_taxonomy_name ?? latestRun.planning_taxonomy_id}
+                {changedTaxonomy ? (zh ? ' · 当前研究分类已改变，请重新运行。' : ' · The selected research taxonomy changed. Run Research again.') : ''}
+              </p>
               {staleRun ? (
                 <section className="panel">
                   <div

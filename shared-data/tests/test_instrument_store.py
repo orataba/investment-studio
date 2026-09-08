@@ -2032,6 +2032,51 @@ def test_email_refresh_success_cursor_survives_failed_and_blocked_statuses(
     assert blocked["refresh_status"]["last_successful_requested_at"] == successful_at
 
 
+def test_crypto_spot_source_settings_roundtrip_and_reject_total_return_without_changes(isolated_store: Path) -> None:
+    crypto = create_instrument(
+        instrument_name="Bitcoin Spot", instrument_type="crypto", currency="USD",
+        identifiers=[{"identifier_type": "provider_symbol", "identifier_value": "fmp:BTCUSD", "is_primary": True}],
+    )
+    settings = dict(instrument_id=crypto["instrument_id"], source_mode="api", source_email=None,
+        source_location="Shared BTC/USD daily series", source_api_profile="fmp", source_email_rules=None,
+        expected_frequency="daily", market_calendar="24/7", release_lag_days=0)
+    updated = upsert_source_settings(**settings, return_semantics="price_return")
+    assert updated is not None
+    assert updated["source_settings"]["return_semantics"] == "price_return"
+    assert updated["source_settings"]["market_calendar"] == "24/7"
+    assert updated["source_settings"]["source_api_profile"] == "fmp"
+    assert updated["source_settings"]["release_lag_days"] == 0
+    with pytest.raises(ValueError, match="Crypto spot prices only support"):
+        upsert_source_settings(**{**settings, "source_location": "Must not be saved"}, return_semantics="total_return")
+    persisted = get_instrument(crypto["instrument_id"])
+    assert persisted is not None
+    assert persisted["source_settings"] == updated["source_settings"]
+
+
+def test_crypto_spot_ohlc_store_preserves_quote_currency_and_rejects_bad_bars(isolated_store: Path) -> None:
+    crypto = create_instrument(
+        instrument_name="Bitcoin Spot Bars", instrument_type="crypto", currency="USD",
+        identifiers=[{"identifier_type": "ticker", "identifier_value": "BTCUSD", "is_primary": True}],
+    )
+    iid = crypto["instrument_id"]
+    row = dict(as_of_date="2026-09-06", open="90000", high="92000", low="89000", close="91000",
+        currency="USD", provider="fmp:market_series_daily:BTCUSD", status="complete")
+    assert instrument_store.upsert_price_bars(instrument_id=iid, rows=[row]) == 1
+    assert instrument_store.upsert_price_bars(instrument_id=iid, rows=[row]) == 0
+    saved = instrument_store.get_price_bars(instrument_id=iid)
+    assert len(saved) == 1
+    assert Decimal(str(saved[0]["close"])) == Decimal("91000")
+    assert saved[0]["currency"] == "USD"
+    assert saved[0]["volume"] is None
+    assert saved[0]["volume_unit"] is None
+    for change, message in [({"currency": "USDT"}, "currency"), ({"high": "90500"}, "OHLC high/low ordering")]:
+        with pytest.raises(ValueError, match=message):
+            instrument_store.upsert_price_bars(instrument_id=iid, rows=[{**row, **change}])
+    assert instrument_store.get_price_bars(instrument_id=iid) == saved
+    # Raw OHLC is a separate observation surface and does not publish return facts.
+    assert get_instrument(iid)["market_data"] == []
+
+
 def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     isolated_store: Path,
 ) -> None:
@@ -2416,3 +2461,94 @@ def test_import_nav_file_accepts_csv_bytes(
         and point["value"] == "100.2"
         for point in record["latest_market_data"]
     )
+
+
+@pytest.mark.parametrize("failure", ["invalid_bar", "database_error"])
+def test_price_history_rolls_back_both_surfaces_and_watermark(isolated_store: Path, failure: str) -> None:
+    from sqlalchemy.orm import Session
+    from investment_studio_instrument_core.db_models import InstrumentPriceBar
+
+    instrument = create_instrument(instrument_name="Atomic equity prices", instrument_type="equity",
+        currency="USD", exchange_code="XNAS",
+        identifiers=[{"identifier_type": "ticker", "identifier_value": "ATOMIC", "is_primary": True}])
+    iid = instrument["instrument_id"]
+    point = dict(as_of_date="2026-09-01", metric_family="price", quote_basis="close",
+        value="100", currency="USD", provider="fixture", status="complete")
+    bar = dict(as_of_date="2026-09-01", open="100", high="110", low="90", close="100",
+        currency="USD", provider="fixture", status="complete")
+    assert instrument_store.upsert_price_history(instrument_id=iid,
+        market_data_rows=[point], price_bar_rows=[bar]) == (1, 1)
+    before = get_instrument(iid)
+    bars_before = instrument_store.get_price_bars(instrument_id=iid)
+    assert instrument_store.upsert_price_history(instrument_id=iid,
+        market_data_rows=[point], price_bar_rows=[bar]) == (0, 0)
+    assert get_instrument(iid)["market_data_updated_at"] == before["market_data_updated_at"]
+
+    def fail_bar_write(session, _context, _instances):
+        if any(isinstance(row, InstrumentPriceBar) for row in list(session.new) + list(session.dirty)):
+            raise RuntimeError("simulated bar storage failure")
+
+    if failure == "database_error":
+        event.listen(Session, "before_flush", fail_bar_write)
+    try:
+        with pytest.raises((ValueError, RuntimeError), match="OHLC high/low ordering|simulated bar storage failure"):
+            instrument_store.upsert_price_history(instrument_id=iid,
+                market_data_rows=[{**point, "value": "101"}, {**point, "as_of_date": "2026-09-02"}],
+                price_bar_rows=[{**bar, "close": "101", "high": "99" if failure == "invalid_bar" else "110"}])
+    finally:
+        if failure == "database_error":
+            event.remove(Session, "before_flush", fail_bar_write)
+    after = get_instrument(iid)
+    assert after["market_data"] == before["market_data"]
+    assert after["market_data_updated_at"] == before["market_data_updated_at"]
+    assert instrument_store.get_price_bars(instrument_id=iid) == bars_before
+
+
+def test_crypto_invalid_ohlc_does_not_publish_valid_close_alone(isolated_store: Path) -> None:
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+    from studio_data.services.fmp import crypto
+
+    instrument = create_instrument(instrument_name="Atomic BTC", instrument_type="crypto", currency="USD",
+        identifiers=[{"identifier_type": "provider_symbol", "identifier_value": "fmp:BTCUSD", "is_primary": True}])
+    iid = instrument["instrument_id"]
+    before = get_instrument(iid)
+    source = Mock()
+    source.query.return_value = {"rows": [{"date": "2026-09-07", "series_id": "BTCUSD",
+        "open": 100, "high": 105, "low": 95, "close": 110}], "total": 1}
+    with pytest.raises(ValueError, match="OHLC high/low ordering"):
+        crypto.refresh_fmp_crypto_eod(iid, store=source, now=datetime(2026, 9, 8, tzinfo=UTC))
+    after = get_instrument(iid)
+    assert after["market_data"] == before["market_data"]
+    assert after["market_data_updated_at"] == before["market_data_updated_at"]
+    assert instrument_store.get_price_bars(instrument_id=iid) == []
+
+
+def test_fmp_projection_replays_old_adjustment_revisions_and_is_idempotent(isolated_store: Path, tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+    from studio_data.services.fmp import eod
+
+    instrument = create_instrument(instrument_name="Revision equity", instrument_type="equity", currency="USD",
+        exchange_code="XNAS",
+        identifiers=[{"identifier_type": "provider_symbol", "identifier_value": "fmp:REV", "is_primary": True}])
+    iid = instrument["instrument_id"]
+    source = eod.NumericStore(eod.MarketSettings(f"sqlite:///{tmp_path / 'numeric.db'}", tmp_path / "numeric"))
+    source.create_schema_for_testing()
+    old = dict(date="2020-01-02", symbol="REV", open=100, high=110, low=90, close=100, adjusted_close=80)
+    recent = {**old, "date": "2026-09-07", "adjusted_close": 100}
+    try:
+        source.ingest("raw_eod_daily", [[old, recent]], source="fmp", observed_at=datetime(2026, 9, 7, tzinfo=UTC))
+        eod.refresh_fmp_eod(iid, instrument_type="equity", store=source)
+        source.ingest("raw_eod_daily", [[{**old, "adjusted_close": 75}]], source="fmp",
+            observed_at=datetime(2026, 9, 8, tzinfo=UTC))
+        revised = eod.refresh_fmp_eod(iid, instrument_type="equity", store=source)
+        old_adjusted = next(row for row in get_instrument(iid)["market_data"]
+            if row["as_of_date"] == "2020-01-02" and row["quote_basis"] == "adjusted_close")
+        assert Decimal(old_adjusted["value"]) == Decimal("75")
+        assert Decimal(instrument_store.get_price_bars(instrument_id=iid)[0]["adjustment_factor"]) == Decimal("0.75")
+        replay = eod.refresh_fmp_eod(iid, instrument_type="equity", store=source)
+        assert replay["market_data_updated_at"] == revised["market_data_updated_at"]
+        assert replay["refresh_status"]["status"] == "no_new_data"
+        assert source.query("raw_eod_daily", versions=True)["total"] == 3
+    finally:
+        source.close()

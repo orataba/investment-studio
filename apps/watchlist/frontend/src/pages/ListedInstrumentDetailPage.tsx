@@ -76,6 +76,7 @@ function instrumentTypeLabel(value: string) {
   if (value === 'etf') return 'ETF'
   if (value === 'equity') return 'Stock'
   if (value === 'index') return 'Index'
+  if (value === 'crypto') return 'Crypto'
   return formatLabel(value)
 }
 
@@ -361,9 +362,9 @@ function GrowthChart({ bars, kind = 'return' }: { bars: DisplayPriceBar[]; kind?
   )
 }
 
-function IndexLevelChart({ bars }: { bars: DisplayPriceBar[] }) {
+function IndexLevelChart({ bars, crypto = false }: { bars: DisplayPriceBar[]; crypto?: boolean }) {
   if (bars.length < 2) {
-    return <div className="listed-empty-chart">Not enough index history for a level chart.</div>
+    return <div className="listed-empty-chart">{crypto ? 'Not enough spot price history.' : 'Not enough index history for a level chart.'}</div>
   }
   const width = 1000
   const height = 340
@@ -384,7 +385,7 @@ function IndexLevelChart({ bars }: { bars: DisplayPriceBar[] }) {
   const areaPath = `${linePath} L ${x(bars.length - 1)} ${bottom} L ${x(0)} ${bottom} Z`
 
   return (
-    <svg className="listed-index-level-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Index level chart">
+    <svg className="listed-index-level-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={crypto ? 'Crypto spot price chart' : 'Index level chart'}>
       <defs>
         <linearGradient id="listed-index-level-gradient" x1="0" x2="0" y1="0" y2="1">
           <stop offset="0%" stopColor="#425d7a" stopOpacity="0.2" />
@@ -507,12 +508,14 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const canWriteTeam = useCanWriteTeam()
   const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
-  const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index'
+  const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index' | 'crypto'
   const [assistant, setAssistant] = useState<{ instrumentId: string; question: string; researchReference?: ResearchReference } | null>(null)
   const [riskInstrumentId, setRiskInstrumentId] = useState<string | null>(null)
   function openAssistant(question = '', researchReference?: ResearchReference) { setRiskInstrumentId(null); setAssistant({ instrumentId, question, researchReference }) }
   function openRisk() { setAssistant(null); setRiskInstrumentId(instrumentId) }
   const isIndex = listedInstrumentType === 'index'
+  const isCrypto = listedInstrumentType === 'crypto'
+  const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab')
@@ -573,16 +576,21 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       if (cancelled) return
       if (barsResult.status === 'rejected') {
         setBarsResponse(null)
-        setError(barsResult.reason instanceof Error ? barsResult.reason.message : 'Failed to load OHLCV history.')
+        if (!usesCanonicalPriceSeries) {
+          setError(barsResult.reason instanceof Error ? barsResult.reason.message : 'Failed to load OHLCV history.')
+        }
       } else {
         setBarsResponse(barsResult.value)
         const qfqReady =
-          instrument.instrument_type !== 'index' &&
+          !usesCanonicalPriceSeries &&
           hasCompleteAdjustmentFactors(barsResult.value.bars)
         setMode(qfqReady ? 'qfq' : 'raw')
       }
       setSummary(summaryResult.status === 'fulfilled' ? summaryResult.value : null)
       setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
+      if (usesCanonicalPriceSeries && chartResult.status === 'rejected') {
+        setError(chartResult.reason instanceof Error ? chartResult.reason.message : 'Failed to load the canonical price series.')
+      }
       setPerformance(performanceResult.status === 'fulfilled' ? performanceResult.value : null)
       setRisk(riskResult.status === 'fulfilled' ? riskResult.value : null)
       setResearch(
@@ -684,7 +692,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   }
 
   const qfqAvailable =
-    instrument.instrument_type !== 'index' &&
+    !usesCanonicalPriceSeries &&
     hasCompleteAdjustmentFactors(barsResponse?.bars ?? [])
   const calculationSeries = useMemo(
     () => chart?.series[0]?.points ?? [],
@@ -715,7 +723,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       }]
     })
   }, [barsResponse?.currency, calculationSeries, chart?.currency])
-  const analysisBars = canonicalCloseAnalysisBars.length
+  const analysisBars = usesCanonicalPriceSeries || canonicalCloseAnalysisBars.length
     ? canonicalCloseAnalysisBars
     : allBars
   const visibleBars = useMemo(() => slicePriceBars(allBars, range), [allBars, range])
@@ -724,8 +732,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     [analysisBars, range],
   )
   const performanceMetricPeriodSnapshots = useMemo(
-    () => buildPerformanceMetricPeriodSnapshots(calculationSeries),
-    [calculationSeries],
+    () => buildPerformanceMetricPeriodSnapshots(calculationSeries, {
+      continuousDaily: isCrypto,
+      pathRiskAvailable: risk?.data_quality?.status === 'ready',
+    }),
+    [calculationSeries, isCrypto, risk?.data_quality?.status],
   )
   const performanceMetricSnapshotByKey = useMemo(
     () => new Map(performanceMetricPeriodSnapshots.map((period) => [period.key, period.snapshot])),
@@ -761,7 +772,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   )
   const displayReturns = useMemo(() => ({
     ...returns,
-    dailyChange: isIndex ? returns.dailyChange : quoteReturns.dailyChange ?? returns.dailyChange,
+    dailyChange: usesCanonicalPriceSeries ? returns.dailyChange : quoteReturns.dailyChange ?? returns.dailyChange,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
       : null,
@@ -777,7 +788,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     oneYear: standardizedReturns.oneYear.present
       ? standardizedReturns.oneYear.value
       : null,
-  }), [isIndex, quoteReturns.dailyChange, returns, standardizedReturns])
+  }), [usesCanonicalPriceSeries, quoteReturns.dailyChange, returns, standardizedReturns])
   const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
   const standardizedRisk = useMemo(
     () => ({
@@ -801,24 +812,28 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     observationCount:
       risk?.calculation_frequency_profile?.observation_count ?? riskStats.observationCount,
   }), [risk, riskStats, standardizedRisk])
-  const latest = isIndex
+  const latest = usesCanonicalPriceSeries
     ? analysisBars[analysisBars.length - 1]
     : allBars[allBars.length - 1] || analysisBars[analysisBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
   const sourceRefreshFailed = ['failed', 'blocked'].includes(barsResponse?.source_refresh_status || '')
-  const analysisBasisLabel = canonicalCloseAnalysisBars.length
+  const analysisBasisLabel = usesCanonicalPriceSeries || canonicalCloseAnalysisBars.length
     ? chart?.selected_series?.label || chart?.base_series_type || 'canonical return series'
     : mode === 'qfq' ? 'QFQ price' : 'raw price'
   const indexReturnKind = chart?.selected_series?.return_kind || summary?.series_snapshot?.return_kind || null
-  const indexSemanticsLabel = indexReturnKind === 'total_return'
+  const indexSemanticsLabel = isCrypto ? 'Spot Price' : indexReturnKind === 'total_return'
     ? 'Total Return Index'
     : indexReturnKind === 'price_return'
       ? 'Price Index'
       : 'Index Series'
-  const indexChartDescription = language === 'zh-Hans'
+  const indexChartDescription = isCrypto
+    ? language === 'zh-Hans' ? '使用美元现货价格的已完成UTC日线，全年交易；不代表基金份额或完整交易所成交数据。' : 'Completed UTC daily spot prices in USD, trading seven days a week; these are native assets and do not imply fund units or complete exchange trading data.'
+    : language === 'zh-Hans'
     ? `图表使用标准${indexReturnKind === 'total_return' ? '全收益' : '价格'}指数序列，不代表存在可交易的开高低收量行情。`
     : `This chart uses the canonical ${indexSemanticsLabel.toLowerCase()} series. It does not imply tradable OHLCV data.`
-  const indexPerformanceDescription = !isIndex
+  const indexPerformanceDescription = isCrypto
+    ? language === 'zh-Hans' ? '收益与风险基于已完成UTC日线，使用全年实际观察间距年化；比率使用零无风险利率。' : 'Returns and risk use completed UTC daily prices, annualized from actual observation spacing across the full year; ratios use a zero risk-free rate.'
+    : !isIndex
     ? (language === 'zh-Hans' ? `收益与风险基于${analysisBasisLabel}，截至 ${formatDate(chart?.date_range?.end)}。` : `Returns and risk use ${analysisBasisLabel}, through ${formatDate(chart?.date_range?.end)}.`)
     : language === 'zh-Hans'
     ? `基于标准${indexReturnKind === 'total_return' ? '全收益' : '价格'}指数序列计算；风险调整比率使用零无风险利率。`
@@ -940,13 +955,13 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     <section className="panel listed-chart-panel">
       <div className="listed-chart-toolbar">
         <div>
-          <div className="panel-title">{chartView === 'return' ? (zh ? '累计收益' : 'Cumulative Return') : 'Index Level'}</div>
+          <div className="panel-title">{chartView === 'return' ? (zh ? '累计收益' : 'Cumulative Return') : isCrypto ? (zh ? '现货价格' : 'Spot Price') : 'Index Level'}</div>
           <div className="listed-chart-caption">
             {analysisBasisLabel} · {visibleAnalysisBars.length} observations
           </div>
         </div>
         <div className="listed-chart-controls">
-          <InfoHint label={zh ? '指数图表口径' : 'Index chart basis'} detail={indexChartDescription} />
+          <InfoHint label={isCrypto ? (zh ? '现货图表口径' : 'Spot price chart basis') : zh ? '指数图表口径' : 'Index chart basis'} detail={indexChartDescription} />
           <div className="listed-segmented-control" aria-label={zh ? '图表内容' : 'Chart content'}>
             <button type="button" className={chartView === 'price' ? 'active' : ''} onClick={() => setChartView('price')}>{zh ? '价格' : 'Price'}</button>
             <button type="button" className={chartView === 'return' ? 'active' : ''} disabled={!canonicalCloseAnalysisBars.length} onClick={() => setChartView('return')}>{zh ? '累计收益' : 'Cumulative Return'}</button>
@@ -959,7 +974,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       </div>
       <div className="listed-chart-shell">
-        {chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} />}
+        {error ? <div className="error-state">{error}</div> : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} crypto={isCrypto} />}
       </div>
     </section>
   )
@@ -991,8 +1006,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <h1 className="instrument-detail-title" translate="no">{instrument.instrument_name}</h1>
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
-            <span className="context-chip">{barsResponse?.currency || latest?.currency || '—'}</span>
-            {isIndex ? <span className="context-chip">{indexSemanticsLabel}</span> : null}
+            <span className="context-chip">{(usesCanonicalPriceSeries ? chart?.currency : barsResponse?.currency) || latest?.currency || '—'}</span>
+            {usesCanonicalPriceSeries ? <span className="context-chip">{indexSemanticsLabel}</span> : null}
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
             {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
             {typeof displayedCoverageStatus === 'string' && displayedCoverageStatus ? (
@@ -1130,11 +1145,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div className="listed-tab-stack">
           {listedInstrumentType === 'etf' && <EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} />}
           <section className="listed-metric-grid listed-overview-quote">
-            <MetricCard label="YTD" value={percentValue(isIndex ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
-            <MetricCard label="1 Year" value={percentValue(isIndex ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
-            <MetricCard label={isIndex ? '1 Month' : 'Volume'} value={isIndex ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
+            <MetricCard label="YTD" value={percentValue(usesCanonicalPriceSeries ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
+            <MetricCard label="1 Year" value={percentValue(usesCanonicalPriceSeries ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
+            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : 'Volume'} value={usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
           </section>
-          {isIndex ? indexChartPanel : chartPanel}
+          {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
           <section className="panel listed-overview-brief">
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '最新投资观点' : 'Latest Investment View'}</h3>
@@ -1175,7 +1190,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </section>
           <section className="panel instrument-performance-shell listed-index-performance-shell">
             <div className="instrument-price-topline" />
-            {isIndex ? <section className="instrument-performance-section instrument-performance-section-metrics">
+            {usesCanonicalPriceSeries ? <section className="instrument-performance-section instrument-performance-section-metrics">
               <div className="instrument-performance-section-header">
                 <div className="instrument-performance-title-group">
                   <div className="panel-title">Performance</div>

@@ -40,11 +40,7 @@ def sector_research(instrument_id: str | None = None, watchlist_id: str | None =
                 "latest_review": reviews.get(iid), "last_completed_review": completed.get(iid)} for iid in ids]
     available = bool(ids)
     message = None if available else "当前范围没有可分析的已登记标的。"
-    from watchlist_app.db.models import InstrumentDetail
-    research_enabled = available and all(session.get(InstrumentDetail, iid).instrument_type not in {"public_fund", "private_fund"} for iid in ids)
-    if available and not research_enabled:
-        message = "普通公募和私募暂缓主动深研，已有档案与研究记录仍可查阅。"
-    return {"available": available, "research_enabled": research_enabled, "sectors": sectors,
+    return {"available": available, "research_enabled": available, "sectors": sectors,
             "events": service.events_for_instruments(session, ids), "message": message}
 
 

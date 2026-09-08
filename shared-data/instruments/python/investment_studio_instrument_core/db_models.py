@@ -83,7 +83,7 @@ class Instrument(InstrumentRegistryBase):
     __table_args__ = (
         CheckConstraint(
             "instrument_type IN ('public_fund', 'private_fund', 'etf', 'index', 'equity', "
-            "'cash', 'fx', 'other')",
+            "'crypto', 'cash', 'fx', 'other')",
             name="instrument_type_contract",
         ),
         CheckConstraint(

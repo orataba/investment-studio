@@ -1,0 +1,44 @@
+.concentration-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.concentration-toolbar-actions > label { display: flex; align-items: center; gap: 8px; }
+.concentration-toolbar-actions select, .concentration-field select, .concentration-field input { font: inherit; color: inherit; border: 1px solid var(--line, #dbe3e9); border-radius: 6px; padding: 7px 10px; background: var(--surface, #fff); min-width: 0; }
+.concentration-table-wrap { overflow-x: auto; }
+.concentration-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.concentration-table th, .concentration-table td { padding: 12px 10px; border-bottom: 1px solid var(--line, #e7ecf0); text-align: right; white-space: nowrap; }
+.concentration-table th { color: var(--muted, #708090); font-weight: 500; }
+.concentration-table th:first-child, .concentration-table td:first-child { text-align: left; width: 28%; white-space: normal; min-width: 140px; }
+.concentration-row-name { display: flex; gap: 6px; align-items: center; }
+.concentration-row-name button, .concentration-source-button { font: inherit; color: inherit; padding: 2px 0; border: 0; background: none; cursor: pointer; text-align: left; }
+.concentration-row-name button:focus-visible, .concentration-source-button:focus-visible { outline: 2px solid #428f96; outline-offset: 3px; }
+.concentration-bar-cell { min-width: 150px; }
+.concentration-track { position: relative; display: flex; height: 7px; border-radius: 4px; background: #edf1f4; min-width: 130px; overflow: visible; }
+.concentration-fill-security { height: 7px; background: #4d8790; border-radius: 3px; }
+.concentration-fill-fcn { height: 7px; background: #b09564; border-radius: 3px; }
+.concentration-limit-marker { position: absolute; width: 2px; height: 13px; top: -3px; background: #924b4b; }
+.concentration-watch-marker { position: absolute; width: 1px; height: 11px; top: -2px; background: #b08941; }
+.concentration-status { display: inline-block; font-size: 12px; border-radius: 4px; padding: 3px 7px; background: #f0f3f5; color: #657582; }
+.concentration-status-within { color: #336d65; background: #edf5f1; }
+.concentration-status-watch { color: #916f28; background: #faf4e5; }
+.concentration-status-breached { color: #a24444; background: #faeeee; }
+.concentration-status-unavailable { color: #946325; background: #fbf2e8; }
+.concentration-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 9px 0; font-size: 12px; color: #6c7d88; }
+.concentration-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.concentration-legend i { display: inline-block; width: 15px; height: 6px; border-radius: 3px; }
+.concentration-coverage { margin: 10px 0; font-size: 12px; color: #7c6e55; }
+.concentration-coverage ul { margin: 6px 0; padding-left: 20px; }
+.concentration-source-list { list-style: none; padding: 0; }
+.concentration-source-list li { padding: 14px 0; border-bottom: 1px solid #e4e9ed; display: flex; flex-direction: column; gap: 5px; }
+.concentration-field { display: flex; flex-direction: column; align-items: stretch; gap: 7px; margin: 10px 0; min-width: 0; font-size: 13px; }
+.concentration-settings-drawer .concentration-field select { width: 100%; max-width: 360px; }
+.concentration-settings-drawer .concentration-field input[type="date"] { max-width: 200px; }
+.concentration-percent-input { display: flex; align-items: center; gap: 5px; }
+.concentration-percent-input input { width: 100%; }
+.concentration-rule-editor { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(110px, 1fr) minmax(110px, 1fr); gap: 12px; align-items: center; border-bottom: 1px solid #e2e8ec; padding: 12px 0; }
+.concentration-settings-fields { border: 0; padding: 0; margin: 16px 0; }
+.concentration-settings-fields:disabled { opacity: .75; }
+.concentration-settings-actions { display: flex; justify-content: flex-end; padding: 12px 0; }
+.concentration-toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; }
+.concentration-allocation-settings { border-top: 1px solid #e2e8ec; margin-top: 24px; padding-top: 16px; }
+.concentration-allocation-contract { padding: 10px 0; }
+.concentration-allocation-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
+.concentration-settings-drawer .inline-notice button { margin: 10px 0 0; display: block; }
+@media(max-width: 650px) { .concentration-rule-editor { grid-template-columns: 1fr 1fr; } .concentration-rule-editor > strong { grid-column: 1/-1; } .concentration-allocation-inputs { grid-template-columns: 1fr; } }

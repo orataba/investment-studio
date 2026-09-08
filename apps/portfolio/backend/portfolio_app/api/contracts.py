@@ -1885,6 +1885,7 @@ class TaxonomyCatalogResponse(BaseModel):
 
 
 class ResearchPlanningTaxonomyOption(BaseModel):
+    targets_available: bool = True
     taxonomy_id: str
     name: str
     taxonomy_type: str

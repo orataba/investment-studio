@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: ['./src/test/setup.ts'],
       css: false,
+      // Avoid starving async UI tests when many jsdom workers start together.
+      maxWorkers: 4,
     },
     resolve: {
       alias: [

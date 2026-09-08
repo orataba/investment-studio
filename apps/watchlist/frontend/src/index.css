@@ -6043,48 +6043,6 @@ td:last-child {
   gap: 7px;
 }
 
-.instrument-product-tags-help {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 17px;
-  height: 17px;
-  border: 1px solid #b8af9c;
-  border-radius: 50%;
-  color: #6b6257;
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1;
-  cursor: help;
-}
-
-.instrument-product-tags-tooltip {
-  box-sizing: border-box;
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  z-index: 12;
-  display: none;
-  width: 320px;
-  max-width: min(320px, 70vw);
-  padding: 10px 12px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
-  color: #374151;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.55;
-  text-transform: none;
-  transform: translateX(-50%);
-}
-
-.instrument-product-tags-help:hover .instrument-product-tags-tooltip,
-:root:not([data-input-modality='pointer']) .instrument-product-tags-help:focus-visible .instrument-product-tags-tooltip {
-  display: block;
-}
-
 .instrument-product-tags-table-value {
   color: #111827;
   font-weight: 400;
@@ -8077,7 +8035,7 @@ input[type='checkbox'] {
   box-shadow: none;
 }
 
-.instrument-chart-compare-search-box > button:not(.investment-studio-info-hint) {
+.instrument-chart-compare-search-box > button {
   position: absolute;
   top: 3px;
   right: 5px;
@@ -8096,7 +8054,7 @@ input[type='checkbox'] {
   line-height: 1;
 }
 
-.instrument-chart-compare-search-box > button:not(.investment-studio-info-hint):hover {
+.instrument-chart-compare-search-box > button:hover {
   border-color: #cbd5e1;
   background: #f8fafc;
   color: #1f6fbc;
@@ -8116,33 +8074,31 @@ input[type='checkbox'] {
   top: 3px;
   right: 57px;
   z-index: 31;
-}
-.instrument-benchmark-status > button {
+  display: flex;
   width: 24px;
   height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+.instrument-benchmark-status > [role="status"] { color: var(--muted); }
+.instrument-benchmark-error {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  color: #a13a34;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.instrument-benchmark-error > button {
+  flex-shrink: 0;
   padding: 0;
   border: 0;
-  background: none;
-  color: #70818b;
-  cursor: pointer;
+  color: var(--accent);
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
-.instrument-benchmark-status-error > button { color: #a36237; }
-.instrument-benchmark-status > span {
-  display: none;
-  position: absolute;
-  right: -57px;
-  top: 30px;
-  width: 290px;
-  padding: 10px 12px;
-  border: 1px solid #dce3e8;
-  background: #fff;
-  color: #526675;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: normal;
-}
-.instrument-benchmark-status:hover > span,
-:root:not([data-input-modality='pointer']) .instrument-benchmark-status:has(:focus-visible) > span { display: block; }
 
 .instrument-chart-compare-toggle span {
   width: 7px;

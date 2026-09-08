@@ -22,8 +22,6 @@
 4. 记录输出的 `user_id`、`team_id`，由业务迁移明确分配历史作者、旧私聊和组合管理者。Home 不猜测历史作者，也不会把全部组合授给新成员。
 5. 配置各业务应用身份解析地址与专属后台凭证，完成组合、助手、附件的隔离验证后再开放真实成员访问。旧签名 cookie 不再有效。
 
-本次确认的初始化归属为：拥有者账号及显示名均为 `shaw`，旧组合由他独占 manager 权限，已确认的旧观点与私聊显式认领到他的永久用户 ID。`leo`、`aaron`、`huangwei` 为团队成员，`yungu` 为团队只读成员；四人均不预授现有组合权限，之后由组合管理者手工授予。该说明是初始化要求，不代表运行库已执行。
-
 ## 本机免登录
 
 先显式初始化真实团队拥有者，再在本机 `home.env` 设置 `INVESTMENT_STUDIO_HOME_ENVIRONMENT=local`、`INVESTMENT_STUDIO_HOME_AUTH_MODE=local`；各业务应用设置 `INVESTMENT_STUDIO_AUTH_MODE=local`。Home 和业务入口必须绑定 loopback，并使用 `127.0.0.1` 或 `localhost` 访问。仅设置模式而没有身份数据库或拥有者，不会自动创建账号。

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -27,10 +27,18 @@ def _market_calendar_sessions(
     start_date: date,
     end_date: date,
 ) -> tuple[date, ...] | None:
+    if calendar_name == "24/7":
+        return tuple(start_date + timedelta(days=offset) for offset in range((end_date - start_date).days + 1))
     try:
-        calendar = exchange_calendars.get_calendar(
-            _MARKET_CALENDAR_ALIASES.get(calendar_name, calendar_name)
-        )
+        name = _MARKET_CALENDAR_ALIASES.get(calendar_name, calendar_name)
+        calendar = exchange_calendars.get_calendar(name)
+        if start_date < calendar.first_session.date() or end_date > calendar.last_session.date():
+            # Defaults only cover a rolling twenty-year history. Clipping an
+            # older price history to that window would silently certify gaps as
+            # aligned; request the actual sample instead, within known bounds.
+            calendar = exchange_calendars.get_calendar(name,
+                start=min(start_date, calendar.first_session.date()).isoformat(),
+                end=max(end_date, calendar.last_session.date()).isoformat())
         covered_start = max(start_date, calendar.first_session.date())
         covered_end = min(end_date, calendar.last_session.date())
         if covered_start > covered_end:
@@ -58,6 +66,8 @@ def _annualization_periods_per_year(points: list[dict[str, Any]]) -> float | Non
 def source_calendar_date(now: datetime, market_calendar: object) -> date:
     """Use the source market's local day when evaluating a publication schedule."""
     name = str(market_calendar or "").strip()
+    if name == "24/7":
+        return now.astimezone(UTC).date()
     if name:
         try:
             calendar = exchange_calendars.get_calendar(_MARKET_CALENDAR_ALIASES.get(name, name))

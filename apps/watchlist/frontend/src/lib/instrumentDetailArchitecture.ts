@@ -4,6 +4,7 @@ export type WatchlistDetailInstrumentType =
   | 'etf'
   | 'equity'
   | 'index'
+  | 'crypto'
 
 export type ListedDetailTab = 'overview' | 'research' | 'events' | 'performance'
 
@@ -68,7 +69,7 @@ const FUND_TAB_LABELS: Record<
 }
 
 export function listedDetailTabs(
-  _instrumentType: 'etf' | 'equity' | 'index',
+  _instrumentType: 'etf' | 'equity' | 'index' | 'crypto',
 ): readonly ListedDetailTab[] {
   return LISTED_TABS
 }

@@ -209,6 +209,8 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
 
     if instrument is None:
         raise HTTPException(status_code=400, detail="Instrument not found in shared registry.")
+    if instrument["instrument_type"] == "crypto":
+        raise HTTPException(status_code=400, detail="Native crypto assets are available for Watchlist research; Portfolio transactions are not supported.")
 
     return {
         "instrument_id": instrument["instrument_id"],
@@ -1859,7 +1861,7 @@ def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListRespons
 
     return SharedInstrumentListResponse(
         portfolio_id=portfolio_id,
-        instruments=[_serialize_instrument_option(item) for item in instruments],
+        instruments=[_serialize_instrument_option(item) for item in instruments if item["instrument_type"] != "crypto"],
     )
 
 

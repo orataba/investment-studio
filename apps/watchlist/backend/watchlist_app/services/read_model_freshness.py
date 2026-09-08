@@ -543,6 +543,11 @@ def schedule_instrument_refreshes_if_stale(
                 local_instrument = local_by_id.get(instrument_id)
                 if shared_instrument is None or local_instrument is None:
                     continue
+                if (shared_instrument.get("lifecycle_state") or {}).get("status") == "archived":
+                    # Registry owns lifecycle. Keep historical facts/read models,
+                    # but stop treating an archived instrument as a live target.
+                    local_instrument.is_active = False
+                    continue
                 shared_latest_date = _latest_shared_market_data_date(shared_instrument)
                 shared_updated_at = _shared_calculation_inputs_updated_at(shared_instrument)
                 local_latest_date = _parse_iso_date(target.get("local_latest_date"))

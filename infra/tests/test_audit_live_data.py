@@ -51,10 +51,10 @@ def test_flat_table_profile_accepts_only_final_heads(
 ) -> None:
     expected_heads = {
         "identity": "20260908_0001",
-        "instrument_data": "20260907_0034",
+        "instrument_data": "20260908_0035",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260908_0062",
-        "watchlist": "20260908_0056",
+        "portfolio": "20260908_0063",
+        "watchlist": "20260908_0057",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }
@@ -105,7 +105,7 @@ def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 53
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 55
     assert {"numeric_publication_catalog_contract", "numeric_complete_snapshot_contract",
             "numeric_dataset_clock_contract", "market_text_version_contract",
             "briefing_frozen_source_contract"} <= set(audit_module.AUDIT_CHECK_NAMES)
@@ -118,6 +118,8 @@ def test_audit_contract_names_cover_registry_0019(
     assert "fmp_etf_catalog_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_system_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_taxonomy_type_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "instrument_crypto_spot_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_crypto_scope_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_field_identity_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_group_by_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_saved_view_field_contract" in audit_module.AUDIT_CHECK_NAMES
@@ -316,6 +318,8 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "snapshot.instrument_id NOT LIKE 'pending:%'" in valuation_query
     assert "snapshot.holding_kind = 'position'" in valuation_query
     assert "= 'market_quote'" in valuation_query
+    assert "quote.metric_family = holdings.holding_json ->> 'quote_metric_family'" in valuation_query
+    assert "quote.currency = holdings.currency" in valuation_query
     holding_basis_query = next(
         query
         for query in queries
@@ -628,3 +632,87 @@ def test_cli_normalizes_sqlalchemy_url_and_reports_database_name(
         assert json.loads(output)["database_name"] == "audit_fixture"
     else:
         assert "database_name: audit_fixture" in output
+
+
+def test_system_directory_audit_detects_missing_instruments_and_preserves_type_boundaries(audit_module):
+    with sqlite3.connect(':memory:') as db:
+        db.executescript("""
+            ATTACH ':memory:' AS instrument_data;
+            ATTACH ':memory:' AS watchlist;
+            CREATE TABLE instrument_data.instrument (instrument_id TEXT, instrument_type TEXT, lifecycle_state_json TEXT);
+            CREATE TABLE watchlist.watchlist (watchlist_id TEXT, name TEXT, owner_type TEXT, owner_id TEXT, is_default BOOL, is_shared BOOL, sort_order INT);
+            CREATE TABLE watchlist.watchlist_item (watchlist_id TEXT, instrument_id TEXT);
+            CREATE TABLE watchlist.watchlist_row_read_model (watchlist_id TEXT, instrument_id TEXT, instrument_type TEXT);
+        """)
+        for wid, name, order in [('all-instruments','All Instruments',0),('index','Index',1),
+                                  ('all-public-funds','All 公募',2),('all-private-funds','All 私募',3)]:
+            db.execute('INSERT INTO watchlist.watchlist VALUES (?, ?, ?, ?, ?, ?, ?)', (wid,name,'system','watchlist',True,True,order))
+        db.executemany('INSERT INTO instrument_data.instrument VALUES (?, ?, ?)', [
+            ('btc','crypto','{"status":"active"}'), ('stock','equity','{}'),
+            ('archived','equity','{"status":"archived"}'), ('cash','cash','{}')])
+        for iid,kind in [('btc','crypto'),('stock','equity')]:
+            db.execute('INSERT INTO watchlist.watchlist_item VALUES (?, ?)', ('all-instruments',iid))
+            db.execute('INSERT INTO watchlist.watchlist_row_read_model VALUES (?, ?, ?)', ('all-instruments',iid,kind))
+        count = lambda: db.execute(audit_module._watchlist_system_contract_query()).fetchone()[0]
+        assert count() == 0
+        db.execute("DELETE FROM watchlist.watchlist_item WHERE instrument_id='stock'")
+        db.execute("DELETE FROM watchlist.watchlist_row_read_model WHERE instrument_id='stock'")
+        assert count() == 1  # A missing registered asset must not disappear silently.
+        db.execute("INSERT INTO watchlist.watchlist_item VALUES ('all-instruments','stock')")
+        assert count() == 1  # Membership without its read model is also incomplete.
+        db.execute("INSERT INTO watchlist.watchlist_row_read_model VALUES ('all-instruments','stock','equity')")
+        db.execute("INSERT INTO watchlist.watchlist_item VALUES ('all-instruments','archived')")
+        db.execute("INSERT INTO watchlist.watchlist_row_read_model VALUES ('all-instruments','archived','equity')")
+        assert count() == 1
+        db.execute("DELETE FROM watchlist.watchlist_item WHERE instrument_id='archived'")
+        db.execute("DELETE FROM watchlist.watchlist_row_read_model WHERE instrument_id='archived'")
+        db.execute("UPDATE watchlist.watchlist_row_read_model SET instrument_type='etf' WHERE instrument_id='btc'")
+        assert count() == 1  # Mixed directories still reconcile every row's actual type.
+        db.execute("UPDATE watchlist.watchlist_row_read_model SET instrument_type='crypto' WHERE instrument_id='btc'")
+        db.execute("UPDATE watchlist.watchlist SET sort_order=0 WHERE watchlist_id='index'")
+        assert count() == 1
+
+
+def _sqlite_crypto_audit_query(audit_module):
+    # Translate only PostgreSQL JSON containment and the clock to SQLite fixture
+    # functions; execute the production joins and financial predicates unchanged.
+    query = audit_module._instrument_crypto_spot_contract_query()
+    query = query.replace("CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE)", "'2026-09-08'")
+    query = query.replace("(VALUES ('trading'), ('valuation'), ('total_return'), ('chart'), ('reference')) roles(role_name)",
+                          "(SELECT 'trading' AS role_name UNION ALL SELECT 'valuation' UNION ALL SELECT 'total_return' UNION ALL SELECT 'chart' UNION ALL SELECT 'reference') roles")
+    return re.sub(r"\(i.quote_selection_policy_json -> roles.role_name\)::jsonb\s+<@ '\[\"close\", \"last\"\]'::jsonb",
+                  "json_subset(i.quote_selection_policy_json -> roles.role_name, '[\"close\", \"last\"]')", query)
+
+
+@pytest.mark.parametrize('defect', ['currency','type','calendar','return_basis','provider','utc_day','volume','adjustment'])
+def test_crypto_audit_rejects_wrong_vehicle_clocks_and_undocumented_bar_semantics(audit_module, defect):
+    with sqlite3.connect(':memory:') as db:
+        db.create_function('json_subset',2,lambda a,b: set(json.loads(a)) <= set(json.loads(b)))
+        db.executescript("""
+            ATTACH ':memory:' AS instrument_data;
+            CREATE TABLE instrument_data.instrument (instrument_id TEXT, instrument_type TEXT, currency TEXT, exchange_code TEXT, source_settings_json TEXT, quote_selection_policy_json TEXT);
+            CREATE TABLE instrument_data.instrument_identifier (instrument_id TEXT, identifier_type TEXT, identifier_value TEXT);
+            CREATE TABLE instrument_data.instrument_market_data (instrument_id TEXT, metric_family TEXT, quote_basis TEXT, currency TEXT, provider TEXT, as_of_date TEXT);
+            CREATE TABLE instrument_data.instrument_price_bar (instrument_id TEXT, provider TEXT, as_of_date TEXT, adjustment_factor TEXT, volume TEXT, volume_unit TEXT, turnover TEXT, turnover_unit TEXT);
+        """)
+        source = {'source_mode':'api','source_api_profile':'fmp','market_calendar':'24/7','expected_frequency':'daily','return_semantics':'price_return'}
+        policy = {role:['close','last'] for role in ('trading','valuation','total_return','chart','reference')}
+        db.execute('INSERT INTO instrument_data.instrument VALUES (?, ?, ?, ?, ?, ?)', ('btcusd','crypto','USD',None,json.dumps(source),json.dumps(policy)))
+        db.execute("INSERT INTO instrument_data.instrument_identifier VALUES ('btcusd','provider_symbol','fmp:BTCUSD')")
+        db.execute("INSERT INTO instrument_data.instrument_market_data VALUES ('btcusd','price','close','USD','fmp:market_series_daily:BTCUSD','2026-09-07')")
+        db.execute("INSERT INTO instrument_data.instrument_price_bar VALUES ('btcusd','fmp:market_series_daily:BTCUSD','2026-09-07',NULL,NULL,NULL,NULL,NULL)")
+        query = _sqlite_crypto_audit_query(audit_module)
+        assert db.execute(query).fetchone()[0] == 0
+        if defect == 'currency': db.execute("UPDATE instrument_data.instrument SET currency='USDT'")
+        elif defect == 'type': db.execute("UPDATE instrument_data.instrument SET instrument_type='etf'")
+        elif defect == 'calendar':
+            source['market_calendar']='XNYS'
+            db.execute('UPDATE instrument_data.instrument SET source_settings_json=?', (json.dumps(source),))
+        elif defect == 'return_basis':
+            policy['total_return']=['adjusted_close']
+            db.execute('UPDATE instrument_data.instrument SET quote_selection_policy_json=?', (json.dumps(policy),))
+        elif defect == 'provider': db.execute("UPDATE instrument_data.instrument_identifier SET identifier_value='fmp:BTC'")
+        elif defect == 'utc_day': db.execute("UPDATE instrument_data.instrument_market_data SET as_of_date='2026-09-08'")
+        elif defect == 'volume': db.execute("UPDATE instrument_data.instrument_price_bar SET volume='1000',volume_unit='shares'")
+        elif defect == 'adjustment': db.execute("UPDATE instrument_data.instrument_price_bar SET adjustment_factor='1'")
+        assert db.execute(query).fetchone()[0] > 0

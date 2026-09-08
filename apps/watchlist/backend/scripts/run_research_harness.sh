@@ -95,12 +95,24 @@ copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
   --patch "$copilot_patch" \
   "$copilot_task")
 if [[ "${2:-}" != "risk" ]]; then
-  copilot_review_args=()
+  # macOS /bin/bash 3.2 treats an empty array as unset under set -u.
+  # Keep the complete command nonempty for automatic research too.
+  copilot_review_command=(/usr/bin/env -i "${copilot_exec_env[@]}"
+    "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review)
   if [[ "${2:-}" != "sector" ]]; then
-    copilot_review_args+=(--conversation)
+    copilot_review_command+=(--conversation)
   fi
-  "${copilot_command[@]}" | /usr/bin/env -i "${copilot_exec_env[@]}" \
-    "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review "${copilot_review_args[@]}"
+  copilot_review_output() {
+    local copilot_review_status=0
+    "${copilot_review_command[@]}" || copilot_review_status=$?
+    if [[ "$copilot_review_status" -ne 0 ]]; then
+      # A missing executable/module can fail before Python emits its own marker.
+      # The runner keeps an earlier, more specific marker when one exists.
+      printf '%s\n' 'SECTOR_REVIEW_ERROR {"type":"FactReviewProcessExit","summary":"本地事实核证进程退出，未生成核证结果；请检查研究运行环境。"}' >&2
+    fi
+    return "$copilot_review_status"
+  }
+  "${copilot_command[@]}" | copilot_review_output
 else
   exec "${copilot_command[@]}"
 fi

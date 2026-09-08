@@ -16,6 +16,7 @@ type RiskTargetGapChartProps = {
   ariaLabel: string
   emptyLabel: string
   currentLabel?: string
+  showTargets?: boolean
 }
 
 function pctWidth(value: number | null | undefined, maxValue: number) {
@@ -30,6 +31,7 @@ export default function RiskTargetGapChart({
   ariaLabel,
   emptyLabel,
   currentLabel = 'Current',
+  showTargets = true,
 }: RiskTargetGapChartProps) {
   if (!rows.length) {
     return <div className="risk-chart-empty">{emptyLabel}</div>
@@ -47,14 +49,14 @@ export default function RiskTargetGapChart({
           <span className="risk-target-gap-swatch risk-target-gap-swatch-current" />
           {currentLabel}
         </span>
-        <span className="risk-target-gap-legend-item">
+        {showTargets ? <span className="risk-target-gap-legend-item">
           <span className="risk-target-gap-swatch risk-target-gap-swatch-saa" />
           SAA
-        </span>
-        <span className="risk-target-gap-legend-item">
+        </span> : null}
+        {showTargets ? <span className="risk-target-gap-legend-item">
           <span className="risk-target-gap-swatch risk-target-gap-swatch-taa" />
           TAA
-        </span>
+        </span> : null}
       </div>
       {rows.map((row) => (
         <div className="risk-target-gap-row" key={row.id}>
@@ -69,27 +71,27 @@ export default function RiskTargetGapChart({
                 style={{ width: `${pctWidth(row.current, maxValue)}%` }}
               />
             </div>
-            <div className="risk-target-gap-track" aria-hidden="true">
+            {showTargets ? <div className="risk-target-gap-track" aria-hidden="true">
               <span
                 className="risk-target-gap-fill risk-target-gap-fill-saa"
                 style={{ width: `${pctWidth(row.saaTarget, maxValue)}%` }}
               />
-            </div>
-            <div className="risk-target-gap-track" aria-hidden="true">
+            </div> : null}
+            {showTargets ? <div className="risk-target-gap-track" aria-hidden="true">
               <span
                 className="risk-target-gap-fill risk-target-gap-fill-taa"
                 style={{ width: `${pctWidth(row.taaTarget, maxValue)}%` }}
               />
-            </div>
+            </div> : null}
           </div>
           <div className="risk-target-gap-values">
             <span>{formatPercent(row.current)}</span>
-            <span className={signedValueClass(row.saaGap)} title={`SAA gap ${formatPercent(row.saaGap)}`}>
+            {showTargets ? <span className={signedValueClass(row.saaGap)} title={`SAA gap ${formatPercent(row.saaGap)}`}>
               {formatPercent(row.saaTarget)}
-            </span>
-            <span className={signedValueClass(row.taaGap)} title={`TAA gap ${formatPercent(row.taaGap)}`}>
+            </span> : null}
+            {showTargets ? <span className={signedValueClass(row.taaGap)} title={`TAA gap ${formatPercent(row.taaGap)}`}>
               {formatPercent(row.taaTarget)}
-            </span>
+            </span> : null}
           </div>
         </div>
       ))}

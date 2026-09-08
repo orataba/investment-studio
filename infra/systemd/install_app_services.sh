@@ -256,7 +256,7 @@ for briefing_period in daily weekly; do
   REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.service")
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-briefing-$briefing_period.timer")
 done
-for market_action in daily weekly publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
+for market_action in daily weekly crypto publish sync registered-prices-cn registered-prices-hk registered-prices-us registered-prices-eu; do
   REFRESH_SERVICE_UNITS+=("$UNIT_PREFIX-market-$market_action.service")
   REFRESH_TIMER_UNITS+=("$UNIT_PREFIX-market-$market_action.timer")
 done

@@ -30,6 +30,7 @@ import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   formatCurrency,
   formatLabel,
@@ -1487,11 +1488,12 @@ function resolveNodePath(
   return path
 }
 
-function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | null) {
+function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | null, selectedTaxonomyId?: string) {
   const taxonomies = (catalog?.taxonomies ?? []).filter(
     (taxonomy) => taxonomy.status === 'active',
   )
   return (
+    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId) ??
     taxonomies.find(
       (taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id,
     ) ??
@@ -1519,8 +1521,9 @@ function labelsForTaxonomyAssignment(
 
 function buildTaxonomyLabelsByInstrumentId(
   catalog: PortfolioTaxonomyCatalogResponse | null,
+  selectedTaxonomyId?: string,
 ) {
-  const taxonomy = resolveGroupingTaxonomy(catalog)
+  const taxonomy = resolveGroupingTaxonomy(catalog, selectedTaxonomyId)
   if (!catalog || !taxonomy) {
     return new Map<string, HoldingTaxonomyLabels>()
   }
@@ -2557,6 +2560,7 @@ function buildGroupedRows(
 }
 
 export default function PortfolioHomePage() {
+  const zh = useLanguage().language === 'zh-Hans'
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -2733,9 +2737,11 @@ export default function PortfolioHomePage() {
     portfolioId,
   ])
 
+  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState('')
+  const groupingTaxonomy = resolveGroupingTaxonomy(taxonomyCatalog, groupingTaxonomyId)
   const taxonomyByInstrumentId = useMemo(
-    () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog),
-    [taxonomyCatalog],
+    () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog, groupingTaxonomyId),
+    [taxonomyCatalog, groupingTaxonomyId],
   )
   const columnContext = useMemo(
     () =>
@@ -3860,7 +3866,7 @@ export default function PortfolioHomePage() {
                       onClick={() => setHoldingsGroupByOpen(true)}
                     >
                       Group By{'\u00A0: '}
-                      {selectedGroupByOption.label}
+                      {selectedGroupByOption.label}{holdingsGroupBy.startsWith('taxonomy_') && groupingTaxonomy ? ` · ${groupingTaxonomy.name}` : ''}
                     </button>
                   </div>
                 </div>
@@ -4095,6 +4101,11 @@ export default function PortfolioHomePage() {
               </button>
             </div>
             <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
+              <label>{zh ? '分类' : 'Taxonomy'} <select aria-label={zh ? '持仓分组分类' : 'Holdings grouping taxonomy'} value={groupingTaxonomy?.taxonomy_id ?? ''}
+                onChange={(event) => { setGroupingTaxonomyId(event.target.value); setHoldingsGroupBy('taxonomy_top') }}>
+                {!groupingTaxonomy && <option value="">{zh ? '暂无分类' : 'No taxonomy'}</option>}
+                {(taxonomyCatalog?.taxonomies ?? []).filter((taxonomy) => taxonomy.status === 'active').map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}</option>)}
+              </select></label>
               {HOLDINGS_GROUP_BY_OPTIONS.map((option) => (
                 <button
                   type="button"

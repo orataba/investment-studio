@@ -8,13 +8,13 @@ import { emptyInstrumentResearchResponse } from '../lib/api'
 import FundDetailPage from './FundDetailPage'
 
 const api = vi.hoisted(() => ({ summary: vi.fn(), library: vi.fn(), nav: vi.fn(), research: vi.fn(), reference: vi.fn(), attributes: vi.fn(),
-  performance: vi.fn(), risk: vi.fn(), documents: vi.fn(), strategy: vi.fn(), taxonomy: vi.fn() }))
+  performance: vi.fn(), risk: vi.fn(), documents: vi.fn(), strategy: vi.fn(), taxonomy: vi.fn(), resolve: vi.fn() }))
 vi.mock('../lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/api')>(),
   getInstrumentSummary: api.summary, getInstrumentLibrary: api.library, getInstrumentNavSeries: api.nav,
   getInstrumentResearch: api.research, getInstrumentReferenceData: api.reference, getInstrumentAttributes: api.attributes,
   getInstrumentPerformance: api.performance, getInstrumentRisk: api.risk, getInstrumentDocuments: api.documents, getInstrumentStrategy: api.strategy,
-  getInstrumentTaxonomyTree: api.taxonomy,
+  getInstrumentTaxonomyTree: api.taxonomy, resolveInstrumentDetail: api.resolve,
 }))
 vi.mock('../components/InstrumentRiskPanel', () => ({ default: ({ mode }: { mode: string }) => <div data-testid="fund-price-risk" data-mode={mode} /> }))
 vi.mock('../components/InstrumentRiskDrawer', () => ({ default: ({ instrumentId, instrumentName, watchlistId, onClose, onAskAssistant }: {
@@ -181,6 +181,62 @@ it('opens an existing risk link in the unified chart and risk surface with a sin
   expect(container.querySelectorAll('.instrument-chart-stage')).toHaveLength(1)
   expect(screen.getAllByRole('searchbox')).toHaveLength(1)
   expect(screen.queryByRole('region', { name: '基金总览' })).toBeNull()
+})
+
+it('explains a benchmark failure from the shared hint and retries only through the text action', async () => {
+  const nav = await api.nav()
+  api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
+  api.nav.mockImplementation((id: string) => id === 'benchmark-1' ? Promise.reject(new Error('价格服务暂时不可用')) : Promise.resolve(nav))
+  const { container } = show('/instruments/fund-1?tab=risk&benchmark=benchmark-1')
+  const failure = await screen.findByRole('alert')
+  expect(failure.textContent).toContain('价格服务暂时不可用')
+  const hint = screen.getByRole('button', { name: /基准比较口径: 基准加载失败/ })
+  expect(hint.textContent).toBe('!')
+  expect(hint.closest('.instrument-chart-compare-search-box')).not.toBeNull()
+  const requestCount = () => api.nav.mock.calls.filter(([id]) => id === 'benchmark-1').length
+  expect(requestCount()).toBe(1)
+  fireEvent.pointerEnter(hint, { pointerType: 'mouse' })
+  expect(screen.getByRole('tooltip').textContent).toContain('价格服务暂时不可用')
+  expect(container.contains(screen.getByRole('tooltip'))).toBe(false)
+  fireEvent.click(hint)
+  expect(requestCount()).toBe(1)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  fireEvent.click(within(failure).getByRole('button', { name: '重试' }))
+  await waitFor(() => expect(requestCount()).toBe(2))
+  expect(await screen.findByRole('alert')).toBeTruthy()
+})
+
+it('withholds fund path risk across missing expected observations while keeping endpoint returns', async () => {
+  const nav = await api.nav()
+  api.nav.mockResolvedValue({ ...nav, calculation_frequency_profile: {
+    ...nav.calculation_frequency_profile, gap_count: 1, gap_status: 'calendar_gaps',
+  } })
+  const { container } = show('/instruments/fund-1?tab=risk')
+  await screen.findByTestId('fund-price-risk')
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  const rowValues = (label: string) => within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
+  for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
+    expect([...rowValues(label)].every((node) => node.textContent === '—')).toBe(true)
+  }
+  expect([...rowValues('Period Return')].some((node) => node.textContent !== '—')).toBe(true)
+  expect(screen.getByText(/不存在缺失观测或待确认的收益断点/)).toBeTruthy()
+})
+
+it.each(['price_return', null, 'total_return'] as const)('requires matched known return semantics for benchmark relative metrics: %s', async (returnKind) => {
+  const nav = await api.nav()
+  const fund = { ...nav, return_kind: 'total_return' }
+  const benchmark = { ...nav, fund_id: 'benchmark-1', return_kind: returnKind }
+  api.resolve.mockResolvedValue({ detail_supported: true, canonical_instrument_id: 'benchmark-1', instrument_name: '测试基准', primary_identifier: 'BENCH', instrument_type: 'index' })
+  api.nav.mockImplementation((id: string) => Promise.resolve(id === 'benchmark-1' ? benchmark : fund))
+  const { container } = show('/instruments/fund-1?tab=risk&benchmark=benchmark-1')
+  await screen.findByTestId('fund-price-risk')
+  await waitFor(() => expect(screen.getByRole('button', { name: /基准比较口径: 标的/ })).toBeTruthy())
+  const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+  for (const label of ['Excess Return', 'Beta', 'Upside Capture']) {
+    const values = [...within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')]
+    expect(values.length).toBeGreaterThan(0)
+    expect(values.some((node) => node.textContent !== '—')).toBe(returnKind === 'total_return')
+  }
 })
 
 it('preserves old document links and upload access inside the archive', async () => {

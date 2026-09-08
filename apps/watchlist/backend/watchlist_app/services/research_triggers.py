@@ -3,10 +3,8 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from investment_studio_instrument_core.db_models import Instrument
-from investment_studio_instrument_core.listing_contract import MARKET_SCOPE_TIMEZONES, market_scope_for_calendar
 
-from watchlist_app.db.models.workbench import ResearchEntry, RiskCase
+from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.services.market_evidence import text_store
 
 
@@ -47,10 +45,22 @@ def _monitoring_context(session, instrument_id, context):
         return context
     # A new daily run or a failed/manual task need not search again. Preserve the
     # most recent actual research scope, rather than silently ending monitoring.
-    for entry in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis")
-                                 .order_by(ResearchEntry.created_at.desc())):
+    # A private query is itself private information even when it searched public
+    # documents. Only shared, non-portfolio research establishes automatic scope.
+    query = select(ResearchEntry).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
+        ResearchEntry.kind == "analysis", ResearchTopic.visibility == "team", ResearchTopic.portfolio_id.is_(None),
+    ).order_by(ResearchEntry.created_at.desc())
+    team_id = (context.get("research_actor") or {}).get("team_id")
+    if team_id:
+        query = query.where(ResearchEntry.team_id == team_id, ResearchTopic.team_id == team_id)
+    for entry in session.scalars(query):
         prior = getattr(entry, "context_json", None) or {}
         if (prior.get("sector_run") or prior.get("research_run")) and instrument_id in prior.get("instrument_ids", []):
+            from watchlist_app.services.research_access import topic_portfolio_ids
+            topic = session.get(ResearchTopic, entry.topic_id)
+            if (prior.get("portfolio_id") or (prior.get("risk_scope") or {}).get("portfolio_id")
+                    or topic_portfolio_ids(session, topic)):
+                continue
             if _queries(prior, instrument_id):
                 return prior
     return context
@@ -124,10 +134,9 @@ def _risk_changes(session, instrument_id, since, now):
 
 
 def _due_items(session, instrument_id, context, since, now):
-    instrument = session.get(Instrument, instrument_id)
-    calendar = ((instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code) if instrument else None
-    market = market_scope_for_calendar(calendar) if calendar else None
-    zone = ZoneInfo(MARKET_SCOPE_TIMEZONES[market]) if market else None
+    from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
+    market = _research_market(session, instrument_id)
+    zone = ZoneInfo(RESEARCH_TIMEZONES[market]) if market else None
     review = (context.get("reviews") or {}).get(instrument_id) or {}
     dossier = next((item for item in context.get("research_dossiers", []) if item.get("instrument_id") == instrument_id), {})
     notebook = review.get("research") or dossier.get("notebook") or {}

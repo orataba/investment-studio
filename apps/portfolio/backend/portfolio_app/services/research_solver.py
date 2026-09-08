@@ -42,6 +42,7 @@ from portfolio_app.services.portfolio_store import (
     list_transactions,
 )
 from portfolio_app.services.research_eligibility import (
+    contract_only_instrument_ids,
     FORMER_PM_REVIEW_EXECUTION_NOTE,
     RESEARCH_EXECUTION_TARGET_EPSILON,
     enrich_instrument_research_state,
@@ -4186,6 +4187,7 @@ def _build_taxonomy_state(
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    require_planning_enabled: bool = True,
 ) -> TaxonomyResearchState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -4212,7 +4214,7 @@ def _build_taxonomy_state(
         raise ValueError("The effective taxonomy configuration is incomplete.")
     if str(taxonomy.get("status") or "") != "active":
         raise ValueError("The effective taxonomy configuration is inactive or deleted.")
-    if not bool(taxonomy.get("planning_enabled")):
+    if require_planning_enabled and not bool(taxonomy.get("planning_enabled")):
         raise ValueError("The effective taxonomy configuration is not planning-enabled.")
     node_rows = [
         item
@@ -4262,6 +4264,15 @@ def _build_taxonomy_state(
         for item in list(configuration.get("taxonomy_assignments") or [])
         if isinstance(item, dict) and str(item.get("status") or "") == "active"
     ]
+    active_target_ids = {str(item["target_set_id"]) for item in configuration.get("target_sets", [])
+                         if isinstance(item, dict) and item.get("status") == "active"}
+    explicit_members = {str(item["target_member_id"]) for item in configuration.get("target_set_lines", [])
+                        if isinstance(item, dict) and item.get("target_member_type") == "instrument"
+                        and str(item.get("target_set_id")) in active_target_ids}
+    contract_only = contract_only_instrument_ids(portfolio_id, as_of_date=as_of_date,
+                                                  explicitly_selected=explicit_members)
+    assignments = [item for item in assignments if item.get("target_scope") != "instrument"
+                   or item.get("target_entity_id") not in contract_only]
     assignments.sort(
         key=lambda item: (
             str(item.get("taxonomy_node_id") or ""),
@@ -4363,6 +4374,7 @@ def build_research_scope_options(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        require_planning_enabled=False,
     )
     options: list[dict[str, object]] = [
         {
@@ -4412,6 +4424,7 @@ def build_research_calculation_frequency_profile(
         as_of_date=as_of_date,
         instrument_detail_cache=_instrument_detail_cache,
         direct_fx_instruments=_direct_fx_instruments,
+        require_planning_enabled=False,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")

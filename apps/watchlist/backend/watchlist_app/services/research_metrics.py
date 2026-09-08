@@ -150,31 +150,38 @@ def research_numeric_data(*, action="catalogue", as_of, dataset=None, series_ids
 def ewma_price_evidence(series, *, instrument_type, calendar, as_of):
     """Calculate on the latest contiguous run of actual exchange-session prices."""
     cutoff = cutoff_instant(as_of)
+    crypto = instrument_type == "crypto"
+    half_life, minimum_returns, window, annualization = (30, 90, 365, 365.25) if crypto else (EWMA_HALF_LIFE, EWMA_MIN_RETURNS, EWMA_WINDOW, 252)
     metadata = series.get("metadata") or {}
     result = {
         "status": "unavailable", "current": None, "previous": None, "five_sessions_ago": None,
         "change_pp": None, "change_pct": None, "five_session_change_pp": None,
         "history": [], "historical_reference": None, "limitations": [], "input_points": [],
         "methodology": {
-            "metric": "ewma_volatility", "half_life_sessions": EWMA_HALF_LIFE,
-            "minimum_returns": EWMA_MIN_RETURNS, "maximum_returns": EWMA_WINDOW,
-            "annualization": 252, "return_basis": "log(P_t/P_previous_session)",
+            "metric": "ewma_volatility", "half_life_sessions": half_life,
+            "minimum_returns": minimum_returns, "maximum_returns": window,
+            "annualization": annualization, "return_basis": "log(P_t/P_previous_session)",
             "variance": "normalized exponential weights; weighted mean removed; population variance",
-            "definition": "1m means a 21-trading-observation half-life, not a one-month rolling sample",
+            "definition": "30 UTC-calendar-day half-life; completed daily spot prices" if crypto else "1m means a 21-trading-observation half-life, not a one-month rolling sample",
             "quote_basis": metadata.get("quote_basis"), "return_kind": metadata.get("return_kind"),
             "calendar": calendar,
         },
     }
-    if instrument_type not in {"equity", "etf", "index"} or metadata.get("quote_basis") not in {"close", "adjusted_close", "last"}:
+    if instrument_type not in {"equity", "etf", "index", "crypto"} or metadata.get("quote_basis") not in {"close", "adjusted_close", "last"}:
         result["limitations"].append("本指标仅适用于交易所日频价格；普通基金或净值口径不套用此年化波动定义。")
+        return result
+    if crypto and calendar != "24/7":
+        result["limitations"].append("加密资产缺少24/7 UTC日线合同，未套用交易所交易日年化。")
         return result
     if metadata.get("return_series_status") not in {"ready", "complete", "partial"} or metadata.get("return_segment_breaks"):
         result["limitations"].append("价格收益口径未就绪或存在待确认断点。")
         return result
-    points = sorted((p for p in series.get("points", []) if p["date"] <= cutoff.date().isoformat()), key=lambda p: p["date"])
+    cutoff_day = cutoff.astimezone(UTC).date().isoformat()
+    points = sorted((p for p in series.get("points", [])
+                     if (p["date"] < cutoff_day if crypto else p["date"] <= cutoff_day)), key=lambda p: p["date"])
     # Older prices are outside every estimate below. In particular they need not
     # fall inside the calendar package's retained historical session coverage.
-    points = points[-2 * EWMA_WINDOW - 1:]
+    points = points[-2 * window - 1:]
     if not points:
         result["limitations"].append("截止时间内没有可用价格。")
         return result
@@ -199,19 +206,19 @@ def ewma_price_evidence(series, *, instrument_type, calendar, as_of):
     # Retain one year of volatility history, with a year of prior prices for its first estimate.
     points = points[last_break:]
     result["input_points"] = points
-    if len(points) < EWMA_MIN_RETURNS + 1:
-        result["limitations"].append(f"连续实际日收益不足{EWMA_MIN_RETURNS}个；未生成短样本年化波动。")
+    if len(points) < minimum_returns + 1:
+        result["limitations"].append(f"连续实际日收益不足{minimum_returns}个；未生成短样本年化波动。")
         return result
     returns = [log(float(b["value"]) / float(a["value"])) for a, b in zip(points, points[1:])]
-    decay = 0.5 ** (1 / EWMA_HALF_LIFE)
+    decay = 0.5 ** (1 / half_life)
     history = []
-    for stop in range(max(EWMA_MIN_RETURNS, len(returns) - EWMA_WINDOW + 1), len(returns) + 1):
-        sample = returns[max(0, stop - EWMA_WINDOW):stop]
+    for stop in range(max(minimum_returns, len(returns) - window + 1), len(returns) + 1):
+        sample = returns[max(0, stop - window):stop]
         weights = [decay ** index for index in range(len(sample) - 1, -1, -1)]
         total = sum(weights)
         mean = sum(w * value for w, value in zip(weights, sample)) / total
         variance = sum(w * (value - mean) ** 2 for w, value in zip(weights, sample)) / total
-        history.append({"date": points[stop]["date"], "volatility_pct": sqrt(variance * 252) * 100,
+        history.append({"date": points[stop]["date"], "volatility_pct": sqrt(variance * annualization) * 100,
                         "returns": len(sample), "sample_start": points[stop - len(sample)]["date"]})
     current = history[-1]
     previous = history[-2] if len(history) >= 2 else None
@@ -253,7 +260,7 @@ def instrument_price_risk(session, instrument_id, *, as_of):
     series = chart.payload_json.get("research_returns") or {}
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
     data = ewma_price_evidence(series, instrument_type=instrument.instrument_type, calendar=calendar, as_of=cutoff)
-    return _evidence("价格波动研究 · 21交易日半衰期EWMA", cutoff, data, data["methodology"],
+    return _evidence("价格波动研究 · 30日半衰期EWMA" if instrument.instrument_type == "crypto" else "价格波动研究 · 21交易日半衰期EWMA", cutoff, data, data["methodology"],
                      instrument_id=instrument_id, input_snapshot={
                          "source_type": "instrument_chart_snapshot", "instrument_id": instrument_id,
                          "known_at": known_at.isoformat(),

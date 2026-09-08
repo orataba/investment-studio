@@ -153,20 +153,22 @@ function drawdownStats(points: InstrumentChartPoint[]) {
 
 export function buildPerformanceMetricSnapshot(
   points: InstrumentChartPoint[],
+  options: { continuousDaily?: boolean; pathRiskAvailable?: boolean } = {},
 ): PerformanceMetricSnapshot {
+  const unavailable: PerformanceMetricSnapshot = {
+    periodReturn: null,
+    annualizedReturn: null,
+    annualizedVolatility: null,
+    sharpe: null,
+    sortino: null,
+    calmar: null,
+    maxDrawdown: null,
+    recoveryDays: null,
+    recoveryOpen: false,
+  }
   const ordered = orderedPoints(points)
   if (ordered.length < 2) {
-    return {
-      periodReturn: null,
-      annualizedReturn: null,
-      annualizedVolatility: null,
-      sharpe: null,
-      sortino: null,
-      calmar: null,
-      maxDrawdown: null,
-      recoveryDays: null,
-      recoveryOpen: false,
-    }
+    return unavailable
   }
 
   const first = ordered[0]
@@ -176,6 +178,14 @@ export function buildPerformanceMetricSnapshot(
   const annualizedReturn = years >= 1
     ? (Math.pow(last.value / first.value, 1 / years) - 1) * 100
     : null
+  if (options.pathRiskAvailable === false || (options.continuousDaily && ordered.some((point, index) => index > 0 && (
+    new Date(`${point.date}T00:00:00Z`).getTime() -
+    new Date(`${ordered[index - 1].date}T00:00:00Z`).getTime()
+  ) !== 86_400_000))) {
+    // Missing UTC days leave endpoint returns usable but cannot establish a
+    // complete daily risk path by lowering the inferred observation density.
+    return { ...unavailable, periodReturn, annualizedReturn }
+  }
   const returns = periodicReturns(ordered)
   const periodsPerYear = inferredPeriodsPerYear(ordered, returns.length)
   const standardDeviation = sampleStandardDeviation(returns)
@@ -219,9 +229,10 @@ export function buildPerformanceMetricSnapshot(
 
 export function buildPerformanceMetricPeriodSnapshots(
   points: InstrumentChartPoint[],
+  options: { continuousDaily?: boolean; pathRiskAvailable?: boolean } = {},
 ): PerformanceMetricPeriodSnapshot[] {
   return PERFORMANCE_METRIC_PERIODS.map((period) => ({
     ...period,
-    snapshot: buildPerformanceMetricSnapshot(anchoredWindow(points, period.key)),
+    snapshot: buildPerformanceMetricSnapshot(anchoredWindow(points, period.key), options),
   }))
 }

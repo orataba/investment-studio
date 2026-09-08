@@ -88,7 +88,7 @@ export default function InstrumentDetailPage() {
 
   if (
     instrument.detail_supported &&
-    ['etf', 'equity', 'index'].includes(instrument.instrument_type) &&
+    ['etf', 'equity', 'index', 'crypto'].includes(instrument.instrument_type) &&
     instrument.detail_subject_id
   ) {
     return (
@@ -157,7 +157,7 @@ export default function InstrumentDetailPage() {
       </div>
       <div className="instrument-detail-body">
         <p>
-          Watchlist supports public fund, private fund, ETF, equity, and index detail workspaces.{' '}
+          Watchlist supports public fund, private fund, ETF, equity, index, and crypto detail workspaces.{' '}
           <strong>{instrument.instrument_type}</strong> instruments can exist in shared asset data, but they do not
           have a local watchlist detail workspace yet.
         </p>

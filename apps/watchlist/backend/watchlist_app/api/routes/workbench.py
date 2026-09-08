@@ -224,18 +224,13 @@ async def _save_uploaded_material(topic: ResearchTopic, file: UploadFile, sessio
     path = folder / f"{entry_id}-{name}"
     await _persist_uploaded_document(file, path)
     try:
-        text, extraction = "", "未提取正文；请补充摘要或原文"
-        if path.suffix.lower() in {".txt", ".md", ".csv"}:
-            text = path.read_text(encoding="utf-8-sig")[:60000]
-            extraction = "文本最多保留前 60000 字符；完整原件保留"
-        elif path.suffix.lower() == ".pdf":
-            from pypdf import PdfReader
-            reader = PdfReader(path)
-            text = "\n".join(f"[第 {i+1} 页]\n{page.extract_text() or ''}" for i, page in enumerate(reader.pages))[:60000]
-            extraction = "PDF 文字层，最多前 60000 字符；扫描件需补充文字" if text.strip() else extraction
+        from watchlist_app.services.research_dossier import _file_text
+        text, extraction_status, extraction = _file_text(path)
+        if extraction_status in {"failed", "missing"}:
+            raise ValueError("Uploaded research material could not be read")
         record = ResearchEntry(entry_id=entry_id, topic_id=topic.topic_id, team_id=topic.team_id, author_user_id=current_principal().user_id, kind="evidence", title=(title or "").strip() or name, body=text,
             source=f"/api/research/entries/{entry_id}/file", status="recorded",
-            context_json={**(metadata or {}), "file_name": name, "extraction": extraction})
+            context_json={**(metadata or {}), "file_name": name, "extraction": extraction, "extraction_status": extraction_status})
         topic.updated_at = now()
         session.add(record)
         session.commit()

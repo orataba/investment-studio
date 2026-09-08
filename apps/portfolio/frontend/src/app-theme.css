@@ -6,6 +6,14 @@
   gap: 0;
 }
 
+.portfolio-workspace-content {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 2px solid var(--portfolio-ink);
+}
+
 .portfolio-toolbar-band {
   gap: 11px;
   padding: 0 0 12px;
@@ -140,8 +148,7 @@
 }
 
 .portfolio-header-row,
-.portfolio-entry-hero,
-.account-page-heading {
+.portfolio-entry-hero {
   min-height: 92px;
   padding: 19px 0 17px;
   border: 0;
@@ -149,6 +156,16 @@
   border-bottom: 1px solid var(--portfolio-line-strong);
   border-radius: 0;
   background: #ffffff;
+  box-shadow: none;
+}
+
+.account-page-heading {
+  min-height: 0;
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
@@ -279,9 +296,7 @@
 
 /* Primary work surfaces use horizontal rules rather than card containers. */
 .portfolio-section-block,
-.holdings-surface,
 .transaction-workbench-grid,
-.taxonomy-page-table,
 .research-chart-panel,
 .research-metrics-panel,
 .research-validation-grid,
@@ -297,6 +312,26 @@
   overflow: visible;
 }
 
+.holdings-surface,
+.taxonomy-page-table {
+  border: 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.risk-page-surface > .portfolio-section-block:first-of-type,
+.performance-section-stack > .portfolio-section-block:first-child {
+  border-top: 0;
+}
+
+.risk-page-surface > .portfolio-section-block:first-of-type > .portfolio-detail-toolbar,
+.taxonomy-strip-section:first-of-type .taxonomy-topbar {
+  padding-top: 0;
+}
+
 .portfolio-workspace-page .portfolio-section-block > .portfolio-detail-toolbar,
 .portfolio-workspace-page .portfolio-detail-surface > .portfolio-detail-toolbar,
 .holdings-section-heading,
@@ -309,10 +344,14 @@
   background: transparent;
 }
 
-.portfolio-workspace-page .portfolio-detail-toolbar .panel-title {
+.portfolio-workspace-page .portfolio-detail-toolbar .panel-title,
+.research-command-copy > .panel-title,
+.account-page-title-stack h1 {
   font-size: 17px;
   font-weight: 500;
   letter-spacing: -0.01em;
+  line-height: 1.2;
+  text-transform: none;
 }
 
 .portfolio-section-block > .table-shell,
@@ -322,7 +361,8 @@
 }
 
 .overview-performance-block {
-  padding: 15px 0 0;
+  padding: 0;
+  border-top: 0;
 }
 
 .overview-nav-grid {
@@ -403,7 +443,13 @@
   border-top: 1px solid var(--portfolio-line);
   border-bottom: 1px solid var(--portfolio-line);
   border-radius: 0;
-  background: var(--portfolio-band);
+  background: transparent;
+}
+
+.holdings-filter-bar,
+.performance-window-bar {
+  padding: 0 0 14px;
+  border-top: 0;
 }
 
 .holdings-filter-input,
@@ -779,8 +825,7 @@
   }
 
   .portfolio-header-row,
-  .portfolio-entry-hero,
-  .account-page-heading {
+  .portfolio-entry-hero {
     padding: 18px 0 16px;
   }
 

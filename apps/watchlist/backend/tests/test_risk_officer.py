@@ -184,6 +184,54 @@ def test_portfolio_modules_and_local_contracts_have_bound_sources_and_underlying
         assert view["latest_completed"]["evidence_sources"]["portfolio-risk:p1:metrics"]["detail_path"] == "/portfolios/p1/risk"
 
 
+def test_new_portfolio_modules_and_sources_survive_risk_snapshot_and_validation(client, monkeypatch):
+    from types import SimpleNamespace
+    from watchlist_app import research_mcp
+    seed(client)
+    sources = [{"source_id": source_id, "portfolio_id": "p1", "detail_path": "/portfolios/p1/risk"}
+               for source_id in ("concentration:p1:1", "tail:p1:.95", "portfolio-risk:p1:targets:industry", "portfolio-risk:p1:targets:country")]
+    sources[0]["source_type"] = "portfolio_concentration"
+    context = {
+        "portfolio_id": "p1", "as_of_date": "2026-09-08",
+        "workspace": {"portfolio_id": "p1", "portfolio_name": "组合", "as_of_date": "2026-09-08",
+            "base_currency": "CNY", "totals": {"nav": 1000}, "rows": [
+                {"position_reference_id": "risk-a", "holding_kind": "position", "quantity": 1,
+                 "market_value_base": 600, "instrument_core": {"instrument_id": "risk-a", "instrument_type": "etf"}}]},
+        "holdings": [{"holding_id": "risk-a"}],
+        "concentration": {"status": "partial", "settings_revision": 3, "source_id": sources[0]["source_id"], "sources": [sources[0]], "scopes": [
+            {"taxonomy_id": tid, "rows": [{"weight": None, "lower_bound_weight": .4, "status": "breached"}]}
+            for tid in ("industry", "country")]},
+        "tail_risk": {"status": "unavailable", "var_amount": None, "confidence": .99, "sources": [sources[1]],
+                      "tail_effective_observations": .9, "coverage_status": "partial", "excluded_gross_nav_fraction": .4},
+        "targets_by_taxonomy": [{"taxonomy_id": tid, "source_id": f"portfolio-risk:p1:targets:{tid}", "rows": [{"dimension": "weight", "breach": None}]}
+                                for tid in ("industry", "country")],
+        "sources": sources,
+    }
+    calls = []
+    monkeypatch.setattr(service, "external_json", lambda name, path: calls.append((name, path)) or context)
+    with get_session_factory()() as session:
+        snapshot = service.read_snapshot(session, portfolio_id="p1")
+    assert calls == [("portfolio", "/portfolios/p1/risk-context")]
+    for section in ("concentration", "tail_risk", "targets_by_taxonomy"):
+        assert snapshot["portfolio"]["risk_context"][section] == context[section]
+    assert set(source["source_id"] for source in sources).issubset(service.evidence_sources(snapshot))
+    monkeypatch.setattr(research_mcp, "request", lambda _: {
+        "risk_run": True, "cutoff": "2026-09-08", "risk_inputs": snapshot})
+    assert research_mcp.read_portfolio_risk("concentration")["sources"] == [sources[0]]
+    assert research_mcp.read_portfolio_risk("tail_risk")["sources"] == [sources[1]]
+    target_packet = research_mcp.read_portfolio_risk("targets_by_taxonomy")
+    assert target_packet["sources"] == sources[2:]
+    assert len(target_packet["current"]) == 2
+    run = SimpleNamespace(context_json={"risk_inputs": snapshot})
+    for source in sources:
+        review = service.RiskReview.model_validate(reply(instrument_ids=[], case_ids=[], source_ids=[source["source_id"]]))
+        service.validate_result(run, review)
+    with pytest.raises(ValueError, match="范围快照"):
+        service.validate_result(run, service.RiskReview.model_validate(reply(instrument_ids=["industry"], case_ids=[], source_ids=[sources[0]["source_id"]])))
+    with pytest.raises(ValueError, match="范围快照以外"):
+        service.validate_result(run, service.RiskReview.model_validate(reply(instrument_ids=[], case_ids=[], source_ids=["tail:other:.95"])))
+
+
 def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch):
     from watchlist_app.api.routes import risk_officer as route
     seed(client)

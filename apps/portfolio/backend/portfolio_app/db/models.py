@@ -1552,3 +1552,17 @@ class PortfolioUserPreferenceModel(Base):
     preference_key: Mapped[str] = mapped_column(String, primary_key=True)
     value_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class ConcentrationPolicyRevisionModel(Base):
+    __tablename__ = "concentration_policy_revision"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="positive_revision"),
+        Index("ix_concentration_policy_effective", "portfolio_id", "effective_from", "revision"),
+    )
+    portfolio_id: Mapped[str] = mapped_column(ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    settings_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)

@@ -94,9 +94,7 @@ export default function WatchlistEntryPage() {
     return () => window.clearTimeout(timeoutId)
   }, [notice])
 
-  const totalProducts = watchlists
-    .filter(isSystemWatchlist)
-    .reduce((sum, item) => sum + item.item_count, 0)
+  const totalProducts = watchlists.find((item) => item.watchlist_id === 'all-instruments')?.item_count ?? 0
 
   async function moveWatchlist(sourceId: string, targetId: string) {
     if (sourceId === targetId || reordering) {
@@ -466,7 +464,7 @@ export default function WatchlistEntryPage() {
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         title="Delete Watchlist"
-        description="This permanently deletes the watchlist, its saved views, and its list membership. Shared instruments are not deleted. This action cannot be undone."
+        description="Delete this list and its saved views? Each instrument keeps its investment status, settings, and research, and remains accessible in All Instruments."
         confirmLabel="Delete Watchlist"
         confirmationText={pendingDelete?.name}
         busy={deleting}

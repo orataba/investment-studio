@@ -97,6 +97,35 @@ def test_future_publications_are_excluded_without_confusing_fiscal_periods_or_re
     assert retained["sources"] == []
 
 
+@pytest.mark.parametrize("provenance", [
+    {"source_kind": "generated_source_summary"}, {"source_kind": "internal_computed_summary"},
+    {"extraction_status": "summary"}, {"extraction_status": "computed_summary"},
+])
+def test_new_summaries_remain_readable_but_old_source_dates_do_not_turn_them_into_originals(provenance):
+    record = ResearchEntry(entry_id="summary", topic_id="dossier:xlk", kind="evidence", title="2026年补建历史摘要",
+        body="依据2022年原件所作的摘要和本次研究推论。", source="https://issuer.example/2022-original", status="recorded",
+        created_at=datetime(2026, 9, 8, tzinfo=UTC), context_json={"published_at": "2022-12-14",
+            "original_published_at": "2022-12-14", "extraction_status": "provided", **provenance})
+    summary = material_record(record, "xlk")
+    assert summary["role"] == "derived_reference"
+    packet = dossier(materials=[summary])
+    assert dossier_source(packet, summary["source_id"])["body"] == record.body
+    assert dossier_outline(packet)["materials"][0]["body_available"]
+    real_original = {"source_id": "material:original", "instrument_id": "xlk", "body": "原始披露全文",
+                     "metadata": {"published_at": "2022-12-14", "extraction_status": "provided"}}
+    metric = {"source_id": "computed:fund", "source_type": "computed_metric", "scope": "instrument",
+        "instrument_id": "xlk", "as_of": "2026-09-08T00:00:00+00:00", "methodology": "实际共同观察区间",
+        "data": {"status": "available", "return_pct": 5}}
+    for cutoff in [CUTOFF, "2026-09-09T00:00:00+00:00"]:
+        sources = research_sources(context(dossier(materials=[summary, real_original], notebook={"sources": [
+            {**summary, "source_type": "research_material"}]}), cutoff=cutoff, computed_metrics=[metric]), "run")
+        assert summary["source_id"] not in sources
+        assert "material:original" in sources
+        assert ("computed:fund" in sources) == (cutoff > metric["as_of"])
+        with pytest.raises(ValueError, match="未取得"):
+            validate_notebook(notebook(source_ids=[summary["source_id"]]), "xlk", sources)
+
+
 def test_snapshot_sources_exclude_ai_context_and_do_not_label_run_cutoff_as_collection_time():
     asset = {"instrument_id": "xlk", "name": "XLK", "summary": {"source_cutoff_at": "2026-09-04"},
              "research": "PM观点", "research_tracking": "AI总结", "analyst_focus": "框架",

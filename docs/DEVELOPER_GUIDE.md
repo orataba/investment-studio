@@ -231,7 +231,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 
 ## 9. 当前明确边界
 
-- Watchlist 主链路只覆盖公募、私募、ETF、股票和指数；cash、FX、other 没有详情工作面。
+- Watchlist 主链路覆盖公募、私募、ETF、股票、指数及原生加密资产现货；cash、FX、other 没有详情工作面。crypto 使用 UTC 全年日历，目前不进入 Portfolio 交易录入。
 - Documents 只具备现有数据/附件能力，没有完整通用文档工作台；PDF/图片 OCR 和官方指数方法论文档摄取未实现。
 - Portfolio 支持股票／ETF 的显式卖空与回补；不支持直接债券、融资、PE/VC capital call、基金份额转换或衍生品 transfer。
 - FCN/Option 没有 daily fair value、Greeks、自动 barrier/行权或 covariance risk；相关持仓按明确的 carrying/liability 口径披露。

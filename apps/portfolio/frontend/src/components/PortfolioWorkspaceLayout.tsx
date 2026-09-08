@@ -1,6 +1,6 @@
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
-import { Fragment, type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
@@ -764,7 +764,9 @@ export default function PortfolioWorkspaceLayout({
         </div>
       </header>
 
-      <Fragment key={`${resolvedPortfolioId}:${summaryRevision}`}>{children}</Fragment>
+      <div className="portfolio-workspace-content" key={`${resolvedPortfolioId}:${summaryRevision}`}>
+        {children}
+      </div>
       <ConfirmDialog
         open={Boolean(pendingPortfolioDelete)}
         title="Delete Portfolio"

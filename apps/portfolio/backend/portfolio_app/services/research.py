@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import mimetypes
 import shutil
 from copy import deepcopy
@@ -28,7 +29,6 @@ from portfolio_app.services.daily_snapshots import (
     _run_portfolio_daily_snapshot_recalculation_synchronously,
     ensure_portfolio_daily_snapshots,
 )
-from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.analytics_scope import analytics_policy_version, taxonomy_configuration_as_of_in_session
@@ -67,6 +67,7 @@ CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
 RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 2
+logger = logging.getLogger(__name__)
 DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
     {
         "scenario_id": "friction_1_5x",
@@ -244,24 +245,31 @@ def _next_research_run_id(portfolio_id: str) -> str:
     return f"{portfolio_id}__research__{timestamp}__{uuid4().hex[:8]}"
 
 
-def _prune_portfolio_research_runs(session, portfolio_id: str, *, keep_run_id: str) -> None:
+def _prune_portfolio_research_runs(session, portfolio_id: str, *, keep_run_id: str) -> list[str]:
+    current = session.get(ResearchRunRecordModel, keep_run_id)
     rows = session.scalars(
         select(ResearchRunRecordModel).where(
             ResearchRunRecordModel.portfolio_id == portfolio_id,
             ResearchRunRecordModel.research_run_id != keep_run_id,
+            ResearchRunRecordModel.status != "running",
+            ResearchRunRecordModel.requested_at <= current.requested_at,
         )
     ).all()
     for row in rows:
         session.delete(row)
-    portfolio_output_root = _research_outputs_root() / portfolio_id
-    if portfolio_output_root.exists():
-        for child in portfolio_output_root.iterdir():
-            if child.name == keep_run_id:
-                continue
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
+    return [row.research_run_id for row in rows]
+
+
+def _remove_pruned_research_artifacts(portfolio_id: str, run_ids: list[str]) -> None:
+    # Only remove the terminal runs whose database deletion committed. Other
+    # directories can belong to active calculations or later requests.
+    for run_id in run_ids:
+        path = _research_outputs_root() / portfolio_id / run_id
+        if path.exists():
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                logger.exception("Could not remove retired research artifacts for %s.", run_id)
 
 
 def _default_as_of_date(portfolio: dict[str, object]) -> date:
@@ -383,8 +391,8 @@ def _validate_planning_taxonomy(
     )
     if taxonomy is None:
         raise ValueError("Planning taxonomy not found.")
-    if not taxonomy.planning_enabled:
-        raise ValueError("Research planning taxonomy must be planning-enabled.")
+    if taxonomy.status != "active":
+        raise ValueError("Research planning taxonomy must be active.")
     return taxonomy
 
 
@@ -472,15 +480,18 @@ def _validate_top_sleeve_weight_bounds(
 
 
 def _planning_taxonomy_options(portfolio_id: str) -> list[dict[str, object]]:
+    configured = {item["taxonomy_id"] for item in list_target_sets(portfolio_id)
+                  if item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))}
     return [
         {
             "taxonomy_id": item["taxonomy_id"],
             "name": item["name"],
             "taxonomy_type": item["taxonomy_type"],
             "budgeting_level": item.get("budgeting_level"),
+            "targets_available": item["taxonomy_id"] in configured,
         }
         for item in list_taxonomies(portfolio_id)
-        if bool(item.get("planning_enabled"))
+        if item.get("status") == "active"
     ]
 
 
@@ -2040,11 +2051,14 @@ def run_portfolio_research(
     if portfolio is None:
         return None
 
-    latest_portfolio_as_of_date = _default_as_of_date(portfolio)
     # This POST explicitly requests a calculation. Finish its snapshot inputs
     # before creating the research run; financial GETs only queue this work.
     _run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
     ensure_portfolio_daily_snapshots(portfolio_id)
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        return None
+    latest_portfolio_as_of_date = _default_as_of_date(portfolio)
     taxonomy_name_map = _taxonomy_name_map(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -2066,6 +2080,12 @@ def run_portfolio_research(
             settings_row,
             default_as_of_date=latest_portfolio_as_of_date,
         )
+        effective_configuration = taxonomy_configuration_as_of_in_session(
+            session, portfolio_id, settings_row.planning_taxonomy_id, effective_as_of_date,
+        ) if settings_row.planning_taxonomy_id else None
+        if not any(item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))
+                   for item in (effective_configuration or {}).get("target_sets", [])):
+            raise ValueError("Configure active weight or risk-contribution targets for the selected taxonomy and date before running Research.")
         production_risk_model = get_portfolio_risk_policy(portfolio_id)
         risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
         risk_calculation_frequency = "daily"
@@ -2236,24 +2256,23 @@ def run_portfolio_research(
             run_row.detail_json = detail
             run_row.artifacts_json = artifacts
             run_row.error_message = None
-            _prune_portfolio_research_runs(session, portfolio_id, keep_run_id=run_id)
+            retired_run_ids = _prune_portfolio_research_runs(session, portfolio_id, keep_run_id=run_id)
             session.commit()
-        except (InstrumentRegistryError, ValueError) as error:
-            run_row.status = "failed"
-            run_row.finished_at = _utc_now_iso()
-            run_row.error_message = str(error)
-            run_row.artifacts_json = []
-            session.commit()
-            raise
-        except Exception as error:  # pragma: no cover - defensive error handling
-            run_row.status = "failed"
-            run_row.finished_at = _utc_now_iso()
-            run_row.error_message = str(error)
-            run_row.artifacts_json = []
-            session.commit()
+        except Exception as error:
+            # A failed publish must not commit pending pruning or leave the
+            # session in SQLAlchemy's failed-transaction state.
+            session.rollback()
+            failed_run = session.get(ResearchRunRecordModel, run_id)
+            if failed_run is not None:
+                failed_run.status = "failed"
+                failed_run.finished_at = _utc_now_iso()
+                failed_run.error_message = str(error)
+                failed_run.artifacts_json = []
+                session.commit()
+            _remove_pruned_research_artifacts(portfolio_id, [run_id])
             raise
 
-        session.refresh(run_row)
+        _remove_pruned_research_artifacts(portfolio_id, retired_run_ids)
         return _serialize_run_row(run_row, taxonomy_name_map)
 
 

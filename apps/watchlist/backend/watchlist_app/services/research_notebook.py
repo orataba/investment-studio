@@ -252,6 +252,12 @@ def dossier_source(dossier: dict, source_id: str) -> dict:
 
 
 def _original_source(source: dict, iid: str, cutoff: datetime | None = None) -> bool:
+    metadata = source.get("metadata") or {}
+    if (metadata.get("source_kind") in {"generated_source_summary", "internal_computed_summary"}
+            or metadata.get("extraction_status") in {"summary", "computed_summary"}):
+        # A newly written synopsis stays useful context, but an old source date
+        # cannot make its paraphrases or later interpretations an original.
+        return False
     kind = source.get("source_type")
     if kind == "public_source":
         readable = bool(source.get("text", "").strip()) and "\ufffd" not in source.get("text", "")

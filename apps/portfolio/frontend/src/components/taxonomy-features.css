@@ -1,0 +1,70 @@
+.taxonomy-feature-settings {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.taxonomy-feature-settings .taxonomy-target-summary-meta {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.taxonomy-feature-settings fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 5px 10px 8px;
+  border: 1px solid var(--border-color, #d8e0e9);
+  border-radius: 6px;
+}
+.taxonomy-feature-settings legend {
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.taxonomy-feature-settings label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.taxonomy-feature-settings input[type='checkbox'] {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+.taxonomy-feature-settings select {
+  max-width: 220px;
+}
+.taxonomy-tree-summary > .taxonomy-target-summary-meta {
+  flex: 1 1 400px;
+}
+.taxonomy-tree-summary > .taxonomy-header-actions {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-left: auto;
+}
+.research-taxonomy-choice {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.research-taxonomy-choice label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  max-width: 100%;
+}
+.research-taxonomy-choice select {
+  width: 100%;
+}
+.research-taxonomy-choice a {
+  margin-bottom: 8px;
+}
+.taxonomy-instrument-status-contract .taxonomy-instrument-status-icon,
+.taxonomy-status-legend-item-contract .taxonomy-instrument-status-icon {
+  background: #8b6bb1;
+  border-color: #8b6bb1;
+}

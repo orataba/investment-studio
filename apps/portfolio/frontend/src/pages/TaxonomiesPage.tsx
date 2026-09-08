@@ -52,6 +52,9 @@ import {
 } from '../lib/taxonomyTargetIntegrity'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { ConcentrationSettings } from '../components/ConcentrationSettings'
+import '../components/taxonomy-features.css'
 
 type TreeRow = PortfolioTaxonomyNodeRecord & {
   depth: number
@@ -126,7 +129,7 @@ type CoverageEntity = {
   current_assignment: PortfolioTaxonomyAssignmentRecord | null
   current_node: PortfolioTaxonomyNodeRecord | null
   holding_state: 'held' | 'not_held'
-  instrument_state: 'held' | 'former' | 'observe' | null
+  instrument_state: 'held' | 'former' | 'observe' | 'contract' | null
   instrument_state_label: string | null
   coverage_state: 'unassigned' | 'ambiguous' | 'selected' | 'other'
 }
@@ -582,7 +585,7 @@ function validateTargetSetDraft(
   let riskSeen = false
 
   if (!draft.weight_enabled && !draft.risk_budget_enabled) {
-    errors.push('Enable at least one target dimension.')
+    return { errors } satisfies TargetSetValidation
   }
   if (draft.weight_enabled && !allowedDimensions.weight) {
     errors.push('Current taxonomy budgeting level does not allow weight targets.')
@@ -655,7 +658,7 @@ function buildChildrenByParent(nodes: PortfolioTaxonomyNodeRecord[]) {
 async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult> {
   const [catalogResult, holdingsResult, accountsResult, instrumentsResult] = await Promise.allSettled([
     getPortfolioTaxonomyCatalog(portfolioId),
-    getHoldingsWorkspace(portfolioId),
+    getHoldingsWorkspace(portfolioId, { include_details: true }),
     getPortfolioAccountsWorkspace(portfolioId),
     getPortfolioInstruments(portfolioId),
   ])
@@ -686,6 +689,7 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
 }
 
 export default function TaxonomiesPage() {
+  const zh = useLanguage().language === 'zh-Hans'
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const currentPortfolioIdRef = useRef(portfolioId)
@@ -1119,6 +1123,25 @@ export default function TaxonomiesPage() {
     () => holdingsRows.filter((row) => row.holding_category === 'derivatives'),
     [holdingsRows],
   )
+  const contractLinkedInstruments = useMemo(() => {
+    const linked = new Map<string, { name: string; currency: string; contracts: string[] }>()
+    derivativeHoldingRows.forEach((row) => {
+      const contract = row.derivative_contract
+      if (contract?.contract_type !== 'fcn' || !row.quantity) return
+      contract.terms.underlyings.forEach((underlying) => {
+        const quote = row.fcn_risk?.underlyings.find((item) => item.instrument_id === underlying.instrument_id)
+        const core = instrumentById.get(underlying.instrument_id) ?? universeInstrumentById.get(underlying.instrument_id)
+        const item = linked.get(underlying.instrument_id) ?? {
+          name: core?.instrument_name ?? quote?.instrument_name ?? underlying.instrument_id,
+          currency: core?.currency ?? quote?.currency ?? '',
+          contracts: [],
+        }
+        if (!item.contracts.includes(contract.contract_name)) item.contracts.push(contract.contract_name)
+        linked.set(underlying.instrument_id, item)
+      })
+    })
+    return linked
+  }, [derivativeHoldingRows, instrumentById, universeInstrumentById])
   const taxonomyTotalValueBase = useMemo(
     () =>
       completeAmountSum([
@@ -1167,6 +1190,9 @@ export default function TaxonomiesPage() {
 
       const heldInstrumentIds = new Set(securitiesHoldingRows.map((row) => row.instrument_core.instrument_id))
       const visibleNonHeldInstrumentIds = new Set<string>()
+      contractLinkedInstruments.forEach((_item, id) => {
+        if (!heldInstrumentIds.has(id)) visibleNonHeldInstrumentIds.add(id)
+      })
       instrumentUniverseRows.forEach((item) => {
         if (
           item.status === 'active' &&
@@ -1206,6 +1232,11 @@ export default function TaxonomiesPage() {
           const currentNode = currentAssignment ? nodeById.get(currentAssignment.taxonomy_node_id) ?? null : null
           const instrument = instrumentById.get(instrumentId) ?? universeInstrumentById.get(instrumentId) ?? null
           const universeRecord = universeRecordByInstrumentId.get(instrumentId) ?? null
+          const contractLink = contractLinkedInstruments.get(instrumentId)
+          const explicitlyTargeted = (catalog?.target_set_lines ?? []).some((line) =>
+            line.target_member_type === 'instrument' && line.target_member_id === instrumentId &&
+            (catalog?.target_sets ?? []).some((target) => target.taxonomy_id === selectedTaxonomy.taxonomy_id && target.status === 'active' && target.target_set_id === line.target_set_id))
+          const contractOnly = Boolean(contractLink) && !(universeRecord?.transaction_count) && universeRecord?.source !== 'manual' && !explicitlyTargeted
           let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
           if (assignments.length > 1) {
             coverageState = 'ambiguous'
@@ -1217,14 +1248,16 @@ export default function TaxonomiesPage() {
           entities.push({
             entity_id: instrumentId,
             entity_kind: 'instrument',
-            label: instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : instrumentId,
-            supporting_label: instrument?.currency ?? '',
+            label: instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : contractLink?.name ?? instrumentId,
+            supporting_label: contractLink ? `FCN: ${contractLink.contracts.join(', ')}` : instrument?.currency ?? '',
             allocation: null,
             market_value_base: null,
             current_assignment: currentAssignment,
             current_node: currentNode,
             holding_state: 'not_held',
-            ...instrumentStateForEntity('not_held', universeRecord),
+            ...(contractOnly
+              ? { instrument_state: 'contract' as const, instrument_state_label: zh ? '合约关联' : 'Contract linked' }
+              : instrumentStateForEntity('not_held', universeRecord)),
             coverage_state: coverageState,
           })
           return entities
@@ -1243,6 +1276,10 @@ export default function TaxonomiesPage() {
     taxonomyTotalValueBase,
     universeInstrumentById,
     universeRecordByInstrumentId,
+    contractLinkedInstruments,
+    catalog?.target_sets,
+    catalog?.target_set_lines,
+    zh,
   ])
 
   const coverageSummary = useMemo(() => {
@@ -1576,11 +1613,8 @@ export default function TaxonomiesPage() {
         : `Add Child Node${nodeCreateAnchorNode ? ` · ${nodeCreateAnchorNode.node_name}` : ''}`
   const editingNode = nodeEditId ? nodeById.get(nodeEditId) ?? null : null
   const allowedTargetDimensions = useMemo(
-    () => ({
-      weight: Boolean(selectedTaxonomy?.planning_enabled),
-      risk_budget: Boolean(selectedTaxonomy?.planning_enabled),
-    }),
-    [selectedTaxonomy?.planning_enabled],
+    () => ({ weight: true, risk_budget: true }),
+    [],
   )
   const scopeMembersByScopeKey = useMemo(() => {
     const lookup = new Map<string, TargetScopeMember[]>()
@@ -1643,7 +1677,8 @@ export default function TaxonomiesPage() {
         return
       }
 
-      const directEntities = directEntitiesByNodeId.get(node.taxonomy_node_id) ?? []
+      const directEntities = (directEntitiesByNodeId.get(node.taxonomy_node_id) ?? [])
+        .filter((entity) => entity.instrument_state !== 'contract')
       if (!directEntities.length) {
         return
       }
@@ -1705,7 +1740,7 @@ export default function TaxonomiesPage() {
     })
   }, [selectedNodePath])
 
-  useEffect(() => {
+  const baselineTargetDraftsByScope = useMemo(() => {
     const nextDraftsByScope: Record<string, { saa: TargetSetDraft; taa: TargetSetDraft }> = {}
     Array.from(scopeMembersByScopeKey.keys()).forEach((scopeKey) => {
       const comparatorNodeId = targetScopeNodeId(scopeKey)
@@ -1726,23 +1761,21 @@ export default function TaxonomiesPage() {
           targetSetLines: targetSetLinesByTargetSetId.get(saaTargetSet?.target_set_id ?? '') ?? [],
           targetMembers,
           defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${scopePathLabel} SAA`,
-          defaultWeightEnabled: allowedTargetDimensions.weight,
-          defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
+          defaultWeightEnabled: false,
+          defaultRiskBudgetEnabled: false,
         }),
         taa: buildTargetSetDraft({
           targetSet: taaTargetSet,
           targetSetLines: targetSetLinesByTargetSetId.get(taaTargetSet?.target_set_id ?? '') ?? [],
           targetMembers,
           defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${scopePathLabel} TAA`,
-          defaultWeightEnabled: allowedTargetDimensions.weight,
-          defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
+          defaultWeightEnabled: false,
+          defaultRiskBudgetEnabled: false,
         }),
       }
     })
 
-    setTargetDraftsByScope((current) =>
-      targetDraftScopesEqual(current, nextDraftsByScope) ? current : nextDraftsByScope,
-    )
+    return nextDraftsByScope
   }, [
     allowedTargetDimensions.risk_budget,
     allowedTargetDimensions.weight,
@@ -1753,6 +1786,12 @@ export default function TaxonomiesPage() {
     selectedTaxonomyActiveTargetSets,
     targetSetLinesByTargetSetId,
   ])
+
+  useEffect(() => {
+    setTargetDraftsByScope((current) =>
+      targetDraftScopesEqual(current, baselineTargetDraftsByScope) ? current : baselineTargetDraftsByScope,
+    )
+  }, [baselineTargetDraftsByScope])
 
   useEffect(() => {
     const preferredScopeNode = selectedComparatorScopeNode?.taxonomy_node_id ?? null
@@ -1769,78 +1808,34 @@ export default function TaxonomiesPage() {
     })
   }, [selectedComparatorScopeNode, targetDraftsByScope])
 
-  const activeComparatorScopeNodeId = targetScopeNodeId(activeTargetScopeKey)
-  const activeComparatorScopeNode = activeComparatorScopeNodeId
-    ? nodeById.get(activeComparatorScopeNodeId) ?? null
-    : null
   const currentScopeMembers = useMemo(
     () => scopeMembersByScopeKey.get(activeTargetScopeKey) ?? [],
     [activeTargetScopeKey, scopeMembersByScopeKey],
   )
-  const currentScopeLabel = activeComparatorScopeNode
-    ? currentScopeMembers.some((member) => member.entity)
-      ? `${activeComparatorScopeNode.node_name} Instruments`
-      : `${activeComparatorScopeNode.node_name} Children`
-    : 'Top Level Children'
-  const currentScopeTargetSets = useMemo(
-    () =>
-      selectedTaxonomyActiveTargetSets.filter(
-        (targetSet) => (targetSet.comparator_taxonomy_node_id ?? null) === activeComparatorScopeNodeId,
-      ),
-    [activeComparatorScopeNodeId, selectedTaxonomyActiveTargetSets],
-  )
-  const activeSaaTargetSet = currentScopeTargetSets.find((targetSet) => targetSet.target_set_type === 'saa') ?? null
-  const activeTaaTargetSet = currentScopeTargetSets.find((targetSet) => targetSet.target_set_type === 'taa') ?? null
   const currentScopeDrafts = targetDraftsByScope[activeTargetScopeKey] ?? {
     saa: EMPTY_TARGET_SET_DRAFT,
     taa: EMPTY_TARGET_SET_DRAFT,
   }
-  const saaDraft = currentScopeDrafts.saa
-  const taaDraft = currentScopeDrafts.taa
   const hasTargetScope = currentScopeMembers.length > 0
-  const activeScopePathLabel = activeComparatorScopeNode
-    ? (nodePathByNodeId.get(activeComparatorScopeNode.taxonomy_node_id) ?? []).map((node) => node.node_name).join(' / ')
-    : 'Top Level'
-  const activeBaselineDrafts = useMemo(
-    () => ({
-      saa: buildTargetSetDraft({
-        targetSet: activeSaaTargetSet,
-        targetSetLines: targetSetLinesByTargetSetId.get(activeSaaTargetSet?.target_set_id ?? '') ?? [],
-        targetMembers: currentScopeMembers,
-        defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${activeScopePathLabel} SAA`,
-        defaultWeightEnabled: allowedTargetDimensions.weight,
-        defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
-      }),
-      taa: buildTargetSetDraft({
-        targetSet: activeTaaTargetSet,
-        targetSetLines: targetSetLinesByTargetSetId.get(activeTaaTargetSet?.target_set_id ?? '') ?? [],
-        targetMembers: currentScopeMembers,
-        defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${activeScopePathLabel} TAA`,
-        defaultWeightEnabled: allowedTargetDimensions.weight,
-        defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
-      }),
-    }),
-    [
-      activeSaaTargetSet,
-      activeScopePathLabel,
-      activeTaaTargetSet,
-      allowedTargetDimensions.risk_budget,
-      allowedTargetDimensions.weight,
-      currentScopeMembers,
-      selectedTaxonomy?.name,
-      targetSetLinesByTargetSetId,
-    ],
-  )
-  const saaDraftChanged = !targetSetDraftsEqual(saaDraft, activeBaselineDrafts.saa)
-  const taaDraftChanged = !targetSetDraftsEqual(taaDraft, activeBaselineDrafts.taa)
-  const saaValidation = useMemo(
-    () => validateTargetSetDraft(saaDraft, currentScopeMembers, allowedTargetDimensions),
-    [allowedTargetDimensions, currentScopeMembers, saaDraft],
-  )
-  const taaValidation = useMemo(
-    () => validateTargetSetDraft(taaDraft, currentScopeMembers, allowedTargetDimensions),
-    [allowedTargetDimensions, currentScopeMembers, taaDraft],
-  )
+  const changedTargetScopes = useMemo(() => Object.entries(targetDraftsByScope).flatMap(([scopeKey, drafts]) => {
+    const members = scopeMembersByScopeKey.get(scopeKey) ?? []
+    if (!members.length) return []
+    const comparatorNodeId = targetScopeNodeId(scopeKey)
+    const label = comparatorNodeId
+      ? (nodePathByNodeId.get(comparatorNodeId) ?? []).map((node) => node.node_name).join(' / ')
+      : 'Top Level'
+    return (['saa', 'taa'] as const).flatMap((kind) => {
+      const draft = drafts[kind]
+      const baseline = baselineTargetDraftsByScope[scopeKey]?.[kind] ?? EMPTY_TARGET_SET_DRAFT
+      if (targetSetDraftsEqual(draft, baseline)) return []
+      const existingTargetSet = selectedTaxonomyActiveTargetSets.find((targetSet) =>
+        (targetSet.comparator_taxonomy_node_id ?? null) === comparatorNodeId && targetSet.target_set_type === kind,
+      ) ?? null
+      return [{ scopeKey, comparatorNodeId, label, kind, draft, members, existingTargetSet,
+        validation: validateTargetSetDraft(draft, members, allowedTargetDimensions) }]
+    })
+  }), [targetDraftsByScope, scopeMembersByScopeKey, nodePathByNodeId, baselineTargetDraftsByScope,
+    selectedTaxonomyActiveTargetSets, allowedTargetDimensions])
   const currentScopeMemberKeySet = useMemo(
     () => new Set(currentScopeMembers.map((member) => member.member_key)),
     [currentScopeMembers],
@@ -1854,13 +1849,10 @@ export default function TaxonomiesPage() {
     [defaultTargetDraftsByNodeId, selectedTaxonomyNodes],
   )
   const hasDefaultTargetChanges = changedDefaultTargetNodes.length > 0
-  const targetSaveBlockedReason = [
-    hasTargetScope && saaDraftChanged ? targetValidationMessage('saa', saaValidation) : '',
-    hasTargetScope && taaDraftChanged ? targetValidationMessage('taa', taaValidation) : '',
-  ]
-    .filter(Boolean)
-    .join(' ')
-  const hasTargetsConfigurationChanges = hasDefaultTargetChanges || (hasTargetScope && (saaDraftChanged || taaDraftChanged))
+  const targetSaveBlockedReason = changedTargetScopes.flatMap((scope) => scope.validation.errors.map(
+    (message) => `${scope.kind.toUpperCase()} ${scope.label}: ${message}`,
+  )).join(' ')
+  const hasTargetsConfigurationChanges = hasDefaultTargetChanges || changedTargetScopes.length > 0
   const canSaveTargetsConfiguration = canEditPortfolio && hasTargetsConfigurationChanges && !targetSaveBlockedReason
 
   function preventTargetEditorDrag(event: ReactDragEvent<HTMLInputElement | HTMLSelectElement>) {
@@ -1870,7 +1862,7 @@ export default function TaxonomiesPage() {
 
   function renderDefaultTargetCell(node: PortfolioTaxonomyNodeRecord) {
     const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id] ?? (node.default_target_dimension as DefaultTargetDimension)
-    if (!canEditPortfolio || !targetEditMode || !selectedTaxonomy?.planning_enabled) {
+    if (!canEditPortfolio || !targetEditMode) {
       return <span className="taxonomy-default-target-label">{draftValue === 'risk_budget' ? 'Risk Budget' : 'Weight'}</span>
     }
     return (
@@ -2241,39 +2233,14 @@ export default function TaxonomiesPage() {
     }
   }
 
-  function targetValidationMessage(kind: 'saa' | 'taa', validation: TargetSetValidation) {
-    return validation.errors
-      .map((message) => `${kind.toUpperCase()} ${currentScopeLabel}: ${message}`)
-      .join(' ')
-  }
-
   async function handleSaveTargetsConfiguration() {
     if (!canEditPortfolio) return
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
 
-    const targetKindsToSave: Array<'saa' | 'taa'> = []
-    if (hasTargetScope && saaDraftChanged) {
-      const message = targetValidationMessage('saa', saaValidation)
-      if (message) {
-        setActionError(null)
-        setNotice(null)
-        return
-      }
-      targetKindsToSave.push('saa')
-    }
-    if (hasTargetScope && taaDraftChanged) {
-      const message = targetValidationMessage('taa', taaValidation)
-      if (message) {
-        setActionError(null)
-        setNotice(null)
-        return
-      }
-      targetKindsToSave.push('taa')
-    }
-
-    if (!hasDefaultTargetChanges && !targetKindsToSave.length) {
+    if (targetSaveBlockedReason) return
+    if (!hasTargetsConfigurationChanges) {
       setActionError(null)
       setNotice('No changes.')
       return
@@ -2284,12 +2251,12 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       if (
-        targetKindsToSave.length &&
-        selectedTaxonomy.planning_enabled &&
-        selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL
+        changedTargetScopes.some(({ draft }) => draft.weight_enabled || draft.risk_budget_enabled) &&
+        (!selectedTaxonomy.planning_enabled || selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL)
       ) {
         await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
           effective_from: effectiveDate,
+          planning_enabled: true,
           budgeting_level: PLANNING_BUDGETING_LEVEL,
         })
       }
@@ -2305,10 +2272,14 @@ export default function TaxonomiesPage() {
         })
       }
 
-      for (const kind of targetKindsToSave) {
-        const draft = kind === 'saa' ? saaDraft : taaDraft
-        const existingTargetSet = kind === 'saa' ? activeSaaTargetSet : activeTaaTargetSet
-        const payload = buildTargetSetPayload(draft)
+      for (const { kind, draft, members, comparatorNodeId, existingTargetSet } of changedTargetScopes) {
+        if (!draft.weight_enabled && !draft.risk_budget_enabled) {
+          if (existingTargetSet) await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, {
+            effective_from: effectiveDate, status: 'inactive',
+          })
+          continue
+        }
+        const payload = buildTargetSetPayload(draft, members)
         if (existingTargetSet) {
           await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, {
             effective_from: effectiveDate,
@@ -2317,7 +2288,7 @@ export default function TaxonomiesPage() {
         } else {
           await createPortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, {
             effective_from: effectiveDate,
-            comparator_taxonomy_node_id: activeComparatorScopeNodeId,
+            comparator_taxonomy_node_id: comparatorNodeId,
             target_set_type: kind,
             ...payload,
           })
@@ -2326,7 +2297,7 @@ export default function TaxonomiesPage() {
 
       const savedParts = [
         changedDefaultTargetNodes.length ? `default targets (${changedDefaultTargetNodes.length})` : '',
-        ...targetKindsToSave.map((kind) => `${kind.toUpperCase()} ${currentScopeLabel}`),
+        ...changedTargetScopes.map(({ kind, label }) => `${kind.toUpperCase()} ${label}`),
       ].filter(Boolean)
       setTargetEditMode(false)
       setNotice(`Saved ${savedParts.join(', ')}.`)
@@ -2767,7 +2738,6 @@ export default function TaxonomiesPage() {
     const scopeKey = targetScopeKey(entity.current_assignment?.taxonomy_node_id ?? null)
     const editable =
       targetEditMode &&
-      Boolean(selectedTaxonomy?.planning_enabled) &&
       Boolean(entity.current_assignment) &&
       Boolean(targetDraftsByScope[scopeKey])
     const isTargetScopeMember = currentScopeMemberKeySet.has(targetMember.member_key)
@@ -2828,7 +2798,6 @@ export default function TaxonomiesPage() {
     }
     const editable =
       targetEditMode &&
-      Boolean(selectedTaxonomy?.planning_enabled) &&
       Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
     const isTargetScopeMember = currentScopeMemberKeySet.has(derivativeTargetMember.member_key)
     const isCollapsed = collapsedNodeIds.has(TAXONOMY_DERIVATIVES_ROW_ID)
@@ -2937,7 +2906,7 @@ export default function TaxonomiesPage() {
       label: CASH_TARGET_LABEL,
       system_role: 'cash',
     }
-    const editable = targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
+    const editable = targetEditMode && Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
     const isTargetScopeMember = currentScopeMemberKeySet.has(cashTargetMember.member_key)
     const isCollapsed = collapsedNodeIds.has(TAXONOMY_CASH_ROW_ID)
     const rows: ReactElement[] = [
@@ -3007,7 +2976,7 @@ export default function TaxonomiesPage() {
       }
       const isTargetScopeChild = currentScopeMemberKeySet.has(nodeTargetMember.member_key)
       const isEditableInTree =
-        targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[parentScopeKey])
+        targetEditMode && Boolean(targetDraftsByScope[parentScopeKey])
       const assignmentDropEnabled = canEditPortfolio && canDropTaxonomyEntity({
         targetEditMode,
         terminalNode: node.is_terminal,
@@ -3123,7 +3092,7 @@ export default function TaxonomiesPage() {
           <section className="panel taxonomy-strip-section">
             <div className="taxonomy-topbar">
               <div className="taxonomy-topbar-field" ref={taxonomyPickerRef}>
-                <span>{canEditPortfolio ? 'Default Taxonomy:' : 'Taxonomy:'}</span>
+                <span>{zh ? '分类：' : 'Taxonomy:'}</span>
                 <div className="taxonomy-picker">
                   <button
                     type="button"
@@ -3148,7 +3117,7 @@ export default function TaxonomiesPage() {
                             className={`taxonomy-picker-option ${
                               taxonomy.taxonomy_id === resolvedSelectedTaxonomyId ? 'taxonomy-picker-option-active' : ''
                             }`}
-                            onClick={() => void handleDefaultTaxonomySelection(taxonomy.taxonomy_id)}
+                            onClick={() => handleTaxonomySelection(taxonomy.taxonomy_id)}
                             onContextMenu={canEditPortfolio ? (event) => {
                               event.preventDefault()
                               setContextMenuState({
@@ -3180,6 +3149,14 @@ export default function TaxonomiesPage() {
                 />
               </label>
               <div className="taxonomy-header-actions">
+                {selectedTaxonomy && <button type="button" className="toolbar-link"
+                  disabled={!canEditPortfolio || targetEditMode || Boolean(actionPending) || selectedTaxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id}
+                  onClick={() => void handleDefaultTaxonomySelection(selectedTaxonomy.taxonomy_id)}
+                  title={zh ? '更改组合生产分析范围及默认规划分类。' : 'Changes the portfolio production analytics scope and default planning taxonomy.'}>
+                  {selectedTaxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id
+                    ? (zh ? '当前组合规划分类' : 'Portfolio planning taxonomy')
+                    : (zh ? '设为组合规划分类' : 'Use for portfolio planning')}
+                </button>}
                 <button
                   type="button"
                   className="toolbar-link button-primary"
@@ -3343,14 +3320,16 @@ export default function TaxonomiesPage() {
                     {renderInstrumentStatusLegendItem('observe', 'Observed', coverageSummary.observeEntityCount)}
                     {renderInstrumentStatusLegendItem('former', 'Former', coverageSummary.formerEntityCount)}
                   </span>
+                  {renderInstrumentStatusLegendItem('contract', zh ? '合约关联' : 'Contract linked', currentEntities.filter((entity) => entity.instrument_state === 'contract').length)}
                   {coverageSummary.ambiguousEntities.length ? <span>Ambiguous {coverageSummary.ambiguousEntities.length}</span> : null}
                 </div>
                 <div className="taxonomy-header-actions">
-                  {selectedTaxonomy.planning_enabled && !targetEditMode ? (
+                  {!targetEditMode ? (
                     <button
                       type="button"
                       className="table-inline-button"
                       onClick={() => {
+                        setTargetDraftsByScope(baselineTargetDraftsByScope)
                         setDefaultTargetDraftsByNodeId(defaultTargetDraftsFromNodes(selectedTaxonomyNodes))
                         setDragTargetNodeId(null)
                         setContextMenuState(null)
@@ -3361,7 +3340,7 @@ export default function TaxonomiesPage() {
                       Edit Targets
                     </button>
                   ) : null}
-                  {selectedTaxonomy.planning_enabled && targetEditMode ? (
+                  {targetEditMode ? (
                     <>
                       <button
                         type="button"
@@ -3376,8 +3355,8 @@ export default function TaxonomiesPage() {
                         className="table-inline-button"
                         onClick={() => {
                           setTargetEditMode(false)
+                          setTargetDraftsByScope(baselineTargetDraftsByScope)
                           setDefaultTargetDraftsByNodeId(defaultTargetDraftsFromNodes(selectedTaxonomyNodes))
-                          void reloadWorkspace()
                         }}
                         disabled={Boolean(actionPending)}
                       >
@@ -3386,6 +3365,34 @@ export default function TaxonomiesPage() {
                     </>
                   ) : null}
                 </div>
+              </div>
+
+              <div className="taxonomy-collapsed-summary taxonomy-target-summary-row taxonomy-feature-settings" aria-label={zh ? '目标与集中度设置' : 'Targets and concentration settings'}>
+                <div className="taxonomy-target-summary-meta">
+                  <strong>{zh ? '目标与集中度' : 'Targets and concentration'}</strong>
+                  <label>{zh ? '目标层级' : 'Target scope'} <select value={activeTargetScopeKey}
+                    onChange={(event) => setActiveTargetScopeKey(event.target.value)} disabled={Boolean(actionPending)}>
+                    {Array.from(scopeMembersByScopeKey.keys()).map((key) => <option key={key} value={key}>
+                      {key === ROOT_TARGET_SCOPE_KEY ? (zh ? '组合根层' : 'Portfolio root') : (nodePathByNodeId.get(key) ?? []).map((node) => node.node_name).join(' / ')}
+                    </option>)}
+                  </select></label>
+                  {(['saa', 'taa'] as const).map((kind) => <fieldset key={kind} disabled={!canEditPortfolio || !targetEditMode || Boolean(actionPending)}>
+                    <legend>{kind.toUpperCase()}</legend>
+                    {(['weight', 'risk_budget'] as const).map((dimension) => {
+                      const field = dimension === 'weight' ? 'weight_enabled' : 'risk_budget_enabled'
+                      return <label key={dimension}><input type="checkbox"
+                        aria-label={`${kind.toUpperCase()} ${dimension === 'weight' ? 'weight targets' : 'risk contribution targets'}`}
+                        checked={currentScopeDrafts[kind][field]}
+                        onChange={(event) => {
+                          const enabled = event.target.checked
+                          setTargetDraftsByScope((current) => ({ ...current, [activeTargetScopeKey]: {
+                            ...current[activeTargetScopeKey], [kind]: { ...current[activeTargetScopeKey][kind], [field]: enabled },
+                          } }))
+                        }} />{dimension === 'weight' ? (zh ? '权重目标' : 'Weight targets') : (zh ? '风险贡献目标' : 'Risk contribution targets')}</label>
+                    })}
+                  </fieldset>)}
+                </div>
+                <ConcentrationSettings portfolioId={portfolioId} taxonomyId={selectedTaxonomy.taxonomy_id} canEdit={canEditPortfolio} />
               </div>
 
               {targetSetIntegrityNotice ? (

@@ -4,6 +4,7 @@ export type InstrumentType =
   | 'etf'
   | 'index'
   | 'equity'
+  | 'crypto'
   | 'cash'
   | 'fx'
   | 'other'

@@ -179,7 +179,7 @@ it('saves text material with separate publication and effective dates without al
 it('edits the instrument research mandate through its own API while preserving research materials and judgments', async () => {
   const mandate: ResearchMandate = {
     instrument_id: 'fund-1', entry_id: 'mandate-1', role: 'research_method', updated_at: null,
-    title: '该基金的持续研究任务', background: '以基金持仓与管理人披露为背景，持续核实策略的收益来源。',
+    title: '该基金的持续研究框架', background: '以基金持仓与管理人披露为背景，持续核实策略的收益来源。',
     mechanisms: ['持仓风格影响净值表现。'], research_approach: ['对照定期披露与历史底稿。'],
     focus: ['重点跟踪策略容量变化。'], source_plan: ['管理人季度报告。'], gaps: ['最新持仓披露仍待补齐。'],
   }
@@ -190,13 +190,13 @@ it('edits the instrument research mandate through its own API while preserving r
   await screen.findByRole('region', { name: '正在研究的问题' })
   expect(screen.queryByText(mandate.background)).toBeNull()
   await expandArchive()
-  const task = screen.getByRole('region', { name: '标的研究任务' })
+  const task = screen.getByRole('region', { name: '研究框架' })
   expect(within(task).getByText(mandate.background)).toBeTruthy()
   expect(within(task).getByText(mandate.focus[0]).closest('details')?.open).toBe(true)
-  fireEvent.click(within(task).getByRole('button', { name: '编辑研究任务' }))
+  fireEvent.click(within(task).getByRole('button', { name: '编辑研究框架' }))
   fireEvent.change(within(task).getByLabelText('背景与研究边界'), { target: { value: saved.background } })
   fireEvent.change(within(task).getByLabelText('重点关注（每行一项）'), { target: { value: ' 核对策略容量。\n\n核对持仓变化。 ' } })
-  fireEvent.click(within(task).getByRole('button', { name: '保存研究任务' }))
+  fireEvent.click(within(task).getByRole('button', { name: '保存研究框架' }))
   await within(task).findByText(saved.background)
   const input = { title: mandate.title, background: saved.background, mechanisms: mandate.mechanisms, research_approach: mandate.research_approach, focus: saved.focus, source_plan: mandate.source_plan, gaps: mandate.gaps }
   expect(save).toHaveBeenCalledExactlyOnceWith('fund-1', input)
@@ -219,14 +219,14 @@ it('keeps user instructions distinct from the analyst focus when editing another
   render(<ResearchDossierPanel instrumentId="fund-1" />)
   await screen.findByRole('region', { name: '正在研究的问题' })
   await expandArchive()
-  const task = screen.getByRole('region', { name: '标的研究任务' })
+  const task = screen.getByRole('region', { name: '研究框架' })
   expect(within(task).getByRole('heading', { name: '用户指定重点' })).toBeTruthy()
   expect(within(task).getByText('研究员新增的盈利问题')).toBeTruthy()
   expect(within(task).getByText('更新来源：研究员')).toBeTruthy()
-  fireEvent.click(within(task).getByRole('button', { name: '编辑研究任务' }))
+  fireEvent.click(within(task).getByRole('button', { name: '编辑研究框架' }))
   expect((within(task).getByLabelText('重点关注（每行一项）') as HTMLTextAreaElement).value).toBe('用户指定的现金回报问题')
   fireEvent.change(within(task).getByLabelText('背景与研究边界'), { target: { value: '修订背景' } })
-  fireEvent.click(within(task).getByRole('button', { name: '保存研究任务' }))
+  fireEvent.click(within(task).getByRole('button', { name: '保存研究框架' }))
   await within(task).findByText('修订背景')
   const [, options] = request.mock.calls.find(([, init]) => init?.method === 'PUT')!
   expect(JSON.parse(options.body).focus).toEqual(['用户指定的现金回报问题'])

@@ -151,6 +151,81 @@ afterEach(() => {
 })
 
 describe('ListedInstrumentDetailPage index view', () => {
+  it('keeps index endpoint returns but withholds matrix path risk when canonical sessions are missing', async () => {
+    apiMocks.getInstrumentRisk.mockResolvedValueOnce({
+      data_quality: { status: 'partial_missing_observations', gap_count: 1 },
+      risk_metrics: [], current_drawdown: null, calculation_frequency_profile: null,
+    })
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={{
+        requested_instrument_id: 'h11001-csi', canonical_instrument_id: 'h11001-csi',
+        instrument_name: '中证全债', instrument_type: 'index', primary_identifier: 'H11001.CSI',
+        detail_view_type: 'index', detail_subject_id: 'h11001-csi', detail_supported: true,
+        support_reason: '', corporate_actions: [],
+      }} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await screen.findByRole('img', { name: 'Index level chart' })
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$/ })[0])
+    const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+    for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Max DD']) {
+      const values = [...within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')]
+      expect(values.length).toBeGreaterThan(0)
+      expect(values.every((node) => node.textContent === '—')).toBe(true)
+    }
+    const returns = within(table).getByText('Period Return').closest('tr')!
+    expect([...returns.querySelectorAll('td strong')].some((node) => node.textContent !== '—')).toBe(true)
+  })
+
+  it('renders native crypto from completed daily spot prices without stock or ETF controls', async () => {
+    apiMocks.getInstrumentPriceBars.mockRejectedValueOnce(new Error('Optional OHLCV is unavailable'))
+    apiMocks.getInstrumentChart.mockResolvedValueOnce({
+      instrument_id: 'btcusd', currency: 'USD', base_series_type: 'price_close',
+      selected_series: { label: 'Spot Price', return_kind: 'price_return' },
+      date_range: { start: chartPoints[0].date, end: chartPoints[chartPoints.length - 1].date },
+      series: [{ name: 'Bitcoin', points: chartPoints }], available_compare_targets: [],
+    })
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={{
+        requested_instrument_id: 'btcusd', canonical_instrument_id: 'btcusd',
+        instrument_name: 'Bitcoin', instrument_type: 'crypto', primary_identifier: 'BTCUSD',
+        detail_view_type: 'crypto', detail_subject_id: 'btcusd', detail_supported: true,
+        support_reason: '', corporate_actions: [],
+      }} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Crypto spot price chart' })).toBeTruthy())
+    expect(screen.getByText('Crypto Detail')).toBeTruthy()
+    expect(screen.queryByLabelText('Price adjustment')).toBeNull()
+    expect(screen.queryByText('Volume')).toBeNull()
+    expect(screen.queryByTestId('estimate-history')).toBeNull()
+    expect(screen.queryByText('Index Level')).toBeNull()
+    expect(screen.getByText('USD')).toBeTruthy()
+    expect(screen.queryByText('Optional OHLCV is unavailable')).toBeNull()
+  })
+
+  it.each(['index', 'crypto'] as const)('does not substitute raw bars when the %s canonical series is unavailable', async (kind) => {
+    apiMocks.getInstrumentChart.mockRejectedValueOnce(new Error('Canonical series unavailable'))
+    apiMocks.getInstrumentPriceBars.mockResolvedValueOnce({
+      instrument_id: 'canonical-only', instrument_type: kind, currency: 'USD',
+      adjustment_mode: 'raw', count: 2,
+      bars: ['2026-09-07', '2026-09-08'].map((date) => ({
+        date, open: '999', high: '999', low: '999', close: '999', previous_close: null,
+        adjustment_factor: null, volume: null, turnover: null, currency: 'USD',
+        volume_unit: null, turnover_unit: null, provider: 'raw-test', status: 'complete',
+      })),
+    })
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={{
+        requested_instrument_id: 'canonical-only', canonical_instrument_id: 'canonical-only',
+        instrument_name: 'Canonical only', instrument_type: kind, primary_identifier: 'CANONICAL',
+        detail_view_type: kind, detail_subject_id: 'canonical-only', detail_supported: true,
+        support_reason: '', corporate_actions: [],
+      }} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await waitFor(() => expect(screen.getByText('Canonical series unavailable')).toBeTruthy())
+    expect(screen.queryByText('999.00')).toBeNull()
+    expect(screen.queryByRole('img', { name: /Crypto spot price chart|Index level chart/ })).toBeNull()
+  })
+
   it('keeps operational market data off the index overview without waiting for provider reference data', async () => {
     apiMocks.getInstrumentPriceBars.mockResolvedValueOnce({
       instrument_id: 'h11001-csi',

@@ -259,6 +259,25 @@ def test_store_reset_rejects_legacy_asset_references():
         portfolio_store.reset_store(store)
 
 
+def test_crypto_research_assets_do_not_enter_portfolio_transaction_choices(client, monkeypatch):
+    from fastapi import HTTPException
+    from portfolio_app.api.routes import transactions
+
+    original = transactions.list_registry_instruments
+    monkeypatch.setattr(transactions, "list_registry_instruments", lambda: [
+        *original(), {"instrument_id": "btcusd", "instrument_type": "crypto"},
+    ])
+    response = client.get("/api/portfolios/investment-studio/instruments")
+    assert response.status_code == 200
+    ids = {item["instrument_core"]["instrument_id"] for item in response.json()["instruments"]}
+    assert "btcusd" not in ids
+    assert "fund-us-agg" in ids
+    monkeypatch.setattr(transactions, "get_registry_instrument", lambda _: {"instrument_id": "btcusd", "instrument_type": "crypto"})
+    with pytest.raises(HTTPException, match="Portfolio transactions are not supported") as error:
+        transactions._load_instrument_ref("btcusd")
+    assert error.value.status_code == 400
+
+
 def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_backend(client):
     response = client.get("/api/portfolios/investment-studio/instruments")
     assert response.status_code == 200

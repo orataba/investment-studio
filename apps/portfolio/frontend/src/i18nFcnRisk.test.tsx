@@ -15,6 +15,15 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
+it('translates risk exclusions and FX requirements while preserving security names', async () => {
+  const source = 'Current risk cannot model policy-excluded market exposure PDD Holdings Inc. as zero risk. · Forward RC requires an FX total-return series for non-base monetary exposure Cash (USD) (USD versus HKD).'
+  render(<LanguageProvider><LanguageSelector /><span title={source}>Daily risk basis</span></LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => expect(screen.getByText('日频风险口径').title).toBe('当前风险不能将按配置排除的市场敞口 PDD Holdings Inc. 视为零风险。 · 前瞻风险贡献需要非本位币货币敞口 Cash (USD) 的汇率总回报序列（USD 兑 HKD）。'))
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => expect(screen.getByText('Daily risk basis').title).toBe(source))
+})
+
 describe('FCN risk translations', () => {
   it('keeps English source text in English mode and restores it after switching languages', async () => {
     render(

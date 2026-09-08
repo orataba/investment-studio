@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
-import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 import {
   getPortfolioInstrumentEventTasks,
@@ -11,6 +10,7 @@ import {
 import { formatNumber, formatQuantity } from '../lib/format'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import { usePortfolioSession } from './PortfolioSessionProvider'
+import InfoHint from './InfoHint'
 import './fund-distribution-tasks.css'
 
 
@@ -18,6 +18,7 @@ type Props = {
   portfolioId: string
   accountNames: Record<string, string>
   refreshKey: number
+  children?: (controls: ReactNode) => ReactNode
   onRecord: (
     task: PortfolioInstrumentEventTaskRecord,
     transactionType: 'dividend' | 'dividend_reinvestment',
@@ -31,10 +32,12 @@ export default function FundDistributionTasksPanel({
   accountNames,
   refreshKey,
   onRecord,
+  children,
 }: Props) {
   const { language, t } = useLanguage()
   const [open, setOpen] = useState(false)
-  const dialogRef = useModalDialog(open, () => setOpen(false))
+  const reviewId = useId()
+  const reviewTriggerRef = useRef<HTMLButtonElement>(null)
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const [tasks, setTasks] = useState<PortfolioInstrumentEventTaskRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -150,45 +153,49 @@ export default function FundDistributionTasksPanel({
       : orderedTasks.length
         ? `${orderedTasks.length} ${t('need attention')}`
         : t('No distribution events currently need attention.')
-  const triggerLabel = `${t('Fund distribution reviews')}: ${triggerStatus}`
+  const reviewLabel = language === 'zh-Hans' ? '分红复核' : 'Review distributions'
+  const hintDetails = [
+    triggerStatus,
+    ...(error ? [error] : loading ? [] : orderedTasks.map((task) =>
+      `${task.instrument_name ?? task.instrument_id} · ${accountNames[task.account_id] ?? task.account_id} · ${task.record_date ?? task.effective_date}`,
+    )),
+    t('Confirmed distribution events never post cash or units automatically.'),
+  ]
+
+  function closeReview() {
+    setOpen(false)
+    reviewTriggerRef.current?.focus()
+  }
 
   function recordTask(task: PortfolioInstrumentEventTaskRecord, transactionType: 'dividend' | 'dividend_reinvestment') {
-    setOpen(false)
+    closeReview()
     onRecord(task, transactionType, reviewedBy.trim())
   }
 
-  return <>
-    <button
-      type="button"
-      className={`fund-distribution-tasks-trigger${error ? ' has-error' : orderedTasks.length ? ' needs-attention' : ''}`}
-      aria-label={triggerLabel}
-      title={triggerLabel}
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      onClick={() => setOpen(true)}
-    >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
-        <path d="M10 21h4" />
-      </svg>
-      {error || loading || orderedTasks.length ? <span className="fund-distribution-tasks-badge" aria-hidden="true">
-        {error ? '!' : loading ? '…' : orderedTasks.length}
-      </span> : null}
+  const controls = <span className="fund-distribution-tasks-controls">
+    <InfoHint label={t('Fund distribution reviews')} detail={hintDetails} tone={error || orderedTasks.length ? 'warning' : 'info'} />
+    <button ref={reviewTriggerRef} type="button" className="fund-distribution-review-toggle" aria-expanded={open} aria-controls={open ? reviewId : undefined} onClick={() => setOpen((value) => !value)}>
+      {reviewLabel}{!loading && orderedTasks.length ? ` (${orderedTasks.length})` : ''}
     </button>
-    {open ? <div className="portfolio-settings-modal-backdrop fund-distribution-review-backdrop" onClick={(event) => {
-      if (event.target === event.currentTarget) setOpen(false)
-    }}>
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
+  </span>
+
+  return <>
+    {children ? children(controls) : controls}
+    {open ? <section
+        id={reviewId}
         aria-label={t('Fund distribution reviews')}
-        tabIndex={-1}
-        className="portfolio-settings-modal fund-distribution-review-modal"
+        className="fund-distribution-review-panel"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            closeReview()
+          }
+        }}
       >
-        <header className="portfolio-settings-modal-header">
+        <header className="fund-distribution-review-header">
           <div className="panel-title">Fund Distribution Review</div>
-          <button type="button" onClick={() => setOpen(false)} aria-label={language === 'zh-Hans' ? '关闭基金分红复核' : 'Close fund distribution reviews'}>×</button>
+          <button type="button" onClick={closeReview} aria-label={language === 'zh-Hans' ? '关闭基金分红复核' : 'Close fund distribution reviews'}>×</button>
         </header>
         <div className="fund-distribution-review-body" aria-busy={loading}>
           <div className="fund-distribution-task-header">
@@ -338,7 +345,7 @@ export default function FundDistributionTasksPanel({
             })}
           </div>
         </div>
-        <footer className="portfolio-settings-modal-actions">
+        <footer className="fund-distribution-review-actions">
           <button
             type="button"
             disabled={!canEditPortfolio || loading || reconciling || workingTaskId !== null}
@@ -346,9 +353,8 @@ export default function FundDistributionTasksPanel({
           >
             {reconciling ? 'Refreshing Distribution Events…' : 'Refresh Distribution Events'}
           </button>
-          <button type="button" onClick={() => setOpen(false)}>Close</button>
+          <button type="button" onClick={closeReview}>Close</button>
         </footer>
-      </div>
-    </div> : null}
+    </section> : null}
   </>
 }

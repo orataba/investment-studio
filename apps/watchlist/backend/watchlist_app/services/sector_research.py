@@ -26,7 +26,11 @@ from watchlist_app.services.calculation_frequency import _market_calendar_sessio
 
 TOPIC_ID = "us-sector-daily-review"
 INSTRUMENT_TOPIC_PREFIX = "instrument-events:"
-EVENT_INSTRUMENT_TYPES = ("equity", "etf", "index", "public_fund", "private_fund")
+EVENT_INSTRUMENT_TYPES = ("equity", "etf", "index", "public_fund", "private_fund", "crypto")
+FUND_INSTRUMENT_TYPES = ("public_fund", "private_fund")
+# Operational check time for funds without a supported source calendar. This is
+# not an investment-market classification or a daily NAV disclosure requirement.
+RESEARCH_TIMEZONES = {**MARKET_SCOPE_TIMEZONES, "fund_nav": "Asia/Shanghai", "crypto": "UTC"}
 SECTORS = {
     "XLB": ("原材料", ["拆分矿业、化工和包装的供需、库存与定价能力。", "原料价格变化对售价、成本和利润的影响可能相反。"]),
     "XLC": ("通信服务", ["区分广告平台、内容娱乐和电信公司的经营驱动。", "关注广告需求、用户变现、内容投入、资本开支与监管变化。"]),
@@ -162,12 +166,9 @@ def sector_snapshot(iid, session, *, as_of=None):
 def begin_run(session, ids, *, scheduled=False):
     from watchlist_app.services.research_identity import research_identity
     ids = list(dict.fromkeys(ids))
-    if any((asset := session.get(InstrumentDetail, iid)) is not None
-           and asset.instrument_type in {"public_fund", "private_fund"} for iid in ids):
-        raise ValueError("普通公募和私募暂缓主动深研，已有档案与研究记录仍可查阅。")
     sector_scope = bool(ids) and set(ids).issubset(scoped_ids(session))
     if not sector_scope and (len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0])):
-        raise ValueError("请选择一个已登记的股票、基金、ETF或指数；批量每日检查仅支持美股行业ETF")
+        raise ValueError("请选择一个已登记的股票、基金、ETF、指数或加密资产；批量每日检查仅支持美股行业ETF")
     # Batch and single-instrument jobs publish into the same dossiers and cases.
     # Lock the shared instrument rows before checking either kind of active job.
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
@@ -246,11 +247,25 @@ def bind_research_instruments(session, run, ids):
     company_data = dict(context.get("sector_company_data", {}))
     dossiers = list(context.get("research_dossiers", []))
     estimates = list(context.get("sector_estimate_evidence", []))
+    computed_metrics = list(context.get("computed_metrics", []))
     gaps = list(context.get("data_gaps", []))
     for asset in assets:
         iid = asset["instrument_id"]
         asset["source_id"] = f"instrument:{run.entry_id}:{iid}"
         asset["snapshot_cutoff"] = cutoff.isoformat()
+        if asset.get("performance_evidence") is not None:
+            from watchlist_app.services.research_metrics import _evidence
+            performance = asset["performance_evidence"]
+            computed = _evidence(f"{asset['name']} · 净值与共同样本比较", cutoff,
+                {**performance, "status": "available" if performance["available"] else "unavailable"},
+                performance["method"], scope="instrument", instrument_id=iid, source_run_id=run.entry_id)
+            # Risk-packet IDs are internal to that packet; research publishes the
+            # exact retained calculation under a run-bound, attributable source.
+            computed["data"]["source_id"] = computed["source_id"]
+            computed["data"]["comparisons"] = [{**row, "source_id": computed["source_id"]}
+                for row in performance.get("comparisons", [])]
+            asset["performance_evidence"] = computed["data"]
+            computed_metrics.append(computed)
         ensure_mandate(session, iid)
         dossiers.append(read_dossier(session, iid, actor=run_identity(context)))
         if iid.upper() in SECTORS:
@@ -266,6 +281,7 @@ def bind_research_instruments(session, run, ids):
     context.update(instrument_inputs=[*context.get("instrument_inputs", []), *assets],
         sector_inputs=inputs, sector_company_data=company_data, research_dossiers=dossiers,
         sector_estimate_evidence=estimates, data_gaps=gaps,
+        computed_metrics=computed_metrics,
         prior_events=[*context.get("prior_events", []), *[{**event_record(c), "evidence": c.evidence_json} for c in prior]])
     # Automatic runs retain their requested publication scope; comparisons may read peers.
     if not context.get("sector_run"):
@@ -286,7 +302,7 @@ def prepare_run(run_id):
         cutoff = datetime.now(UTC).isoformat()
         context.update(research_run=True, run_id=run_id, cutoff=cutoff, input_snapshot_cutoff=cutoff,
             catalogue=catalogue(session), instrument_inputs=[], research_dossiers=[],
-            sector_inputs=[], sector_company_data={}, sector_estimate_evidence=[], prior_events=[],
+            sector_inputs=[], sector_company_data={}, sector_estimate_evidence=[], computed_metrics=[], prior_events=[],
             tool_evidence=[], web_evidence=[], market_text_sources=[], market_queries=[],
             market_coverage=text_store().get_coverage())
         run.context_json = context
@@ -345,7 +361,9 @@ def draft_payload(result: ReviewResult):
 
 def usable_computed(source: dict, cutoff: datetime, iid: str) -> bool:
     """Only retained application calculations establish a numeric observation, not a cause."""
-    if source.get("source_type") != "computed_metric" or source.get("scope") != "public_market":
+    if source.get("source_type") != "computed_metric" or source.get("scope") not in {"public_market", "instrument"}:
+        return False
+    if source.get("scope") == "instrument" and source.get("instrument_id") != iid:
         return False
     if source.get("instrument_id") not in {None, iid} or not source.get("as_of"):
         return False
@@ -507,7 +525,7 @@ def validate_result(session, run, parsed: ReviewResult):
             }:
                 raise ValueError("事件发布时间必须来自已引用原文，不得以收录时间代替")
             if not originals and item.occurred_at is not None:
-                raise ValueError("预期快照只能证明两次采集之间发生变化，发生时间必须留空")
+                raise ValueError("数值快照不能确定外部事件发生时间，发生时间必须留空")
             if item.action != "new" and session.scalar(select(RiskCase).where(
                 RiskCase.instrument_id == review.instrument_id, RiskCase.signal == f"sector:{item.event_key}"
             )) is None:
@@ -601,10 +619,11 @@ def _research_market(session, instrument_id):
     instrument = session.get(Instrument, instrument_id)
     if instrument is None:
         return None
-    if instrument.instrument_type == "private_fund":
-        return "cn"
+    if instrument.instrument_type == "crypto":
+        return "crypto"
     calendar = (instrument.source_settings_json or {}).get("market_calendar") or instrument.exchange_code
-    return market_scope_for_calendar(calendar)
+    market = market_scope_for_calendar(calendar)
+    return market or ("fund_nav" if instrument.instrument_type in FUND_INSTRUMENT_TYPES else None)
 
 
 def _research_dates(session, ids, now):
@@ -613,23 +632,29 @@ def _research_dates(session, ids, now):
         market = _research_market(session, iid)
         if market is None:
             raise ValueError(f"{iid} 尚未配置支持的交易市场，不能安排自动研究。")
-        dates[iid] = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market])).date().isoformat()
+        dates[iid] = now.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market])).date().isoformat()
     return dates
 
 
 def _research_due(market, now):
     if market is None:
         return False
-    local = now.astimezone(ZoneInfo(MARKET_SCOPE_TIMEZONES[market]))
+    local = now.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]))
+    if market == "crypto":
+        # UTC daily bars close at midnight, including weekends. Check after that
+        # boundary; missing or delayed provider bars remain a data-coverage gap.
+        return (local.hour, local.minute) >= (0, 30)
     if (local.hour, local.minute) < (8, 30):
         return False
+    if market == "fund_nav":
+        return True
     day = local.date()
     return bool(_market_calendar_sessions(MARKET_SCOPE_CALENDARS[market][0], day, day))
 
 
 def daily_review_groups(session, *, now=None):
     from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
-    registered = set(list_shared_active_instrument_ids(instrument_types={"equity", "etf", "index"}))
+    registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
     statuses = {}
     for value in session.scalars(select(InstrumentAttributeValue).where(
         InstrumentAttributeValue.attribute_key == "coverage_status", InstrumentAttributeValue.instrument_id.in_(registered))
@@ -638,7 +663,7 @@ def daily_review_groups(session, *, now=None):
     selected = [iid for iid, status in statuses.items() if status in {"Proposed", "Invested"}]
     ids = sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
-        InstrumentDetail.instrument_type.in_(("equity", "etf", "index")))))
+        InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
     now = now or datetime.now(UTC)
     groups = [[iid] for iid in ids if _research_due(_research_market(session, iid), now)]
     reviews = latest_reviews(session)
@@ -661,7 +686,8 @@ def _run_daily_reviews(stop):
         if not groups:
             return
         research_dates = _research_dates(session, [iid for ids in groups for iid in ids], datetime.now(UTC))
-        watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id))]
+        watchlist_scopes = [{"watchlist_id": iid} for iid in session.scalars(select(Watchlist.watchlist_id)
+            .where(Watchlist.watchlist_id != "all-instruments"))]
     risk_scopes = [{"portfolio_id": p["portfolio_id"]} for p in portfolio_options().get("portfolios", [])] + watchlist_scopes
 
     def review_group(ids):

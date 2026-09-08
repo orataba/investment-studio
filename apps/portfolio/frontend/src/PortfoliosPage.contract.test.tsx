@@ -144,4 +144,22 @@ describe('Portfolios rendered page contract', () => {
     expect(await screen.findByText(/historical values are recalculating/i)).toHaveClass('investment-studio-notice-toast-success')
     expect(screen.getByText('Recalculating')).toBeInTheDocument()
   })
+
+  it.each([false, true])('keeps deletion and copying unavailable to a non-manager with can_edit=%s', async (canEdit) => {
+    apiMocks.getPortfolios.mockResolvedValue([{
+      portfolio_id: 'portfolio-a', portfolio_name: 'Portfolio A',
+      access: { can_read: true, can_edit: canEdit, can_manage: false },
+      base_currency: 'USD', inception_date: '2026-01-01', as_of_date: '2026-09-01',
+      nav: 100, day_change_value: 1, day_change_pct: 0.01, securities_count: 2, sort_order: 0,
+    }])
+    const user = userEvent.setup()
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Portfolio A actions' }))
+    expect(screen.getByRole('button', { name: 'Copy Portfolio' })).toBeDisabled()
+    const deleteButton = screen.getByRole('button', { name: 'Delete Portfolio' })
+    expect(deleteButton).toBeDisabled()
+    await user.click(deleteButton)
+    expect(screen.queryByRole('dialog', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
+    expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
+  })
 })

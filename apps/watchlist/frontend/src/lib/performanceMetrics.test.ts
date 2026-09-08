@@ -6,6 +6,29 @@ import {
 } from './performanceMetrics'
 
 describe('performance metrics', () => {
+  it('uses all UTC days for crypto risk and withholds path metrics across a missing day', () => {
+    const points = [
+      { date: '2026-09-04', value: 100 },
+      { date: '2026-09-05', value: 99 },
+      { date: '2026-09-06', value: 101 },
+      { date: '2026-09-07', value: 100 },
+    ]
+    const returns = [-0.01, 101 / 99 - 1, 100 / 101 - 1]
+    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
+    const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 2
+    const full = buildPerformanceMetricSnapshot(points, { continuousDaily: true })
+    expect(full.annualizedVolatility).toBeCloseTo(Math.sqrt(variance * 365.25) * 100)
+    expect(full.maxDrawdown).not.toBeNull()
+    const missingSunday = buildPerformanceMetricPeriodSnapshots(
+      points.filter((point) => point.date !== '2026-09-06'), { continuousDaily: true },
+    ).find((period) => period.key === 'SI')!.snapshot
+    expect(missingSunday.periodReturn).toBe(0)
+    for (const key of ['annualizedVolatility', 'sharpe', 'sortino', 'calmar', 'maxDrawdown', 'recoveryDays'] as const) {
+      expect(missingSunday[key]).toBeNull()
+    }
+    expect(missingSunday.recoveryOpen).toBe(false)
+  })
+
   it('calculates drawdown and recovery from the supplied index path', () => {
     const snapshot = buildPerformanceMetricSnapshot([
       { date: '2026-01-01', value: 100 },

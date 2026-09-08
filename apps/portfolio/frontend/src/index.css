@@ -1975,7 +1975,7 @@ input[type='checkbox'] {
 }
 
 .portfolio-section-toolbar {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .risk-page-surface {
@@ -7039,8 +7039,7 @@ input[type='checkbox'] {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 62px;
-  padding: 10px 0;
+  padding: 0 0 12px;
 }
 
 .research-command-copy {
@@ -7838,7 +7837,7 @@ input[type='checkbox'] {
 .taxonomy-page-table {
   display: grid;
   gap: 12px;
-  padding-top: 2px;
+  padding-top: 0;
 }
 
 .taxonomy-page-table .panel {
@@ -10689,14 +10688,13 @@ input[type='date']::-webkit-calendar-picker-indicator {
   gap: 0;
 }
 
-.portfolio-workspace-page > :is(.portfolio-detail-surface, .panel, .taxonomy-page) {
+.portfolio-workspace-content > :is(.portfolio-detail-surface, .panel, .taxonomy-page) {
   width: 100%;
 }
 
-.portfolio-workspace-page > .portfolio-detail-surface > .portfolio-detail-toolbar:first-child,
-.portfolio-workspace-page > .portfolio-detail-surface > .performance-block-grid:first-child > .portfolio-section-block:first-child > .portfolio-detail-toolbar:first-child,
-.portfolio-workspace-page > .panel:first-of-type > .panel-header:first-child {
-  padding-top: 10px;
+.portfolio-workspace-content > .portfolio-detail-surface > .portfolio-detail-toolbar:first-child,
+.portfolio-workspace-content > .panel:first-of-type > .panel-header:first-child {
+  padding-top: 0;
   border-top: none;
 }
 

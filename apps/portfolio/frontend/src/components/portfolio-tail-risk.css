@@ -1,0 +1,22 @@
+.portfolio-tail-risk { margin-top: 20px; padding: 20px; }
+.portfolio-tail-risk-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.portfolio-tail-risk-heading h2 { margin: 0 0 6px; font-size: 17px; }
+.portfolio-tail-risk-heading p, .portfolio-tail-risk-scope, .portfolio-tail-risk-coverage { margin: 0; color: var(--text-muted, #6b7280); font-size: 12px; line-height: 1.6; }
+.portfolio-tail-risk-controls { display: flex; gap: 12px; }
+.portfolio-tail-risk-controls label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted, #6b7280); }
+.portfolio-tail-risk-controls select { min-height: 32px; border: 1px solid var(--border-color, #dfe5e8); border-radius: 6px; padding: 4px 8px; background: var(--surface, #fff); color: var(--text-primary, #24313c); }
+.portfolio-tail-risk-metrics { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 16px; margin: 18px 0; }
+.portfolio-tail-risk-metrics > div { border-left: 2px solid var(--border-color, #e5e7eb); padding-left: 14px; display: flex; flex-direction: column; gap: 5px; }
+.portfolio-tail-risk-metrics strong { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.portfolio-tail-risk-metrics span, .portfolio-tail-risk-metrics small { color: var(--text-muted, #6b7280); font-size: 12px; }
+.portfolio-tail-risk-scope { margin-bottom: 6px; }
+.portfolio-tail-risk-limitations { margin: 10px 0; padding-left: 18px; color: var(--text-muted, #6b7280); font-size: 12px; line-height: 1.7; }
+.portfolio-tail-risk-details { margin-top: 12px; border-top: 1px solid var(--border-color, #e5e7eb); padding-top: 12px; }
+.portfolio-tail-risk-details summary { cursor: pointer; font-size: 12px; }
+.portfolio-tail-risk-details p { color: var(--text-muted, #6b7280); font-size: 12px; line-height: 1.6; }
+.portfolio-tail-risk-table-wrap { overflow-x: auto; }
+.portfolio-tail-risk table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.portfolio-tail-risk th, .portfolio-tail-risk td { padding: 9px 12px; border-bottom: 1px solid var(--border-color, #e5e7eb); text-align: left; }
+.portfolio-tail-risk th:nth-child(2), .portfolio-tail-risk td:nth-child(2), .portfolio-tail-risk th:nth-child(3), .portfolio-tail-risk td:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+.portfolio-tail-risk-error { color: var(--error-color, #b42318); font-size: 13px; }
+@media (max-width: 700px) { .portfolio-tail-risk-metrics { grid-template-columns: 1fr; } .portfolio-tail-risk { padding: 16px; } }

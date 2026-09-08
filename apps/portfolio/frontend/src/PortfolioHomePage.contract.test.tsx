@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,6 +37,10 @@ vi.mock('../../../../packages/ui/src/tableExport', () => tableExportMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
+
+function render(ui: ReactNode) {
+  return renderUI(<LanguageProvider>{ui}</LanguageProvider>)
+}
 
 function taxonomyCatalogFixture(
   overrides: Partial<PortfolioTaxonomyCatalogResponse> = {},
@@ -509,7 +515,7 @@ describe('Holdings rendered page contract', () => {
     render(<OptionOutcomePrompt portfolioId="3" />)
 
     const status = await screen.findByRole('button', { name: /Option action check failed:/ })
-    expect(status).toHaveAttribute('title', 'Option action service unavailable')
+    expect(status).toHaveAttribute('aria-label', expect.stringContaining('Option action service unavailable'))
     await userEvent.setup().click(status)
     expect(screen.getByRole('tooltip')).toHaveTextContent('Option action service unavailable')
   })

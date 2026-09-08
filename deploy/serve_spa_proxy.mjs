@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, statSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { URL } from 'node:url'
@@ -32,8 +32,20 @@ const contentTypes = new Map([
 
 function sendFile(response, filePath) {
   const type = contentTypes.get(extname(filePath).toLowerCase()) || 'application/octet-stream'
-  response.writeHead(200, { 'Content-Type': type })
-  createReadStream(filePath).pipe(response)
+  const stream = createReadStream(filePath)
+  stream.on('open', () => {
+    response.writeHead(200, { 'Content-Type': type })
+    stream.pipe(response)
+  })
+  stream.on('error', () => {
+    if (response.headersSent) {
+      response.destroy()
+    } else {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('File unavailable')
+    }
+  })
+  response.on('close', () => stream.destroy())
 }
 
 function resolveStaticPath(pathname) {
@@ -43,12 +55,13 @@ function resolveStaticPath(pathname) {
   } catch {
     return null
   }
+  if (decoded.includes('\0')) return null
   const normalized = normalize(decoded).replace(/^([.][.][/\\])+/, '')
   const candidate = resolve(join(distRoot, normalized))
   if (candidate !== distRoot && !candidate.startsWith(distRoot + sep)) {
     return indexPath
   }
-  if (existsSync(candidate) && statSync(candidate).isFile()) {
+  if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) {
     return candidate
   }
   return indexPath
@@ -56,7 +69,13 @@ function resolveStaticPath(pathname) {
 
 function proxyApi(clientRequest, clientResponse) {
   const targetUrl = new URL(clientRequest.url, apiTarget)
-  const headers = { ...clientRequest.headers, host: apiTarget.host }
+  // Preserve the browser destination and actual peer for local-owner checks.
+  // Replacing Host with loopback would let DNS rebinding appear local upstream.
+  const forwarded = clientRequest.headers['x-forwarded-for']
+  const headers = {
+    ...clientRequest.headers,
+    'x-forwarded-for': [forwarded, clientRequest.socket.remoteAddress].filter(Boolean).join(', '),
+  }
   const upstream = httpRequest(
     {
       protocol: apiTarget.protocol,
@@ -68,13 +87,21 @@ function proxyApi(clientRequest, clientResponse) {
     },
     (upstreamResponse) => {
       clientResponse.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers)
+      upstreamResponse.on('aborted', () => clientResponse.destroy())
+      upstreamResponse.on('error', () => clientResponse.destroy())
       upstreamResponse.pipe(clientResponse)
     },
   )
   upstream.on('error', (error) => {
-    clientResponse.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
-    clientResponse.end(`API proxy failed: ${error.message}`)
+    if (clientResponse.headersSent) {
+      clientResponse.destroy(error)
+    } else {
+      clientResponse.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+      clientResponse.end('API temporarily unavailable')
+    }
   })
+  clientRequest.on('aborted', () => upstream.destroy())
+  clientResponse.on('close', () => upstream.destroy())
   clientRequest.pipe(upstream)
 }
 

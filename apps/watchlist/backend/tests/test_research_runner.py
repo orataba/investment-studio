@@ -82,6 +82,8 @@ def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monke
 @pytest.mark.parametrize("marker,expected", [
     ({"type": "ValidationError", "summary": "事实核证结果格式不完整。", "diagnostic": "missing: reviews"},
      {"type": "ValidationError", "summary": "事实核证结果格式不完整。", "diagnostic": "missing: reviews", "exit_code": 1}),
+    ({"type": "FactReviewProcessExit", "summary": "本地事实核证进程退出，未生成核证结果；请检查研究运行环境。"},
+     {"type": "FactReviewProcessExit", "summary": "本地事实核证进程退出，未生成核证结果；请检查研究运行环境。", "exit_code": 1}),
     (None, {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": 1}),
 ])
 def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypatch, marker, expected):

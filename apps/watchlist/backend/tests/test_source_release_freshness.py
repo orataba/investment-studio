@@ -5,6 +5,25 @@ import pytest
 from watchlist_app.services.calculation_frequency import assess_latest_observation_freshness, build_calculation_frequency_context, source_calendar_date
 
 
+@pytest.mark.parametrize("calendar", ["XNYS", "XSHG", "XHKG"])
+def test_older_history_does_not_silently_skip_missing_sessions_outside_default_calendar_window(calendar):
+    profile = build_calculation_frequency_context([
+        {"as_of_date": date(2001, 1, 2), "value": 100},
+        {"as_of_date": date(2001, 3, 1), "value": 105},
+    ], market_calendar=calendar)["profile"]
+    assert profile["gap_detection_basis"] == f"market_calendar:{calendar}"
+    assert profile["gap_count"] > 20
+    assert "2001-01-03" in profile["missing_observation_date_sample"]
+
+
+def test_older_continuous_sessions_remain_valid_when_calendar_is_expanded():
+    profile = build_calculation_frequency_context([
+        {"as_of_date": date(2001, 1, day), "value": 100 + day}
+        for day in (5, 8, 9)
+    ], market_calendar="XNYS")["profile"]
+    assert profile["gap_count"] == 0  # January 6 and 7 were a weekend.
+
+
 @pytest.mark.parametrize("current,expected", [
     ("2026-07-25", "2026-07-23"),
     ("2026-07-26", "2026-07-23"),

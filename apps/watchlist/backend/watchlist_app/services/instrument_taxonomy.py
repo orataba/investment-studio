@@ -16,6 +16,7 @@ SUPPORTED_TAXONOMY_INSTRUMENT_TYPES = (
     "etf",
     "equity",
     "index",
+    "crypto",
 )
 
 

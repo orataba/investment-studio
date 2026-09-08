@@ -72,7 +72,7 @@ Investment Studio 的入口与业务应用：
 
 从 Investment Studio 首页进入 Watchlist，或访问维护人提供的 Watchlist 地址。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
-Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。所有类型都只选择已登记的共享资产，不从网页抓取行情或注册新资产。
+Watchlist 的系统列表包括“全部标的”、`Index`、`All 公募`、`All 私募`。全部标的自动汇集有效登记的基金、ETF、股票、指数和加密资产现货；其余系统列表按类型同步。自定义列表只组织成员，删除列表或移除成员不会注销标的，也不会改变标的自己的投资状态、设置和研究。相同标的在多个列表中共用同一份资料。资产登记与行情维护仍由共享数据后台完成。
 
 ### 5.2 添加资产
 
@@ -146,7 +146,9 @@ Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Instrum
 
 ### 5.7 ETF、股票和指数详情页
 
-ETF、股票和指数共用 Overview、Research、Performance、Risk、Price 外壳，但内容不相同：ETF 增加 Portfolio（档案、费用、行业/国家配置和持仓），股票增加 Fundamentals 与 Events，指数增加 Profile（指数基础档案）。指数分析使用指数本身的行情序列，不采集成分权重。三类资产与基金共用投研记录能力，但研究问题按资产特征变化；它们不使用基金专属的 people 或 strategy profile。行情分析可基于共享资产数据的 quote selection policy 选中的序列计算：
+ETF、股票、指数和加密资产现货共用 Overview、Research、Performance、Risk、Price 外壳，但内容不相同：ETF 增加 Portfolio（档案、费用、行业/国家配置和持仓），股票增加 Fundamentals 与 Events，指数增加 Profile（指数基础档案）。指数分析使用指数本身的行情序列，不采集成分权重。这些资产与基金共用投研记录能力，但研究问题按资产特征变化；它们不使用基金专属的 people 或 strategy profile。BTC现货独立使用美元报价、UTC完整日线和全年交易日历，不与同名比特币ETF混用。研究档案中的“编辑研究框架”可修改背景、方法和用户重点，保存时保留版本；研究助手与追踪共读更新后的档案。公募、私募可从净值及共同样本比较开展研究，缺少持仓或合同的部分保持未知。
+
+行情分析可基于共享资产数据的 quote selection policy 选中的序列计算：
 
 - `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 和年化收益。
 - 最大回撤、当前回撤。
@@ -254,7 +256,7 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 AI 草稿、JSON、CSV 和 Excel 中的新 Option 都必须把挂钩证券写入合约条款的 `underlying_instrument_id`，并由预览核对 Instrument Data 身份、币种和条款。文件支持 `physical_long` / `physical_written` 加 `option_delivery_json`，一行原子生成两腿；不能再导入同笔交付股票。AI 复核可将误识别的现金结果改为实物结果并补填交付账户、费用分类，也可添加、修改或移除 FCN 交付证券和指定批次；缺失信息必须依据回单人工补齐，预览通过后才入账。
 
-Transactions 的 Fund Distribution Review 默认只读取已经保存的事项，不会因为打开页面而写入新任务。需要核对新增分红事件时，先点击 `Refresh Distribution Events`，再逐项核对；刷新只建立待审事项，不会自动生成现金或份额交易。
+Transactions 的 Activity 旁叹号显示分红状态说明；选择 `Review distributions`（分红复核）在本页展开复核区。Fund Distribution Review 默认只读取已经保存的事项，不会因为打开页面而写入新任务。需要核对新增分红事件时，先点击 `Refresh Distribution Events`，再逐项核对；刷新只建立待审事项，不会自动生成现金或份额交易。
 
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。页面或文件填写的 `source_system + external_reference` 是整笔 Transfer 的来源身份，系统只把它保存在 transfer-out 腿；导出折叠和再次导入仍会保留并查重。
 
@@ -342,10 +344,12 @@ Risk 是当前权重口径的风险工作台，使用市场资产历史收益与
 
 常用内容：
 
-- Risk Health：看 forward volatility 与样本覆盖、风险预算总偏离、Top-3/HHI 集中度、现金与待交收。
+- Risk Health：看 forward volatility 与样本覆盖、Top-3/HHI 持仓摘要、现金与待交收。
 - rolling volatility / Sharpe：看风险和风险调整收益随时间变化。
 - correlation matrix：默认查看 Current Holdings；需要研究未持有资产时可显式切到 Full Universe。
-- current drift：看当前权重相对目标或分类的偏离。
+- current drift：选择分类，查看实际权重及已启用的权重/风险贡献目标偏移。
+- concentration：在单证券、单 FCN 和任意自定义分类间切换，查看占 NAV 比例、关注线、上限、余量与来源。
+- VaR / ES：用当前持仓重放共同历史证券/汇率情景，同时检查样本量和未建模范围。
 - risk contribution：看各资产或分组对组合风险的贡献。
 - benchmark：选择可用 benchmark 后比较风险曲线。
 
@@ -355,9 +359,17 @@ Forward RC 先对当前 leaf instruments 运行一次组合级 covariance；taxo
 
 Benchmark 对比要求 benchmark 与组合本币一致，并且收益语义已确认为 total return 或 price return。价格收益可以查看，但页面会提示其不含分红；币种不一致或收益语义未知时不绘制比较曲线。
 
+集中度中，单证券按各账户绝对市值合计；单 FCN 按剩余名义本金；分类集中度把 FCN 本金按挂钩标的归属分配，默认等分，也可自定义合计 100% 的比例。FCN 分配不加入单证券限额，不表示潜在接票股数。期权、现金、待结算不计入这项指标的分子，组合 NAV 分母保持不变。未分类、缺汇率或缺本金会显示覆盖限制，不能解释为没有风险。
+
+点击集中度设置或进入 Taxonomies，可启用对应范围的限额、设通用值与单项例外，并指定生效日期。默认不预设投资阈值；达到关注线/上限即显示相应状态。生效日期默认使用当前持仓截至日，可修改。浏览分类不改变生产分析范围，DSH 会读取全部分类的有效限额。
+
+VaR / ES 默认三年、95% 置信度，可切一/三/五年和 95%/99%。仅覆盖真实日频证券/FX 情景，不包括 FCN/Option 公允价值变化；查看百分比时同时查看未建模金额。共同样本及尾部观察过少时会披露限制或不返回数值。
+
 ### 6.8 Taxonomies
 
 Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这里。
+
+所有分类仍由用户自定义，可按国家、行业、策略或其他管理需要命名。浏览分类和“设为默认规划”是两个操作；目标设置独立启停权重和风险贡献维度，集中度设置另行启用。无风险贡献目标的分类仍可用来分组、观察权重及集中度。FCN 挂钩标的可在 assignment 中分类，但仅为合约关联的标的不会自动成为可投资研究候选。
 
 常见对象：
 
@@ -391,6 +403,8 @@ Assignment 的键盘提交只在编辑区域内使用 `Ctrl/Cmd + Enter`；Tab �
 ### 6.9 Research
 
 Research 用于 target solve 和假设回测。它不改变真实持仓，结果用于研究和调仓建议。
+
+Research 可以选择任意活动分类；无目标分类可以浏览和返回分类设置，正式运行要求截至日有有效目标。切换分类不会改写旧研究结果，结果保留原运行分类，需重新运行才能获得新分类下的分析。
 
 研究资产有三种 lifecycle：`Held` 是当前持仓，`Observed` 是研究池成员，`Former` 是历史持有但已退出。页面同时显示 research eligibility。Former instrument 如果得到正目标，必须由 PM 显式批准；未批准时 run 可保留研究结果，但 execution readiness 显示 `PM review required`，不得把它当成已批准调仓建议。
 

@@ -98,13 +98,12 @@ it('qualifies a quiet result when the research had material coverage gaps', asyn
   expect(screen.getByText('未取得最新持仓数据')).toBeTruthy()
 })
 
-it('preserves saved fund research while pausing active deep research', async () => {
-  request.mockResolvedValue({ ...payload(), research_enabled: false, message: '普通公募和私募暂缓主动深研，已有档案与研究记录仍可查阅。' })
+it('enables fund research updates while preserving saved research', async () => {
+  request.mockResolvedValue({ ...payload(), research_enabled: true })
   render(<SectorResearchPanel instrumentId="public-fund" />)
   await load()
-  expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(false)
   expect(screen.getByText(review('limited').summary)).toBeTruthy()
-  expect(screen.getByText(/普通公募和私募暂缓主动深研/)).toBeTruthy()
 })
 
 it('loads only the saved conclusion’s fetched originals on expansion and shares one source list for a multi-instrument run', async () => {

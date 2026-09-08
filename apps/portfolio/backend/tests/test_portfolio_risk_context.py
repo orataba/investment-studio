@@ -96,9 +96,16 @@ def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
         return value
     monkeypatch.setattr(workspace_routes, 'holdings_workspace', read_holdings)
     monkeypatch.setattr(taxonomies, 'get_portfolio_taxonomies', lambda *args, **kwargs: SimpleNamespace(model_dump=lambda **kwargs: catalog()))
+    from portfolio_app.services import concentration, tail_risk
+    def read_extra(portfolio_id, *, workspace):
+        assert portfolio_id == workspace['portfolio_id']
+        return {'as_of_date': workspace['as_of_date'], 'sources': []}
+    monkeypatch.setattr(concentration, 'read_portfolio_concentration', read_extra)
+    monkeypatch.setattr(tail_risk, 'read_portfolio_tail_risk', read_extra)
     result = service.read_portfolio_risk_context('p', as_of_date=selected)
     assert calls == [{'portfolio_id': 'p', 'as_of_date': selected, 'include_details': True}]
     assert result['as_of_date'] == result['workspace']['as_of_date'] == selected.isoformat()
+    assert result['concentration']['as_of_date'] == result['tail_risk']['as_of_date'] == selected.isoformat()
     assert all(source['end_date'] == selected.isoformat() for source in result['sources'])
 
 
@@ -127,6 +134,30 @@ def test_unavailable_model_and_missing_targets_stay_explicit_without_zero_risk_c
     assert all(row["risk_share"] is None for row in result["portfolio_metrics"]["groups"]["rows"])
     assert result["targets"]["status"] == "unavailable" and result["targets"]["rows"] == []
     assert result["comparisons"]["status"] == "unavailable" and result["comparisons"]["limitations"]
+
+
+def test_groups_outside_market_risk_model_are_not_reported_as_zero_risk():
+    current, previous = workspace(), workspace(previous=True)
+    for value in [current, previous]:
+        value["rows"].extend([
+            {"position_reference_id": "cash:CNY", "holding_category": "cash_and_settlement", "holding_kind": "cash",
+             "instrument_core": {"instrument_id": "cash:CNY", "instrument_type": "cash"},
+             "market_value_base": 100_000, "risk_eligible": False},
+            {"position_reference_id": "fcn", "holding_category": "derivatives", "holding_kind": "derivative_contract",
+             "instrument_core": {"instrument_name": "FCN"}, "derivative_contract_id": "fcn",
+             "market_value_base": 200_000, "risk_eligible": False},
+        ])
+    result = service.project_portfolio_risk(current, catalog(), previous)
+    groups = {row["group_id"]: row for row in result["portfolio_metrics"]["groups"]["rows"]}
+    for group_id in ["cash_bucket:__cash__", "derivative_bucket:__derivatives__"]:
+        assert groups[group_id]["risk_status"] == "outside_model"
+        assert groups[group_id]["risk_share"] is None
+        assert groups[group_id]["contribution_to_variance"] is None
+        assert groups[group_id]["risk_budget_share"] is None
+    assert groups["cash_bucket:__cash__"]["weight"] == .1
+    assert groups["derivative_bucket:__derivatives__"]["weight"] == .2
+    assert {row["group_id"] for row in result["comparisons"]["risk_group_changes"]} == {"macro", "gold"}
+    assert sum(row["risk_share"] for row in groups.values() if row["risk_share"] is not None) == pytest.approx(1)
 
 
 @pytest.mark.parametrize("new_position", [True, False])

@@ -48,8 +48,7 @@ from studio_data.services.instrument_store import (
     update_refresh_status,
     upsert_quote_selection_policy,
     upsert_corporate_action_event,
-    upsert_market_data_points,
-    upsert_price_bars,
+    upsert_price_history,
 )
 from studio_data.services.nav_raw_store import (
     list_raw_nav_observations,
@@ -3789,6 +3788,10 @@ def refresh_market_data(
             full_history=full_history,
         )
     if requested_source == "fmp":
+        if str(instrument.get("instrument_type") or "") == "crypto":
+            from studio_data.services.fmp.crypto import refresh_fmp_crypto_eod
+
+            return refresh_fmp_crypto_eod(instrument_id, full_history=full_history)
         if str(instrument.get("instrument_type") or "") == "fx":
             from studio_data.services.fmp import refresh_fmp_fx_eod
 
@@ -3822,6 +3825,10 @@ def refresh_market_data(
                 full_history=full_history,
             )
         if profile.lower() == "fmp":
+            if str(instrument.get("instrument_type") or "") == "crypto":
+                from studio_data.services.fmp.crypto import refresh_fmp_crypto_eod
+
+                return refresh_fmp_crypto_eod(instrument_id, full_history=full_history)
             if str(instrument.get("instrument_type") or "") == "fx":
                 from studio_data.services.fmp import refresh_fmp_fx_eod
 
@@ -4135,22 +4142,18 @@ def _refresh_tushare_listed_security(
         )
     points.extend(adjusted_points)
 
-    changed_count = upsert_market_data_points(
+    changes = upsert_price_history(
         instrument_id=instrument_id,
-        rows=points,
-    )
-    if changed_count is None:
-        return None
-    bar_changed_count = upsert_price_bars(
-        instrument_id=instrument_id,
-        rows=_tushare_price_bar_rows(
+        market_data_rows=points,
+        price_bar_rows=_tushare_price_bar_rows(
             close_rows,
             api_name=price_api_name,
             adjustment_factors=factors,
         ),
     )
-    if bar_changed_count is None:
+    if changes is None:
         return None
+    changed_count, bar_changed_count = changes
     detected_actions = _detect_tushare_share_splits(
         factors=factors,
         close_by_date=close_by_date,
@@ -4402,9 +4405,9 @@ def _upsert_tushare_price_rows(
             mode="api",
         )
 
-    changed_count = upsert_market_data_points(
+    changes = upsert_price_history(
         instrument_id=instrument_id,
-        rows=[
+        market_data_rows=[
             {
                 "metric_family": "price",
                 "quote_basis": "close",
@@ -4416,15 +4419,11 @@ def _upsert_tushare_price_rows(
             }
             for row in rows
         ],
+        price_bar_rows=_tushare_price_bar_rows(rows, api_name=api_name),
     )
-    if changed_count is None:
+    if changes is None:
         return None
-    bar_changed_count = upsert_price_bars(
-        instrument_id=instrument_id,
-        rows=_tushare_price_bar_rows(rows, api_name=api_name),
-    )
-    if bar_changed_count is None:
-        return None
+    changed_count, bar_changed_count = changes
     if changed_count == 0 and bar_changed_count == 0:
         return update_refresh_status(
             instrument_id=instrument_id,

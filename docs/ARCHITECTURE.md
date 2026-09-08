@@ -9,7 +9,7 @@
 - `shared-data/`
   独立的 CLI 数据维护与定时作业，没有 HTTP 服务。
 - `apps/watchlist`
-  公募 / 私募 / ETF / 股票 / 指数 Watchlist、local detail、monitoring 与 recalc。
+  公募 / 私募 / ETF / 股票 / 指数 / 原生加密资产现货 Watchlist、local detail、monitoring 与 recalc。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 - `apps/regime`

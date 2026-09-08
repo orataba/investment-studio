@@ -30,7 +30,7 @@ def capture(store, body, *, observed=1, received=1, url="https://example.com/gol
 
 def session(cases=(), calendar="XNYS"):
     return SimpleNamespace(scalars=lambda statement: cases,
-        get=lambda model, iid: SimpleNamespace(source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
+        get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
 
 
 def context(**extra):
@@ -106,6 +106,39 @@ def test_unscoped_batch_and_other_instrument_queries_are_not_broadcast(store):
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is not None
 
 
+@pytest.mark.parametrize("private_scope", ["personal", "portfolio", "historical_portfolio", "other_team"])
+def test_automatic_monitoring_never_inherits_private_or_portfolio_query_scope(client, private_scope):
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.db.session import get_session_factory
+
+    with get_session_factory()() as database:
+        shared = ResearchTopic(topic_id="shared-monitor", title="Shared research", instrument_ids=["gold"], visibility="team")
+        excluded = ResearchTopic(topic_id="private-monitor", title="Private research", instrument_ids=["gold"],
+            visibility="private" if private_scope == "personal" else "team",
+            portfolio_id="p-private" if private_scope == "portfolio" else None,
+            team_id="other" if private_scope == "other_team" else "default")
+        database.add_all([shared, excluded])
+        database.flush()
+        public_context = context(sector_run=True, research_actor={"team_id": "default"})
+        secret_context = context(research_run=True, market_queries=[{
+            "instrument_id": "gold", "query": "Private position and investment discussion", "entities": [],
+        }])
+        database.add_all([
+            ResearchEntry(entry_id="public-query", topic_id=shared.topic_id, title="Public query", kind="analysis",
+                created_at=stamp(1), context_json=public_context),
+            ResearchEntry(entry_id="private-query", topic_id=excluded.topic_id, title="Private query", kind="analysis",
+                created_at=stamp(3), context_json=secret_context, team_id=excluded.team_id),
+        ])
+        if private_scope == "historical_portfolio":
+            database.add(ResearchEntry(entry_id="old-portfolio-query", topic_id=excluded.topic_id, title="Old portfolio",
+                kind="analysis", created_at=stamp(1), context_json={"portfolio_id": "p-private"}))
+        database.commit()
+        current = context(market_queries=[], research_actor={"team_id": "default"})
+        actual = triggers._monitoring_context(database, "gold", current)
+        assert actual == public_context
+        assert triggers._queries(actual, "gold")[0]["query"] == "Gold"
+
+
 def test_future_import_and_ai_summary_are_not_new_original_evidence(store):
     capture(store, "Gold future disclosure", observed=3, received=5)
     assert triggers.research_trigger(session(), "gold", context(), now=stamp(4)) is None
@@ -159,6 +192,17 @@ def test_natural_language_horizon_is_not_parsed_into_an_invented_deadline(store)
         "forecasts": [{"key": "view", "claim": "Gold higher", "horizon": "a few weeks", "status": "active"}],
     }}])
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(7)) is None
+
+
+def test_fund_observation_date_uses_the_same_nav_check_clock_as_daily_research(store):
+    fund_session = SimpleNamespace(scalars=lambda statement: [], get=lambda model, iid:
+        SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None))
+    prior = {"cutoff": "2026-09-02T15:00:00+00:00", "instrument_ids": ["private-fund"],
+        "research_dossiers": [{"instrument_id": "private-fund", "notebook": {"forecasts": [
+            {"key": "review", "claim": "复核月度净值", "review_on": "2026-09-03", "status": "active"}]}}]}
+    result = triggers.research_trigger(fund_session, "private-fund", prior, now=datetime(2026, 9, 2, 17, tzinfo=UTC))
+    assert result["reasons"][0]["items"][0]["kind"] == "forecast_review"
+    assert "不代表事件已经发生" in result["reasons"][0]["items"][0]["note"]
 
 
 def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_trigger(client, store, monkeypatch):

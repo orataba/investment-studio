@@ -28,6 +28,7 @@ Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxo
 - Holdings 的分析结果和 summary 共用的风险频率按快照来源版本缓存；日期、风险政策、分析分类版本参与缓存键。计算中来源发生变化的结果不缓存，金融响应发布前再次核对来源；实时任务和衍生品观察在缓存外读取。展示图表裁剪不裁剪收益率、回撤或波动率计算历史；
 - 组合 summary、Overview 和默认 Holdings 共享同一 fresh-complete snapshot 选择规则；来源日历确认的休市可沿用前一有效点，预期行情或必要 FX 缺失则在首个缺口停止，补齐并重算前不从后续日期重新起算；
 - Taxonomy/TargetSet 是 planning truth，Research 消费它们，不建立第二套目标体系；
+- Research 先成功提交结果，再清理请求时间更早且已结束的运行及其产物；仍在运行的任务和较新请求不被旧任务删除。发布失败会回滚本次修改并保留上一份有效结果；
 - Portfolio taxonomy 与 Watchlist taxonomy 的节点、assignment 和版本完全独立，同名不代表关联；
 - 条件不足的收益、风险和研究结果明确 unavailable，不用旧算法、等权或不完整样本兜底。
 
@@ -88,6 +89,8 @@ npm --prefix apps/portfolio/frontend run dev -- --host 127.0.0.1 --port 5174
 Performance 手动编辑起止日期后，点击“应用区间”或按 Enter 才提交完整区间；预设区间、最新日期和重置仍立即应用。可靠日期边界继续由后端返回的有效区间决定。前端仅对带 `portfolio_calculation_pending` 的 GET 按 `Retry-After` 重试，同一路径的在途请求共用等待，最多等待 120 秒后提示稍后刷新；计算失败、普通 `503` 和写请求不自动重试。
 
 ## 验证
+
+Risk 提供单证券、单 FCN 和自定义分类的集中度观察及可选上限。FCN 按剩余本金分配，默认等分挂钩标的，支持自定义比例；Option 不进入该集中度分子。分类设置可管理权重/风险贡献目标和集中度规则，页面分组选择与默认生产分析分类分离。尾部风险提供当前持仓历史模拟 VaR/ES，并显示证券/FX 的实际建模覆盖；DSH 读取同一套集中度、目标与尾部风险数据。详见计算规格第 8、9、11.5 节。新增限额默认未配置，由组合编辑者显式设定。
 
 ```bash
 infra/scripts/verify_repository.sh backend portfolio

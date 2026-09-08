@@ -86,7 +86,7 @@ shared instruments / local evidence / holdings ingest
 
 ### 4.2 Instrument Product Framework
 
-这一层负责 `public_fund / private_fund / etf / equity / index` 各自的分类，以及适用的研究标签和监控评估：
+这一层负责 `public_fund / private_fund / etf / equity / index / crypto` 各自的分类，以及适用的研究标签和监控评估：
 
 - `instrument_taxonomy_node`
 - `instrument_taxonomy_assignment`
@@ -286,7 +286,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 说明：
 
-- 这组接口服务 `public_fund / private_fund / etf / equity / index` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Instrument Data
+- 这组接口服务 `public_fund / private_fund / etf / equity / index / crypto` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Instrument Data
 - 节点带 `instrument_type`，assignment 必须与资产类型一致；不同类型之间不能交叉赋值
 - 公募、私募、ETF 和指数 assignment 默认允许为空，正式分类由详情页人工 `PUT` 确认
 - 股票分类由 Instrument Data 的 canonical `exchange_code` 映射到市场/交易所节点，接口拒绝人工改写

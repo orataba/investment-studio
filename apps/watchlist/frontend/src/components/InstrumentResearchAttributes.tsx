@@ -7,6 +7,7 @@ import {
 } from '../lib/api'
 import { formatLabel } from '../lib/format'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
 type AttributeDomain = InstrumentAttributeDefinition['domain_code']
 
@@ -237,12 +238,7 @@ export default function InstrumentResearchAttributes({
                             <td className="instrument-product-tags-table-label-cell">
                               <div className="instrument-product-tags-field">
                                 <span>{definition.label}</span>
-                                {help ? (
-                                  <span className="instrument-product-tags-help" tabIndex={0}>
-                                    ?
-                                    <span className="instrument-product-tags-tooltip">{help}</span>
-                                  </span>
-                                ) : null}
+                                {help ? <InfoHint label={definition.label} detail={help} /> : null}
                               </div>
                             </td>
                             <td className="instrument-product-tags-table-value-cell">

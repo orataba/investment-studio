@@ -2053,9 +2053,9 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
             {"ts_code": "000300.SH", "trade_date": "20260612", "close": "4190.00"},
         ]
 
-    def fake_upsert_market_data_points(**kwargs: object) -> int:
-        captured["upsert"] = kwargs
-        return len(kwargs["rows"])
+    def fake_upsert_price_history(**kwargs: object) -> tuple[int, int]:
+        captured["upsert"] = {"instrument_id": kwargs["instrument_id"], "rows": kwargs["market_data_rows"]}
+        return len(kwargs["market_data_rows"]), len(kwargs["price_bar_rows"])
 
     def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
         captured["refresh_status"] = kwargs
@@ -2078,8 +2078,8 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         market_data_ops,
-        "upsert_market_data_points",
-        fake_upsert_market_data_points,
+        "upsert_price_history",
+        fake_upsert_price_history,
     )
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
@@ -2311,15 +2311,11 @@ def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
     )
     monkeypatch.setattr(
         market_data_ops,
-        "upsert_market_data_points",
-        lambda **kwargs: captured.setdefault("market_rows", kwargs["rows"])
-        and len(kwargs["rows"]),
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "upsert_price_bars",
-        lambda **kwargs: captured.setdefault("bar_rows", kwargs["rows"])
-        and len(kwargs["rows"]),
+        "upsert_price_history",
+        lambda **kwargs: (
+            len(captured.setdefault("market_rows", kwargs["market_data_rows"])),
+            len(captured.setdefault("bar_rows", kwargs["price_bar_rows"])),
+        ),
     )
     monkeypatch.setattr(
         market_data_ops,
@@ -2427,14 +2423,11 @@ def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
     )
     monkeypatch.setattr(
         market_data_ops,
-        "upsert_market_data_points",
-        lambda **kwargs: len(kwargs["rows"]),
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "upsert_price_bars",
-        lambda **kwargs: captured.setdefault("bar_rows", kwargs["rows"])
-        and len(kwargs["rows"]),
+        "upsert_price_history",
+        lambda **kwargs: (
+            len(kwargs["market_data_rows"]),
+            len(captured.setdefault("bar_rows", kwargs["price_bar_rows"])),
+        ),
     )
     monkeypatch.setattr(
         market_data_ops,
@@ -2519,9 +2512,9 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             {"ts_code": "513050.SH", "trade_date": "20240102", "close": "0.91"},
         ]
 
-    def fake_upsert_market_data_points(**kwargs: object) -> int:
-        captured["upsert"] = kwargs
-        return len(kwargs["rows"])
+    def fake_upsert_price_history(**kwargs: object) -> tuple[int, int]:
+        captured["upsert"] = {"instrument_id": kwargs["instrument_id"], "rows": kwargs["market_data_rows"]}
+        return len(kwargs["market_data_rows"]), len(kwargs["price_bar_rows"])
 
     def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
         captured["refresh_status"] = kwargs
@@ -2538,8 +2531,8 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
     )
     monkeypatch.setattr(
         market_data_ops,
-        "upsert_market_data_points",
-        fake_upsert_market_data_points,
+        "upsert_price_history",
+        fake_upsert_price_history,
     )
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
     monkeypatch.setattr(
@@ -2616,10 +2609,9 @@ def test_empty_listed_security_response_preserves_existing_history(monkeypatch) 
 
     monkeypatch.setattr(
         market_data_ops,
-        "upsert_market_data_points",
+        "upsert_price_history",
         fail_if_written,
     )
-    monkeypatch.setattr(market_data_ops, "upsert_price_bars", fail_if_written)
     monkeypatch.setattr(
         market_data_ops,
         "update_refresh_status",

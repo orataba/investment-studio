@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 
 def register_fund(client):
     watchlist = client.post("/api/watchlists", json={"name": "分析师测试"}).json()
@@ -106,16 +108,8 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
         'title': '管理人说明', 'body': '管理人说明策略机制，未披露底层持仓。', 'source': '用户提供的管理人说明', 'published_at': '2026-08-31'}).json()
     sid = material['source_id']
     with get_session_factory()() as session:
-        # Ordinary funds no longer launch active research. Retained historical
-        # research still provides the same evidence to today's personal assistant.
-        from watchlist_app.db.models.workbench import ResearchTopic
-        topic = ResearchTopic(topic_id="instrument-events:sxv264", title="已有基金研究", instrument_ids=["sxv264"], visibility="team")
-        session.add(topic)
-        session.flush()
-        run = ResearchEntry(entry_id="retained-fund-research", topic_id=topic.topic_id, kind="analysis", title="已保存的基金研究", status="queued",
-                            context_json={"sector_run": True, "instrument_ids": ["sxv264"], "reviews": {}})
-        session.add(run)
-        session.commit()
+        run, created = sector_research.begin_run(session, ["sxv264"])
+        assert created
         run_id = run.entry_id
     sector_research.prepare_run(run_id)
     outline = client.get(f'/api/research/runs/{run_id}/context').json()
@@ -146,6 +140,72 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
     found = client.post(path, json={'tool': 'dossier', 'instrument_ids': ['sxv264'], 'source_id': sid}).json()['result']
     assert found['body'] == material['body']
     assert all(not topic['topic_id'].startswith(('dossier:', 'instrument-events:')) for topic in client.get('/api/research/topics').json())
+
+
+def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missing_exposure(client, monkeypatch):
+    from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentManualProfile
+    from watchlist_app.db.models.workbench import ResearchEntry
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services import sector_research
+
+    register_fund(client)
+    with get_session_factory()() as session:
+        session.add(InstrumentDetail(instrument_id="fund-benchmark", instrument_name="登记基准", instrument_type="index", detail_view_type="index", is_active=True))
+        session.flush()
+        for iid, values in [("sxv264", [("2026-08-07", 1), ("2026-08-14", 1.04), ("2026-08-21", 1.1)]),
+                            ("fund-benchmark", [("2026-08-07", 2), ("2026-08-21", 2.1)])]:
+            row = session.get(InstrumentChartReadModel, iid)
+            if row is None:
+                row = InstrumentChartReadModel(instrument_id=iid)
+                session.add(row)
+            row.payload_json = {"research_returns": {"currency": "CNY", "metadata": {
+                "return_kind": "total_return", "return_series_status": "complete", "quote_basis": "total_return_nav"},
+                "frequency": {"resolved_frequency": "weekly"}, "points": [{"date": day, "value": value} for day, value in values]}}
+            row.data_freshness_status = "fresh"
+            row.source_cutoff_at = row.last_recalculated_at = datetime(2026, 8, 22, tzinfo=UTC)
+        profile = session.get(InstrumentManualProfile, "sxv264")
+        if profile is None:
+            profile = InstrumentManualProfile(instrument_id="sxv264", updated_at=datetime.now(UTC))
+            session.add(profile)
+        profile.nav_settings_json = {**(profile.nav_settings_json or {}), "default_benchmark_instrument_id": "fund-benchmark"}
+        session.commit()
+        run, created = sector_research.begin_run(session, ["sxv264"])
+        assert created
+        run_id = run.entry_id
+    sector_research.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        automatic_evidence = run.context_json["instrument_inputs"][0]["performance_evidence"]
+        computed = run.context_json["computed_metrics"][0]
+        assert computed["source_id"] == automatic_evidence["source_id"]
+        assert computed["scope"] == "instrument"
+        assert sector_research.usable_computed(computed, datetime.now(UTC), "sxv264")
+        assert not sector_research.usable_computed(computed, datetime.now(UTC), "fund-benchmark")
+        from watchlist_app.services.research_notebook import research_sources
+        assert computed["source_id"] in research_sources(run.context_json, run_id)
+        draft = sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "sxv264", "change_kind": "knowledge",
+            "research": {"fundamental_view": "基于共同周度观察日的表现仍需结合策略与敞口解释。", "source_ids": [computed["source_id"]]},
+            "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
+                "title": "共同样本表现待解释", "body": "共同样本超额收益5个百分点，底层敞口仍未知。",
+                "next_watch": "核实策略来源及更长区间表现。", "confidence": "confirmed", "information_type": "fact",
+                "recording_type": "new", "source_ids": [computed["source_id"]]}]}]})
+        sector_research.validate_result(session, run, draft)
+    assert automatic_evidence["frequency"] == "weekly"
+    comparison = automatic_evidence["comparisons"][0]["comparison"]
+    assert comparison["dates"] == ["2026-08-07", "2026-08-21"]
+    fund = next(item for item in comparison["rows"] if item["instrument_id"] == "sxv264")
+    assert fund["excess_return_pp"] == pytest.approx(5)
+    assert automatic_evidence["observations"] == 3
+
+    conversation = start_analysis(client, monkeypatch)
+    response = client.post(f"/api/research/runs/{conversation['entry_id']}/tools",
+        json={"tool": "instruments", "instrument_ids": ["sxv264"]})
+    assert response.status_code == 200, response.text
+    evidence = response.json()["result"]["assets"][0]
+    assert evidence["performance_evidence"]["sample_return_pct"] == automatic_evidence["sample_return_pct"]
+    assert evidence["performance_evidence"]["comparisons"][0]["comparison"] == comparison
+    assert evidence["performance_evidence"]["source_id"] != automatic_evidence["source_id"]
+    assert "未披露的持仓、杠杆和对冲只能列为待核实项" in evidence["analyst_focus"]
 
 
 def test_public_search_preserves_original_publication_and_failed_coverage(client, monkeypatch):

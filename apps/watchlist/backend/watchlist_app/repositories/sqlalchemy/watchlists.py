@@ -45,7 +45,7 @@ CLASSIFICATION_VIEW_ID = "classification"
 CLASSIFICATION_VIEW_NAME = "分类"
 CLASSIFICATION_VIEW_DESCRIPTION = "使用 Watchlist 内部分类树组织当前列表。"
 LOCAL_DETAIL_VIEW_FILTERS = {
-    "instrument_type": ["public_fund", "private_fund", "etf", "equity", "index"]
+    "instrument_type": ["public_fund", "private_fund", "etf", "equity", "index", "crypto"]
 }
 SYSTEM_OWNER_TYPE = "system"
 SYSTEM_OWNER_ID = "watchlist"
@@ -58,10 +58,16 @@ class SystemWatchlistSpec:
     watchlist_id: str
     name: str
     description: str
-    instrument_type: str
+    instrument_type: str | None
 
 
 SYSTEM_WATCHLIST_SPECS = (
+    SystemWatchlistSpec(
+        "all-instruments",
+        "All Instruments",
+        "All active registered instruments supported by Watchlist. Membership does not control instrument settings or research.",
+        None,
+    ),
     SystemWatchlistSpec("index", "Index", "All active indexes in the shared Registry.", "index"),
     SystemWatchlistSpec(
         "all-public-funds",
@@ -215,8 +221,10 @@ class SQLAlchemyWatchlistRepository:
         self,
         session: Session,
         spec: SystemWatchlistSpec,
+        *,
+        existing_record: Watchlist | None = None,
     ) -> Watchlist:
-        record = self.get(session, spec.watchlist_id)
+        record = existing_record if existing_record is not None else self.get(session, spec.watchlist_id)
         if record is None:
             try:
                 record = self.create(
@@ -268,13 +276,8 @@ class SQLAlchemyWatchlistRepository:
                 default_filters={},
                 default_advanced_filter={},
                 columns=_overview_view_columns(spec.instrument_type),
-                is_default=True,
+                is_default=not any(view.is_default for view in self.list_views(session, spec.watchlist_id)),
             )
-        else:
-            overview.kind = "system"
-            overview.default_group_by = "none"
-            overview.default_filters_json = {}
-            overview.is_default = True
 
         classification = self.get_view(
             session,
@@ -291,25 +294,18 @@ class SQLAlchemyWatchlistRepository:
                 kind="system",
                 default_group_by=TAXONOMY_GROUP_BY_CODE,
                 default_sort=[],
-                default_filters={"instrument_type": [spec.instrument_type]},
+                default_filters=(
+                    {"instrument_type": [spec.instrument_type]}
+                    if spec.instrument_type
+                    else _local_detail_view_filters()
+                ),
                 default_advanced_filter={},
                 columns=_classification_view_columns(),
                 is_default=False,
             )
-        else:
-            classification.kind = "system"
-            classification.name = CLASSIFICATION_VIEW_NAME
-            classification.description = CLASSIFICATION_VIEW_DESCRIPTION
-            classification.default_group_by = TAXONOMY_GROUP_BY_CODE
-            classification.default_filters_json = {"instrument_type": [spec.instrument_type]}
 
-        default_view_key = _scoped_view_id(spec.watchlist_id, "overview")
-        for view in session.scalars(
-            select(WatchlistView).where(
-                WatchlistView.watchlist_id == spec.watchlist_id
-            )
-        ).all():
-            view.is_default = view.watchlist_view_id == default_view_key
+        # Reference metadata belongs to the system; existing view configuration
+        # and personal ordering belong to their users and survive every sync.
 
         session.flush()
         return self.get(session, spec.watchlist_id) or record

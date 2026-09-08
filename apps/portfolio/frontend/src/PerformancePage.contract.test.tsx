@@ -222,8 +222,8 @@ describe('Performance rendered page contract', () => {
     expect(screen.getByText('Calculation')).toBeInTheDocument()
     const performanceDetails = screen.getByRole('button', { name: /Performance details:/ })
     const calculationDetails = screen.getByRole('button', { name: /Calculation details:/ })
-    expect(performanceDetails).toHaveAttribute('title', expect.stringContaining('2026-07-06 to 2026-07-15'))
-    expect(calculationDetails).toHaveAttribute('title', expect.stringContaining('2026-07-06 to 2026-07-15'))
+    expect(performanceDetails).toHaveAttribute('aria-label', expect.stringContaining('2026-07-06 to 2026-07-15'))
+    expect(calculationDetails).toHaveAttribute('aria-label', expect.stringContaining('2026-07-06 to 2026-07-15'))
     expect(
       await screen.findByRole('row', { name: /Portfolio Total/ }),
     ).toBeInTheDocument()
@@ -236,7 +236,7 @@ describe('Performance rendered page contract', () => {
     expect(within(annualizedReturnRow).queryByText('Requires ≥ 1 year')).not.toBeInTheDocument()
     expect(screen.queryByText('Short observed history.')).not.toBeInTheDocument()
     expect(screen.queryByText(/Ordinary Assets Sleeve TWR unavailable/)).not.toBeInTheDocument()
-    expect(calculationDetails).toHaveAttribute('title', expect.stringContaining('Daily risk basis'))
+    expect(calculationDetails).toHaveAttribute('aria-label', expect.stringContaining('Daily risk basis'))
 
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters)
     expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters)
@@ -267,12 +267,12 @@ describe('Performance rendered page contract', () => {
     )
 
     const hint = await screen.findByRole('button', { name: /Performance details:/ })
-    expect(hint).toHaveAttribute('title', expect.stringContaining('operational ledger return'))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining('operational ledger return'))
     expect(screen.queryByText('Operational carrying-basis return.')).not.toBeInTheDocument()
     expect(screen.queryByText('Not a complete fair-value TWR.')).not.toBeInTheDocument()
-    expect(hint).toHaveAttribute('title', expect.stringContaining('not a complete fair-value or GIPS-informed TWR'))
-    expect(hint).toHaveAttribute('title', expect.stringContaining('Recorded fees and taxes deducted'))
-    expect(hint).toHaveAttribute('title', expect.stringContaining('Risk: daily observations'))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining('not a complete fair-value or GIPS-informed TWR'))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining('Recorded fees and taxes deducted'))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining('Risk: daily observations'))
     expect(screen.queryByText('Recorded fees and taxes deducted')).not.toBeInTheDocument()
     await userEvent.setup().click(hint)
     expect(screen.getByRole('tooltip')).toHaveTextContent('Recorded fees and taxes deducted')
@@ -314,7 +314,7 @@ describe('Performance rendered page contract', () => {
     expect(within(screen.getByRole('row', { name: /^Growth/ })).getByText('+2.00%')).toBeVisible()
     expect(within(screen.getByRole('row', { name: /^Asset/ })).getByText('+2.00%')).toBeVisible()
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
-      'title', expect.stringContaining('Linked contributions sum to period TWR; child contributions sum to their parent.'),
+      'aria-label', expect.stringContaining('Linked contributions sum to period TWR; child contributions sum to their parent.'),
     )
     await user.click(screen.getByRole('button', { name: 'Columns' }))
     const dialog = screen.getByRole('dialog', { name: 'Choose calculation columns' })
@@ -324,7 +324,7 @@ describe('Performance rendered page contract', () => {
     expect(within(bridge).getByText('-0.12%')).toBeVisible()
     expect(screen.getByRole('columnheader', { name: /Arithmetic Return Contribution/ })).toBeVisible()
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
-      'title', expect.stringContaining('Arithmetic contributions + TWR linking difference = period TWR.'),
+      'aria-label', expect.stringContaining('Arithmetic contributions + TWR linking difference = period TWR.'),
     )
     expect(screen.queryByText('Relative')).not.toBeInTheDocument()
     const maxDrawdown = screen.getByRole('row', { name: /^Market Risk Max DD/ })
@@ -488,7 +488,7 @@ describe('Performance rendered page contract', () => {
       name: /Benchmark comparison:/,
     })
     expect(benchmarkHint).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('Comparison uses the selected price'),
     )
     const periodReturnCells = within(screen.getByRole('row', { name: /Total Portfolio Return/ })).getAllByRole('cell')
@@ -533,7 +533,7 @@ describe('Performance rendered page contract', () => {
     const hint = await screen.findByRole('button', { name: /Benchmark comparison:/ })
     const returnRow = screen.getByRole('row', { name: /Total Portfolio Return/ })
     if (missingDate) {
-      expect(hint).toHaveAttribute('title', expect.stringContaining(`required observations are missing: ${missingDate}`))
+      expect(hint).toHaveAttribute('aria-label', expect.stringContaining(`required observations are missing: ${missingDate}`))
       expect(within(returnRow).getAllByRole('cell')).toHaveLength(1)
       expect(screen.getByRole('row', { name: /Tracking Error/ })).toHaveTextContent('—')
     } else {
@@ -914,14 +914,14 @@ describe('Performance rendered page contract', () => {
     const cutoffHint = await screen.findByRole('button', { name: /Performance data cutoff:/ })
     expect(cutoffHint.closest('.performance-window-bar')).not.toBeNull()
     expect(cutoffHint).toHaveAttribute(
-      'title', expect.stringContaining('requested through 2026-07-15; reliable results end on 2026-07-14'),
+      'aria-label', expect.stringContaining('requested through 2026-07-15; reliable results end on 2026-07-14'),
     )
     expect(screen.getByRole('button', { name: /Performance details:/ })).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('2026-07-06 to 2026-07-14'),
     )
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('2026-07-06 to 2026-07-14'),
     )
   })

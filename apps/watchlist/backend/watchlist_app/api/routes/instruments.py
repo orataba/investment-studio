@@ -21,7 +21,7 @@ from watchlist_app.services.shared_instrument_registry import (
 
 
 router = APIRouter()
-PRICE_BAR_INSTRUMENT_TYPES = {"etf", "equity", "index"}
+PRICE_BAR_INSTRUMENT_TYPES = {"etf", "equity", "index", "crypto"}
 
 
 @router.get("/{instrument_id}/reference-data")

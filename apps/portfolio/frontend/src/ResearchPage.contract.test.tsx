@@ -368,6 +368,19 @@ describe('Research rendered page contract', () => {
     expect(apiMocks.getPortfolioResearchRun).toHaveBeenCalledWith('3', 'research-1')
   })
 
+  it('keeps the saved research taxonomy and marks results from another taxonomy as historical', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: 'industry', planning_taxonomy_name: 'Industry' },
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom', budgeting_level: 'root' }],
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    await screen.findByTestId('research-result-taxonomy')
+    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
+    expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Policy Allocation')
+    expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Run Research again')
+    expect(screen.getByText('Historical result — not current or execution-ready.')).toBeInTheDocument()
+  })
+
   it('preserves existing research notes when run settings auto-save', async () => {
     renderPortfolioPage(
       <ResearchPage />,
@@ -384,6 +397,25 @@ describe('Research rendered page contract', () => {
         expect.objectContaining({ notes: 'Keep this research note.' }),
       )
     }, { timeout: 2_000 })
+  })
+
+  it('saves a selected custom taxonomy and clears constraints from the previous taxonomy', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, frozen_taxonomy_node_ids: ['risk-assets'] },
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options,
+        { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom', budgeting_level: null, targets_available: false }],
+    })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [
+      { taxonomy_id: 'industry', name: 'Industry', planning_enabled: false, status: 'active' },
+    ], taxonomy_nodes: [] })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    fireEvent.change(await screen.findByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith('3',
+      expect.objectContaining({ planning_taxonomy_id: 'industry', frozen_taxonomy_node_ids: [], top_sleeve_weight_bounds: [] }),
+    ), { timeout: 2_000 })
+    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
+    expect(screen.getByText('Configure targets before running Research')).toHaveAttribute('href', '/portfolios/3/taxonomies')
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
 
   it('marks a constrained risk-budget target miss as not execution-ready', async () => {

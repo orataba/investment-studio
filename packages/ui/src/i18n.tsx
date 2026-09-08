@@ -630,6 +630,8 @@ const systemPatterns: LanguagePattern[] = [
   { match: /^(Policy|configuration|selection) (.+)$/, replace: (label, versions) => `${systemLabel(label)} ${systemLabel(versions)}` },
   { match: /^Current rolling risk requires one period identity for the return ending (\d{4}-\d{2}-\d{2}); (.+)\.$/, replace: (date, starts) => `当前滚动风险计算要求截至 ${date} 的收益区间起点一致；各标的起点：${starts}。` },
   { match: /^Current rolling risk requires identical return dates after all active holdings have history; missing (\d+) date\(s\), beginning (.+)\.$/, replace: (count, dates) => `当前滚动风险计算要求所有在持标的历史开始后的收益日期一致；缺少 ${count} 个日期，最早为 ${dates}。` },
+  { match: /^(Current risk|Forward RC) cannot model policy-excluded market exposure ([^·]+) as zero risk\.$/, replace: (model, name) => `${model === 'Current risk' ? '当前风险' : '前瞻风险贡献'}不能将按配置排除的市场敞口 ${name} 视为零风险。` },
+  { match: /^(Current risk|Forward RC) requires an FX total-return series for non-base monetary exposure ([^·]+) \(([^·]+) versus ([^·]+)\)\.$/, replace: (model, name, currency, base) => `${model === 'Current risk' ? '当前风险' : '前瞻风险贡献'}需要非本位币货币敞口 ${name} 的汇率总回报序列（${currency} 兑 ${base}）。` },
   { match: /^All (\d+) scope members must share one complete aligned return window; no members or dates were dropped\.?$/, replace: (count) => `范围内全部 ${count} 个成员必须具有完整且一致的收益区间；未剔除任何成员或日期。` },
   { match: /^Return ending (\d{4}-\d{2}-\d{2}) starts at (.+?); scope members do not share one period identity\.?$/, replace: (end, start) => `截至 ${end} 的收益区间始于 ${systemLabel(start)}；范围内成员的收益区间起点不一致。` },
   { match: /^Missing dates \((\d+) total\): (.+)\.?$/, replace: (count, dates) => `缺失日期（共 ${count} 个）：${dates.replace(/\.$/, '')}。` },
@@ -818,7 +820,8 @@ function resolveTranslation(
     const inner = resolveTranslation(fragment[2], language, messages, patterns)
     if (inner !== fragment[2]) return `${fragment[1] || ''}${inner}${fragment[3] || ''}`
   }
-  for (const separator of [' · ', '. ', ': ', '; ', ' / ']) {
+  // Keep a labeled explanation intact so its full-message translation can match.
+  for (const separator of [': ', ' · ', '. ', '; ', ' / ']) {
     if (separator === ': ') {
       const labeledValue = source.match(/^(.+?): (.+)$/)
       if (labeledValue) {

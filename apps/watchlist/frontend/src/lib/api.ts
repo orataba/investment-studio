@@ -203,7 +203,7 @@ export type InstrumentResolveResponse = {
 
 export type InstrumentReferenceData = {
   instrument_id: string
-  instrument_type: 'public_fund' | 'private_fund' | 'etf' | 'equity' | 'index'
+  instrument_type: 'public_fund' | 'private_fund' | 'etf' | 'equity' | 'index' | 'crypto'
   provider: string
   provider_symbol: string | null
   fetched_at: string | null

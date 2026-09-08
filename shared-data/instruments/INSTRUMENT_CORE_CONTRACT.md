@@ -54,6 +54,10 @@ NAV 对外只有两种 basis：`official_nav` 是单位净值，`total_return_na
 shared market data。`total_return_nav` 不存在时必须为 NA；不得回退到 `official_nav`、close 或
 其他价格序列。派生复权净值必须记录算法版本、锚点日期和非空 evidence。
 
+同一来源批次的 canonical price 与 raw OHLC 使用 `upsert_price_history` 在同一事务提交，
+任一侧校验或持久化失败必须同时回滚价格、OHLC 和资产更新水位。单独修正某一事实表仍可使用
+各自的 batch writer；相同事实重放不推进水位，不触发新的计算输入。
+
 ### `QuoteSelectionPolicy`
 
 - `trading[]`
@@ -167,7 +171,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持当前仓库 migration head 所定义的 Instrument Registry schema，不会探测或兼容更早物理 schema；当前 revision 由 Alembic source 和 `migration-heads` gate 确定，不在合同里复制易漂移的编号。Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`。股票与 ETF 都必须持有 canonical MIC `exchange_code`；FMP 资产还必须持有 `provider_symbol` identity。支持的 listing MIC 为 `XNAS / XNYS / XASE / BATS / XHKG / XSHG / XSHE / XLON / XETR / XPAR / XAMS / XMIL / XSWX`，其中 `BATS` 只用于 ETF 目录。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持当前仓库 migration head 所定义的 Instrument Registry schema，不会探测或兼容更早物理 schema；当前 revision 由 Alembic source 和 `migration-heads` gate 确定，不在合同里复制易漂移的编号。Registry 类型集合是 `public_fund | private_fund | etf | index | equity | crypto | cash | fx | other`。股票与 ETF 都必须持有 canonical MIC `exchange_code`；FMP 资产还必须持有 `provider_symbol` identity。支持的 listing MIC 为 `XNAS / XNYS / XASE / BATS / XHKG / XSHG / XSHE / XLON / XETR / XPAR / XAMS / XMIL / XSWX`，其中 `BATS` 只用于 ETF 目录。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、
@@ -235,3 +239,7 @@ NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `privat
 - `Portfolio` 只把 `confirmed` corporate action 作为份额账本事件；`adjusted_close` 仅用于收益、风险和图表
 
 但两个 app 的派生结果都必须在各自 app 内部完成。
+
+### Native crypto research identity
+
+`crypto` 是现货资产类型，与股票、ETF 和指数分别登记。当前维护 BTC/USD（`btcusd`，`ticker:BTCUSD`，`provider_symbol:fmp:BTCUSD`），不设证券交易所MIC，币种USD，`market_calendar=24/7`。现货价格使用已结束的UTC日线 close，收益为价格收益，不构造分红复权序列。Watchlist支持研究与价格工作面；Portfolio交易与衍生品underlying范围不因Registry新增类型而扩展。

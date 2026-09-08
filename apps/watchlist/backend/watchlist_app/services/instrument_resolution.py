@@ -15,6 +15,7 @@ LOCAL_DETAIL_INSTRUMENT_TYPES = {
     "etf",
     "equity",
     "index",
+    "crypto",
 }
 EQUITY_MARKET_DEFAULT_TAXONOMY_NODES = {
     "XNAS": "equity-us-unclassified",
@@ -60,13 +61,20 @@ def sync_local_instrument(
         shared_instrument=shared_record,
         detail_view_type=detail_view_type,
     )
+    node_id = None
+    source_record_id = None
     if instrument_type == "equity":
         exchange_code = str(shared_record.get("exchange_code") or "").strip().upper()
         node_id = EQUITY_MARKET_DEFAULT_TAXONOMY_NODES.get(exchange_code)
         if node_id is None:
             raise ValueError(f"Unsupported Registry equity exchange_code: {exchange_code or 'missing'}")
+        source_record_id = f"registry_market:{exchange_code}"
+    elif instrument_type == "crypto":
+        node_id = "crypto-native"
+        source_record_id = "registry_type:crypto"
+    if node_id is not None:
         if taxonomy_repository.get_node(session, node_id=node_id) is None:
-            raise ValueError(f"Watchlist equity taxonomy node is missing: {node_id}")
+            raise ValueError(f"Watchlist {instrument_type} taxonomy node is missing: {node_id}")
         if taxonomy_repository.get_assignment(
             session,
             instrument_id=local_instrument.instrument_id,
@@ -75,7 +83,7 @@ def sync_local_instrument(
                 session,
                 instrument_id=local_instrument.instrument_id,
                 node_id=node_id,
-                source_record_id=f"registry_market:{exchange_code}",
+                source_record_id=source_record_id,
             )
     return local_instrument
 

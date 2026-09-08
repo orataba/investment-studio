@@ -43,9 +43,10 @@
 - 选项、modal、表格视图和字段选择器默认只显示名称；不展示解释性小字、备注提示或长 tooltip，除非缺少它会导致错误操作。
 - 错误、校验失败、不可用原因可以保留，但必须是可执行或可诊断的信息。
 - 不用页面内说明文字解释功能、键盘操作、内部计算流程或实现细节；这些内容放在文档或测试里。
-- 无待办的提醒不展示横幅或空面板；需要手动检查的入口可安静地保留在相关标题右侧，有事项或读取失败时用图标及计数标记，点击后再展示处理内容。成功反馈使用不占文档流的短暂通知。
-- 非阻断的数据质量、口径、覆盖范围说明邻近标题或指标，以紧凑图标提供悬浮说明及可点击详情；展开内容不挤动图表、表格和筛选区。真实读取错误、无法计算及会计事实冲突保持可见，不能把未知伪装成无事项。
-- Watchlist、Portfolio、Briefing 的说明图标复用共享 `InfoHint`；Regime 使用相同的原生交互和样式。弹层支持点击、Escape 和外点关闭，成功通知统一悬浮，滚动区域预留滚动条空间。
+- 无待办的提醒不展示横幅或空面板；状态说明邻近标题，实际操作使用明确的文字入口。交易的分红复核在当前页展开，说明图标本身不打开复核窗口或触发操作。成功反馈使用不占文档流的短暂通知。
+- 非阻断的数据质量、口径、覆盖范围说明邻近标题或指标，统一用 16px 正圆叹号 `!`；普通说明与警告只以颜色区分，不混用字母、问号或闹钟。悬停、键盘聚焦与点击显示同一份锚定说明，不跳转、不打开模态窗口、不挤动图表、表格和筛选区。真实读取错误、无法计算及会计事实冲突保持可见，不能把未知伪装成无事项。
+- Watchlist、Portfolio、Briefing 的说明图标复用共享 `InfoHint`；Regime 使用相同的原生交互和样式。点击可固定或关闭说明，Escape 和外点关闭，鼠标可移入说明阅读长内容；不叠加浏览器原生 title 提示。成功通知统一悬浮，滚动区域预留滚动条空间。
+- Briefing 面包屑固定为 `Home / Market Briefing`（中文为 `首页 / 市场简报`）；日报与周报是页内切换，不作为额外导航层级。
 
 ## Portfolio Metric Presentation
 
@@ -67,7 +68,7 @@
 ## Tabs And Content Rhythm
 
 - Portfolio workspace tabs 和 Watchlist fund detail tabs 可以有不同 header，但 tabs 以下的间距、section title、图表和 facts 结构应保持同一语言。
-- tabs 到首个内容块之间不留大空白；首个内容块直接从细线、section title 或 chart/table 开始。
+- Portfolio tabs 下方由 `PortfolioWorkspaceLayout` 统一承载内容边界：页签下留 12px，绘制 2px 顶部分隔线，线下留 14px 再开始首组标题、筛选或图表；子页不重复绘制同一条顶线。后续独立 section 保留自身细分层级，避免筛选按钮贴线或切换页签时顶部间距变化。
 - Portfolio 是更重的独立 app，因此顶部 portfolio selector / portfolio headline 可以比 fund detail 更强，但不要把这种层级扩散到 tabs 以下。
 - Portfolio Holdings 的 instrument detail 固定分成 `Overview / Transactions / Position Lots`：Overview 承载行情与当前仓位摘要，Transactions 承载已确认交易事实，Position Lots 承载开放成本批次；matched exits 属于所选 lot 的上下文，不再作为与 lot 平级的顶层 tab。
 - Portfolio Accounts 使用左侧账户目录和右侧单账户工作区。账户身份与余额摘要常驻；`Overview / Positions / Transactions / Ledger` 分别承载配置、当前仓位、源交易和派生分录，不能把四类内容纵向堆叠成一个长页面。页签写入 URL，刷新和深链必须保持当前上下文。

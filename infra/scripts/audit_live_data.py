@@ -31,10 +31,10 @@ from investment_studio_instrument_core import (  # noqa: E402
 
 FINAL_FLAT_TABLE_HEADS = {
     "identity": "20260908_0001",
-    "instrument_data": "20260907_0034",
+    "instrument_data": "20260908_0035",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260908_0062",
-    "watchlist": "20260908_0056",
+    "portfolio": "20260908_0063",
+    "watchlist": "20260908_0057",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
@@ -248,10 +248,12 @@ SCHEMA_IDENTIFIER_RENAMES = (
 AUDIT_CHECK_NAMES = (
     "schema_identifier_contract",
     "instrument_type_listed_security_identity_contract",
+    "instrument_crypto_spot_contract",
     "fmp_equity_catalog_contract",
     "fmp_etf_catalog_contract",
     "watchlist_system_contract",
     "watchlist_taxonomy_type_contract",
+    "watchlist_crypto_scope_contract",
     "watchlist_field_identity_contract",
     "watchlist_group_by_contract",
     "watchlist_saved_view_field_contract",
@@ -609,6 +611,197 @@ def _count_check(
     )
 
 
+
+def _instrument_crypto_spot_contract_query() -> str:
+    return """
+        WITH crypto AS (
+            SELECT * FROM instrument_data.instrument WHERE instrument_type = 'crypto'
+        ), violations AS (
+            SELECT instrument_id FROM crypto i
+            WHERE i.currency <> 'USD' OR i.exchange_code IS NOT NULL
+               OR coalesce(i.source_settings_json ->> 'source_mode', '') <> 'api'
+               OR coalesce(i.source_settings_json ->> 'source_api_profile', '') <> 'fmp'
+               OR coalesce(i.source_settings_json ->> 'market_calendar', '') <> '24/7'
+               OR coalesce(i.source_settings_json ->> 'expected_frequency', '') <> 'daily'
+               OR coalesce(i.source_settings_json ->> 'return_semantics', '') <> 'price_return'
+               OR NOT EXISTS (
+                   SELECT 1 FROM instrument_data.instrument_identifier k
+                   WHERE k.instrument_id = i.instrument_id
+                     AND k.identifier_type = 'provider_symbol' AND k.identifier_value = 'fmp:BTCUSD'
+               )
+               OR EXISTS (
+                   SELECT 1 FROM instrument_data.instrument_identifier k
+                   WHERE k.instrument_id = i.instrument_id AND (
+                       k.identifier_type = 'exchange_ticker'
+                       OR (k.identifier_type = 'provider_symbol' AND k.identifier_value <> 'fmp:BTCUSD')
+                   )
+               )
+            UNION ALL
+            SELECT i.instrument_id FROM instrument_data.instrument i
+            JOIN instrument_data.instrument_identifier k USING (instrument_id)
+            WHERE k.identifier_type = 'provider_symbol' AND k.identifier_value = 'fmp:BTCUSD'
+              AND i.instrument_type <> 'crypto'
+            UNION ALL
+            SELECT i.instrument_id FROM crypto i
+            CROSS JOIN (VALUES ('trading'), ('valuation'), ('total_return'), ('chart'), ('reference')) roles(role_name)
+            WHERE NOT coalesce((i.quote_selection_policy_json -> roles.role_name)::jsonb
+                               <@ '["close", "last"]'::jsonb, false)
+            UNION ALL
+            SELECT md.instrument_id FROM instrument_data.instrument_market_data md
+            JOIN crypto i USING (instrument_id)
+            WHERE md.metric_family <> 'price' OR md.quote_basis <> 'close' OR md.currency <> 'USD'
+               OR md.provider IS DISTINCT FROM 'fmp:market_series_daily:BTCUSD'
+               OR md.as_of_date >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE)
+            UNION ALL
+            SELECT bar.instrument_id FROM instrument_data.instrument_price_bar bar
+            JOIN crypto i USING (instrument_id)
+            WHERE bar.provider IS DISTINCT FROM 'fmp:market_series_daily:BTCUSD'
+               OR bar.as_of_date >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE)
+               OR bar.adjustment_factor IS NOT NULL OR bar.volume IS NOT NULL
+               OR bar.volume_unit IS NOT NULL OR bar.turnover IS NOT NULL OR bar.turnover_unit IS NOT NULL
+        ) SELECT count(*) FROM violations
+    """
+
+
+def _watchlist_crypto_scope_contract_query() -> str:
+    return """
+        WITH scopes AS (
+            SELECT instrument_scope_json::jsonb AS scope FROM watchlist.field_registry
+            UNION ALL
+            SELECT instrument_scope_json::jsonb FROM watchlist.instrument_attribute_definition
+        ), invalid_scope AS (
+            SELECT scope FROM scopes
+            WHERE (scope @> '["public_fund", "private_fund", "etf", "equity", "index"]'::jsonb)
+                  <> (scope @> '["crypto"]'::jsonb)
+        ), missing_required_scope AS (
+            SELECT required.field_key FROM (VALUES ('attr.coverage_status'), ('attr.manual_rating')) required(field_key)
+            LEFT JOIN watchlist.field_registry f USING (field_key)
+            WHERE f.field_key IS NULL OR NOT coalesce(f.instrument_scope_json::jsonb @> '["crypto"]'::jsonb, false)
+            UNION ALL
+            SELECT 'coverage_status' WHERE NOT EXISTS (
+                SELECT 1 FROM watchlist.instrument_attribute_definition
+                WHERE attribute_key = 'coverage_status' AND instrument_scope_json::jsonb @> '["crypto"]'::jsonb
+            )
+        ), taxonomy_errors AS (
+            SELECT 'crypto-native' WHERE NOT EXISTS (
+                SELECT 1 FROM watchlist.instrument_taxonomy_node
+                WHERE node_id = 'crypto-native' AND instrument_type = 'crypto'
+                  AND taxonomy_code = 'instrument_taxonomy' AND parent_node_id IS NULL
+                  AND is_leaf IS TRUE AND level_index = 1
+                  AND path_node_ids_json::jsonb = '["crypto-native"]'::jsonb
+            )
+            UNION ALL
+            SELECT detail.instrument_id FROM watchlist.instrument_detail detail
+            LEFT JOIN watchlist.instrument_taxonomy_assignment assignment
+              ON assignment.instrument_id = detail.instrument_id AND assignment.taxonomy_code = 'instrument_taxonomy'
+            WHERE detail.instrument_type = 'crypto' AND assignment.node_id IS DISTINCT FROM 'crypto-native'
+        ) SELECT (SELECT count(*) FROM invalid_scope)
+               + (SELECT count(*) FROM missing_required_scope)
+               + (SELECT count(*) FROM taxonomy_errors)
+    """
+
+
+def _watchlist_system_contract_query() -> str:
+    return """
+                        WITH specs(
+                            watchlist_id,
+                            watchlist_name,
+                            instrument_type,
+                            sort_order
+                        ) AS (
+                            VALUES
+                                ('all-instruments', 'All Instruments', NULL, 0),
+                                ('index', 'Index', 'index', 1),
+                                ('all-public-funds', 'All 公募', 'public_fund', 2),
+                                ('all-private-funds', 'All 私募', 'private_fund', 3)
+                        ), metadata_errors AS (
+                            SELECT specs.watchlist_id
+                            FROM specs
+                            LEFT JOIN watchlist.watchlist record
+                              ON record.watchlist_id = specs.watchlist_id
+                            WHERE record.watchlist_id IS NULL
+                               OR record.name <> specs.watchlist_name
+                               OR record.owner_type <> 'system'
+                               OR record.owner_id <> 'watchlist'
+                               OR record.is_default IS NOT TRUE
+                               OR record.is_shared IS NOT TRUE
+                               OR record.sort_order <> specs.sort_order
+                        ), unexpected_system_lists AS (
+                            SELECT record.watchlist_id
+                            FROM watchlist.watchlist record
+                            WHERE (
+                                    record.owner_type = 'system'
+                                    AND record.owner_id = 'watchlist'
+                                  )
+                              AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM specs
+                                    WHERE specs.watchlist_id = record.watchlist_id
+                              )
+                        ), invalid_memberships AS (
+                            SELECT item.watchlist_id, item.instrument_id
+                            FROM watchlist.watchlist_item item
+                            JOIN specs ON specs.watchlist_id = item.watchlist_id
+                            LEFT JOIN instrument_data.instrument instrument
+                              ON instrument.instrument_id = item.instrument_id
+                            WHERE instrument.instrument_id IS NULL
+                               OR instrument.instrument_type NOT IN (
+                                    'public_fund', 'private_fund', 'etf', 'equity', 'index', 'crypto'
+                                  )
+                               OR (specs.instrument_type IS NOT NULL
+                                   AND instrument.instrument_type <> specs.instrument_type)
+                               OR coalesce(
+                                    instrument.lifecycle_state_json ->> 'status',
+                                    'active'
+                                  ) <> 'active'
+                        ), invalid_rows AS (
+                            SELECT row.watchlist_id, row.instrument_id
+                            FROM watchlist.watchlist_row_read_model row
+                            JOIN specs ON specs.watchlist_id = row.watchlist_id
+                            LEFT JOIN watchlist.watchlist_item item
+                              ON item.watchlist_id = row.watchlist_id
+                             AND item.instrument_id = row.instrument_id
+                            WHERE item.instrument_id IS NULL
+                               OR row.instrument_type NOT IN (
+                                    'public_fund', 'private_fund', 'etf', 'equity', 'index', 'crypto'
+                                  )
+                               OR (specs.instrument_type IS NOT NULL
+                                   AND row.instrument_type <> specs.instrument_type)
+                               OR row.instrument_type IS DISTINCT FROM (
+                                    SELECT instrument.instrument_type FROM instrument_data.instrument instrument
+                                    WHERE instrument.instrument_id = row.instrument_id
+                                  )
+                        ), missing_memberships AS (
+                            SELECT specs.watchlist_id, instrument.instrument_id
+                            FROM specs CROSS JOIN instrument_data.instrument instrument
+                            LEFT JOIN watchlist.watchlist_item item
+                              ON item.watchlist_id = specs.watchlist_id
+                             AND item.instrument_id = instrument.instrument_id
+                            WHERE instrument.instrument_type IN (
+                                    'public_fund', 'private_fund', 'etf', 'equity', 'index', 'crypto'
+                                  )
+                              AND (specs.instrument_type IS NULL
+                                   OR instrument.instrument_type = specs.instrument_type)
+                              AND coalesce(instrument.lifecycle_state_json ->> 'status', 'active') = 'active'
+                              AND item.instrument_id IS NULL
+                        ), missing_rows AS (
+                            SELECT item.watchlist_id, item.instrument_id
+                            FROM watchlist.watchlist_item item
+                            JOIN specs ON specs.watchlist_id = item.watchlist_id
+                            LEFT JOIN watchlist.watchlist_row_read_model row
+                              ON row.watchlist_id = item.watchlist_id
+                             AND row.instrument_id = item.instrument_id
+                            WHERE row.instrument_id IS NULL
+                        )
+                        SELECT
+                            (SELECT count(*) FROM metadata_errors)
+                            + (SELECT count(*) FROM unexpected_system_lists)
+                            + (SELECT count(*) FROM invalid_memberships)
+                            + (SELECT count(*) FROM invalid_rows)
+                            + (SELECT count(*) FROM missing_memberships)
+                            + (SELECT count(*) FROM missing_rows)
+    """
+
 def _schema_identifier_contract_query() -> str:
     expected_rows = ",\n".join(
         "(" + ", ".join(_sql_text_literal(value) for value in row) + ")"
@@ -806,7 +999,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         FROM instrument_data.instrument instrument
                         WHERE instrument.instrument_type NOT IN (
                                 'public_fund', 'private_fund', 'etf', 'index',
-                                'equity', 'cash', 'fx', 'other'
+                                'equity', 'crypto', 'cash', 'fx', 'other'
                               )
                            OR (
                                 instrument.instrument_type = 'equity'
@@ -901,6 +1094,30 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "contract; stocks and ETFs must carry canonical listing identity, "
                         "use their configured FMP or Tushare source contract, and "
                         "non-listed instruments must not carry exchange identity."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="instrument_crypto_spot_contract",
+                    query=_instrument_crypto_spot_contract_query(),
+                    detail=(
+                        "Maintained crypto must be BTC/USD spot on the daily 24/7 calendar, "
+                        "with price-return quote roles and complete UTC closes projected from "
+                        "the shared BTCUSD series; no listed identity, split adjustment, or "
+                        "undocumented volume units may be introduced."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_crypto_scope_contract",
+                    query=_watchlist_crypto_scope_contract_query(),
+                    detail=(
+                        "Universal Watchlist fields and investment status must cover crypto "
+                        "without broadening asset-specific fields; crypto taxonomy must stay native."
                     ),
                 )
             )
@@ -1007,82 +1224,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="watchlist_system_contract",
-                    query="""
-                        WITH specs(
-                            watchlist_id,
-                            watchlist_name,
-                            instrument_type,
-                            sort_order
-                        ) AS (
-                            VALUES
-                                ('index', 'Index', 'index', 0),
-                                ('all-public-funds', 'All 公募', 'public_fund', 1),
-                                ('all-private-funds', 'All 私募', 'private_fund', 2)
-                        ), metadata_errors AS (
-                            SELECT specs.watchlist_id
-                            FROM specs
-                            LEFT JOIN watchlist.watchlist record
-                              ON record.watchlist_id = specs.watchlist_id
-                            WHERE record.watchlist_id IS NULL
-                               OR record.name <> specs.watchlist_name
-                               OR record.owner_type <> 'system'
-                               OR record.owner_id <> 'watchlist'
-                               OR record.is_default IS NOT TRUE
-                               OR record.is_shared IS NOT TRUE
-                               OR record.sort_order <> specs.sort_order
-                        ), unexpected_system_lists AS (
-                            SELECT record.watchlist_id
-                            FROM watchlist.watchlist record
-                            WHERE (
-                                    record.owner_type = 'system'
-                                    AND record.owner_id = 'watchlist'
-                                  )
-                              AND NOT EXISTS (
-                                    SELECT 1
-                                    FROM specs
-                                    WHERE specs.watchlist_id = record.watchlist_id
-                              )
-                        ), invalid_memberships AS (
-                            SELECT item.watchlist_id, item.instrument_id
-                            FROM watchlist.watchlist_item item
-                            JOIN specs ON specs.watchlist_id = item.watchlist_id
-                            LEFT JOIN instrument_data.instrument instrument
-                              ON instrument.instrument_id = item.instrument_id
-                            WHERE instrument.instrument_id IS NULL
-                               OR instrument.instrument_type <> specs.instrument_type
-                               OR coalesce(
-                                    instrument.lifecycle_state_json ->> 'status',
-                                    'active'
-                                  ) <> 'active'
-                        ), invalid_rows AS (
-                            SELECT row.watchlist_id, row.instrument_id
-                            FROM watchlist.watchlist_row_read_model row
-                            JOIN specs ON specs.watchlist_id = row.watchlist_id
-                            LEFT JOIN watchlist.watchlist_item item
-                              ON item.watchlist_id = row.watchlist_id
-                             AND item.instrument_id = row.instrument_id
-                            WHERE item.instrument_id IS NULL
-                               OR row.instrument_type <> specs.instrument_type
-                        ), missing_rows AS (
-                            SELECT item.watchlist_id, item.instrument_id
-                            FROM watchlist.watchlist_item item
-                            JOIN specs ON specs.watchlist_id = item.watchlist_id
-                            LEFT JOIN watchlist.watchlist_row_read_model row
-                              ON row.watchlist_id = item.watchlist_id
-                             AND row.instrument_id = item.instrument_id
-                            WHERE row.instrument_id IS NULL
-                        )
-                        SELECT
-                            (SELECT count(*) FROM metadata_errors)
-                            + (SELECT count(*) FROM unexpected_system_lists)
-                            + (SELECT count(*) FROM invalid_memberships)
-                            + (SELECT count(*) FROM invalid_rows)
-                            + (SELECT count(*) FROM missing_rows)
-                    """,
+                    query=_watchlist_system_contract_query(),
                     detail=(
-                        "The only system Watchlists are Index, All 公募, and All 私募; "
-                        "their existing memberships and read models must contain active "
-                        "instruments of the matching type."
+                        "The four system Watchlists must retain their canonical metadata; "
+                        "All Instruments must cover every active registered supported instrument, "
+                        "and each typed list must cover its active type, with matching read models."
                     ),
                 )
             )
@@ -1095,7 +1241,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT node.node_id
                             FROM watchlist.instrument_taxonomy_node node
                             WHERE node.instrument_type NOT IN (
-                                    'public_fund', 'private_fund', 'etf', 'equity', 'index'
+                                    'public_fund', 'private_fund', 'etf', 'equity', 'index', 'crypto'
                                   )
                                OR node.node_id IN (
                                     'fund-public', 'fund-private', 'equity', 'index'
@@ -3132,7 +3278,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         SELECT value::double precision AS expected_price
                         FROM instrument_data.instrument_market_data quote
                         WHERE quote.instrument_id = holdings.instrument_id
+                          AND quote.metric_family = holdings.holding_json ->> 'quote_metric_family'
                           AND quote.quote_basis = holdings.quote_basis
+                          AND quote.currency = holdings.currency
                           AND quote.as_of_date <= holdings.as_of_date
                           AND quote.status = 'complete'
                         ORDER BY quote.as_of_date DESC
@@ -3470,7 +3618,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                          AND close_quote.quote_basis = 'close'
                          AND close_quote.as_of_date = bar.as_of_date
                          AND close_quote.currency = bar.currency
-                        WHERE instrument.instrument_type NOT IN ('etf', 'equity', 'index')
+                        WHERE instrument.instrument_type NOT IN ('etf', 'equity', 'index', 'crypto')
                            OR bar.currency <> instrument.currency
                            OR close_quote.instrument_market_data_id IS NULL
                            OR abs(
@@ -3478,7 +3626,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                            ) > 0.000000000001
                     """,
                     detail=(
-                        "Every raw OHLCV bar must belong to a listed instrument, use its "
+                        "Every raw OHLCV bar must belong to a listed or native crypto instrument, use its "
                         "canonical currency, and reconcile to the same-date raw close."
                     ),
                 )

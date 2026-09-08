@@ -116,7 +116,7 @@ def _generate_watchlist_id(session: Session, name: str) -> str:
     base = _slugify_watchlist_name(name)
     candidate = base
     suffix = 2
-    while watchlist_repository.get(session, candidate) is not None:
+    while candidate in SYSTEM_WATCHLIST_IDS or watchlist_repository.get(session, candidate) is not None:
         candidate = f"{base}-{suffix}"
         suffix += 1
     return candidate
@@ -537,13 +537,9 @@ def _sync_system_watchlist(
     spec: SystemWatchlistSpec,
     existing_record: Watchlist | None = None,
 ) -> Watchlist:
-    record = (
-        existing_record
-        if existing_record is not None
-        else watchlist_repository.get(session, spec.watchlist_id)
+    record = watchlist_repository.ensure_system_watchlist(
+        session, spec, existing_record=existing_record,
     )
-    if record is None:
-        record = watchlist_repository.ensure_system_watchlist(session, spec)
 
     try:
         shared_instruments = list_shared_instruments(

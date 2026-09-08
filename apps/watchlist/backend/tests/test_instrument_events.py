@@ -181,14 +181,15 @@ def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_in
         session.commit()
     result = client.get("/api/sector-research", params={"instrument_id": "sxv264"}).json()
     assert result["events"] == [] and result["sectors"][0]["latest_review"]["run_id"] == chat_id
-    assert result["research_enabled"] is False
+    assert result["research_enabled"] is True
 
 
 @pytest.mark.parametrize("iid", ["savf63", "sxv264"])
-def test_fund_run_is_paused_while_saved_research_and_dossier_remain_readable(client, monkeypatch, iid):
+def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client, monkeypatch, iid):
     seed_instruments(client, monkeypatch)
     monkeypatch.setattr(routes, "harness_available", lambda: True)
-    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token=None: pytest.fail("Paused fund must not launch research"))
+    started = []
+    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token=None: started.append(run_id))
     with get_session_factory()() as session:
         topic_id, run_id = f"instrument-events:{iid}", f"saved-{iid}"
         session.add(ResearchTopic(topic_id=topic_id, title="已有研究", instrument_ids=[iid]))
@@ -198,10 +199,11 @@ def test_fund_run_is_paused_while_saved_research_and_dossier_remain_readable(cli
                 "reviews": {iid: {"status": "completed", "summary": "以前保存的研究。", "research": {
                     "fundamental_view": "已有研究判断。", "sources": []}}}}))
         session.commit()
-    blocked = client.post("/api/sector-research/runs", json={"instrument_ids": [iid]})
-    assert blocked.status_code == 422 and "暂缓" in blocked.text
+    requested = client.post("/api/sector-research/runs", json={"instrument_ids": [iid]})
+    assert requested.status_code == 202, requested.text
+    assert started == [requested.json()["run_id"]]
     overview = client.get("/api/sector-research", params={"instrument_id": iid}).json()
-    assert overview["available"] and overview["research_enabled"] is False
+    assert overview["available"] and overview["research_enabled"] is True
     assert overview["sectors"][0]["last_completed_review"]["run_id"] == run_id
     dossier = client.get(f"/api/research/instruments/{iid}/dossier")
     assert dossier.status_code == 200, dossier.text

@@ -190,6 +190,20 @@ def upsert_price_bars(
     )
 
 
+def upsert_price_history(
+    *,
+    instrument_id: str,
+    market_data_rows: list[dict[str, object]],
+    price_bar_rows: list[dict[str, object]],
+) -> tuple[int, int] | None:
+    return shared_store.upsert_price_history(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        market_data_rows=market_data_rows,
+        price_bar_rows=price_bar_rows,
+    )
+
+
 def get_price_bars(
     *,
     instrument_id: str,

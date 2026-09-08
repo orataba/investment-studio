@@ -54,7 +54,7 @@ export type ResearchNotebook = {
 export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[] }
 export type ResearchMandate = ResearchMandateInput & ResearchRevision & {
   instrument_id: string; role: 'research_method'; entry_id: string | null; updated_at: string | null; versions?: ResearchMandate[]
-  readonly user_focus?: string[]; readonly author?: { origin: 'user' | 'research' | 'initial' } | null
+  readonly user_focus?: string[]; readonly author?: { origin: 'user' | 'research' | 'initial'; display_name?: string } | null
 }
 
 export type ResearchCatalyst = {

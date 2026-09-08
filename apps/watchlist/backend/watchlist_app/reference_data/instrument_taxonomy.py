@@ -229,6 +229,7 @@ def _typed_roots(
 
 
 INSTRUMENT_TAXONOMY_TREE = [
+    {"node_id": "crypto-native", "label": "原生加密资产", "instrument_type": "crypto"},
     *_typed_roots(_PUBLIC_FUND_TAXONOMY, "public_fund"),
     *_typed_roots(_PRIVATE_FUND_TAXONOMY, "private_fund"),
     {

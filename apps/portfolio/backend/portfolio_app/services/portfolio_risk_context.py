@@ -61,7 +61,7 @@ def _groups(workspace, catalog):
             key, name = (node["taxonomy_node_id"], node["node_name"]) if node else (f"unassigned:{taxonomy_id}", "未分类")
         group = groups.setdefault(key, {"group_id": key, "name": name, "instrument_ids": [], "holding_ids": [],
             "market_value_base": 0.0, "weight": None, "risk_share": 0.0, "contribution_to_variance": 0.0,
-            "risk_budget_share": 0.0})
+            "risk_budget_share": 0.0, "_has_risk_member": False, "_has_risk_budget_member": False})
         iid, hid = core.get("instrument_id"), _holding_id(row)
         if iid and iid not in group["instrument_ids"]:
             group["instrument_ids"].append(iid)
@@ -75,6 +75,8 @@ def _groups(workspace, catalog):
         elif group["market_value_base"] is not None:
             group["market_value_base"] += value
         if row.get("risk_eligible"):
+            group["_has_risk_member"] = True
+            group["_has_risk_budget_member"] |= bool(row.get("risk_budget_eligible"))
             share, contribution = _number(row.get("forward_risk_share")), _number(row.get("forward_contribution_to_variance"))
             if row.get("forward_risk_status") != "ok" or share is None or contribution is None:
                 limitations.append(f"{core.get('instrument_name') or hid}的生产风险贡献不可用。")
@@ -88,10 +90,13 @@ def _groups(workspace, catalog):
     budget_total = sum(group["risk_budget_share"] for group in groups.values())
     for group in groups.values():
         group["weight"] = group["market_value_base"] / nav if group["market_value_base"] is not None and nav is not None and nav > 0 else None
-        if not risk_ready:
+        has_risk_member = group.pop("_has_risk_member")
+        has_risk_budget_member = group.pop("_has_risk_budget_member")
+        group["risk_status"] = "outside_model" if not has_risk_member else "modeled" if risk_ready else "unavailable"
+        if not risk_ready or not has_risk_member:
             group["risk_share"] = group["contribution_to_variance"] = group["risk_budget_share"] = None
         else:
-            group["risk_budget_share"] = group["risk_budget_share"] / budget_total if budget_total else None
+            group["risk_budget_share"] = group["risk_budget_share"] / budget_total if has_risk_budget_member and budget_total else None
     return {"status": "ok" if risk_ready else "limited", "weights_available": weights_available, "taxonomy_id": taxonomy_id,
         "rows": sorted(groups.values(), key=lambda row: abs(row["risk_share"] or 0), reverse=True), "limitations": limitations}
 
@@ -188,6 +193,8 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
                     row = current or old
                     current_share = current["risk_share"] if current else 0.0
                     previous_share = old["risk_share"] if old else 0.0
+                    if current_share is None or previous_share is None:
+                        continue
                     comparison["risk_group_changes"].append({"group_id": group_id, "name": row["name"],
                         "current": current_share, "previous": previous_share,
                         "change_pp": (current_share - previous_share) * 100,
@@ -248,6 +255,17 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
     workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
     catalog = get_portfolio_taxonomies(portfolio_id, include_market_profile=False).model_dump(mode="json")
     with get_session_factory()() as session:
+        from portfolio_app.services.analytics_scope import analytics_taxonomy_selection_as_of_in_session, taxonomy_configuration_as_of_in_session
+        holding_date = date.fromisoformat(workspace["as_of_date"])
+        selection = analytics_taxonomy_selection_as_of_in_session(session, portfolio_id=portfolio_id, as_of_date=holding_date)
+        dated = {key: [] for key in ("taxonomies", "taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines")}
+        for taxonomy in catalog.get("taxonomies", []):
+            configuration = taxonomy_configuration_as_of_in_session(session, portfolio_id, taxonomy["taxonomy_id"], holding_date)
+            dated["taxonomies"].append(configuration.get("taxonomy", taxonomy) if configuration else taxonomy)
+            if configuration:
+                for key in ("taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines"):
+                    dated[key].extend(configuration.get(key, []))
+        catalog = {**catalog, **dated, "default_planning_taxonomy_id": selection.taxonomy_id if selection else None}
         previous_date = session.scalar(select(PortfolioDailySnapshotModel.as_of_date).where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
             PortfolioDailySnapshotModel.as_of_date < date.fromisoformat(workspace["as_of_date"]))
@@ -258,4 +276,37 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
             previous = holdings_workspace(portfolio_id=portfolio_id, as_of_date=previous_date, include_details=True)
         except (HTTPException, PortfolioCalculationUnavailable, ValueError) as exc:
             error = f"历史持仓风险重算暂不可用：{getattr(exc, 'detail', str(exc))}"
-    return project_portfolio_risk(workspace, catalog, previous, previous_error=error)
+    result = project_portfolio_risk(workspace, catalog, previous, previous_error=error)
+    from portfolio_app.services.concentration import ConcentrationUnavailable, read_portfolio_concentration
+    from portfolio_app.services.tail_risk import read_portfolio_tail_risk
+    try:
+        concentration = read_portfolio_concentration(portfolio_id, workspace=workspace)
+    except ConcentrationUnavailable as unavailable:
+        # A missing account-level slice is a known coverage state. Preserve the
+        # other valid risk modules, while giving DSH no invented concentration.
+        source_id = f"portfolio-concentration:{portfolio_id}:{workspace['as_of_date']}:unavailable"
+        concentration = {"portfolio_id": portfolio_id, "as_of_date": workspace["as_of_date"], "status": "unavailable",
+            "source_id": source_id, "base_currency": workspace["base_currency"], "nav": workspace.get("totals", {}).get("nav"),
+            "weight_basis": "portfolio_nav", "scopes": [], "coverage": [unavailable.detail],
+            "sources": [{"source_id": source_id, "source_type": "portfolio_concentration", "portfolio_id": portfolio_id,
+                "title": "Concentration unavailable: account-level holdings missing", "end_date": workspace["as_of_date"],
+                "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"}]}
+    tail_risk = read_portfolio_tail_risk(portfolio_id, workspace=workspace)
+    result["concentration"] = concentration
+    result["tail_risk"] = tail_risk
+    result["sources"].extend(concentration["sources"])
+    result["sources"].extend(tail_risk.get("sources", []))
+    # A browser grouping is not a monitoring preference. Read all configured
+    # target classifications, keeping the same production risk observations.
+    result["targets_by_taxonomy"] = []
+    for taxonomy in catalog.get("taxonomies", []):
+        if taxonomy.get("status", "active") != "active":
+            continue
+        selected_catalog = {**catalog, "default_planning_taxonomy_id": taxonomy["taxonomy_id"]}
+        target_source_id = f"portfolio-risk:{portfolio_id}:targets:{taxonomy['taxonomy_id']}"
+        result["targets_by_taxonomy"].append({"taxonomy_id": taxonomy["taxonomy_id"], "name": taxonomy["name"], "source_id": target_source_id,
+            **_targets(selected_catalog, _groups(workspace, selected_catalog))})
+        result["sources"].append({"source_id": target_source_id, "source_type": "portfolio_taxonomy_targets", "portfolio_id": portfolio_id,
+            "taxonomy_id": taxonomy["taxonomy_id"], "title": f"{taxonomy['name']} targets", "start_date": None,
+            "end_date": workspace["as_of_date"], "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"})
+    return result

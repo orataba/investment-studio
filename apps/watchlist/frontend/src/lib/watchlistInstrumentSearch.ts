@@ -9,6 +9,7 @@ const REGISTRY_SEARCH_TYPES = [
   'etf',
   'equity',
   'index',
+  'crypto',
 ] as const
 
 export type WatchlistInstrumentSearchResult = {

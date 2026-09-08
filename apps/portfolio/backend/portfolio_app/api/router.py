@@ -3,6 +3,7 @@ from portfolio_app.api.authorization import portfolio_request_context
 
 from portfolio_app.api.routes import (
     accounts,
+    concentration,
     fx_rates,
     health,
     instrument_events,
@@ -15,6 +16,7 @@ from portfolio_app.api.routes import (
     positions,
     research_assistant,
     table_views,
+    tail_risk,
     taxonomies,
     transaction_captures,
     transactions,
@@ -27,6 +29,8 @@ protected = {"dependencies": [Depends(portfolio_request_context)]}
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(portfolios.router, prefix="/portfolios", tags=["portfolios"], **protected)
 api_router.include_router(portfolio_risk_context.router, prefix="/portfolios", tags=["portfolio-risk-context"], **protected)
+api_router.include_router(concentration.router, prefix="/portfolios", tags=["concentration"], **protected)
+api_router.include_router(tail_risk.router, prefix="/portfolios", tags=["tail-risk"], **protected)
 api_router.include_router(workspace.router, prefix="/workspace", tags=["workspace"], **protected)
 api_router.include_router(accounts.router, prefix="/portfolios", tags=["accounts"], **protected)
 api_router.include_router(

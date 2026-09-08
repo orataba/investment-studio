@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_public_arrivals_project_after_success_only_and_keep_external_api_targets(tmp_path):
+def test_public_arrivals_project_successful_stages_and_keep_external_api_targets(tmp_path):
     root = tmp_path / 'repo'
     for path in ('infra/scripts', 'infra/launchd', 'shared-data/scripts', 'shared-data/studio_data/services', 'shared-data/market/studio_market/numeric'):
         (root / path).mkdir(parents=True)
@@ -46,6 +46,7 @@ def list_instruments(*, include_inactive):
     return [{'instrument_id': iid, 'instrument_type': kind, 'source_settings': {'source_api_profile': profile},
              'identifiers': [{'identifier_type': 'provider_symbol', 'identifier_value': 'fmp:' + symbol}]}
             for iid,kind,profile,symbol in [('us','equity','fmp','AAPL'),('hk','etf','fmp','2800.HK'),
+                                          ('btcusd','crypto','fmp','BTCUSD'),
                                           ('private','private_fund','fmp','PRIVATE'),('manual','equity','','MANUAL')]]
 ''')
     (root / 'shared-data/scripts/refresh_market_data_scheduled.py').write_text('''
@@ -80,12 +81,20 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         (['registered-prices','--market','eu'], ready_prices, 0, [], []),
         (['weekly'], {'status':'ready','stages':[]}, 0, [], []),
         (['publish'], {'status':'ready','stages':[]}, 0, [], []),
-        (['registered-prices','--market','us'], {**ready_prices,'status':'failed'}, 0, [], []),
-        (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[]}}]}, 0, ['market','reference'], [['us','hk'],['us','hk']]),
-        (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[{'batches':[{'status':'already_imported'}]}]}}]}, 0, ['market','reference'], [['us','hk'],['us','hk']]),
-        (['sync'], sync_new, 0, ['market','reference'], [['us','hk'],['us','hk']]),
+        (['registered-prices','--market','us'], {**ready_prices,'status':'failed'}, 0, ['market'], [['us']]),
+        (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[]}}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
+        (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[{'batches':[{'status':'already_imported'}]}]}}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
+        (['sync'], sync_new, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
+        (['sync'], {**sync_new,'status':'failed','stages':sync_new['stages'] + [{'stage':'mi_text_catchup','status':'failed'}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
+        (['sync'], {'status':'failed','stages':[{'stage':'numeric_catchup','status':'failed'}]}, 0, [], []),
+        (['sync'], {'status':'already_running'}, 0, [], []),
         (['daily'], {'status':'ready','stages':[{'stage':'registered_reference','status':'ready'}]}, 0, ['reference'], [['us','hk']]),
-        (['sync'], sync_new, 9, ['market'], [['us','hk']]),
+        (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}, {'stage':'registered_reference','status':'ready'}]}, 0, ['market','reference'], [['btcusd'],['us','hk']]),
+        (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
+        (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
+        (['crypto'], {'status':'failed','stages':[{'stage':'market_series','status':'failed'}]}, 0, [], []),
+        (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 1, ['market'], [['btcusd']]),
+        (['sync'], sync_new, 9, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
     ]
     for arguments, result, projection_exit, channels, expected_ids in cases:
         events.write_text('')
@@ -99,7 +108,7 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         assert records[0]['step'] == 'pipeline'
         assert records[0]['registry_url'] == 'postgresql://registry@localhost/studio'
         catchups = [row for row in records if row['step'] == 'regime-catch-up']
-        expected_catchup = arguments == ['sync'] and result['status'] == 'ready'
+        expected_catchup = arguments == ['sync'] and any(row['stage'] == 'numeric_catchup' and row['status'] == 'ready' for row in result.get('stages', []))
         assert len(catchups) == int(expected_catchup)
         if catchups:
             assert catchups[0]['args'] == ['kickstart', f'gui/{os.getuid()}/test.regime.auto.catch-up']

@@ -1061,6 +1061,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
             "etf",
             "equity",
             "index",
+            "crypto",
         ],
     }
     assert classification_view["columns"] == [
@@ -1316,6 +1317,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
         "etf",
         "equity",
         "index",
+        "crypto",
     ]
     node_ids = {node["node_id"] for node in tree_payload["nodes"]}
     assert "equity-us-information-technology" in node_ids
@@ -2506,7 +2508,7 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v7"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v8"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,
@@ -4108,6 +4110,7 @@ def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
     assert response.status_code == 200
     payload = response.json()
     assert [item["watchlist_id"] for item in payload] == [
+        "all-instruments",
         "index",
         "all-public-funds",
         "all-private-funds",
@@ -4185,7 +4188,7 @@ def test_list_watchlists_syncs_each_system_list_by_instrument_type(
     assert {
         item["watchlist_id"]: item["item_count"] for item in response.json()
     }["all-public-funds"] == len(PUBLIC_FUND_IDS)
-    assert requested_types == ["index", "public_fund", "private_fund"]
+    assert requested_types == ["None", "index", "public_fund", "private_fund"]
 
 
 def test_system_watchlist_detail_syncs_only_its_instrument_type(
@@ -4337,8 +4340,10 @@ def test_all_public_funds_reconcile_rolls_back_membership_when_materialization_f
     assert recovered.json()["item_count"] == len(PUBLIC_FUND_IDS) + 1
 
 
+@pytest.mark.parametrize("reconcile_path", ["worker", "queued_recalc"])
 def test_default_all_public_funds_watchlist_removes_archived_registry_members(
     client: TestClient,
+    reconcile_path: str,
 ) -> None:
     initial = client.get("/api/watchlists/all-public-funds")
     assert initial.status_code == 200
@@ -4346,6 +4351,14 @@ def test_default_all_public_funds_watchlist_removes_archived_registry_members(
 
     from investment_studio_instrument_core import instrument_store as shared_store
     from watchlist_app.db.session import get_session_factory
+    from watchlist_app.db.models.instruments import InstrumentDetail
+    from watchlist_app.db.models.read_models import InstrumentChartReadModel
+    from watchlist_app.services.read_model_freshness import schedule_instrument_refreshes_if_stale
+
+    original_nav = shared_store.get_instrument(get_session_factory(), "savf63")["market_data"]
+    with get_session_factory()() as session:
+        original_chart = session.execute(select(InstrumentChartReadModel.__table__).where(
+            InstrumentChartReadModel.instrument_id == "savf63")).mappings().first()
 
     archived = shared_store.archive_instrument(
         get_session_factory(),
@@ -4357,6 +4370,23 @@ def test_default_all_public_funds_watchlist_removes_archived_registry_members(
         get_session_factory(),
         instrument_types={"public_fund", "private_fund", "etf", "index"},
     )
+
+    if reconcile_path == "worker":
+        assert schedule_instrument_refreshes_if_stale(
+            targets=[{"instrument_id": "savf63"}], trigger_ref_type="worker_reconcile",
+            raise_on_error=True,
+        ) == 0
+    else:
+        result = client.post("/api/recalc/instruments/savf63/execute", json={"job_type": "all"})
+        assert result.status_code == 200
+        assert result.json()["result"]["reason"] == "instrument_archived"
+
+    with get_session_factory()() as session:
+        assert session.get(InstrumentDetail, "savf63").is_active is False
+        chart = session.execute(select(InstrumentChartReadModel.__table__).where(
+            InstrumentChartReadModel.instrument_id == "savf63")).mappings().first()
+        assert chart == original_chart
+    assert shared_store.get_instrument(get_session_factory(), "savf63")["market_data"] == original_nav
 
     detail = client.get("/api/watchlists/all-public-funds")
     assert detail.status_code == 200
@@ -4376,14 +4406,20 @@ def test_default_all_public_funds_watchlist_removes_archived_registry_members(
     assert screener.status_code == 200
     assert "savf63" not in {row["instrument_id"] for row in screener.json()["rows"]}
 
+    shared_store.restore_instrument(get_session_factory(), instrument_id="savf63", updated_by="pytest")
+    restored = client.get("/api/watchlists/all-public-funds")
+    assert restored.json()["item_count"] == len(PUBLIC_FUND_IDS)
+    with get_session_factory()() as session:
+        assert session.get(InstrumentDetail, "savf63").is_active is True
+
 
 def test_default_index_watchlist_syncs_active_shared_indexes(
     client: TestClient,
 ) -> None:
     initial = client.get("/api/watchlists")
     assert initial.status_code == 200
-    assert initial.json()[0]["watchlist_id"] == "index"
-    assert initial.json()[0]["item_count"] == 0
+    index = next(item for item in initial.json() if item["watchlist_id"] == "index")
+    assert index["item_count"] == 0
 
     seed_shared_instrument(
         {

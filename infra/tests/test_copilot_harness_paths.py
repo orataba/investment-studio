@@ -11,8 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 LOADER = Path('infra/launchd/load_runtime_env.sh')
 
 
-@pytest.mark.parametrize('app', ['portfolio', 'watchlist', 'briefing'])
-def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app):
+@pytest.mark.parametrize('app,watchlist_mode,reviewer_fails', [
+    ('portfolio', None, False), ('watchlist', None, False), ('watchlist', 'sector', False),
+    ('watchlist', 'risk', False), ('watchlist', 'sector', True), ('briefing', None, False),
+])
+def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, watchlist_mode, reviewer_fails):
     if app == 'portfolio':
         runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
         patch_path = Path('apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml')
@@ -22,8 +25,8 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         api_url = 'http://127.0.0.1:8101/api'
     elif app == 'watchlist':
         runner = Path('apps/watchlist/backend/scripts/run_research_harness.sh')
-        patch_path = Path('apps/watchlist/backend/config/research_harness.patch.yml')
-        args = ['run-test']
+        patch_path = Path(f'apps/watchlist/backend/config/{watchlist_mode or "research"}_harness.patch.yml')
+        args = ['run-test', *([watchlist_mode] if watchlist_mode else [])]
         prefix = 'INVESTMENT_STUDIO_RESEARCH_'
         api_key = 'INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL'
         api_url = 'http://127.0.0.1:8100/api'
@@ -47,7 +50,11 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         # the launch environment only; publication is covered by Watchlist API tests.
         python = project / '.venv/bin/python'
         python.parent.mkdir(parents=True)
-        python.write_text('#!/bin/sh\ncat\n')
+        python.write_text(
+            f'#!{sys.executable}\nimport json, sys\n'
+            'print("FACT_REVIEW_ARGS " + json.dumps(sys.argv[1:]), file=sys.stderr)\n'
+            + ('raise SystemExit(78)\n' if reviewer_fails else 'sys.stdout.write(sys.stdin.read())\n')
+        )
         python.chmod(0o700)
     secret = tmp_path / 'portfolio-copilot.env'
     secret.write_text('DEEPSEEK_API_KEY=test-key\n', encoding='utf-8')
@@ -74,9 +81,16 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'FMP_API_KEY': 'private-market-key',
     }
     result = subprocess.run(
-        ['bash', str(project / runner), *args],
-        env=env, cwd=tmp_path, check=True, capture_output=True, text=True,
+        ['/bin/bash', str(project / runner), *args],
+        env=env, cwd=tmp_path, check=False, capture_output=True, text=True,
     )
+    if reviewer_fails:
+        assert result.returncode == 78
+        markers = [json.loads(line.removeprefix('SECTOR_REVIEW_ERROR ')) for line in result.stderr.splitlines()
+                   if line.startswith('SECTOR_REVIEW_ERROR ')]
+        assert markers == [{'type': 'FactReviewProcessExit', 'summary': '本地事实核证进程退出，未生成核证结果；请检查研究运行环境。'}]
+        return
+    assert result.returncode == 0, result.stderr
     captured = json.loads(result.stdout)
     runtime_env = captured['env']
     assert runtime_env[prefix + 'PROJECT_ROOT'] == str(project)
@@ -87,6 +101,10 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     elif app == 'watchlist':
         assert runtime_env[prefix + 'RUN_ID'] == 'run-test'
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
+        reviewer_args = [json.loads(line.removeprefix('FACT_REVIEW_ARGS ')) for line in result.stderr.splitlines()
+                         if line.startswith('FACT_REVIEW_ARGS ')]
+        assert reviewer_args == ([] if watchlist_mode == 'risk' else [
+            ['-m', 'watchlist_app.services.sector_fact_review', *([] if watchlist_mode == 'sector' else ['--conversation'])]])
     else:
         assert runtime_env[prefix + 'REPORT_ID'] == 'report-test'
     assert runtime_env[prefix + 'RUN_TOKEN'] == 'scoped-task-token'

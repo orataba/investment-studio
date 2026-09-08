@@ -5,84 +5,67 @@
   min-height: 30px;
 }
 
-.fund-distribution-tasks-trigger {
-  position: relative;
+.fund-distribution-tasks-controls {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  padding: 5px;
-  border: 1px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--portfolio-muted);
-  cursor: pointer;
+  gap: 8px;
 }
 
-.fund-distribution-tasks-trigger:hover,
-.fund-distribution-tasks-trigger:focus-visible {
-  border-color: var(--portfolio-accent);
+.fund-distribution-review-toggle {
+  min-height: 30px;
+  padding: 4px 0;
+  border: 0;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.fund-distribution-review-toggle:hover,
+.fund-distribution-review-toggle[aria-expanded="true"] {
   color: var(--portfolio-accent);
 }
 
-.fund-distribution-tasks-trigger.needs-attention {
-  color: var(--portfolio-warning);
+.fund-distribution-review-panel {
+  min-width: 0;
+  margin: 0 0 14px;
+  border: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
 }
 
-.fund-distribution-tasks-trigger.has-error {
-  color: var(--portfolio-danger, #b42318);
-}
-
-.fund-distribution-tasks-trigger svg {
-  width: 18px;
-  height: 18px;
-}
-
-.fund-distribution-tasks-badge {
-  position: absolute;
-  top: -1px;
-  right: -3px;
-  min-width: 13px;
-  padding: 0 2px;
-  background: #fff;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 13px;
-  text-align: center;
-}
-
-.fund-distribution-review-backdrop {
+.fund-distribution-review-header,
+.fund-distribution-review-actions {
+  display: flex;
   align-items: center;
-  padding: 24px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
 }
 
-.fund-distribution-review-modal {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(1000px, 100%);
-  max-height: min(86dvh, 860px);
-  overflow: hidden;
+.fund-distribution-review-header {
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.fund-distribution-review-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  border-top: 1px solid var(--portfolio-line);
 }
 
 .fund-distribution-review-body {
   display: grid;
   gap: 16px;
   min-height: 0;
-  padding: 18px;
-  overflow: auto;
+  padding: 14px;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-header,
-.fund-distribution-review-modal .fund-distribution-task-card {
+.fund-distribution-review-panel .fund-distribution-task-header,
+.fund-distribution-review-panel .fund-distribution-task-card {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
 }
 
-.fund-distribution-review-modal .fund-distribution-reviewer-field {
+.fund-distribution-review-panel .fund-distribution-reviewer-field {
   display: grid;
   flex: 0 1 240px;
   gap: 4px;
@@ -90,7 +73,7 @@
   font-size: 12px;
 }
 
-.fund-distribution-review-modal .fund-distribution-reviewer-field input {
+.fund-distribution-review-panel .fund-distribution-reviewer-field input {
   width: 100%;
   min-width: 0;
 }
@@ -103,28 +86,28 @@
   color: var(--portfolio-danger, #b42318);
 }
 
-.fund-distribution-review-modal .fund-distribution-task-list {
+.fund-distribution-review-panel .fund-distribution-task-list {
   display: grid;
   gap: 14px;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-card {
+.fund-distribution-review-panel .fund-distribution-task-card {
   padding-top: 14px;
   border-top: 1px solid var(--portfolio-line);
 }
 
-.fund-distribution-review-modal .fund-distribution-task-copy {
+.fund-distribution-review-panel .fund-distribution-task-copy {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-title {
+.fund-distribution-review-panel .fund-distribution-task-title {
   margin-bottom: 4px;
   color: var(--portfolio-ink);
   font-weight: 500;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-values {
+.fund-distribution-review-panel .fund-distribution-task-values {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
@@ -133,12 +116,12 @@
   font-size: 13px;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-reason {
+.fund-distribution-review-panel .fund-distribution-task-reason {
   margin-top: 8px;
   font-size: 13px;
 }
 
-.fund-distribution-review-modal .fund-distribution-task-actions {
+.fund-distribution-review-panel .fund-distribution-task-actions {
   display: flex;
   flex: 0 0 40%;
   flex-wrap: wrap;
@@ -146,37 +129,29 @@
   gap: 8px;
 }
 
-.fund-distribution-review-modal .fund-distribution-dismiss-form {
+.fund-distribution-review-panel .fund-distribution-dismiss-form {
   display: flex;
   width: 100%;
   gap: 8px;
 }
 
-.fund-distribution-review-modal .fund-distribution-dismiss-form input {
+.fund-distribution-review-panel .fund-distribution-dismiss-form input {
   min-width: 0;
   flex: 1;
 }
 
 @media (max-width: 700px) {
-  .fund-distribution-review-backdrop {
-    padding: 12px;
-  }
-
-  .fund-distribution-review-modal {
-    max-height: calc(100dvh - 24px);
-  }
-
-  .fund-distribution-review-modal .fund-distribution-task-header,
-  .fund-distribution-review-modal .fund-distribution-task-card {
+  .fund-distribution-review-panel .fund-distribution-task-header,
+  .fund-distribution-review-panel .fund-distribution-task-card {
     flex-direction: column;
   }
 
-  .fund-distribution-review-modal .fund-distribution-reviewer-field {
+  .fund-distribution-review-panel .fund-distribution-reviewer-field {
     flex-basis: auto;
     width: 100%;
   }
 
-  .fund-distribution-review-modal .fund-distribution-task-actions {
+  .fund-distribution-review-panel .fund-distribution-task-actions {
     flex-basis: auto;
     justify-content: flex-start;
     width: 100%;

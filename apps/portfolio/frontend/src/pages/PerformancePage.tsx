@@ -12,6 +12,7 @@ import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
@@ -1529,6 +1530,7 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
 }
 
 function PerformancePage() {
+  const zh = useLanguage().language === 'zh-Hans'
   const { portfolioId } = useParams<{ portfolioId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -1708,21 +1710,20 @@ function PerformancePage() {
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
-  const defaultPlanningTaxonomy = useMemo(
+  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState('')
+  const groupingTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
+  const selectedGroupingTaxonomy = useMemo(
     () =>
-      taxonomyCatalog?.taxonomies.find(
-        (taxonomy) =>
-          taxonomy.taxonomy_id === taxonomyCatalog.default_planning_taxonomy_id &&
-          taxonomy.planning_enabled &&
-          taxonomy.status === 'active',
-      ) ?? null,
-    [taxonomyCatalog],
+      groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === groupingTaxonomyId) ??
+      groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === taxonomyCatalog?.default_planning_taxonomy_id) ??
+      groupingTaxonomies[0] ?? null,
+    [taxonomyCatalog, groupingTaxonomyId],
   )
   const taxonomyCatalogReady = taxonomyCatalogReadyPortfolioId === portfolioId
   const calculationTableViewStoreSettled =
     calculationTableViewStoreSettledPortfolioId === portfolioId
   const effectiveCalculationGroupBy: CalculationGroupByKey =
-    calculationGroupBy === 'taxonomy' && taxonomyCatalogReady && !defaultPlanningTaxonomy
+    calculationGroupBy === 'taxonomy' && taxonomyCatalogReady && !selectedGroupingTaxonomy
       ? 'none'
       : calculationGroupBy
   const resolvedCalculationGroupBy: PortfolioContributionAxis =
@@ -1736,11 +1737,11 @@ function PerformancePage() {
       axis: resolvedCalculationGroupBy,
       taxonomy_id:
         resolvedCalculationGroupBy === 'taxonomy'
-          ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined
+          ? selectedGroupingTaxonomy?.taxonomy_id ?? undefined
           : undefined,
     }),
     [
-      defaultPlanningTaxonomy?.taxonomy_id,
+      selectedGroupingTaxonomy?.taxonomy_id,
       calculationWindowFilters,
       resolvedCalculationGroupBy,
     ],
@@ -1796,10 +1797,10 @@ function PerformancePage() {
       {
         value: 'taxonomy',
         label: 'Taxonomy',
-        disabled: !defaultPlanningTaxonomy,
+        disabled: !selectedGroupingTaxonomy,
       },
     ],
-    [defaultPlanningTaxonomy],
+    [selectedGroupingTaxonomy],
   )
   const selectedCalculationGroupByOption =
     calculationGroupByOptions.find((option) => option.value === effectiveCalculationGroupBy) ??
@@ -2994,7 +2995,7 @@ function PerformancePage() {
                       onClick={() => setCalculationGroupByOpen(true)}
                     >
                       Group By{'\u00A0: '}
-                      {selectedCalculationGroupByOption.label}
+                      {selectedCalculationGroupByOption.label}{effectiveCalculationGroupBy === 'taxonomy' && selectedGroupingTaxonomy ? ` · ${selectedGroupingTaxonomy.name}` : ''}
                     </button>
                     <DownloadFormatMenu
                       wrapperClassName="portfolio-download-menu"
@@ -3211,6 +3212,11 @@ function PerformancePage() {
               </button>
             </div>
             <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
+              <label>{zh ? '分类' : 'Taxonomy'} <select aria-label={zh ? '绩效分组分类' : 'Performance grouping taxonomy'} value={selectedGroupingTaxonomy?.taxonomy_id ?? ''}
+                onChange={(event) => { setGroupingTaxonomyId(event.target.value); setCalculationGroupBy('taxonomy') }}>
+                {!groupingTaxonomies.length && <option value="">{zh ? '暂无分类' : 'No taxonomy'}</option>}
+                {groupingTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}</option>)}
+              </select></label>
               {calculationGroupByOptions.map((option) => (
                 <button
                   type="button"

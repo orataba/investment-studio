@@ -26,6 +26,7 @@ from portfolio_app.db.models import (
     AccountRecordModel,
     AnalyticsScopePolicyRecordModel,
     AnalyticsTaxonomySelectionRecordModel,
+    ConcentrationPolicyRevisionModel,
     DerivativeContractRecordModel,
     OptionDeliveryLinkModel,
     PortfolioCalculationStateModel,
@@ -68,6 +69,7 @@ from portfolio_app.services.transaction_dates import (
 from portfolio_app.services.valuation_clock import portfolio_valuation_today
 from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.research_eligibility import (
+    contract_only_instrument_ids,
     derive_research_lifecycle,
     enrich_instrument_research_state,
 )
@@ -781,6 +783,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 f"portfolio inception_date {inception_date}."
             )
     existing_tables = set(inspect(session.get_bind()).get_table_names())
+    if ConcentrationPolicyRevisionModel.__tablename__ in existing_tables:
+        session.execute(delete(ConcentrationPolicyRevisionModel))
     session.execute(delete(PortfolioDailyContributionSliceModel))
     session.execute(delete(PortfolioDailyHoldingSnapshotModel))
     session.execute(delete(PortfolioDailySnapshotModel))
@@ -1295,10 +1299,6 @@ def _safe_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
-
-
-def _max_transaction_trade_date(transactions: list[TransactionRecordModel]) -> date | None:
-    return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
 
 
 def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -> date | None:
@@ -2419,6 +2419,7 @@ def _scope_target_members(
     *,
     taxonomy: TaxonomyRecordModel,
     comparator_taxonomy_node_id: str | None,
+    as_of_date: date | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent_node, child_nodes = _scope_child_nodes(
         session,
@@ -2450,9 +2451,26 @@ def _scope_target_members(
             TaxonomyAssignmentRecordModel.status == "active",
         )
     ).all()
+    if as_of_date is not None:
+        configuration = taxonomy_configuration_as_of_in_session(
+            session, taxonomy.portfolio_id, taxonomy.taxonomy_id, as_of_date,
+        ) or {}
+        active_target_ids = {item["target_set_id"] for item in configuration.get("target_sets", [])
+                             if item.get("status") == "active"}
+        explicit_members = [item["target_member_id"] for item in configuration.get("target_set_lines", [])
+                            if item.get("target_member_type") == "instrument" and item.get("target_set_id") in active_target_ids]
+    else:
+        explicit_members = session.scalars(select(TargetSetLineRecordModel.target_member_id)
+            .join(TargetSetRecordModel, TargetSetRecordModel.target_set_id == TargetSetLineRecordModel.target_set_id)
+            .where(TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
+                   TargetSetRecordModel.status == "active", TargetSetLineRecordModel.target_member_type == "instrument")).all()
+    contract_only = contract_only_instrument_ids(taxonomy.portfolio_id,
+        as_of_date=as_of_date or date.today(), explicitly_selected=explicit_members, session=session)
     visible_direct_assignments: dict[tuple[str, str], TaxonomyAssignmentRecordModel] = {}
     for assignment in direct_assignments:
         member_key = (str(assignment.target_scope), str(assignment.target_entity_id))
+        if member_key[0] == "instrument" and member_key[1] in contract_only:
+            continue
         visible_direct_assignments.setdefault(member_key, assignment)
     if not visible_direct_assignments:
         raise ValueError("Comparator scope must have active child sleeves or directly assigned instruments.")
@@ -2479,6 +2497,7 @@ def _validate_target_set_lines(
     status: str,
     lines: list[dict[str, object]],
     exclude_target_set_id: str | None = None,
+    as_of_date: date | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[TaxonomyNodeRecordModel]]:
     if not taxonomy.planning_enabled:
         raise ValueError("Target sets require a planning-enabled taxonomy.")
@@ -2497,6 +2516,7 @@ def _validate_target_set_lines(
         session,
         taxonomy=taxonomy,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+        as_of_date=as_of_date,
     )
     if not lines:
         raise ValueError("Target set lines are required.")
@@ -3529,6 +3549,7 @@ def create_target_set(
             risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
             lines=lines,
+            as_of_date=effective_from,
         )
 
         record = TargetSetRecordModel(
@@ -3650,6 +3671,7 @@ def update_target_set(
             status=(record.status if status is UNSET else ((status or "active").strip() or "active")),
             lines=resolved_lines,
             exclude_target_set_id=target_set_id,
+            as_of_date=effective_from,
         )
 
         if name is not UNSET and name is not None:
@@ -4122,6 +4144,12 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             return None
 
         analytics_history_count = int(
+            session.scalar(
+                select(func.count()).select_from(ConcentrationPolicyRevisionModel).where(
+                    ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id
+                )
+            ) or 0
+        ) + int(
             session.scalar(
                 select(func.count())
                 .select_from(AnalyticsScopePolicyRecordModel)
@@ -4655,32 +4683,6 @@ def delete_portfolio(portfolio_id: str) -> bool:
             item.sort_order = index
         session.commit()
         return True
-
-
-def reorder_portfolios(portfolio_ids: list[str]) -> list[dict[str, object]]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
-                PortfolioRecordModel.sort_order,
-                PortfolioRecordModel.portfolio_id,
-            )
-        ).all()
-        by_id = {item.portfolio_id: item for item in portfolios}
-        ordered_ids = [portfolio_id for portfolio_id in portfolio_ids if portfolio_id in by_id]
-        remaining_ids = [item.portfolio_id for item in portfolios if item.portfolio_id not in ordered_ids]
-        final_ids = ordered_ids + remaining_ids
-        for index, portfolio_id in enumerate(final_ids):
-            by_id[portfolio_id].sort_order = index
-        session.commit()
-        reordered = session.scalars(
-            select(PortfolioRecordModel).order_by(
-                PortfolioRecordModel.sort_order,
-                PortfolioRecordModel.portfolio_name,
-                PortfolioRecordModel.portfolio_id,
-            )
-        ).all()
-        return [_serialize_portfolio_row(item) for item in reordered]
 
 
 def list_accounts(portfolio_id: str) -> list[dict[str, object]]:

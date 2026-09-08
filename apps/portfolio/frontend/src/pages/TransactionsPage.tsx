@@ -4023,16 +4023,17 @@ export default function TransactionsPage() {
       busy={metaLoading || loadingTransactions}
     >
       <section className="portfolio-detail-surface">
-        <div className="portfolio-detail-toolbar transaction-activity-toolbar">
+        <FundDistributionTasksPanel
+          portfolioId={portfolioId}
+          accountNames={accountNameById}
+          refreshKey={eventTasksRefreshKey}
+          onRecord={openEventTaskDrawer}
+        >
+        {(distributionControls) => <div className="portfolio-detail-toolbar transaction-activity-toolbar">
           <div>
             <div className="transaction-activity-title">
               <div className="panel-title">Activity</div>
-              <FundDistributionTasksPanel
-                portfolioId={portfolioId}
-                accountNames={accountNameById}
-                refreshKey={eventTasksRefreshKey}
-                onRecord={openEventTaskDrawer}
-              />
+              {distributionControls}
             </div>
             <div className="portfolio-detail-meta">
               {`${displayedTransactions.length} ${activeFilterCount ? 'matching ' : ''}${displayedTransactions.length === 1 ? 'activity' : 'activities'}`}
@@ -4108,7 +4109,8 @@ export default function TransactionsPage() {
               </button>
             </div>
           </div>
-        </div>
+        </div>}
+        </FundDistributionTasksPanel>
 
         <section className="transaction-filter-bar">
           <div className="transaction-filter-group">

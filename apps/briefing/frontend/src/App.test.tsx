@@ -103,7 +103,9 @@ it('supports the English interface while keeping the report in Chinese', async (
   expect(screen.queryByText('Report generation is not configured. Completed editions remain available.')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /Generation unavailable:/ }))
   expect(screen.getByText('Report generation is not configured. Completed editions remain available.')).toBeTruthy()
-  expect(screen.getByRole('navigation', { name: 'Workspace navigation' }).textContent).toBe('Home/Market Briefing/Daily')
+  const navigation = screen.getByRole('navigation', { name: 'Workspace navigation' })
+  expect(navigation.textContent).toBe('Home/Market Briefing')
+  expect(navigation.querySelector('[aria-current="page"]')?.textContent).toBe('Market Briefing')
   expect(screen.getByRole('link', { name: 'Home' }).getAttribute('href')).toContain(':5172/?lang=en')
   expect(document.title).toBe('Market Briefing · Investment Studio')
 })
@@ -139,7 +141,7 @@ it('keeps weekly selection, report identity and language in the address and rest
   window.history.replaceState(null, '', weeklyAddress)
   fireEvent.popState(window)
   await screen.findByRole('heading', { name: 'Weekly research briefing | 2026-09-07' })
-  expect(screen.getByRole('navigation', { name: 'Workspace navigation' }).textContent).toBe('Home/Market Briefing/Weekly')
+  expect(screen.getByRole('navigation', { name: 'Workspace navigation' }).textContent).toBe('Home/Market Briefing')
 })
 
 it('shows a discovery quota failure separately from missing collection records', async () => {

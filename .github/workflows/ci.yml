@@ -46,6 +46,11 @@ jobs:
       - name: Run backend suites
         run: infra/scripts/verify_repository.sh backend all
 
+      - name: Set up Node.js for web proxy integration
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+
       - name: Run infrastructure suites
         run: infra/scripts/verify_repository.sh infra portable
 

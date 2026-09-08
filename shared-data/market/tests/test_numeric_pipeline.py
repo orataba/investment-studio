@@ -141,6 +141,7 @@ def test_replica_has_no_collection_and_failed_delivery_stays_visible(tmp_path,mo
     settings=MarketSettings(f"sqlite:///{tmp_path/'unused.db'}",tmp_path/'data')
     monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ROLE','replica')
     with pytest.raises(ValueError,match='replica'):pipeline.run(settings,'daily')
+    with pytest.raises(ValueError,match='replica'):pipeline.run(settings,'crypto')
     for name in ['NUMERIC','MI']:
         monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_'+name+'_HOST',raising=False)
         monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_'+name+'_REMOTE_DIR',raising=False)
@@ -155,16 +156,35 @@ def test_scheduled_definitions_only_collect_on_cloud_and_do_not_embed_secrets(tm
     spec=importlib.util.spec_from_file_location('market_pipeline_installer',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     units=module.definitions('systemd','collector',tmp_path/'project',tmp_path/'external',tmp_path/'python',tmp_path/'logs')
-    assert len(units)==16
+    assert len(units)==18
     assert b'Asia/Shanghai' in units['investment-studio-market-daily.timer']
     assert b'Persistent=true' in units['investment-studio-market-sync.timer']
     assert b'15:30 Asia/Shanghai' in units['investment-studio-market-registered-prices-cn.timer']
     assert b'registered-prices --market hk' in units['investment-studio-market-registered-prices-hk.service']
+    assert b'*-*-* 08:15 Asia/Shanghai' in units['investment-studio-market-crypto.timer']
+    assert b'run_market_pipeline.sh" crypto' in units['investment-studio-market-crypto.service']
     plists=module.definitions('launchd','replica',tmp_path/'project',tmp_path/'external',tmp_path/'python',tmp_path/'logs')
     assert list(plists)==['com.orataba.investment-studio.market-sync.plist']
     item=plistlib.loads(next(iter(plists.values())))
     assert item['ProgramArguments'][-1]=='sync' and item['RunAtLoad']
     assert item['EnvironmentVariables']['INVESTMENT_STUDIO_MARKET_ROLE']=='replica'
+    assert item['StartInterval']==3600 and item['StartCalendarInterval']=={'Hour':8,'Minute':20}
+
+
+@pytest.mark.parametrize('clock, cutoff', [('2026-09-08T08:15:00+08:00', date(2026,9,7)),
+                                        ('2026-09-06T08:15:00+08:00', date(2026,9,5))])
+def test_crypto_pipeline_captures_completed_utc_days_and_publishes_without_listed_data(tmp_path,monkeypatch,clock,cutoff):
+    settings=MarketSettings('sqlite://',tmp_path/'data')
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ROLE','collector')
+    captured=[]
+    monkeypatch.setattr(pipeline,'collect',lambda _settings,**kwargs:captured.append(kwargs) or {'status':'ready'})
+    monkeypatch.setattr(pipeline,'registered_instruments',lambda _settings:pytest.fail('crypto must not use the listed registry capture'))
+    monkeypatch.setattr(pipeline,'publish_pending',lambda _settings:{'status':'no_new_batches'})
+    result=pipeline.run(settings,'crypto',now=datetime.fromisoformat(clock))
+    assert result['status']=='ready'
+    assert len(captured)==1 and captured[0]['groups']==['market_series'] and captured[0]['symbols']==['BTCUSD']
+    assert captured[0]['end']==cutoff and (cutoff-captured[0]['start']).days==7
+    assert [r['stage'] for r in result['stages']]==['market_series','publish_numeric_delta']
 
 
 def test_weekly_pipeline_maintains_migrated_index_membership_and_events(tmp_path,monkeypatch):

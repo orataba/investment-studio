@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
 from studio_data.services.instrument_store import (
     get_instrument,
-    get_price_bar_coverage,
     update_refresh_status,
-    upsert_market_data_points,
-    upsert_price_bars,
+    upsert_price_history,
 )
 
 
@@ -45,6 +43,10 @@ def refresh_fmp_eod(
     full_history: bool = False,
     store: NumericStore | None = None,
 ) -> dict[str, object]:
+    # The shared collector can revise retained adjusted prices after a split or
+    # dividend. Projection is a local replay, so include those older revisions
+    # on every run instead of mixing adjustment bases across a seven-day edge.
+    del full_history
     instrument = get_instrument(instrument_id)
     if instrument is None:
         raise ValueError(f"Registry instrument not found: {instrument_id}")
@@ -66,22 +68,19 @@ def refresh_fmp_eod(
     if not provider_identifier:
         raise ValueError(f"{instrument_type.upper()} has no FMP provider_symbol identifier.")
     symbol = provider_identifier.removeprefix("fmp:")
-    coverage = get_price_bar_coverage(instrument_id=instrument_id)
-    latest_date = str(coverage.get("latest_date") or "")
     start_date = date(1900, 1, 1)
-    if not full_history and latest_date:
-        start_date = date.fromisoformat(latest_date) - timedelta(days=7)
     end_date = date.today()
     market = store or NumericStore(MarketSettings.from_environment())
-    raw_rows, offset = [], 0
     try:
-        while True:
-            page = market.query("raw_eod_daily", symbols=[symbol], start=start_date.isoformat(),
-                                end=end_date.isoformat(), limit=10000, offset=offset)
-            raw_rows.extend(page["rows"])
-            offset += len(page["rows"])
-            if offset >= page["total"]:
-                break
+        # One query fixes the source file view across this instrument's history.
+        # Daily observations since 1900 fit below the shared query's row limit.
+        history = market.query("raw_eod_daily", symbols=[symbol], start=start_date.isoformat(),
+                               end=end_date.isoformat(), limit=100000)
+        raw_rows = history["rows"]
+        if len(raw_rows) != history["total"]:
+            raise ValueError(
+                f"Shared FMP EOD returned an incomplete history: {len(raw_rows)} of {history['total']} rows."
+            )
     finally:
         if store is None:
             market.close()
@@ -157,11 +156,13 @@ def refresh_fmp_eod(
             )
         return record
 
-    upsert_price_bars(instrument_id=instrument_id, rows=price_bars)
-    upsert_market_data_points(instrument_id=instrument_id, rows=market_data)
+    changes = upsert_price_history(instrument_id=instrument_id,
+        market_data_rows=market_data, price_bar_rows=price_bars)
+    if changes is None:
+        raise RuntimeError(f"Registry {instrument_type} disappeared during refresh: {instrument_id}")
     record = update_refresh_status(
         instrument_id=instrument_id,
-        status="refreshed",
+        status="refreshed" if any(changes) else "no_new_data",
         message=f"Projected {len(price_bars)} shared FMP EOD rows for {symbol}.",
         updated_by=updated_by,
         mode="api",

@@ -24,6 +24,8 @@ vi.mock('./lib/api', () => apiMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
+vi.mock('./components/ConcentrationPanel', () => ({ default: () => <div>Concentration test panel</div> }))
+vi.mock('./components/PortfolioTailRiskPanel', () => ({ default: () => <div>Tail risk test panel</div> }))
 
 function isoDateDaysBefore(daysBefore: number) {
   const date = new Date(Date.UTC(2026, 6, 15 - daysBefore))
@@ -342,6 +344,7 @@ function renderRiskPage() {
 describe('Risk rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.removeItem('investment_studio.portfolio.risk.target-taxonomy.3')
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [
@@ -414,7 +417,7 @@ describe('Risk rendered page contract', () => {
 
     const hint = await screen.findByRole('button', { name: /Benchmark comparison:/ })
     expect(hint.closest('.risk-rolling-toolbar')).not.toBeNull()
-    expect(hint).toHaveAttribute('title', expect.stringContaining(detail))
+    expect(hint).toHaveAttribute('aria-label', expect.stringContaining(detail))
     expect(Boolean(screen.queryByText('Benchmark unavailable'))).toBe(blocked)
     await user.click(hint)
     expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
@@ -550,7 +553,7 @@ describe('Risk rendered page contract', () => {
     expect(within(riskHealth).getByText('Modeled Market Sleeve Volatility')).toBeInTheDocument()
     expect(within(riskHealth).getByText('10.00%')).toBeInTheDocument()
     expect(within(riskHealth).getByText(/61\/61 complete/)).toBeInTheDocument()
-    expect(within(riskHealth).getByText('SAA 0.00% · TAA 0.00%')).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Current drift' })).getByText('SAA 0.00% · TAA 0.00%')).toBeInTheDocument()
     expect(within(riskHealth).getByText('Cash / Unallocated')).toBeInTheDocument()
     expect(within(riskHealth).getByText('$200.00')).toBeInTheDocument()
 
@@ -621,13 +624,13 @@ describe('Risk rendered page contract', () => {
 
     const coverageStatus = await findCorrelationUnavailable()
     expect(coverageStatus).toHaveTextContent('Correlation matrix unavailable')
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
     expect(coverageStatus).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('Full-history return series is missing'),
     )
     expect(coverageStatus).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('no members or dates were dropped'),
     )
   })
@@ -650,7 +653,7 @@ describe('Risk rendered page contract', () => {
 
     const coverageStatus = await findCorrelationUnavailable()
     expect(coverageStatus).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('Alpha Fund: Current holding is missing its current portfolio weight.'),
     )
   })
@@ -672,9 +675,9 @@ describe('Risk rendered page contract', () => {
     const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
     await user.selectOptions(scopeSelect, '__full_universe__')
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('active universe payload'))
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('All 2 scope members'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('active universe payload'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('All 2 scope members'))
   })
 
   it('fails closed on misaligned member dates and lists the first dates plus total count', async () => {
@@ -688,10 +691,10 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Return dates do not match'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Return dates do not match'))
     expect(coverageStatus).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining(`Missing dates (1 total): ${missingDate}`),
     )
   })
@@ -714,11 +717,94 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
     expect(coverageStatus).toHaveAttribute(
-      'title',
+      'aria-label',
       expect.stringContaining('scope members do not share one period identity'),
     )
-    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining(mismatchedDate))
+    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining(mismatchedDate))
   })
+  it('switches target taxonomy locally and hides disabled risk targets without changing model scope or NAV', async () => {
+    const user = userEvent.setup()
+    const customTaxonomy = { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'industry', name: 'Industry', planning_enabled: false }
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, customTaxonomy],
+      taxonomy_nodes: [...taxonomyCatalog.taxonomy_nodes, { ...taxonomyCatalog.taxonomy_nodes[0], taxonomy_id: 'industry', taxonomy_node_id: 'technology', node_name: 'Technology' }],
+      taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments, { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'industry-assignment', taxonomy_id: 'industry', taxonomy_node_id: 'technology' }],
+    })
+    renderRiskPage()
+    const selector = await screen.findByRole('combobox', { name: 'Target drift taxonomy' })
+    const healthBefore = screen.getByRole('region', { name: 'Risk health' }).textContent
+    const holdingsReads = apiMocks.getHoldingsWorkspace.mock.calls.length
+    expect(screen.getByText('Risk Target Gap')).toBeInTheDocument()
+    await user.selectOptions(selector, 'industry')
+    const drift = screen.getByRole('region', { name: 'Current drift' })
+    expect(drift).toHaveTextContent('Technology')
+    expect(drift).toHaveTextContent('Current Weight')
+    expect(drift).toHaveTextContent('70.00%')
+    expect(within(drift).queryByText('Risk Target Gap')).not.toBeInTheDocument()
+    expect(within(drift).queryByText('SAA')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Risk health' }).textContent).toBe(healthBefore)
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(holdingsReads)
+    expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe('industry')
+    await user.selectOptions(selector, 'taxonomy-1')
+    expect(within(drift).getByText('Risk Target Gap')).toBeInTheDocument()
+  })
+
+  it('shows only weight drift when the selected taxonomy has no enabled risk contribution target', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog, target_sets: taxonomyCatalog.target_sets.map((target) => ({ ...target, risk_budget_enabled: false })),
+    })
+    renderRiskPage()
+    const drift = await screen.findByRole('region', { name: 'Current drift' })
+    expect(within(drift).getByText('Weight Target Gap')).toBeInTheDocument()
+    expect(within(drift).queryByText('Risk Target Gap')).not.toBeInTheDocument()
+    expect(within(drift).getByRole('img', { name: 'Weight target drift' })).toHaveTextContent('70.00%')
+  })
+
+  it('regroups production RC without applying another taxonomy exclusion policy or dropping unheld targets', async () => {
+    const user = userEvent.setup()
+    const industryTaxonomy = { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'industry', name: 'Industry' }
+    const industryNodes = ['technology', 'healthcare'].map((id, index) => ({
+      ...taxonomyCatalog.taxonomy_nodes[0], taxonomy_id: 'industry', taxonomy_node_id: id,
+      node_name: index === 0 ? 'Technology' : 'Healthcare', sort_order: index,
+    }))
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, industryTaxonomy],
+      taxonomy_nodes: [...taxonomyCatalog.taxonomy_nodes, ...industryNodes],
+      taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments, {
+        ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'industry-assignment', taxonomy_id: 'industry', taxonomy_node_id: 'technology',
+      }],
+      analytics_scope_policies: [...taxonomyCatalog.analytics_scope_policies, {
+        ...taxonomyCatalog.analytics_scope_policies[0], analytics_scope_policy_id: 'industry-excluded-root',
+        taxonomy_id: 'industry', risk_eligible: false, risk_budget_eligible: false,
+      }],
+      target_sets: [...taxonomyCatalog.target_sets, {
+        ...taxonomyCatalog.target_sets[0], taxonomy_id: 'industry', target_set_id: 'industry-saa', name: 'Industry SAA', weight_enabled: false,
+      }],
+      target_set_lines: [...taxonomyCatalog.target_set_lines, ...industryNodes.map((node) => ({
+        ...taxonomyCatalog.target_set_lines[0], target_line_id: `industry-saa-${node.taxonomy_node_id}`, target_set_id: 'industry-saa',
+        target_member_id: node.taxonomy_node_id, taxonomy_node_id: node.taxonomy_node_id, target_weight: null,
+        target_risk_share: node.taxonomy_node_id === 'technology' ? .6 : .4,
+      }))],
+    })
+    renderRiskPage()
+    const selector = await screen.findByRole('combobox', { name: 'Target drift taxonomy' })
+    const healthBefore = screen.getByRole('region', { name: 'Risk health' }).textContent
+    const holdingsReads = apiMocks.getHoldingsWorkspace.mock.calls.length
+    await user.selectOptions(selector, 'industry')
+    const riskChart = screen.getByRole('img', { name: 'Risk budget target gap' })
+    const techRow = within(riskChart).getByText('Technology').closest('.risk-target-gap-row')!
+    const healthcareRow = within(riskChart).getByText('Healthcare').closest('.risk-target-gap-row')!
+    expect(techRow).toHaveTextContent('100.00%')
+    expect(techRow).toHaveTextContent('60.00%')
+    expect(healthcareRow).toHaveTextContent('0.00%')
+    expect(healthcareRow).toHaveTextContent('40.00%')
+    expect(screen.getByRole('region', { name: 'Risk health' }).textContent).toBe(healthBefore)
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(holdingsReads)
+    expect(screen.getByRole('button', { name: /Target drift risk basis:/ })).toHaveAccessibleName(expect.stringContaining('analytics exclusion rules are not applied again'))
+  })
+
 })

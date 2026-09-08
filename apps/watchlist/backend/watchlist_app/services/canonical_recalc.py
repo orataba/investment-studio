@@ -75,6 +75,7 @@ from watchlist_app.services.return_windows import (
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
+    get_shared_instrument_summaries,
     list_shared_instruments,
 )
 
@@ -93,6 +94,7 @@ FUND_DETAIL_TABS = [
 ]
 
 LISTED_DETAIL_TABS = {
+    "crypto": ["overview", "research", "events", "performance", "risk", "price", "monitoring"],
     "etf": ["overview", "research", "performance", "risk", "price", "portfolio", "monitoring"],
     "equity": [
         "overview",
@@ -107,8 +109,8 @@ LISTED_DETAIL_TABS = {
     "index": ["overview", "research", "performance", "risk", "price", "methodology", "monitoring"],
 }
 
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v8"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v7"
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v9"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v8"
 PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v4"
 
 
@@ -308,7 +310,7 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _allows_listed_price_return_basis(instrument_type: object) -> bool:
-    return str(instrument_type or "").strip().lower() in {"equity", "etf", "index"}
+    return str(instrument_type or "").strip().lower() in {"equity", "etf", "index", "crypto"}
 
 
 def _normalize_quote_basis(value: object) -> str:
@@ -2180,6 +2182,12 @@ class CanonicalRecalcService:
             raise ValueError(f"Instrument not found: {instrument_id}")
 
         shared_instrument = get_shared_instrument(instrument_id)
+        if shared_instrument is None or shared_instrument.get("instrument_id") != instrument_id:
+            source_record = get_shared_instrument_summaries([instrument_id]).get(instrument_id)
+            if source_record and (source_record.get("lifecycle_state") or {}).get("status") == "archived":
+                instrument.is_active = False
+                return {"instrument_id": instrument_id, "job_type": job_type,
+                        "status": "skipped", "reason": "instrument_archived"}
         source_watermark_at_start = _shared_calculation_watermark(shared_instrument)
         shared_instrument_type = (
             str(shared_instrument.get("instrument_type") or "").strip().lower()

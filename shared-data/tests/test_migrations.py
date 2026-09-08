@@ -70,6 +70,40 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     command.upgrade(config, "head")
 
 
+def test_crypto_type_migration_preserves_triggers_and_guards_existing_assets(tmp_path, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from investment_studio_instrument_core import instrument_store
+
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'crypto-type.db'}"
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260907_0034")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        before = dict(connection.execute(text("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'")).all())
+    command.upgrade(config, "head")
+    factory = sessionmaker(bind=engine)
+    instrument = instrument_store.create_instrument(factory, instrument_name="Bitcoin", instrument_type="crypto", currency="USD",
+        identifiers=[{"identifier_type": "ticker", "identifier_value": "BTCUSD", "is_primary": True}])
+    assert instrument["instrument_type"] == "crypto"
+    assert instrument["exchange_code"] is None
+    assert instrument["source_settings"]["market_calendar"] == "24/7"
+    assert instrument["source_settings"]["return_semantics"] == "price_return"
+    assert instrument["quote_selection_policy"]["chart"] == ["close", "last"]
+    with pytest.raises(RuntimeError, match="crypto facts exist"):
+        command.downgrade(config, "20260907_0034")
+    assert instrument_store.get_instrument(factory, instrument["instrument_id"])["instrument_type"] == "crypto"
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM instrument_identifier WHERE instrument_id = :iid"), {"iid": instrument["instrument_id"]})
+        connection.execute(text("DELETE FROM instrument WHERE instrument_id = :iid"), {"iid": instrument["instrument_id"]})
+    command.downgrade(config, "20260907_0034")
+    with engine.connect() as connection:
+        after = dict(connection.execute(text("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'")).all())
+        assert after == before
+
+
 def test_reference_observation_migration_preserves_real_collection_clock_and_is_reversible(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{tmp_path / 'reference-observations.db'}"
     monkeypatch.setenv("INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL", database_url)

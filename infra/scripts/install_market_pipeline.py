@@ -10,12 +10,12 @@ import plistlib
 
 def definitions(scheduler, role, project_root, env_root, python_bin, log_root, label_prefix='com.orataba.investment-studio'):
     runner=project_root/'infra/scripts/run_market_pipeline.sh'
-    actions=['sync'] if role=='replica' else ['daily','weekly','publish','sync','registered-prices-cn','registered-prices-hk','registered-prices-us','registered-prices-eu']
+    actions=['sync'] if role=='replica' else ['daily','weekly','crypto','publish','sync','registered-prices-cn','registered-prices-hk','registered-prices-us','registered-prices-eu']
     result={}
     for action in actions:
         name='investment-studio-market-'+action
         if scheduler=='systemd':
-            calendars={'daily':'*-*-* 07:15 Asia/Shanghai','weekly':'Sat *-*-* 11:00 Asia/Shanghai','publish':'*-*-* *:40:00','sync':'*-*-* *:20:00',
+            calendars={'daily':'*-*-* 07:15 Asia/Shanghai','weekly':'Sat *-*-* 11:00 Asia/Shanghai','crypto':'*-*-* 08:15 Asia/Shanghai','publish':'*-*-* *:40:00','sync':'*-*-* *:20:00',
                 'registered-prices-cn':'Mon..Fri *-*-* 15:30 Asia/Shanghai','registered-prices-hk':'Mon..Fri *-*-* 17:00 Asia/Shanghai',
                 'registered-prices-us':'Tue..Sat *-*-* 07:00 Asia/Shanghai','registered-prices-eu':'Tue..Sat *-*-* 07:05 Asia/Shanghai'}
             command=action
@@ -41,7 +41,8 @@ def definitions(scheduler, role, project_root, env_root, python_bin, log_root, l
             result[name+'.plist']=plistlib.dumps({
                 'Label':name,'ProgramArguments':['/bin/bash',str(runner),action],
                 'EnvironmentVariables':{'ENV_ROOT':str(env_root),'PYTHON_BIN':str(python_bin),'INVESTMENT_STUDIO_MARKET_ROLE':role},
-                'RunAtLoad':True,'StartInterval':3600,'ProcessType':'Background',
+                'RunAtLoad':True,'StartInterval':3600,
+                'StartCalendarInterval':{'Hour':8,'Minute':20},'ProcessType':'Background',
                 'StandardOutPath':str(log_root/(name+'.log')),
                 'StandardErrorPath':str(log_root/(name+'.error.log')),
             })

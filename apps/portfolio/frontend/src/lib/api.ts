@@ -1296,6 +1296,7 @@ export type PortfolioResearchAsOfMode = 'dynamic' | 'pinned'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
   taxonomy_id: string
+  targets_available?: boolean
   name: string
   taxonomy_type: string
   budgeting_level?: string | null
@@ -4210,6 +4211,11 @@ export function getPortfolioOptionObligations(
 
 export function requestInstrumentRisk<T>(path: string, init?: RequestInit) {
   return fetchJson<T>(API_BASE_URL, `/api/instrument-risk${path.slice('/risk'.length)}`, init)
+}
+
+/** Share authenticated requests and financial-read retry semantics with domain panels. */
+export function requestPortfolioResource<T>(path: string, init?: RequestInit) {
+  return fetchJson<T>(API_BASE_URL, path, init)
 }
 
 export function getPortfolioFcnLifecycles(portfolioId: string, positionReferenceId: string, asOfDate: string) {

@@ -137,11 +137,16 @@ the archive and its checksum/index arrive from the same trusted host.
 ## Scheduled entrypoints
 
 `infra/scripts/install_market_pipeline.py --scheduler systemd --role collector
---env-root /external/config` writes eight user service/timer pairs. Daily collection
+--env-root /external/config` writes nine user service/timer pairs. Daily collection
 runs at 07:15 Shanghai time, weekly collection Saturday 11:00, publication hourly
 at :40, and text catch-up hourly at :20. Persistent timers catch up after downtime.
+BTC/USD has a separate daily 08:15 Shanghai collection after the UTC day closes;
+it publishes the shared series and projects registered crypto instruments without
+changing the other markets' daily collection time.
 Registered prices run at CN15:30, HK17:00, US07:00 and Europe07:05 Shanghai time.
-`--scheduler launchd --role replica` writes only hourly/login catch-up. The runner
+`--scheduler launchd --role replica` writes hourly/login catch-up plus a daily
+08:20 synchronization before the 08:30 BTC research check. Delayed collection or
+delivery remains an explicit data gap, and does not fabricate a current close. The runner
 loads the validated external environment. Acquisition and delivery use separate
 locks so a long bulk task cannot block a market close; publication and status
 updates serialize their shared directory mutations.
