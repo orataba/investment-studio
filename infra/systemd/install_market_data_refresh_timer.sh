@@ -47,6 +47,7 @@ RESTART_SEC="${RESTART_SEC:-20min}"
 START_LIMIT_INTERVAL_SEC="${START_LIMIT_INTERVAL_SEC:-3h}"
 START_LIMIT_BURST="${START_LIMIT_BURST:-3}"
 PERSISTENT="${PERSISTENT:-false}"
+START_TIMERS="${START_TIMERS:-true}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "PYTHON_BIN is not executable: $PYTHON_BIN" >&2
@@ -137,7 +138,7 @@ if [[ ! "$RETRY_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
   echo "RETRY_FAILED_ATTEMPTS must be a non-negative integer: $RETRY_FAILED_ATTEMPTS" >&2
   exit 64
 fi
-for boolean_name in FAIL_ON_ITEM_FAILURE REQUIRE_DOWNSTREAM_SUCCESS RESTART_ON_FAILURE PERSISTENT; do
+for boolean_name in FAIL_ON_ITEM_FAILURE REQUIRE_DOWNSTREAM_SUCCESS RESTART_ON_FAILURE PERSISTENT START_TIMERS; do
   boolean_value="${!boolean_name}"
   if [[ "$boolean_value" != "true" && "$boolean_value" != "false" ]]; then
     echo "$boolean_name must be true or false." >&2
@@ -232,7 +233,9 @@ EOF
 systemctl --user stop "$UNIT_NAME.timer" >/dev/null 2>&1 || true
 systemctl --user daemon-reload
 systemctl --user enable "$UNIT_NAME.timer"
-systemctl --user start "$UNIT_NAME.timer"
+if [[ "$START_TIMERS" == true ]]; then
+  systemctl --user start "$UNIT_NAME.timer"
+fi
 
 echo "Installed $SERVICE_FILE"
 echo "Installed $TIMER_FILE"

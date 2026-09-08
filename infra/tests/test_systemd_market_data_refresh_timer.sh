@@ -141,4 +141,14 @@ for schedule in \
   grep -Fq "enable $unit_name.timer" "$SYSTEMCTL_CALLS"
 done
 
+: > "$SYSTEMCTL_CALLS"
+HOME="$TEST_ROOT/home" XDG_CONFIG_HOME="$TEST_ROOT/config" PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" ENV_ROOT="$ENV_ROOT" START_TIMERS=false \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh"
+if grep -Fq 'start investment-studio-market-data-refresh.timer' "$SYSTEMCTL_CALLS"; then
+  echo "A staged timer started before the caller restored its prior state." >&2
+  exit 1
+fi
+
 echo "systemd market close, pre-open reference and settlement timer tests passed."
