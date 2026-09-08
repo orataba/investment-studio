@@ -432,6 +432,7 @@ class Collector:
                 self.publish("macro_series",treasury.normalize_treasury_xml(response.body,field_map=field_map,start_date=start,end_date=end,source_dataset=key,**clock),response,ref,provider="us_treasury")
 
     def market_series(self,start,end,symbols):
+        source_issues=[]
         for series_id,provider_symbol in market_series.FMP_PROVIDER_SYMBOLS.items():
             if symbols and series_id not in symbols:continue
             stop=min(end,datetime.now(UTC).date()-timedelta(days=1) if series_id=="BTCUSD" else closed_us_date(datetime.now(UTC)))
@@ -439,14 +440,18 @@ class Collector:
             while cursor<=stop:
                 hi=min(stop,cursor+timedelta(days=1459))
                 response=self.fmp.get_json("historical-price-eod/full",{"symbol":provider_symbol,"from":cursor.isoformat(),"to":hi.isoformat()});clock,ref=self.archive(response)
-                rows=market_series.normalize_fmp_market_series(response.payload,series_id=series_id,start_date=cursor,end_date=hi,**clock)
-                self.publish("market_series_daily",rows,response,ref)
+                rows,rejected=market_series.normalize_fmp_market_series(response.payload,series_id=series_id,start_date=cursor,end_date=hi,**clock)
+                details={"validation":{"status":"partial","accepted_row_count":len(rows),"rejected_rows":rejected}} if rejected else {}
+                batch=self.publish("market_series_daily",rows,response,ref,**details)
+                if rejected:
+                    source_issues.append({"series_id":series_id,"batch_id":batch["batch_id"],"raw_ref":ref,"rejected_rows":rejected})
                 cursor=hi+timedelta(days=1)
         for series_id,code in market_series.HK_SECTOR_CODES.items():
             if symbols and series_id not in symbols:continue
             response=get_public_bytes(market_series.HSIL_CHART_URL.format(code=code));clock,ref=self.archive(response,"hang_seng_indexes")
             rows=market_series.normalize_hsil_close_series(response.body,series_id=series_id,code=code,start_date=start,end_date=end,**clock)
             self.publish("market_series_daily",rows,response,ref,provider="hang_seng_indexes")
+        if source_issues:return {"status":"failed","source_issues":source_issues}
 
     def cn_futures(self,start,end,symbols):
         from .providers.cn_futures import GTJAFuturesClient,ENDPOINTS,load_cn_futures_coverage,_requests_for_endpoint,_extract_records,normalize_gtja_records,_dataset_catalog_row

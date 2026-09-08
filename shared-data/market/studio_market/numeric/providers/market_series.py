@@ -35,13 +35,27 @@ def normalize_fmp_market_series(
     end_date: date,
     raw_sha256: str,
     collected_at: datetime,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Return valid dates and explicit rejections from one immutable capture.
+
+    Only a known series/date can be isolated. Structural or identity failures
+    still reject the entire response; a conflicting date contributes no price.
+    Callers must retain rejections and report the source as incomplete.
+    """
     if series_id not in FMP_SERIES_IDS:
         raise ValueError(f"unsupported FMP market series: {series_id}")
     if not isinstance(payload, list):
         raise ValueError(f"FMP {series_id} history is not a list")
     by_date: dict[date, dict[str, object]] = {}
-    for item in payload:
+    rejected: list[dict[str, object]] = []
+    rejected_dates: set[date] = set()
+
+    def reject(observed: date, row_index: int, reason: str) -> None:
+        by_date.pop(observed, None)
+        rejected_dates.add(observed)
+        rejected.append({"date": observed.isoformat(), "row_index": row_index, "reason": reason})
+
+    for row_index, item in enumerate(payload):
         if not isinstance(item, Mapping):
             raise ValueError(f"FMP {series_id} history contains a malformed row")
         expected_symbol = FMP_PROVIDER_SYMBOLS[series_id].upper()
@@ -52,12 +66,18 @@ def normalize_fmp_market_series(
                 f"{provider_symbol} != {expected_symbol}"
             )
         observed = _iso_date(item.get("date"))
-        if observed is None or observed < start_date or observed > end_date:
+        if observed is None:
+            raise ValueError(f"FMP {series_id} history contains an invalid date")
+        if observed < start_date or observed > end_date:
             continue
-        open_value = _positive_number(item.get("open"), f"{series_id} open", observed)
-        high_value = _positive_number(item.get("high"), f"{series_id} high", observed)
-        low_value = _positive_number(item.get("low"), f"{series_id} low", observed)
-        close_value = _positive_number(item.get("close"), f"{series_id} close", observed)
+        try:
+            open_value = _positive_number(item.get("open"), f"{series_id} open", observed)
+            high_value = _positive_number(item.get("high"), f"{series_id} high", observed)
+            low_value = _positive_number(item.get("low"), f"{series_id} low", observed)
+            close_value = _positive_number(item.get("close"), f"{series_id} close", observed)
+        except ValueError as error:
+            reject(observed, row_index, str(error))
+            continue
         high_value = max(high_value, open_value, low_value, close_value)
         low_value = min(low_value, open_value, high_value, close_value)
         volume = _optional_number(item.get("volume"), minimum=0.0)
@@ -77,9 +97,10 @@ def normalize_fmp_market_series(
         }
         prior = by_date.get(observed)
         if prior is not None and prior != row:
-            raise ValueError(f"FMP {series_id} has conflicting rows on {observed}")
-        by_date[observed] = row
-    return [by_date[key] for key in sorted(by_date)]
+            reject(observed, row_index, f"FMP {series_id} has conflicting rows on {observed}")
+        elif observed not in rejected_dates:
+            by_date[observed] = row
+    return [by_date[key] for key in sorted(by_date)], rejected
 
 def normalize_hsil_close_series(
     body: bytes,

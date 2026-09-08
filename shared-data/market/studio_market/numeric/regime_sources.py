@@ -13,13 +13,17 @@ import gzip
 import os
 import json
 import math
+from collections.abc import Mapping
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
 
 from .collect import Collector
 from .providers.http_client import get_public_bytes
 from .raw import archive_response
 from .store import NumericStore
+from .schema import batches
 
 UTC = timezone.utc
 HSIL_CODES = {
@@ -32,6 +36,45 @@ HSIL_CODES = {
 
 class DataHubIntermittentPermissionError(RuntimeError):
     """Observed gateway code 40203, retried by the existing page controller."""
+
+
+def _fmp_raw_dates(payload, *, symbol, start, end):
+    """Isolate invalid known dates without changing raw or close-only semantics."""
+    if not isinstance(payload, list):
+        raise ValueError("FMP raw daily response must be a list")
+    accepted, rejected, rejected_dates = {}, [], set()
+    for index, incoming in enumerate(payload):
+        if not isinstance(incoming, Mapping) or incoming.get("symbol") != symbol:
+            raise ValueError("FMP raw daily symbol or row does not match its requested series")
+        try:
+            day = date.fromisoformat(str(incoming["date"]))
+        except (KeyError, ValueError):
+            raise ValueError("FMP raw daily date cannot be identified") from None
+        if not start <= day <= end:
+            continue
+        row = {**incoming, "date": day, "provider_symbol": symbol,
+               "ohlc_adjustment": "provider_raw", "adjustment_factor": 1.0}
+        reason = None
+        for field in ("close", "open", "high", "low", "volume"):
+            if (field != "close" and field not in incoming) or (field == "volume" and incoming[field] is None):
+                continue
+            try:
+                value = float(incoming.get(field))
+                valid = math.isfinite(value) and (value >= 0 if field == "volume" else value > 0)
+            except (TypeError, ValueError, OverflowError):
+                valid = False
+            if not valid:
+                reason = f"FMP raw {field} must be finite and {'nonnegative' if field == 'volume' else 'positive'}"
+                break
+        if reason is None and day in accepted and accepted[day] != row:
+            reason = "FMP raw daily response contains conflicting rows for this date"
+        if reason:
+            accepted.pop(day, None)
+            rejected_dates.add(day)
+            rejected.append({"date": day.isoformat(), "row_index": index, "reason": reason})
+        elif day not in rejected_dates:
+            accepted[day] = row
+    return [accepted[day] for day in sorted(accepted)], rejected
 
 
 class RegimeSources:
@@ -64,21 +107,65 @@ class RegimeSources:
             if not page["rows"]:
                 raise ValueError("Shared numeric pagination stopped before the declared total")
 
-    def _record_read(self, rows):
-        captures = {(row["batch_id"], row.get("raw_ref"), row["observed_at"]) for row in rows}
-        self.provenance.extend({"batch_id": batch, "raw_ref": raw, "observed_at": observed} for batch, raw, observed in sorted(captures))
+    def _record_read(self, rows, *, series=None, start=None, end=None):
+        captures = {row["batch_id"]: {"batch_id": row["batch_id"], "raw_ref": row.get("raw_ref"),
+                                    "observed_at": row["observed_at"],
+                                    **({"adjusted_raw_ref": row["adjusted_raw_ref"]} if row.get("adjusted_raw_ref") else {})} for row in rows}
+        scope = batches.c.id.in_(list(captures))
+        if series:
+            scope = scope | ((batches.c.dataset == "regime_market_daily") & (batches.c.status == "ready") &
+                (batches.c.details["series"].as_string() == series) &
+                (batches.c.details["parameters"]["from"].as_string() <= end.isoformat()) &
+                (batches.c.details["parameters"]["to"].as_string() >= start.isoformat()))
+        with self.store.engine.connect() as connection:
+            details = dict(connection.execute(select(batches.c.id, batches.c.details).where(scope)).all())
+        complete = [detail for detail in details.values() if series and detail.get("series") == series
+                    and not detail.get("validation") and detail.get("observed_at")]
 
-    def _publish(self, response, rows, *, source, series):
-        _, reference = archive_response(self.settings, source, response.body)
+        def corrected(observed, lower, upper):
+            return any(datetime.fromisoformat(detail["observed_at"]) > observed
+                       and detail["parameters"]["from"] <= lower
+                       and detail["parameters"]["to"] >= upper for detail in complete)
+
+        for batch, detail in details.items():
+            validation = detail.get("validation")
+            if not validation:
+                continue
+            scoped = validation
+            if series and detail.get("series") == series:
+                observed = datetime.fromisoformat(detail["observed_at"])
+                if validation["status"] == "partial":
+                    rejected = [item for item in validation["rejected_rows"]
+                        if start.isoformat() <= item["date"] <= end.isoformat()
+                        and not corrected(observed, item["date"], item["date"])
+                        and not any(row["date"] == item["date"] and datetime.fromisoformat(row["observed_at"]) > observed for row in rows)]
+                    scoped = {**validation, "rejected_rows": rejected} if rejected else None
+                elif validation["status"] == "failed":
+                    lower = max(start.isoformat(), detail["parameters"]["from"])
+                    upper = min(end.isoformat(), detail["parameters"]["to"])
+                    if lower > upper or corrected(observed, lower, upper):
+                        scoped = None
+            if scoped:
+                # Include a relevant rejection even when its batch contributes
+                # no selected facts; complete newer captures resolve the warning.
+                capture = captures.setdefault(batch, {"batch_id": batch, "raw_ref": detail.get("raw_ref"),
+                                                      "observed_at": detail["observed_at"]})
+                capture["validation"] = scoped
+        self.provenance.extend(captures[batch] for batch in sorted(captures))
+
+    def _publish(self, response, rows, *, source, series, raw_ref=None, validation=None):
+        reference = raw_ref or archive_response(self.settings, source, response.body)[1]
         normalized = []
         for row in rows:
             row = dict(row)
             row.setdefault("series_id", series)
             row["raw_ref"] = reference
             normalized.append(row)
+        evidence = {"validation": validation} if validation else {}
         result = self.store.ingest("regime_market_daily", [normalized], source=source, observed_at=response.received_at,
-            details={"endpoint": response.endpoint, "parameters": response.params, "series": series})
-        self.provenance.append({"batch_id": result["batch_id"], "raw_ref": reference, "observed_at": response.received_at.isoformat()})
+            details={"endpoint": response.endpoint, "parameters": response.params, "series": series,
+                     "raw_ref": reference, "observed_at": response.received_at.isoformat(), **evidence})
+        self.provenance.append({"batch_id": result["batch_id"], "raw_ref": reference, "observed_at": response.received_at.isoformat(), **evidence})
         return self._rows("regime_market_daily", batch_id=result["batch_id"])
 
     def fmp_payload(self, endpoint: str, params: dict) -> list[dict]:
@@ -93,13 +180,12 @@ class RegimeSources:
                     if acquired['status'] != 'ready':
                         raise ValueError('Shared Regime price acquisition or revision is incomplete')
                     batches = self.collector.results[before:]
-                    self.provenance.extend(batches)
                     rows = [row for batch in batches for row in self._rows("raw_eod_daily", batch_id=batch["batch_id"])]
                 else:
                     rows = self._rows("raw_eod_daily", symbols=[symbol], start=start.isoformat(), end=end.isoformat())
-                    self._record_read(rows)
                 self._prepared_eod[identity] = rows
             rows = self._prepared_eod[identity]
+            self._record_read(rows)
             if endpoint.endswith("dividend-adjusted"):
                 return [{"symbol": symbol, "date": row["date"], "adjOpen": row["adjusted_open"], "adjHigh": row["adjusted_high"], "adjLow": row["adjusted_low"], "adjClose": row["adjusted_close"], "volume": row["volume"]} for row in rows]
             return [{"symbol": symbol, "date": row["date"], "adjOpen": row["open"], "adjHigh": row["high"], "adjLow": row["low"], "adjClose": row["close"], "volume": row["volume"]} for row in rows]
@@ -109,27 +195,23 @@ class RegimeSources:
         series = "fmp:raw:" + symbol
         if self.role == "replica":
             rows = self._rows("regime_market_daily", symbols=[series], start=start.isoformat(), end=end.isoformat())
-            self._record_read(rows)
+            self._record_read(rows, series=series, start=start, end=end)
             return [{**row, "symbol": row["provider_symbol"]} for row in rows]
         cursor = start
         captured_rows = []
         while cursor <= end:
             stop = min(cursor + timedelta(days=1459), end)
             response = self.collector.fmp.get_json(endpoint, {"symbol": symbol, "from": cursor.isoformat(), "to": stop.isoformat()})
-            if not isinstance(response.payload, list):
-                raise ValueError("FMP raw daily response must be a list")
-            rows = []
-            for incoming in response.payload:
-                if incoming.get("symbol") != symbol:
-                    raise ValueError("FMP raw daily symbol does not match its requested series")
-                day = date.fromisoformat(str(incoming["date"]))
-                if not cursor <= day <= stop:
-                    continue
-                close = float(incoming["close"])
-                if not math.isfinite(close) or close <= 0:
-                    raise ValueError("FMP raw close must be finite and positive")
-                rows.append({**incoming, "date": day, "provider_symbol": symbol, "ohlc_adjustment": "provider_raw", "adjustment_factor": 1.0})
-            captured_rows.extend(self._publish(response, rows, source="fmp", series=series))
+            _, reference = archive_response(self.settings, "fmp", response.body)
+            try:
+                rows, rejected = _fmp_raw_dates(response.payload, symbol=symbol, start=cursor, end=stop)
+            except ValueError as error:
+                self._publish(response, [], source="fmp", series=series, raw_ref=reference,
+                    validation={"status": "failed", "accepted_row_count": 0, "reason": str(error)})
+                raise
+            validation = {"status": "partial", "accepted_row_count": len(rows), "rejected_rows": rejected} if rejected else None
+            captured_rows.extend(self._publish(response, rows, source="fmp", series=series,
+                raw_ref=reference, validation=validation))
             cursor = stop + timedelta(days=1)
         return [{**row, "symbol": row["provider_symbol"]} for row in captured_rows]
 

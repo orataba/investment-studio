@@ -112,3 +112,79 @@ def test_durable_price_revision_requests_use_postgres_json_and_exact_receipts(pu
         assert pending_revisions(store,**{**kwargs,'dataset':'raw_eod_daily'})=={'SPY':requests[1]}
     finally:
         store.close()
+
+
+def test_regime_replica_scopes_delivered_partial_evidence_and_keeps_original_receipt(publication_settings, tmp_path):
+    import gzip
+    import json
+    from types import SimpleNamespace
+    from studio_market.numeric.regime_sources import RegimeSources
+
+    source_settings = MarketSettings(f"sqlite:///{tmp_path / 'collector.db'}", tmp_path / 'collector')
+    source_store = NumericStore(source_settings)
+    source_store.create_schema_for_testing()
+
+    class Client:
+        observed = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        payload = []
+
+        def get_json(self, endpoint, params):
+            return SimpleNamespace(payload=self.payload, body=json.dumps(self.payload).encode(),
+                                   endpoint=endpoint, params=params, received_at=self.observed)
+
+        def close(self):
+            pass
+
+    client = Client()
+    collector = RegimeSources(source_settings, store=source_store, role='collector', fmp_client=client)
+    replica = RegimeSources(publication_settings, role='replica')
+    endpoint = 'historical-price-eod/full'
+    params = {'symbol': 'USDHKD', 'from': '2026-09-06', 'to': '2026-09-07'}
+    bundle = tmp_path / 'regime-capture.zip'
+
+    def deliver(rows, *, day, symbol='USDHKD', end='2026-09-07'):
+        client.payload = rows
+        client.observed = datetime(2026, 9, day, tzinfo=timezone.utc)
+        collector.fmp_payload(endpoint, {**params, 'symbol': symbol, 'to': end})
+        capture = collector.provenance[-1]
+        exported = export_bundle(source_settings, bundle, batch_ids=[capture['batch_id']])
+        assert exported['batch_count'] == 1
+        imported = import_bundle(publication_settings, bundle)
+        assert imported['batches'][0]['status'] == 'ready'
+        return capture
+
+    def read(**overrides):
+        replica.provenance.clear()
+        return replica.fmp_payload(endpoint, {**params, **overrides})
+
+    good = {'symbol': 'USDHKD', 'date': '2026-09-07', 'close': 7.8}
+    bad = {**good, 'date': '2026-09-06', 'close': 0}
+    try:
+        partial = deliver([bad, good], day=8)
+        original = replica.store.query('regime_market_daily', as_of='2026-09-08T23:59:00Z')['rows']
+        assert [row['date'] for row in read(**{'from': '2026-09-07'})] == ['2026-09-07']
+        assert all('validation' not in capture for capture in replica.provenance)
+        assert read(to='2026-09-06') == []
+        assert replica.provenance[0]['validation']['rejected_rows'][0]['date'] == '2026-09-06'
+        copied_raw = publication_settings.data_root / partial['raw_ref']
+        assert json.loads(gzip.decompress(copied_raw.read_bytes())) == [bad, good]
+
+        # PostgreSQL's nested JSONB scope must exclude a different symbol's
+        # later complete empty receipt, even though its requested dates match.
+        deliver([], day=9, symbol='USDCNH')
+        assert len(read()) == 1
+        assert any(capture.get('validation', {}).get('status') == 'partial' for capture in replica.provenance)
+
+        # Correct only the rejected date: the other selected row still belongs
+        # to the original partial capture but must no longer inherit its warning.
+        deliver([{**bad, 'close': 7.7}], day=10, end='2026-09-06')
+        assert {row['date'] for row in read()} == {'2026-09-06', '2026-09-07'}
+        assert len(replica.provenance) == 2
+        assert all('validation' not in capture for capture in replica.provenance)
+        with replica.store.engine.connect() as connection:
+            retained = connection.execute(select(batches.c.details).where(batches.c.id == partial['batch_id'])).scalar_one()
+        assert retained['validation'] == partial['validation']
+        assert replica.store.query('regime_market_daily', as_of='2026-09-08T23:59:00Z')['rows'] == original
+    finally:
+        collector.close()
+        replica.close()
