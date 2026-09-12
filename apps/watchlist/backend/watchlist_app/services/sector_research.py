@@ -25,7 +25,6 @@ from watchlist_app.services.research_notebook import ResearchNotebook, research_
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions
 
-TOPIC_ID = "us-sector-daily-review"
 INSTRUMENT_TOPIC_PREFIX = "instrument-events:"
 EVENT_INSTRUMENT_TYPES = ("equity", "etf", "index", "public_fund", "private_fund", "crypto")
 FUND_INSTRUMENT_TYPES = ("public_fund", "private_fund")
@@ -221,25 +220,23 @@ def sector_snapshot(iid, session, *, as_of=None):
     return view, evidence, companies
 
 
-def begin_run(session, ids, *, scheduled=False):
+def begin_run(session, ids, *, scheduled=False, question: str | None = None):
     from watchlist_app.services.research_identity import research_identity
-    ids = list(dict.fromkeys(ids))
-    sector_scope = bool(ids) and set(ids).issubset(scoped_ids(session))
-    if not sector_scope and (len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0])):
-        raise ValueError("请选择一个已登记的股票、基金、ETF、指数或加密资产；批量每日检查仅支持美股行业ETF")
-    # Batch and single-instrument jobs publish into the same dossiers and cases.
-    # Lock the shared instrument rows before checking either kind of active job.
+    if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
+        raise ValueError("每次研究请选择一个已登记且有效的股票、基金、ETF、指数或加密资产")
+    ids = list(ids)
+    # Manual and scheduled research share the same instrument's publication lock.
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
     for active in session.scalars(select(ResearchEntry).where(
             ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["queued", "running"]))):
         context = active.context_json or {}
         if context.get("sector_run") and set(ids).intersection(context.get("instrument_ids", [])):
-            if set(ids).issubset(context["instrument_ids"]):
+            if ids == context["instrument_ids"]:
                 return active, False
-            raise ReviewInProgress("部分标的的研究追踪正在运行，请完成后再检查当前范围")
-    topic_id = TOPIC_ID if len(ids) > 1 else f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}"
-    title = "美股行业ETF每日观察" if len(ids) > 1 else f"{instrument_label(session, ids[0])} · 研究追踪"
+            raise ReviewInProgress("当前标的的研究追踪正在运行，请完成后再更新")
+    topic_id = f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}"
+    title = f"{instrument_label(session, ids[0])} · 研究追踪"
     topic = session.get(ResearchTopic, topic_id)
     if topic is None:
         topic = ResearchTopic(topic_id=topic_id, title=title, question="风险、机会与重要不确定性", instrument_ids=ids, status="active", conclusion="", visibility="team")
@@ -248,16 +245,12 @@ def begin_run(session, ids, *, scheduled=False):
     session.refresh(topic, with_for_update=True)
     latest = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc()))
     if latest and latest.status in {"queued", "running"}:
-        if not scheduled and not set(ids).issubset(latest.context_json.get("instrument_ids", [])):
-            raise ReviewInProgress("其他行业检查正在运行，请稍后再检查当前范围")
         return latest, False
     cutoff = datetime.now(UTC)
     incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
-        # Existing batch checks still count for each sector's daily attempt.
-        daily_topics = [topic_id, TOPIC_ID] if sector_scope else [topic_id]
-        for prior in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id.in_(daily_topics)).order_by(ResearchEntry.created_at.desc())):
+        for prior in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc())):
             if not prior.context_json.get("sector_run"):
                 continue
             checked = datetime.fromisoformat(prior.context_json["cutoff"])
@@ -274,11 +267,12 @@ def begin_run(session, ids, *, scheduled=False):
                 if not incremental_trigger:
                     return prior, False
                 break
-    run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="行业ETF每日检查" if sector_scope else title,
+    run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=title,
         body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
-        status="queued", context_json={"sector_run": True, "event_scope": "daily_sector" if sector_scope else "instrument",
+        status="queued", context_json={"sector_run": True, "event_scope": "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
         "research_actor": research_identity(),
+        **({"question": question} if question is not None else {}),
         "incremental_trigger": incremental_trigger,
         "web_evidence": [], "reviews": {}})
     session.add(run)

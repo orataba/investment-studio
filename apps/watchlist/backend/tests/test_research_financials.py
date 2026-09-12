@@ -132,8 +132,13 @@ def test_read_pages_enter_same_run_original_pool_and_independent_receipt_review(
     research_notebook.validate_notebook(notebook, "company", research_notebook.research_sources(context, "run"))
     packet = sector_fact_review._evidence_packet(context, [{"instrument_id": "company", "events": [],
         "reflection": {"summary": "复核财报", "source_ids": []}}], "run")
-    assert packet["sources"] == [source]
-    assert packet["sources"][0]["company"]["financials"][0]["value"] == 150
+    originals = {item["source_id"]: item for item in packet["sources"]}
+    assert set(originals) == {source["source_id"], "instrument:run:company"}
+    assert originals[source["source_id"]] == source
+    assert originals[source["source_id"]]["company"]["financials"][0]["value"] == 150
+    overview = originals["instrument:run:company"]
+    assert overview["instrument_id"] == "company" and overview["snapshot_scope"] == "overview"
+    assert "financials" not in overview["snapshot"].get("reference_data", {}).get("sections", {})
     with pytest.raises(ValueError, match="其他标的"):
         research_notebook.validate_notebook(notebook, "another", research_notebook.research_sources(context, "run"))
 

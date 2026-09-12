@@ -163,7 +163,7 @@ it('enables fund research updates while preserving saved research', async () => 
   expect(screen.getByText(review('limited').summary)).toBeTruthy()
 })
 
-it('loads only the saved conclusion’s fetched originals on expansion and shares one source list for a multi-instrument run', async () => {
+it('loads the selected instrument’s saved originals and versions from an earlier shared run', async () => {
   const saved = { ...review('completed'), run_id: 'saved-run', checked_at: '2026-09-05T08:00:00+08:00' }
   const latest = { ...review('failed'), run_id: 'failed-run', summary: '最新更新未完成。' }
   const published = '2026-09-04T17:00:00+08:00'
@@ -172,10 +172,11 @@ it('loads only the saved conclusion’s fetched originals on expansion and share
       { source_id: 'report', version_id: 'first', title: '已查阅的公司报告', url: 'https://example.com/report', body_available: true, published_at: published, retrieved_at: retrieved },
       { source_id: 'report', version_id: 'revised', title: '同网址的另一原文版本', url: 'https://example.com/report', body_available: true, published_at: null, retrieved_at: null },
       { source_id: 'empty', title: '未取得正文', url: 'https://example.com/empty', body_available: false },
-  ] } : { available: true, sectors: Array.from({ length: 11 }, (_, index) => sector({ instrument_id: `fund-${index}`, ticker: `FUND${index}`, latest_review: latest, last_completed_review: saved })), events: [] })
-  render(<SectorResearchPanel watchlistId="all-funds" />)
+  ] } : payload([], { latest_review: latest, last_completed_review: saved }))
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
-  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/sector-research?watchlist_id=all-funds'])
+  expect(request.mock.calls[0][0]).toBe('/api/sector-research?instrument_id=xlk-us')
+  expect(request.mock.calls.some(([path]) => path.includes('/context'))).toBe(false)
   await act(async () => {
     fireEvent.click(screen.getByText(/^研究来源与覆盖/))
     await vi.advanceTimersByTimeAsync(0)
@@ -183,7 +184,6 @@ it('loads only the saved conclusion’s fetched originals on expansion and share
   const originals = screen.getByRole('region', { name: '对应研究查阅原文' })
   expect(within(originals).getByRole('link', { name: '已查阅的公司报告' }).getAttribute('href')).toBe('https://example.com/report')
   expect(within(originals).getByRole('link', { name: '同网址的另一原文版本' }).getAttribute('href')).toBe('https://example.com/report')
-  expect(within(originals).getByText('这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。')).toBeTruthy()
   expect(Array.from(originals.querySelectorAll('time')).map((node) => node.dateTime)).toEqual([published, retrieved, '', ''])
   expect(within(originals).getAllByText('时间未知')).toHaveLength(2)
   expect(screen.queryByText('只有搜索结果')).toBeNull()
@@ -228,17 +228,16 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
   expect(screen.queryByRole('button', { name: '保存跟进' })).toBeNull()
 })
 
-it('keeps the full-list drawer compact and shows the saved research conclusion in the overview', async () => {
-  request.mockResolvedValue({ available: true, sectors: Array.from({ length: 11 }, (_, index) =>
-    sector({ instrument_id: `sector-${index}`, latest_review: currentReview(review('limited')) })), events: [event()] })
-  const { rerender } = render(<SectorResearchPanel watchlistId="sector-list" variant="status" />)
+it('keeps instrument status compact and shows its saved research conclusion in the overview', async () => {
+  request.mockResolvedValue(payload([event()]))
+  const { rerender } = render(<SectorResearchPanel instrumentId="xlk-us" variant="status" />)
   await load()
-  expect(screen.getByText('11 个标的 · 已更新，覆盖受限')).toBeTruthy()
+  expect(screen.getByText('信息技术 · 已更新，覆盖受限')).toBeTruthy()
   expect(screen.queryByLabelText('所选日期内研究进展')).toBeNull()
   expect(screen.queryByText('云需求新增变化')).toBeNull()
   expect(screen.queryByText('持仓截至')).toBeNull()
   const open = vi.fn()
-  rerender(<SectorResearchPanel watchlistId="sector-list" variant="summary" onOpenEvents={open} />)
+  rerender(<SectorResearchPanel instrumentId="xlk-us" variant="summary" onOpenEvents={open} />)
   expect(screen.getByText('云需求新增变化')).toBeTruthy()
   expect(screen.getAllByText('需求趋势暂未出现实质变化，继续验证盈利预期。').every((node) => node.closest('details') === null)).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: '查看研究追踪' }))
@@ -256,13 +255,13 @@ it('shows an honest empty state with coverage limits and prevents running withou
   expect((screen.getByRole('button', { name: '更新研究' }) as HTMLButtonElement).disabled).toBe(true)
 })
 
-it('starts the selected scope and stops polling after completion', async () => {
+it('starts only the selected instrument and stops polling after completion', async () => {
   let started = false, complete = false
   request.mockImplementation(async (_path: string, init?: RequestInit) => {
     if (init?.method === 'POST') { started = true; return { run_id: 'run-1', status: 'queued' } }
     return payload([], { latest_review: started ? review(complete ? 'completed' : 'running') : null })
   })
-  render(<SectorResearchPanel watchlistId="sector-list" />)
+  render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '更新研究' })) })
   expect(request).toHaveBeenCalledWith('/api/sector-research/runs', { method: 'POST', body: JSON.stringify({ instrument_ids: ['xlk-us'] }) })

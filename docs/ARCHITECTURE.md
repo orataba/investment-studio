@@ -119,8 +119,8 @@ DSH 和传递依赖在版本部署时按 `infra/harness/pnpm-lock.yaml` 安装�
 Watchlist 的三个入口共用 `research_runner.py` 和对应的 Harness patch；交易截图使用
 Portfolio 自己的 runner、patch 和 MCP。子进程只接收运行所需的显式环境变量，
 没有数据库、行情供应商或交易提交权限。普通对话接口不能修改系统研究档案或风控记录；
-自动研究不能经普通对话工具绕过已绑定的输入。对同一标的的批量和单标研究在入队时
-按标的串行检查，避免并发覆盖底稿与事件。
+自动研究不能经普通对话工具绕过已绑定的输入。手动与自动研究均以单个标的入队，
+共用该标的的运行检查与发布锁，避免并发覆盖底稿与事件；历史批量记录仅保留读取。
 
 部署地址与外部运行配置见 [Server Deployment](SERVER_DEPLOYMENT.md)，
 投资判断、研究状态、持续验证与人机协作合同见 [投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md)，

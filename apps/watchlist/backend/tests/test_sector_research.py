@@ -28,7 +28,7 @@ def add_sources(run, **overrides):
     run.context_json={**run.context_json,"web_evidence":[{"operation":"search","sources":[]},{"operation":"fetch","sources":[source]}]}
 
 
-def test_sectors_have_independent_runs_and_existing_batch_preserves_daily_dedup(client, monkeypatch):
+def test_manual_and_daily_research_share_one_run_per_instrument(client, monkeypatch):
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
         first, created=service.begin_run(session,["xlk"])
@@ -36,33 +36,31 @@ def test_sectors_have_independent_runs_and_existing_batch_preserves_daily_dedup(
         assert service.latest_reviews(session)["xlk"]["status"]=="queued"
         other, created = service.begin_run(session,["xlf"])
         assert created and first.topic_id == "instrument-events:xlk" and other.topic_id == "instrument-events:xlf"
+        for run in (first, other):
+            assert run.context_json["event_scope"] == "instrument"
+            assert run.title.endswith(" · 研究追踪")
+            same, created = service.begin_run(session, run.context_json["instrument_ids"], scheduled=True)
+            assert not created and same.entry_id == run.entry_id
         other.status = "completed"
         first.status="completed"
         session.commit()
-        full, created=service.begin_run(session,["xlk","xlf"], scheduled=True)
-        assert created and full.entry_id!=first.entry_id
-        full.status="completed"
-        session.commit()
-        same, created=service.begin_run(session,["xlk","xlf"], scheduled=True)
-        assert not created and same.entry_id==full.entry_id
-        same, created=service.begin_run(session,["xlk"], scheduled=True)
-        assert not created and same.entry_id in {full.entry_id, first.entry_id}
+        for run in (first, other):
+            same, created = service.begin_run(session, run.context_json["instrument_ids"], scheduled=True)
+            assert not created and same.entry_id == run.entry_id
 
 
-def test_batch_and_single_instrument_cannot_publish_overlapping_runs(client, monkeypatch):
+@pytest.mark.parametrize("ids", [[], ["xlk", "xlf"], ["xlk", "xlk"], ["missing"]])
+def test_new_research_rejects_invalid_scope_without_creating_any_run(client, monkeypatch, ids):
+    from watchlist_app.api.routes import sector_research as routes
     seed_sector(client, monkeypatch)
+    monkeypatch.setattr(routes, "harness_available", lambda: True)
+    monkeypatch.setattr(routes, "run_analysis", lambda *args: pytest.fail("invalid scope started a harness"))
+    response = client.post("/api/sector-research/runs", json={"instrument_ids": ids})
+    assert response.status_code == 422
     with get_session_factory()() as session:
-        single, _ = service.begin_run(session, ["xlk"])
-        with pytest.raises(service.ReviewInProgress):
-            service.begin_run(session, ["xlk", "xlf"])
-        single.status = "completed"
-        session.commit()
-        batch, created = service.begin_run(session, ["xlk", "xlf"])
-        assert created
-        same, created = service.begin_run(session, ["xlf"], scheduled=True)
-        assert not created and same.entry_id == batch.entry_id
-        same, created = service.begin_run(session, ["xlk"])
-        assert not created and same.entry_id == batch.entry_id
+        with pytest.raises(ValueError, match="每次研究请选择一个"):
+            service.begin_run(session, ids)
+        assert session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis")).all() == []
 
 
 def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_automatic_resolution(client, monkeypatch):

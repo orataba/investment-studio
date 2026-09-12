@@ -45,7 +45,7 @@ def sector_research(instrument_id: str | None = None, watchlist_id: str | None =
 
 
 class RunInput(BaseModel):
-    instrument_ids: list[str] = Field(min_length=1, max_length=11)
+    instrument_ids: list[str] = Field(min_length=1, max_length=1)
 
 
 @router.post("/sector-research/runs", status_code=202)

@@ -67,11 +67,11 @@ function ResearchRunSources({ review, instruments, expanded }: { review: Review;
   </section>
 }
 
-export default function SectorResearchPanel({ instrumentId, watchlistId, variant = 'timeline', onOpenEvents, onAskAssistant }: {
-  instrumentId?: string; watchlistId?: string; variant?: 'timeline' | 'summary' | 'status'
+export default function SectorResearchPanel({ instrumentId, variant = 'timeline', onOpenEvents, onAskAssistant }: {
+  instrumentId: string; variant?: 'timeline' | 'summary' | 'status'
   onOpenEvents?: () => void; onAskAssistant?: AskResearchAssistant
 }) {
-  const query = instrumentId ? `instrument_id=${encodeURIComponent(instrumentId)}` : watchlistId ? `watchlist_id=${encodeURIComponent(watchlistId)}` : ''
+  const query = `instrument_id=${encodeURIComponent(instrumentId)}`
   const canWrite = useStudioAccount()?.team_role !== 'reader'
   const [snapshot, setSnapshot] = useState<{ query: string; data: ResearchResponse } | null>(null)
   const [refresh, setRefresh] = useState(0)
@@ -88,7 +88,7 @@ export default function SectorResearchPanel({ instrumentId, watchlistId, variant
 
   useEffect(() => {
     const updated = (event: Event) => {
-      if (!instrumentId || (event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1)
+      if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1)
     }
     window.addEventListener(RESEARCH_UPDATED, updated)
     return () => window.removeEventListener(RESEARCH_UPDATED, updated)
@@ -127,7 +127,7 @@ export default function SectorResearchPanel({ instrumentId, watchlistId, variant
     setError('')
     try {
       const result = await fetchJson<{ run_id: string; status: string }>('/api/sector-research/runs', {
-        method: 'POST', body: JSON.stringify({ instrument_ids: data.sectors.map((sector) => sector.instrument_id) }),
+        method: 'POST', body: JSON.stringify({ instrument_ids: [instrumentId] }),
       })
       if (running(result.status)) setSubmitted({ query, runId: result.run_id })
       else setRefresh((value) => value + 1)

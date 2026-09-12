@@ -497,6 +497,9 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     return {
         "run_id": run_id,
         "cutoff": context["cutoff"],
+        **({"question": context["question"], "question_note":
+            "This is the recorded research request and review scope, not factual evidence or an investment conclusion. Verify the proposed response against the retained originals; do not cite the request as a source."}
+           if context.get("question") else {}),
         "draft_reviews": reviewed,
         **snapshot_indexes,
         "snapshot_read_note": "instrument_inputs/sector_inputs index canonical originals in sources. A snapshot_scope=overview source supplies only the shown excerpt; omitted tables are not reviewed evidence. Explicitly cited full snapshots remain complete. Use the supplied source_id for supported facts; do not infer valuation or a causal market narrative from price/risk alone.",
