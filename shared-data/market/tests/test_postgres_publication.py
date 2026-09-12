@@ -38,9 +38,13 @@ def publication_settings(tmp_path, monkeypatch):
         command.upgrade(config, 'head')
         yield MarketSettings(url, tmp_path / 'market')
     finally:
-        with admin.connect() as connection:
-            connection.exec_driver_sql(f'DROP DATABASE "{name}" WITH (FORCE)')
-        admin.dispose()
+        # Tests close their stores before teardown. Ordinary DROP exposes leaked
+        # clients and lets PostgreSQL stop autovacuum without FORCE's role check.
+        try:
+            with admin.connect() as connection:
+                connection.exec_driver_sql(f'DROP DATABASE "{name}"')
+        finally:
+            admin.dispose()
 
 
 def test_simultaneous_first_writers_register_once_and_publish_both(publication_settings):
