@@ -1,11 +1,11 @@
-from datetime import date,datetime,timezone
+from datetime import date,datetime,timedelta,timezone
 from pathlib import Path
 import json
 import gzip
 
 import duckdb
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select, update
 
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
@@ -178,6 +178,99 @@ def test_latest_asof_and_pagination_prices(store):
     assert result['rows'][0]['ohlc_adjustment']=='unadjusted'
     page=store.query('raw_eod_daily',limit=1,offset=1)
     assert page['total']==3 and page['rows'][0]['date']=='2026-09-02'
+
+
+def test_visible_current_matches_history_and_reads_one_snapshot(store, monkeypatch):
+    # Include same-fact A -> B -> A, an older-date later revision, and ties.
+    for observed, value in ((1, 10), (2, 20), (3, 10)):
+        store.ingest('macro_series', [[dict(series_id='A', date=date(2026, 9, 1),
+            value=value, observed_at=stamp(observed))]], source='fixture')
+    store.ingest('macro_series', [[
+        dict(series_id='B', date=date(2026, 9, 2), value=30, observed_at=stamp(2)),
+        dict(series_id='C', date=date(2026, 9, 2), value=40, observed_at=stamp(2)),
+        dict(series_id='C', date=date(2026, 9, 2), value=41, observed_at=stamp(2)),
+        dict(series_id='B', date=date(2026, 8, 31), value=99, observed_at=stamp(3)),
+    ]], source='fixture')
+    expected = store.query('macro_series', as_of=stamp(3), limit=2, _latest=True)
+    statements = []
+    event.listen(store.engine, 'before_cursor_execute', lambda *args: statements.append(args[2]))
+    monkeypatch.setattr(store, 'query', lambda *a, **k: pytest.fail('visible latest scanned history'))
+    result = store.latest('macro_series', as_of=stamp(3), limit=2)
+    assert {key: value for key, value in result.items() if key != 'rows'} == {
+        key: value for key, value in expected.items() if key != 'rows'}
+    clocks = {'observed_at', 'available_at', 'snapshot_at'}
+    for actual, historical in zip(result['rows'], expected['rows']):
+        assert {key: value for key, value in actual.items() if key not in clocks} == {
+            key: value for key, value in historical.items() if key not in clocks}
+        assert all(datetime.fromisoformat(actual[key]) == datetime.fromisoformat(historical[key]) for key in clocks)
+    assert result['total'] == 3
+    assert [row['symbol'] for row in result['rows']] == ['B', 'C']
+    assert result['rows'][1]['value'] == 41
+    assert len(statements) == 1
+    assert store.latest('macro_series', symbols=['A'], as_of=stamp(3))['rows'][0]['value'] == 10
+    assert store.latest('macro_series', symbols=[], as_of=stamp(3))['total'] == 0
+    assert store.latest('macro_series', symbols=['UNKNOWN'], as_of=stamp(3))['rows'] == []
+    for limit in (0, 100001):
+        with pytest.raises(ValueError):
+            store.latest('macro_series', as_of=stamp(3), limit=limit)
+
+
+@pytest.mark.parametrize('future_clock', ['observed_at', 'available_at'])
+def test_latest_cutoff_checks_winners_beyond_limit(store, monkeypatch, future_clock):
+    store.ingest('macro_series', [[
+        dict(series_id='A', date=date(2026, 9, 2), value=10, observed_at=stamp(1)),
+        dict(series_id='Z', date=date(2026, 9, 1), value=20, observed_at=stamp(1)),
+    ]], source='fixture')
+    future = dict(series_id='Z', date=date(2026, 9, 1), value=99,
+                  observed_at=stamp(2), available_at=stamp(2))
+    future[future_clock] = stamp(3)
+    store.ingest('macro_series', [[future]], source='fixture')
+    original = store.query
+    calls = []
+    def history(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(store, 'query', history)
+    result = store.latest('macro_series', as_of=stamp(2), limit=1)
+    assert result == original('macro_series', as_of=stamp(2), limit=1, _latest=True)
+    assert result['total'] == 2 and len(calls) == 1
+    result = store.latest('macro_series', symbols=['Z'], as_of=stamp(2))
+    assert result['rows'][0]['value'] == 20
+    assert len(calls) == 2
+
+
+def test_latest_cutoff_preserves_exact_microsecond_availability(store, monkeypatch):
+    cutoff = stamp(2)
+    store.ingest('analyst_price_targets', [[dict(symbol='A', target=10,
+        observed_at=stamp(1))]], source='fixture')
+    store.ingest('analyst_price_targets', [[dict(symbol='A', target=20,
+        observed_at=cutoff, available_at=cutoff + timedelta(microseconds=1))]], source='fixture')
+    assert store.latest('analyst_price_targets', as_of=cutoff)['rows'][0]['target'] == 10
+    monkeypatch.setattr(store, 'query', lambda *a, **k: pytest.fail('visible clock scanned history'))
+    assert store.latest('analyst_price_targets',
+        as_of=cutoff + timedelta(microseconds=1))['rows'][0]['target'] == 20
+
+
+def test_latest_missing_availability_does_not_prove_visibility(store, monkeypatch):
+    store.ingest('analyst_price_targets', [[dict(symbol='A', target=10,
+        observed_at=stamp(1))]], source='fixture')
+    with store.engine.begin() as conn:
+        payload = conn.execute(select(current.c.payload)).scalar_one()
+        payload['available_at'] = None
+        conn.execute(update(current).values(payload=payload))
+    expected = store.query('analyst_price_targets', as_of=stamp(2), _latest=True)
+    calls = []
+    monkeypatch.setattr(store, 'query', lambda *a, **k: calls.append(k) or expected)
+    assert store.latest('analyst_price_targets', as_of=stamp(2)) == expected
+    assert len(calls) == 1
+
+
+def test_mutable_fact_date_stays_on_historical_query(store, monkeypatch):
+    for observed, day in ((1, 5), (2, 4)):
+        store.ingest('delisted_securities', [[dict(symbol='A',
+            delisted_date=date(2026, 9, day), observed_at=stamp(observed))]], source='fixture')
+    monkeypatch.setattr(store, '_visible_current', lambda *a, **k: pytest.fail('mutable date used projection'))
+    assert store.latest('delisted_securities', as_of=stamp(2))['rows'][0]['date'] == '2026-09-04'
 
 
 def test_numeric_bundle_keeps_source_ids_and_is_idempotent(store,tmp_path):

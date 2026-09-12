@@ -9,12 +9,6 @@ briefing_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 briefing_root="$(cd "$briefing_script_dir/../../../.." && pwd -P)"
 briefing_secret_root="${INVESTMENT_STUDIO_SECRET_ROOT:-$HOME/.config/orataba/secrets/investment-studio}"
 briefing_env_file="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE:-$briefing_secret_root/portfolio-copilot.env}"
-briefing_pnpm="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM:-$(command -v pnpm || true)}"
-if [[ -z "$briefing_pnpm" || ! -x "$briefing_pnpm" ]]; then
-  echo "pnpm is required for the pinned DeepSeek Harness." >&2
-  exit 1
-fi
-export PATH="$(dirname "$briefing_pnpm"):$PATH"
 source "$briefing_root/infra/launchd/load_runtime_env.sh"
 investment_studio_reject_repository_env_files "$briefing_root"
 investment_studio_load_env_file "$briefing_env_file" DEEPSEEK_ INVESTMENT_STUDIO_PORTFOLIO_COPILOT_
@@ -34,7 +28,7 @@ briefing_env=(
   "INVESTMENT_STUDIO_BRIEFING_RUN_TOKEN=$INVESTMENT_STUDIO_BRIEFING_RUN_TOKEN"
   "INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE=$2"
 )
-for briefing_key in DEEPSEEK_BASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NPM_CONFIG_REGISTRY PNPM_HOME SSL_CERT_FILE SSL_CERT_DIR NODE_EXTRA_CA_CERTS; do
+for briefing_key in DEEPSEEK_BASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR NODE_EXTRA_CA_CERTS; do
   if [[ -n "${!briefing_key:-}" ]]; then
     briefing_env+=("$briefing_key=${!briefing_key}")
   fi
@@ -44,10 +38,7 @@ if [[ "$2" == review ]]; then
 else
   briefing_task="Read read_briefing_context including its complete current-period headline index. Select relevant retained originals and read every page of those originals before citing them. Search late_received historical context when relevant, keeping its original dates. Compose the Chinese daily or weekly briefing using only bound evidence and program-calculated tables. Submit the complete structured report with submit_briefing_report, correct validation errors, then briefly acknowledge acceptance."
 fi
-exec /usr/bin/env -i "${briefing_env[@]}" "$briefing_pnpm" dlx \
-  --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai \
-  --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs \
-  @deepseek-ai/dsh@0.1.1-rc.2 \
+exec /usr/bin/env -i "${briefing_env[@]}" "$briefing_root/infra/harness/run.sh" \
   --profile headless --patch "$briefing_root/infra/config/deepseek_harness.patch.yml" \
   --patch "$briefing_root/apps/briefing/backend/config/briefing_harness.patch.yml" \
   "$briefing_task"

@@ -25,8 +25,11 @@ SCRIPT = ROOT / "apps/briefing/backend/scripts/run_briefing_harness.sh"
 def harness_available() -> bool:
     secret_root = Path(os.environ.get("INVESTMENT_STUDIO_SECRET_ROOT", str(Path.home() / ".config/orataba/secrets/investment-studio")))
     env_file = Path(os.environ.get("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE", str(secret_root / "portfolio-copilot.env")))
-    pnpm = os.environ.get("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM") or shutil.which("pnpm")
-    return bool(env_file.is_file() and SCRIPT.is_file() and pnpm and os.access(pnpm, os.X_OK))
+    node = shutil.which("node")
+    entry = ROOT / "infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js"
+    launcher = ROOT / "infra/harness/run.sh"
+    return bool(env_file.is_file() and SCRIPT.is_file() and node
+                and entry.is_file() and launcher.is_file() and os.access(launcher, os.X_OK))
 
 
 def interrupt_incomplete_runs():

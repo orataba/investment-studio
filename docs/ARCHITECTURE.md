@@ -105,6 +105,8 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 ### DeepSeek Harness
 
 Harness 只负责模型循环和受限 MCP 工具调用；数据库事实、计算和结果发布仍由所属应用维护。
+DSH 和传递依赖在版本部署时按 `infra/harness/pnpm-lock.yaml` 安装；三个应用共用
+`infra/harness/run.sh`，请求执行不经过包管理器，也不依赖 npm 注册表可用性。
 
 | 入口 | 所有者与输入 | 允许产生的结果 |
 | --- | --- | --- |

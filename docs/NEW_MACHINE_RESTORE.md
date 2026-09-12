@@ -84,10 +84,14 @@ CONFIRM_RESTORE=investment_studio \
 macOS 使用统一安装器完成迁移复核、前端构建、八个 API/前端 LaunchAgent、每日刷新、数据审计和健康检查：
 
 ```bash
+infra/harness/install.sh
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio' \
   infra/launchd/install_local_services.sh
 infra/launchd/status_local_services.sh
 ```
+
+研究运行时使用 Node 24、pnpm 11 或 12，安装器按提交内的依赖锁安装固定 DSH；
+运行研究时直接启动当前版本的已安装程序，不临时联网安装依赖。
 
 调度、日志和卸载见 [macOS Local Service](./LOCAL_MACOS_SERVICE.md)。Linux 服务器不要复制上述 launchd 步骤，按 [Server Deployment](./SERVER_DEPLOYMENT.md) 安装 user-systemd 服务。只做交互式开发时，按对应 app README 启动对应后端和前端，无需先安装常驻服务。
 

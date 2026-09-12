@@ -49,6 +49,12 @@ cutoff. Importing revised history does not create observations in an earlier PIT
 period. Financial/as-reported history whose earlier revisions were never captured
 remains labelled `provider_history_with_current_revisions`.
 
+For datasets with equivalent current and historical rankings, `latest(as_of)`
+reads the current projection only after proving every row in the requested scope
+was observed and available by that cutoff in the same database snapshot. Other
+cutoffs retain the historical query; this optimization preserves source IDs,
+total counts and the requested information clock without scanning full price history.
+
 Forecasts are complete captures grouped by company and annual/quarter frequency.
 The frequency capture becomes available only after its last required year
 response. A→B→A remains three observations. An empty complete capture removes old

@@ -10,6 +10,25 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 LOADER = Path('infra/launchd/load_runtime_env.sh')
 PROVIDER_PATCH = Path('infra/config/deepseek_harness.patch.yml')
+HARNESS_RUNNER = Path('infra/harness/run.sh')
+HARNESS_ENTRY = Path('infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js')
+
+
+def test_missing_installed_runtime_stops_without_resolving_packages(tmp_path):
+    launcher = tmp_path / HARNESS_RUNNER
+    launcher.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / HARNESS_RUNNER, launcher)
+    invoked = tmp_path / 'package-manager-invoked'
+    pnpm = tmp_path / 'pnpm'
+    pnpm.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(invoked)!r}).touch()\n')
+    pnpm.chmod(0o700)
+    result = subprocess.run(
+        [str(launcher), '--version'], check=False, capture_output=True, text=True,
+        env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH']},
+    )
+    assert result.returncode == 78
+    assert 'infra/harness/install.sh' in result.stderr
+    assert not invoked.exists()
 
 
 @pytest.mark.parametrize('app,watchlist_mode,reviewer_fails,configured_model', [
@@ -40,7 +59,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         api_key = prefix + 'API_BASE_URL'
         api_url = 'http://127.0.0.1:8110/api/briefing'
     project = tmp_path / 'relocated studio'
-    for relative in (runner, patch_path, LOADER, PROVIDER_PATCH):
+    for relative in (runner, patch_path, LOADER, PROVIDER_PATCH, HARNESS_RUNNER):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)
@@ -63,17 +82,20 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'DEEPSEEK_SEARCH_URL=https://provider.example/v1/messages\n' +
         (f'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME={configured_model}\n' if configured_model else ''), encoding='utf-8')
     secret.chmod(0o600)
-    pnpm = tmp_path / 'pnpm'
-    pnpm.write_text(
+    entry = project / HARNESS_ENTRY
+    entry.parent.mkdir(parents=True)
+    entry.write_text('// provisioned fixture')
+    node = tmp_path / 'node'
+    node.write_text(
         f'#!{sys.executable}\n'
         'import json, os, sys\n'
         'print(json.dumps({"env": dict(os.environ), "args": sys.argv[1:]}))\n',
         encoding='utf-8',
     )
-    pnpm.chmod(0o700)
+    node.chmod(0o700)
     env = {
         **os.environ,
-        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM': str(pnpm),
+        'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE': str(secret),
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME': str(tmp_path / 'harness'),
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PROJECT_ROOT': '/obsolete/project',
@@ -122,6 +144,8 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     assert runtime_env['DEEPSEEK_BASE_URL'] == 'https://provider.example/v1'
     assert 'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL' not in runtime_env
     assert 'FMP_API_KEY' not in runtime_env
+    assert captured['args'][0] == str(project / HARNESS_ENTRY)
+    assert 'dlx' not in captured['args']
     assert str(project / patch_path) in captured['args']
     assert captured['args'].index(str(project / PROVIDER_PATCH)) < captured['args'].index(str(project / patch_path))
     patch = (project / patch_path).read_text(encoding='utf-8')
@@ -142,12 +166,15 @@ def test_portfolio_text_models_stop_before_starting_harness(tmp_path, configured
         (f'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME={configured_model}\n' if configured_model else ''), encoding='utf-8')
     secret.chmod(0o600)
     started = tmp_path / 'model-started'
-    pnpm = tmp_path / 'pnpm'
-    pnpm.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(started)!r}).write_text("started")\n')
-    pnpm.chmod(0o700)
+    entry = project / HARNESS_ENTRY
+    entry.parent.mkdir(parents=True)
+    entry.write_text('// provisioned fixture')
+    node = tmp_path / 'node'
+    node.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(started)!r}).write_text("started")\n')
+    node.chmod(0o700)
     env = {
         **os.environ,
-        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM': str(pnpm),
+        'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE': str(secret),
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME': str(tmp_path / 'harness'),
         'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN': 'scoped-task-token',

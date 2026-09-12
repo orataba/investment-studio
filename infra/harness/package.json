@@ -1,0 +1,6 @@
+{
+  "name": "investment-studio-research-harness",
+  "private": true,
+  "engines": { "node": ">=24", "pnpm": ">=11 <13" },
+  "dependencies": { "@deepseek-ai/dsh": "0.1.1-rc.2" }
+}

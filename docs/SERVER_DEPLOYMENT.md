@@ -118,6 +118,16 @@ schema values, and data-maintenance refresh execution commands pin
 `INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion`, so a stale secret
 template cannot redirect private ingestion tables into a shared schema.
 
+Provision the release's frozen research runtime as the service user before
+switching services. This installs DSH 0.1.1-rc.2 and its locked transitive
+dependencies; it needs Node 24 and pnpm 11 or 12. An already populated official
+registry store can be reused with `infra/harness/install.sh --offline`.
+
+```bash
+infra/harness/install.sh
+infra/harness/run.sh --version
+```
+
 Install and start the app units with that external directory explicitly bound:
 
 ```bash
@@ -192,8 +202,11 @@ Research on the shared server. Restart both APIs after updating their files and
 check `/api/research/connections` on Watchlist and `/api/instrument-risk` on
 Portfolio through the authenticated ingress.
 
-Watchlist uses the existing external `portfolio-copilot.env` and pinned Harness
-runtime, with pnpm/Node available to the service user. Missing credentials or
+Watchlist uses the existing external `portfolio-copilot.env` and the Harness
+installed under that release's `infra/harness/node_modules`, with Node available
+to the service user. Research, Briefing and transaction-capture callers execute
+the same installed CLI directly; research requests never run a package manager
+or download dependencies. Missing credentials or
 runtime disables assistant execution while saved research and risk records remain
 available. Do not copy local secrets over the server configuration during a release.
 

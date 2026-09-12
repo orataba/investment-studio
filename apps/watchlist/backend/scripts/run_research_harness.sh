@@ -12,7 +12,6 @@ copilot_project_root="$(cd "$copilot_script_dir/../../../.." && pwd -P)"
 copilot_env_root="${INVESTMENT_STUDIO_SECRET_ROOT:-$HOME/.config/orataba/secrets/investment-studio}"
 copilot_env_file="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE:-$copilot_env_root/portfolio-copilot.env}"
 copilot_patch="$copilot_project_root/apps/watchlist/backend/config/research_harness.patch.yml"
-copilot_pnpm="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM:-$(command -v pnpm || { [[ -x /opt/homebrew/bin/pnpm ]] && echo /opt/homebrew/bin/pnpm; } || true)}"
 copilot_dsh_home="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME:-$HOME/.local/share/investment-studio/deepseek-harness}"
 research_run_id="$1"
 if [[ "${2:-}" == "sector" ]]; then
@@ -20,16 +19,6 @@ if [[ "${2:-}" == "sector" ]]; then
 elif [[ "${2:-}" == "risk" ]]; then
   copilot_patch="$copilot_project_root/apps/watchlist/backend/config/risk_harness.patch.yml"
 fi
-
-if [[ -z "$copilot_pnpm" || ! -x "$copilot_pnpm" ]]; then
-  echo "pnpm is required to run the pinned DeepSeek Harness runtime." >&2
-  exit 1
-fi
-
-# launchd intentionally starts services with a minimal PATH.  Once the
-# operator supplies the exact pnpm executable, make its sibling Node binary
-# available to pnpm's /usr/bin/env shebang without broadening the agent tools.
-export PATH="$(dirname "$copilot_pnpm"):$PATH"
 
 source "$copilot_project_root/infra/launchd/load_runtime_env.sh"
 investment_studio_reject_repository_env_files "$copilot_project_root"
@@ -85,7 +74,6 @@ for copilot_optional_env in \
   DEEPSEEK_SEARCH_URL \
   HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
   http_proxy https_proxy all_proxy no_proxy \
-  NPM_CONFIG_REGISTRY PNPM_HOME \
   XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME \
   SSL_CERT_FILE SSL_CERT_DIR NODE_EXTRA_CA_CERTS
 do
@@ -95,7 +83,7 @@ do
 done
 
 copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
-  "$copilot_pnpm" dlx --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs @deepseek-ai/dsh@0.1.1-rc.2 \
+  "$copilot_project_root/infra/harness/run.sh" \
   --profile headless \
   --patch "$copilot_project_root/infra/config/deepseek_harness.patch.yml" \
   --patch "$copilot_patch" \

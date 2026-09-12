@@ -155,7 +155,8 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
             quoted = {item.get("instrument_id"): item for item in (row.get("fcn_risk") or {}).get("underlyings", [])}
             if not any(item["contract_id"] == cid for item in fcn_contracts):
                 fcn_contracts.append({"contract_id": cid, "name": name, "underlyings": [
-                    {"instrument_id": iid, "name": quoted.get(iid, {}).get("instrument_name") or quoted.get(iid, {}).get("name") or iid}
+                    {"instrument_id": iid, "name": quoted.get(iid, {}).get("instrument_name") or quoted.get(iid, {}).get("name")
+                     or (catalog.get("instrument_names") or {}).get(iid) or iid}
                     for iid in ids if iid], "allocation": deepcopy(allocation)})
             if not ids or any(not iid for iid in ids) or len(ids) != len(set(ids)):
                 issues.append(f"FCN linked securities are missing or ambiguous: {name}.")
@@ -247,10 +248,16 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
 
 
 def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None = None, workspace: dict | None = None) -> dict:
-    from portfolio_app.api.routes.workspace import holdings_workspace
+    from portfolio_app.api.routes.workspace import _resolve_holdings_request
     from portfolio_app.api.routes.taxonomies import get_portfolio_taxonomies
     from portfolio_app.services.analytics_scope import taxonomy_configuration_as_of_in_session
-    workspace = workspace or holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
+    from portfolio_app.services.workspace_cache import get_cached_materialized_holdings_workspace
+    from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument_summaries
+    if workspace is None:
+        _, effective_date = _resolve_holdings_request(portfolio_id, as_of_date)
+        workspace = get_cached_materialized_holdings_workspace(portfolio_id, as_of_date=effective_date)
+        if workspace is None:
+            raise ConcentrationUnavailable()
     effective_date = date.fromisoformat(workspace["as_of_date"])
     if workspace.get("portfolio_id") != portfolio_id:
         raise ValueError("Concentration workspace belongs to another portfolio.")
@@ -281,4 +288,26 @@ def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None =
                 dated_assignments.extend(configuration.get("taxonomy_assignments", []))
         catalog = {**catalog, "taxonomies": dated_taxonomies, "taxonomy_nodes": dated_nodes, "taxonomy_assignments": dated_assignments,
                    "concentration_taxonomy_limitations": limitations, "concentration_taxonomy_configurations": configurations}
+    # Concentration uses dated account holdings and contract principal, not return
+    # histories or market-risk analytics. Only linked-security display names may
+    # need current registry metadata; never replace saved quotes, FX or terms.
+    linked_ids, names = set(), {}
+    for row in [*workspace.get("rows", []), *rows]:
+        contract = row.get("derivative_contract") or {}
+        if contract.get("contract_type") != "fcn":
+            continue
+        linked_ids.update(item["instrument_id"] for item in (contract.get("terms") or {}).get("underlyings", [])
+                          if item.get("instrument_id"))
+        for item in (row.get("fcn_risk") or {}).get("underlyings", []):
+            name = item.get("instrument_name") or item.get("name")
+            if item.get("instrument_id") and name:
+                names.setdefault(item["instrument_id"], name)
+    if missing_names := linked_ids - names.keys():
+        try:
+            summaries = get_registry_instrument_summaries(missing_names)
+        except InstrumentRegistryError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        names.update({iid: item["instrument_name"] for iid, item in summaries.items()
+                      if item and item.get("instrument_name")})
+    catalog["instrument_names"] = names
     return project_portfolio_concentration(workspace, catalog, settings, holding_rows=rows)

@@ -58,7 +58,7 @@ def test_live_synthetic_broker_statement(client, tmp_path):
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     before = len(list_transactions("investment-studio"))
-    environment = {**os.environ, "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL": f"http://127.0.0.1:{port}/api", "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME": str(tmp_path / "dsh"), "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM": "/opt/homebrew/bin/pnpm"}
+    environment = {**os.environ, "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_API_BASE_URL": f"http://127.0.0.1:{port}/api", "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME": str(tmp_path / "dsh")}
     # The existing credential file contains only the provider key; its contents
     # are loaded by the normal harness and never copied or printed by this run.
     script = Path(__file__).resolve().parents[1] / "scripts/run_portfolio_copilot_harness.sh"

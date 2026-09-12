@@ -10,8 +10,7 @@ SERVICE="$1"
 PROJECT_ROOT="$(cd "$2" && pwd)"
 PYTHON_BIN="$3"
 NODE_BIN="$4"
-# launchd starts with the system PATH; the pinned Node distribution does not
-# contain Homebrew's pnpm executable used by the existing research harnesses.
+# The APIs and installed research runtime use the same configured Node binary.
 export PATH="$(dirname "$NODE_BIN"):/opt/homebrew/bin:/usr/local/bin:$PATH"
 EXTERNAL_ENV_ROOT="$5"
 DATABASE_URL=""

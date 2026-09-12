@@ -52,7 +52,7 @@ DeepSeek Harness 实际可用时，Watchlist API 在标的所在市场交易日�
 
 研究、事件与风险 DSH 使用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`（默认 `deepseek-v4-pro`）；独立事实核证保持 Pro，公开检索辅助保持 Flash，原有推理设置不变。启动器先加载 [共享模型接口](../../infra/config/deepseek_harness.patch.yml)，再加载各任务的受限工具配置；使用 Harness 自带的 OpenAI 兼容接口，保留网关流式增量中的工具身份。`DEEPSEEK_BASE_URL` 同时传入 DSH、核证和研究工具，默认 `https://api.deepseek.com`；该值是追加 `/chat/completions` 前的命名空间，标准兼容网关通常需包含 `/v1`。检索默认使用同一地址去掉末尾 `/v1` 后的 `/anthropic/v1/messages`，可用 `DEEPSEEK_SEARCH_URL` 明确指定完整检索接口。接口只返回客户端 `tool_use` 或普通文本时，不作为已执行检索或无新增证据，记录真实覆盖失败；不自动切回其他服务发送凭据。
 
-运行环境的可用性检查与启动脚本使用相同的 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE` 和 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM` 路径。生产环境须显式配置 Watchlist 自身的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL`，以及 Portfolio、Regime 的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_PORTFOLIO_API_URL`、`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_REGIME_API_URL`。`data/research` 的方法、专属研究框架与历史案例，以及 [共同研究原则](backend/config/research_core.md)均为运行所需源文件。两个 DSH 入口加载同一份核心原则，任务提示只区分自动检查和交互。
+运行环境的可用性检查与启动脚本使用相同的 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE`，并读取当前发布目录内已安装的 DSH 与 PATH 中的 Node。部署时先以服务用户执行 `infra/harness/install.sh`，按冻结的依赖锁安装；每次研究直接运行 `infra/harness/run.sh`，不临时解析或下载软件包。生产环境须显式配置 Watchlist 自身的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL`，以及 Portfolio、Regime 的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_PORTFOLIO_API_URL`、`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_REGIME_API_URL`。`data/research` 的方法、专属研究框架与历史案例，以及 [共同研究原则](backend/config/research_core.md)均为运行所需源文件。两个 DSH 入口加载同一份核心原则，任务提示只区分自动检查和交互。
 
 研究追踪使用一条统一进展时间线；主题内时间线引用其中与该主题有关的同一组记录，不另写一份进展。事件、研究问题、判断、预测、日程、复盘、经验及 PM 观点各保留自己的原始记录与版本。事件可以不属于主题，也可以同时影响多个主题；当前主题判断与逐次变化分开显示。
 

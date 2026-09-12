@@ -1,6 +1,6 @@
 """Publication races exercise the real PostgreSQL transaction contract."""
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import os
 from pathlib import Path
 from threading import Barrier
@@ -60,6 +60,43 @@ def test_simultaneous_first_writers_register_once_and_publish_both(publication_s
         assert store.latest('analyst_price_targets')['rows'][0]['target'] == 2
         with store.engine.connect() as connection:
             assert connection.scalar(select(func.count()).select_from(datasets)) == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('future_clock', ['observed_at', 'available_at'])
+def test_latest_visibility_uses_full_postgres_scope_and_exact_cutoff(publication_settings, monkeypatch, future_clock):
+    store = NumericStore(publication_settings)
+    cutoff = datetime(2026, 9, 2, 8, 0, 0, 123456, tzinfo=timezone.utc)
+    try:
+        store.ingest('macro_series', [[
+            dict(series_id='A', date=date(2026, 9, 2), value=10),
+            dict(series_id='Z', date=date(2026, 9, 1), value=20),
+        ]], source='fixture', observed_at=cutoff - timedelta(days=1))
+        revision = dict(series_id='Z', date=date(2026, 9, 1), value=99,
+                        observed_at=cutoff, available_at=cutoff)
+        revision[future_clock] += timedelta(microseconds=1)
+        store.ingest('macro_series', [[revision]], source='fixture')
+        original = store.query
+        calls = []
+
+        def history(*args, **kwargs):
+            calls.append(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(store, 'query', history)
+        page = store.latest('macro_series', as_of=cutoff, limit=1)
+        assert page['total'] == 2 and page['rows'][0]['symbol'] == 'A'
+        assert len(calls) == 1  # The future winner is outside the returned page.
+        assert store.latest('macro_series', symbols=['Z'], as_of=cutoff)['rows'][0]['value'] == 20
+        known = cutoff + timedelta(microseconds=1)
+        expected = original('macro_series', as_of=known, _latest=True)
+        monkeypatch.setattr(store, 'query', lambda *a, **k: pytest.fail('visible latest scanned history'))
+        actual = store.latest('macro_series', as_of=known)
+        assert actual['total'] == expected['total']
+        assert actual['provenance'] == expected['provenance']
+        assert [(r['source_id'], r['value']) for r in actual['rows']] == [
+            (r['source_id'], r['value']) for r in expected['rows']]
     finally:
         store.close()
 

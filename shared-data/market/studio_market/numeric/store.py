@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
-from sqlalchemy import create_engine, delete, func, insert, select, update, text
+from sqlalchemy import and_, case, create_engine, delete, func, insert, select, update, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -349,6 +349,15 @@ class NumericStore:
 
     def latest(self, dataset: str, symbols: list[str] | None = None, as_of: str | datetime | None = None, limit: int = 1000) -> dict:
         spec=get_dataset(dataset)
+        if as_of is not None and spec.current_keys and dataset != "analyst_estimates" and (
+            spec.date is None or spec.date in spec.keys
+        ):
+            if limit < 1 or limit > 100000:
+                raise ValueError("limit must be 1..100000")
+            cutoff = cutoff_instant(as_of)
+            visible = self._visible_current(dataset, symbols, cutoff, limit)
+            if visible is not None:
+                return visible
         if as_of is not None or not spec.current_keys or dataset=="analyst_estimates":
             return self.query(dataset,symbols=symbols,as_of=as_of,limit=limit,_latest=True)
         query=select(current.c.payload).where(current.c.dataset==dataset).order_by(current.c.symbol,current.c.key).limit(limit)
@@ -359,6 +368,40 @@ class NumericStore:
             if symbols is not None:count_query=count_query.where(current.c.symbol.in_(symbols))
             total=conn.execute(count_query).scalar_one()
         return {"dataset":dataset,"rows":rows,"total":total,"limit":limit,"offset":0,"provenance":{"as_of":None,"version_policy":"current_projection","historical_use":spec.historical_use}}
+
+    def _visible_current(self, dataset, symbols, cutoff, limit):
+        """Use the current winners only when every winner was visible at cutoff.
+
+        For immutable fact dates (or dates derived from the observation clock),
+        the projection and historical latest query have the same ranking. If all
+        projected winners are visible, no historical row can replace them. A
+        future or unknown availability clock requires the historical query.
+        Window aggregates examine the entire scope before LIMIT, in the same
+        database snapshot as the returned rows.
+        """
+        # Ingest/import retain normalized UTC ISO clocks. Pad absent fractional
+        # seconds for exact microsecond comparison on PostgreSQL and SQLite;
+        # SQLite's julianday would round away meaningful submillisecond clocks.
+        available = current.c.payload["available_at"].as_string()
+        available_key = func.substr(func.replace(available, "+00:00", "") + ".000000", 1, 26)
+        cutoff_key = cutoff.replace(tzinfo=None).isoformat(timespec="microseconds")
+        known = and_(current.c.observed_at <= cutoff, available_key <= cutoff_key)
+        query = select(current.c.payload,
+            func.count().over().label("total"),
+            func.max(case((known, 0), else_=1)).over().label("requires_history"),
+        ).where(current.c.dataset == dataset)
+        if symbols is not None:
+            query = query.where(current.c.symbol.in_(symbols))
+        query = query.order_by(current.c.payload["date"].as_string().desc().nulls_last(),
+            current.c.symbol, current.c.observed_at.desc(), current.c.batch_id, current.c.row_index).limit(limit)
+        with self.engine.connect() as conn:
+            page = conn.execute(query).all()
+        if page and page[0].requires_history:
+            return None
+        return {"dataset": dataset, "rows": [row.payload for row in page],
+            "total": page[0].total if page else 0, "limit": limit, "offset": 0,
+            "provenance": {"as_of": serializable(cutoff), "version_policy": "latest_observed_per_fact",
+                "historical_use": get_dataset(dataset).historical_use}}
 
     def read_source(self, source_id: str) -> dict:
         parts=source_id.split(":")

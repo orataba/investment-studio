@@ -76,14 +76,21 @@ def test_every_harness_explicitly_delegates_the_single_run_credential():
 def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monkeypatch, tmp_path):
     env_file = tmp_path / "research.env"
     env_file.write_text("DEEPSEEK_API_KEY=fixture\n")
-    pnpm = tmp_path / "pnpm"
-    pnpm.write_text("#!/bin/sh\n")
-    pnpm.chmod(0o700)
+    node = tmp_path / "node"
+    node.write_text("#!/bin/sh\n")
+    node.chmod(0o700)
+    entry = tmp_path / "infra/harness/node_modules/@deepseek-ai/dsh/lib/bin.js"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("// installed runtime")
+    launcher = tmp_path / "infra/harness/run.sh"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o700)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner.shutil, "which", lambda name: str(node))
     monkeypatch.setenv("INVESTMENT_STUDIO_SECRET_ROOT", str(tmp_path / "missing-default"))
     monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE", str(env_file))
-    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM", str(pnpm))
     assert runner.harness_available()
-    pnpm.chmod(0o600)
+    entry.unlink()
     assert not runner.harness_available()
 
 

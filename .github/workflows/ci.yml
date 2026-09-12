@@ -15,10 +15,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  application-tests:
-    name: Application and repository tests
+  backend-tests:
+    name: ${{ matrix.app }} backend tests
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [home, data, market, portfolio, watchlist, briefing]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version-file: uv.toml
+          enable-cache: true
+          cache-dependency-glob: requirements/python.lock
+
+      - name: Synchronize locked Python environment
+        run: infra/scripts/sync_python_env.sh
+
+      - name: Run backend suite
+        run: infra/scripts/verify_repository.sh backend "${{ matrix.app }}"
+
+  application-tests:
+    name: Application and repository tests
+    needs: backend-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -42,9 +75,6 @@ jobs:
 
       - name: Run static repository checks
         run: infra/scripts/verify_repository.sh static
-
-      - name: Run backend suites
-        run: infra/scripts/verify_repository.sh backend all
 
       - name: Set up Node.js for web proxy integration
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0

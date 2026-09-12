@@ -934,12 +934,10 @@ def preload_workspace(
     }
 
 
-@router.get("/holdings")
-def holdings_workspace(
+def _resolve_holdings_request(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
-    include_details: bool = False,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], date]:
     resolved_portfolio = _require_portfolio(portfolio_id, ensure_materialized_summary=True)
 
     portfolio_as_of_date = (
@@ -951,6 +949,16 @@ def holdings_workspace(
     blocked_from = resolved_portfolio.get("valuation_blocked_from")
     if blocked_from and resolved_as_of_date >= date.fromisoformat(str(blocked_from)):
         raise HTTPException(status_code=409, detail=str(resolved_portfolio["valuation_blocked_reason"]))
+    return resolved_portfolio, resolved_as_of_date
+
+
+@router.get("/holdings")
+def holdings_workspace(
+    portfolio_id: str | None = None,
+    as_of_date: date | None = None,
+    include_details: bool = False,
+) -> dict[str, object]:
+    resolved_portfolio, resolved_as_of_date = _resolve_holdings_request(portfolio_id, as_of_date)
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
 
