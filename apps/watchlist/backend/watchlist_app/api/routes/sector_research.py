@@ -112,6 +112,7 @@ class MarketSearch(BaseModel):
     published_after: AwareDatetime | None = None
     observed_after: AwareDatetime | None = None
     received_after: AwareDatetime | None = None
+    as_of: AwareDatetime | None = None
     limit: int = Field(default=30, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
@@ -135,15 +136,22 @@ def search_market_documents(run_id: str, request: MarketSearch, session: Session
     scope = set(context.get("instrument_ids", [])) | {i["instrument_id"] for i in context.get("catalogue", [])}
     if request.instrument_id and request.instrument_id not in scope:
         raise HTTPException(422, "检索标的不在本轮研究目录")
-    cutoff = datetime.fromisoformat(context["cutoff"])
+    cutoff = request.as_of or datetime.fromisoformat(context["cutoff"])
+    if cutoff > datetime.fromisoformat(context["cutoff"]):
+        raise HTTPException(422, "检索时点不能晚于本轮已取得资料的截止时间")
     result = text_store().search(request.query, entities=request.entities or None,
         published_after=request.published_after, observed_after=request.observed_after, received_after=request.received_after,
         as_of=cutoff, limit=request.limit, offset=request.offset)
-    query = {**request.model_dump(mode="json"), "total": result["total"], "cutoff": context["cutoff"]}
+    query = {**request.model_dump(mode="json"), "total": result["total"], "cutoff": cutoff.isoformat()}
     run.context_json = {**context, "market_queries": [*context.get("market_queries", []), query],
                         "market_coverage": result["coverage"]}
     session.commit()
-    return result
+    # Search is a source directory. Original bodies remain available through
+    # the immutable document/version read, which also binds the actual source.
+    return {**result, "rows": [{**{key: value for key, value in row.items()
+                                  if key not in {"content_text", "raw_path"}},
+                                "body_available": bool(row.get("content_text"))}
+                               for row in result["rows"]]}
 
 
 @router.get("/research/runs/{run_id}/market-source")

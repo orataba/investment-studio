@@ -37,6 +37,69 @@ def complete(tool, arguments, path=None):
     return output
 
 
+def test_market_search_directory_and_originals_have_lossless_bound_wire_pages(monkeypatch):
+    cutoff = "2026-09-03T00:00:00+00:00"
+    directory = [{"document_id": f"doc-{i}", "version_id": f"old-{i}", "source_id": f"text:old-{i}",
+                  "title": ("完整标题🙂" * 14000 if i in {0, 17} else f"目录标题{i}"),
+                  "body_available": True, "entities": [{"name": "完整实体" * 100, "id": j} for j in range(3)]}
+                 for i in range(41)]
+    coverage = {"sources": [{"channel": i, "details": "完整覆盖状态🙂" * 2000} for i in range(25)]}
+    article = {"source_id": "text:old-17", "document_id": "doc-17", "version_id": "old-17",
+               "text": "完整版本正文及条件🙂" * 25000, "published_at": "2026-09-01", "body_available": True}
+    calls = []
+
+    def request(suffix, payload=None):
+        calls.append((suffix, deepcopy(payload)))
+        if suffix == "market-search":
+            assert payload["query"] == "baseline" and payload["instrument_id"] == "xlk"
+            assert payload["entities"] == ["entity"]
+            assert payload["as_of"] in {None, cutoff}
+            begin = payload["offset"]
+            return {"rows": deepcopy(directory[begin:begin + payload["limit"]]), "total": len(directory),
+                    "as_of": cutoff, "coverage": deepcopy(coverage)}
+        params = parse_qs(urlsplit(suffix).query)
+        assert params == {"document_id": ["doc-17"], "version_id": ["old-17"]}
+        return deepcopy(article)
+
+    monkeypatch.setattr(mcp, "request", request)
+    args = {"query": "baseline", "instrument_id": "xlk", "entities": ["entity"]}
+    first = wire("search_market_information", args)
+    assert first["as_of"] == cutoff and first["search_total"] == 41
+    assert first["deferred"] == [{"path": [0], "type": "object", "count": len(directory[0])}]
+    assert "read_market_source" in first["original_read"]
+    assert complete("search_market_information", {**args, "as_of": cutoff}) == directory
+    assert complete("search_market_information", {**args, "as_of": cutoff, "section": "coverage"}) == coverage
+    assert all(suffix == "market-search" for suffix, _ in calls)
+    assert complete("read_market_source", {"document_id": "doc-17", "version_id": "old-17"}) == article
+    assert not any("content_text" in row or "text" in row for row in directory)
+
+
+def test_empty_market_results_do_not_spill_large_coverage(monkeypatch):
+    cutoff = "2026-09-03T00:00:00+00:00"
+    coverage = {"sources": [{"id": i, "coverage": "完整采集条件🙂" * 3000} for i in range(20)]}
+    monkeypatch.setattr(mcp, "request", lambda suffix, payload: {
+        "rows": [], "total": 0, "as_of": cutoff, "coverage": coverage})
+    first = wire("search_market_information", {"query": "no-match"})
+    assert first["data"] == [] and first["total"] == 0 and first["next_offset"] is None
+    assert len(json.dumps(first, ensure_ascii=False).encode()) < 1500
+    assert first["coverage_read"]["as_of"] == cutoff
+    assert complete("search_market_information", {
+        "query": "no-match", "section": "coverage", "as_of": cutoff}) == coverage
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("search_market_information", {"offset": 1}),
+    ("search_market_information", {"path": [0]}),
+    ("read_market_source", {"document_id": "doc", "offset": 1}),
+    ("read_market_source", {"document_id": "doc", "path": ["text"]}),
+])
+def test_market_continuations_require_the_original_cutoff_or_version(monkeypatch, tool, args):
+    from mcp.server.mcpserver.exceptions import ToolError
+    monkeypatch.setattr(mcp, "request", lambda *args: pytest.fail("unbound continuation queried the backend"))
+    with pytest.raises(ToolError, match="as_of|version_id"):
+        asyncio.run(mcp.mcp.call_tool(tool, args))
+
+
 def large_context():
     article = {"source_id": "shared-original", "document_id": "article-one", "version_id": "old-article",
         "source_type": "public_source", "title": "当时原文", "published_at": "2026-09-01", "text": "完整旧版原文与条件🙂" * 7000}

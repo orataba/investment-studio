@@ -80,15 +80,23 @@ class SQLAlchemyInstrumentRepository:
             session.flush()
             return record
 
-        record.instrument_type = instrument_type
-        record.detail_view_type = detail_view_type
-        record.instrument_name = instrument_name
-        record.primary_identifier_type = primary_identifier_type
-        record.primary_identifier_value = primary_identifier_value
-        record.is_active = True
-        record.metadata_json = metadata_json or {}
-        record.updated_at = now
-        session.flush()
+        values = {
+            "instrument_type": instrument_type,
+            "detail_view_type": detail_view_type,
+            "instrument_name": instrument_name,
+            "primary_identifier_type": primary_identifier_type,
+            "primary_identifier_value": primary_identifier_value,
+            "is_active": True,
+            "metadata_json": metadata_json or {},
+        }
+        changed = False
+        for field, value in values.items():
+            if getattr(record, field) != value:
+                setattr(record, field, value)
+                changed = True
+        if changed:
+            record.updated_at = now
+            session.flush()
         return record
 
     def upsert_from_shared_instrument(

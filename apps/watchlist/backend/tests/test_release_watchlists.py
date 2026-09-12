@@ -1,11 +1,12 @@
 """Exercise the actual release entry point without any discovery GET repairing it."""
 
 import importlib.util
+from datetime import datetime
 from pathlib import Path
 import sys
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 
 from investment_studio_instrument_core.db_models import Instrument
 from watchlist_app.api.routes import watchlists
@@ -82,6 +83,10 @@ def test_release_reconciles_registry_before_live_gate_and_preserves_user_state(c
         assert _snapshot_custom(session, custom) == custom_before
         expected = (set(TEST_SHARED_INSTRUMENTS) - {"fund-us-agg"}) | {"release-equity", "release-index", "release-crypto"}
         assert set(session.scalars(select(WatchlistItem.instrument_id).where(WatchlistItem.watchlist_id == "all-instruments"))) == expected
+        # Cross a definite clock boundary without sleeping: unchanged metadata
+        # must retain its timestamp even when reconciliation runs much later.
+        session.execute(update(InstrumentDetail).values(updated_at=datetime(2001, 1, 1)))
+        session.commit()
         before_repeat = _snapshot(session, [Watchlist, WatchlistItem, WatchlistRowReadModel, InstrumentDetail])
     assert _release() == 0
     with get_session_factory()() as session:

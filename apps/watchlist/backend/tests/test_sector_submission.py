@@ -272,6 +272,38 @@ def test_mcp_submission_can_correct_missing_automatic_reflection(mcp_http, submi
         **reflection, "reviewed_update_ids": []}
 
 
+def test_mixed_citation_error_identifies_only_invalid_id_and_preserves_real_snapshots(mcp_http, submission):
+    from watchlist_app import research_mcp
+    rid, calls = mcp_http
+    _, draft = submission
+    valid = [f"instrument:{rid}:xlk", f"sector:{rid}:xlk", "computed:measured-risk"]
+    invalid = "dossier-mandate:xlk:v1"
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        run.context_json = {**run.context_json,
+            "sector_inputs": [{"instrument_id": "xlk", "holdings": [{"symbol": "MSFT", "weight_percent": 20}]}],
+            "computed_metrics": [{"source_id": valid[-1], "source_type": "computed_metric", "instrument_id": "xlk",
+                "scope": "public_market", "as_of": run.context_json["cutoff"], "methodology": "Measured observations",
+                "data": {"volatility": 0.18}}]}
+        session.commit()
+    draft["reviews"][0]["research"]["source_ids"] = [*valid, invalid]
+    with pytest.raises(ValueError) as rejected:
+        research_mcp.submit_research_review(service.ReviewResult.model_validate(draft))
+    diagnostic = json.loads(str(rejected.value))
+    assert diagnostic["status"] == 422 and diagnostic["error"] == "invalid_request"
+    bad, good = diagnostic["message"].split("。本次已取得且可继续引用的依据：", 1)
+    assert invalid in bad and all(sid not in bad for sid in valid)
+    assert all(sid in good for sid in valid) and "保留合法依据" in good
+    assert "test-token-not-for-output" not in str(rejected.value)
+    with get_session_factory()() as session:
+        assert "submitted_draft" not in session.get(ResearchEntry, rid).context_json
+    draft["reviews"][0]["research"]["source_ids"].remove(invalid)
+    assert research_mcp.submit_research_review(service.ReviewResult.model_validate(draft))["status"] == "pending_fact_review"
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, rid).context_json["submitted_draft"]["reviews"][0]["research"]["source_ids"] == valid
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("field", ["published_after", "observed_after", "received_after"])
 @pytest.mark.parametrize("value", ["2026-09-04", "2026-09-04T00:00:00"])
 def test_market_search_reports_actual_timezone_validation_without_echoing_input(mcp_http, field, value):

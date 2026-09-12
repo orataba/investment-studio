@@ -116,6 +116,16 @@ market event needs evidence connecting it to this product. A material directory 
 document text, and a user's research thesis or previous AI response does not prove a new fact.
 Check transmission to the instrument's actual exposure. Unsupported valuation, already-priced-in
 claims or good-business-news arguments do not establish an investment opportunity.
+Apply this to every investment_view field and question assessment even for change_kind=knowledge.
+A return, drawdown, volatility reading or concentrated holding is an observation about price/risk/exposure;
+it does not establish that the market accepted a narrative, that valuation is high/neutral, or that a
+particular growth expectation is already priced in. Such conclusions require the applicable dated
+price/valuation and expectation or operating assumptions, an explained inference, and its uncertainty.
+Without those inputs, explicitly leave valuation/pricing unknown or recast the proposed mechanism as a
+conditional hypothesis with a discriminating next check. Do not merely lower conviction while retaining
+the unsupported assertion. A pure exploratory question can remain uncited; cite the actual snapshot or
+computed source for factual premises, measurements and exposure claims. Nonempty citations are not proof
+that a source supports the inference. Never invent a mandatory valuation method or numeric price target.
 Do not turn a tracking benchmark into an exact NAV identity or use a drawdown alone as proof
 that a policy shock is already priced in; retain unmeasured tracking differences and uncertainty.
 Remove unsupported clauses; remove the event entirely if no verified material increment remains.
@@ -175,7 +185,7 @@ Do not turn the investment manager's view into a fact or rewrite shared methods.
 and questions must be supplied original evidence. No new message does not refute an open question.
 Research is a sparse change to a continuing notebook. Correct only the supplied research fields
 and keyed items, including only supplied fields inside investment_view and each keyed item.
-You may add explicitly returned, nonempty source_ids to an already proposed investment_view or keyed item
+You may add explicitly returned, nonempty source_ids at research level or to an already proposed investment_view or keyed item
 when supplied originals support it. This citation exception does not permit new items or default empty lists
 that erase earlier evidence. All added source IDs must remain in the supplied evidence and instrument scope.
 Never fill schema defaults for omitted fields: empty text/lists would erase previous knowledge.
@@ -369,7 +379,7 @@ def _source_index(source):
 
 
 def _instrument_overview(asset, *, sector_holdings=False):
-    """Reuse the research reader's overview boundary; full cited snapshots stay in sources."""
+    """Reuse the research reader's overview boundary; full cited snapshots stay intact."""
     from watchlist_app.services.research_estimate_tools import estimate_overview
     omitted = {"risk_cases", "research", "research_dossier", "research_tracking", "reference_data", "materials"}
     overview = {key: value for key, value in asset.items() if key not in omitted}
@@ -460,14 +470,29 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                     raise ValueError("Retained FMP company source did not match the draft reference")
                 sources[source_id] = value
     sector_ids = {row["instrument_id"] for row in context.get("sector_inputs", [])}
+    snapshot_indexes = {"instrument_inputs": [], "sector_inputs": []}
+    for field, prefix in (("instrument_inputs", "instrument"), ("sector_inputs", "sector")):
+        for asset in context.get(field, []):
+            iid = asset["instrument_id"]
+            if iid not in ids:
+                continue
+            sid = f"{prefix}:{run_id}:{iid}"
+            if sid not in sources:
+                # Facts supplied in an overview need a usable canonical citation
+                # even when the draft forgot it. Supply exactly that excerpt;
+                # unrequested financial/estimate tables do not become reviewed.
+                snapshot = (_instrument_overview(available[sid]["snapshot"], sector_holdings=iid in sector_ids)
+                            if prefix == "instrument" else
+                            {key: value for key, value in available[sid]["snapshot"].items() if key != "leading_companies"})
+                sources[sid] = {**available[sid], "snapshot": snapshot, "snapshot_scope": "overview"}
+            snapshot_indexes[field].append({**_source_index(sources[sid]), "instrument_id": iid,
+                **({"analyst_focus": asset["analyst_focus"]} if asset.get("analyst_focus") else {})})
     return {
         "run_id": run_id,
         "cutoff": context["cutoff"],
         "draft_reviews": reviewed,
-        "sector_inputs": [{key: value for key, value in row.items() if key != "leading_companies"}
-                          for row in context.get("sector_inputs", []) if row["instrument_id"] in ids],
-        "instrument_inputs": [_instrument_overview(row, sector_holdings=row["instrument_id"] in sector_ids)
-                              for row in context.get("instrument_inputs", []) if row["instrument_id"] in ids],
+        **snapshot_indexes,
+        "snapshot_read_note": "instrument_inputs/sector_inputs index canonical originals in sources. A snapshot_scope=overview source supplies only the shown excerpt; omitted tables are not reviewed evidence. Explicitly cited full snapshots remain complete. Use the supplied source_id for supported facts; do not infer valuation or a causal market narrative from price/risk alone.",
         "prior_events": [{**{key: value for key, value in row.items() if key not in {"history", "evidence", "sources"}},
                           **({"sources": [_source_index(source) for source in row["sources"]]} if "sources" in row else {})}
                          for row in context.get("prior_events", []) if row["instrument_id"] in ids],
@@ -495,7 +520,7 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
                 if key in original or (key == "source_ids" and item)}
 
     value = {key: item for key, item in corrected.model_dump(mode="json", exclude_unset=True).items()
-             if key in proposed}
+             if key in proposed or (key == "source_ids" and item)}
     if isinstance(value.get("investment_view"), dict):
         if isinstance(proposed.get("investment_view"), dict):
             value["investment_view"] = corrected_item(value["investment_view"], proposed["investment_view"])

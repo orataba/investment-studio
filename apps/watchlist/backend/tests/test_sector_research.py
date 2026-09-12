@@ -523,6 +523,10 @@ def test_shared_original_can_support_research_without_online_search(client, monk
         run_id = run.entry_id
     page = client.post(f"/api/research/runs/{run_id}/market-search", json={"instrument_id": "xlk", "query": "policy", "limit": 1}).json()
     assert page["total"] == 1
+    assert page["rows"][0]["body_available"]
+    assert "content_text" not in page["rows"][0] and "raw_path" not in page["rows"][0]
+    with get_session_factory()() as session:
+        assert not session.get(ResearchEntry, run_id).context_json.get("market_text_sources")
     source = client.get(f"/api/research/runs/{run_id}/market-source", params={"document_id": original["document_id"], "version_id": original["version_id"]}).json()
     assert source["published_at"] == "2026-09-01" and source["time_status"] == "date_only"
     assert source["text"] == "The official policy takes effect next quarter."
@@ -538,6 +542,34 @@ def test_shared_original_can_support_research_without_online_search(client, monk
         assert case.evidence_json["sources"][0]["version_id"] == original["version_id"]
         assert "text" not in case.evidence_json["sources"][0]
     assert client.get(f"/api/research/runs/{run_id}/market-source", params={"document_id": original["document_id"]}).status_code == 409
+
+
+def test_market_search_continuation_keeps_original_cutoff_after_new_capture(client, monkeypatch):
+    from watchlist_app.services.market_evidence import text_store
+    seed_sector(client, monkeypatch)
+    original = text_store().capture_public_source({"source_id": "captured", "url": "https://example.com/continuation",
+        "title": "Policy original", "text": "Policy conditions before revision", "published_at": "2026-09-01",
+        "retrieved_at": "2026-09-05T08:00:00+00:00"})
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        run_id = run.entry_id
+    url = f"/api/research/runs/{run_id}/market-search"
+    first = client.post(url, json={"query": "Policy"}).json()
+    revised = text_store().capture_public_source({"source_id": "captured", "url": "https://example.com/continuation",
+        "title": "Policy revised", "text": "Policy conditions after revision", "published_at": "2026-09-01",
+        "retrieved_at": datetime.now(UTC).isoformat()})
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        run.context_json = {**run.context_json, "cutoff": datetime.now(UTC).isoformat()}
+        session.commit()
+    bound = client.post(url, json={"query": "Policy", "as_of": first["as_of"]}).json()
+    assert bound["rows"][0]["version_id"] == original["version_id"]
+    assert client.post(url, json={"query": "Policy"}).json()["rows"][0]["version_id"] == revised["version_id"]
+    assert client.post(url, json={"as_of": "2099-01-01T00:00:00Z"}).status_code == 422
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.context_json["market_queries"][-2]["cutoff"] == first["as_of"]
+        assert not run.context_json.get("market_text_sources")
 
 
 def test_live_capture_advances_knowledge_cutoff_and_materializes_through_api(client, monkeypatch):

@@ -84,10 +84,12 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     assert "window_start" not in packets[0]
     assert packets[0]["draft_reviews"][0]["events"][0]["recording_type"] == "backfill"
     assert [row["instrument_id"] for row in packets[0]["sector_inputs"]] == ["xle"]
-    assert packets[0]["instrument_inputs"] == [{"instrument_id": "xle", "name": "XLE", "analyst_focus": "Use actual disclosed exposure.",
-                                               "holdings": {"report_period": "2026-06-30"}}]
+    instrument_index = packets[0]["instrument_inputs"][0]
+    assert instrument_index["source_id"] == "instrument:test-run:xle"
+    assert instrument_index["analyst_focus"] == "Use actual disclosed exposure."
+    assert "snapshot" not in instrument_index and "holdings" not in instrument_index
     assert {s["source_id"] for s in packets[0]["sources"]} == {
-        "source-1", "fmp:test-run:xle:XOM"}
+        "source-1", "fmp:test-run:xle:XOM", "instrument:test-run:xle", "sector:test-run:xle"}
     receipts = [payload for suffix, payload in retained_run if suffix == "sector-evidence"]
     assert receipts == [
         {"operation": "review", "review": {"draft": original}},
@@ -471,6 +473,59 @@ def test_citation_exception_does_not_add_unsubmitted_research_items():
     assert result == paper
 
 
+def test_reviewer_can_supply_missing_root_citations_without_erasing_existing_defaults():
+    from watchlist_app.services.research_notebook import retain_notebook
+    source = {"source_id": "original", "source_type": "public_source", "text": "Dated disclosed fact"}
+    paper = {"fundamental_view": "已有披露事实仍适用"}
+    prior = retain_notebook(review.ResearchNotebook(**paper, source_ids=["original"]), None,
+        {"original": source}, "old", "2026-09-01T00:00:00+00:00")
+    for correction in (review.ResearchNotebook(**paper).model_dump(mode="json"), {**paper, "source_ids": ["original"]}):
+        document = {"reviews": [{"instrument_id": "xlk", "events": [], "research": paper}]}
+        checked = {"reviews": [{"instrument_id": "xlk", "coverage": [], "decisions": [], "research": correction}]}
+        result = review._apply_checks(document, checked, [source])["reviews"][0]["research"]
+        if correction["source_ids"]:
+            assert result["source_ids"] == ["original"]
+        else:
+            assert "source_ids" not in result
+        saved = retain_notebook(review.ResearchNotebook.model_validate(result), prior,
+            {"original": source}, "new", "2026-09-12T00:00:00+00:00")
+        assert saved["source_ids"] == ["original"]
+
+
+def test_uncited_snapshot_facts_remain_citable_but_pricing_hypothesis_is_not_restored(monkeypatch):
+    snapshot_id = "instrument:uncited-run:xlk"
+    metric = {"source_id": "computed:actual-risk", "source_type": "computed_metric", "instrument_id": "xlk",
+        "scope": "public_market", "as_of": "2026-09-12T00:00:00+00:00", "methodology": "Dated price observations",
+        "data": {"volatility": 0.18}}
+    asset = {"instrument_id": "xlk", "name": "XLK", "performance": {"return_ytd": 0.10},
+        "reference_data": {"sections": {"financials": ["UNREQUESTED_FINANCIAL_TABLE"]}}}
+    context = {"sector_run": True, "instrument_ids": ["xlk"], "cutoff": metric["as_of"],
+        "instrument_inputs": [asset], "computed_metrics": [metric], "web_evidence": [], "market_queries": []}
+    question = {"key": "ai-roi", "question": "AI投入能否改善现金流？", "assessment": "探索性假设，仍待经营披露",
+        "next_check": "观察下一次经营披露中投入与现金流的关系", "status": "open"}
+    paper = {"investment_view": {"direction": "价格上涨证明市场接受AI叙事", "attractiveness": "估值中性偏高"},
+        "questions": [question]}
+    corrected = {"investment_view": {"direction": "已观察到价格上涨，驱动因素仍待验证", "attractiveness": "缺少估值与预期输入，尚不能判断定价程度",
+        "source_ids": [snapshot_id]}, "questions": [question], "source_ids": [metric["source_id"]]}
+    def reviewer(packet):
+        sources = {row["source_id"]: row for row in packet["sources"]}
+        assert set(sources) == {snapshot_id, metric["source_id"]}
+        assert sources[snapshot_id]["snapshot"]["performance"] == asset["performance"]
+        assert sources[snapshot_id]["snapshot_scope"] == "overview"
+        assert "UNREQUESTED_FINANCIAL_TABLE" not in json.dumps(packet)
+        assert json.dumps(packet).count('"return_ytd"') == 1
+        return {"reviews": [{"instrument_id": "xlk", "coverage": ["估值与当前市场预期仍待核实"], "decisions": [],
+            "change_kind": "knowledge", "research": corrected}]}
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "uncited-run")
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None: context if suffix == "context?originals=true" else payload)
+    monkeypatch.setattr(review, "_call_reviewer", reviewer)
+    output = review.review_output(json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "knowledge", "research": paper}]}))["reviews"][0]
+    assert output["research"] == corrected
+    assert output["research"]["questions"] == [question]  # Exploration needs no invented proof or citation.
+    assert "市场接受AI叙事" not in json.dumps(output, ensure_ascii=False)
+    assert "估值中性偏高" not in json.dumps(output, ensure_ascii=False)
+
+
 @pytest.mark.parametrize("field,item", _CITED_RESEARCH_ITEMS)
 def test_default_empty_citations_do_not_erase_an_existing_items_sources(field, item):
     from watchlist_app.services.research_notebook import retain_notebook
@@ -707,15 +762,19 @@ def test_quiet_packet_keeps_complete_dated_holdings_and_only_actually_read_origi
         "reflection": {"status": "insufficient_evidence", "summary": "覆盖不足", "reviewed_update_ids": []}}], "bounded-run")
 
     assert context == before
-    assert packet["sector_inputs"][0]["holdings"] == holdings
-    assert packet["sector_inputs"][0]["holdings_as_of"] == "2026-06-30"
-    assert packet["sector_inputs"][0]["holdings_observed_on"] == "2026-09-09"
-    assert packet["instrument_inputs"][0]["holdings"] == {"report_period": "2026-06-30"}
-    assert packet["instrument_inputs"][0]["reference_data"]["sections"] == {"profile": {"asset_type": "ETF"}}
+    sources = {source["source_id"]: source for source in packet["sources"]}
+    sector = sources[packet["sector_inputs"][0]["source_id"]]["snapshot"]
+    instrument = sources[packet["instrument_inputs"][0]["source_id"]]["snapshot"]
+    assert sector["holdings"] == holdings
+    assert sector["holdings_as_of"] == "2026-06-30"
+    assert sector["holdings_observed_on"] == "2026-09-09"
+    assert instrument["holdings"] == {"report_period": "2026-06-30"}
+    assert instrument["reference_data"]["sections"] == {"profile": {"asset_type": "ETF"}}
+    assert sources["instrument:bounded-run:xlk"]["snapshot_scope"] == "overview"
     assert packet["research_dossiers"][0]["themes"] == [theme]
     assert packet["research_dossiers"][0]["notebook"]["forecast_reviews"][0] == {
         **saved_review, "versions": [{"version_id": "old-version"}]}
-    assert [source["source_id"] for source in packet["sources"]] == ["actually-read"]
+    assert set(sources) == {"actually-read", "instrument:bounded-run:xlk", "sector:bounded-run:xlk"}
     encoded = json.dumps(packet)
     assert encoded.count("FULL_CURRENT_ORIGINAL") == 1
     assert encoded.count('"holding_symbol": "S83"') == 1
@@ -875,7 +934,7 @@ def test_reflection_financial_snapshot_and_current_metrics_reach_independent_rev
     assert sources[snapshot_id]["snapshot"] == asset
     assert sources[snapshot_id]["run_cutoff"] == asset["snapshot_cutoff"]
     assert sources[metric["source_id"]] == metric
-    assert "financials" not in packets[0]["instrument_inputs"][0]["reference_data"]["sections"]
+    assert "reference_data" not in packets[0]["instrument_inputs"][0]
     assert json.dumps(packets[0]).count('"net_profit"') == len(rows)
     assert output["reflection"] == corrected
     assert output["summary"] == "" and output["research"] is None and output["events"] == []

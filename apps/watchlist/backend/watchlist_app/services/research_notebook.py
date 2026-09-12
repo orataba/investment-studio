@@ -427,15 +427,21 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
         if not any(sources.get(sid, {}).get("source_type") in {"public_source", "research_material"} for sid in catalyst.source_ids):
             raise ValueError("预定事件必须有已取得的日程或披露原文，历史案例和模型判断不能证明日程")
     refs = notebook_source_ids(notebook)
-    for sid in refs:
+    unknown = sorted(refs - sources.keys())
+    if unknown:
+        valid = sorted(sid for sid in refs if sid in sources and _original_source(sources[sid], iid))
+        raise ValueError(
+            "研究底稿引用了未取得的原始依据：" + ", ".join(unknown)
+            + "。本次已取得且可继续引用的依据：" + (", ".join(valid) or "无")
+            + "。仅更正无效引用，保留合法依据；使用读取工具返回的原始 source_id，"
+              "研究任务/方法标识不是原始依据，计算结果引用返回的 computed: 标识而非底层输入标识。")
+    for sid in sorted(refs):
         source = sources.get(sid)
-        if source is None:
-            raise ValueError("研究底稿引用了未取得的原始依据")
         if source.get("instrument_id") not in {None, iid} and not (
                 source.get("source_type") == "computed_metric" and source.get("scope") == "public_market"):
-            raise ValueError("研究底稿引用了其他标的的私有资料或快照")
+            raise ValueError(f"研究底稿引用了其他标的的私有资料或快照：{sid}")
         if not _original_source(source, iid):
-            raise ValueError("研究底稿依据不是已取得的原文、资料或真实快照")
+            raise ValueError(f"研究底稿依据不是已取得的原文、资料或真实快照：{sid}")
 
 
 def _versioned(value: dict, previous: dict | None, model: type[BaseModel], version_id: str, run_id: str, recorded_at: str) -> dict:
