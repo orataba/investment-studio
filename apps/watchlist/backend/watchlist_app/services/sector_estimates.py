@@ -5,7 +5,7 @@ from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKER
 from copy import deepcopy
 
 from watchlist_app.services.sector_market_data import (
-    all_rows, enrich_estimate, numeric_store, read_sector_market_data, reporting_statements,
+    all_rows, enrich_estimate, numeric_store, read_sector_market_data, reporting_statements_at,
 )
 
 
@@ -189,7 +189,18 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
     cutoff = as_of if as_of is not None else datetime.now(UTC)
     if cutoff.tzinfo is None:
         raise ValueError("Estimate history cutoff must include a timezone.")
-    market = read_sector_market_data(session, scope["symbol"], as_of=cutoff, instrument_type=scope["instrument_type"])
+    statement_history = []
+
+    def read_statements(store, symbols, as_of):
+        # Bind all revisions once, after the actual constituent scope is known.
+        # Current and historical currencies are selected independently below;
+        # only I/O is shared, never a later financial judgment or source clock.
+        statement_history.extend(all_rows(store, "financial_statements", symbols=symbols,
+                                          as_of=as_of, versions=True, page_size=100000))
+        return reporting_statements_at(statement_history, symbols, as_of)
+
+    market = read_sector_market_data(session, scope["symbol"], as_of=cutoff,
+                                    instrument_type=scope["instrument_type"], statement_reader=read_statements)
     if market is None:
         return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
     companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
@@ -215,7 +226,7 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
     # rather than rescanning long histories for every ETF constituent.
     captured_rows = {}
     for clock, symbols in scopes_by_clock.items():
-        statements = reporting_statements(store, list(symbols), clock)
+        statements = reporting_statements_at(statement_history, symbols, clock)
         rows = defaultdict(list)
         for row in all_rows(store, "analyst_estimates", symbols=list(symbols), as_of=cutoff, observed_at=clock):
             rows[(row["symbol"], row["estimate_period"])].append(enrich_estimate(row, statements.get(row["symbol"])))

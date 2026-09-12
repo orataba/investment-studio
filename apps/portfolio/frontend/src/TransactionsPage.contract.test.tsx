@@ -2046,7 +2046,7 @@ describe('Transactions rendered page contract', () => {
       lifecycle_event_type: 'fcn_knock_out', gross_amount: 500000, asset_deliveries: [],
       settlement_cashflows: [{ kind: 'coupon', cash_account_id: cashAccount.account_id, currency: 'USD', amount: '3333.33' }],
     }), expect.any(String)))
-  })
+  }, 10_000) // Two complete settlement submissions share this rendered-page test.
 
   it('lets the reviewer correct FCN delivery accounts, instruments and selected lots before submission', async () => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [fcnAccount, securitiesAccount, fundSecuritiesAccount, cashAccount] })

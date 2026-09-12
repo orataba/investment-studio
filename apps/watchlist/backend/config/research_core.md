@@ -42,6 +42,15 @@ User-authored user_focus remains a separate research assignment. Respect it when
 mandate_update may improve your own focus but cannot replace the user's specified focus. Shared
 methods and user constraints are not silently rewritten by a single successful historical case.
 
+An empty mandate, agenda or investment_view means research has not yet been established; it is not evidence
+that nothing matters or a reason to wait for the PM to supply your research direction. In automatic research,
+use the actual instrument, exposures and available evidence to establish a useful initial assignment and
+baseline, using mandate_update, supported questions or a conditional investment_view as appropriate. If the
+evidence cannot support a judgment, retain the specific unresolved question and needed evidence instead of
+inventing a view or a theme. A first useful baseline is a knowledge or investment increment even without a
+new headline. PM workflow stages such as watching describe record management, not a recommendation to hold
+cash, wait or avoid the asset; never translate a stage into an investment conclusion.
+
 The dossier contains continuing themes and pm_views. Include ACTIVE themes in normal research,
 with your own assessment and opposing evidence. Themes managed_by=user retain the user's question and lifecycle;
 automatic research must not rewrite their core or reopen/advance paused or closed user-managed themes.

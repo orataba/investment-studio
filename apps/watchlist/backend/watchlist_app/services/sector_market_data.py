@@ -6,6 +6,7 @@ import re
 
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
+from studio_market.numeric.store import cutoff_instant, instant
 
 
 @lru_cache(maxsize=1)
@@ -13,10 +14,10 @@ def numeric_store():
     return NumericStore(MarketSettings.from_environment())
 
 
-def all_rows(store, dataset, *, symbols, as_of, **filters):
+def all_rows(store, dataset, *, symbols, as_of, page_size=10000, **filters):
     rows, offset = [], 0
     while True:
-        page = store.query(dataset, symbols=symbols, as_of=as_of, limit=10000, offset=offset, **filters)
+        page = store.query(dataset, symbols=symbols, as_of=as_of, limit=page_size, offset=offset, **filters)
         rows.extend(page["rows"])
         offset += len(page["rows"])
         if offset >= page["total"]:
@@ -36,6 +37,32 @@ def reporting_statements(store, symbols, as_of):
         symbol = row["symbol"]
         if symbol not in result or row["period_end"] > result[symbol]["period_end"]:
             result[symbol] = row
+    return result
+
+
+def reporting_statements_at(rows, symbols, as_of):
+    """Select original income facts at a capture clock from one bound history.
+
+    Match NumericStore.query's PIT deduplication and ordering. In particular a
+    later revision must not supply the reporting currency for an older forecast.
+    """
+    cutoff, scope, winners = cutoff_instant(as_of), set(symbols), {}
+    for row in rows:
+        if (row["symbol"] not in scope or row["statement_type"] != "income"
+                or instant(row["observed_at"]) > cutoff or instant(row["available_at"]) > cutoff):
+            continue
+        rank = (instant(row["observed_at"]), row["batch_id"], row["row_index"])
+        previous = winners.get(row["_key"])
+        if previous is None or rank > previous[0]:
+            winners[row["_key"]] = (rank, row)
+    # Stable sorts reproduce date DESC, observed_at DESC, batch_id, row_index.
+    # Ordering across symbols is immaterial to each symbol's first income fact.
+    ordered = sorted((item[1] for item in winners.values()), key=lambda row: (row["batch_id"], row["row_index"]))
+    ordered.sort(key=lambda row: instant(row["observed_at"]), reverse=True)
+    ordered.sort(key=lambda row: row["period_end"], reverse=True)
+    result = {}
+    for row in ordered:
+        result.setdefault(row["symbol"], row)
     return result
 
 
@@ -63,7 +90,8 @@ def holding_type(name, symbol, profile):
     return "unclassified"
 
 
-def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None, instrument_type: str = "etf") -> dict | None:
+def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None,
+                            instrument_type: str = "etf", statement_reader=None) -> dict | None:
     ticker = ticker.strip().upper()
     if instrument_type not in {"equity", "etf", "public_fund"}:
         raise ValueError("Company estimates require an equity or disclosed equity fund holdings")
@@ -81,7 +109,7 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
         "company_profiles", symbols=symbols, as_of=cutoff, limit=100000)["rows"]}
     prices = {row["symbol"]: source_fields(row) for row in store.latest(
         "us_eod_daily", symbols=symbols, as_of=cutoff, limit=100000)["rows"]}
-    statements = reporting_statements(store, symbols, cutoff)
+    statements = (statement_reader or reporting_statements)(store, symbols, cutoff)
     estimates = defaultdict(list)
     for row in all_rows(store, "analyst_estimates", symbols=symbols, as_of=cutoff):
         estimates[row["symbol"]].append(enrich_estimate(row, statements.get(row["symbol"])))

@@ -78,6 +78,71 @@ def test_two_captures_compare_without_running_research_or_registering_constituen
     assert read_estimate_evidence(None, "512880")["status"] == "unsupported"
 
 
+def test_bound_statement_versions_match_historical_queries_and_tie_order(market_store):
+    store, ingest = market_store
+    income = {"symbol": "AAA", "statement_type": "income", "period_end": "2026-06-30",
+              "fiscal_year": 2026, "fiscal_period": "Q2", "reported_currency": "USD"}
+    ingest("financial_statements", [income], "2026-09-04T08:00:00+00:00")
+    ingest("financial_statements", [{**income, "reported_currency": "EUR",
+        "available_at": "2026-09-05T08:00:00.000002+00:00"}], "2026-09-05T08:00:00.000001+00:00")
+    # Same observation clock, distinct batches and duplicate rows exercise both
+    # revision winner ordering and the original result-page ordering.
+    ingest("financial_statements", [{**income, "reported_currency": "GBP"},
+        {**income, "reported_currency": "CHF"},
+        {**income, "fiscal_period": "FY", "reported_currency": "CAD"}], "2026-09-06T08:00:00+00:00")
+    ingest("financial_statements", [{**income, "reported_currency": "AUD"}], "2026-09-06T08:00:00+00:00")
+    ingest("financial_statements", [{**income, "period_end": "2026-09-30", "fiscal_period": "Q3",
+        "available_at": "2026-09-09T08:00:00+00:00", "reported_currency": "JPY"}], "2026-09-07T08:00:00+00:00")
+    ingest("financial_statements", [{**income, "reported_currency": "CNY"}], "2026-09-09T08:00:00+00:00")
+    cutoff = datetime(2026, 9, 8, tzinfo=UTC)
+    history = market.all_rows(store, "financial_statements", symbols=["AAA"], as_of=cutoff, versions=True)
+    for clock in ["2026-09-04T07:59:59Z", "2026-09-04T08:00:00Z", "2026-09-05T08:00:00Z",
+                  "2026-09-05T08:00:00.000001Z", "2026-09-05T08:00:00.000002Z",
+                  "2026-09-06T08:00:00Z", cutoff.isoformat()]:
+        expected = market.reporting_statements(store, ["AAA"], clock)
+        assert market.reporting_statements_at(history, ["AAA"], clock) == expected
+    assert market.reporting_statements_at(history, ["BBB"], cutoff) == {}
+    assert market.reporting_statements_at(history, ["AAA"], "2026-09-05T08:00:00.000001Z")["AAA"]["reported_currency"] == "USD"
+    assert market.reporting_statements_at(history, ["AAA"], "2026-09-05T08:00:00.000002Z")["AAA"]["reported_currency"] == "EUR"
+
+
+@pytest.mark.parametrize("page_limit", [None, 2])
+def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_store, monkeypatch, page_limit):
+    store, ingest = market_store
+    income = {"symbol": "AAA", "statement_type": "income", "period_end": "2026-06-30",
+              "fiscal_year": 2026, "fiscal_period": "Q2", "reported_currency": "USD"}
+    old = ingest("financial_statements", [income], "2026-09-04T08:00:00+00:00")
+    new = ingest("financial_statements", [{**income, "reported_currency": "EUR"}], "2026-09-05T12:00:00+00:00")
+    ingest("financial_statements", [{**income, "statement_type": "balance", "reported_currency": "GBP"}], "2026-09-05T13:00:00+00:00")
+    ingest("financial_statements", [{**income, "reported_currency": "JPY",
+        "available_at": "2026-09-07T00:00:00+00:00"}], "2026-09-05T14:00:00+00:00")
+    ingest("financial_statements", [{**income, "reported_currency": "CNY"}], "2026-09-07T00:00:00+00:00")
+    for frequency, clock in [("annual", "2026-09-06T08:00:00+00:00"), ("quarter", "2026-09-06T09:00:00+00:00")]:
+        ingest("analyst_estimates", [{"symbol": "AAA", "estimate_period": frequency,
+            "target_period_end": "2026-12-31", "revenue_avg": 110, "eps_avg": 2,
+            "num_analysts_revenue": 10, "num_analysts_eps": 9}], clock)
+    query, financial_calls = store.query, []
+
+    def counted_query(dataset, **kwargs):
+        if dataset == "financial_statements":
+            financial_calls.append(dict(kwargs))
+            if page_limit is not None:
+                kwargs["limit"] = page_limit
+        return query(dataset, **kwargs)
+
+    monkeypatch.setattr(store, "query", counted_query)
+    result = read_estimate_evidence(None, "xlk", as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
+    assert result["changes"] == []
+    assert len(result["observations"]) == 2
+    for row in result["observations"]:
+        assert row["reason"] == "currency_changed"
+        assert (row["previous_currency"], row["currency"]) == ("USD", "EUR")
+        assert row["previous_currency_source"]["source_id"] == f"numeric:{old['batch_id']}:0"
+        assert row["current_currency_source"]["source_id"] == f"numeric:{new['batch_id']}:0"
+    assert [call["offset"] for call in financial_calls] == ([0] if page_limit is None else [0, 2])
+    assert all(call["versions"] and call["limit"] == 100000 for call in financial_calls)
+
+
 @pytest.mark.parametrize("iid,kind,symbol", [("600036-sh", "equity", "600036.SS"), ("broad-market", "etf", "SPY")])
 def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_tools(client, market_store, monkeypatch, iid, kind, symbol):
     from watchlist_app.services import sector_research as service
