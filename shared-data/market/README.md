@@ -29,7 +29,8 @@ URL defaults to the existing `http://datahubco.com/app-api/openapi/v1/tushare`.
 The cloud installation uses `ROLE=collector`; the local installation uses
 `ROLE=replica`. Text receivers either configure `MI_HOST` and `MI_REMOTE_DIR`
 for SSH pull, or `MI_INBOX_DIR` for a completed local SFTP inbox; choose one
-transport. The replica additionally configures `NUMERIC_HOST` and
+transport. Explicit registered-stock/ETF price preparation may supplement missing source history locally through the same numerical collector; those observations retain their own capture clocks and immutable batches. The replica role still schedules only synchronization, with no whole-market acquisition or publication.
+The replica additionally configures `NUMERIC_HOST` and
 `NUMERIC_REMOTE_DIR`.
 These names also use the full prefix. Hosts are existing trusted SSH aliases;
 remote directories must be explicit absolute paths. No host is inferred.
@@ -97,6 +98,9 @@ does not suppress an already completed CN or HK session.
 Weekly work refreshes the directory/profiles, ETF disclosure history, official
 ETF filings and low-frequency Chinese futures facts. Additional explicit groups
 include `financial_history`, `financial_details`, `rating_history`, and `tushare`.
+Official ETF sources run independently by fund: a failed issuer or SEC source
+remains a failed item while other funds' successful captures are retained and
+published. A partial group is never reported as fully covered.
 Detailed as-reported financials, SEC filing metadata and individual grading
 history accept explicit symbols; they are not claimed to refresh daily for every
 US security. Provider entitlements, pagination and quota failures remain visible

@@ -53,7 +53,7 @@ def test_review_agenda_omits_inactive_theme_assignments_but_keeps_shared_events(
         session.commit()
         notebook, _ = _notebooks(session, "xlk", False)
         agenda = review_agenda(session, "xlk", notebook, [])
-        assert agenda["open_questions"] == [] and agenda["existing_lessons"] == []
+        assert agenda["tracked_questions"] == [] and agenda["existing_lessons"] == []
         assert [row["key"] for row in agenda["active_forecasts"]] == ["independent-forecast"]
         assert len(agenda["pending_events"]) == 1
         original_event = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "event")
@@ -101,7 +101,8 @@ def test_theme_creation_or_status_change_is_not_a_checked_judgment(activity_clie
                 "reviewed_update_ids": [theme_update["update_id"]]})
 
 
-def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(client, monkeypatch):
+@pytest.mark.parametrize("instrument_ids", [None, ["fund-us-agg"]])
+def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(client, monkeypatch, instrument_ids):
     calls = []
     check_scopes = research_access.topic_portfolio_ids_by_topic
     def measured_scopes(session, topics):
@@ -118,7 +119,8 @@ def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(clie
                     kind="analysis", status="completed", title="研究", context_json={
                         "research_run": True, "instrument_ids": ["fund-us-agg"],
                         "portfolio_id": "private-historical-scope" if scope == "portfolio" and index == 0 else None,
-                        "reviews": {"fund-us-agg": {"status": "completed", "summary": f"{scope}-{index}"}}}))
+                        "reviews": {"fund-us-agg": {"status": "completed", "summary": f"{scope}-{index}",
+                            "research": {"investment_view": {"direction": f"{scope}-{index}"}}}}}))
         session.add(ResearchEntry(entry_id="unrelated-analysis", topic_id="unrelated-analysis-topic", kind="analysis",
             status="completed", title="无关分析", context_json={"instrument_ids": ["fund-us-agg"]}))
         session.commit()
@@ -128,7 +130,7 @@ def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(clie
             queries.append(statement)
             return execute(statement, *args, **kwargs)
         monkeypatch.setattr(session, "execute", measured_execute)
-        states = sector_research.review_states(session)
+        states = sector_research.review_states(session, instrument_ids=instrument_ids)
         assert states["latest"]["fund-us-agg"]["current_summary"].startswith("public-")
         assert states["last_completed"] == states["latest"]
         assert calls == [["repeated-portfolio-topic", "repeated-public-topic"]]
@@ -139,13 +141,15 @@ def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(clie
         session.add(ResearchEntry(entry_id="new-private-scope", topic_id="repeated-public-topic", kind="note",
             status="recorded", title="私有组合历史", context_json={"portfolio_id": "new-private-scope"}))
         session.commit()
-        assert sector_research.review_states(session) == {"latest": {}, "last_completed": {}}
+        assert sector_research.review_states(session, instrument_ids=instrument_ids) == {"latest": {}, "last_completed": {}}
         assert calls == [["repeated-portfolio-topic", "repeated-public-topic"]]
         assert len(queries) == 3
 
 
-def test_shared_review_states_preserve_quiet_check_current_judgment_and_failed_attempt(client):
-    notebook = {"investment_view": {"risk": "信用质量仍待验证"}}
+@pytest.mark.parametrize("instrument_ids", [None, ["fund-us-agg"]])
+def test_shared_review_states_preserve_quiet_check_current_judgment_and_failed_attempt(client, instrument_ids):
+    notebook = {"investment_view": {"direction": "信用质量仍待验证", "risk": "信用质量仍待验证",
+        "updated_at": "2026-09-01T00:00:00+00:00", "source_run_id": "published-view"}}
     with get_session_factory()() as session:
         topic = ResearchTopic(topic_id="shared-state", title="研究", visibility="team")
         session.add(topic)
@@ -163,7 +167,7 @@ def test_shared_review_states_preserve_quiet_check_current_judgment_and_failed_a
                 context_json={"research_run": True, "sector_run": sector, "instrument_ids": ["fund-us-agg"],
                     "cutoff": when.isoformat(), "reviews": {"fund-us-agg": review}}))
         session.commit()
-        states = sector_research.review_states(session)
+        states = sector_research.review_states(session, instrument_ids=instrument_ids)
         latest, completed = states["latest"]["fund-us-agg"], states["last_completed"]["fund-us-agg"]
         assert (latest["run_id"], latest["status"], latest["summary"]) == ("failed-check", "failed", "本轮执行失败")
         assert (completed["run_id"], completed["status"], completed["change_kind"]) == ("quiet-review", "limited", "none")
@@ -173,12 +177,13 @@ def test_shared_review_states_preserve_quiet_check_current_judgment_and_failed_a
             assert state["current_research"] == notebook
             assert state["view_run_id"] == "published-view"
             assert state["view_updated_at"] == "2026-09-01T00:00:00+00:00"
-        assert sector_research.latest_reviews(session) == states["latest"]
-        assert sector_research.latest_reviews(session, completed_only=True) == states["last_completed"]
+        assert sector_research.latest_reviews(session, instrument_ids=instrument_ids) == states["latest"]
+        assert sector_research.latest_reviews(session, completed_only=True, instrument_ids=instrument_ids) == states["last_completed"]
 
 
 @pytest.mark.parametrize("private_scope", ["topic", "entry", "risk_entry", "foreign_topic", "foreign_entry"])
-def test_shared_review_states_exclude_current_and_historical_private_scopes(client, private_scope):
+@pytest.mark.parametrize("instrument_ids", [None, ["fund-us-agg"]])
+def test_shared_review_states_exclude_current_and_historical_private_scopes(client, private_scope, instrument_ids):
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="scoped-state", title="研究", visibility="team",
             team_id="other-team" if private_scope == "foreign_topic" else "default",
@@ -195,7 +200,7 @@ def test_shared_review_states_exclude_current_and_historical_private_scopes(clie
                 context_json=scope if private_scope == "entry" else {"risk_scope": scope}))
         session.commit()
         with principal_context(Principal("alice", "经理甲", "default")):
-            assert sector_research.review_states(session) == {"latest": {}, "last_completed": {}}
+            assert sector_research.review_states(session, instrument_ids=instrument_ids) == {"latest": {}, "last_completed": {}}
 
 
 @pytest.mark.parametrize("evidence", ["current_snapshot", "other_snapshot", "missing", "future_metric"])

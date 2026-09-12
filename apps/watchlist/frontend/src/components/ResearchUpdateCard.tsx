@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useStudioAccount } from './AccountBoundary'
 import type { AskResearchAssistant, ResearchUpdate } from '../lib/researchDossierApi'
 import { SourceList, dateLabel, hasTimeZone } from './ResearchEvidence'
+import ResearchQuestionTracking, { questionTrackingLabels } from './ResearchQuestionTracking'
 
 export const updateKindLabels: Record<ResearchUpdate['kind'], string> = {
   event: '事件', question: '问题进展', judgment: '研究判断', schedule: '观察日程', forecast: '预测', review: '复盘', lesson: '研究经验', theme: '主题', opinion: '投资观点',
@@ -22,6 +23,7 @@ export function updateStatusLabel(update: ResearchUpdate) {
     question: { open: '当时待验证', supported: '当时证据支持', refuted: '当时证据不支持' },
     schedule: { released: '已发布', cancelled: '已取消' },
     theme: { active: '持续关注', paused: '已暂停', closed: '已结束' },
+    lesson: { withdrawn: '经验已停用' },
   }
   return labels[update.kind]?.[update.status] || ''
 }
@@ -38,6 +40,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const correction = citationCorrected ? update.citation_correction : undefined
   const statusLabel = updateStatusLabel(update)
   const reference = { ...update.reference, research_update_id: update.update_id }
+  const sourceVersion = reference.pm_note_id && reference.pm_note_revision ? `pm:${reference.pm_note_id}:${reference.pm_note_revision}` : reference.notebook_version_id
   function saveOpinion(event: FormEvent) {
     event.preventDefault()
     if (!opinion.trim()) return
@@ -48,6 +51,8 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
     {update.body && <p className={`research-update-body${!expandedBody && update.body.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{update.body}</p>}
     {update.body.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
     {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
+    {update.kind === 'question' && update.tracking_status && <p className="sector-research-note"><strong>当时跟踪安排</strong> <span>{questionTrackingLabels[update.tracking_status]}</span>{update.tracking_reason && <> · <span translate="no">{update.tracking_reason}</span></>}</p>}
+    {update.kind === 'lesson' && update.status === 'withdrawn' && update.withdrawal_reason && <p className="sector-research-note" translate="no">{update.withdrawal_reason}</p>}
     {update.scheduled_at && <p className="sector-event-dates"><span>预定时间 <time dateTime={update.scheduled_at}>{dateLabel(update.scheduled_at)}</time></span></p>}
     {(update.occurred_at || update.published_at) && <p className="sector-event-dates">
       {update.occurred_at && <span>事件发生 <time dateTime={update.occurred_at}>{dateLabel(update.occurred_at)}</time></span>}
@@ -55,7 +60,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
     </p>}
     {Boolean(update.details?.length || update.sources.length) && <details className="research-update-evidence"><summary>分析与研究依据</summary>
       {update.details?.filter(detail => detail.text).map((detail, index) => <div key={`${detail.label}:${index}`}><strong>{detail.label}</strong><p translate="no">{detail.text}</p></div>)}
-      <SourceList instrumentId={reference.instrument_id} sources={update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))} />
+      <SourceList instrumentId={reference.instrument_id} versionId={sourceVersion} sources={update.sources.map((source, index) => ({ ...source, source_id: source.source_id || `${update.update_id}:${index}` }))} />
     </details>}
     {onAskAssistant && <div className="research-update-actions">
       <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请${historical ? '按当时信息复核这条历史研究更新' : '继续分析这条研究更新'}“${update.title}”。读取它对应的原始证据、相关事件及主题，区分新增事实、机制判断和市场定价；核实后说明是否需要改变认识或继续跟进。${historical ? '此版本已被修订或撤回，请区分当时判断与当前结论。' : ''}`, reference)}>{historical ? '讨论当时判断' : '追问这条更新'}</button>
@@ -69,6 +74,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
       <p className="sector-research-note">将交给研究助手保存，并关联这条更新；助手完成保存后会显示结果。</p>
       <div className="research-theme-actions"><button type="submit" disabled={!opinion.trim()}>交给助手保存</button><button type="button" onClick={() => setWriting(false)}>取消</button></div>
     </form>}
+    <ResearchQuestionTracking update={update} onAskAssistant={onAskAssistant} />
   </>
   return <article className={`research-update-card${historical ? ' research-update-historical' : ''}`} data-update-id={update.update_id}>
     <div className="research-update-meta"><span>{updateKindLabels[update.kind]}{update.analysis_depth === 'brief' && <> · <span>简讯</span></>}</span>

@@ -57,6 +57,7 @@ def test_system_citation_revision_updates_current_sources_without_changing_judgm
         session.commit()
 
         states = sector_research.review_states(session)
+        assert sector_research.review_states(session, instrument_ids=["xlk"]) == states
         for key in ("latest", "last_completed"):
             assert {k: v for k, v in states[key]["xlk"].items() if k != "current_research"} == {
                 k: v for k, v in before_states[key]["xlk"].items() if k != "current_research"}
@@ -80,9 +81,9 @@ def test_system_citation_revision_updates_current_sources_without_changing_judgm
         if theme:
             after = themes_view(session, "xlk")["themes"][0]
             assert after["last_changed_at"] == before_theme["last_changed_at"]
-            assert after["last_reviewed_at"] == before_theme["last_reviewed_at"]
-            assert after["current_assessment"]["updated_at"] == before_theme["current_assessment"]["updated_at"]
-            assert after["current_assessment"]["source_ids"] == ["original"]
+            assert after["current_questions"][0]["last_reviewed_at"] == before_theme["current_questions"][0]["last_reviewed_at"]
+            assert after["current_questions"][0]["last_changed_at"] == before_theme["current_questions"][0]["last_changed_at"]
+            assert [source["source_id"] for source in after["current_questions"][0]["sources"]] == ["original"]
         else:
             followup = activity["current_followups"][0]
             assert followup["title"] == before_followups[0]["title"]

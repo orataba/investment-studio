@@ -1,4 +1,5 @@
 """Apply the user's explicit recordkeeping instructions, separate from AI research publication."""
+from copy import deepcopy
 from datetime import UTC, datetime
 import re
 from typing import Annotated, Literal
@@ -103,11 +104,15 @@ def apply_user_command(session, run, command):
         theme = next((row for row in bound.get("themes", []) if row["theme_id"] == theme_id), {})
         notebook = bound.get("notebook") or {}
         refs = command.note.research_context.source_ids if command.note.research_context else []
+        bound_sources = []
         if refs:
             from watchlist_app.services.research_notebook import research_sources, validate_notebook, ResearchNotebook
+            from watchlist_app.services.market_evidence import source_reference
+            available = research_sources(run.context_json, run.entry_id)
             validate_notebook(ResearchNotebook(source_ids=refs), command.instrument_id,
-                              research_sources(run.context_json, run.entry_id))
-        note_provenance = {**provenance, "information_cutoff": run.context_json.get("cutoff"), "research_snapshot": {
+                              available)
+            bound_sources = [deepcopy(source_reference(available[sid])) for sid in dict.fromkeys(refs)]
+        note_provenance = {**provenance, "sources": bound_sources, "information_cutoff": run.context_json.get("cutoff"), "research_snapshot": {
             "notebook_version_id": notebook.get("version_id", notebook.get("run_id")),
             "mandate_version_id": (bound.get("mandate") or {}).get("version_id"),
             "theme_revision": theme.get("revision_number"),

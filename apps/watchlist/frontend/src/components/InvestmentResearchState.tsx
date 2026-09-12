@@ -7,7 +7,7 @@ type Sources = (ids: string[]) => ReactNode
 
 function ViewBody({ view }: { view: InvestmentView }) {
   return <dl className="research-investment-dimensions">
-    {([['direction', '方向判断'], ['horizon', '适用期限'], ['attractiveness', '当前投资吸引力'], ['risk', '风险状况'], ['conviction', '判断把握程度']] as const).map(([key, label]) => view[key] && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}
+    {([['direction', '方向判断'], ['horizon', '适用期限'], ['attractiveness', '当前投资吸引力'], ['risk', '风险状况'], ['conviction', '判断把握程度'], ['invalidation', '改判条件'], ['next_check', '下一步验证']] as const).map(([key, label]) => view[key] && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}
   </dl>
 }
 
@@ -55,6 +55,7 @@ function ReviewBody({ review, forecasts, sources }: { review: ResearchForecastRe
 
 function LessonBody({ lesson, sources }: { lesson: ResearchLesson; sources: Sources }) {
   return <>
+    {lesson.status === 'withdrawn' && <p className="sector-research-note"><strong>经验已停用</strong>{lesson.withdrawal_reason && <> · <span translate="no">{lesson.withdrawal_reason}</span></>}</p>}
     <p translate="no">{lesson.lesson}</p>
     {lesson.applicability && <p><strong>适用条件</strong> <span translate="no">{lesson.applicability}</span></p>}
     {lesson.limitations && <p><strong>适用边界</strong> <span translate="no">{lesson.limitations}</span></p>}
@@ -86,6 +87,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
         {Boolean(review.versions?.length) && <details className="research-dossier-record"><summary>复盘修订历史 · {review.versions!.length} 次</summary>{review.versions!.map(version => <article key={version.version_id}><ReviewBody review={version} {...{ forecasts, sources }} /></article>)}</details>}
       </article>)}
       {lessons.map(lesson => <article className="research-notebook-question" key={lesson.key}><h4>研究经验</h4><LessonBody {...{ lesson, sources }} />
+        {onAskAssistant && lesson.version_id && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核这条研究经验“${lesson.lesson}”的适用条件、局限和反例，区分已验证机制与单次结果，说明应保留、修订还是停用。${lesson.status === 'withdrawn' ? '这条经验已经停用，不得默认为当前规则；恢复使用需要明确判断和依据。' : ''}`, { instrument_id: instrumentId, research_update_id: `research:${lesson.version_id}` })}>复核这条经验</button>}
         {Boolean(lesson.versions?.length) && <details className="research-dossier-record"><summary>经验修订历史 · {lesson.versions!.length} 次</summary>{lesson.versions!.map(version => <article key={version.version_id}><LessonBody lesson={version} sources={sources} /></article>)}</details>}
       </article>)}
     </details>}

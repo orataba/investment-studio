@@ -8,6 +8,7 @@
 | --- | --- |
 | 第一次接手项目、定位代码和评估修改影响 | [Developer Guide](./DEVELOPER_GUIDE.md) |
 | 主页、共享数据与四个业务 App 的职责和数据流 | [Architecture](./ARCHITECTURE.md) |
+| 数据、量化、AI 研究、PM 判断、跟踪与风控如何共同服务投资决策 | [投资研究系统](./INVESTMENT_RESEARCH_SYSTEM.md) |
 | 同事如何使用四个业务应用 | [User Manual](./USER_MANUAL.md) |
 | 公共数值、资讯包、PIT 与日报周报运行 | [Market Data Pipeline](./MARKET_DATA_PIPELINE.md) |
 | 数据库拓扑、迁移、重建、恢复与 PostgreSQL 测试 | [Database Workflow](./DATABASE_WORKFLOW.md) |

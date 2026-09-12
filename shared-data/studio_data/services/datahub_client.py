@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -16,6 +17,9 @@ DEFAULT_DATAHUB_TUSHARE_API_URL = (
 DATAHUB_PAGE_SIZE = 5000
 DATAHUB_TRANSIENT_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
 DATAHUB_TRANSIENT_PROVIDER_CODES = {40203, 40204}
+# Verified index-daily request contract: a 366-day inclusive range succeeds;
+# multi-year repair requests are rejected before offset pagination can begin.
+DATAHUB_INDEX_DAILY_WINDOW_DAYS = 366
 TUSHARE_ENDPOINT_PATHS = {
     "fund_basic": "fund-basic",
     "fund_portfolio": "fund-portfolio",
@@ -93,6 +97,24 @@ def _decode_rows(payload: object) -> tuple[list[dict[str, object]], bool]:
     return rows, bool(data.get("has_more"))
 
 
+def _date_queries(api_name: str, query: dict[str, object]) -> list[dict[str, object]]:
+    if api_name != "index_daily" or not query.get("start_date") or not query.get("end_date"):
+        return [query]
+    try:
+        start = datetime.strptime(str(query["start_date"]), "%Y%m%d").date()
+        end = datetime.strptime(str(query["end_date"]), "%Y%m%d").date()
+    except ValueError as error:
+        raise DataHubClientError("index_daily dates must use YYYYMMDD.") from error
+    if start > end:
+        raise DataHubClientError("index_daily start_date must not follow end_date.")
+    queries = []
+    while start <= end:
+        stop = min(start + timedelta(days=DATAHUB_INDEX_DAILY_WINDOW_DAYS - 1), end)
+        queries.append({**query, "start_date":start.strftime("%Y%m%d"), "end_date":stop.strftime("%Y%m%d")})
+        start = stop + timedelta(days=1)
+    return queries
+
+
 def fetch_tushare_rows(
     *,
     api_key: str | None,
@@ -127,48 +149,50 @@ def fetch_tushare_rows(
         active_session.trust_env = False
 
     rows: list[dict[str, object]] = []
-    offset = 0
     try:
-        while True:
-            page_query = {**query, "offset": offset}
-            for attempt in range(len(DATAHUB_TRANSIENT_RETRY_DELAYS) + 1):
-                try:
-                    response = active_session.get(
-                        f"{normalized_url}/{endpoint_path}",
-                        headers={"X-API-Key": normalized_key},
-                        params=page_query,
-                        timeout=max(1, int(timeout_seconds)),
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                except (requests.RequestException, ValueError) as error:
-                    safe_message = redact_datahub_error_message(
-                        error,
-                        api_key=normalized_key,
-                    )
-                    raise DataHubClientError(
-                        f"DataHub request failed: {safe_message}"
-                    ) from error
+        for date_query in _date_queries(str(api_name).strip(), query):
+            offset = 0
+            while True:
+                page_query = {**date_query, "offset": offset}
+                for attempt in range(len(DATAHUB_TRANSIENT_RETRY_DELAYS) + 1):
+                    try:
+                        response = active_session.get(
+                            f"{normalized_url}/{endpoint_path}",
+                            headers={"X-API-Key": normalized_key},
+                            params=page_query,
+                            timeout=max(1, int(timeout_seconds)),
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                    except (requests.RequestException, ValueError) as error:
+                        safe_message = redact_datahub_error_message(
+                            error,
+                            api_key=normalized_key,
+                        )
+                        raise DataHubClientError(
+                            f"DataHub request failed: {safe_message}"
+                        ) from error
 
-                provider_code = (
-                    payload.get("code") if isinstance(payload, dict) else None
-                )
-                if (
-                    provider_code not in DATAHUB_TRANSIENT_PROVIDER_CODES
-                    or attempt == len(DATAHUB_TRANSIENT_RETRY_DELAYS)
-                ):
+                    provider_code = (
+                        payload.get("code") if isinstance(payload, dict) else None
+                    )
+                    if (
+                        provider_code not in DATAHUB_TRANSIENT_PROVIDER_CODES
+                        or attempt == len(DATAHUB_TRANSIENT_RETRY_DELAYS)
+                    ):
+                        break
+                    time.sleep(DATAHUB_TRANSIENT_RETRY_DELAYS[attempt])
+
+                page_rows, has_more = _decode_rows(payload)
+                rows.extend(page_rows)
+                if not has_more:
                     break
-                time.sleep(DATAHUB_TRANSIENT_RETRY_DELAYS[attempt])
-
-            page_rows, has_more = _decode_rows(payload)
-            rows.extend(page_rows)
-            if not has_more:
-                return rows
-            if not page_rows:
-                raise DataHubClientError(
-                    "DataHub returned has_more=true with an empty page."
-                )
-            offset += len(page_rows)
+                if not page_rows:
+                    raise DataHubClientError(
+                        "DataHub returned has_more=true with an empty page."
+                    )
+                offset += len(page_rows)
+        return rows
     finally:
         if owned_session:
             active_session.close()

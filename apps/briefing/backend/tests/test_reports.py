@@ -19,9 +19,12 @@ from studio_identity import Principal
 
 @pytest.fixture(autouse=True)
 def report_test_actor(monkeypatch):
+    actor = Principal("pm", "研究员", "default", team_role="admin", credential="test")
     monkeypatch.setattr("briefing_app.main.resolve_request", lambda *a, **k: Principal("pm", "研究员", "default", team_role="admin", credential="test"))
     monkeypatch.setattr("briefing_app.runner.resolve_token", lambda token, audience: Principal("pm", "研究员", "default", team_role="admin", credential=token, resource_scope={"kind": "report", "id": token}))
     monkeypatch.setattr("briefing_app.runner.revoke_delegation", lambda *a, **k: None)
+    monkeypatch.setattr("briefing_app.runner.issue_delegation", lambda principal, audience, scope: scope["id"])
+    return actor
 
 
 @pytest.fixture(autouse=True)
@@ -255,7 +258,7 @@ def test_api_preserves_source_versions_and_rejects_late_draft(factory, snapshot)
     assert detail["report"]["sections"][0]["groups"][0]["items"][0]["tags"] == ["利率", "就业"]
 
 
-def test_runner_publishes_only_structured_success_and_retains_failed_version(factory, snapshot, monkeypatch, caplog):
+def test_runner_publishes_only_structured_success_and_retains_failed_version(factory, snapshot, monkeypatch, caplog, report_test_actor):
     from briefing_app import runner
     monkeypatch.setattr(runner, "get_session_factory", lambda: factory)
     monkeypatch.setattr(runner, "build_input", lambda *args: deepcopy(snapshot))
@@ -279,7 +282,7 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
                 session.commit()
             return "报告已提交", ""
     monkeypatch.setattr(runner.subprocess, "Popen", Process)
-    runner.run_report(report_id, report_id)
+    runner.run_report(report_id, report_id, report_test_actor)
     with factory() as session:
         row = session.get(Report, report_id)
         assert row.status == "completed" and modes == ["write", "review"]
@@ -287,7 +290,7 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
         second, _ = begin_report(session, "daily", datetime(2026, 9, 7, tzinfo=UTC), "Asia/Shanghai", edition_role="publisher")
         second_id = second.report_id
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=0, communicate=lambda **kw: ("这里只是普通回复", "")))
-    runner.run_report(second_id, second_id)
+    runner.run_report(second_id, second_id, report_test_actor)
     with factory() as session:
         rows = list(session.scalars(select(Report).order_by(Report.version)))
         assert [row.status for row in rows] == ["completed", "failed"]
@@ -295,13 +298,13 @@ def test_runner_publishes_only_structured_success_and_retains_failed_version(fac
         third, _ = begin_report(session, "daily", datetime(2026, 9, 7, 3, tzinfo=UTC), "Asia/Shanghai", edition_role="publisher")
         third_id = third.report_id
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(returncode=1, communicate=lambda **kw: ("", "API_KEY=private-value\nerror EEXIST profile bootstrap\n")))
-    runner.run_report(third_id, third_id)
+    runner.run_report(third_id, third_id, report_test_actor)
     assert third_id in caplog.text and "exit_code=1" in caplog.text and "EEXIST profile bootstrap" in caplog.text
     assert "private-value" not in caplog.text
 
 
 @pytest.mark.parametrize("review_exit", [0, 1])
-def test_runner_never_publishes_writer_draft_when_editor_does_not_submit(factory, snapshot, monkeypatch, review_exit):
+def test_runner_never_publishes_writer_draft_when_editor_does_not_submit(factory, snapshot, monkeypatch, review_exit, report_test_actor):
     from briefing_app import runner
     monkeypatch.setattr(runner, "get_session_factory", lambda: factory)
     monkeypatch.setattr(runner, "build_input", lambda *args: deepcopy(snapshot))
@@ -319,11 +322,91 @@ def test_runner_never_publishes_writer_draft_when_editor_does_not_submit(factory
                     session.commit()
             return "校稿未提交", ""
     monkeypatch.setattr(runner.subprocess, "Popen", Process)
-    runner.run_report(report_id, report_id)
+    runner.run_report(report_id, report_id, report_test_actor)
     with factory() as session:
         report = session.get(Report, report_id)
         assert report.status == "failed" and "校稿" in report.error
         assert report.result_json is None and report.draft_json["mode"] == "write"
+
+
+@pytest.mark.parametrize("failure", [None, "initial_expired", "issuer_after_prepare", "permission_before_review", "revoked_before_publish"])
+def test_each_stage_revalidates_original_issuer_and_revokes_all_grants(factory, snapshot, monkeypatch, report_test_actor, failure):
+    from dataclasses import replace
+    import json
+    from studio_identity import IdentityError
+    from briefing_app import runner
+    issuer = report_test_actor
+    with factory() as session:
+        report, _ = begin_report(session, "daily", datetime(2026, 9, 7, tzinfo=UTC), "Asia/Shanghai",
+                                  edition_role="publisher", principal=issuer)
+        report_id = report.report_id
+    elapsed, stages, issued, revoked = [0], [], [], []
+    expiries = {"initial-grant": 3600}
+    def build(*args):
+        elapsed[0] = 3700  # Preparation consumed the original grant; issuer remains valid.
+        return deepcopy(snapshot)
+    def issue(principal, audience, scope):
+        assert principal is issuer and audience == "briefing" and scope == {"kind": "report", "id": report_id}
+        if failure == "issuer_after_prepare":
+            raise IdentityError(401, "Original issuer expired")
+        token = f"stage-grant-{len(issued) + 1}"
+        issued.append(token)
+        expiries[token] = elapsed[0] + 3600
+        return token
+    def resolve(token, audience):
+        assert audience == "briefing"
+        if ((failure == "initial_expired" and token == "initial-grant")
+                or elapsed[0] >= expiries[token]
+                or (failure == "revoked_before_publish" and len(stages) == 2)):
+            raise IdentityError(401, "Report grant no longer valid")
+        role = "reader" if failure == "permission_before_review" and len(issued) == 2 else "admin"
+        return replace(issuer, credential=token, team_role=role, resource_scope={"kind": "report", "id": report_id})
+    def harness(rid, mode, token):
+        assert rid == report_id and token == issued[-1]
+        stages.append((mode, token))
+        elapsed[0] += 1740  # Each allowed model stage finishes within 30 minutes.
+        with factory() as session:
+            session.get(Report, rid).draft_json = {"mode": mode, "report": draft()}
+            session.commit()
+        return {"reviewed": mode == "review"}
+    monkeypatch.setattr(runner, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(runner, "build_input", build)
+    monkeypatch.setattr(runner, "issue_delegation", issue)
+    monkeypatch.setattr(runner, "resolve_token", resolve)
+    monkeypatch.setattr(runner, "_run_harness", harness)
+    monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append((token, principal)))
+    runner.run_report(report_id, "initial-grant", issuer)
+    with factory() as session:
+        report = session.get(Report, report_id)
+        assert report.status == ("failed" if failure else "completed")
+        assert report.result_json == (None if failure else {"reviewed": True})
+        assert "stage-grant" not in json.dumps(report.input_json) + json.dumps(report.draft_json) + json.dumps(report.result_json)
+    assert {token for token, _ in revoked} == {"initial-grant", *issued}
+    assert all(principal is issuer for _, principal in revoked)
+    if failure in {"initial_expired", "issuer_after_prepare"}:
+        assert stages == []
+    elif failure == "permission_before_review":
+        assert stages == [("write", "stage-grant-1")]
+    else:
+        assert stages == [("write", "stage-grant-1"), ("review", "stage-grant-2")]
+
+
+def test_generate_dispatch_retains_original_issuer(factory, monkeypatch, report_test_actor):
+    from briefing_app import main
+    app = create_app(Settings(database_url="sqlite+pysqlite:///:memory:"))
+    def session_override():
+        with factory() as session:
+            yield session
+    app.dependency_overrides[get_session] = session_override
+    calls = []
+    monkeypatch.setattr(main, "harness_available", lambda: True)
+    monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs: report_test_actor)
+    monkeypatch.setattr(main, "issue_delegation", lambda *args: "initial-grant")
+    monkeypatch.setattr(main, "run_report", lambda report_id, token, issuer: calls.append((report_id, token, issuer)))
+    response = TestClient(app, headers={"Authorization": "Bearer test"}).post("/api/briefing/reports",
+        json={"report_type": "daily", "cutoff": "2026-09-07T00:00:00Z"})
+    assert response.status_code == 202
+    assert calls == [(response.json()["report_id"], "initial-grant", report_test_actor)]
 
 
 def test_weekly_schema_is_independent_of_daily_summary(snapshot):

@@ -95,6 +95,65 @@ def test_withdrawal_of_a_previously_available_source_requires_reassessment(store
     assert result["reasons"][0]["sources"][0]["document_id"] == prior_source["document_id"]
 
 
+@pytest.mark.parametrize("status", ["active", "withdrawn"])
+def test_read_original_revision_triggers_even_after_old_terms_and_entities_disappear(store, status):
+    from hashlib import sha256
+    first = capture(store, "Gold reserve disclosure")
+    with store.engine.begin() as connection:
+        revised = {key: value for key, value in first.items() if key not in {"source_id", "received_at", "content_text", "raw_path"}}
+        revised.update(version_id="corrected", title="Correction notice", status=status,
+                       body_sha256=sha256(b"The earlier disclosure is invalid.").hexdigest(),
+                       observed_at=stamp(3).isoformat(), entities=[], event_ids=[])
+        store._write_document(connection, revised, "The earlier disclosure is invalid.", stamp(3))
+    assert store.search("Gold", as_of=stamp(4), include_withdrawn=True)["total"] == 0
+    prior = context(market_text_sources=[{"source_id": first["source_id"], "document_id": first["document_id"]}])
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(4))
+    source, = result["reasons"][0]["sources"]
+    assert source["change"] == ("withdrawn_original" if status == "withdrawn" else "revised_original")
+    assert source["previous_source_id"] == first["source_id"]
+    assert source["dependency"] == "previously_read_original"
+    assert store.read(first["source_id"], as_of=stamp(4))["content_text"] == "Gold reserve disclosure"
+    followup = {**prior, "cutoff": stamp(4).isoformat(), "incremental_trigger": result}
+    assert triggers.research_trigger(session(), "gold", followup, now=stamp(5)) is None
+
+
+def test_original_read_without_keyword_search_still_tracks_its_revision_without_broadcast(store):
+    first = capture(store, "Gold reserve disclosure")
+    capture(store, "Gold revised reserve disclosure", observed=3, received=3)
+    prior = context(market_queries=[], market_text_sources=[{"source_id": first["source_id"]}])
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["sources"]
+    prior["instrument_ids"] = ["gold", "xlk"]
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
+    prior["reviews"] = {"gold": {"reflection": {"source_ids": [first["source_id"]]}}}
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["sources"]
+    assert triggers.research_trigger(session(), "xlk", prior, now=stamp(4)) is None
+
+
+def test_unrelated_later_fetch_cutoff_does_not_consume_an_unread_correction(store):
+    first = capture(store, "Gold reserve disclosure")
+    latest = capture(store, "Gold revised reserve disclosure", observed=3, received=3)
+    prior = context(cutoff=stamp(4).isoformat(), input_snapshot_cutoff=stamp(2).isoformat(),
+                    market_text_sources=[{"source_id": first["source_id"]}])
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(5))
+    assert result["reasons"][0]["sources"][0]["previous_source_id"] == first["source_id"]
+    prior["market_text_sources"].append({"source_id": latest["source_id"]})
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(5)) is None
+
+
+@pytest.mark.parametrize("correction", [{"title": "Correction notice"}, {"published_at": "2019-01-01"},
+                                       {"information_type": "rumor"}])
+def test_original_metadata_correction_is_not_mistaken_for_identical_body_recapture(store, correction):
+    first = capture(store, "Gold reserve disclosure")
+    with store.engine.begin() as connection:
+        revised = {key: value for key, value in first.items() if key not in {"source_id", "received_at", "content_text", "raw_path"}}
+        revised.update(version_id="metadata-correction", observed_at=stamp(3).isoformat(),
+                       entities=[], event_ids=[], **correction)
+        store._write_document(connection, revised, first["content_text"], stamp(3))
+    prior = context(market_text_sources=[{"source_id": first["source_id"]}])
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(4))
+    assert result["reasons"][0]["sources"][0]["change"] == "revised_original"
+
+
 def test_unscoped_batch_and_other_instrument_queries_are_not_broadcast(store):
     capture(store, "Gold reserve disclosure", observed=3, received=3)
     prior = context(instrument_ids=["gold", "xlk"], market_queries=[

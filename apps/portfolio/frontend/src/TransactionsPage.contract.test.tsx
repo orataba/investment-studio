@@ -30,6 +30,8 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioFxRates: vi.fn(),
   getPortfolioInstrumentEventTasks: vi.fn(),
   getPortfolioInstruments: vi.fn(),
+  searchPortfolioSecurities: vi.fn(),
+  materializePortfolioSecurity: vi.fn(),
   getPortfolioOptionDeliveryLinks: vi.fn(),
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
@@ -364,6 +366,8 @@ describe('Transactions rendered page contract', () => {
   beforeEach(() => {
     accessState.can_edit = true
     vi.clearAllMocks()
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [], catalog_errors: {} })
+    apiMocks.materializePortfolioSecurity.mockReset()
     apiMocks.deletePortfolioTransaction.mockResolvedValue({
       portfolio_id: '3',
       deleted_count: 1,
@@ -1449,7 +1453,7 @@ describe('Transactions rendered page contract', () => {
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     fireEvent.change(securitySearch, { target: { value: 'FUND1' } })
-    expect(await within(dialog).findByText('No registered asset matches. Add new assets through backend maintenance.')).toBeInTheDocument()
+    expect(await within(dialog).findByText('No matching security for this account.')).toBeInTheDocument()
 
     fireEvent.change(securitySearch, { target: { value: 'GETF' } })
     expect(
@@ -1538,6 +1542,152 @@ describe('Transactions rendered page contract', () => {
     await user.type(within(dialog).getByRole('searchbox', { name: 'Security' }), symbol)
     await user.click(await within(dialog).findByRole('button', { name: new RegExp(symbol + '.*USD') }))
     expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(1)
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+  })
+
+  it.each(['SHV', 'STIP', 'DBA', 'EMXC', 'GCC'])('finds %s in the catalog and registers only when selected', async (symbol) => {
+    const candidate = { instrument_type: 'etf', symbol, catalog_provider: 'fmp', catalog_symbol: symbol,
+      name: `${symbol} ETF`, exchange_code: 'ARCX', exchange_label: 'NYSE Arca', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null }
+    const registered = { ...etfInstrument, instrument_id: symbol.toLowerCase(), instrument_name: candidate.name,
+      identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: symbol, is_primary: true }] }
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [candidate], catalog_errors: {} })
+    apiMocks.materializePortfolioSecurity.mockResolvedValue(registered)
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: symbol } })
+    const result = await within(dialog).findByRole('button', { name: new RegExp(`${symbol}.*USD`) })
+    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', symbol)
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+    await user.click(result)
+    await waitFor(() => expect(within(dialog).getByRole('searchbox', { name: 'Security' })).toHaveValue(`${symbol} · ${symbol} ETF`))
+    expect(apiMocks.materializePortfolioSecurity).toHaveBeenCalledTimes(1)
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('resolves a catalog name to an existing renamed instrument without registering again', async () => {
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{ instrument_type: 'etf', symbol: 'GETF',
+      catalog_provider: 'fmp', catalog_symbol: 'GETF', name: 'Provider Original Fund Name',
+      exchange_code: 'ARCX', exchange_label: 'NYSE Arca', market: 'US', currency: 'USD',
+      currency_verified: true, existing_instrument_id: etfInstrument.instrument_id }], catalog_errors: {} })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'Provider Original' } })
+    await user.click(await within(dialog).findByRole('button', { name: /GETF.*Global Equity ETF/ }))
+    expect(search).toHaveValue('GETF · Global Equity ETF')
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+  })
+
+  it('hides catalog candidates with a verified currency that differs from the selected USD account', async () => {
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{
+      instrument_type: 'etf', symbol: 'HKETF', catalog_provider: 'fmp', catalog_symbol: 'HKETF.HK',
+      name: 'Hong Kong ETF', exchange_code: 'XHKG', exchange_label: 'Hong Kong Exchange',
+      market: 'HK', currency: 'HKD', currency_verified: true, existing_instrument_id: null,
+    }], catalog_errors: {} })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    expect(within(dialog).getByRole('combobox', { name: 'Holding Account' })).toHaveValue(securitiesAccount.account_id)
+    fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: 'HKETF' } })
+
+    expect(await within(dialog).findByText('No matching security for this account.')).toBeInTheDocument()
+    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', 'HKETF')
+    expect(within(dialog).queryByRole('button', { name: /HKETF.*Hong Kong ETF/ })).not.toBeInTheDocument()
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+  })
+
+  it('shows an unverified catalog currency but rejects selection when registration confirms a non-USD currency', async () => {
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{
+      instrument_type: 'etf', symbol: 'LONETF', catalog_provider: 'fmp', catalog_symbol: 'LONETF.L',
+      name: 'London ETF', exchange_code: 'XLON', exchange_label: 'London Stock Exchange',
+      market: 'EU', currency: 'GBP', currency_verified: false, existing_instrument_id: null,
+    }], catalog_errors: {} })
+    apiMocks.materializePortfolioSecurity.mockResolvedValue({
+      ...etfInstrument, instrument_id: 'etf-london', instrument_name: 'London ETF', currency: 'GBP',
+      identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: 'LONETF', is_primary: true }],
+      latest_market_data: [],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    expect(within(dialog).getByRole('combobox', { name: 'Holding Account' })).toHaveValue(securitiesAccount.account_id)
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'LONETF' } })
+    await user.click(await within(dialog).findByRole('button', { name: /LONETF.*Currency to be verified/ }))
+
+    expect(await within(dialog).findByText('The security is not compatible with the selected account currency or transaction type.')).toBeInTheDocument()
+    expect(search).toHaveValue('LONETF')
+    expect(apiMocks.materializePortfolioSecurity).toHaveBeenCalledTimes(1)
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('retries price preparation for an already registered security without usable prices', async () => {
+    const registered = { ...etfInstrument, instrument_id: 'shv', instrument_name: 'Treasury ETF',
+      identifiers: [
+        { identifier_type: 'exchange_ticker', identifier_value: 'SHV', is_primary: true },
+        { identifier_type: 'provider_symbol', identifier_value: 'fmp:SHV', is_primary: false },
+      ], latest_market_data: [], coverage_state: 'unavailable' }
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [registered] })
+    apiMocks.materializePortfolioSecurity.mockResolvedValue({ ...registered, latest_market_data: etfInstrument.latest_market_data, coverage_state: 'complete' })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'SHV' } })
+    await user.click(await within(dialog).findByRole('button', { name: /SHV.*Treasury ETF/ }))
+    await waitFor(() => expect(search).toHaveValue('SHV · Treasury ETF'))
+    expect(apiMocks.materializePortfolioSecurity).toHaveBeenCalledWith('3', {
+      instrument_type: 'etf', catalog_provider: 'fmp', catalog_symbol: 'SHV',
+    })
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('preserves the search after failed registration and permits an explicit retry', async () => {
+    const candidate = { instrument_type: 'etf', symbol: 'SHV', catalog_provider: 'fmp', catalog_symbol: 'SHV',
+      name: 'Treasury ETF', exchange_code: 'ARCX', exchange_label: 'NYSE Arca', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null }
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [candidate], catalog_errors: {} })
+    apiMocks.materializePortfolioSecurity.mockRejectedValueOnce(new Error('Data preparation failed'))
+    apiMocks.materializePortfolioSecurity.mockResolvedValueOnce({ ...etfInstrument, instrument_name: 'Treasury ETF',
+      identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: 'SHV', is_primary: true }] })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'SHV' } })
+    await user.click(await within(dialog).findByRole('button', { name: /SHV.*Treasury ETF/ }))
+    expect(await within(dialog).findByText('Data preparation failed')).toBeInTheDocument()
+    expect(search).toHaveValue('SHV')
+    await user.click(within(dialog).getByRole('button', { name: /SHV.*Treasury ETF/ }))
+    await waitFor(() => expect(search).toHaveValue('SHV · Treasury ETF'))
+  })
+
+  it('does not select a late registration result after the user changes the search', async () => {
+    const candidate = { instrument_type: 'etf', symbol: 'SHV', catalog_provider: 'fmp', catalog_symbol: 'SHV',
+      name: 'Treasury ETF', exchange_code: 'ARCX', exchange_label: 'NYSE Arca', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null }
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [candidate], catalog_errors: {} })
+    let finish!: (value: typeof etfInstrument) => void
+    apiMocks.materializePortfolioSecurity.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'SHV' } })
+    await user.click(await within(dialog).findByRole('button', { name: /SHV.*Treasury ETF/ }))
+    fireEvent.change(search, { target: { value: 'GETF' } })
+    await act(async () => finish(etfInstrument))
+    expect(search).toHaveValue('GETF')
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {

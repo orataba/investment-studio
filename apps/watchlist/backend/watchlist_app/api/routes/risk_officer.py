@@ -54,5 +54,5 @@ def start_review(request: ScopeInput, background: BackgroundTasks, session: Sess
         from studio_identity import current_principal
         from watchlist_app.services.research_runner import authorize_run
         token = authorize_run(current_principal(), run.entry_id)
-        background.add_task(run_analysis, run.entry_id, token)
+        background.add_task(run_analysis, run.entry_id, token, current_principal())
     return {"run_id": run.entry_id, "status": run.status}

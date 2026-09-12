@@ -73,6 +73,13 @@ def _readable(document):
             and not (document.get("provenance") or {}).get("ai_generated"))
 
 
+def _same_original(left, right):
+    # A correction to headline, occurrence/publication clock or fact/rumor
+    # attribution can change the evidence even while its body stays identical.
+    return all(left.get(key) == right.get(key) for key in (
+        "body_sha256", "status", "title", "published_at", "occurred_at", "information_type"))
+
+
 def _new_text(store, queries, consumed_at, now, read_source_ids):
     changed = {}
     for query in queries:
@@ -97,9 +104,7 @@ def _new_text(store, queries, consumed_at, now, read_source_ids):
                     withdrawn = row.get("status") in {"withdrawn", "superseded"}
                     if (withdrawn and not previous) or (not withdrawn and not _readable(row)):
                         continue
-                    if previous and (previous["version_id"] == row["version_id"]
-                                     or (previous.get("body_sha256") == row.get("body_sha256")
-                                         and previous.get("status") == row.get("status"))):
+                    if previous and (previous["version_id"] == row["version_id"] or _same_original(previous, row)):
                         continue
                     changed[row["source_id"]] = {
                         key: row.get(key) for key in (
@@ -111,6 +116,59 @@ def _new_text(store, queries, consumed_at, now, read_source_ids):
                 offset += len(page["rows"])
                 if offset >= page["total"] or not page["rows"]:
                     break
+    return list(changed.values())
+
+
+def _read_originals(context, instrument_id):
+    """A cited document remains a dependency after its title/entities are corrected."""
+    from watchlist_app.services.research_notebook import notebook_source_ids
+    review = (context.get("reviews") or {}).get(instrument_id) or {}
+    cited = notebook_source_ids(review.get("research") or {})
+    cited.update((review.get("reflection") or {}).get("source_ids", []))
+    for row in [*review.get("events", []), *review.get("themes", [])]:
+        cited.update(row.get("source_ids", []))
+    sources = []
+    for dossier in context.get("research_dossiers", []):
+        if dossier.get("instrument_id") != instrument_id:
+            continue
+        originals = [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", [])]
+        sources.extend(originals)
+        cited.update(row.get("source_id") for row in originals)
+    sources.extend((review.get("research") or {}).get("sources", []))
+    for row in [*context.get("market_text_sources", []),
+                *(row for capture in context.get("web_evidence", []) if capture.get("operation") == "fetch"
+                  for row in capture.get("sources", []))]:
+        if (context.get("instrument_ids") == [instrument_id] or row.get("instrument_id") == instrument_id
+                or row.get("source_id") in cited):
+            sources.append(row)
+    return {row["source_id"]: row for row in sources
+            if str(row.get("source_id", "")).startswith("text:")}
+
+
+def _revised_originals(store, sources, consumed_at, now):
+    changed = {}
+    latest_by_document = {}
+    for source_id in sources:
+        original = store.read(source_id, as_of=now)
+        if not original:
+            continue
+        document_id = original["document_id"]
+        if document_id not in latest_by_document:
+            latest_by_document[document_id] = store.read(document_id, as_of=now)
+        latest = latest_by_document[document_id]
+        if (not latest or latest["source_id"] in sources
+                or (consumed_at is not None
+                    and max(_instant(latest["received_at"]), _instant(latest["observed_at"])) <= consumed_at)
+                or _same_original(original, latest)):
+            continue
+        withdrawn = latest.get("status") in {"withdrawn", "superseded"}
+        if not withdrawn and not _readable(latest):
+            continue
+        changed[latest["source_id"]] = {key: latest.get(key) for key in (
+            "source_id", "document_id", "version_id", "title", "url", "body_sha256",
+            "published_at", "observed_at", "received_at", "content_completeness", "status",
+        )} | {"change": "withdrawn_original" if withdrawn else "revised_original",
+              "previous_source_id": source_id, "dependency": "previously_read_original"}
     return list(changed.values())
 
 
@@ -184,6 +242,14 @@ def research_trigger(session, instrument_id, prior_context, *, now):
                            for capture in context.get("web_evidence", [])
                            for row in capture.get("sources", []) if row.get("source_id"))
     documents = _new_text(text_store(), queries, max(consumed, key=_instant) if consumed else None, now, read_source_ids) if queries else []
+    originals = {**_read_originals(monitoring, instrument_id), **_read_originals(prior_context, instrument_id)}
+    if originals:
+        # The run cutoff can advance through an unrelated fetch after this source
+        # was read. Only a prior dependency check or a read of the latest version
+        # consumes this correction; a later run timestamp does not prove review.
+        dependency_cursor = max((_instant(cursor) for cursor in consumed), default=None)
+        revisions = _revised_originals(text_store(), originals, dependency_cursor, now)
+        documents = list({row["source_id"]: row for row in [*documents, *revisions]}.values())
     risk_changes = _risk_changes(session, instrument_id, since, now)
     due = _due_items(session, instrument_id, prior_context, since, now)
     reasons = []

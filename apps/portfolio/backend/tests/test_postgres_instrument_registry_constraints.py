@@ -271,3 +271,51 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
+
+
+def test_concurrent_security_identifier_registration_has_one_owner(
+    postgres_portfolio_env: dict[str, str],
+) -> None:
+    """The materializer's race recovery relies on this real PG unique constraint."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from investment_studio_instrument_core.db_models import InstrumentIdentifier
+    from portfolio_app.db import session as session_module
+
+    session_factory = session_module.get_session_factory()
+    instruments = [
+        shared_store.create_instrument(
+            session_factory,
+            instrument_name=f"Concurrent listing {index}",
+            instrument_type="etf",
+            currency="USD",
+            exchange_code="XNAS",
+            identifiers=[{"identifier_type": "exchange_ticker", "identifier_value": f"PGTEST{index}", "is_primary": True}],
+        )
+        for index in (1, 2)
+    ]
+    ready = Barrier(2)
+
+    def claim(instrument_id: str) -> tuple[str, str]:
+        with session_factory() as session:
+            session.add(InstrumentIdentifier(
+                instrument_id=instrument_id, identifier_type="provider_symbol",
+                identifier_value="fmp:PGTEST", is_primary=False,
+            ))
+            ready.wait(timeout=10)
+            try:
+                session.commit()
+                return "created", instrument_id
+            except IntegrityError as error:
+                session.rollback()
+                assert error.orig.diag.constraint_name == "uq_instrument_identifier_type_value"
+                return "conflict", instrument_id
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        outcomes = list(workers.map(claim, [str(item["instrument_id"]) for item in instruments]))
+    assert sorted(outcome for outcome, _ in outcomes) == ["conflict", "created"]
+    winner = next(instrument_id for outcome, instrument_id in outcomes if outcome == "created")
+    resolved = shared_store.find_instrument_by_identifier(
+        session_factory, identifier_type="provider_symbol", identifier_value="fmp:PGTEST", include_inactive=True,
+    )
+    assert resolved["instrument_id"] == winner

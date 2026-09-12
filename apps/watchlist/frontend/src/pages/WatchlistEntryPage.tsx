@@ -12,6 +12,7 @@ import {
   type WatchlistRecord,
 } from '../lib/api'
 import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
+import { useWatchlistForegroundRefresh } from '../lib/useWatchlistForegroundRefresh'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
@@ -37,6 +38,14 @@ export default function WatchlistEntryPage() {
   const [pendingDelete, setPendingDelete] = useState<WatchlistRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  useWatchlistForegroundRefresh(
+    loading ? null : 'entry',
+    (records) => {
+      setWatchlists(records)
+      setError(null)
+    },
+    setError,
+  )
   const menuRef = useRef<HTMLDivElement | null>(null)
   const createNameRef = useRef<HTMLInputElement | null>(null)
   const createDialogRef = useModalDialog(

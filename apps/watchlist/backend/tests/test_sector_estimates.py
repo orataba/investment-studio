@@ -118,3 +118,28 @@ def test_negative_and_zero_eps_bases_keep_absolute_change_without_percentage():
     assert len(changes) == 2 and {row["symbol"] for row in changes} == {"LOSS", "ZERO"}
     assert all(row["metric"] == "eps_avg" and row["delta"] == 1 and row["delta_pct"] is None
                and row["percent_change_status"] == "nonpositive_base" for row in changes)
+
+
+@pytest.mark.parametrize("value,previous", [(0, True), (2, True), (0, False)])
+def test_zero_current_analysts_are_missing_coverage_not_a_consensus_revision(value, previous):
+    old = snapshot("old", {"AAA": company(estimate(value=None, eps=2, clock=OLD_CLOCK))}, day=5)
+    current = snapshot("current", {"AAA": company(estimate(value=None, eps=value, num_analysts_eps=0))})
+    result = compare_estimate_snapshots("aaa", current, old if previous else None, instrument_type="equity")
+    assert result["changes"] == [] and result["observations"] == []
+    point, = result["unmatched"]
+    assert point["reason"] == "current_analyst_coverage_missing"
+    assert point["current_value"] == value and point["current_num_analysts"] == 0
+    assert "delta" not in point and "delta_pct" not in point
+    coverage = next(row for row in result["coverage"]["metrics"]
+                    if row["frequency"] == "annual" and row["metric"] == "eps_avg")
+    assert coverage["current_company_count"] == coverage["comparable_company_count"] == 0
+    assert result["gap_codes"] == ["current_analyst_coverage_missing"]
+
+
+def test_unknown_current_analyst_count_is_not_misrepresented_as_zero():
+    old = snapshot("old", {"AAA": company(estimate(value=None, eps=2, clock=OLD_CLOCK))}, day=5)
+    current = snapshot("current", {"AAA": company(estimate(value=None, eps=3, num_analysts_eps=None))})
+    result = compare_estimate_snapshots("aaa", current, old, instrument_type="equity")
+    change, = result["changes"]
+    assert change["delta"] == 1 and change["current_num_analysts"] is None
+    assert change["analyst_count_changed"] is None

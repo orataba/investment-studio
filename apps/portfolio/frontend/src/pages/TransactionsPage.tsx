@@ -1,5 +1,6 @@
+import { useSecurityCatalog } from '../lib/useSecurityCatalog'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
-import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
@@ -18,6 +19,8 @@ import {
   getPortfolioDerivativeContracts,
   getPortfolioFxRates,
   getPortfolioInstruments,
+  materializePortfolioSecurity,
+  type SecurityCatalogResult,
   getPortfolioOptionDeliveryLinks,
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
@@ -597,7 +600,7 @@ function eligibleCounterpartyAccounts(
 
 function isSelectableInstrument(
   transactionType: string,
-  instrument: SecuritySearchOption,
+  instrument: Pick<SecuritySearchOption, 'currency' | 'instrument_type'>,
   account?: PortfolioAccountRecord | null,
   accountCurrency?: string | null,
   transferObjectType?: string | null,
@@ -1130,7 +1133,18 @@ export default function TransactionsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
-  const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
+  const instrumentQuery = form.instrument_search
+  const catalog = useSecurityCatalog(portfolioId, form.instrument_search,
+    drawerOpen && form.asset_domain === 'security' && !form.instrument_id)
+  const [materializingSecurity, setMaterializingSecurity] = useState(false)
+  const securitySelectionGeneration = useRef(0)
+  const materializingSecurityRef = useRef(false)
+  useEffect(() => {
+    securitySelectionGeneration.current += 1
+    materializingSecurityRef.current = false
+    setMaterializingSecurity(false)
+    return () => { securitySelectionGeneration.current += 1 }
+  }, [portfolioId, drawerOpen, editingTransactionId, form.account_id, form.transaction_type, form.asset_domain, form.instrument_search])
   const [derivativeDraft, setDerivativeDraft] = useState<DerivativeContractDraft>(() =>
     buildInitialDerivativeContractDraft(),
   )
@@ -1633,7 +1647,7 @@ export default function TransactionsPage() {
     : form.instrument_search
 
   const filteredInstrumentOptions = useMemo(() => {
-    const normalizedSearch = deferredInstrumentSearch.trim().toLowerCase()
+    const normalizedSearch = instrumentQuery.trim().toLowerCase()
     if (!normalizedSearch) {
       return []
     }
@@ -1656,22 +1670,46 @@ export default function TransactionsPage() {
           instrument.instrument_name,
           instrument.instrument_type,
           instrument.currency,
-          primaryIdentifier(instrument),
+          ...instrument.identifiers.map((identifier) => identifier.identifier_value),
           instrumentSearchLabel(instrument),
         ]
           .join(' ')
           .toLowerCase()
         return haystack.includes(normalizedSearch)
       })
-    return registryMatches.slice(0, 12)
+    return registryMatches
   }, [
-    deferredInstrumentSearch,
+    instrumentQuery,
     form.transaction_type,
     form.transfer_object_type,
     instruments,
     selectedAccount,
     selectedAccount?.currency,
   ])
+  const securityOptions = [
+    ...filteredInstrumentOptions.map((instrument) => ({
+      key: instrument.instrument_id, symbol: primaryIdentifier(instrument),
+      name: instrument.instrument_name, currency: instrument.currency,
+      instrument, catalogResult: null as SecurityCatalogResult | null,
+    })),
+    ...catalog.results.flatMap((item) => {
+      const existing = instruments.find((instrument) => instrument.instrument_id === item.existing_instrument_id)
+      if (existing && filteredInstrumentOptions.some((instrument) => instrument.instrument_id === existing.instrument_id)) return []
+      const eligible = existing ?? item
+      if (!isSelectableInstrument(form.transaction_type, eligible, selectedAccount,
+        existing || item.currency_verified ? selectedAccount?.currency : null, form.transfer_object_type)) return []
+      return [{
+        key: existing?.instrument_id ?? `${item.instrument_type}:${item.catalog_provider}:${item.catalog_symbol}`,
+        symbol: existing ? primaryIdentifier(existing) : item.symbol,
+        name: existing?.instrument_name ?? item.name,
+        currency: existing?.currency ?? `${item.exchange_label} · ${item.currency_verified ? item.currency : fcnLabel('Currency to be verified', '币种待核实')}`,
+        instrument: existing ?? null, catalogResult: existing ? null : item,
+      }]
+    }),
+  ].sort((left, right) => {
+    const query = form.instrument_search.trim().toLowerCase()
+    return Number(right.symbol.toLowerCase() === query) - Number(left.symbol.toLowerCase() === query)
+  }).slice(0, 12)
   const selectedInstrumentLabel = selectedInstrument ? instrumentSearchLabel(selectedInstrument) : ''
   const showInstrumentResults =
     shouldAllowRegistryInstrument &&
@@ -2053,8 +2091,49 @@ export default function TransactionsPage() {
     window.setTimeout(() => accountSelectRef.current?.focus(), 0)
   }
 
-  function selectInstrument(instrument: SecuritySearchOption) {
-    commitSelectedInstrument(instrument)
+  async function selectSecurityOption(option: typeof securityOptions[number]) {
+    if (materializingSecurityRef.current) return
+    setFormError(null)
+    const registered = option.instrument
+    const providerSymbol = registered?.identifiers.find((identifier) =>
+      identifier.identifier_type === 'provider_symbol' && identifier.identifier_value.startsWith('fmp:'),
+    )?.identifier_value.slice(4)
+    const needsInitialPrices = registered && providerSymbol &&
+      ['equity', 'etf'].includes(registered.instrument_type) &&
+      !registered.latest_market_data.some((point) => point.metric_family === 'price' &&
+        ['last', 'close'].includes(point.quote_basis) && point.status === 'complete')
+    if (registered && !needsInitialPrices) {
+      commitSelectedInstrument(registered)
+      return
+    }
+    const catalogRequest = option.catalogResult ?? (needsInitialPrices ? {
+      instrument_type: registered.instrument_type as 'equity' | 'etf',
+      catalog_provider: 'fmp' as const, catalog_symbol: providerSymbol,
+    } : null)
+    if (!catalogRequest || !portfolioId) return
+    const generation = securitySelectionGeneration.current
+    materializingSecurityRef.current = true
+    setMaterializingSecurity(true)
+    try {
+      const instrument = await materializePortfolioSecurity(portfolioId, catalogRequest)
+      if (generation !== securitySelectionGeneration.current) return
+      setInstruments((current) => [...current.filter((item) => item.instrument_id !== instrument.instrument_id), instrument])
+      if (!isSelectableInstrument(form.transaction_type, instrument, selectedAccount,
+        selectedAccount?.currency, form.transfer_object_type)) {
+        setFormError('The security is not compatible with the selected account currency or transaction type.')
+        return
+      }
+      commitSelectedInstrument(instrument)
+    } catch (error) {
+      if (generation === securitySelectionGeneration.current) {
+        setFormError(error instanceof Error ? error.message : 'Unable to prepare this security. Select it again to retry.')
+      }
+    } finally {
+      if (generation === securitySelectionGeneration.current) {
+        materializingSecurityRef.current = false
+        setMaterializingSecurity(false)
+      }
+    }
   }
 
   function selectDerivativeContract(contractId: string) {
@@ -6567,36 +6646,41 @@ export default function TransactionsPage() {
                             if (event.key !== 'Enter') {
                               return
                             }
-                            if (filteredInstrumentOptions.length === 0) {
+                            if (securityOptions.length === 0) {
                               return
                             }
                             event.preventDefault()
-                            void selectInstrument(filteredInstrumentOptions[0])
+                            void selectSecurityOption(securityOptions[0])
                           }}
                         />
                       </label>
 
                       {showInstrumentResults ? (
                         <div className="transaction-instrument-results">
-                          {filteredInstrumentOptions.map((instrument) => (
+                          {securityOptions.map((option) => (
                             <button
                               type="button"
-                              key={instrument.instrument_id}
+                              key={option.key}
+                              title={`${option.symbol} · ${option.name} · ${option.currency}`}
+                              disabled={materializingSecurity}
                               className="transaction-instrument-result"
-                              onClick={() => void selectInstrument(instrument)}
+                              onClick={() => void selectSecurityOption(option)}
                             >
                               <div className="holding-name-stack">
-                                <span>{primaryIdentifier(instrument)}</span>
-                                <span className="holding-secondary" translate="no">{instrument.instrument_name}</span>
+                                <span>{option.symbol}</span>
+                                <span className="holding-secondary" translate="no">{option.name}</span>
                               </div>
                               <span className="transaction-picker-meta">
-                                {instrument.currency}
+                                {option.currency}
                               </span>
                             </button>
                           ))}
-                          {!filteredInstrumentOptions.length ? (
+                          {materializingSecurity ? <div role="status" className="transaction-instrument-empty">Preparing security…</div> : null}
+                          {catalog.loading ? <div role="status" className="transaction-instrument-empty">Searching securities…</div> : null}
+                          {catalog.error ? <div role="alert" className="transaction-instrument-empty">{catalog.error}</div> : null}
+                          {!securityOptions.length && !catalog.loading && !catalog.error ? (
                             <div className="transaction-instrument-empty">
-                              No registered asset matches. Add new assets through backend maintenance.
+                              No matching security for this account.
                             </div>
                           ) : null}
                         </div>

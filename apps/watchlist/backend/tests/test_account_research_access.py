@@ -240,7 +240,7 @@ def test_team_reader_can_analyze_an_authorized_portfolio_but_cannot_refresh_shar
     client, _, grants = accounts
     monkeypatch.setattr(risk_officer, "harness_available", lambda: True)
     queued = []
-    monkeypatch.setattr(risk_officer, "run_analysis", lambda run_id, token: queued.append(run_id))
+    monkeypatch.setattr(risk_officer, "run_analysis", lambda run_id, token, issuer: queued.append(run_id))
     as_user(client, "reader")
     path = "/api/risk/review/runs"
     assert client.post(path, json={"instrument_id": "fund-us-agg"}).status_code == 403

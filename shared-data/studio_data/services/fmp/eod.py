@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
+from studio_data.services.fmp.eod_capture import ensure_fmp_security_history
 from studio_data.services.instrument_store import (
     get_instrument,
     update_refresh_status,
@@ -42,6 +43,7 @@ def refresh_fmp_eod(
     instrument_type: str,
     full_history: bool = False,
     store: NumericStore | None = None,
+    acquire_history: bool = False,
 ) -> dict[str, object]:
     # The shared collector can revise retained adjusted prices after a split or
     # dividend. Projection is a local replay, so include those older revisions
@@ -68,6 +70,14 @@ def refresh_fmp_eod(
     if not provider_identifier:
         raise ValueError(f"{instrument_type.upper()} has no FMP provider_symbol identifier.")
     symbol = provider_identifier.removeprefix("fmp:")
+    # Equity/ETF registration and scheduled refresh share this acquisition
+    # boundary. An explicitly supplied store always stays an offline replay.
+    if acquire_history and store is None:
+        ensure_fmp_security_history(
+            instrument_id,
+            symbol=symbol,
+            exchange_code=str(instrument.get("exchange_code") or ""),
+        )
     start_date = date(1900, 1, 1)
     end_date = date.today()
     market = store or NumericStore(MarketSettings.from_environment())

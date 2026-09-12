@@ -54,6 +54,9 @@ def isolated_equity_store(
     _upgrade(database_url, root=BACKEND_ROOT)
     _upgrade(database_url, root=REGISTRY_MIGRATIONS_ROOT)
 
+    from studio_data.services.fmp import eod_capture
+    monkeypatch.setattr(eod_capture, "closed_symbol_date", lambda symbol, now: date(2026, 8, 15))
+
     from studio_market.config import MarketSettings
     from studio_market.numeric import NumericStore
     from datetime import UTC, datetime

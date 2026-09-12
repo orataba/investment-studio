@@ -16,7 +16,7 @@ from briefing_app.evidence import build_input
 from briefing_app.reports import validate_draft
 from briefing_app.settings import get_settings
 from briefing_app.access import require_report_access
-from studio_identity import IdentityError, principal_context, resolve_token, revoke_delegation
+from studio_identity import IdentityError, Principal, issue_delegation, principal_context, resolve_token, revoke_delegation
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / "apps/briefing/backend/scripts/run_briefing_harness.sh"
@@ -69,14 +69,16 @@ def _run_harness(report_id: str, mode: str, token: str) -> dict:
         return validate_draft(ReportDraft.model_validate(report.draft_json["report"]), report.input_json)
 
 
-def run_report(report_id: str, token: str):
+def run_report(report_id: str, token: str, issuer: Principal):
+    tokens = [token]
     try:
-        _execute_report(report_id, token)
+        _execute_report(report_id, token, issuer, tokens)
     finally:
-        try:
-            revoke_delegation(token)
-        except IdentityError:
-            logging.getLogger(__name__).warning("Report task credential could not be revoked; its expiry remains enforced")
+        for issued_token in dict.fromkeys(reversed(tokens)):
+            try:
+                revoke_delegation(issued_token, issuer)
+            except IdentityError:
+                logging.getLogger(__name__).warning("Report task credential could not be revoked; its expiry remains enforced")
 
 
 def _authorize(report, token):
@@ -87,7 +89,7 @@ def _authorize(report, token):
         require_report_access(report, write=True)
 
 
-def _execute_report(report_id: str, token: str):
+def _execute_report(report_id: str, token: str, issuer: Principal, tokens: list[str]):
     with get_session_factory()() as session:
         report = session.scalar(select(Report).where(Report.report_id == report_id).with_for_update())
         if not report or report.status != "queued":
@@ -113,13 +115,23 @@ def _execute_report(report_id: str, token: str):
             session.commit()
         if not snapshot["source_count"]:
             raise ValueError("当前窗口没有可阅读的新闻或事件原文；本轮未生成报告。")
-        _run_harness(report_id, "write", token)
-        reviewed = _run_harness(report_id, "review", token)
+        for mode in ("write", "review"):
+            # Preparation and the two allowed 30-minute stages must not share
+            # an aging one-hour grant. Home revalidates the original issuer for
+            # each stage; never renew from the report grant or another service.
+            stage_token = issue_delegation(issuer, "briefing", {"kind": "report", "id": report_id})
+            tokens.append(stage_token)
+            with get_session_factory()() as session:
+                report = session.get(Report, report_id)
+                if report.status != "running":
+                    return
+                _authorize(report, stage_token)
+            reviewed = _run_harness(report_id, mode, stage_token)
         with get_session_factory()() as session:
             report = session.scalar(select(Report).where(Report.report_id == report_id).with_for_update())
             if report.status != "running":
                 return
-            _authorize(report, token)
+            _authorize(report, stage_token)
             report.result_json = reviewed
             report.status = "completed"
             report.completed_at = datetime.now(UTC)

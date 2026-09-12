@@ -37,28 +37,18 @@ function sourceHref(value?: string) {
 }
 
 function ResearchRunSources({ review, instruments, expanded }: { review: Review; instruments: string[]; expanded: boolean }) {
-  type Original = { url: string; title: string; published_at?: string | null; retrieved_at?: string | null }
+  type Original = EventSource & { body_available?: boolean }
   const [sources, setSources] = useState<Original[] | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
     if (!expanded || sources !== null) return
     const controller = new AbortController()
     setError('')
-    void fetchJson<{ web_evidence?: Array<{ operation: string; sources?: Array<EventSource & { text?: string }> }>; market_text_sources?: Array<EventSource & { text?: string }> }>(
-      `/api/research/runs/${encodeURIComponent(review.run_id)}/context`, { signal: controller.signal },
+    void fetchJson<{ sources: Original[] }>(
+      `/api/research/runs/${encodeURIComponent(review.run_id)}/context?section=sources`, { signal: controller.signal },
     ).then((context) => {
       if (controller.signal.aborted) return
-      const originals = new Map<string, Original>()
-      for (const capture of [...(context.web_evidence || []), { operation: 'fetch', sources: context.market_text_sources || [] }]) {
-        if (capture.operation !== 'fetch') continue
-        for (const source of capture.sources || []) {
-          const url = sourceHref(source.url)
-          if (url && ((typeof source.text === 'string' && source.text.trim()) || (source.document_id && source.version_id))) originals.set(url, {
-            url, title: source.title || url, published_at: source.published_at, retrieved_at: source.retrieved_at,
-          })
-        }
-      }
-      setSources([...originals.values()])
+      setSources(context.sources.filter(source => source.body_available))
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '原文列表读取失败')
     })
@@ -70,8 +60,8 @@ function ResearchRunSources({ review, instruments, expanded }: { review: Review;
     {instruments.length > 1 && <p className="sector-research-note">这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。</p>}
     {error ? <p className="sector-research-limitation" role="alert">原文列表暂时无法读取：{error}</p>
       : sources === null ? <p className="sector-research-note">正在读取已保存的原文记录…</p>
-        : sources.length ? <ul className="sector-event-sources">{sources.map((source) => <li key={source.url}>
-          <a href={source.url} target="_blank" rel="noopener noreferrer" translate="no">{source.title}</a>
+        : sources.length ? <ul className="sector-event-sources">{sources.map((source, index) => <li key={`${source.source_id}:${source.version_id || ''}:${index}`}>
+          {sourceHref(source.url) ? <a href={sourceHref(source.url)} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : <span translate="no">{source.title || '已保存的来源记录'}</span>}
           <small>发布 <time dateTime={source.published_at || undefined}>{source.published_at ? time(source.published_at) : '时间未知'}</time> · 取得 <time dateTime={source.retrieved_at || undefined}>{source.retrieved_at ? time(source.retrieved_at) : '时间未知'}</time></small>
         </li>)}</ul> : <p className="sector-research-note">本轮未保留可打开的原文记录。</p>}
   </section>
@@ -189,8 +179,8 @@ export default function SectorResearchPanel({ instrumentId, watchlistId, variant
         const completed = completedReview(sector)
         const latest = sector.latest_review
         const investmentView = completed?.current_research?.investment_view
-        const summary = completed?.summary.trim() ? completed.summary : investmentView?.direction
-        const summaryUpdatedAt = completed?.summary.trim() ? completed.view_updated_at || completed.checked_at : investmentView?.updated_at
+        const summary = investmentView?.direction
+        const summaryUpdatedAt = investmentView?.updated_at
         return <article key={sector.instrument_id}>
           {data.sectors.length > 1 && <h4>{sector.ticker} · {sector.sector_name}</h4>}
           {summary?.trim() ? <>

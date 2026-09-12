@@ -252,17 +252,13 @@ def themes_view(session, instrument_id, *, actor=None):
                           and (note.research_context or {}).get("theme_id") == theme["theme_id"]]
         theme["research_progress"] = research_progress(session, instrument_id, theme_id=theme["theme_id"], actor=actor)
         theme["updates"] = [row for row in updates if theme["theme_id"] in row["theme_ids"]]
-        current = next((row for row in theme["updates"] if row["kind"] == "question"
+        current = [row for row in theme["updates"] if row["kind"] == "question"
                         and row["reference"].get("theme_id") == theme["theme_id"]
-                        and not row.get("superseded") and not row.get("withdrawn")), None)
+                        and not row.get("superseded") and not row.get("withdrawn")
+                        and (row.get("tracking_status") or "active") == "active"]
         progress = [row for row in theme["updates"] if row["kind"] != "theme"
                     and not row.get("superseded") and not row.get("withdrawn")]
         theme["last_changed_at"] = max((judgment_changed_at(row) for row in progress), default=None)
-        theme["last_reviewed_at"] = None
-        if current:
-            theme.update(judgment_review_receipt(current, receipts))
-        theme["current_assessment"] = ({"assessment": current.get("body", ""),
-            "next_check": current.get("next_check", ""), "status": current.get("status"),
-            "updated_at": judgment_changed_at(current),
-            "source_ids": [source["source_id"] for source in current.get("sources", [])]} if current else None)
+        theme["current_questions"] = [{**row, "tracking_status": "active", "last_changed_at": judgment_changed_at(row),
+            "last_reviewed_at": None, **judgment_review_receipt(row, receipts)} for row in current]
     return {"identity": actor, "themes": themes}

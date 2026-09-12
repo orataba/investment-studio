@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import Boolean, JSON, String, case, func, or_, select, true
 from investment_studio_instrument_core.db_models import Instrument
 from investment_studio_instrument_core.listing_contract import (
     MARKET_SCOPE_CALENDARS, MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
@@ -76,31 +76,44 @@ def instrument_label(session, iid):
     return session.get(InstrumentDetail, iid).instrument_name
 
 
-def latest_reviews(session, *, completed_only=False):
-    return review_states(session)["last_completed" if completed_only else "latest"]
+def latest_reviews(session, *, completed_only=False, instrument_ids=None):
+    return review_states(session, instrument_ids=instrument_ids)["last_completed" if completed_only else "latest"]
 
 
-def review_states(session):
+def review_states(session, *, instrument_ids=None):
     """Build current and last-published states from one authorized history read."""
     from studio_identity import current_principal
-    from watchlist_app.services.research_access import topic_portfolio_ids_by_topic
-    latest, completed, current_views, current_research = {}, {}, {}, {}
+    from watchlist_app.services.research_access import (
+        instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic,
+    )
+    latest, completed, current_research = {}, {}, {}
+    requested_ids = set(instrument_ids) if instrument_ids is not None else None
+    if requested_ids == set():
+        return {"latest": latest, "last_completed": completed}
     principal = current_principal()
     team_id = principal.team_id
     # Status consumers need the published result, not every retained financial table,
     # original text and model transcript from every historical run.
-    runs = session.execute(select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
+    relation, values = research_context_projection(session, {
+        "instrument_ids": JSON, "reviews": JSON, "cutoff": String,
+        "sector_run": Boolean, "research_run": Boolean, "recordkeeping_only": Boolean,
+    })
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
         case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
-        ResearchEntry.context_json["instrument_ids"].label("instrument_ids"),
-        ResearchEntry.context_json["reviews"].label("reviews"),
-        ResearchEntry.context_json["cutoff"].as_string().label("cutoff"),
-        ResearchEntry.context_json["sector_run"].as_boolean().label("sector_run"),
-        ResearchEntry.context_json["research_run"].as_boolean().label("research_run"),
-        ResearchEntry.context_json["recordkeeping_only"].as_boolean().label("recordkeeping_only"),
-    ).where(ResearchEntry.kind == "analysis", True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
-        or_(ResearchEntry.context_json["sector_run"].as_boolean().is_(True),
-            ResearchEntry.context_json["research_run"].as_boolean().is_(True)))
-                          .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc())).all()
+        *(value.label(name) for name, value in values.items()),
+    ).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    query = query.where(ResearchEntry.kind == "analysis",
+        True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
+        or_(values["sector_run"].is_(True), values["research_run"].is_(True)))
+    if requested_ids is not None:
+        # Failed/queued checks may not yet contain a review. The saved run scope,
+        # rather than the result or today's topic membership, determines inclusion.
+        query = query.where(instrument_run_scope(session, sorted(requested_ids), scope=values["instrument_ids"]))
+    runs = research_projection_rows(session,
+        query.order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+        {name: (name,) for name in values})
     topic_ids = {run.topic_id for run in runs if run.instrument_ids}
     topics = session.execute(select(ResearchTopic.topic_id, ResearchTopic.portfolio_id).where(
         ResearchTopic.topic_id.in_(topic_ids),
@@ -118,6 +131,8 @@ def review_states(session):
         if not context.get("instrument_ids") or run.topic_id not in allowed_topics:
             continue
         for iid in context.get("instrument_ids", []):
+            if requested_ids is not None and iid not in requested_ids:
+                continue
             review = (context.get("reviews") or {}).get(iid, {})
             accepted = published and review.get("status") in {"completed", "limited"}
             # A conversation is not a daily check until it actually publishes research.
@@ -129,10 +144,6 @@ def review_states(session):
             # time of a research check or the original investment judgment.
             if context.get("recordkeeping_only"):
                 continue
-            if accepted and iid not in current_views and review.get("summary"):
-                current_views[iid] = {"summary": review["summary"],
-                    "view_updated_at": review.get("view_updated_at", context.get("cutoff")),
-                    "view_run_id": review.get("view_run_id", run.entry_id)}
             if iid in latest and (not accepted or iid in completed):
                 continue
             state = {"run_id": run.entry_id, "status": review.get("status", run.status),
@@ -145,12 +156,15 @@ def review_states(session):
                 completed.setdefault(iid, state.copy())
     for result in (latest, completed):
         for iid, review in result.items():
-            view = current_views.get(iid, {})
-            review["current_summary"] = view.get("summary", "")
+            # The versioned analyst view is the only current investment judgment.
+            # A report's prose is historical output, not a second current truth.
+            # In particular, explicit withdrawal must not resurrect an older report.
+            view = (current_research.get(iid) or {}).get("investment_view") or {}
+            review["current_summary"] = view.get("direction", "")
             if review["status"] != "failed":
-                review["summary"] = view.get("summary", "")
-            review["view_updated_at"] = view.get("view_updated_at")
-            review["view_run_id"] = view.get("view_run_id")
+                review["summary"] = view.get("direction", "")
+            review["view_updated_at"] = view.get("updated_at")
+            review["view_run_id"] = view.get("source_run_id")
             review["current_research"] = current_research.get(iid)
     return {"latest": latest, "last_completed": completed}
 
@@ -456,7 +470,7 @@ def usable_original(source: dict, cutoff: datetime) -> bool:
 
 def _source_views(sources):
     fields = ("source_id", "document_id", "version_id", "url", "title", "source_type", "as_of", "published_at", "published_at_raw",
-              "occurred_at", "observed_at", "received_at", "retrieved_at", "discovered_at", "time_status")
+              "occurred_at", "observed_at", "received_at", "retrieved_at", "discovered_at", "time_status", "run_cutoff", "pm_binding_note")
     return [{**{key: source.get(key) for key in fields}, **({"source_type": source["source_type"],
                 "changes": source["changes"], "current_snapshot": source["current_snapshot"],
                 "previous_snapshot": source["previous_snapshot"]} if source.get("source_type") == "analyst_estimate_changes" else {}),
@@ -806,7 +820,6 @@ def apply_result(session, run, reply):
                 before_id = before.get("event_version_id") or event_version_id(before["case_id"], max(1, len(before.get("history", [])))) if before else None
                 if before_id != (after or {}).get("event_version_id"):
                     raise ResearchVersionConflict("事件判断在本轮分析期间已有更新，本轮草稿已保留；请基于最新事件版本继续研究。")
-    previous_reviews = latest_reviews(session, completed_only=True)
     acquisition_gaps = [gap for e in context.get("web_evidence", []) for gap in e.get("coverage", [])]
     if context.get("sector_run") and not context.get("market_queries") and not any(e.get("operation") == "search" for e in context.get("web_evidence", [])):
         acquisition_gaps.append("本轮未检索共享资讯或补充来源，不能据此认定无重大新增。")
@@ -866,14 +879,13 @@ def apply_result(session, run, reply):
         if notebook and review.research.mandate_update is not None:
             from watchlist_app.services.research_dossier import save_mandate
             save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False, origin="research")
-        prior = previous_reviews.get(review.instrument_id) or {}
         publishes = review.change_kind == "investment"
-        # An explicit quiet/knowledge update cannot turn a paraphrase into a new PM article.
-        summary = review.summary if publishes and review.summary.strip() else prior.get("summary", "")
-        changed = publishes and bool(review.summary.strip()) and review.summary != prior.get("summary")
+        # This run's narrative is not carried forward as a parallel investment view.
+        summary = review.summary if publishes else ""
+        current_view = ((notebook or dossier.get("notebook") or {}).get("investment_view") or {})
         reviews[review.instrument_id] = {"status": "limited" if coverage else "completed", "summary": summary,
-            "view_updated_at": context["cutoff"] if changed else prior.get("view_updated_at"),
-            "view_run_id": run.entry_id if changed else prior.get("view_run_id"),
+            "view_updated_at": current_view.get("updated_at"),
+            "view_run_id": current_view.get("source_run_id"),
             "change_kind": "investment" if publishes else "knowledge" if changed_events or changed_themes or notebook and (
                 notebook.get("version_id") != (dossier.get("notebook") or {}).get("version_id") or review.research.mandate_update) else "none",
             "coverage": coverage, "market_coverage": context.get("market_coverage"), "research": notebook,
@@ -935,7 +947,7 @@ def daily_review_groups(session, *, now=None):
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
     now = now or datetime.now(UTC)
     groups = [[iid] for iid in ids if _research_due(_research_market(session, iid), now)]
-    reviews = latest_reviews(session)
+    reviews = latest_reviews(session, instrument_ids=[iid for group in groups for iid in group])
     # Resume the least recently attempted work first, including after a restart or date change.
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))
 

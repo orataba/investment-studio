@@ -90,13 +90,19 @@ def test_context_keeps_all_catalogue_identities_and_indexes_retained_evidence(mo
                                  "updated_at": "2026-09-12T00:00:00Z", "body": "入口所选风险"}}
     monkeypatch.setattr(mcp, "request", lambda *args: context)
     result = mcp.read_research_context()
-    assert len(result["catalogue"]) == 225
-    assert [row["instrument_id"] for row in result["catalogue"]] == [f"i{number}" for number in range(225)]
-    assert result["catalogue"][0]["watchlist_ids"] == ["watch"]
-    assert result["tool_evidence"][0]["source_id"] == "instruments:retained"
-    assert "result" not in result["tool_evidence"][0] and _bytes(result) < 50_000
+    assert result["sections"]["catalogue"]["count"] == 225
+    catalogue, offset = [], 0
+    while offset is not None:
+        page = mcp.read_research_context(section="catalogue", offset=offset)
+        catalogue.extend(page["data"])
+        offset = page["next_offset"]
+    assert [row["instrument_id"] for row in catalogue] == [f"i{number}" for number in range(225)]
+    assert catalogue[0]["watchlist_ids"] == ["watch"]
+    evidence_page = mcp.read_research_context(section="tool_evidence")
+    assert evidence_page["data"][0]["source_id"] == "instruments:retained"
+    assert "result" not in evidence_page["data"][0] and _bytes(result) < 50_000
     assert "result" in context["tool_evidence"][0]
-    assert result["referenced_risk_case"] == context["referenced_risk_case"]
+    assert mcp.read_research_context(section="referenced_risk_case")["data"] == context["referenced_risk_case"]
     assert "当前风险快照" in result["next_read"]
 
 
@@ -122,7 +128,7 @@ def test_sector_overview_and_company_use_bound_evidence_and_full_holdings_remain
     assert _bytes(overview) < 50_000
     assert overview["sector_estimate_evidence"][0]["row_counts"]["changes"] == 5700
     assert overview["instrument_inputs"][0]["analyst_estimate_history"]["row_counts"]["changes"] == 5700
-    assert overview["research_dossier"]["mandate"]["focus"] == "真实研究任务"
+    assert mcp.read_research_dossier("xlk", section="mandate")["data"]["focus"] == "真实研究任务"
     assert overview["sector_inputs"][0]["source"]["source_count"] == 5700
     assert "source_ids" not in overview["sector_inputs"][0]["source"]
     recovered, offset = [], 0

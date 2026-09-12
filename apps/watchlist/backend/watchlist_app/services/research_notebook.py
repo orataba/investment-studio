@@ -53,8 +53,19 @@ class ResearchQuestion(BaseModel):
     evidence_for: list[str] = Field(default_factory=list)
     evidence_against: list[str] = Field(default_factory=list)
     next_check: str = Field(max_length=2000)
-    status: Literal["open", "supported", "refuted"] = "open"
+    status: Literal["open", "supported", "refuted"] = Field(default="open",
+        description="证据判断，与是否继续跟踪无关；支持或反驳原假设不自动结束研究。")
+    tracking_status: Literal["active", "paused", "closed"] = Field(default="active",
+        description="跟踪安排。仅显式提交才改变已有安排；暂停或结束须说明原因，恢复须显式 active。")
+    tracking_reason: str = Field(default="", max_length=2000,
+        description="暂停、结束或重新审视的原因；观察条件写 next_check，不要求每天生成新结论。")
     source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def tracking_decision(self):
+        if self.tracking_status in {"paused", "closed"} and not self.tracking_reason.strip():
+            raise ValueError("暂停或结束研究问题须明确说明跟踪安排的原因")
+        return self
 
 
 class ResearchFact(BaseModel):
@@ -76,6 +87,8 @@ class InvestmentView(BaseModel):
     risk: str = Field(default="", max_length=3000)
     conviction: str = Field(default="", max_length=1000)
     assumptions: list[str] = Field(default_factory=list)
+    invalidation: str = Field(default="", max_length=3000, description="哪些可观察的证据会要求改变或撤回当前判断；不是任意价格止损。")
+    next_check: str = Field(default="", max_length=2000, description="下一次需要验证的关键事实或条件；可关联持续研究问题，不要求每日产生新结论。")
     source_ids: list[str] = Field(default_factory=list)
 
 
@@ -127,6 +140,8 @@ class ResearchLesson(BaseModel):
     lesson: str = Field(min_length=1, max_length=4000)
     applicability: str = Field(default="", max_length=3000)
     limitations: str = Field(default="", max_length=3000)
+    status: Literal["active", "withdrawn"] = Field(default="active", description="可继续使用或已停用；停用保留原版本及其依据，不再作为当前经验复用。")
+    withdrawal_reason: str = Field(default="", max_length=2000)
     forecast_key: str | None = None
     forecast_version_id: str | None = None
     source_ids: list[str] = Field(default_factory=list)
@@ -135,6 +150,8 @@ class ResearchLesson(BaseModel):
     def forecast_reference(self):
         if bool(self.forecast_key) != bool(self.forecast_version_id):
             raise ValueError("经验关联预测时须同时给出预测标识和原始版本")
+        if self.status == "withdrawn" and not self.withdrawal_reason.strip():
+            raise ValueError("停用研究经验须说明原因")
         return self
 
 
@@ -176,24 +193,44 @@ def notebook_source_ids(notebook: ResearchNotebook | dict) -> set[str]:
 
 def retained_public_sources(session, instrument_id: str) -> list[dict]:
     """Keep fetched originals usable even when the associated AI draft was rejected."""
-    from sqlalchemy import select
+    from sqlalchemy import Boolean, JSON, select, true
+    from types import SimpleNamespace
+    from studio_identity import current_principal
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-    records = session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis").order_by(ResearchEntry.created_at.desc()))
+    from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
+    principal = current_principal()
+    relation, payload = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
+        "research_run": Boolean, "web_evidence": JSON, "market_text_sources": JSON, "submitted_draft": JSON, "reviews": JSON})
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchTopic.portfolio_id,
+        payload["instrument_ids"].label("instrument_ids"), payload["sector_run"].label("sector_run"),
+        payload["research_run"].label("research_run"), payload["web_evidence"].label("web_evidence"),
+        payload["market_text_sources"].label("market_text_sources"), payload["submitted_draft"].label("submitted_draft"),
+        payload["reviews"][instrument_id].label("review"),
+    ).select_from(ResearchEntry).join(ResearchTopic)
+    if relation is not None:
+        query = query.join(relation, true())
+    records = research_projection_rows(session, query.where(ResearchEntry.kind == "analysis", ResearchTopic.visibility == "team",
+        True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
+        True if principal.local_unrestricted else ResearchTopic.team_id == principal.team_id,
+        instrument_run_scope(session, instrument_id, scope=payload["instrument_ids"]),
+    ).order_by(ResearchEntry.created_at.desc()),
+        {**{name: (name,) for name in ("instrument_ids", "sector_run", "research_run", "web_evidence", "market_text_sources", "submitted_draft")},
+         "review": ("reviews", instrument_id)})
+    topics = {row.topic_id: SimpleNamespace(topic_id=row.topic_id, portfolio_id=row.portfolio_id) for row in records}
+    portfolios = topic_portfolio_ids_by_topic(session, topics.values())
     by_url = {}
     for record in records:
-        context = record.context_json or {}
-        topic = session.get(ResearchTopic, record.topic_id)
-        if context.get("portfolio_id") or not topic or topic.portfolio_id or topic.visibility != "team":
+        if portfolios[record.topic_id]:
             continue
-        scope = context.get("instrument_ids", [])
-        if (not (context.get("sector_run") or context.get("research_run")) or instrument_id not in scope
-                or (not context.get("research_run") and record.topic_id not in {
+        scope = record.instrument_ids or []
+        if (not (record.sector_run or record.research_run)
+                or (not record.research_run and record.topic_id not in {
                     f"instrument-events:{instrument_id}", "us-sector-daily-review"})):
             continue
         # Batch fetches have no instrument attribution: use explicit draft/review references.
         references = set()
-        reviews = [*context.get("submitted_draft", {}).get("reviews", []),
-                   {"instrument_id": instrument_id, **context.get("reviews", {}).get(instrument_id, {})}]
+        reviews = [*(record.submitted_draft or {}).get("reviews", []),
+                   {"instrument_id": instrument_id, **(record.review or {})}]
         for review in reviews:
             if review.get("instrument_id") != instrument_id:
                 continue
@@ -201,20 +238,25 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
             references.update(notebook_source_ids(research))
             for row in [*review.get("events", []), *review.get("themes", [])]:
                 references.update(row.get("source_ids", []))
-        for capture in reversed(context.get("web_evidence", [])):
+        for capture in reversed(record.web_evidence or []):
             if capture.get("operation") != "fetch":
                 continue
             for source in capture.get("sources", []):
-                source = hydrate_source(source)
                 if len(scope) != 1 and source.get("source_id") not in references:
                     continue
+                identity = source.get("version_id") or source["source_id"]
+                if identity in by_url:
+                    continue
+                source = hydrate_source(source)
                 original = {**source, "source_type": "public_source", "source_run_id": record.entry_id,
                     "instrument_id": instrument_id, "role": "retained_original",
                     "verification_note": "已取得的原文，不代表其主张已核实；须重读正文及原始日期。所属报告的模型结论不作为依据。"}
                 if _original_source(original, instrument_id):
                     by_url.setdefault(source.get("version_id") or source["source_id"], original)
-        for source in context.get("market_text_sources", []):
+        for source in record.market_text_sources or []:
             if len(scope) != 1 and source.get("source_id") not in references:
+                continue
+            if source["version_id"] in by_url:
                 continue
             original = {**hydrate_source(source), "instrument_id": instrument_id,
                         "source_run_id": record.entry_id, "role": "retained_original"}
@@ -256,6 +298,7 @@ def dossier_outline(dossier: dict) -> dict:
 def dossier_source(dossier: dict, source_id: str) -> dict:
     for source in [*dossier.get("materials", []), *dossier.get("historical_cases", []),
                    *dossier.get("prior_sources", []),
+                   *(source for view in dossier.get("pm_views", []) for source in view.get("sources", [])),
                    *(dossier.get("notebook") or {}).get("sources", [])]:
         if source.get("source_id") == source_id:
             if source.get("instrument_id") != dossier["instrument_id"] and not (
@@ -318,7 +361,8 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     cutoff = datetime.fromisoformat(context["cutoff"])
     for dossier in context.get("research_dossiers", []):
         iid = dossier["instrument_id"]
-        for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", [])]:
+        for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
+                       *(source for view in dossier.get("pm_views", []) for source in view.get("sources", []))]:
             source = hydrate_source(source, cutoff=cutoff)
             if _original_source(source, iid, cutoff):
                 sources[source["source_id"]] = source
@@ -359,6 +403,9 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
                 if _original_source(original, source.get("instrument_id"), cutoff):
                     sources[source["source_id"]] = original
     sources.update(retained_sources(context))
+    for source in context.get("financial_sources", []):
+        if _original_source(source, source.get("instrument_id"), cutoff):
+            sources[source["source_id"]] = source
     for source in context.get("computed_metrics", []):
         if _original_source(source, source.get("instrument_id"), cutoff):
             sources[source["source_id"]] = source
@@ -414,6 +461,10 @@ def _merge_partial(item: BaseModel, previous: dict | None) -> dict:
         for key in value:
             if key not in item.model_fields_set and key in previous:
                 value[key] = deepcopy(previous[key])
+    if isinstance(item, ResearchQuestion) and "tracking_status" in item.model_fields_set and item.tracking_status == "active" and "tracking_reason" not in item.model_fields_set:
+        value["tracking_reason"] = ""
+    if isinstance(item, ResearchLesson) and "status" in item.model_fields_set and item.status == "active" and "withdrawal_reason" not in item.model_fields_set:
+        value["withdrawal_reason"] = ""
     return type(item).model_validate(value).model_dump(mode="json")
 
 

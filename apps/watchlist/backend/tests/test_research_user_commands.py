@@ -51,6 +51,7 @@ def test_user_commands_link_theme_and_pm_view_with_server_identity_and_same_run_
     command["note"].update(author="模型不能指定作者", research_context={"theme_id": theme["id"], "horizon": "中期"})
     response = client.post(conversation, json=command)
     assert response.status_code == 200, response.text
+
     receipt = response.json()
     assert client.post(conversation, json=command).json() == receipt
     assert receipt["kind"] == "investment_view" and receipt["author"] == "原投资经理"
@@ -168,3 +169,58 @@ def test_mcp_user_command_tools_accept_objects_and_json(monkeypatch):
     assert research_mcp.manage_research_theme(theme["instrument_id"], theme["source_quote"], json.dumps(theme["theme"]))["status"] == "saved"
     assert research_mcp.record_investment_view(note["instrument_id"], note["source_quote"], note["note"])["status"] == "saved"
     assert calls == [("user-command", {**theme, "theme_id": None}), ("user-command", note)]
+
+
+def test_pm_sources_are_frozen_with_the_view_and_reusable_through_the_dossier(client, conversation):
+    from watchlist_app.services.research_dossier import read_dossier, read_dossier_version
+    from watchlist_app.services.research_notebook import research_sources, dossier_source
+    from watchlist_app.services.research_activity import research_activity
+    sid = "instrument:user-command-run:gold-command"
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "user-command-run")
+        run.context_json = {**run.context_json, "instrument_inputs": [{"instrument_id": "gold-command", "name": "黄金", "currency": "USD", "observed_value": 100}]}
+        session.commit()
+    command = view_command()
+    command["note"]["research_context"] = {"source_ids": [sid]}
+    saved = client.post(conversation, json=command)
+    assert saved.status_code == 200, saved.text
+    version_id = f"pm:{saved.json()['id']}:1"
+    with get_session_factory()() as session:
+        before = read_dossier_version(session, "gold-command", version_id)
+        assert before["sources"][0]["snapshot"]["observed_value"] == 100
+        run = session.get(ResearchEntry, "user-command-run")
+        run.context_json = {**run.context_json, "instrument_inputs": [{"instrument_id": "gold-command", "name": "黄金", "currency": "USD", "observed_value": 200}]}
+        session.commit()
+        after = read_dossier_version(session, "gold-command", version_id)
+        assert after == before
+        dossier = read_dossier(session, "gold-command")
+        assert dossier_source(dossier, sid)["snapshot"]["observed_value"] == 100
+        assert research_sources({"cutoff": "2026-09-09T00:00:00+00:00", "research_dossiers": [dossier]}, "later")[sid]["snapshot"]["observed_value"] == 100
+        opinion = next(row for row in research_activity(session, "gold-command")["updates"] if row["kind"] == "opinion")
+        assert [row["source_id"] for row in opinion["sources"]] == [sid]
+    read = client.get("/api/research/instruments/gold-command/dossier", params={"version_id": version_id, "source_id": sid})
+    assert read.status_code == 200 and read.json()["snapshot"]["observed_value"] == 100
+    assert client.get("/api/research/instruments/gold-command/dossier", params={"version_id": version_id, "source_id": "uncited"}).status_code == 422
+
+
+def test_editing_a_pm_view_does_not_rebind_unchanged_material_ids(client, conversation):
+    material = client.post("/api/research/instruments/gold-command/dossier/materials", json={
+        "title": "原始资料", "body": "保存观点时取得的原始说明", "source": "管理人", "published_at": "2026-09-01"}).json()
+    payload = {"note": {"note_date": date.today().isoformat(), "title": "独立投资观点", "body": "当时判断",
+                        "research_context": {"source_ids": [material["source_id"]]}}}
+    response = client.post("/api/instruments/gold-command/research/notes", json=payload)
+    assert response.status_code == 200, response.text
+    note = response.json()["notes"][0]
+    with get_session_factory()() as session:
+        entry = session.get(ResearchEntry, material["entry_id"])
+        entry.body = "后来更改的说明"
+        session.commit()
+    payload["note"]["body"] = "更正措辞，原依据不变"
+    response = client.put(f"/api/instruments/gold-command/research/notes/{note['note_id']}", json=payload)
+    assert response.status_code == 200, response.text
+    changed = response.json()["notes"][0]
+    assert changed["research_context"]["sources"][0]["body"] == "保存观点时取得的原始说明"
+    for revision in (1, 2):
+        original = client.get("/api/research/instruments/gold-command/dossier", params={
+            "version_id": f"pm:{note['note_id']}:{revision}", "source_id": material["source_id"]})
+        assert original.status_code == 200 and original.json()["body"] == "保存观点时取得的原始说明"

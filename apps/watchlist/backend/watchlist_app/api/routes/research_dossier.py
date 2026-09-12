@@ -37,9 +37,18 @@ def require_instrument(session, instrument_id):
 
 @router.get("/research/instruments/{instrument_id}/dossier")
 def dossier(instrument_id: str, include_history: bool = False, source_id: str | None = None,
+            version_id: str | None = None,
             session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
+        if version_id:
+            saved = service.read_dossier_version(session, instrument_id, version_id)
+            if source_id:
+                source = next((row for row in saved.get("sources", []) if row.get("source_id") == source_id), None)
+                if source is None:
+                    raise ValueError("该研究版本没有引用这份原始依据")
+                return source
+            return saved
         result = service.read_dossier(session, instrument_id, include_history=include_history)
         if source_id:
             from watchlist_app.services.research_notebook import dossier_source
@@ -47,6 +56,8 @@ def dossier(instrument_id: str, include_history: bool = False, source_id: str | 
         return result
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
 
 
 @router.put("/research/instruments/{instrument_id}/dossier/mandate")

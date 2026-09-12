@@ -33,6 +33,8 @@ export type ResearchQuestion = {
   evidence_against: string[]
   next_check: string
   status: 'open' | 'supported' | 'refuted'
+  tracking_status?: 'active' | 'paused' | 'closed'
+  tracking_reason?: string
   source_ids: string[]
 }
 
@@ -41,6 +43,7 @@ export type AskResearchAssistant = (question: string, reference?: ResearchRefere
 export type ResearchRevision = { version_id?: string; created_at?: string | null; updated_at?: string | null; source_run_id?: string }
 export type InvestmentView = ResearchRevision & {
   direction: string; horizon: string; attractiveness: string; risk: string; conviction: string
+  invalidation?: string; next_check?: string
   assumptions: string[]; source_ids: string[]; versions?: InvestmentView[]
 }
 export type ResearchForecast = ResearchRevision & {
@@ -54,6 +57,7 @@ export type ResearchForecastReview = ResearchRevision & {
 }
 export type ResearchLesson = ResearchRevision & {
   key: string; lesson: string; applicability: string; limitations: string
+  status?: 'active' | 'withdrawn'; withdrawal_reason?: string
   forecast_key: string | null; forecast_version_id: string | null; source_ids: string[]; versions?: ResearchLesson[]
 }
 
@@ -90,6 +94,7 @@ export type NotebookSource = {
   source_type?: string; as_of?: string | null; run_cutoff?: string | null
   published_at?: string | null; retrieved_at?: string | null; recorded_at?: string | null
   metadata?: { published_at?: string | null; effective_date?: string | null }
+  pm_binding_note?: string
 }
 export type SavedResearchNotebook = ResearchNotebook & ResearchRevision & { run_id: string; checked_at: string | null; sources?: NotebookSource[] }
 export type ResearchMaterial = {
@@ -133,9 +138,11 @@ export type ResearchTheme = ResearchThemeInput & {
   created_at: string; updated_at: string; revision_number: number
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
   origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
-  last_reviewed_at?: string | null; last_changed_at?: string | null
-  last_review_status?: 'reviewed' | 'insufficient_evidence' | null
-  current_assessment?: { assessment: string; next_check: string; status: string; updated_at: string; source_ids: string[] } | null
+  last_changed_at?: string | null
+  current_questions?: Array<ResearchUpdate & {
+    last_reviewed_at?: string | null; last_changed_at?: string | null
+    last_review_status?: 'reviewed' | 'insufficient_evidence' | null
+  }>
 }
 export type ResearchThemesResponse = {
   identity: { user_id: string; display_name: string; mode: 'account'; local_unrestricted?: boolean; team_id?: string; team_role?: 'admin' | 'member' | 'reader' }
@@ -158,21 +165,31 @@ export function getResearchDossier(instrumentId: string, signal?: AbortSignal) {
   return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=true`, { signal })
 }
 
-export function getSavedResearchSource(instrumentId: string, sourceId: string, signal?: AbortSignal) {
-  return fetchJson<SavedResearchSource>(`${dossierPath(instrumentId)}?source_id=${encodeURIComponent(sourceId)}`, { signal })
+export function getSavedResearchSource(instrumentId: string, sourceId: string, signal?: AbortSignal, versionId?: string) {
+  return fetchJson<SavedResearchSource>(`${dossierPath(instrumentId)}?source_id=${encodeURIComponent(sourceId)}${versionId ? `&version_id=${encodeURIComponent(versionId)}` : ''}`, { signal })
+}
+
+export type SavedComparison = {
+  sample_start?: string | null; sample_end?: string | null; observations?: number; currency?: string
+  method?: string; limitations?: string[]
+  rows?: Array<{ instrument_id: string; name?: string; return_pct: number | null; max_drawdown_pct: number | null;
+    correlation_to_target?: number | null; excess_return_pp?: number | null; return_kind?: string; quote_basis?: string }>
 }
 
 export type SavedResearchSource = NotebookSource & {
   text?: string; body?: string
-  data?: {
+  snapshot?: Record<string, unknown>; company?: Record<string, unknown>
+  data?: SavedComparison & Record<string, unknown> & {
     current?: { date: string; volatility_pct: number } | null
     previous?: { date: string; volatility_pct: number } | null
     change_pp?: number | null; five_session_change_pp?: number | null
     limitations?: string[]
+    available?: boolean; sample_return_pct?: number | null; frequency?: string; return_kind?: string; quote_basis?: string
+    comparisons?: Array<{ instrument_id: string; name: string; role: string; comparison: SavedComparison; note?: string }>
     series?: Array<{ series_id: string; unit: string | null; currency: string | null; observations: number;
       first: { date: string; value: number } | null; latest: { date: string; value: number } | null; change: number | null; change_unit: string | null }>
   }
-  methodology?: { half_life_sessions?: number; annualization?: number } | string
+  methodology?: ({ half_life_sessions?: number; annualization?: number } & Record<string, unknown>) | string
 }
 
 export function saveResearchMandate(instrumentId: string, mandate: ResearchMandateInput) {
@@ -200,6 +217,7 @@ export type ResearchUpdate = {
   direction?: 'risk' | 'opportunity' | 'uncertain'; confidence?: string; change?: string; information_type?: 'fact' | 'opinion' | 'rumor' | null
   details?: Array<{ label: string; text: string }>; superseded?: boolean; withdrawn?: boolean
   status?: string; scheduled_at?: string; withdrawal_reason?: string; withdrawn_at?: string
+  tracking_status?: 'active' | 'paused' | 'closed' | null; tracking_reason?: string
   citation_correction?: {
     source_run_id: string; source_notebook_version_id: string; source_update_id: string
     reason: string; corrected_at: string; original_recorded_at: string

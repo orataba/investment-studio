@@ -194,14 +194,16 @@ def test_daily_context_is_read_per_instrument_without_copying_other_instrument_m
     assert "instrument_inputs" not in index and "web_evidence" not in index
     packet = mcp.read_research_instrument("gold")
     assert packet["instrument_inputs"][0]["benchmark"] == "Au99.99"
-    assert packet["research_dossier"]["mandate"]["focus"] == ["实际利率与国内基差"]
+    assert packet["research_dossier"]["sections"]["mandate"]["count"] == 1
+    assert mcp.read_research_dossier("gold", section="mandate")["data"]["focus"] == ["实际利率与国内基差"]
     assert "无关长资料" not in str(packet)
     context["instrument_inputs"][0].update(risk_cases=[{"body": "重复正文" * 30000}], reference_data={"sections": {
         "profile": {"name": "黄金"}, "financials": [{"revenue": 100, "date": "2026-06-30"}]}})
     context["prior_events"] = [{"instrument_id": "gold", "withdrawn": True, "body": "已撤回的错误分析", "event_key": "old", "withdrawal_reason": "事实错误"}]
     packet = mcp.read_research_instrument("gold")
     assert "重复正文" not in str(packet) and "已撤回的错误分析" not in str(packet)
-    assert packet["prior_events"][0]["withdrawal_reason"] == "事实错误"
+    assert packet["research_sections"]["events"]["count"] == 1
+    assert mcp.read_research_instrument("gold", section="events")["data"][0]["withdrawal_reason"] == "事实错误"
     assert packet["reference_sections"] == ["financials"]
     assert mcp.read_research_instrument("gold", "financials")["reference_data"]["data"] == [{"revenue": 100, "date": "2026-06-30"}]
     with pytest.raises(ValueError, match="本轮研究范围"):

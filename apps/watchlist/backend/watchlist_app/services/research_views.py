@@ -21,6 +21,31 @@ def note_version(session, instrument_id, note_id, revision, *, actor=None):
     return record
 
 
+def note_sources(session, instrument_id, context):
+    """Resolve only the sources explicitly cited in this PM revision."""
+    from watchlist_app.services.market_evidence import hydrate_source
+    from watchlist_app.services.research_notebook import research_sources, _original_source
+    refs = set(context.get("source_ids", []))
+    if not refs:
+        return []
+    cutoff = datetime.fromisoformat(context["information_cutoff"]) if context.get("information_cutoff") else None
+    retained = context.get("sources")
+    if retained is None and context.get("source_run_id"):
+        # Historical PM records kept explicit IDs and the source run, but did not
+        # freeze their own evidence list. Read that retained run, never today's dossier.
+        from watchlist_app.db.models.workbench import ResearchEntry
+        from watchlist_app.services.research_access import require_team_publication_scope
+        run = session.get(ResearchEntry, context["source_run_id"])
+        if run and (current_principal().local_unrestricted or run.team_id == current_principal().team_id):
+            require_team_publication_scope(session, run)
+            retained = [{**source, "pm_binding_note": "旧观点未单独冻结来源；此项来自原运行保留的明确引用。"}
+                        for sid, source in research_sources(run.context_json, run.entry_id).items() if sid in refs]
+    return [source for row in retained or [] if row.get("source_id") in refs
+            and (source := hydrate_source(row, cutoff=cutoff)) and _original_source(source, instrument_id, cutoff)
+            and (source.get("instrument_id") in {None, instrument_id}
+                 or (source.get("source_type") == "computed_metric" and source.get("scope") == "public_market"))]
+
+
 def prepare_note_values(session, instrument_id, payload, *, actor=None, record=None, provenance=None):
     actor = actor or research_identity()
     from watchlist_app.services.research_access import require_team_write
@@ -76,4 +101,18 @@ def prepare_note_values(session, instrument_id, payload, *, actor=None, record=N
     values["author"] = record.author if record is not None else actor["display_name"]
     values["research_context"] = {**context, **({"author_role": "user", "recorded_via": "editor"}
         if record is None else {}), **(provenance or {})}
+    if payload.research_context is not None and "source_ids" in payload.research_context.model_fields_set and "sources" not in (provenance or {}):
+        from watchlist_app.services.research_dossier import read_dossier
+        from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook
+        from watchlist_app.services.market_evidence import source_reference
+        saved_context = values["research_context"]
+        cutoff = saved_context.get("information_cutoff") or (record.created_at.replace(tzinfo=record.created_at.tzinfo or UTC).isoformat() if record else datetime.now(UTC).isoformat())
+        refs = saved_context.get("source_ids", [])
+        available = research_sources({"cutoff": cutoff, "research_dossiers": [read_dossier(session, instrument_id, actor=actor)]}, "pm-editor") if refs else {}
+        # Editing prose must not rebind an unchanged citation to a later material
+        # that happens to have the same catalogue ID.
+        if record is not None:
+            available.update({source["source_id"]: source for source in note_sources(session, instrument_id, old_context)})
+        validate_notebook(ResearchNotebook(source_ids=refs), instrument_id, available)
+        saved_context.update(information_cutoff=cutoff, sources=[deepcopy(source_reference(available[sid])) for sid in dict.fromkeys(refs)])
     return values

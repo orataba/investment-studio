@@ -121,6 +121,7 @@ Portfolio 自己的 runner、patch 和 MCP。子进程只接收运行所需的�
 按标的串行检查，避免并发覆盖底稿与事件。
 
 部署地址与外部运行配置见 [Server Deployment](SERVER_DEPLOYMENT.md)，
+投资判断、研究状态、持续验证与人机协作合同见 [投资研究系统](INVESTMENT_RESEARCH_SYSTEM.md)，
 研究材料和任务流程见 [Watchlist README](../apps/watchlist/README.md)，
 截图工具边界见 [Portfolio Copilot Harness](PORTFOLIO_COPILOT_HARNESS.md)。
 

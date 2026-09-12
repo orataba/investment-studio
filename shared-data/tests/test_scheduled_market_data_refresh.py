@@ -20,6 +20,37 @@ scheduled_refresh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scheduled_refresh)
 
 
+def test_configured_fmp_failure_keeps_later_scheduled_instruments_running(monkeypatch):
+    from contextlib import nullcontext
+    from studio_data.services import market_data_ops
+    from studio_data.services.fmp import FmpApiError
+
+    def record(instrument_id, status):
+        return {"instrument_id":instrument_id, "instrument_name":instrument_id,
+                "instrument_type":"equity", "source_settings":{"source_mode":"api", "source_api_profile":"fmp"},
+                "refresh_status":{"status":status, "message":status}}
+
+    called = []
+    def refresh(**kwargs):
+        called.append(kwargs["instrument_id"])
+        if kwargs["instrument_id"] == "unavailable":
+            raise FmpApiError("Shared FMP history is not ready")
+        return record(kwargs["instrument_id"], "refreshed")
+
+    monkeypatch.setattr(market_data_ops, "market_data_item_timeout", lambda *args: nullcontext())
+    monkeypatch.setattr(market_data_ops, "refresh_market_data", refresh)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", lambda **kwargs: record(kwargs["instrument_id"], kwargs["status"]))
+    result = scheduled_refresh._refresh_selected_instruments(channel="configured", instrument_ids=["unavailable", "next"], updated_by="scheduler", full_history=False)
+    assert called == ["unavailable", "next"]
+    assert [(item["instrument_id"], item["status"]) for item in result] == [("unavailable", "failed"), ("next", "refreshed")]
+
+    def programming_error(**kwargs):
+        raise RuntimeError("unrelated implementation failure")
+    monkeypatch.setattr(market_data_ops, "refresh_market_data", programming_error)
+    with pytest.raises(RuntimeError, match="unrelated implementation failure"):
+        scheduled_refresh._refresh_selected_instruments(channel="configured", instrument_ids=["next"], updated_by="scheduler", full_history=False)
+
+
 @pytest.fixture(autouse=True)
 def _empty_projection_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(scheduled_refresh, "refresh_reference_data_batch",

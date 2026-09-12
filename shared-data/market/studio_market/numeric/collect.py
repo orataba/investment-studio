@@ -498,18 +498,19 @@ def collect(settings: MarketSettings, *, groups: list[str] | None=None, start: d
             if group in {"market_series", "macro"}:identity["series_id"]=job_symbols[0]
             if progress:progress({**identity,"status":"collecting"})
             try:
+                outcome = None
                 if group=="official_etf":
                     from .official_etf import collect_official_etf
-                    collect_official_etf(collector,start,end,job_symbols)
+                    outcome=collect_official_etf(collector,start,end,job_symbols)
                 elif group=="tushare":
                     from .tushare import collect_tushare
                     collector.results.extend(collect_tushare(settings,collector.store,start,end,job_symbols))
                 else:
                     outcome=getattr(collector,group)(start,end,job_symbols)
-                    if isinstance(outcome,dict) and outcome.get('status')=='failed':
-                        stages.append({**identity,**outcome})
-                        if progress:progress(stages[-1])
-                        continue
+                if isinstance(outcome,dict) and outcome.get('status')=='failed':
+                    stages.append({**identity,**outcome})
+                    if progress:progress(stages[-1])
+                    continue
                 stage={**identity,"status":"ready"}
             except Exception as exc:
                 stage={**identity,"status":"failed",**failure_summary(exc)}

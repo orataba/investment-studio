@@ -22,7 +22,17 @@ const event = (overrides: Partial<SectorEventRecord> = {}): SectorEventRecord =>
   sources: [{ source_id: 'source-1', title: '公司原始公告', url: 'https://example.com/earnings', published_at: '2026-09-05T08:00:00+08:00' }],
   coverage: [], history: [], ...overrides,
 })
-const payload = (events: SectorEventRecord[] = [], overrides: Partial<SectorResearch> = {}) => ({ available: true, sectors: [sector(overrides)], events })
+const currentReview = (value: SectorResearch['latest_review'] | undefined) => value && ({ ...value,
+  current_research: value.current_research === undefined ? { investment_view: {
+    direction: value.summary, horizon: '', attractiveness: '', risk: '', conviction: '', assumptions: [], source_ids: [],
+    updated_at: value.view_updated_at || value.checked_at,
+  } } : value.current_research,
+})
+const payload = (events: SectorEventRecord[] = [], overrides: Partial<SectorResearch> = {}) => {
+  const asset = sector(overrides)
+  return { available: true, sectors: [{ ...asset, latest_review: currentReview(asset.latest_review),
+    last_completed_review: currentReview(asset.last_completed_review) }], events }
+}
 const load = async () => { await act(async () => {}) }
 
 it('does not invent coverage restrictions when a registered instrument has no research yet', async () => {
@@ -86,7 +96,7 @@ it('separates a quiet check from the original view date without creating empty r
   expect(screen.queryByRole('region', { name: '当前风险与机会' })).toBeNull()
   expect(screen.queryByRole('region', { name: '研究进展' })).toBeNull()
   await act(async () => { fireEvent.click(screen.getByText('研究来源与覆盖')); await vi.advanceTimersByTimeAsync(0) })
-  expect(request.mock.calls.some(([path]) => path === '/api/research/runs/original-view-run/context')).toBe(true)
+  expect(request.mock.calls.some(([path]) => path === '/api/research/runs/original-view-run/context?section=sources')).toBe(true)
 })
 
 it('qualifies a quiet result when the research had material coverage gaps', async () => {
@@ -100,7 +110,7 @@ it('qualifies a quiet result when the research had material coverage gaps', asyn
   expect(screen.getByText('未取得最新持仓数据')).toBeTruthy()
 })
 
-it.each([true, false])('uses the saved summary before the published structured assessment (summary present: %s)', async hasSummary => {
+it.each([true, false])('uses the current structured judgment independently of report prose (summary present: %s)', async hasSummary => {
   const viewTime = '2026-09-02T08:00:00+08:00'
   const summaryTime = '2026-09-03T08:00:00+08:00'
   const investmentView = { direction: '估值有吸引力，但需核实净息差的稳定性。', horizon: '中期', attractiveness: '估值折价',
@@ -111,20 +121,22 @@ it.each([true, false])('uses the saved summary before the published structured a
   render(<SectorResearchPanel instrumentId="600036-sh" />)
   await load()
   const conclusion = screen.getByRole('region', { name: '当前研究结论' })
-  expect(within(conclusion).getByText(hasSummary ? checked.summary : investmentView.direction).getAttribute('translate')).toBe('no')
-  expect(conclusion.querySelector('time')?.dateTime).toBe(hasSummary ? summaryTime : viewTime)
+  expect(within(conclusion).getByText(investmentView.direction).getAttribute('translate')).toBe('no')
+  if (hasSummary) expect(within(conclusion).queryByText(checked.summary)).toBeNull()
+  expect(conclusion.querySelector('time')?.dateTime).toBe(viewTime)
   expect(within(conclusion).getByText(/研究资料已更新/)).toBeTruthy()
   expect(conclusion.textContent).not.toContain('沿用')
   expect(screen.queryByText('尚无已发布的投资判断。')).toBeNull()
   expect(screen.queryByText('尚未形成研究结论。')).toBeNull()
 })
 
-it('only shows an empty conclusion when neither a published summary nor an assessment exists', async () => {
-  const checked = { ...review('completed'), change_kind: 'knowledge' as const, summary: '', current_research: { investment_view: null } }
+it('never resurrects old report prose after the current judgment is withdrawn', async () => {
+  const checked = { ...review('completed'), change_kind: 'knowledge' as const, summary: '曾经看好但已撤回的报告', current_research: { investment_view: null } }
   request.mockResolvedValue(payload([], { latest_review: checked, last_completed_review: checked }))
   render(<SectorResearchPanel instrumentId="600036-sh" />)
   await load()
   expect(screen.getByText('尚未形成研究结论。')).toBeTruthy()
+  expect(within(screen.getByRole('region', { name: '当前研究结论' })).queryByText(checked.summary)).toBeNull()
   expect(screen.getByText('信息技术 · 研究资料已更新')).toBeTruthy()
   expect(screen.queryByText(/投资判断沿用/)).toBeNull()
 })
@@ -156,13 +168,10 @@ it('loads only the saved conclusion’s fetched originals on expansion and share
   const latest = { ...review('failed'), run_id: 'failed-run', summary: '最新更新未完成。' }
   const published = '2026-09-04T17:00:00+08:00'
   const retrieved = '2026-09-05T07:30:00+08:00'
-  request.mockImplementation(async (path: string) => path === '/api/research/runs/saved-run/context' ? { web_evidence: [
-    { operation: 'search', sources: [{ title: '只有搜索结果', url: 'https://example.com/search-only', text: '搜索摘要不是已取得原文。' }] },
-    { operation: 'fetch', sources: [
-      { title: '已查阅的公司报告', url: 'https://example.com/report', text: '原文正文不应显示在研究主页面。', published_at: published, retrieved_at: retrieved },
-      { title: '时间尚未核实的原文', url: 'https://example.com/undated', text: '取得正文但没有可靠日期。', published_at: null, retrieved_at: null },
-      { title: '未取得正文', url: 'https://example.com/empty', text: '  ' },
-    ] },
+  request.mockImplementation(async (path: string) => path === '/api/research/runs/saved-run/context?section=sources' ? { sources: [
+      { source_id: 'report', version_id: 'first', title: '已查阅的公司报告', url: 'https://example.com/report', body_available: true, published_at: published, retrieved_at: retrieved },
+      { source_id: 'report', version_id: 'revised', title: '同网址的另一原文版本', url: 'https://example.com/report', body_available: true, published_at: null, retrieved_at: null },
+      { source_id: 'empty', title: '未取得正文', url: 'https://example.com/empty', body_available: false },
   ] } : { available: true, sectors: Array.from({ length: 11 }, (_, index) => sector({ instrument_id: `fund-${index}`, ticker: `FUND${index}`, latest_review: latest, last_completed_review: saved })), events: [] })
   render(<SectorResearchPanel watchlistId="all-funds" />)
   await load()
@@ -173,13 +182,14 @@ it('loads only the saved conclusion’s fetched originals on expansion and share
   })
   const originals = screen.getByRole('region', { name: '对应研究查阅原文' })
   expect(within(originals).getByRole('link', { name: '已查阅的公司报告' }).getAttribute('href')).toBe('https://example.com/report')
+  expect(within(originals).getByRole('link', { name: '同网址的另一原文版本' }).getAttribute('href')).toBe('https://example.com/report')
   expect(within(originals).getByText('这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。')).toBeTruthy()
   expect(Array.from(originals.querySelectorAll('time')).map((node) => node.dateTime)).toEqual([published, retrieved, '', ''])
   expect(within(originals).getAllByText('时间未知')).toHaveLength(2)
   expect(screen.queryByText('只有搜索结果')).toBeNull()
   expect(screen.queryByText('未取得正文')).toBeNull()
   expect(screen.queryByText('原文正文不应显示在研究主页面。')).toBeNull()
-  expect(request.mock.calls.filter(([path]) => path.includes('/context')).map(([path]) => path)).toEqual(['/api/research/runs/saved-run/context'])
+  expect(request.mock.calls.filter(([path]) => path.includes('/context')).map(([path]) => path)).toEqual(['/api/research/runs/saved-run/context?section=sources'])
 })
 
 it('keeps a saved conclusion visible during an update', async () => {
@@ -219,7 +229,8 @@ it('shows a shared risk case as withdrawn, with the incorrect body kept in read-
 })
 
 it('keeps the full-list drawer compact and shows the saved research conclusion in the overview', async () => {
-  request.mockResolvedValue({ available: true, sectors: Array.from({ length: 11 }, (_, index) => sector({ instrument_id: `sector-${index}` })), events: [event()] })
+  request.mockResolvedValue({ available: true, sectors: Array.from({ length: 11 }, (_, index) =>
+    sector({ instrument_id: `sector-${index}`, latest_review: currentReview(review('limited')) })), events: [event()] })
   const { rerender } = render(<SectorResearchPanel watchlistId="sector-list" variant="status" />)
   await load()
   expect(screen.getByText('11 个标的 · 已更新，覆盖受限')).toBeTruthy()

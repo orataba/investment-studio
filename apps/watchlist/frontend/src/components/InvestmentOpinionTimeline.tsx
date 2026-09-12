@@ -12,6 +12,7 @@ import {
 } from '../lib/api'
 import { getResearchThemes, type AskResearchAssistant, type ResearchTheme } from '../lib/researchDossierApi'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
+import { SourceList } from './ResearchEvidence'
 import './investment-opinion-timeline.css'
 
 type Props = {
@@ -87,7 +88,7 @@ function editableContext(note: InstrumentResearchNote): InvestmentOpinionResearc
   return Object.fromEntries(fields.filter(key => key in note.research_context!).map(key => [key, note.research_context![key]]))
 }
 
-export function InvestmentOpinionContext({ note, language = 'zh-Hans' }: { note: InstrumentResearchNote; language?: 'en' | 'zh-Hans' }) {
+export function InvestmentOpinionContext({ note, language = 'zh-Hans', instrumentId }: { note: InstrumentResearchNote; language?: 'en' | 'zh-Hans'; instrumentId?: string }) {
   const t = (zh: string, en: string) => language === 'zh-Hans' ? zh : en
   const context = note.research_context
   if (!context) return null
@@ -103,7 +104,7 @@ export function InvestmentOpinionContext({ note, language = 'zh-Hans' }: { note:
   return <details className="investment-opinion-context"><summary>{t('背景、验证与经验', 'Context, verification and lessons')}</summary>
     <dl>{populated.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{value}</dd></div>)}</dl>
     {context.source_quote && <p className="investment-opinion-source" translate="no"><span>{t('原话', 'Original statement')}</span>{context.source_quote}</p>}
-    {Boolean(context.source_ids?.length) && <p className="investment-opinion-source"><span>{t('资料引用', 'Evidence references')}</span>{context.source_ids!.join(' · ')}</p>}
+    {context.sources?.length ? <SourceList sources={context.sources} instrumentId={instrumentId} versionId={`pm:${note.note_id}:${note.revision_number}`} /> : Boolean(context.source_ids?.length) && <p className="investment-opinion-source"><span>{t('资料引用', 'Evidence references')}</span>{context.source_ids!.join(' · ')}</p>}
   </details>
 }
 
@@ -260,7 +261,7 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
             {note.research_context.related_note_id && <span>{t('关联原观点', 'Related view')}：{research.notes.find(item => item.note_id === note.research_context?.related_note_id)?.title || t('历史记录', 'Historical record')}{note.research_context.related_revision ? ` · v${note.research_context.related_revision}` : ''}</span>}
             {note.research_context.recorded_via?.startsWith('assistant') && <span>{t('助手整理', 'Organized by assistant')}</span>}
           </p>}
-          <InvestmentOpinionContext note={note} language={language} />
+          <InvestmentOpinionContext note={note} language={language} instrumentId={instrumentId} />
           {note.source_refs && <p className="investment-opinion-source"><span>{t('来源', 'Source')}</span>{/^https?:\/\/\S+$/i.test(note.source_refs)
             ? <a href={note.source_refs} target="_blank" rel="noreferrer">{note.source_refs}</a> : note.source_refs}</p>}
           <div className="investment-opinion-followups"><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => continueView(note)}>{t('补充判断', 'Add a follow-up view')}</button>

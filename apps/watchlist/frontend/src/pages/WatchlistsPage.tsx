@@ -30,6 +30,7 @@ import {
   runScreenerQuery,
 } from '../lib/api'
 import { searchWatchlistInstrumentCandidates } from '../lib/watchlistInstrumentSearch'
+import { useWatchlistForegroundRefresh } from '../lib/useWatchlistForegroundRefresh'
 import {
   buildInstrumentDetailPath,
   buildWatchlistPath,
@@ -855,6 +856,15 @@ export default function WatchlistsPage() {
   >({})
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
   const [reloadToken, setReloadToken] = useState(0)
+  useWatchlistForegroundRefresh(
+    !loading && watchlistDetailOwnerId === watchlistId ? watchlistId : null,
+    (records) => {
+      setWatchlists(records)
+      setError(null)
+      setReloadToken((value) => value + 1)
+    },
+    setError,
+  )
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)

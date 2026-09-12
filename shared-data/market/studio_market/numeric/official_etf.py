@@ -7,6 +7,23 @@ from .providers.sec_fund import SecFundFiling,_date_at,_datetime_at,_text_at
 
 
 def collect_official_etf(collector,start,end,symbols=None):
+    """Keep one issuer's unavailable source from blocking independent funds."""
+    from .collect import failure_summary
+
+    selected = ["GLD", *(spec.symbol for spec in NPORT_FUNDS), *(spec.symbol for spec in PERIODIC_FUNDS)]
+    results = []
+    for symbol in dict.fromkeys(selected):
+        if symbols is not None and symbol not in symbols:
+            continue
+        try:
+            _collect_official_etf(collector,start,end,[symbol])
+            results.append({"symbol":symbol,"status":"ready"})
+        except Exception as error:
+            results.append({"symbol":symbol,"status":"failed",**failure_summary(error)})
+    return {"status":"failed" if any(item["status"]=="failed" for item in results) else "ready","symbols":results}
+
+
+def _collect_official_etf(collector,start,end,symbols):
     if symbols is None or "GLD" in symbols:
         response=get_public_bytes(GLD_ARCHIVE_URL,{"product":"gld","exchange":"NYSE","lang":"en"},timeout_seconds=90)
         clock,ref=collector.archive(response,"spdr_gold_shares")

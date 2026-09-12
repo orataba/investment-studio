@@ -50,13 +50,27 @@ if args.action == 'sync' and stages.get('numeric_catchup', {}).get('status') == 
         completed = subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/{label}'])
         exit_code = exit_code or completed.returncode
 channels = []
-if args.action == 'registered-prices' and stages.get('registered_raw_prices', {}).get('status') == 'ready':
-    channels = ['market']
+projection_symbols = {}
+
+def completed_stage(channel, name, rows, identity):
+    if stages.get(name, {}).get('status') == 'ready':
+        channels.append(channel)
+        projection_symbols[channel] = None
+    elif stages.get(name, {}).get('status') == 'failed':
+        completed = {row[identity] for row in rows if row.get('status') == 'ready' and row.get(identity)}
+        if completed:
+            channels.append(channel)
+            projection_symbols[channel] = completed
+
+if args.action == 'registered-prices':
+    collected = stages.get('registered_raw_prices', {}).get('result', {}).get('stages', [])
+    symbols = [symbol for group in collected if group.get('group') == 'raw_eod' for symbol in group.get('symbols', [])]
+    completed_stage('market', 'registered_raw_prices', symbols, 'symbol')
 elif args.action in {'daily', 'crypto'}:
-    if stages.get('market_series', {}).get('status') == 'ready':
-        channels.append('market')
-    if stages.get('registered_reference', {}).get('status') == 'ready':
-        channels.append('reference')
+    series = stages.get('market_series', {}).get('result', {}).get('stages', [])
+    completed_stage('market', 'market_series', [row for row in series if row.get('group') == 'market_series'], 'series_id')
+    references = stages.get('registered_reference', {}).get('result', {}).get('instruments', [])
+    completed_stage('reference', 'registered_reference', references, 'symbol')
 elif args.action == 'sync' and stages.get('numeric_catchup', {}).get('status') == 'ready':
     # A previous arrival can lose the shared projection lock to settlement.
     # Every scheduled sync rechecks the public projections, even without a new pack.
@@ -83,6 +97,9 @@ for channel in channels:
             continue
         symbols = [row['identifier_value'][4:] for row in item.get('identifiers', [])
                    if row.get('identifier_type') == 'provider_symbol' and row.get('identifier_value', '').startswith('fmp:')]
+        completed_symbols = projection_symbols.get(channel)
+        if completed_symbols is not None and not completed_symbols.intersection(symbols):
+            continue
         if args.action != 'registered-prices' or args.market == 'all' or any(symbol_market(symbol) == args.market for symbol in symbols):
             instruments.append(str(item['instrument_id']))
     if not instruments:

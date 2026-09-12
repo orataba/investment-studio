@@ -33,6 +33,8 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
     for instrument in index["instruments"]:
         packet = mcp.read_risk_instrument(instrument["instrument_id"])
         assert packet["current"]["instrument"]["performance_evidence"]["monthly_periods"][0]["return_pct"] == -2
+        assert packet["current_counts"]["research"] == 1
+        packet = mcp.read_risk_instrument(instrument["instrument_id"], section="cases")
         report = packet["current"]["research"][0]
         assert report["body"] == "完整风险分析及反向证据"
         assert report["case_id"].split("-")[1] == instrument["instrument_id"].split("-")[1]
@@ -41,17 +43,129 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
         assert packet["previous"] == {"unchanged": True}
         assert len(json.dumps(packet, ensure_ascii=False, indent=2).encode()) < 50000
     snapshot["research"][-1]["body"] = "新增配售风险"
-    updated = mcp.read_risk_instrument("asset-11")
+    updated = mcp.read_risk_instrument("asset-11", section="cases")
     assert updated["current"]["research"][0]["body"] == "新增配售风险"
     assert updated["previous"]["research"][0]["body"] == "完整风险分析及反向证据"
     with pytest.raises(ValueError, match="本次风控范围"):
         mcp.read_risk_instrument("outside")
 
 
+def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkeypatch):
+    from datetime import date, timedelta
+    from math import sin
+    from types import SimpleNamespace
+    from watchlist_app.services import risk_performance as performance
+
+    dates, day = [], date(2023, 9, 1)
+    while len(dates) < 756:
+        if day.weekday() < 5:
+            dates.append(day.isoformat())
+        day += timedelta(days=1)
+    series = {"currency": "CNY", "frequency": {"resolved_frequency": "daily"},
+        "metadata": {"return_series_status": "ready", "return_kind": "total_return"},
+        "points": [{"date": day, "value": 100 * 1.0002 ** index * (1 + .004 * sin(index))}
+                   for index, day in enumerate(dates)]}
+    class RetainedSession:
+        def get(self, model, instrument_id):
+            if model is performance.InstrumentChartReadModel:
+                return SimpleNamespace(payload_json={"research_returns": series},
+                    source_cutoff_at="2026-09-13T00:00:00+00:00", data_freshness_status="fresh")
+            if model is performance.InstrumentManualProfile:
+                return SimpleNamespace(nav_settings_json={})
+            if model is performance.InstrumentDetail:
+                return SimpleNamespace(instrument_name=instrument_id)
+            return None
+
+    monkeypatch.setattr(performance, "_taxonomy_peers", lambda *_: ([f"peer-{i}" for i in range(15)], {}, None))
+    evidence = performance.performance_evidence(RetainedSession(), "target", peer_scope={})
+    assert len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode()) > 50000
+    instrument = {"instrument_id": "target", "name": "同类基金", "performance_evidence": evidence}
+    judgments = [{"kind": "pm_view", "source_id": f"pm-{i}", "value": {"body": "经理原始判断及其不确定性。" * 500,
+        "author": f"经理{i}", "note_date": "2026-09-01"}} for i in range(12)]
+    instrument["research_context"] = {"records": judgments, "counts": {"pm_view": 12}}
+    cases = [{"case_id": f"case-{i}", "instrument_id": "target", "body": f"风险{i}：" + "实际风险与反证。" * 600,
+              "evidence_json": {"source_ids": [f"source-{i}"]}} for i in range(35)]
+    snapshot = {"instrument_ids": ["target"], "instruments": [instrument],
+                "research": cases, "quantitative": [], "coverage": []}
+    previous = copy.deepcopy(snapshot)
+    previous["research"].append({"case_id": "previous-only", "instrument_id": "target", "body": "此前仍活跃的事项"})
+    previous["research"][0]["body"] = "前次风险判断"
+    previous["instruments"][0]["performance_evidence"]["comparisons"][0]["comparison"]["dates"] = dates[:-1]
+    # A different interior observation can leave the displayed bounds/count unchanged.
+    previous["instruments"][0]["performance_evidence"]["comparisons"][1]["comparison"]["dates"][1] = "2023-09-03"
+    context = {"risk_run": True, "cutoff": "2026-09-13T00:00:00+00:00",
+               "risk_inputs": snapshot, "prior_inputs": previous}
+    original = copy.deepcopy(context)
+    monkeypatch.setattr(mcp, "request", lambda _: context)
+
+    overview = asyncio.run(mcp.mcp.call_tool("read_risk_instrument", {"instrument_id": "target"}))
+    assert len(overview.content[0].text.encode()) <= 48000
+    assert overview.structured_content["current_counts"] == {"research": 35, "quantitative": 0, "coverage": 0, "comparisons": 15}
+    assert "comparisons" not in overview.structured_content["current"]["instrument"]["performance_evidence"]
+
+    def pages(section, **kwargs):
+        offset = 0
+        while True:
+            result = asyncio.run(mcp.mcp.call_tool("read_risk_instrument", {
+                "instrument_id": "target", "section": section, "offset": offset, **kwargs}))
+            assert len(result.content[0].text.encode()) <= 48000
+            assert json.loads(result.content[0].text) == result.structured_content
+            yield result.structured_content
+            following = result.structured_content["next_offset"]
+            if following is None:
+                break
+            assert following > offset
+            offset = following
+
+    case_pages = list(pages("cases"))
+    assert len(case_pages) > 1
+    current_cases = [case for page in case_pages for case in page["current"]["research"]]
+    assert current_cases == [mcp._risk_case_brief(case) for case in cases]
+    prior_cases = [case for page in case_pages for case in
+                   (page["current"] if page["previous"] == {"unchanged": True} else page["previous"])["research"]]
+    assert {case["case_id"] for case in prior_cases} == {case["case_id"] for case in previous["research"]}
+    assert prior_cases[0]["body"] == "前次风险判断"
+
+    comparison_pages = list(pages("comparisons"))
+    assert len(comparison_pages) > 1
+    comparisons = [row for page in comparison_pages for row in page["current"]["comparisons"]]
+    assert [row["source_id"] for row in comparisons] == [row["source_id"] for row in evidence["comparisons"]]
+    assert all("dates" not in row["comparison"] and row["sample_dates_count"] == 756 for row in comparisons)
+    assert comparisons[0]["comparison"]["observations"] == 756
+    assert comparisons[0]["comparison"]["sample_start"] == dates[0]
+    assert comparisons[0]["comparison"]["sample_end"] == dates[-1]
+    assert {source for page in comparison_pages for source in page.get("changed_sample_source_ids", [])} == {
+        comparisons[0]["source_id"], comparisons[1]["source_id"]}
+    sample_pages = list(pages("sample_dates", comparison_source_id=comparisons[0]["source_id"]))
+    assert [day for page in sample_pages for day in page["current"]["dates"]] == dates
+    assert [day for page in sample_pages for day in page["previous"]["dates"]] == dates[:-1]
+    assert context == original
+    research_pages = list(pages("research_context"))
+    assert len(research_pages) > 1
+    assert [row for page in research_pages for row in page["current"]["records"]] == judgments
+    with pytest.raises(ValueError, match="来源不在"):
+        mcp.read_risk_instrument("target", section="sample_dates", comparison_source_id="outside")
+
+
+def test_risk_instrument_rejects_unreadable_single_record_without_truncating(monkeypatch):
+    context = {"risk_run": True, "cutoff": "2026-09-13", "risk_inputs": {
+        "instrument_ids": ["target"], "instruments": [], "research": [
+            {"case_id": "large", "instrument_id": "target", "body": "原始风险" * 20000}],
+        "quantitative": [], "coverage": []}}
+    monkeypatch.setattr(mcp, "request", lambda _: context)
+    with pytest.raises(ValueError, match="未截断"):
+        mcp.read_risk_instrument("target", section="cases")
+    with pytest.raises(ValueError, match="非负整数"):
+        mcp.read_risk_instrument("target", section="cases", offset=-1)
+    with pytest.raises(ValueError, match="超出"):
+        mcp.read_risk_instrument("target", section="cases", offset=2)
+
+
 def test_conversation_is_preserved_and_cannot_read_risk_scope(monkeypatch):
     context = {"conversation": [{"body": "PM观点"}]}
     monkeypatch.setattr(mcp, "request", lambda _: context)
-    assert mcp.read_research_context()["conversation"] == [{"body": "PM观点"}]
+    assert mcp.read_research_context()["sections"]["conversation"]["count"] == 1
+    assert mcp.read_research_context(section="conversation")["data"] == [{"body": "PM观点"}]
     assert context == {"conversation": [{"body": "PM观点"}]}
     with pytest.raises(ValueError, match="本次风控范围"):
         mcp.read_risk_instrument("asset-0")

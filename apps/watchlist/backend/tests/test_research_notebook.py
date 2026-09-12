@@ -56,6 +56,32 @@ def test_unmentioned_questions_and_old_original_clocks_survive_but_explicit_refu
     assert previous == untouched and retained["checked_at"] == CUTOFF
 
 
+@pytest.mark.parametrize("evidence_status", ["open", "supported", "refuted"])
+def test_question_evidence_never_implicitly_changes_tracking(evidence_status):
+    from watchlist_app.services.research_notebook import ResearchQuestion, _merge_partial
+    old = question(status="supported", tracking_status="paused", tracking_reason="等待下一次披露")
+    updated = _merge_partial(ResearchQuestion(**question(status=evidence_status)), old)
+    assert updated["status"] == evidence_status
+    assert updated["tracking_status"] == "paused" and updated["tracking_reason"] == old["tracking_reason"]
+    resumed = _merge_partial(ResearchQuestion(**question(tracking_status="active")), old)
+    assert resumed["tracking_status"] == "active" and resumed["tracking_reason"] == ""
+    assert old["tracking_status"] == "paused"
+
+
+@pytest.mark.parametrize("tracking_status", ["paused", "closed"])
+def test_question_pause_or_closure_requires_a_reason(tracking_status):
+    from watchlist_app.services.research_notebook import ResearchQuestion
+    with pytest.raises(ValueError, match="跟踪安排的原因"):
+        ResearchQuestion(**question(tracking_status=tracking_status, tracking_reason=" "))
+    assert ResearchQuestion(**question(tracking_status=tracking_status, tracking_reason="已由其他问题接续")).tracking_status == tracking_status
+
+
+def test_withdrawing_a_lesson_requires_an_explicit_reason():
+    from watchlist_app.services.research_notebook import ResearchLesson
+    with pytest.raises(ValueError, match="停用研究经验须说明原因"):
+        ResearchLesson(key="cash", lesson="研究经验", status="withdrawn")
+
+
 def test_only_acquired_originals_can_be_referenced_and_private_sources_require_exact_instrument():
     sources = {
         "method": {"source_id": "method", "source_type": "research_method", "text": "分析框架"},

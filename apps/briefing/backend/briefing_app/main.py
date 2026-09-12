@@ -118,7 +118,7 @@ def create_app(settings=None):
                 report.status, report.error = "failed", "未能建立报告任务身份，本轮未开始。"
                 session.commit()
                 raise
-            background.add_task(run_report, report.report_id, token)
+            background.add_task(run_report, report.report_id, token, principal)
         return report_summary(report)
 
     @app.get("/api/briefing/reports/{report_id}")

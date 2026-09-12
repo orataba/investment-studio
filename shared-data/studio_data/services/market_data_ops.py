@@ -3898,10 +3898,11 @@ def refresh_market_data_with_timeout(
             mode=refresh_mode,
         )
     except Exception as exc:
-        if str(source or "configured").strip().lower() != "fmp":
-            raise
         from studio_data.services.fmp import FmpApiError
 
+        # Scheduled market projections select each instrument's configured
+        # source. A typed FMP failure has the same per-item boundary there as
+        # when the caller explicitly selected FMP.
         if not isinstance(exc, FmpApiError):
             raise
         return update_refresh_status(

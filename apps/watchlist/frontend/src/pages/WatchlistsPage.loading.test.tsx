@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -189,6 +189,45 @@ describe('WatchlistsPage loading', () => {
     expect(screen.queryByRole('button', { name: 'Watchlist actions' })).toBeNull()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Fund 1' }))
     expect(within(tools).getByRole('button', { name: 'Research assistant' }).textContent).toBe('Research assistant(1)')
+    fireEvent.click(within(settings).getByRole('button', { name: 'Column settings' }))
+    const columnsDialog = screen.getByRole('dialog', { name: 'Choose columns' })
+    const columnSearch = within(columnsDialog).getByPlaceholderText('Search columns') as HTMLInputElement
+    fireEvent.change(columnSearch, { target: { value: 'unfinished edit' } })
+    const initialQueries = apiMocks.runScreenerQuery.mock.calls.map(([payload], index) => ({
+      payload,
+      result: apiMocks.runScreenerQuery.mock.results[index].value,
+    }))
+    const mainQuery = initialQueries.filter(({ payload }) => payload.view_id === 'overview').slice(-1)[0]!
+    const filterOptionsQuery = initialQueries.filter(({ payload }) => payload.view_id == null).slice(-1)[0]!
+    const savedCriteria = mainQuery.payload
+    const initialQueryCount = apiMocks.runScreenerQuery.mock.calls.length
+    const listRecords = await apiMocks.getWatchlists.mock.results[0].value
+    let finishSync!: (records: unknown) => void
+    apiMocks.getWatchlists.mockReturnValueOnce(new Promise((resolve) => { finishSync = resolve }))
+    const refreshedRows = await mainQuery.result
+    const filterOptionsResult = await filterOptionsQuery.result
+    apiMocks.runScreenerQuery.mockImplementation(async (payload) => payload.view_id === 'overview'
+      ? {
+        ...refreshedRows, total_rows: 2,
+        rows: [...refreshedRows.rows, { instrument_id: 'fund-2', instrument_name: 'New Fund 2' }],
+      }
+      : filterOptionsResult)
+    fireEvent(window, new Event('focus'))
+    fireEvent(document, new Event('visibilitychange'))
+    expect(apiMocks.getWatchlists).toHaveBeenCalledTimes(2)
+    expect(apiMocks.runScreenerQuery).toHaveBeenCalledTimes(initialQueryCount)
+    expect(screen.getByText('Fund 1')).toBeTruthy()
+    expect(columnSearch.value).toBe('unfinished edit')
+    await act(async () => { finishSync(listRecords.map((record: object) => ({ ...record, item_count: 2 }))) })
+    await waitFor(() => expect(screen.getByText('New Fund 2')).toBeTruthy())
+    const refreshedQueries = apiMocks.runScreenerQuery.mock.calls.slice(initialQueryCount)
+    expect(refreshedQueries.filter(([payload]) => payload.view_id === 'overview')).toEqual([[savedCriteria]])
+    expect(refreshedQueries.filter(([payload]) => payload.view_id == null)).toEqual([[filterOptionsQuery.payload]])
+    expect(apiMocks.getWatchlistDetail).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('dialog', { name: 'Choose columns' })).toBe(columnsDialog)
+    expect(columnSearch.value).toBe('unfinished edit')
+    expect((screen.getByRole('checkbox', { name: 'Select Fund 1' }) as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(within(columnsDialog).getByRole('button', { name: 'Cancel' }))
     fireEvent.click(within(tools).getByRole('button', { name: 'Risk alerts' }))
     expect(screen.queryByRole('group', { name: 'Watchlist settings menu' })).toBeNull()
     expect(await screen.findByRole('dialog', { name: '风险提示' })).toBeTruthy()

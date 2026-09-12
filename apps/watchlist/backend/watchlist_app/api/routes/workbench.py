@@ -331,12 +331,41 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
     session.commit()
     from watchlist_app.services.research_runner import authorize_run
     token = authorize_run(current_principal(), record.entry_id)
-    background.add_task(run_analysis, record.entry_id, token)
+    background.add_task(run_analysis, record.entry_id, token, current_principal())
     return dump(record)
 
 
+def _run_source_context(session, run_id):
+    from types import SimpleNamespace
+    from sqlalchemy import JSON, true
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    from watchlist_app.services.research_read_projection import run_source_index
+    relation, values = research_context_projection(session, {
+        "research_actor": JSON, "web_evidence": JSON, "market_text_sources": JSON})
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.team_id, ResearchEntry.kind,
+        *(value.label(key) for key, value in values.items())).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    rows = research_projection_rows(session, query.where(ResearchEntry.entry_id == run_id),
+                                   {name: (name,) for name in values})
+    row = rows[0] if rows else None
+    if row is None:
+        raise HTTPException(404, "Record not found")
+    record = SimpleNamespace(entry_id=row.entry_id, topic_id=row.topic_id, team_id=row.team_id,
+        context_json={"research_actor": row.research_actor})
+    require_entry_access(session, record)
+    if row.kind != "analysis":
+        raise HTTPException(404, "Analysis not found")
+    return {"sources": run_source_index(row._mapping)}
+
+
 @router.get("/research/runs/{run_id}/context")
-def run_context(run_id: str, originals: bool = False, session: Session = Depends(get_db_session)):
+def run_context(run_id: str, originals: bool = False, session: Session = Depends(get_db_session),
+                section: Literal["sources"] | None = None):
+    if section == "sources":
+        if originals:
+            raise HTTPException(422, "来源目录不展开原文正文")
+        return _run_source_context(session, run_id)
     record = require(session, ResearchEntry, run_id)
     if record.kind != "analysis":
         raise HTTPException(404, "Analysis not found")
@@ -361,6 +390,26 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
     elif context.get("research_dossiers"):
         context["research_dossiers"] = [dossier_outline(d) for d in context["research_dossiers"]]
     return context
+
+
+@router.get("/research/runs/{run_id}/computed-source")
+def run_computed_source(run_id: str, source_id: str, session: Session = Depends(get_db_session)):
+    """Read one already retained calculation; never calculate or refresh its inputs."""
+    record = require(session, ResearchEntry, run_id)
+    if record.kind != "analysis" or record.context_json.get("risk_run"):
+        raise HTTPException(404, "本轮没有可读取的普通研究计算来源")
+    source = next((item for item in record.context_json.get("computed_metrics", [])
+                   if item.get("source_id") == source_id and item.get("source_type") == "computed_metric"), None)
+    if source is None:
+        raise HTTPException(404, "该计算来源未在本轮取得并留存")
+    # Earlier comparison metrics kept target/benchmark selection only in the
+    # matching tool receipt. Preserve that exact request when reading its source.
+    if "input_series" in source and "request" not in source:
+        receipt = next((item for item in record.context_json.get("tool_evidence", [])
+                        if item.get("source_id") == source_id and item.get("tool") == "comparison"), None)
+        if receipt:
+            return {**source, "request": receipt["request"], "retrieved_at": receipt["retrieved_at"]}
+    return source
 
 
 @router.get("/research/runs/{run_id}/dossier/{instrument_id}")
@@ -500,7 +549,8 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
     if request.tool == "comparison":
         metric = {"source_id": source_id, "source_type": "computed_metric", "scope": "public_market",
             "title": "已登记标的共同观察区间比较", "as_of": context["cutoff"], "data": result,
-            "methodology": result["method"], "input_series": series}
+            "methodology": result["method"], "input_series": series,
+            "request": evidence["request"], "retrieved_at": evidence["retrieved_at"]}
         context["computed_metrics"] = [*context.get("computed_metrics", []), metric]
     record.context_json = context
     session.commit()

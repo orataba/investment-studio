@@ -47,7 +47,7 @@ bin/investment-studio data status data
 bin/investment-studio data status email --limit 100
 ```
 
-需要 JSON 输入的操作使用 `--input /absolute/request.json`，也可 `--input -` 从标准输入读取。所有单项写命令都需 `--apply` 才执行；不加时只校验输入结构，不保证业务条件满足。股票/ETF 通过已同步的 FMP 目录建档：
+需要 JSON 输入的操作使用 `--input /absolute/request.json`，也可 `--input -` 从标准输入读取。所有单项写命令都需 `--apply` 才执行；不加时只校验输入结构，不保证业务条件满足。股票/ETF 通过已同步的 FMP 目录建档。Portfolio 交易录入也通过这套 CLI 入口搜索目录，并仅在用户选中证券后按需建档；不新增独立的数据 HTTP 服务。注册和既有盘后更新会为 FMP 股票/ETF 补齐缺失行情；单标的补采复用共享数值采集器及其原始/复权数据合同，不改全市场采集角色或发行配置：
 
 ```json
 {"instrument_type":"equity","catalog_provider":"fmp","catalog_symbol":"AAPL","refresh_eod":true}
@@ -96,7 +96,9 @@ bin/investment-studio data reference refresh INSTRUMENT_ID --apply
 
 BTC/USD现货使用独立`crypto`身份和已采集的`market_series_daily/BTCUSD`，沿用共享数值库的来源版本与原文引用。`refresh instrument`的FMP路径将已完成UTC日线投影到Instrument Data；全年保留周末，未结束当日不发布close。不把供应商单位未明确的aggregate volume写成BTC数量或股票股数，不使用股票的拆股复权通道。完整保留的序列重放也会更新较早的来源修订，未变化的数据写入幂等。
 
-FMP 股票/ETF 的 Registry 投影同样重放共享库已保留的完整 EOD 历史，使股息、拆股后的较早复权价格修订进入收益计算；这一步只读本地共享事实，不额外调用供应商。FMP、BTC/USD 与 Tushare 的 canonical prices 和 raw OHLC 按单一资产、同一批次原子提交；写入失败同时回滚两侧事实和更新水位。
+FMP 股票/ETF 每次登记或周期更新都先检查共享历史是否覆盖最近已结束的交易日，缺少时按该标的补采，再重放已保留的完整 EOD 历史，使股息、拆股后的较早复权价格修订进入收益计算。重放本身只读本地共享事实；本机独有的公共证券也沿此路径持续更新，不需要复制 Watchlist 或 Portfolio 的业务状态到云端。明确的供应商失败记录为该标的失败，周期任务继续处理其他标的。FMP、BTC/USD 与 Tushare 的 canonical prices 和 raw OHLC 按单一资产、同一批次原子提交；写入失败同时回滚两侧事实和更新水位。
+
+DataHub 的 `index_daily` 长期历史/缺失 OHLC 修复按已验证可接受的 366 个日历日窗口读取，每窗继续独立的 offset 分页，全部完成后才发布。窗口之间不重叠、不遗漏日期；后续窗口失败不提交前半份历史。其他接口保留各自已有的请求合同。
 
 ## 迁移与运行
 

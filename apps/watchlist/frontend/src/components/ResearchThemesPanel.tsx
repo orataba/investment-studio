@@ -1,16 +1,17 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
 import { createResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemesResponse } from '../lib/researchDossierApi'
 import ResearchUpdateCard from './ResearchUpdateCard'
-import { dateLabel } from './ResearchEvidence'
+import { dateLabel, SourceList } from './ResearchEvidence'
 import './research-themes.css'
 import { fetchJson } from '../lib/api'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import ResearchFollowupClocks from './ResearchFollowupClocks'
+import ResearchQuestionTracking from './ResearchQuestionTracking'
 
 const statusLabel = { active: '持续关注', paused: '已暂停', closed: '已结束' }
 type ThemeDraft = ResearchThemeInput & { theme_id?: string }
-export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, sources, onThemesLoaded }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; sources?: (ids: string[]) => ReactNode; onThemesLoaded?: (themes: ResearchTheme[]) => void }) {
+export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; onThemesLoaded?: (themes: ResearchTheme[]) => void }) {
   const [data, setData] = useState<ResearchThemesResponse | null>(null)
   const [draft, setDraft] = useState<ThemeDraft | null>(null)
   const [closing, setClosing] = useState<{ themeId: string; reason: string } | null>(null)
@@ -67,15 +68,20 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   function themeCard(theme: ResearchTheme) {
     const updates = [...(theme.updates || [])].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
     const latest = updates.find(update => !update.superseded && !update.withdrawn && update.kind !== 'theme')
-    const current = theme.current_assessment
+    const questions = theme.current_questions || []
     return <article id={`research-theme-${encodeURIComponent(theme.theme_id)}`} key={theme.theme_id} className="research-theme-record">
       <div className="research-notebook-question-heading"><h4 translate="no">{theme.title}</h4><span>{statusLabel[theme.status]}</span></div>
       <p className="research-theme-question" translate="no">{theme.question}</p>
       <p className="sector-research-note"><span translate="no">{theme.author || '未标注作者'}</span> · {theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <time dateTime={theme.created_at}>{dateLabel(theme.created_at)}</time></p>
-      {current?.assessment ? <p className="research-theme-assessment"><strong>当前判断</strong> <span translate="no">{current.assessment}</span></p> : <p className="sector-research-note">尚待形成研究判断。</p>}
+      {questions.length ? questions.map(question => <div key={question.update_id} className="research-current-followup" data-question-id={question.update_id}>
+        <h5 translate="no">{question.title}</h5>
+        {question.body && <p className="research-theme-assessment"><strong>当前判断</strong> <span translate="no">{question.body}</span></p>}
+        {question.next_check && <p className="research-notebook-next"><strong>下一步观察</strong> <span translate="no">{question.next_check}</span></p>}
+        <ResearchFollowupClocks changedAt={question.last_changed_at} reviewedAt={question.last_reviewed_at} reviewStatus={question.last_review_status} />
+        {question.sources.length > 0 && <details><summary>当前判断依据</summary><SourceList instrumentId={instrumentId} versionId={question.reference.notebook_version_id} sources={question.sources.flatMap(source => source.source_id ? [{ ...source, source_id: source.source_id }] : [])} /></details>}
+        <ResearchQuestionTracking update={question} onAskAssistant={onAskAssistant} />
+      </div>) : <p className="sector-research-note">当前没有单独安排跟进的研究问题。</p>}
       {latest && <p className="research-theme-latest"><strong>最近研究记录</strong> <span translate="no">{latest.title}</span></p>}
-      {current?.next_check && <p className="research-notebook-next"><strong>下一步观察</strong> <span translate="no">{current.next_check}</span></p>}
-      <ResearchFollowupClocks changedAt={theme.last_changed_at} reviewedAt={theme.last_reviewed_at} reviewStatus={theme.last_review_status} />
       {theme.close_reason && <p className="sector-research-note"><strong>结束原因</strong> <span translate="no">{theme.close_reason}</span></p>}
       <details className="research-theme-thread"><summary>主题研究时间线 · {updates.length}</summary>
         {updates.length ? updates.map(update => <ResearchUpdateCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} inTheme />) : <p className="sector-research-note">尚无主题更新。后续事件、判断和复盘会保留在这里。</p>}
@@ -83,7 +89,6 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       <details className="research-theme-settings"><summary>背景与主题管理</summary>
         {theme.background && <p translate="no">{theme.background}</p>}
         {theme.responsible_user_id && <p className="sector-research-note">负责人：<span translate="no">{members.find(member => member.user_id === theme.responsible_user_id)?.display_name || (theme.responsible_user_id === theme.author_user_id ? theme.author : '已指定团队成员')}</span></p>}
-        {Boolean(current?.source_ids.length) && sources && <details><summary>当前判断依据</summary>{sources(current!.source_ids)}</details>}
         {canWrite && <div className="research-theme-actions">
           <button type="button" disabled={saving || Boolean(draft)} onClick={() => { setDraft({ theme_id: theme.theme_id, title: theme.title, question: theme.question, background: theme.background, responsible_user_id: theme.responsible_user_id }); setNotice(null); setError('') }}>编辑主题</button>
           {theme.status === 'active' ? <button type="button" disabled={saving} onClick={() => void changeStatus(theme, 'paused')}>暂停关注</button> : <button type="button" disabled={saving} onClick={() => void changeStatus(theme, 'active')}>恢复关注</button>}

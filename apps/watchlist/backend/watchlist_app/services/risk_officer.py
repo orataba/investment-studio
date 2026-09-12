@@ -1,8 +1,9 @@
 """A scoped risk officer reads retained research, quantitative triggers and holdings."""
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import math
 from urllib.parse import quote
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -67,6 +68,70 @@ def _portfolio_snapshot(portfolio_id):
         "exposure_note": "市值与市值占净值是持仓敞口描述，不是风险贡献；有正负持仓时净额可能抵消。"}
 
 
+def _research_context(session, instrument_id, notebook):
+    """Bind current team judgments, without hydrating the historical source corpus."""
+    from studio_identity import current_principal
+    from watchlist_app.api.routes.research import _serialize_note, _serialize_profile, research_repository
+    from watchlist_app.services.research_identity import research_identity
+    from watchlist_app.services.research_themes import theme_index
+    from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
+
+    actor = research_identity()
+    inactive = {theme["theme_id"] for theme in theme_index(session, instrument_id, actor=actor)
+                if theme["status"] != "active"}
+    market = _research_market(session, instrument_id)
+    zone = ZoneInfo(RESEARCH_TIMEZONES[market]) if market else None
+    review_day = datetime.now(UTC).astimezone(zone).date() if zone else None
+    records = []
+    profile = research_repository.get_profile(session, instrument_id)
+    if profile is not None:
+        records.append({"kind": "pm_profile", "source_id": f"risk-pm-profile:{instrument_id}:{profile.revision_number}",
+            "instrument_id": instrument_id, "value": _serialize_profile(profile),
+            "note": "标的PM档案的完整当前版本，含当前观点、假设、风险、反证、期限和监测计划；保留研究阶段，不推定仍建议持有。primary_analyst是负责人、updated_by是维护人，均不等于原观点作者；此档案未保存独立作者归属，不能补推。"})
+    for note in research_repository.list_notes(session, instrument_id):
+        if (not current_principal().local_unrestricted and note.team_id != actor["team_id"]
+                or note.completed_at is not None or (note.research_context or {}).get("theme_id") in inactive):
+            continue
+        value = _serialize_note(note)
+        context = value.get("research_context") or {}
+        if "sources" in context:
+            # A PM note binds originals for provenance, but risk reads that PM's
+            # judgment here; embedded financial tables and article bodies are not
+            # a second risk evidence corpus or independently verified facts.
+            reference_fields = {"source_id", "source_type", "title", "url", "instrument_id", "instrument_ids",
+                "document_id", "version_id", "status", "content_hash", "body_sha256", "published_at", "occurred_at",
+                "observed_at", "received_at", "retrieved_at", "discovered_at", "collected_at", "recorded_at",
+                "as_of", "as_of_date", "information_cutoff", "run_cutoff", "source_run_id", "period_end", "statement_type", "period_type",
+                "time_status", "verification_status", "provider", "symbol", "currency", "unit"}
+            value["research_context"] = {**context,
+                "sources": [{key: source[key] for key in reference_fields if key in source}
+                            for source in context["sources"]],
+                "sources_note": "这是PM原记录引用的来源索引；保留版本与原日期，不在此嵌入正文或财务数据，也不表示本轮已读取、核实这些原文。"}
+        records.append({"kind": "pm_view", "source_id": f"risk-pm:{instrument_id}:{note.note_id}:{note.revision_number}",
+            "instrument_id": instrument_id, "value": value,
+            "note": "投资经理当前保存版本的原文与归属；未知作者保持未知，未由本轮重新核实。"})
+    for field, kind in (("questions", "active_question"), ("forecasts", "forecast_check")):
+        for item in notebook.get(field, []):
+            if item.get("theme_id") in inactive:
+                continue
+            if field == "questions" and item.get("tracking_status", "active") != "active":
+                continue
+            if field == "forecasts" and item.get("status", "active") != "active":
+                continue
+            value = {key: value for key, value in item.items() if key not in {"versions", "sources"}}
+            if field == "forecasts":
+                scheduled = date.fromisoformat(str(item["review_on"])) if item.get("review_on") else None
+                value["review_status"] = ("condition_based" if scheduled is None else "date_basis_unknown" if review_day is None
+                                          else "due" if scheduled <= review_day else "scheduled")
+            identity = item.get("version_id") or f"{item['key']}:{item.get('source_run_id') or notebook.get('source_run_id') or 'retained'}"
+            records.append({"kind": kind, "source_id": f"risk-{kind}:{instrument_id}:{identity}",
+                "instrument_id": instrument_id, "value": value,
+                "note": "研究员保存的判断、反证和下一检查条件；到期只要求复核，不表示预测已经兑现或错误。"})
+    return {"records": records,
+        "counts": {kind: sum(row["kind"] == kind for row in records) for kind in ("pm_profile", "pm_view", "active_question", "forecast_check")},
+        "note": "绑定标的PM档案当前版本、当前团队可见且未结束的PM观点及有效主题内继续跟踪的问题/预测；历史版本、已完成观点、暂停/结束问题和撤回预测不在当前清单。保留原文、已有归属、原日期与来源引用；这些是待检验判断，不是独立事实。预测复核日期按标的市场时区判断，市场未知时不推定到期。"}
+
+
 def read_snapshot(session, **scope):
     from watchlist_app.api.routes.workbench import risk_workspace
     from watchlist_app.services.sector_research import review_states
@@ -109,22 +174,24 @@ def read_snapshot(session, **scope):
         ids, name = [identifier], record.instrument_name
     workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
     instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
-    states = review_states(session) if instruments else {"latest": {}, "last_completed": {}}
+    states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments])
     latest_research, completed_research = states["latest"], states["last_completed"]
     peer_scope = peer_context(session) if instruments else None
     for item in instruments:
         iid = item["instrument_id"]
         latest, completed = latest_research.get(iid), completed_research.get(iid)
-        view = ((completed or {}).get("current_research") or {}).get("investment_view")
+        notebook = (completed or {}).get("current_research") or {}
+        view = notebook.get("investment_view")
         item["research_tracking"] = {
             "latest_check": {key: latest.get(key) for key in (
                 "run_id", "status", "checked_at", "coverage", "reflection")} if latest else None,
-            "current_judgment": {"summary": completed.get("current_summary") or completed.get("summary", ""),
-                "view_updated_at": completed.get("view_updated_at"), "view_run_id": completed.get("view_run_id"),
-                "investment_view": {key: value for key, value in view.items() if key != "versions"} if view else None}
-                if completed else None,
+            "current_judgment": {"summary": view.get("direction", ""),
+                "view_updated_at": view.get("updated_at"), "view_run_id": view.get("source_run_id"),
+                "investment_view": {key: value for key, value in view.items() if key != "versions"}}
+                if view else None,
             "note": "研究员已保存的判断与复核状态，供风险分析衔接；不是独立原始证据，也不表示本轮重新核实。资料覆盖不足本身不是投资风险，正常净值披露滞后不等于研究失败。",
         }
+        item["research_context"] = _research_context(session, iid, notebook)
         status = (latest or {}).get("status")
         gap = {None: "尚无已留存的研究检查，研究覆盖尚未确认",
             "queued": "本次研究仍在等待，尚未完成新的检查",
@@ -305,6 +372,16 @@ def apply_result(session, run, payload):
 def evidence_sources(snapshot):
     sources = {}
     for item in snapshot["instruments"]:
+        for record in (item.get("research_context") or {}).get("records", []):
+            value = record["value"]
+            sources[record["source_id"]] = {"source_type": record["kind"], "instrument_id": item["instrument_id"],
+                "title": "标的PM档案" if record["kind"] == "pm_profile" else value.get("title") or value.get("question") or value.get("claim"),
+                "author": value.get("author") if record["kind"] in {"pm_profile", "pm_view"} else "研究员",
+                "author_user_id": value.get("author_user_id"), "recorded_at": value.get("updated_at") or value.get("created_at"),
+                **({"primary_analyst": value.get("primary_analyst"), "updated_by": value.get("updated_by")}
+                   if record["kind"] == "pm_profile" else {}),
+                "note_id": value.get("note_id"), "revision_number": value.get("revision_number"),
+                "version_id": value.get("version_id"), "verification_status": "retained_judgment_not_independent_fact"}
         evidence = item.get("performance_evidence")
         if not evidence:
             continue

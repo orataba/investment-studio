@@ -39,7 +39,7 @@ Investment Studio 的入口与业务应用：
 - Regime：市场状态与信号面板，模型与运行独立维护，公共市场资料由 Studio 提供。
 - Briefing：日报和周报。按日期选择报告，通过简短要点、标签、相关证券涨跌及原始链接浏览信息；原文证据按需查看。
 
-各 App 共用 Studio 的公共数值与文本资料，私有业务数据分别保存；Regime 独立保存模型状态。新增市场资产由后台 CLI 建档，网页只能选择已登记资产。FCN 和期权属于 Portfolio 的组合合约，仍在组合交易流程中创建，其标的引用已登记资产。
+各 App 共用 Studio 的公共数值与文本资料，私有业务数据分别保存；Regime 独立保存模型状态。Portfolio 交易录入支持搜索股票与 ETF 全市场目录，选中后通过共享数据维护入口按需建档；其他资产仍由后台 CLI 建档。FCN 和期权属于 Portfolio 的组合合约，仍在组合交易流程中创建，其标的引用已登记资产。
 
 市场数据按 instrument 固定一个 primary source：股票包括 A 股统一使用 FMP；A 股公募和 A 股 ETF 使用 DataHub Tushare，港股/美股 ETF 使用 FMP；A 股指数先核验 FMP 的精确代码和历史覆盖，核验成功才用 FMP，否则固定使用 Tushare。刷新时不会因空响应或错误切到第二 provider，也不双写同一序列。
 
@@ -64,7 +64,7 @@ Investment Studio 的入口与业务应用：
 
 ## 4. 后台数据维护
 
-共享资产注册、数据接入、邮件解析、NAV 文件导入、人工修正和状态检查只通过后台 CLI 进行，没有数据管理网页或专用公开域名。现有定时任务继续自动运行。维护人员参见 [Investment Studio CLI](../shared-data/README.md)。
+共享资产注册、数据接入、邮件解析、NAV 文件导入、人工修正和状态检查由后台 CLI 执行，没有数据管理网页或专用公开域名。Portfolio 交易录入可由有编辑权限的用户触发股票/ETF 目录搜索及按需注册，复用相同的 CLI 维护入口。现有定时任务继续自动运行。维护人员参见 [Investment Studio CLI](../shared-data/README.md)。
 
 ## 5. Watchlist 使用
 
@@ -72,7 +72,7 @@ Investment Studio 的入口与业务应用：
 
 从 Investment Studio 首页进入 Watchlist，或访问维护人提供的 Watchlist 地址。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
-Watchlist 的系统列表包括“全部标的”、`Index`、`All 公募`、`All 私募`。全部标的自动汇集有效登记的基金、ETF、股票、指数和加密资产现货；其余系统列表按类型同步。自定义列表只组织成员，删除列表或移除成员不会注销标的，也不会改变标的自己的投资状态、设置和研究。相同标的在多个列表中共用同一份资料。资产登记与行情维护仍由共享数据后台完成。
+Watchlist 的系统列表包括“全部标的”、`Index`、`All 公募`、`All 私募`。全部标的自动汇集有效登记的基金、ETF、股票、指数和加密资产现货；其余系统列表按类型同步。在 Portfolio 注册股票/ETF 后，打开或切回 Watchlist 会自动更新系统列表及数量，保留当前筛选和视图。自定义列表只组织成员，删除列表或移除成员不会注销标的，也不会改变标的自己的投资状态、设置和研究。相同标的在多个列表中共用同一份资料。资产登记与行情维护仍由共享数据后台完成。
 
 ### 5.2 添加资产
 
@@ -462,7 +462,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 1. Portfolio 进入对应组合。
 2. Accounts 确认证券账户和默认结算现金账户存在。
-3. 在 Transactions 搜索已登记资产，不要求先加入 Watchlist。资产不存在时，由维护人员通过后台 CLI 建档、核实币种及数据源，再回到 Transactions 选择；页面不登记新市场资产或抓取供应商数据。
+3. 在 Transactions 按代码或名称搜索：结果包含已登记资产及股票/ETF 全市场目录，不要求先加入 Watchlist。选择未登记的股票/ETF 后，系统通过共享维护入口建立唯一资产身份、配置行情来源并补齐行情，再回填交易表单。搜索本身不建档，选择证券也不会提交交易。账户币种与交易类型仍限制可选证券；其他资产由维护人员通过后台 CLI 建档。
 4. Transactions 新增 `buy`。
 5. 填写 account、instrument、trade date、settlement date、quantity、price、gross amount、fee、tax、currency。
 6. 保存后查看 ledger posting、Holdings 和 Overview。
@@ -489,7 +489,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 ## 8. 常见问题
 
-- 找不到资产：由维护人员通过后台 CLI 搜索名称、ticker、ISIN；确认 active 状态和 identifier；仍没有再新建。
+- 找不到资产：先核对账户币种、交易类型和目录搜索错误。股票/ETF 可在交易录入中直接搜代码或名称；仍无结果时由维护人员检查目录覆盖、active 状态和 identifier。其他资产通过后台 CLI 登记。
 - Watchlist 指标为空：检查资产类型是否适用、行情是否覆盖、recalc 是否完成、字段是否属于该 instrument scope。
 - 指数没有风险指标：检查 close 序列是否足够长，日期是否连续或覆盖所选区间。
 - 基金图表没有 benchmark：benchmark 资产需要可用 NAV 或 close，且日期与基金有交集。

@@ -64,7 +64,7 @@ def test_single_instrument_scope_and_runs_do_not_expand_or_block_sector_daily_ch
     assert [row["instrument_id"] for row in client.get("/api/sector-research", params={"watchlist_id": wid}).json()["sectors"]] == ["xlk"]
     started = []
     monkeypatch.setattr(routes, "harness_available", lambda: True)
-    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token: started.append(run_id))
+    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token, issuer: started.append(run_id))
     first = client.post("/api/sector-research/runs", json={"instrument_ids": ["event-equity"]})
     second = client.post("/api/sector-research/runs", json={"instrument_ids": ["event-index"]})
     assert first.status_code == second.status_code == 202
@@ -140,7 +140,8 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
     assert result["sectors"][0]["latest_review"]["run_id"] == failed_id
     assert result["sectors"][0]["latest_review"]["status"] == "failed"
     assert result["sectors"][0]["last_completed_review"]["run_id"] == newest_id
-    assert result["sectors"][0]["last_completed_review"]["summary"] == "存在需跟进的重要变化。"
+    # The event remains active, but its report prose is not an instrument-wide judgment.
+    assert result["sectors"][0]["last_completed_review"]["summary"] == ""
     assert result["sectors"][0]["last_completed_review"]["change_kind"] == "none"
     assert len(result["events"]) == 1 and result["events"][0]["trigger_active"]
 
@@ -148,7 +149,7 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
 def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_invented_fund_opportunity(client, monkeypatch):
     seed_instruments(client, monkeypatch)
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None: None)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
     topic = client.post("/api/research/topics", json={"title": "私募普通对话", "instrument_ids": ["sxv264"]}).json()
     chat = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json={"question": "有哪些资料还需补充？"})
     assert chat.status_code == 202, chat.text
@@ -190,7 +191,7 @@ def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client
     seed_instruments(client, monkeypatch)
     monkeypatch.setattr(routes, "harness_available", lambda: True)
     started = []
-    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token=None: started.append(run_id))
+    monkeypatch.setattr(routes, "run_analysis", lambda run_id, token=None, issuer=None: started.append(run_id))
     with get_session_factory()() as session:
         topic_id, run_id = f"instrument-events:{iid}", f"saved-{iid}"
         session.add(ResearchTopic(topic_id=topic_id, title="已有研究", instrument_ids=[iid]))

@@ -115,6 +115,41 @@ def test_fetch_tushare_rows_follows_offset_pagination() -> None:
     assert [call["params"]["offset"] for call in session.calls] == [0, 2]
 
 
+def test_index_history_partitions_date_window_and_restarts_offset() -> None:
+    def page(day, more=False):
+        return FakeResponse({"code":0, "data":{"fields":["ts_code", "trade_date", "close"],
+            "items":[["H11001.CSI",day,265.1]], "has_more":more}})
+    session = FakeSession([page("20240102", True), page("20250101"), page("20250102")])
+    rows = datahub_client.fetch_tushare_rows(api_key="secret-key", api_name="index_daily",
+        params={"ts_code":"H11001.CSI", "start_date":"20240102", "end_date":"20250102"}, session=session)
+    assert [row["trade_date"] for row in rows] == ["20240102", "20250101", "20250102"]
+    # The leap-year window is inclusive. The next request neither overlaps nor
+    # omits the first day after it; row pagination belongs to its own window.
+    assert [(call["params"]["start_date"], call["params"]["end_date"], call["params"]["offset"]) for call in session.calls] == [
+        ("20240102", "20250101", 0), ("20240102", "20250101", 1), ("20250102", "20250102", 0)]
+
+
+def test_later_index_history_failure_never_returns_partial_history() -> None:
+    from requests import HTTPError
+    session = FakeSession([
+        FakeResponse({"code":0, "data":{"fields":["trade_date"], "items":[["20240102"]], "has_more":False}}),
+        FakeResponse({}, status_error=HTTPError("HTTP 503")),
+    ])
+    with pytest.raises(datahub_client.DataHubClientError, match="HTTP 503"):
+        datahub_client.fetch_tushare_rows(api_key="secret-key", api_name="index_daily",
+            params={"ts_code":"H11001.CSI", "start_date":"20240102", "end_date":"20250102"}, session=session)
+    assert len(session.calls) == 2
+
+
+def test_date_window_contract_does_not_change_other_endpoints() -> None:
+    session = FakeSession([FakeResponse({"code":0, "data":{"fields":[], "items":[], "has_more":False}})])
+    assert datahub_client.fetch_tushare_rows(api_key="secret-key", api_name="fund_nav",
+        params={"ts_code":"018654.OF", "start_date":"20000101", "end_date":"20260913"}, session=session) == []
+    assert len(session.calls) == 1
+    assert session.calls[0]["params"]["start_date"] == "20000101"
+    assert session.calls[0]["params"]["end_date"] == "20260913"
+
+
 @pytest.mark.parametrize(
     ("api_name", "endpoint_path"),
     [

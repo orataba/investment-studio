@@ -11,7 +11,7 @@ Portfolio 承载组合、账户、交易、账本、持仓、绩效、风险、t
 - Cash、费用、税、利息、换汇和账户内转移；
 - Preview/Commit、CSV/Excel 和截图助手共用的交易 command contract。
 
-Portfolio 不写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。基金卖空、直接债券、券商授信与购买力计算、PE/VC capital call、基金份额转换、空头证券及衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks、FCN 自动 barrier 判定和期权自动行权不在当前支持范围。实际融资借还和抵押释放可通过明确现金用途的账户与内部划转记录。
+Portfolio 不直接写 Registry market facts，也不复用 Watchlist 的名单、taxonomy 或研究模型。交易录入的股票/ETF 搜索同时读取全市场目录；用户选择未登记证券时，组合编辑权限保护的入口调用共享数据 CLI 按需建档及补齐行情，再返回规范资产记录。搜索不写数据，选择证券不创建交易。基金卖空、直接债券、券商授信与购买力计算、PE/VC capital call、基金份额转换、空头证券及衍生品 transfer，以及 FCN/Option 的 daily fair value、Greeks、FCN 自动 barrier 判定和期权自动行权不在当前支持范围。实际融资借还和抵押释放可通过明确现金用途的账户与内部划转记录。
 
 关键运行约束：
 

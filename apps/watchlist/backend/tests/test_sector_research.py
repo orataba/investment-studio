@@ -303,17 +303,23 @@ def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(clien
 
 
 def test_brief_updates_do_not_replace_the_instrument_investment_conclusion(client, monkeypatch):
+    from watchlist_app.services.research_dossier import read_dossier
     seed_sector(client, monkeypatch)
     with get_session_factory()() as session:
         first, _ = service.begin_run(session, ["xlk"])
-        service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "investment", "summary": "原有全标的投资判断"}]}))
+        service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "investment", "summary": "原有全标的投资判断",
+            "research": {"investment_view": {"direction": "原有全标的投资判断"}}}]}))
         session.commit()
         second, _ = service.begin_run(session, ["xlk"])
+        second.context_json = {**second.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
         add_sources(second)
         service.apply_result(session, second, result(sources=["web-one"], analysis_depth="brief", follow_up="none", next_watch=""))
         review = second.context_json["reviews"]["xlk"]
-        assert review["summary"] == "原有全标的投资判断" and review["change_kind"] == "knowledge"
-        assert review["view_run_id"] == first.entry_id
+        assert review["summary"] == "" and review["change_kind"] == "knowledge"
+        session.commit()
+        current = service.review_states(session)["last_completed"]["xlk"]
+        assert current["summary"] == "原有全标的投资判断"
+        assert current["view_run_id"] == first.entry_id
 
 
 @pytest.mark.parametrize("use_alias", [True, False])

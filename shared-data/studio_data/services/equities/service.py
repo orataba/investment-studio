@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
+
 from studio_data.services.equities.catalog import (
     get_catalog_equity,
     search_equity_catalog,
@@ -18,6 +20,10 @@ from studio_data.services.instrument_store import (
 
 
 class EquityNotSupportedError(ValueError):
+    pass
+
+
+class _ArchivedEquityError(EquityNotSupportedError):
     pass
 
 
@@ -44,7 +50,7 @@ def _existing_equity(
             )
         lifecycle = dict(existing.get("lifecycle_state") or {})
         if str(lifecycle.get("status") or "active") != "active":
-            raise EquityNotSupportedError("The matching Registry equity is archived.")
+            raise _ArchivedEquityError("The matching Registry equity is archived.")
         return existing
     return None
 
@@ -90,10 +96,15 @@ def search_equities(
     normalized_query = query.strip()
     if not normalized_query:
         raise ValueError("Equity search query must not be blank.")
-    return [
-        _search_record(record)
-        for record in search_equity_catalog(normalized_query, limit=limit)
-    ]
+    results = []
+    for record in search_equity_catalog(normalized_query, limit=limit):
+        try:
+            results.append(_search_record(record))
+        except _ArchivedEquityError:
+            # Archived listings are unavailable for new transactions, but must
+            # not prevent other directory matches from being searched.
+            continue
+    return results
 
 
 def _source_settings(
@@ -162,33 +173,42 @@ def materialize_equity(
         exchange_ticker=exchange_ticker,
     )
     if existing is None:
-        existing = create_instrument(
-            instrument_name=str(catalog_record["company_name"]),
-            instrument_type="equity",
-            currency=currency,
-            exchange_code=exchange.exchange_code,
-            identifiers=[
-                {
-                    "identifier_type": "exchange_ticker",
-                    "identifier_value": exchange_ticker,
-                    "is_primary": True,
-                },
-                {
-                    "identifier_type": "provider_symbol",
-                    "identifier_value": f"fmp:{symbol}",
-                    "is_primary": False,
-                },
-            ],
+        try:
+            existing = create_instrument(
+                instrument_name=str(catalog_record["company_name"]),
+                instrument_type="equity",
+                currency=currency,
+                exchange_code=exchange.exchange_code,
+                identifiers=[
+                    {
+                        "identifier_type": "exchange_ticker",
+                        "identifier_value": exchange_ticker,
+                        "is_primary": True,
+                    },
+                    {
+                        "identifier_type": "provider_symbol",
+                        "identifier_value": f"fmp:{symbol}",
+                        "is_primary": False,
+                    },
+                ],
+            )
+        except (ValueError, IntegrityError):
+            # A concurrent selection may have registered this same listing
+            # after the initial lookup. Re-resolve its unique identity; unrelated
+            # failures and conflicting/archived instruments must still fail.
+            existing = _existing_equity(
+                fmp_symbol=symbol, exchange_ticker=exchange_ticker,
+            )
+            if existing is None:
+                raise
+    if str(existing.get("exchange_code") or "") != exchange.exchange_code:
+        raise EquityNotSupportedError(
+            "Registry exchange identity conflicts with the local FMP catalog."
         )
-    else:
-        if str(existing.get("exchange_code") or "") != exchange.exchange_code:
-            raise EquityNotSupportedError(
-                "Registry exchange identity conflicts with the local FMP catalog."
-            )
-        if str(existing.get("currency") or "").strip().upper() != currency:
-            raise EquityNotSupportedError(
-                "Registry currency conflicts with the local FMP equity catalog."
-            )
+    if str(existing.get("currency") or "").strip().upper() != currency:
+        raise EquityNotSupportedError(
+            "Registry currency conflicts with the local FMP equity catalog."
+        )
 
     instrument_id = str(existing["instrument_id"])
     ensured = ensure_secondary_identifier(
@@ -227,4 +247,5 @@ def refresh_equity_eod(
         instrument_type="equity",
         full_history=full_history,
         store=store,
+        acquire_history=True,
     )

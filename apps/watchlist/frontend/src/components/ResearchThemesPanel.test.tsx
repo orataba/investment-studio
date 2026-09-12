@@ -53,7 +53,7 @@ it('keeps PM judgments and researcher updates in one theme thread with exact can
   const assessment = '当前证据仍不足以排除实际利率压制。'
   const opinion = { update_id: 'opinion:pm-1:2', kind: 'opinion' as const, title: '中期信用担忧值得关注', body: '中期偏多黄金，短期方向未判断。', recorded_at: '2026-09-05T10:00:00Z', author: 'Shaw', author_role: 'user' as const, theme_ids: ['theme-credit'], sources: [], reference: { instrument_id: 'gold', theme_id: 'theme-credit', pm_note_id: 'pm-1', pm_note_revision: 2 }, details: [{ label: '判断期限', text: '未来一个季度' }] }
   const update = { ...opinion, update_id: 'question:q1:1', kind: 'question' as const, title: '实际利率是否仍占主导', body: assessment, author: '研究员', author_role: 'researcher' as const, recorded_at: '2026-09-06T08:00:00Z', reference: { instrument_id: 'gold', theme_id: 'theme-credit', notebook_version_id: 'n1' } }
-  api.get.mockResolvedValue({ identity, themes: [theme({ origin: 'user', current_assessment: { assessment, next_check: '核实收益率变化的分解。', status: 'open', updated_at: update.recorded_at, source_ids: [] }, updates: [opinion, update] })] })
+  api.get.mockResolvedValue({ identity, themes: [theme({ origin: 'user', current_questions: [{ ...update, next_check: '核实收益率变化的分解。', status: 'open', tracking_status: 'active', last_changed_at: update.recorded_at }], updates: [opinion, update] })] })
   const ask = vi.fn()
   const { container } = render(<ResearchThemesPanel instrumentId="gold" onAskAssistant={ask} />)
   await screen.findByText('核实收益率变化的分解。')

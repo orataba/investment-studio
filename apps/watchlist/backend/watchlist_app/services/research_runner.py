@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -34,28 +35,47 @@ def interrupt_incomplete_runs():
         session.commit()
 
 
-def run_analysis(run_id: str, token: str | None = None):
+def run_analysis(run_id: str, token: str | None = None, issuer=None):
+    tokens = []
     try:
         if token is None:
-            token = authorize_run(service_principal("watchlist"), run_id)
-        with principal_context(resolve_token(token, "watchlist")):
-            _run_analysis(run_id)
-    except (IdentityError, HTTPException):
-        _fail_authorization(run_id)
+            issuer = issuer or service_principal("watchlist")
+            token = authorize_run(issuer, run_id)
+        tokens.append(token)
+        with ExitStack() as identities:
+            identities.enter_context(principal_context(resolve_token(token, "watchlist")))
+
+            def execution_authorization():
+                # Input materialization can outlast the initial one-hour grant.
+                # Revalidate the original subject after preparation; never renew
+                # from an expired run token or substitute a different service.
+                if issuer is not None:
+                    execution_token = authorize_run(issuer, run_id)
+                    tokens.append(execution_token)
+                    identities.enter_context(principal_context(resolve_token(execution_token, "watchlist")))
+
+            _run_analysis(run_id, execution_authorization=execution_authorization)
+    except (IdentityError, HTTPException) as error:
+        _fail_authorization(run_id, error)
     except Exception as error:
         logging.getLogger(__name__).exception("Research run did not finish: %s", run_id)
         summary = "研究运行未完成，本轮没有发布成果；输入与草稿已保留，可重新发起。"
         _fail_run(run_id, summary, runtime_error={"type": type(error).__name__, "summary": summary})
     finally:
-        if token:
+        for issued_token in dict.fromkeys(reversed(tokens)):
             try:
-                revoke_delegation(token)
+                revoke_delegation(issued_token, issuer)
             except IdentityError:
                 pass  # Credentials also expire server-side; never publish on an auth failure.
 
 
-def _fail_authorization(run_id):
-    _fail_run(run_id, "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。")
+def _fail_authorization(run_id, error):
+    message = "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
+    # Preserve the failure class without storing credentials, response bodies or
+    # private provider details. A generic message alone cannot distinguish a
+    # rejected credential/scope from an unavailable identity service afterwards.
+    _fail_run(run_id, message, runtime_error={"type": "AuthorizationUnavailable",
+        "status_code": error.status_code, "summary": message})
 
 
 def _fail_run(run_id, message, *, runtime_error=None):
@@ -74,12 +94,12 @@ def authorize_run(principal, run_id):
     """A persisted queue item must reach a terminal state if dispatch is rejected."""
     try:
         return issue_delegation(principal, audience="watchlist", resource_scope={"kind": "run", "id": run_id})
-    except (IdentityError, HTTPException):
-        _fail_authorization(run_id)
+    except (IdentityError, HTTPException) as error:
+        _fail_authorization(run_id, error)
         raise
 
 
-def _run_analysis(run_id: str):
+def _run_analysis(run_id: str, *, execution_authorization=None):
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
         if not run or run.status != "queued":
@@ -102,6 +122,8 @@ def _run_analysis(run_id: str):
         elif risk_run:
             from watchlist_app.services.risk_officer import prepare_run
             prepare_run(run_id)
+        if execution_authorization is not None:
+            execution_authorization()
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []
@@ -140,6 +162,8 @@ def _run_analysis(run_id: str):
             process.wait()
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
         runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode}
+    except (IdentityError, HTTPException):
+        raise  # Preserve authorization status and do not start/publish a model result.
     except OSError as error:
         outcome = "无法启动研究运行进程。" if process is None else "读取研究运行进程结果失败。"
         runtime_error = {"type": type(error).__name__, "summary": outcome, "exit_code": process.returncode if process else None}

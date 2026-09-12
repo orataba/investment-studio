@@ -138,6 +138,10 @@ for an unverified circulating claim. This classification is separate from confid
 is not confirmation. Do not resolve an active event merely because no new article appeared.
 For removed events, return event=null and explain the factual reason. Do not invent replacement
 events. Rewrite each reviewed instrument's summary AND coverage to match the verified evidence.
+The versioned research.investment_view is the single current analyst judgment; summary is this run's narrative,
+not a second persistent view. Keep both coherent when both are proposed. Do not silently restore a withdrawn
+view from an old summary. Review observable invalidation/next_check against the actual decision and evidence;
+these are conditional research plans, not proof of an outcome or a mandatory daily task.
 summary is only for a material investment update: lead with the forward judgment, horizon,
 remaining implications from the current price/information and what changed. Explanation supports
 the judgment; it is not a mandatory output. Respect change_kind=none/knowledge unless material
@@ -397,6 +401,11 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                if capture.get("operation") == "fetch"
                for s in capture.get("sources", []) if s.get("text")}
     sources.update(retained_sources(context))
+    # Financial pages are complete original rows actually read in this run; the
+    # page-level snapshot carries its statement identities and information clocks.
+    for source in context.get("financial_sources", []):
+        if source.get("instrument_id") in ids and source["source_id"] in available:
+            sources[source["source_id"]] = available[source["source_id"]]
     # These results exist only after a numeric tool call in this run. Keep their
     # actual inputs and clocks, without pulling metrics from historical dossiers.
     for metric in context.get("computed_metrics", []):

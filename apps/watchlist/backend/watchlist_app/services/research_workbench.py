@@ -114,7 +114,7 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
     from watchlist_app.services.shared_instrument_registry import get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
     from watchlist_app.services.sector_research import latest_reviews
-    completed_research = latest_reviews(session, completed_only=True)
+    completed_research = latest_reviews(session, completed_only=True, instrument_ids=ids)
     assets = [item for item in catalogue(session) if item["instrument_id"] in ids]
     from watchlist_app.services.risk_performance import peer_context, performance_evidence
     fund_peer_scope = peer_context(session) if any(asset["instrument_type"] in {"public_fund", "private_fund"} for asset in assets) else None

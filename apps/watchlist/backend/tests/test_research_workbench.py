@@ -93,7 +93,7 @@ def test_conversation_uses_tools_retains_history_and_never_adopts_view(client, m
     import watchlist_app.services.research_runner as runner
     original_run = runner.run_analysis
     monkeypatch.setattr(runner, 'harness_available', lambda: True)
-    monkeypatch.setattr(runner, 'run_analysis', lambda run_id, token=None: None)
+    monkeypatch.setattr(runner, 'run_analysis', lambda run_id, token=None, issuer=None: None)
     topic = client.post('/api/research/topics', json={'title': '基金研究', 'instrument_ids': ['sxv264']}).json()
     path = f"/api/research/topics/{topic['topic_id']}/analysis"
     response = client.post(path, json={'question': '有哪些风险待核查？', 'watchlist_id': wid})
@@ -176,7 +176,7 @@ def test_portfolio_assistant_binds_selected_holding_account_and_valuation_day(cl
         raise AssertionError(path)
     monkeypatch.setattr(research_workbench, "external_json", external)
     monkeypatch.setattr(research_runner, "harness_available", lambda: True)
-    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None: None)
+    monkeypatch.setattr(research_runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
     topic = client.post("/api/research/topics", json={"title": "持仓讨论", "portfolio_id": "portfolio-a"}).json()
     page = {"surface": "portfolio", "portfolio_id": "portfolio-a", "holding_id": "fcn-local",
             "account_id": "account-a", "as_of_date": "2026-08-31", "tab": "risk"}

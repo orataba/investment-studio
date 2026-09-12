@@ -42,8 +42,10 @@ def test_rejected_dispatch_does_not_leave_a_permanently_queued_run(client, monke
 
 
 @pytest.mark.parametrize("failure_point", ["service_identity", "delegation"])
-def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch, failure_point):
+@pytest.mark.parametrize("status_code", [401, 403, 503])
+def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch, failure_point, status_code):
     from studio_identity import IdentityError
+    from fastapi import HTTPException
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="dispatch-topic", title="研究"))
         session.flush()
@@ -51,12 +53,16 @@ def test_background_dispatch_failure_finishes_queued_record(client, monkeypatch,
                                  title="研究", status="queued", context_json={"sector_run": True}))
         session.commit()
     def reject(*args, **kwargs):
-        raise IdentityError(503, "后台研究授权暂不可用")
+        error_type = IdentityError if failure_point == "service_identity" else HTTPException
+        raise error_type(status_code, "private-response-with-fixture-credential")
     monkeypatch.setattr(runner, "service_principal" if failure_point == "service_identity" else "issue_delegation", reject)
     runner.run_analysis("dispatch-run")
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "dispatch-run")
         assert run.status == "failed" and run.completed_at is not None
+        assert run.context_json["runtime_error"] == {"type": "AuthorizationUnavailable",
+            "status_code": status_code, "summary": run.body}
+        assert "private-response" not in json.dumps(run.context_json) + run.body
 
 
 def test_every_harness_explicitly_delegates_the_single_run_credential():
@@ -292,3 +298,56 @@ def test_restart_marks_only_incomplete_runs_failed_with_a_terminal_clock(client)
         for status in ("completed", "draft", "failed"):
             run = session.get(ResearchEntry, f"restart-{status}")
             assert run.status == status and run.body == "original"
+
+
+@pytest.mark.parametrize("issuer_revoked", [False, True])
+def test_execution_revalidates_original_issuer_after_preparation_outlasts_first_grant(client, monkeypatch, issuer_revoked):
+    from dataclasses import replace
+    from studio_identity import IdentityError, Principal
+    issuer = Principal("pm-one", "PM", "default", credential="original-session")
+    run_id = "long-preparation"
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id=run_id, title="研究"))
+        session.flush()
+        session.add(ResearchEntry(entry_id=run_id, topic_id=run_id, kind="analysis", title="讨论", status="queued",
+            context_json={"research_run": True, "retained": "original-input"}))
+        session.commit()
+    prepared, spawned, revoked = [], [], []
+    def resolve(token, audience):
+        if token == "initial-grant" and prepared:
+            raise IdentityError(401, "expired fixture grant")
+        assert token in {"initial-grant", "execution-grant"}
+        return replace(issuer, credential=token, resource_scope={"kind": "run", "id": run_id})
+    def issue(principal, **kwargs):
+        assert prepared and principal is issuer
+        assert kwargs == {"audience": "watchlist", "resource_scope": {"kind": "run", "id": run_id}}
+        if issuer_revoked:
+            raise IdentityError(403, "fixture issuer was revoked")
+        return "execution-grant"
+    class CompletedProcess:
+        returncode = 0
+        def communicate(self, timeout):
+            return json.dumps({"answer": "原样本讨论完成", "research_result": None}), ""
+    def launch(*args, **kwargs):
+        assert not issuer_revoked
+        assert kwargs["env"]["INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN"] == "execution-grant"
+        spawned.append(True)
+        return CompletedProcess()
+    monkeypatch.setattr(sector_research, "prepare_run", lambda *_: prepared.append(True))
+    monkeypatch.setattr(runner, "resolve_token", resolve)
+    monkeypatch.setattr(runner, "issue_delegation", issue)
+    monkeypatch.setattr(runner, "revoke_delegation", lambda token, principal: revoked.append((token, principal)))
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    runner.run_analysis(run_id, "initial-grant", issuer)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.context_json["retained"] == "original-input"
+        assert run.completed_at is not None
+        if issuer_revoked:
+            assert run.status == "failed" and not spawned
+            assert run.context_json["runtime_error"]["status_code"] == 403
+        else:
+            assert run.status == "draft" and run.body == "原样本讨论完成" and spawned
+        assert "original-session" not in json.dumps(run.context_json) + run.body
+    assert {token for token, _ in revoked} == ({"initial-grant"} if issuer_revoked else {"initial-grant", "execution-grant"})
+    assert all(principal is issuer for _, principal in revoked)

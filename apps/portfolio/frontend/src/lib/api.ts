@@ -1083,6 +1083,44 @@ export type SharedInstrumentRecord = InstrumentCore & {
 
 export type SecuritySearchOption = SharedInstrumentRecord
 
+export type SecurityCatalogResult = {
+  instrument_type: 'equity' | 'etf'
+  symbol: string
+  catalog_provider: 'fmp'
+  catalog_symbol: string
+  name: string
+  exchange_code: string
+  exchange_label: string
+  market: string
+  currency: string
+  currency_verified: boolean
+  existing_instrument_id: string | null
+}
+
+export type SecurityCatalogResponse = {
+  results: SecurityCatalogResult[]
+  catalog_errors: Partial<Record<'equity' | 'etf', string>>
+}
+
+export function searchPortfolioSecurities(portfolioId: string, query: string) {
+  return fetchJson<SecurityCatalogResponse>(API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/securities/search${buildQuery({ q: query, limit: '25' })}`)
+}
+
+export function materializePortfolioSecurity(portfolioId: string, security: Pick<SecurityCatalogResult, 'instrument_type' | 'catalog_provider' | 'catalog_symbol'>) {
+  return fetchJson<RawSharedInstrumentRecord>(API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/securities/materialize`, {
+      method: 'POST',
+      body: JSON.stringify({ instrument_type: security.instrument_type,
+        catalog_provider: security.catalog_provider, catalog_symbol: security.catalog_symbol }),
+    }).then((instrument): SharedInstrumentRecord => ({
+      ...instrument.instrument_core,
+      coverage_state: instrument.coverage_state,
+      latest_market_data: instrument.latest_market_data,
+      quote_selection_policy: instrument.quote_selection_policy,
+    }))
+}
+
 export type PortfolioSharedInstrumentsResponse = {
   portfolio_id: string
   instruments: SharedInstrumentRecord[]

@@ -237,7 +237,7 @@ def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch)
     seed(client)
     calls = []
     monkeypatch.setattr(route, "harness_available", lambda: True)
-    monkeypatch.setattr(route, "run_analysis", lambda run_id, token: calls.append(run_id))
+    monkeypatch.setattr(route, "run_analysis", lambda run_id, token, issuer: calls.append(run_id))
     assert client.post("/api/risk/review/runs", json={"portfolio_id": "p1", "weights": {"risk-a": 1}}).status_code == 422
     assert client.post("/api/risk/review/runs", json={"watchlist_id": "risk-list", "instrument_id": "risk-a"}).status_code == 422
     response = client.post("/api/risk/review/runs", json={"instrument_id": "risk-a"})
@@ -415,7 +415,8 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
             status="completed", created_at=datetime(2026, 9, 8, tzinfo=UTC), context_json={"sector_run": True,
                 "instrument_ids": ["risk-a"], "cutoff": "2026-09-08T00:00:00+00:00", "reviews": {"risk-a": {
                     "status": "completed", "summary": "中期判断有条件成立", "coverage": [],
-                    "research": {"investment_view": {"risk": "需求修复仍待验证", "source_ids": [],
+                    "research": {"investment_view": {"direction": "中期判断有条件成立", "risk": "需求修复仍待验证", "source_ids": [],
+                        "updated_at": "2026-09-08T00:00:00+00:00", "source_run_id": "last-published",
                         "versions": [{"risk": "旧版本，不应重复注入"}]}}}}}))
         session.add(ResearchEntry(entry_id="later-quiet-check", topic_id="retained-research", kind="analysis", title="检查",
             status="completed", created_at=datetime(2026, 9, 8, 12, tzinfo=UTC), context_json={"sector_run": True,
@@ -433,7 +434,8 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
     assert tracking["latest_check"]["checked_at"] == "2026-09-09T00:00:00+00:00"
     assert tracking["current_judgment"]["summary"] == "中期判断有条件成立"
     assert tracking["current_judgment"]["view_updated_at"] == "2026-09-08T00:00:00+00:00"
-    assert tracking["current_judgment"]["investment_view"] == {"risk": "需求修复仍待验证", "source_ids": []}
+    assert tracking["current_judgment"]["investment_view"] == {"direction": "中期判断有条件成立", "risk": "需求修复仍待验证",
+        "source_ids": [], "updated_at": "2026-09-08T00:00:00+00:00", "source_run_id": "last-published"}
     assert "不是独立原始证据" in tracking["note"]
     assert any("最近一次研究未完成" in message for message in snapshot["limitations"])
     assert {case["case_id"] for case in snapshot["research"]} == {"research"}
@@ -441,6 +443,152 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
     monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True,
         "risk_inputs": snapshot, "cutoff": "2026-09-09T00:00:00+00:00"})
     assert research_mcp.read_risk_instrument("risk-a")["current"]["instrument"]["research_tracking"] == tracking
+
+
+def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(client, monkeypatch):
+    from watchlist_app.db.models.research import InstrumentResearchNote, InstrumentResearchProfile
+    from watchlist_app.services import research_themes, sector_research
+    from watchlist_app import research_mcp
+    seed(client)
+    instant = datetime(2026, 9, 13, 2, tzinfo=UTC)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+    monkeypatch.setattr(service, "datetime", Clock)
+    monkeypatch.setattr(sector_research, "_research_market", lambda *_: "fund_nav")
+    monkeypatch.setattr(research_themes, "theme_index", lambda *_a, **_k: [{"theme_id": "closed-theme", "status": "closed"}])
+    notebook = {"investment_view": None, "questions": [
+        {"key": "demand", "question": "需求是否改善", "assessment": "暂时支持", "status": "supported", "tracking_status": "active",
+         "evidence_for": ["订单改善"], "evidence_against": ["现金回收未改善"], "next_check": "核对现金流", "pm_note_id": "pm", "pm_note_revision": 3,
+         "updated_at": "2026-09-12T08:00:00+00:00", "versions": [{"assessment": "旧判断"}]},
+        {"key": "closed", "tracking_status": "closed"},
+        {"key": "paused", "tracking_status": "paused"},
+        {"key": "inactive-theme", "tracking_status": "active", "theme_id": "closed-theme"}],
+        "forecasts": [
+            {"key": "due", "claim": "需求恢复", "status": "active", "review_on": "2026-09-13", "invalidation": "订单重新下降"},
+            {"key": "future", "claim": "长期验证", "status": "active", "review_on": "2026-10-01"},
+            {"key": "condition", "claim": "等待公告", "status": "active", "observation_condition": "财报披露"},
+            {"key": "withdrawn", "status": "withdrawn"},
+            {"key": "closed-theme", "status": "active", "theme_id": "closed-theme"}]}
+    completed = {"current_research": notebook, "summary": "旧摘要不可复活", "current_summary": "旧摘要不可复活"}
+    def scoped_states(_, *, instrument_ids):
+        assert instrument_ids == ["risk-a"]
+        return {"latest": {"risk-a": {"status": "limited", "coverage": ["当前原文覆盖不足"]}},
+                "last_completed": {"risk-a": completed}}
+    monkeypatch.setattr(sector_research, "review_states", scoped_states)
+    with get_session_factory()() as session:
+        session.add(InstrumentResearchProfile(instrument_id="risk-a", research_stage="watching",
+            thesis="订单变现支持中期收益", current_view="仍需等待现金流验证", disconfirming_evidence="应收继续增长会推翻逻辑",
+            key_risks="回款及赎回流动性", monitoring_plan="检查下一季回款与赎回窗口", time_horizon="两个季度",
+            portfolio_role="潜在收益来源，尚未配置", primary_analyst="研究负责人", updated_by="profile-editor",
+            revision_number=4, created_at=instant, updated_at=instant))
+        for note_id, extras in [
+            ("pm", {"author": "投资经理甲", "author_user_id": "pm-one", "revision_number": 3}),
+            ("unknown", {"author": "", "author_user_id": None}),
+            ("other-team", {"team_id": "another-team"}),
+            ("completed", {"completed_at": instant}),
+            ("deleted", {"deleted_at": instant}),
+            ("inactive-theme", {"research_context": {"theme_id": "closed-theme"}}),
+        ]:
+            values = {"instrument_id": "risk-a", "note_id": note_id, "note_date": date(2026, 9, 1), "note_type": "thesis_update",
+                "title": "原始主张", "summary": "PM自己的不确定判断", "body": "如果订单改善，我倾向继续持有；现金流是反证。",
+                "author": "投资经理乙", "team_id": "default", "created_at": instant, "updated_at": instant, **extras}
+            session.add(InstrumentResearchNote(**values))
+        session.commit()
+        snapshot = service.read_snapshot(session, instrument_id="risk-a")
+        assert snapshot == service.read_snapshot(session, instrument_id="risk-a")
+        instrument = snapshot["instruments"][0]
+        assert instrument["research_tracking"]["current_judgment"] is None
+        assert instrument["research_tracking"]["latest_check"]["coverage"] == ["当前原文覆盖不足"]
+        records = instrument["research_context"]["records"]
+        profile = next(row for row in records if row["kind"] == "pm_profile")
+        assert profile["source_id"] == "risk-pm-profile:risk-a:4"
+        assert profile["value"]["current_view"] == "仍需等待现金流验证"
+        assert profile["value"]["thesis"] == "订单变现支持中期收益"
+        assert profile["value"]["disconfirming_evidence"] == "应收继续增长会推翻逻辑"
+        assert profile["value"]["monitoring_plan"] == "检查下一季回款与赎回窗口"
+        assert profile["value"]["time_horizon"] == "两个季度"
+        profile_source = service.evidence_sources(snapshot)[profile["source_id"]]
+        assert profile_source["author"] is None and profile_source["author_user_id"] is None
+        assert profile_source["primary_analyst"] == "研究负责人" and profile_source["updated_by"] == "profile-editor"
+        assert profile_source["revision_number"] == 4
+        assert profile_source["recorded_at"] == profile["value"]["updated_at"]
+        assert datetime.fromisoformat(profile_source["recorded_at"]).replace(tzinfo=UTC) == instant
+        pm = next(row for row in records if row["kind"] == "pm_view" and row["value"]["note_id"] == "pm")
+        assert pm["value"]["body"] == "如果订单改善，我倾向继续持有；现金流是反证。"
+        assert pm["value"]["author"] == "投资经理甲" and pm["value"]["revision_number"] == 3
+        assert {row["value"]["note_id"] for row in records if row["kind"] == "pm_view"} == {"pm", "unknown"}
+        assert next(row["value"] for row in records if row["source_id"].startswith("risk-pm:risk-a:unknown:"))["author_user_id"] is None
+        question = next(row["value"] for row in records if row["kind"] == "active_question")
+        assert question["key"] == "demand" and question["evidence_against"] == ["现金回收未改善"]
+        assert question["next_check"] == "核对现金流" and "versions" not in question
+        assert {row["value"]["key"]: row["value"]["review_status"] for row in records if row["kind"] == "forecast_check"} == {
+            "due": "due", "future": "scheduled", "condition": "condition_based"}
+        evidence = service.evidence_sources(snapshot)[pm["source_id"]]
+        assert evidence["author"] == "投资经理甲" and evidence["verification_status"] == "retained_judgment_not_independent_fact"
+        run = ResearchEntry(context_json={"risk_inputs": snapshot})
+        service.validate_result(run, service.RiskReview.model_validate(reply(case_ids=[], source_ids=[pm["source_id"]])))
+        service.validate_result(run, service.RiskReview.model_validate(reply(case_ids=[], source_ids=[profile["source_id"]])))
+        stored_profile = session.get(InstrumentResearchProfile, "risk-a")
+        stored_profile.disconfirming_evidence, stored_profile.revision_number = "新反证条件", 5
+        session.commit()
+        assert service.read_snapshot(session, instrument_id="risk-a") != snapshot
+        assert profile["value"]["disconfirming_evidence"] == "应收继续增长会推翻逻辑"
+        note = session.get(InstrumentResearchNote, ("risk-a", "pm"))
+        note.body, note.revision_number = "后续观点", 4
+        session.commit()
+        assert service.read_snapshot(session, instrument_id="risk-a") != snapshot
+        assert pm["value"]["body"] != note.body  # The already bound evidence cannot drift.
+
+    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True, "risk_inputs": snapshot, "cutoff": instant.isoformat()})
+    overview = research_mcp.read_risk_instrument("risk-a")
+    assert "records" not in overview["current"]["instrument"]["research_context"]
+    packet = research_mcp.read_risk_instrument("risk-a", section="research_context")
+    assert packet["current"]["records"] == records
+    assert packet["next_offset"] is None
+
+
+def test_risk_pm_note_keeps_full_judgment_without_embedding_bound_original_corpus(client, monkeypatch):
+    import asyncio
+    import json
+    from watchlist_app import research_mcp
+    from watchlist_app.db.models.research import InstrumentResearchNote
+    seed(client)
+    sources = [
+        {"source_id": "article", "source_type": "public_source", "document_id": "document-one", "version_id": "version-two",
+         "title": "经营公告", "url": "https://example.com/article", "published_at": "2026-09-01", "observed_at": "2026-09-02T00:00:00Z",
+         "body_sha256": "fixture-body-hash", "text": "公告原文" * 30000},
+        {"source_id": "financials:fixture", "source_type": "company_snapshot", "instrument_id": "risk-a", "collected_at": "2026-09-02T00:00:00Z",
+         "run_cutoff": "2026-09-02T12:00:00Z", "retrieved_at": "2026-09-03T00:00:00Z", "source_run_id": "financial-run",
+         "period_end": "2026-06-30", "statement_type": "cash_flow", "company": {"statements": [{"detail": "完整财务数据" * 30000}]}}
+    ]
+    assert len(json.dumps(sources, ensure_ascii=False).encode()) > 50000
+    with get_session_factory()() as session:
+        note = InstrumentResearchNote(instrument_id="risk-a", note_id="source-heavy-pm", note_date=date(2026, 9, 3),
+            note_type="thesis_update", title="当前主张", summary="仍待验证", body="原始主张、逻辑及反证" * 100,
+            author="原作者", team_id="default", created_at=datetime(2026, 9, 3, tzinfo=UTC), updated_at=datetime(2026, 9, 3, tzinfo=UTC),
+            research_context={"information_cutoff": "2026-09-03T00:00:00Z",
+                "source_ids": ["article", "financials:fixture"], "sources": sources})
+        session.add(note)
+        session.commit()
+        snapshot = service.read_snapshot(session, instrument_id="risk-a")
+        record = snapshot["instruments"][0]["research_context"]["records"][0]
+        assert record["value"]["body"] == note.body
+        references = record["value"]["research_context"]["sources"]
+        assert references[0]["version_id"] == "version-two" and references[0]["published_at"] == "2026-09-01"
+        assert references[0]["body_sha256"] == "fixture-body-hash"
+        assert references[1]["collected_at"] == "2026-09-02T00:00:00Z" and references[1]["period_end"] == "2026-06-30"
+        assert references[1]["source_id"] == "financials:fixture" and references[1]["source_type"] == "company_snapshot"
+        assert references[1]["run_cutoff"] == "2026-09-02T12:00:00Z" and references[1]["retrieved_at"] == "2026-09-03T00:00:00Z"
+        assert references[1]["source_run_id"] == "financial-run"
+        assert "text" not in references[0] and "company" not in references[1]
+        assert note.research_context["sources"] == sources  # Only the risk projection is compacted.
+    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True, "risk_inputs": snapshot, "cutoff": "2026-09-13T00:00:00Z"})
+    result = asyncio.run(research_mcp.mcp.call_tool("read_risk_instrument", {"instrument_id": "risk-a", "section": "research_context"}))
+    assert len(result.content[0].text.encode()) <= 48000
+    assert result.structured_content["current"]["records"] == [record]
+    assert result.structured_content["next_offset"] is None
 
 
 def test_new_limited_check_changes_risk_inputs_without_new_event_and_keeps_the_gap(client):

@@ -12,12 +12,16 @@ from pydantic import AwareDatetime, Field
 from watchlist_app.services.sector_research import ReviewResult, draft_payload
 from watchlist_app.services.risk_officer import RiskReview
 from watchlist_app.services.research_estimate_tools import estimate_overview, estimate_company
+from watchlist_app.services.research_read_projection import (
+    checked_overview, coverage_detail, coverage_summary, dossier_overview, dossier_sections, read_page, shape,
+)
 
 PortfolioRiskSection = Literal[
     "portfolio_metrics", "targets", "targets_by_taxonomy", "comparisons",
     "derivatives", "concentration", "tail_risk",
 ]
-ResearchReferenceSection = Literal["overview", "holdings", "financials", "key_metrics", "ratios", "dividends", "splits", "source_lineage"]
+ResearchReferenceSection = Literal["overview", "holdings", "financials", "key_metrics", "ratios", "dividends", "splits", "source_lineage",
+    "performance", "performance_evidence", "pm_profile", "product_information", "disclosed_holdings", "registered_materials", "events", "sector_context"]
 REFERENCE_TABLES = {"holdings", "financials", "key_metrics", "ratios", "dividends", "splits"}
 SearchClock = Annotated[AwareDatetime | None, Field(description=
     "ISO 8601 datetime with an explicit timezone, e.g. 2026-09-04T00:00:00Z or 2026-09-04T00:00:00+08:00. A date alone or a datetime without timezone is invalid. Omit when no time filter is intended.")]
@@ -64,21 +68,34 @@ def request(suffix, payload=None, *, timeout=30):
 
 
 @compact_read_tool
-def read_research_context() -> dict:
-    """Read this question, previous conversation, uploaded evidence, selected instruments, current Watchlist, all Watchlist memberships and the registered catalogue. Selected instruments are the focus, not a preselected analysis template. Only use IDs from this catalogue."""
+def read_research_context(section: str = "overview", offset: int = 0, limit: int = 20,
+                          path: list[str | int] | None = None) -> dict:
+    """Start with the bound question, scope and section counts. Read catalogue to discover related IDs; history/evidence/page_context and selected references hold the actual conversation inputs. Read nonempty selected references before answering; read market_coverage for channel details. Every section is paginated: follow next_offset, then every deferred.path with the SAME section until complete. Text offsets are characters, array offsets rows, object offsets fields. Empty/unread sections never prove no new information. Automatic tracking covers instrument_ids; a conversation follows the question and selected page, not every catalogue member."""
     context = request("context")
-    if context.get("sector_run"):
-        return {key: context.get(key) for key in ("sector_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "catalogue", "data_gaps", "market_coverage", "incremental_trigger")} | {
-            "next_read": "逐一调用 read_research_instrument 读取每个标的绑定的登记信息、专属研究任务、上次底稿及原文索引。随后按该标的研究计划核实背景与最新变化；这里只是范围索引。"}
     if not context.get("risk_run"):
-        return {**{key: value for key, value in context.items() if key not in {
-                "instrument_inputs", "research_dossiers", "sector_inputs", "sector_estimate_evidence",
-                "web_evidence", "market_text_sources", "computed_metrics", "prior_events"}},
-            "next_read": "研究追踪与助手共用本轮绑定档案。用read_research_instrument读取标的，read_research_dossier读取版本与原文；referenced_risk_case是入口所选的当前风险快照，不是不可变的历史研究版本。个人对话仅在用户明确要求保存团队研究后先authorize_team_research，再submit_research_review；组合对话不能发布团队研究。",
+        sections = {key: context[key] for key in (
+            "question", "page_context", "referenced_research_update", "referenced_risk_case", "history", "conversation", "evidence",
+            "watchlists", "limitations", "data_gaps", "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions") if key in context}
+        sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}
                           for item in context.get("catalogue", [])],
             "tool_evidence": [{key: item.get(key) for key in ("source_id", "tool", "request", "retrieved_at")}
-                              for item in context.get("tool_evidence", [])]}
+                              for item in context.get("tool_evidence", [])]})
+        if section != "overview":
+            if section not in sections:
+                raise ValueError("该分区不在本轮上下文目录中。")
+            return read_page(sections[section], {"run_id": context.get("run_id"), "cutoff": context.get("cutoff"), "section": section},
+                             offset=offset, limit=limit, path=path)
+        if offset or path:
+            raise ValueError("overview不使用offset/path，请读取目录内的section。")
+        return checked_overview({**{key: context[key] for key in (
+            "sector_run", "research_run", "run_id", "topic_id", "question", "cutoff", "input_snapshot_cutoff", "as_of_date",
+            "requested_at", "instrument_ids", "selected_instrument_ids", "watchlist_id", "portfolio_id", "team_id", "visibility") if key in context},
+            "market_coverage": coverage_summary(context.get("market_coverage")),
+            "sections": {key: shape(value) for key, value in sections.items()},
+            "next_read": "自动研究逐一读取instrument_ids；对话按问题读取page_context、非空referenced_research_update/referenced_risk_case及相关history/evidence。referenced_risk_case是当前风险快照；不是历史版本。catalogue按需分页发现相关标的，不要求遍历登记库。read_research_instrument提供当前判断与资料目录，read_research_dossier按section读取任务、复核议程和底稿，source_id/version_id读取原文/原版本。所有选读分区跟随next_offset及deferred.path读完；未读资料不代表缺失。个人对话仅在用户明确要求后先authorize_team_research，再submit_research_review；组合对话不能发布团队研究。"}, pageable_fields=[(["question"], {"tool": "read_research_context", "section": "question"})] if "question" in context else [])
+    if section != "overview" or offset or path:
+        raise ValueError("风控使用read_risk_instrument/read_portfolio_risk分区；范围索引不使用section/offset/path。")
     snapshot = context["risk_inputs"]
     # Full portfolio snapshots exceed the harness's 50 KB tool-result limit.
     # Send the scope index here; read each retained instrument separately below.
@@ -101,7 +118,7 @@ def read_research_context() -> dict:
         "reports": [{key: case.get(key) for key in ("case_id", "instrument_id", "title", "signal", "severity")}
                     for category in ("research", "quantitative", "coverage") for case in snapshot[category]],
         "prior_input_as_of": (context.get("prior_inputs") or {}).get("input_as_of"),
-        "next_read": "逐一调用 read_risk_instrument 读取 instruments 内全部标的。组合另以 read_portfolio_risk 读取每个组合模块；targets_by_taxonomy 与 concentration 包含本轮全部分类，不随浏览器的分组选项裁剪。concentration从offset=0开始，按next_offset逐页读到null；每页source_continuations还须用其offset/source_offset继续读取来源直到清空。tail_risk 保留样本量与未建模敞口，未覆盖不代表零风险。derivatives 按 derivative_holdings 内的 holding_id 逐份读取。这里只是范围索引。"}
+        "next_read": "逐一调用 read_risk_instrument 的overview读取全部标的，按overview计数读取cases与research_context的全部非空分页，包含仅历史存在的记录；某分区current与previous计数均为0可直接跳过。comparisons按业绩研判需要读取，选读时沿next_offset读完；未读比较不能据以判断相对表现。PM档案、观点原文和研究判断是待验证输入，不是独立事实。组合另以 read_portfolio_risk 读取每个组合模块；targets_by_taxonomy 与 concentration 包含本轮全部分类，不随浏览器的分组选项裁剪。concentration从offset=0开始，按next_offset逐页读到null；每页source_continuations还须用其offset/source_offset继续读取来源直到清空。tail_risk 保留样本量与未建模敞口，未覆盖不代表零风险。derivatives 按 derivative_holdings 内的 holding_id 逐份读取。这里只是范围索引。"}
 
 
 def _source_overview(source):
@@ -123,6 +140,10 @@ def _instrument_overview(asset, *, estimate_detail_tool):
     overview["reference_data"] = {**_reference_metadata(reference),
         "sections": {key: value for key, value in sections.items() if key not in REFERENCE_TABLES}}
     overview["reference_sections"] = [key for key in sections if key in REFERENCE_TABLES]
+    if asset.get("instrument_type") == "equity" and reference.get("provider") == "fmp":
+        if "financials" not in overview["reference_sections"]:
+            overview["reference_sections"].append("financials")
+        overview["financials_read"] = "financials默认列可用财报目录（含三表、季度、年度、信息时间和匹配科目数）；按问题选择period_end/statement_type/fiscal_period，再用financial_view=facts读取该表原始科目。逐页跟随company.next_offset，引用每页source_id；目录不代表读过科目。"
     if any((reference.get("source") or {}).get(key) for key in ("section_sources", "source_ids")):
         overview["reference_sections"].append("source_lineage")
     overview["reference_read"] = "用read_research_instrument的section逐页读取原始财务或持仓表；source_lineage读取完整来源索引。每次跟随next_offset直到null，未读页不代表资料缺失。"
@@ -166,8 +187,12 @@ def _reference_page(asset, reference, section, cutoff, offset, limit, company_so
 
 
 @compact_read_tool
-def read_research_instrument(instrument_id: str, section: ResearchReferenceSection = "overview", offset: int = 0, limit: int = 20) -> dict:
-    """Read ONE instrument's bound identity, specific mandate, working paper, methods and evidence index. Reference tables use section and are PAGINATED: start offset=0 and follow next_offset until null; limit controls requested rows, large pages are reduced to fit the tool transport. source_lineage returns the full original source index grouped by section. An overview omits tables, not their availability. This is the run snapshot, not live data. Read original text with read_research_dossier(source_id)."""
+def read_research_instrument(instrument_id: str, section: ResearchReferenceSection = "overview", offset: int = 0, limit: int = 20,
+                             statement_type: Literal["income", "balance_sheet", "cash_flow"] | None = None,
+                             fiscal_period: Literal["FY", "Q1", "Q2", "Q3", "Q4"] | None = None,
+                             period_end: str | None = None, financial_view: Literal["statements", "facts"] = "statements",
+                             path: list[str | int] | None = None) -> dict:
+    """Read ONE bound instrument's identity, complete current analyst judgment and section directory. Use read_research_dossier for mandate/agenda/current research lists and exact sources/versions. Read performance, performance_evidence, pm_profile, product_information, disclosed_holdings, registered_materials, events or sector_context here on demand; follow next_offset and ALL deferred.path with the SAME section. Reference tables/source_lineage use next_offset. FMP equity financials first lists statements: select period_end (YYYY-MM-DD), statement_type/fiscal_period then financial_view=facts for original line items; follow company.next_offset and cite each source_id. Directory reads do not mean evidence was read. Statements/facts join by statement_content_sha256. Everything stays on the run snapshot, never live data."""
     context = request("context")
     if context.get("risk_run") or instrument_id not in {row["instrument_id"] for row in context.get("catalogue", [])}:
         raise ValueError("只能读取本轮研究范围目录内的标的。")
@@ -176,39 +201,51 @@ def read_research_instrument(instrument_id: str, section: ResearchReferenceSecti
         context = request("context")
     asset = next(row for row in context["instrument_inputs"] if row["instrument_id"] == instrument_id)
     reference = asset.get("reference_data") or {}
+    if section == "financials" and asset.get("instrument_type") == "equity" and reference.get("provider") == "fmp":
+        if path:
+            raise ValueError("financials使用财报筛选与offset，不使用path。")
+        return request("financials", {"instrument_id": instrument_id, "offset": offset, "limit": limit,
+            "statement_type": statement_type, "fiscal_period": fiscal_period, "period_end": period_end, "view": financial_view})
+    if statement_type is not None or fiscal_period is not None or period_end is not None or financial_view != "statements":
+        raise ValueError("财报类型与财期筛选仅用于已绑定FMP公司的financials部分。")
     company_inputs = [row for row in context.get("sector_inputs", []) if row["instrument_id"] == instrument_id]
     company_source_ids = [sid for row in company_inputs for sid in (row.get("source") or {}).get("source_ids", [])]
+    details = {"performance": asset.get("performance"), "performance_evidence": asset.get("performance_evidence"),
+        "pm_profile": (asset.get("research") or {}).get("profile"), "product_information": asset.get("product_information"),
+        "disclosed_holdings": asset.get("holdings"), "registered_materials": asset.get("materials", []),
+        "events": [event for event in context.get("prior_events", []) if event["instrument_id"] == instrument_id],
+        "sector_context": {"sector_inputs": company_inputs,
+            "sector_estimate_evidence": [row for row in context.get("sector_estimate_evidence", []) if row["instrument_id"] == instrument_id]}}
+    if section in details:
+        return read_page(details[section], {"instrument_id": instrument_id, "source_id": asset.get("source_id"),
+            "run_id": context["run_id"], "cutoff": context["cutoff"], "section": section}, offset=offset, limit=limit, path=path)
     if section != "overview":
+        if path:
+            raise ValueError("原始资料表使用offset，不使用path。")
         return _reference_page(asset, reference, section, context["cutoff"], offset, limit, company_source_ids)
-    if offset != 0:
-        raise ValueError("offset仅用于读取原始资料表或来源索引。")
+    if offset != 0 or path:
+        raise ValueError("overview不使用offset/path，请读取目录内的section。")
     # Long financial tables and duplicated risk history can exceed the harness's 50 KB reply.
     # Keep the identity/working assignment intact and expose full reference sections on demand.
     overview = _instrument_overview(asset,
         estimate_detail_tool="read_instrument_research(instrument_ids=[instrument_id], estimate_symbol=company_symbols中的一个symbol)")
+    overview = {key: value for key, value in overview.items() if key not in {
+        "performance", "performance_evidence", "research", "product_information", "materials", "holdings"}}
     if company_source_ids and "source_lineage" not in overview["reference_sections"]:
         overview["reference_sections"].append("source_lineage")
     dossier = next(d for d in context["research_dossiers"] if d["instrument_id"] == instrument_id)
-    dossier = {**dossier, "historical_cases": [{key: row.get(key) for key in ("source_id", "case_id", "case_title", "role")}
-                                               for row in dossier.get("historical_cases", [])]}
-    events = []
-    for event in context.get("prior_events", []):
-        if event["instrument_id"] != instrument_id:
-            continue
-        if event.get("withdrawn"):
-            events.append({k: event.get(k) for k in ("case_id", "instrument_id", "event_key", "title", "withdrawn", "withdrawal_reason")})
-            continue
-        events.append({k: v for k, v in event.items() if k not in {"history", "evidence"}})
-    return {"instrument_id": instrument_id, "run_id": context["run_id"], "cutoff": context["cutoff"],
+    return checked_overview({"instrument_id": instrument_id, "run_id": context["run_id"], "cutoff": context["cutoff"],
         "instrument_inputs": [overview],
         "reference_sections": overview["reference_sections"],
-        "next_read": "用同一工具的section参数逐页读取完整持仓、财务表及source_lineage来源索引，跟随next_offset到null；公司预期对照按其detail_read入口读取；历史案例适用条件与原文按研究档案source_id读取。",
+        "research_sections": {key: shape(value) for key, value in details.items()},
+        "next_read": "read_research_dossier按section读取mandate、frameworks、review_agenda及相关当前底稿/PM观点，source_id/version_id读原文和原版本。本工具的performance/performance_evidence、pm_profile、product_information、disclosed_holdings、registered_materials、events、sector_context按需读取；选读分区沿next_offset和deferred.path读全。reference_sections原始表沿next_offset读全；公司预期用detail_read入口。覆盖详情在read_research_context(section='market_coverage')。索引、未读页不能当作已核实或资料缺失。",
         "sector_inputs": [{**{key: value for key, value in row.items() if key not in {"holdings", "leading_companies", "source"}},
                            "source": _source_overview(row.get("source") or {})} for row in company_inputs],
         "sector_estimate_evidence": [estimate_overview(row, detail_tool="read_sector_company(instrument_id, symbol)")
                                      for row in context.get("sector_estimate_evidence", []) if row["instrument_id"] == instrument_id],
-        "research_dossier": dossier, "market_coverage": context.get("market_coverage"),
-        "prior_events": events, "data_gaps": context.get("data_gaps", [])}
+        "research_dossier": dossier_overview(dossier), "market_coverage": coverage_summary(context.get("market_coverage")),
+        "data_gaps": context.get("data_gaps", [])}, pageable_fields=[(["research_dossier", "current_investment_view"], {
+            "tool": "read_research_dossier", "instrument_id": instrument_id, "section": "investment_view"})])
 
 
 def _risk_case_brief(case):
@@ -219,24 +256,121 @@ def _risk_case_brief(case):
                     for source in evidence.get("sources", [])]}
 
 
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def read_risk_instrument(instrument_id: str) -> dict:
-    """Read ONE instrument's complete risk metrics, performance, comparisons and researcher risk reports from this risk run's bound snapshot. Read every instrument in the context index before synthesizing the portfolio/list. Reports preserve shared case IDs, full body, source references and dates; duplicated source text/history stays in the original research archive. Prior snapshot changes are included. Does not fetch live data or create another assessment."""
+def _risk_instrument_overview(item):
+    if item is None:
+        return None
+    result = {**item}
+    if item.get("research_context"):
+        result["research_context"] = {key: value for key, value in item["research_context"].items() if key != "records"}
+    performance = item.get("performance_evidence")
+    if not performance:
+        return result
+    return {**result, "performance_evidence": {
+        **{key: value for key, value in performance.items() if key != "comparisons"},
+        "comparison_count": len(performance.get("comparisons", [])),
+    }}
+
+
+def _risk_comparison_brief(comparison):
+    # The full, pair-specific common dates stay in the bound snapshot. Returning
+    # them for every peer repeats years of dates before the risk reports arrive.
+    values = comparison.get("comparison") or {}
+    return {**comparison, "comparison": {key: value for key, value in values.items() if key != "dates"},
+        "sample_dates_count": len(values.get("dates", []))}
+
+
+def _risk_instrument_page(build, count):
+    while True:
+        packet = build(count)
+        if len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode()) <= 48000:
+            return packet
+        if count <= 1:
+            raise ValueError("单条风控记录超过工具返回上限，无法完整读取；未截断记录，也不能将未读证据视为没有风险。")
+        count -= 1
+
+
+@compact_read_tool
+def read_risk_instrument(instrument_id: str,
+                         section: Literal["overview", "cases", "comparisons", "sample_dates", "research_context"] = "overview",
+                         offset: int = 0, comparison_source_id: str | None = None) -> dict:
+    """Read ONE instrument from this risk run's bound snapshot. Start with overview for metrics, the complete current analyst view, performance and counts. Use overview counts to skip a section only when both its current and previous counts are zero. Read every nonempty cases and research_context page from offset=0 through next_offset=null, including previous-only rows. Read comparisons when needed for performance assessment, following all pages for that section; unread comparisons cannot support relative-performance conclusions. research_context has the full current PM profile (current view, thesis, counterevidence, monitoring and attribution limits), attributed PM original notes, active research questions with counterevidence/next checks, and active forecasts with due status; these are judgments to test, not independent facts. Cases preserve full bodies and source references. Comparisons retain pair-specific sample start/end, count and methodology; sample_dates with a returned comparison_source_id pages exact common dates when needed. Read all instruments and case/research_context pages before synthesis; an unread page is not no risk. Prior changes remain bound, without live fetches."""
     context = request("context")
     if not context.get("risk_run") or instrument_id not in context["risk_inputs"]["instrument_ids"]:
         raise ValueError("只能读取本次风控范围内的标的。")
+    if section not in {"overview", "cases", "comparisons", "sample_dates", "research_context"}:
+        raise ValueError("请选择有效的标的风控资料分区。")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("风控分页offset必须是非负整数。")
+    if (section == "sample_dates") != bool(comparison_source_id):
+        raise ValueError("comparison_source_id仅用于sample_dates分区，且必须提供已返回的同类比较来源。")
 
-    def instrument_packet(snapshot):
-        if not snapshot:
-            return None
-        return {"instrument": next((item for item in snapshot["instruments"] if item["instrument_id"] == instrument_id), None),
-            **{category: [_risk_case_brief(case) for case in snapshot[category] if case["instrument_id"] == instrument_id]
-               for category in ("research", "quantitative", "coverage")}}
+    categories = ("research", "quantitative", "coverage")
+    snapshots = (context["risk_inputs"], context.get("prior_inputs"))
+    instruments = [next((item for item in (snapshot or {}).get("instruments", [])
+                         if item["instrument_id"] == instrument_id), None) for snapshot in snapshots]
+    case_maps = [{case["case_id"]: (category, case) for category in categories
+                  for case in (snapshot or {}).get(category, []) if case["instrument_id"] == instrument_id}
+                 for snapshot in snapshots]
+    comparison_maps = [{row["source_id"]: row for row in ((item or {}).get("performance_evidence") or {}).get("comparisons", [])}
+                       for item in instruments]
+    judgment_maps = [{row["source_id"]: row for row in ((item or {}).get("research_context") or {}).get("records", [])}
+                    for item in instruments]
+    counts = [{**{category: sum(value[0] == category for value in cases.values()) for category in categories},
+               "comparisons": len(comparisons)} for cases, comparisons in zip(case_maps, comparison_maps)]
+    base = {"instrument_id": instrument_id, "cutoff": context["cutoff"], "section": section,
+            "current_counts": counts[0], "previous_counts": counts[1],
+            "research_context_counts": {"current": len(judgment_maps[0]), "previous": len(judgment_maps[1])}}
 
-    current = instrument_packet(context["risk_inputs"])
-    previous = instrument_packet(context.get("prior_inputs"))
-    return {"instrument_id": instrument_id, "cutoff": context["cutoff"], "current": current,
-        "previous": {"unchanged": True} if previous == current else previous}
+    def packet(current, previous, *, total, end):
+        return {**base, "current": current,
+            "previous": {"unchanged": True} if previous == current else previous,
+            "offset": offset, "next_offset": end if end < total else None, "total": total,
+            "read_note": "按overview计数，前后均为0的分区可跳过；有内容的cases/research_context从offset=0读至next_offset=null。cases包含完整风险事项；research_context保留PM档案、观点原文、当前问题与预测，不能当作已核实事实；comparisons按需读完各页后依各自共同样本比较，不合成排名。sample_dates按comparison_source_id另读实际共同日期。"}
+
+    if section == "overview":
+        if offset:
+            raise ValueError("overview不使用分页，请从其他分区读取后续证据。")
+        current = {"instrument": _risk_instrument_overview(instruments[0])}
+        previous = {"instrument": _risk_instrument_overview(instruments[1])} if snapshots[1] else None
+        return _risk_instrument_page(lambda _: packet(current, previous, total=1, end=1), 1)
+
+    if section == "sample_dates":
+        if not any(comparison_source_id in rows for rows in comparison_maps):
+            raise ValueError("同类比较来源不在本次绑定的前后快照中。")
+        samples = [((rows.get(comparison_source_id) or {}).get("comparison") or {}).get("dates", []) for rows in comparison_maps]
+        total = max(map(len, samples))
+        if offset > total:
+            raise ValueError("风控分页超出本次绑定快照的范围。")
+        def sample_page(count):
+            current, previous = [{"comparison_source_id": comparison_source_id,
+                "dates": sample[offset:offset + count], "total_dates": len(sample)} for sample in samples]
+            return packet(current, previous if snapshots[1] else None, total=total, end=offset + count)
+        return _risk_instrument_page(sample_page, min(500, total - offset))
+
+    maps = case_maps if section == "cases" else judgment_maps if section == "research_context" else comparison_maps
+    keys = list(dict.fromkeys([*maps[0], *maps[1]]))
+    if offset > len(keys):
+        raise ValueError("风控分页超出本次绑定快照的范围。")
+    def rows_page(count):
+        selected = keys[offset:offset + count]
+        values = []
+        for rows in maps:
+            if section == "cases":
+                values.append({category: [_risk_case_brief(rows[key][1]) for key in selected
+                                         if key in rows and rows[key][0] == category] for category in categories})
+            elif section == "research_context":
+                values.append({"records": [rows[key] for key in selected if key in rows]})
+            else:
+                values.append({"comparisons": [_risk_comparison_brief(rows[key]) for key in selected if key in rows]})
+        result = packet(values[0], values[1] if snapshots[1] else None, total=len(keys), end=offset + count)
+        if section == "comparisons" and snapshots[1]:
+            changed_samples = [key for key in selected if key in maps[0] and key in maps[1]
+                and (maps[0][key].get("comparison") or {}).get("dates") != (maps[1][key].get("comparison") or {}).get("dates")]
+            if changed_samples:
+                result["changed_sample_source_ids"] = changed_samples
+                result["previous"] = values[1]
+        return result
+    return _risk_instrument_page(rows_page, min(20, len(keys) - offset))
 
 
 def _concentration_page(portfolio, data, *, cutoff, offset, source_offset):
@@ -388,18 +522,38 @@ def submit_risk_review(result: RiskReview) -> dict:
     return request("risk-draft", result.model_dump(mode="json"))
 
 
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def read_research_dossier(instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None) -> dict:
-    """Read this instrument's maintained working view, themes, review agenda and material/case index. Pass a returned source_id for original text, version_id for an archived notebook/view/forecast, or update_id for the exact published research update referenced by an event, review or agenda. Choose only one selector. Past AI/PM judgments are hypotheses, not independent factual evidence. Both entrances use this run's retained dossier and cutoff; later knowledge never becomes prior evidence."""
+@compact_read_tool
+def read_research_dossier(instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
+                          section: str = "overview", offset: int = 0, limit: int = 20, path: list[str | int] | None = None) -> dict:
+    """Read the current judgment and section directory, then select mandate/frameworks/review_agenda/research_state, facts/questions/catalysts/forecasts/forecast_reviews/lessons, themes/pm_views, materials/prior_sources/sources/historical_cases/versions. Read the assignment and agenda before deciding what to investigate. Select ONE source_id for an exact bound original, version_id for a past notebook/view/forecast or pm:<note_id>:<revision>, or update_id for a published update; selectors cannot combine with section. PM source indexes are not the originals: use that PM version's sources, never a later dossier source with the same ID. ALL selected data is paginated: follow next_offset AND every deferred.path, repeating the same section/selector until fully read. Text offsets count characters. No clipping, live substitution or model calls. AI/PM judgments remain hypotheses, not independently verified facts."""
     context = request("context")
     if context.get("risk_run"):
         raise ValueError("风控研判仅使用已绑定的风险快照")
     if not any(d["instrument_id"] == instrument_id for d in context.get("research_dossiers", [])):
         request("tools", {"tool": "instruments", "instrument_ids": [instrument_id]})
+        context = request("context")
+    dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == instrument_id), None)
+    if dossier is None:
+        raise ValueError("本轮尚未绑定该标的研究档案。")
     from urllib.parse import urlencode
     params = {k: v for k, v in {"source_id": source_id, "version_id": version_id, "update_id": update_id}.items() if v}
+    if len(params) > 1 or params and section != "overview":
+        raise ValueError("请选择一个section或原文/版本/更新标识，不能混用。")
     suffix = f"dossier/{quote(instrument_id, safe='')}"
-    return request(suffix + ("?" + urlencode(params) if params else ""))
+    metadata = {"instrument_id": instrument_id, "run_id": context.get("run_id"), "cutoff": context.get("cutoff"),
+                "section": section, **params}
+    if params:
+        value = request(suffix + "?" + urlencode(params))
+        return read_page(value, metadata, offset=offset, limit=limit, path=path)
+    if section == "overview":
+        if offset or path:
+            raise ValueError("overview不使用offset/path，请读取目录内的section。")
+        return checked_overview({**metadata, **dossier_overview(dossier)}, pageable_fields=[(["current_investment_view"], {
+            "tool": "read_research_dossier", "instrument_id": instrument_id, "section": "investment_view"})])
+    sections = dossier_sections(dossier)
+    if section not in sections:
+        raise ValueError("该分区不在本轮研究档案目录中。")
+    return read_page(sections[section], metadata, offset=offset, limit=limit, path=path)
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
@@ -408,10 +562,46 @@ def read_risk_review(instrument_id: str | None = None) -> dict:
     return request("tools", {"tool": "risk_review", "instrument_ids": [instrument_id] if instrument_id else []})
 
 
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def compare_instruments(instrument_ids: list[str], start_date: str, end_date: str, target_id: str | None = None, benchmark_id: str | None = None) -> dict:
-    """Compute returns/drawdowns over YYYY-MM-DD dates inferred from the conversation. Exact common observations and same currency; no filling. Return conventions are shown per instrument; mixed price/NAV/total-return comparisons retain their disclosed limitations. Optional target adds correlation/downside co-movement, optional benchmark adds excess return. Read exclusions and sample dates. Choose appropriate peers; never claim full-market rankings from the local catalogue."""
-    return request("tools", {"tool": "comparison", "instrument_ids": instrument_ids, "start_date": start_date, "end_date": end_date, "target_id": target_id, "benchmark_id": benchmark_id})
+def _computed_source(source_id):
+    return request(f"computed-source?source_id={quote(source_id, safe='')}")
+
+
+@compact_read_tool
+def compare_instruments(instrument_ids: list[str] | None = None, start_date: str | None = None,
+                        end_date: str | None = None, target_id: str | None = None, benchmark_id: str | None = None,
+                        source_id: str | None = None, section: Literal["overview", "result", "dates", "input_series", "evidence"] = "overview",
+                        offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
+    """Compute once over explicit YYYY-MM-DD dates: exact common observations, same currency, no filling. Overview retains returns/drawdowns and optional target correlation/downside co-movement or benchmark excess return. Then pass ONLY the returned source_id plus section=result/dates/input_series/evidence and pagination arguments: continuation reads the same retained calculation, never recalculates or changes its window. Follow next_offset AND every deferred.path with that same source_id/section. Read exclusions, return conventions and common dates; choose appropriate peers and never claim full-market rankings from the local catalogue."""
+    if source_id:
+        if instrument_ids or start_date or end_date or target_id or benchmark_id:
+            raise ValueError("续读只传source_id和分区分页参数，不重新指定计算范围。")
+        metric = _computed_source(source_id)
+    else:
+        if section != "overview" or offset or path:
+            raise ValueError("请先计算并取得source_id，再分页读取同一次计算。")
+        if not instrument_ids or not start_date or not end_date:
+            raise ValueError("首次比较需要标的及完整起止日期。")
+        evidence = request("tools", {"tool": "comparison", "instrument_ids": instrument_ids,
+            "start_date": start_date, "end_date": end_date, "target_id": target_id, "benchmark_id": benchmark_id})
+        metric = _computed_source(evidence["source_id"])
+    if "input_series" not in metric:
+        raise ValueError("该来源不是已留存的标的共同样本比较。")
+    metadata = {key: metric.get(key) for key in ("source_id", "as_of")}
+    sections = {"result": metric["data"], "dates": metric["data"].get("dates", []),
+                "input_series": metric["input_series"], "evidence": metric}
+    if section != "overview":
+        return read_page(sections[section], {**metadata, "section": section}, offset=offset, limit=limit, path=path)
+    if offset or path:
+        raise ValueError("overview不使用offset/path，请读取目录内的section。")
+    read = {"tool": "compare_instruments", "source_id": metric["source_id"]}
+    return checked_overview({**metadata, "source_type": metric["source_type"], "methodology": metric["methodology"],
+        "request": metric.get("request"), "retrieved_at": metric.get("retrieved_at"),
+        "result": {key: value for key, value in metric["data"].items() if key != "dates"},
+        "sample_dates": {**shape(sections["dates"]), "read": {**read, "section": "dates"}},
+        "sections": {key: shape(value) for key, value in sections.items()},
+        "next_read": {**read, "section": "result"},
+        "read_note": "概览保留完整样本计算的数值；dates是精确共同日期，input_series是当时输入。按需选分区并跟随next_offset和全部deferred.path；始终使用同一source_id，不缩短计算窗口或重新计算。"},
+        pageable_fields=[(["result"], {**read, "section": "result"})])
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
@@ -430,28 +620,51 @@ def read_market_state() -> dict:
 def read_research_numbers(action: Literal["catalogue", "series", "compare", "price_risk"] = "catalogue",
                           instrument_id: str | None = None, dataset: str | None = None,
                           series_ids: list[str] | None = None, field: str | None = None,
-                          start: str | None = None, end: str | None = None) -> dict:
+                          start: str | None = None, end: str | None = None,
+                          source_id: str | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
+                          offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
     """Read source-versioned macro/market series or calculated instrument risk from either entrance.
     Start with catalogue, then select an actual dataset and series IDs. series/compare require
     explicit YYYY-MM-DD start/end; no fills or inferred missing values. price_risk requires an
     instrument_id and returns EWMA with its exact half-life, return basis, dates and limitations.
-    A volatility observation is not a sell signal. Cite the returned computed source_id; raw
-    input versions are retained for independent checking. This does not perform a backtest.
+    Overview keeps actual values, changes and risk measures. To read full points/history/raw
+    versions, pass ONLY the returned source_id plus section=data/sources/evidence and pagination
+    arguments; follow next_offset AND every deferred.path with the same source_id/section.
+    Continuations never recalculate, shorten the window or write another source. A volatility
+    observation is not a sell signal. Cite the computed source_id. This is not a backtest.
     """
-    evidence = request("numeric", {"action": action, "instrument_id": instrument_id, "dataset": dataset,
-        "series_ids": series_ids or [], "field": field, "start": start, "end": end})
+    if source_id:
+        if instrument_id or dataset or series_ids or field or start or end:
+            raise ValueError("续读只传source_id和分区分页参数，不重新指定计算范围。")
+        evidence = _computed_source(source_id)
+    else:
+        if section != "overview" or offset or path:
+            raise ValueError("请先计算并取得source_id，再分页读取同一次计算。")
+        evidence = request("numeric", {"action": action, "instrument_id": instrument_id, "dataset": dataset,
+            "series_ids": series_ids or [], "field": field, "start": start, "end": end})
+    if "input_series" in evidence:
+        raise ValueError("该来源是标的比较，请用compare_instruments及同一source_id续读。")
+    metadata = {key: evidence.get(key) for key in ("source_id", "as_of")}
+    sections = {"data": evidence.get("data", {}), "sources": evidence.get("sources", []), "evidence": evidence}
+    if section != "overview":
+        return read_page(sections[section], {**metadata, "section": section}, offset=offset, limit=limit, path=path)
+    if offset or path:
+        raise ValueError("overview不使用offset/path，请读取目录内的section。")
+    read = {"tool": "read_research_numbers", "source_id": evidence["source_id"]}
     result = {key: value for key, value in evidence.items() if key not in {"sources", "source_ids"}}
     data = dict(result.get("data") or {})
-    if action == "price_risk":
-        data.pop("input_points", None)
-        data.pop("input_snapshot", None)
-        data["history"] = data.get("history", [])[-5:]
+    if "series" in data:
+        data["series"] = [{**{key: value for key, value in row.items() if key != "points"},
+            **({"points": {**shape(row["points"]), "read": {**read, "section": "data", "path": ["series", index, "points"]}}}
+               if "points" in row else {})} for index, row in enumerate(data["series"])]
+    for key in ("input_points", "history"):
+        if key in data:
+            data[key] = {**shape(data[key]), "read": {**read, "section": "data", "path": [key]}}
     result["data"] = data
-    if len(json.dumps(result, ensure_ascii=False).encode()) > 45000:
-        data["series"] = [{**row, "points": [], "points_note": "完整样本已参与计算并留存；缩小日期区间以读取逐点值。"}
-                          for row in data.get("series", [])]
-        data["transport_note"] = "本次返回计算与样本摘要；逐点值超过工具回复上限。"
-    return result
+    result.update(sections={key: shape(value) for key, value in sections.items()},
+        next_read={**read, "section": "data"},
+        read_note="概览的points/history为完整原数据入口，数值计算使用全部请求样本。续读沿next_offset及全部deferred.path保持同一source_id；原始版本在sources/evidence，不以缩短日期区间代替续读。")
+    return checked_overview(result, pageable_fields=[(["data"], {**read, "section": "data"})])
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))

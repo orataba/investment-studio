@@ -82,6 +82,12 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         (['weekly'], {'status':'ready','stages':[]}, 0, [], []),
         (['publish'], {'status':'ready','stages':[]}, 0, [], []),
         (['registered-prices','--market','us'], {**ready_prices,'status':'failed'}, 0, ['market'], [['us']]),
+        (['registered-prices'], {'status':'failed','stages':[{'stage':'registered_raw_prices','status':'failed','result':{'status':'failed','stages':[
+            {'group':'raw_eod','status':'failed','symbols':[{'symbol':'AAPL','status':'ready'}, {'symbol':'2800.HK','status':'failed'}]}
+        ]}}]}, 0, ['market'], [['us']]),
+        (['registered-prices'], {'status':'failed','stages':[{'stage':'registered_raw_prices','status':'failed','result':{'status':'failed','stages':[
+            {'group':'raw_eod','status':'failed','symbols':[{'symbol':'AAPL','status':'failed'}, {'symbol':'2800.HK','status':'failed'}]}
+        ]}}]}, 0, [], []),
         (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[]}}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
         (['sync'], {'status':'ready','stages':[{'stage':'numeric_catchup','status':'ready','result':{'receipts':[{'batches':[{'status':'already_imported'}]}]}}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
         (['sync'], sync_new, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
@@ -91,6 +97,15 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         (['daily'], {'status':'ready','stages':[{'stage':'registered_reference','status':'ready'}]}, 0, ['reference'], [['us','hk']]),
         (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}, {'stage':'registered_reference','status':'ready'}]}, 0, ['market','reference'], [['btcusd'],['us','hk']]),
         (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
+        (['daily'], {'status':'failed','stages':[{'stage':'market_series','status':'failed','result':{'status':'failed','stages':[
+            {'group':'market_series','series_id':'DXY','status':'failed'}, {'group':'market_series','series_id':'BTCUSD','status':'ready'}
+        ]}}]}, 0, ['market'], [['btcusd']]),
+        (['daily'], {'status':'failed','stages':[{'stage':'market_series','status':'failed','result':{'status':'failed','stages':[
+            {'group':'market_series','series_id':'DXY','status':'ready'}, {'group':'market_series','series_id':'BTCUSD','status':'failed'}
+        ]}}]}, 0, [], []),
+        (['daily'], {'status':'failed','stages':[{'stage':'registered_reference','status':'failed','result':{'status':'partial','instruments':[
+            {'symbol':'AAPL','status':'failed'}, {'symbol':'2800.HK','status':'ready'}
+        ]}}]}, 0, ['reference'], [['hk']]),
         (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
         (['crypto'], {'status':'failed','stages':[{'stage':'market_series','status':'failed'}]}, 0, [], []),
         (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 1, ['market'], [['btcusd']]),

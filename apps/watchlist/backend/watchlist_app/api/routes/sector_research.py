@@ -34,7 +34,7 @@ def sector_estimates(instrument_id: str, session: Session = Depends(get_db_sessi
 @router.get("/sector-research")
 def sector_research(instrument_id: str | None = None, watchlist_id: str | None = None, session: Session = Depends(get_db_session)):
     ids = service.scoped_ids(session, instrument_id, watchlist_id)
-    states = service.review_states(session)
+    states = service.review_states(session, instrument_ids=ids)
     reviews, completed = states["latest"], states["last_completed"]
     sectors = [{"instrument_id": iid, "ticker": iid.upper(), "sector_name": service.instrument_label(session, iid),
                 "latest_review": reviews.get(iid), "last_completed_review": completed.get(iid)} for iid in ids]
@@ -62,7 +62,7 @@ def start_run(request: RunInput, background: BackgroundTasks, session: Session =
         from studio_identity import current_principal
         from watchlist_app.services.research_runner import authorize_run
         token = authorize_run(current_principal(), run.entry_id)
-        background.add_task(run_analysis, run.entry_id, token)
+        background.add_task(run_analysis, run.entry_id, token, current_principal())
     return {"run_id": run.entry_id, "status": run.status}
 
 
@@ -172,6 +172,40 @@ class NumericResearchInput(BaseModel):
     field: str | None = None
     start: date | None = None
     end: date | None = None
+
+
+class FinancialResearchInput(BaseModel):
+    instrument_id: str
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+    statement_type: Literal["income", "balance_sheet", "cash_flow"] | None = None
+    fiscal_period: Literal["FY", "Q1", "Q2", "Q3", "Q4"] | None = None
+    period_end: date | None = None
+    view: Literal["statements", "facts"] = "statements"
+
+
+@router.post("/research/runs/{run_id}/financials")
+def financial_research(run_id: str, request: FinancialResearchInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_financials import financial_page
+    run = market_run(session, run_id)
+    try:
+        service.bind_research_instruments(session, run, [request.instrument_id])
+        context = run.context_json
+        asset = next(row for row in context["instrument_inputs"] if row["instrument_id"] == request.instrument_id)
+        # A subsequent web fetch does not advance a previously bound numerical snapshot.
+        cutoff = asset.get("snapshot_cutoff") or context.get("input_snapshot_cutoff") or context["cutoff"]
+        filters = request.model_dump(mode="json", exclude={"instrument_id"})
+        prior = next((row for row in context.get("financial_sources", [])
+                      if row["instrument_id"] == request.instrument_id and row["request"] == filters
+                      and datetime.fromisoformat(row["run_cutoff"]) == datetime.fromisoformat(cutoff)), None)
+        if prior is not None:
+            return prior
+        result = {**financial_page(asset, as_of=cutoff, **filters), "source_run_id": run_id}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    run.context_json = {**context, "financial_sources": [*context.get("financial_sources", []), result]}
+    session.commit()
+    return result
 
 
 @router.post("/research/runs/{run_id}/numeric")

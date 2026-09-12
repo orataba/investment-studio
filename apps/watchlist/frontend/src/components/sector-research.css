@@ -110,3 +110,7 @@
 .research-update-historical > h4 { color: var(--muted); }
 .research-update-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .research-update-expand { display: block; }
+.research-financial-evidence, .research-computed-evidence { min-width: 0; overflow-x: auto; }
+.research-financial-evidence table, .research-computed-evidence table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.research-financial-evidence th, .research-financial-evidence td, .research-computed-evidence th, .research-computed-evidence td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.research-financial-evidence td, .research-computed-evidence td { overflow-wrap: anywhere; }

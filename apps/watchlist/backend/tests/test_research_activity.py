@@ -215,9 +215,96 @@ def test_current_followups_group_event_questions_and_hide_finished_work(activity
         assert current[0]["related_updates"][0]["kind"] == "question"
         publish(session, events=[event(action="resolved", follow_up="resolved")], research={"questions": [
             {"key": "terms", "event_key": "financing", "question": "资金如何使用", "assessment": "用途已核实",
-             "status": "supported", "next_check": ""}]})
+             "status": "supported", "next_check": "", "tracking_status": "closed", "tracking_reason": "用途已核实，不再影响投资判断"}]})
         assert research_activity(session, "xlk", include_followups=True)["current_followups"] == []
         assert len(research_activity(session, "xlk")["updates"]) == 4
+
+
+def test_supported_questions_keep_tracking_and_explicit_lifecycle_preserves_history(activity_client):
+    from watchlist_app.services.research_dossier import read_dossier
+    with get_session_factory()() as session:
+        question = {"key": "capacity", "question": "经营改善是否持续", "assessment": "当期得到支持",
+                    "status": "supported", "next_check": "下次披露核对持续性"}
+        publish(session, research={"questions": [question]})
+        original = research_activity(session, "xlk")["updates"][0]
+        assert read_dossier(session, "xlk")["review_agenda"]["tracked_questions"][0]["update_id"] == original["update_id"]
+        assert research_activity(session, "xlk", include_followups=True)["current_followups"][0]["followup_id"] == original["update_id"]
+        publish(session, research={"questions": [{**question, "tracking_status": "paused", "tracking_reason": "等待产品重新披露"}]})
+        publish(session, research={"questions": [{**question, "status": "refuted", "assessment": "对原披露的解释需要纠正"}]})
+        assert not read_dossier(session, "xlk")["review_agenda"]["tracked_questions"]
+        assert not research_activity(session, "xlk", include_followups=True)["current_followups"]
+        history = research_activity(session, "xlk")["updates"]
+        assert history[0]["tracking_status"] == "paused" and history[0]["status"] == "refuted"
+        assert next(row for row in history if row["update_id"] == original["update_id"])["body"] == original["body"]
+        publish(session, research={"questions": [{**question, "tracking_status": "active"}]})
+        assert len(read_dossier(session, "xlk")["review_agenda"]["tracked_questions"]) == 1
+
+
+def test_legacy_supported_question_stays_active_without_rewriting_its_history(activity_client):
+    from watchlist_app.services.research_dossier import read_dossier
+    with get_session_factory()() as session:
+        run = publish(session, research={"questions": [{"key": "margin", "question": "利润率能否持续", "assessment": "初期得到支持", "status": "supported", "next_check": "核实后续结果"}]})
+        legacy = deepcopy(run.context_json)
+        legacy_question = legacy["reviews"]["xlk"]["research"]["questions"][0]
+        legacy_question.pop("tracking_status")
+        legacy_question.pop("tracking_reason")
+        run.context_json = legacy
+        session.commit()
+        before = research_activity(session, "xlk", include_followups=True)
+        assert len(before["current_followups"]) == 1
+        assert len(read_dossier(session, "xlk")["review_agenda"]["tracked_questions"]) == 1
+        publish(session)
+        assert research_activity(session, "xlk", include_followups=True) == before
+        assert "tracking_status" not in run.context_json["reviews"]["xlk"]["research"]["questions"][0]
+
+
+def test_theme_keeps_each_active_question_and_its_own_exact_review_clock(activity_client):
+    from watchlist_app.services.research_themes import themes_view
+    theme = activity_client.post("/api/research/instruments/xlk/themes", json={"title": "融资传导", "question": "是否改善经营"}).json()
+    with get_session_factory()() as session:
+        publish(session, research={"questions": [{"key": key, "theme_id": theme["theme_id"], "question": key,
+            "assessment": f"{key}判断", "status": "supported", "next_check": f"{key}下一观察"} for key in ("cost", "capacity")]})
+        questions = themes_view(session, "xlk")["themes"][0]["current_questions"]
+        assert {row["title"] for row in questions} == {"cost", "capacity"}
+        run = publish(session, reflection={"status": "reviewed", "summary": "只核实融资成本", "reviewed_update_ids": [questions[0]["update_id"]]})
+        after = {row["update_id"]: row for row in themes_view(session, "xlk")["themes"][0]["current_questions"]}
+        assert after[questions[0]["update_id"]]["last_reviewed_at"] == run.completed_at.isoformat()
+        assert after[questions[1]["update_id"]]["last_reviewed_at"] is None
+
+
+def test_agenda_includes_current_judgment_and_schedule_without_implying_release(activity_client):
+    from watchlist_app.services.research_dossier import read_dossier
+    with get_session_factory()() as session:
+        publish(session, research={"investment_view": {"direction": "等待经营兑现", "horizon": "两个季度", "risk": "融资成本上升",
+                "invalidation": "现金流恶化", "next_check": "下季披露", "assumptions": ["资金投入产生回报"]},
+            "catalysts": [{"key": "filing", "title": "预定报告", "scheduled_at": "2026-01-01",
+                "relevance": "核对资金用途", "next_check": "取得实际披露", "source_ids": ["original"]}]})
+        agenda = read_dossier(session, "xlk")["review_agenda"]
+        judgment, schedule = agenda["current_judgment"][0], agenda["scheduled_catalysts"][0]
+        assert judgment["next_check"] == "下季披露" and judgment["invalidation"] == "现金流恶化"
+        assert judgment["reference"]["investment_view_version_id"]
+        assert schedule["scheduled_at"] == "2026-01-01" and schedule["next_check"] == "取得实际披露"
+        reviewed = publish(session, reflection={"status": "insufficient_evidence", "summary": "尚未取得实际披露",
+            "reviewed_update_ids": [judgment["update_id"], schedule["update_id"]]})
+        assert reviewed.status == "completed"
+
+
+def test_withdrawn_lesson_leaves_current_agenda_but_keeps_original_version_and_sources(activity_client):
+    from watchlist_app.services.research_dossier import read_dossier, read_dossier_version
+    with get_session_factory()() as session:
+        lesson = {"key": "financing", "lesson": "融资成本下降可以改善现金流", "applicability": "资金用途不变", "source_ids": ["original"]}
+        publish(session, research={"lessons": [lesson]})
+        original = read_dossier(session, "xlk")["notebook"]["lessons"][0]
+        assert len(read_dossier(session, "xlk")["review_agenda"]["existing_lessons"]) == 1
+        publish(session, research={"lessons": [{**lesson, "status": "withdrawn", "withdrawal_reason": "新增条件表明结论不能按原范围使用"}]})
+        publish(session, research={"lessons": [{**lesson, "limitations": "资本开支变化也会影响现金流"}]})
+        dossier = read_dossier(session, "xlk")
+        assert dossier["review_agenda"]["existing_lessons"] == []
+        assert dossier["notebook"]["lessons"][0]["status"] == "withdrawn"
+        archived = read_dossier_version(session, "xlk", original["version_id"])
+        assert archived["value"]["status"] == "active" and archived["value"]["lesson"] == lesson["lesson"]
+        assert archived["value"]["updated_at"] == original["updated_at"]
+        assert [source["source_id"] for source in archived["sources"]] == ["original"]
 
 
 def test_exact_receipt_advances_check_clock_without_inventing_progress(activity_client):
@@ -247,7 +334,7 @@ def test_active_themes_own_work_but_paused_dedicated_questions_stay_paused(activ
         from watchlist_app.services.research_themes import themes_view
         projected = themes_view(session, "xlk")["themes"][0]
         assert projected["last_changed_at"] == original["recorded_at"]
-        assert projected["last_reviewed_at"] == run.completed_at.isoformat()
+        assert projected["current_questions"][0]["last_reviewed_at"] == run.completed_at.isoformat()
     assert activity_client.patch(f"/api/research/instruments/xlk/themes/{theme['theme_id']}", json={"status": "paused"}).status_code == 200
     data = activity_client.get("/api/research/instruments/xlk/activity").json()
     assert data["current_followups"] == []
@@ -311,7 +398,7 @@ def test_event_receipt_does_not_check_its_grouped_question_or_theme_judgment(act
         after = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
         assert after["last_reviewed_at"] == reviewed.completed_at.isoformat()
         assert child["update_id"] not in review_receipts(session, "xlk")
-        assert themes_view(session, "xlk")["themes"][0]["last_reviewed_at"] is None
+        assert themes_view(session, "xlk")["themes"][0]["current_questions"][0]["last_reviewed_at"] is None
         publish(session, reflection={"status": "insufficient_evidence", "summary": "子问题仍缺证据",
             "reviewed_update_ids": [child["update_id"]]})
         assert research_activity(session, "xlk", include_followups=True)["current_followups"][0]["last_reviewed_at"] == after["last_reviewed_at"]

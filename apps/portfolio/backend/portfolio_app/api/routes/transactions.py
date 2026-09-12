@@ -43,6 +43,7 @@ from portfolio_app.api.contracts import (
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
+    InstrumentOption,
     LedgerPostingListSummary,
     PositionLotListSummary,
     POSITION_EFFECTIVE_COMMAND_TYPES,
@@ -88,6 +89,13 @@ from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument,
     list_registry_instruments,
+)
+from portfolio_app.services.security_catalog import (
+    SecurityCatalogError,
+    SecurityMaterializeRequest,
+    SecuritySearchResponse,
+    materialize_catalog_security,
+    search_catalog,
 )
 from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
 from portfolio_app.services.account_categories import (
@@ -1847,6 +1855,37 @@ def build_transaction_import_preview(
         rows=response_rows,
     )
     return response, list(batch_preview.prepared_records)
+
+
+@router.get("/{portfolio_id}/securities/search", response_model=SecuritySearchResponse)
+def search_portfolio_securities(
+    portfolio_id: str,
+    q: str = Query(min_length=1, max_length=200),
+    limit: int = Query(default=25, ge=1, le=25),
+) -> SecuritySearchResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="请输入证券代码或名称")
+    try:
+        return search_catalog(q.strip(), limit)
+    except SecurityCatalogError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
+
+@router.post("/{portfolio_id}/securities/materialize", response_model=InstrumentOption)
+def materialize_portfolio_security(
+    portfolio_id: str, payload: SecurityMaterializeRequest,
+) -> InstrumentOption:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        record = materialize_catalog_security(payload)
+        return InstrumentOption.model_validate(_serialize_instrument_option(record))
+    except SecurityCatalogError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="证券登记入口返回的数据格式无效。") from error
 
 
 @router.get("/{portfolio_id}/instruments", response_model=SharedInstrumentListResponse)

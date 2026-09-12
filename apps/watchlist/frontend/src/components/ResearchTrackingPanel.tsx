@@ -1,11 +1,12 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useState } from 'react'
 import type { AskResearchAssistant, CurrentResearchFollowup, ResearchTheme, ResearchUpdate } from '../lib/researchDossierApi'
 import { useResearchActivity } from '../lib/useResearchActivity'
 import ResearchThemesPanel from './ResearchThemesPanel'
 import ResearchActivityPanel from './ResearchActivityPanel'
 import ResearchFollowupClocks from './ResearchFollowupClocks'
+import ResearchQuestionTracking from './ResearchQuestionTracking'
 
-const kindLabels = { event: '事件跟进', question: '待解问题', forecast: '预测验证', schedule: '观察日程' }
+const kindLabels = { event: '事件跟进', question: '研究问题', forecast: '预测验证', schedule: '观察日程' }
 
 function CurrentFollowup({ followup, onAskAssistant }: { followup: CurrentResearchFollowup; onAskAssistant?: AskResearchAssistant }) {
   const [expanded, setExpanded] = useState(false)
@@ -27,11 +28,12 @@ function CurrentFollowup({ followup, onAskAssistant }: { followup: CurrentResear
       </div>)}
     </details>}
     {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => ask(followup.latest_update)}>继续跟进此事项</button>}
+    <ResearchQuestionTracking update={followup.latest_update} onAskAssistant={onAskAssistant} />
   </article>
 }
 
-export default function ResearchTrackingPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, sources }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; sources?: (ids: string[]) => ReactNode
+export default function ResearchTrackingPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant
 }) {
   const state = useResearchActivity(instrumentId, reviewRunId, reviewStatus)
   const [themeNames, setThemeNames] = useState<Record<string, string>>({})
@@ -41,13 +43,13 @@ export default function ResearchTrackingPanel({ instrumentId, reviewRunId, revie
     <section className="research-current-tracking" aria-label="当前跟踪">
       <h3>当前跟踪</h3>
       <p className="sector-research-note">更新此标的研究时，一并复核当前跟踪。长期主题积累判断；独立事项解决后退出，记录仍保留。</p>
-      <ResearchThemesPanel {...{ instrumentId, reviewRunId, reviewStatus, onAskAssistant, sources, onThemesLoaded }} />
+      <ResearchThemesPanel {...{ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded }} />
       <section className="research-current-followups" aria-label="独立跟进事项">
         <h4>独立跟进事项{followups.length > 0 && <span> · {followups.length}</span>}</h4>
         {state.error && <p role="alert">当前跟进暂时无法读取：{state.error}</p>}
         {!state.data && !state.error && <p className="sector-research-note" role="status">正在读取当前跟进…</p>}
         {followups.map(followup => <CurrentFollowup key={followup.followup_id} {...{ followup, onAskAssistant }} />)}
-        {state.data && !followups.length && <p className="sector-research-note">当前没有尚待解决的独立事项。已结束事项保留在下方研究动态。</p>}
+        {state.data && !followups.length && <p className="sector-research-note">当前没有正在跟踪的独立事项。暂停或结束的事项保留在下方研究动态。</p>}
       </section>
     </section>
     <ResearchActivityPanel {...{ instrumentId, onAskAssistant, themeNames, state }} />

@@ -16,6 +16,7 @@ _GAP_LABELS = {
     "currency_unverified": "至少一侧预期币种未确认，数值差异仅作待核实线索。",
     "currency_changed": "两次预期币种不同，不能直接计算上修或下修。",
     "analyst_coverage_added": "前次无有效分析师覆盖，新增覆盖不等于预测上修。",
+    "current_analyst_coverage_missing": "本次分析师样本为零，供应商数值不能视为有效共识或预测下修。",
     "collection_time_unknown": "缺少明确的源记录采集时间，无法确定观测先后。",
     "source_observation_not_newer": "部分源记录采集时间尚未推进，重复读取不是新的预期观测。",
     "source_dataset_changed": "两次预期数据来源口径不同，变动尚未核实。",
@@ -64,13 +65,9 @@ def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="
             for (symbol, row_frequency, period), row in latest.items():
                 if row_frequency != frequency or row.get(metric) is None:
                     continue
-                available.add(symbol)
                 company = companies[symbol]
                 before = old.get((symbol, frequency, period))
                 currency = row.get("currency")
-                if not currency:
-                    unknown_currency.add(symbol)
-                    gaps.add("estimate_currency_not_supplied")
                 point = {"symbol": symbol, "name": company.get("name"), "weight_percent": company.get("weight_percent"),
                     "frequency": frequency, "target_period_end": period, "metric": metric, "unit": unit,
                     "currency": currency, "previous_currency": before.get("currency") if before else None,
@@ -82,6 +79,14 @@ def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="
                     "current_num_analysts": row.get(analyst_field), "previous_num_analysts": before.get(analyst_field) if before else None,
                     "source_dataset": row.get("source_dataset"), "previous_source_dataset": before.get("source_dataset") if before else None,
                     "raw_sha256": row.get("raw_sha256"), "previous_raw_sha256": before.get("raw_sha256") if before else None}
+                if row.get(analyst_field) == 0:
+                    gaps.add("current_analyst_coverage_missing")
+                    unmatched.append({**point, "reason": "current_analyst_coverage_missing"})
+                    continue
+                available.add(symbol)
+                if not currency:
+                    unknown_currency.add(symbol)
+                    gaps.add("estimate_currency_not_supplied")
                 if previous is None:
                     continue
                 if before is None or before.get(metric) is None:

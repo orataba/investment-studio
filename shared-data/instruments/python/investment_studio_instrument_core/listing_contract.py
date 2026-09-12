@@ -16,6 +16,14 @@ def market_scope_for_calendar(calendar: str | None) -> str | None:
     return next((scope for scope, calendars in MARKET_SCOPE_CALENDARS.items()
                  if calendar in calendars), None)
 
+
+def session_calendar_name(exchange_code: str) -> str:
+    """Resolve the session calendar without changing a listing's canonical MIC."""
+    # exchange_calendars exposes the mainland equity sessions as XSHG. Shenzhen
+    # uses that session schedule; XSHE remains the instrument's listing identity.
+    return "XSHG" if exchange_code == "XSHE" else exchange_code
+
+
 # Canonical MICs used by the shared Registry. Provider-specific exchange names
 # are translated at the Platform boundary before an instrument is created.
 SUPPORTED_LISTING_EXCHANGES: tuple[str, ...] = (

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
+
 from studio_data.services.etfs.catalog import get_catalog_etf, search_etf_catalog
 from studio_data.services.fmp import FmpClient, refresh_fmp_eod
 from studio_data.services.fmp.exchanges import exchange_by_code
@@ -15,6 +17,10 @@ from studio_data.services.instrument_store import (
 
 
 class EtfNotSupportedError(ValueError):
+    pass
+
+
+class _ArchivedEtfError(EtfNotSupportedError):
     pass
 
 
@@ -44,7 +50,7 @@ def _existing_etf(
             )
         lifecycle = dict(existing.get("lifecycle_state") or {})
         if str(lifecycle.get("status") or "active") != "active":
-            raise EtfNotSupportedError("The matching Registry ETF is archived.")
+            raise _ArchivedEtfError("The matching Registry ETF is archived.")
         return existing
     return None
 
@@ -84,10 +90,15 @@ def search_etfs(query: str, *, limit: int = 10) -> list[dict[str, object]]:
     normalized_query = query.strip()
     if not normalized_query:
         raise ValueError("ETF search query must not be blank.")
-    return [
-        _search_record(record)
-        for record in search_etf_catalog(normalized_query, limit=limit)
-    ]
+    results = []
+    for record in search_etf_catalog(normalized_query, limit=limit):
+        try:
+            results.append(_search_record(record))
+        except _ArchivedEtfError:
+            # Archived listings are unavailable for new transactions, but must
+            # not prevent other directory matches from being searched.
+            continue
+    return results
 
 
 def _source_settings(
@@ -155,33 +166,42 @@ def materialize_etf(
         exchange_ticker=exchange_ticker,
     )
     if existing is None:
-        existing = create_instrument(
-            instrument_name=str(catalog_record["company_name"]),
-            instrument_type="etf",
-            currency=currency,
-            exchange_code=exchange.exchange_code,
-            identifiers=[
-                {
-                    "identifier_type": "exchange_ticker",
-                    "identifier_value": exchange_ticker,
-                    "is_primary": True,
-                },
-                {
-                    "identifier_type": "provider_symbol",
-                    "identifier_value": f"fmp:{symbol}",
-                    "is_primary": False,
-                },
-            ],
+        try:
+            existing = create_instrument(
+                instrument_name=str(catalog_record["company_name"]),
+                instrument_type="etf",
+                currency=currency,
+                exchange_code=exchange.exchange_code,
+                identifiers=[
+                    {
+                        "identifier_type": "exchange_ticker",
+                        "identifier_value": exchange_ticker,
+                        "is_primary": True,
+                    },
+                    {
+                        "identifier_type": "provider_symbol",
+                        "identifier_value": f"fmp:{symbol}",
+                        "is_primary": False,
+                    },
+                ],
+            )
+        except (ValueError, IntegrityError):
+            # A concurrent selection may have registered this same listing
+            # after the initial lookup. Re-resolve its unique identity; unrelated
+            # failures and conflicting/archived instruments must still fail.
+            existing = _existing_etf(
+                fmp_symbol=symbol, exchange_ticker=exchange_ticker,
+            )
+            if existing is None:
+                raise
+    if str(existing.get("exchange_code") or "") != exchange.exchange_code:
+        raise EtfNotSupportedError(
+            "Registry exchange identity conflicts with the local FMP ETF catalog."
         )
-    else:
-        if str(existing.get("exchange_code") or "") != exchange.exchange_code:
-            raise EtfNotSupportedError(
-                "Registry exchange identity conflicts with the local FMP ETF catalog."
-            )
-        if str(existing.get("currency") or "").strip().upper() != currency:
-            raise EtfNotSupportedError(
-                "Registry currency conflicts with the local FMP ETF catalog."
-            )
+    if str(existing.get("currency") or "").strip().upper() != currency:
+        raise EtfNotSupportedError(
+            "Registry currency conflicts with the local FMP ETF catalog."
+        )
 
     instrument_id = str(existing["instrument_id"])
     ensured = ensure_secondary_identifier(
@@ -245,4 +265,5 @@ def refresh_etf_eod(
         instrument_type="etf",
         full_history=full_history,
         store=store,
+        acquire_history=True,
     )

@@ -89,6 +89,13 @@ def _notebook_updates(session, iid, events):
             for row in rows:
                 chain = (field, row["key"])
                 semantic = {key: value for key, value in row.items() if key not in metadata}
+                if kind == "question":
+                    # Older evidence judgments did not record a stop-tracking decision.
+                    semantic.setdefault("tracking_status", "active")
+                    semantic.setdefault("tracking_reason", "")
+                if kind == "lesson":
+                    semantic.setdefault("status", "active")
+                    semantic.setdefault("withdrawal_reason", "")
                 if previous.get(chain) == semantic:
                     continue
                 previous[chain] = deepcopy(semantic)
@@ -102,6 +109,8 @@ def _notebook_updates(session, iid, events):
                     sources=_source_views([sources[sid] for sid in row.get("source_ids", []) if sid in sources]),
                     next_check=row.get("next_check") or (row.get("observation_condition") or row.get("horizon", "") if kind == "forecast" else ""), run_id=run.entry_id,
                     status=row.get("status"), scheduled_at=row.get("scheduled_at"),
+                    tracking_status=row.get("tracking_status"), tracking_reason=row.get("tracking_reason", ""),
+                    withdrawal_reason=row.get("withdrawal_reason", ""),
                     change="updated" if chain in chains else "new",
                     details=_details(**{"支持依据": row.get("evidence_for"), "反向证据": row.get("evidence_against"),
                         "机制复核": row.get("mechanism_assessment"), "其他解释": row.get("alternative_explanations"),
@@ -164,6 +173,8 @@ def _theme_updates(session, iid, actor):
 
 def _opinion_updates(session, iid, actor):
     from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
+    from watchlist_app.services.research_views import note_sources
+    from watchlist_app.services.sector_research import _source_views
     repository = SQLAlchemyInstrumentResearchRepository()
     notes = {row.note_id: row for row in repository.list_notes(session, iid)
              if current_principal().local_unrestricted or row.team_id == actor["team_id"]}
@@ -172,10 +183,12 @@ def _opinion_updates(session, iid, actor):
         if row.note_id not in notes or (not current_principal().local_unrestricted and row.team_id != actor["team_id"]):
             continue
         context = row.research_context or {}
+        sources = note_sources(session, iid, context)
         identifier = f"opinion:{row.note_id}:{row.revision_number}"
         update = _base(iid, identifier, "opinion", row.title, row.body or row.summary, row.recorded_at,
             author=row.author or "未标注作者", author_role="user", theme_ids=[context["theme_id"]] if context.get("theme_id") else [],
             change=context.get("relationship", "initial"), run_id=context.get("source_run_id"),
+            sources=_source_views(sources),
             superseded=row.revision_number != notes[row.note_id].revision_number,
             details=_details(**{"判断期限": context.get("horizon"), "复核条件": context.get("verification"),
                 "复盘结果": context.get("outcome"), "机制复核": context.get("mechanism_assessment"),
@@ -261,7 +274,7 @@ def current_followups(session, instrument_id, updates, *, actor=None):
         if row.get("superseded") or row.get("withdrawn"):
             continue
         if not ((row["kind"] == "event" and row.get("follow_up") == "watch")
-                or (row["kind"] == "question" and row.get("status") == "open")
+                or (row["kind"] == "question" and (row.get("tracking_status") or "active") == "active")
                 or (row["kind"] == "forecast" and row.get("status") == "active")
                 or (row["kind"] == "schedule" and row.get("status") == "scheduled")):
             continue
@@ -328,9 +341,20 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None):
         "active_forecasts": [{"update_id": row["update_id"], **{key: forecast.get(key)
                 for key in ("key", "version_id", "claim", "horizon", "observation_condition", "review_on", "invalidation")}}
             for row in current if row["kind"] == "forecast" and (forecast := forecasts.get(row["update_id"], {})).get("status") == "active"],
-        "open_questions": [{"update_id": row["update_id"], "question": row["title"], "next_check": row.get("next_check")}
-            for row in current if row["kind"] == "question" and row.get("status") == "open"],
-        "existing_lessons": [{"update_id": row["update_id"], "lesson": row["body"]} for row in current if row["kind"] == "lesson"],
+        "tracked_questions": [{"update_id": row["update_id"], "question": row["title"], "assessment": row["body"],
+                "status": row.get("status"), "tracking_status": "active", "next_check": row.get("next_check"),
+                "reference": row["reference"]}
+            for row in current if row["kind"] == "question" and (row.get("tracking_status") or "active") == "active"],
+        "current_judgment": [{"update_id": row["update_id"], "reference": row["reference"],
+                "assessment": row["body"], **{key: (notebook.get("investment_view") or {}).get(key)
+                    for key in ("horizon", "risk", "assumptions", "invalidation", "next_check")}}
+            for row in current if row["kind"] == "judgment"],
+        "scheduled_catalysts": [{"update_id": row["update_id"], "reference": row["reference"],
+                "title": row["title"], "scheduled_at": row.get("scheduled_at"), "relevance": row["body"],
+                "next_check": row.get("next_check")}
+            for row in current if row["kind"] == "schedule" and row.get("status") == "scheduled"],
+        "existing_lessons": [{"update_id": row["update_id"], "lesson": row["body"], "conditions": row.get("details", []), "reference": row["reference"]}
+            for row in current if row["kind"] == "lesson" and row.get("status") != "withdrawn"],
         "pm_views": [{"update_id": f"opinion:{row['note_id']}:{row['revision_number']}",
                        "title": row["title"], "author": row.get("author"), "follow_up_date": row.get("follow_up_date")}
                      for row in pm_views if assignments.get(f"opinion:{row['note_id']}:{row['revision_number']}",

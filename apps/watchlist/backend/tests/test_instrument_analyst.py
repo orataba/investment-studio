@@ -12,7 +12,7 @@ def register_fund(client):
 def start_analysis(client, monkeypatch, instrument_id="sxv264", page_context=None):
     import watchlist_app.services.research_runner as runner
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
     topic_response = client.post("/api/research/topics", json={"title": "标的分析", "instrument_ids": [instrument_id]})
     assert topic_response.status_code == 201, topic_response.text
     topic = topic_response.json()
@@ -31,7 +31,8 @@ def test_assistant_retains_originating_page_and_reads_prepared_research(client, 
         session.add(ResearchTopic(topic_id=topic_id, title="研究追踪", instrument_ids=["sxv264"]))
         session.flush()
         session.add(ResearchEntry(entry_id="prepared-research", topic_id=topic_id, kind="analysis", title="研究追踪", body="已有结论", status="completed",
-                                 context_json={"sector_run": True, "instrument_ids": ["sxv264"], "reviews": {"sxv264": {"status": "limited", "summary": "已有结论", "coverage": ["未披露底层敞口"]}}}))
+                                 context_json={"sector_run": True, "instrument_ids": ["sxv264"], "reviews": {"sxv264": {"status": "limited", "summary": "已有结论",
+                                     "research": {"investment_view": {"direction": "已有结论"}}, "coverage": ["未披露底层敞口"]}}}))
         session.commit()
     page = {"surface": "instrument", "instrument_id": "sxv264", "tab": "events", "currency": "CNY", "start": "2026-08-01", "end": "2026-09-06"}
     run = start_analysis(client, monkeypatch, page_context=page)
@@ -46,7 +47,7 @@ def test_assistant_rejects_page_scope_that_disagrees_with_linked_topic(client, m
     import watchlist_app.services.research_runner as runner
     from watchlist_app.services import research_workbench
     monkeypatch.setattr(runner, "harness_available", lambda: True)
-    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None: None)
+    monkeypatch.setattr(runner, "run_analysis", lambda run_id, token=None, issuer=None: None)
     monkeypatch.setattr(research_workbench, "external_json", lambda service, path:
                         {"research_enabled": True} if path == "/capabilities" else [{"portfolio_id": "linked"}])
     topic = client.post("/api/research/topics", json={"title": "组合对话", "portfolio_id": "linked"}).json()

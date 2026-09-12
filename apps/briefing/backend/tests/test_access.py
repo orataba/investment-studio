@@ -117,7 +117,8 @@ def test_revoked_actor_cannot_publish_completed_model_output(fixture, monkeypatc
     monkeypatch.setattr(runner, "resolve_token", resolve)
     monkeypatch.setattr(runner, "_run_harness", lambda *a: {"sections": []})
     monkeypatch.setattr(runner, "revoke_delegation", lambda *a: None)
-    runner.run_report("draft", "task-token")
+    monkeypatch.setattr(runner, "issue_delegation", lambda *a: "stage-token")
+    runner.run_report("draft", "task-token", Principal("a", "甲", "default", team_role="admin", credential="issuer"))
     with factory() as session:
         report = session.get(Report, "draft")
         assert report.status == "failed" and report.result_json is None

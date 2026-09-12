@@ -800,6 +800,7 @@ export type InvestmentOpinionResearchContextInput = {
 }
 
 export type InvestmentOpinionResearchContext = InvestmentOpinionResearchContextInput & {
+  readonly sources?: import('./researchDossierApi').NotebookSource[]
   readonly author_role?: string
   readonly source_run_id?: string
   readonly recorded_via?: string

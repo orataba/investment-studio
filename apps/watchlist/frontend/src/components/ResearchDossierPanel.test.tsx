@@ -276,7 +276,7 @@ it('does not invent questions before a completed notebook exists and refreshes a
 })
 
 it('keeps the overview summary short and retains the saved notebook when the latest review failed', async () => {
-  const savedReview = { run_id: notebook.run_id, checked_at: notebook.checked_at, status: 'completed', summary: '已完成的当前判断。', coverage: [] }
+  const savedReview = { run_id: notebook.run_id, checked_at: notebook.checked_at, status: 'completed', coverage: [], current_research: { investment_view: { direction: '已完成的当前判断。', updated_at: notebook.checked_at } } }
   request.mockImplementation(async (path: string) => path.includes('/dossier') ? dossier() : { available: true, sectors: [{ instrument_id: 'fund-1', ticker: 'FUND', sector_name: '测试基金', latest_review: { ...savedReview, run_id: 'failed-2', status: 'failed', summary: '新一轮未完成。' }, last_completed_review: savedReview }], events: [] })
   const { rerender } = render(<SectorResearchPanel instrumentId="fund-1" variant="summary" />)
   await screen.findByText('已完成的当前判断。')
