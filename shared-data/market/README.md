@@ -25,6 +25,10 @@ Source secrets are file references, never values in bundles or database URLs:
 (each name has the same `INVESTMENT_STUDIO_MARKET_` prefix).
 DataHub and official Tushare credentials are distinct. DataHub's configured API
 URL defaults to the existing `http://datahubco.com/app-api/openapi/v1/tushare`.
+The Regime DataHub adapter requests at most 5,000 rows per REST page and retains
+the effective request parameters with each capture. Consumers continue by actual
+row count and `has_more`; deterministic HTTP request/authentication failures do
+not enter the transport retry path.
 
 The cloud installation uses `ROLE=collector`; the local installation uses
 `ROLE=replica`. Text receivers either configure `MI_HOST` and `MI_REMOTE_DIR`

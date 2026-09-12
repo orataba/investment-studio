@@ -298,9 +298,20 @@ class RegimeSources:
         from curl_cffi import requests
         key = self.settings.read_secret("datahub_api_key")
         url = self.settings.datahub_api_url.rstrip("/") + "/" + endpoint.replace("_", "-")
+        # The DataHub REST gateway accepts at most 5,000 rows per page, while
+        # callers may use Tushare's larger page size. The caller advances by
+        # actual returned rows and uses has_more, so the smaller page is complete.
+        limit = int(parameters.get("limit", 5000))
+        if limit < 1:
+            raise ValueError("DataHub daily page limit must be positive")
+        effective_parameters = {**parameters, "limit": min(limit, 5000)}
         # This credential is the existing DataHub gateway key, not a Tushare token.
         with requests.Session(trust_env=False) as session:
-            response = session.get(url, headers={"X-API-Key": key, "Accept": "application/json"}, params=parameters, timeout=30)
+            response = session.get(url, headers={"X-API-Key": key, "Accept": "application/json"}, params=effective_parameters, timeout=30)
+            if 400 <= response.status_code < 500 and response.status_code not in {408, 429}:
+                # Do not let deterministic request/authentication failures enter
+                # the consumer's transport retry path or expose response secrets.
+                raise ValueError(f"DataHub daily request rejected with HTTP {response.status_code}")
             response.raise_for_status()
             body = response.content
         observed = datetime.now(UTC)
@@ -318,7 +329,7 @@ class RegimeSources:
         if not items and has_more:
             raise ValueError("DataHub empty page incorrectly reports more rows")
         from types import SimpleNamespace
-        captured = SimpleNamespace(body=body, received_at=observed, endpoint=url, params=parameters)
+        captured = SimpleNamespace(body=body, received_at=observed, endpoint=url, params=effective_parameters)
         rows = []
         for item in items:
             row = dict(zip(fields, item))

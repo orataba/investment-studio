@@ -226,19 +226,25 @@ def research_activity(session, instrument_id, *, actor=None, include_followups=F
 
 def review_receipts(session, instrument_id):
     """Only a published receipt for an exact judgment proves that it was checked."""
-    from sqlalchemy import func, select
+    from sqlalchemy import JSON, String, func, select, true
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-    from watchlist_app.services.research_access import topic_portfolio_ids
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows, topic_portfolio_ids
     principal = current_principal()
-    review = ResearchEntry.context_json["reviews"][instrument_id]
-    rows = session.execute(select(ResearchEntry.topic_id, ResearchEntry.completed_at,
-        ResearchEntry.context_json["cutoff"].as_string(), review["reflection"]).where(
+    relation, context = research_context_projection(session, {"cutoff": String, "reviews": JSON})
+    review = context["reviews"][instrument_id]
+    query = select(ResearchEntry.topic_id, ResearchEntry.completed_at,
+        context["cutoff"].label("cutoff"), review["reflection"].label("reflection")).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    rows = research_projection_rows(session, query.where(
             ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
             review["status"].as_string().in_(["completed", "limited"]),
             True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
-        ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
+        ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+        {"cutoff": ("cutoff",), "reflection": ("reviews", instrument_id, "reflection")})
     receipts, allowed = {}, {}
-    for topic_id, completed_at, cutoff, reflection in rows:
+    for row in rows:
+        topic_id, reflection = row.topic_id, row.reflection
         if not isinstance(reflection, dict):
             continue
         if topic_id not in allowed:
@@ -248,7 +254,7 @@ def review_receipts(session, instrument_id):
         if not allowed[topic_id]:
             continue
         for identifier in reflection.get("reviewed_update_ids", []):
-            receipts.setdefault(identifier, {"last_reviewed_at": _time(completed_at or cutoff),
+            receipts.setdefault(identifier, {"last_reviewed_at": _time(row.completed_at or row.cutoff),
                 "last_review_status": reflection.get("status"),
                 "last_review_summary": reflection.get("summary", "")})
     return receipts

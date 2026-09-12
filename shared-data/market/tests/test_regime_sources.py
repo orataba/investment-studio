@@ -96,7 +96,7 @@ def test_datahub_key_is_separate_and_full_response_precedes_read(source, monkeyp
         def __exit__(self,*args): pass
         def get(self,url,**kwargs):
             captured.append((url,kwargs))
-            return SimpleNamespace(content=json.dumps(payloads.pop(0)).encode(),raise_for_status=lambda:None)
+            return SimpleNamespace(status_code=200,content=json.dumps(payloads.pop(0)).encode(),raise_for_status=lambda:None)
     monkeypatch.setattr(requests,"Session",Session)
     rows, more = source.datahub_page("fund_adj",{"ts_code":"510300.SH","fields":"ts_code,trade_date,adj_factor"})
     assert rows == [{"ts_code":"510300.SH","trade_date":"20240102","adj_factor":1.75}]
@@ -108,6 +108,81 @@ def test_datahub_key_is_separate_and_full_response_precedes_read(source, monkeyp
     assert "private body" not in str(caught.value)
     with pytest.raises(ValueError, match="daily endpoints"):
         source.datahub_page("fut_mins",{})
+
+
+def test_datahub_rest_page_size_and_actual_capture_preserve_pagination(source, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from curl_cffi import requests
+    key = tmp_path / "datahub-key"
+    key.write_text("fixture-only-key")
+    source.settings = replace(source.settings, datahub_api_key_file=key)
+    requested = {"ts_code": "510300.SH", "fields": "ts_code,trade_date,adj_factor", "limit": 6000}
+    wire = []
+    pages = [(["20240103", "20240102"], True), (["20240101"], False)]
+    class Session:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            wire.append(dict(kwargs["params"]))
+            dates, more = pages.pop(0)
+            body = {"code": 0, "data": {"fields": ["ts_code", "trade_date", "adj_factor"],
+                    "items": [["510300.SH", day, 1.75] for day in dates], "has_more": more}}
+            return SimpleNamespace(status_code=200, content=json.dumps(body).encode(), raise_for_status=lambda: None)
+    monkeypatch.setattr(requests, "Session", Session)
+    rows = []
+    while True:
+        page, more = source.datahub_page("fund_adj", {**requested, "offset": len(rows)})
+        rows.extend(page)
+        if not more:
+            break
+    assert [row["trade_date"] for row in rows] == ["20240103", "20240102", "20240101"]
+    assert [params["offset"] for params in wire] == [0, 2]
+    assert all(params["limit"] == 5000 for params in wire)
+    assert requested["limit"] == 6000
+    with source.store.engine.connect() as connection:
+        captures = connection.execute(select(batches.c.details)).scalars().all()
+    assert {json.dumps(capture["parameters"], sort_keys=True) for capture in captures} == {
+        json.dumps(params, sort_keys=True) for params in wire}
+    assert source.store.query("regime_market_daily")["total"] == 3
+
+    # The local replica has no gateway cap and keeps its original paging order.
+    source.role = "replica"
+    monkeypatch.setattr(requests, "Session", lambda **kwargs: pytest.fail("replica acquired data"))
+    first, more = source.datahub_page("fund_adj", {**requested, "offset": 0, "limit": 2})
+    last, last_more = source.datahub_page("fund_adj", {**requested, "offset": 2, "limit": 6000})
+    assert first + last == rows
+    assert more and not last_more
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 408, 429, 500, 503])
+def test_datahub_http_failures_preserve_only_transient_transport_errors(source, monkeypatch, tmp_path, status):
+    from dataclasses import replace
+    from curl_cffi import requests
+    from curl_cffi.requests.exceptions import RequestException
+    key = tmp_path / "datahub-key"
+    key.write_text("fixture-only-key")
+    source.settings = replace(source.settings, datahub_api_key_file=key)
+    failure = RequestException("private provider response")
+    failure.response = SimpleNamespace(status_code=status)
+    def fail():
+        raise failure
+    class Session:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url, **kwargs):
+            return SimpleNamespace(status_code=status, content=b"private provider response", raise_for_status=fail)
+    monkeypatch.setattr(requests, "Session", Session)
+    deterministic = status < 500 and status not in {408, 429}
+    with pytest.raises(ValueError if deterministic else RequestException) as caught:
+        source.datahub_page("index_daily", {"ts_code": "000985.CSI", "limit": 6000})
+    if deterministic:
+        assert str(caught.value) == f"DataHub daily request rejected with HTTP {status}"
+    else:
+        assert caught.value is failure
+    with source.store.engine.connect() as connection:
+        assert connection.execute(select(batches.c.id)).all() == []
 
 
 def test_replica_reads_delivered_rows_without_credentials_or_network(source, monkeypatch):
