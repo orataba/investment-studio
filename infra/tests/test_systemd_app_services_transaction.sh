@@ -12,6 +12,7 @@ mkdir -p \
   "$PROJECT_ROOT/shared-data" \
   "$PROJECT_ROOT/shared-data/scripts" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
+  "$PROJECT_ROOT/apps/watchlist/backend/scripts" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
   "$PROJECT_ROOT/apps/briefing/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend/scripts" \
@@ -61,6 +62,15 @@ printf '%s\n' \
   '    event_log.write("catalog-refresh\n")' \
   'raise SystemExit(1 if environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
   > "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
+
+printf '%s\n' \
+  '#!/usr/bin/env python3' \
+  'from os import environ' \
+  'from pathlib import Path' \
+  'with Path(environ["EVENT_LOG"]).open("a", encoding="utf-8") as event_log:' \
+  '    event_log.write("watchlist-refresh\n")' \
+  'raise SystemExit(1 if environ.get("WATCHLIST_REFRESH_FAIL") == "true" else 0)' \
+  > "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 
 printf '%s\n' \
   '#!/usr/bin/env python3' \
@@ -270,16 +280,18 @@ grep -q 'Safety backup retained at:' "$SUCCESS_CASE/output"
 backup_line="$(grep -n '^backup$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 migration_line="$(grep -n '^migrate$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 catalog_refresh_line="$(grep -n '^catalog-refresh$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+watchlist_refresh_line="$(grep -n '^watchlist-refresh$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 snapshot_refresh_line="$(grep -n '^snapshot-refresh$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 audit_line="$(grep -n '^audit$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 restart_line="$(grep -n 'systemctl:restart' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
-if [[ -z "$backup_line" || -z "$migration_line" || -z "$catalog_refresh_line" || -z "$snapshot_refresh_line" || -z "$audit_line" || -z "$restart_line" \
+if [[ -z "$backup_line" || -z "$migration_line" || -z "$catalog_refresh_line" || -z "$watchlist_refresh_line" || -z "$snapshot_refresh_line" || -z "$audit_line" || -z "$restart_line" \
   || "$backup_line" -ge "$migration_line" \
   || "$migration_line" -ge "$catalog_refresh_line" \
-  || "$catalog_refresh_line" -ge "$snapshot_refresh_line" \
+  || "$catalog_refresh_line" -ge "$watchlist_refresh_line" \
+  || "$watchlist_refresh_line" -ge "$snapshot_refresh_line" \
   || "$snapshot_refresh_line" -ge "$audit_line" \
   || "$audit_line" -ge "$restart_line" ]]; then
-  echo "Systemd install ordering was not backup, migration, catalog refresh, snapshot refresh, audit, then restart." >&2
+  echo "Systemd install ordering was not backup, migration, catalog refresh, Watchlist reconciliation, snapshot refresh, audit, then restart." >&2
   exit 1
 fi
 
@@ -312,11 +324,26 @@ assert_original_state_restored "$CATALOG_REFRESH_CASE"
 grep -q '^backup$' "$CATALOG_REFRESH_CASE/events"
 grep -q '^migrate$' "$CATALOG_REFRESH_CASE/events"
 grep -q '^catalog-refresh$' "$CATALOG_REFRESH_CASE/events"
-if grep -q '^snapshot-refresh$\|^audit$' "$CATALOG_REFRESH_CASE/events"; then
+if grep -q '^watchlist-refresh$\|^snapshot-refresh$\|^audit$' "$CATALOG_REFRESH_CASE/events"; then
   echo "The systemd installer continued after a failed catalog refresh." >&2
   exit 1
 fi
 grep -q '^database-restore$' "$CATALOG_REFRESH_CASE/events"
+
+WATCHLIST_REFRESH_CASE="$TEST_ROOT/watchlist-refresh-failure"
+prepare_case "$WATCHLIST_REFRESH_CASE"
+if WATCHLIST_REFRESH_FAIL=true run_case "$WATCHLIST_REFRESH_CASE" > "$WATCHLIST_REFRESH_CASE/output" 2>&1; then
+  echo "The systemd installer accepted an injected Watchlist reconciliation failure." >&2
+  exit 1
+fi
+assert_original_state_restored "$WATCHLIST_REFRESH_CASE"
+grep -q '^catalog-refresh$' "$WATCHLIST_REFRESH_CASE/events"
+grep -q '^watchlist-refresh$' "$WATCHLIST_REFRESH_CASE/events"
+if grep -q '^snapshot-refresh$\|^audit$' "$WATCHLIST_REFRESH_CASE/events"; then
+  echo "The systemd installer continued after a failed Watchlist reconciliation." >&2
+  exit 1
+fi
+grep -q '^database-restore$' "$WATCHLIST_REFRESH_CASE/events"
 
 SNAPSHOT_REFRESH_CASE="$TEST_ROOT/snapshot-refresh-failure"
 prepare_case "$SNAPSHOT_REFRESH_CASE"

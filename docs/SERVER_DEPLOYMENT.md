@@ -304,9 +304,14 @@ including the market-data refresh service/timer. Before migration it stops every
 database writer and creates a verified backup of the project schemas with
 the shared archive/manifest/checksum primitive, then runs
 `infra/scripts/migrate_all.sh`. After migration it refreshes the FMP stock and
-ETF search catalogs required by the current exchange contract, rebuilds only
-Portfolio snapshots whose calculation version or source lineage is stale, then
-runs the read-only live-data audit. The backup covers `identity`, `instrument_data`,
+ETF search catalogs required by the current exchange contract, reconciles the four
+system Watchlists from the shared registry, and rebuilds only Portfolio snapshots
+whose calculation version or source lineage is stale, then runs the read-only
+live-data audit. Watchlist reconciliation uses the same membership and row
+materialization as normal directory reads, preserving user lists, views and
+research; a registry or materialization error fails the install and rolls back.
+The integrity gate runs only after these release maintenance steps, without
+depending on a browser visit to synchronize the directories. The backup covers `identity`, `instrument_data`,
 `instrument_registry`, `data_ingestion`, `platform`, `portfolio`, `watchlist`,
 `market_data`, `market_text` and `briefing`; preserve external TOTP encryption keys
 and service credentials separately. Migration order is dependency-aware so

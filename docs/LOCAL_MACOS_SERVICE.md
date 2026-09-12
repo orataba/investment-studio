@@ -35,7 +35,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 history 和进程参数暴露凭据。
 
 安装器会停止并等待旧服务退出，创建并校验 `identity / instrument_data / instrument_registry / data_ingestion / platform / portfolio / watchlist / market_data / market_text / briefing`
-项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移，重建四个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
+项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移；资料刷新后按共享登记目录同步四个系统 Watchlist 的成员及行物化，保留用户名单、视图和研究，再刷新失效的 Portfolio 快照并执行只读审计。同步失败同样触发回滚，不依赖浏览器访问补齐目录。随后重建四个前端，以原子文件替换更新各 plist 并启动 `launchd`
 服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
 和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
 校验后的迁移前备份默认保留在

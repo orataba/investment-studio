@@ -536,6 +536,7 @@ def _sync_system_watchlist(
     *,
     spec: SystemWatchlistSpec,
     existing_record: Watchlist | None = None,
+    raise_on_registry_error: bool = False,
 ) -> Watchlist:
     record = watchlist_repository.ensure_system_watchlist(
         session, spec, existing_record=existing_record,
@@ -547,6 +548,8 @@ def _sync_system_watchlist(
             limit=None,
         )
     except SharedInstrumentRegistryError:
+        if raise_on_registry_error:
+            raise
         return record
 
     try:
@@ -620,6 +623,8 @@ def _sync_system_watchlist(
         # membership addition/deletion without its matching read-model row;
         # otherwise the ID probe would consider the broken state reconciled.
         session.expire(record, ["items"])
+        if raise_on_registry_error:
+            raise
         return record
     # The session deliberately keeps objects alive across commits. Expire the
     # loaded collection after bulk membership reconciliation so the response

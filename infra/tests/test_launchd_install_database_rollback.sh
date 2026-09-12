@@ -24,6 +24,7 @@ prepare_case() {
     "$project_root/apps/briefing/frontend/dist" \
     "$project_root/shared-data/scripts" \
     "$project_root/apps/portfolio/backend/scripts" \
+    "$project_root/apps/watchlist/backend/scripts" \
     "$mock_bin" \
     "$plist_root" \
     "$env_root" \
@@ -86,6 +87,14 @@ prepare_case() {
     '    handle.write("snapshot-refresh\n")' \
     'raise SystemExit(1 if os.environ.get("SNAPSHOT_REFRESH_FAIL") == "true" else 0)' \
     > "$project_root/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
+  printf '%s\n' \
+    'from __future__ import annotations' \
+    'import os' \
+    'from pathlib import Path' \
+    'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
+    '    handle.write("watchlist-refresh\n")' \
+    'raise SystemExit(1 if os.environ.get("WATCHLIST_REFRESH_FAIL") == "true" else 0)' \
+    > "$project_root/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" Darwin' > "$mock_bin/uname"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$mock_bin/node"
@@ -227,6 +236,18 @@ if grep -q 'sensitive-password' "$PASSWORD_URL_CASE/output"; then
 fi
 [[ ! -e "$EVENT_LOG" ]]
 
+MISSING_WATCHLIST_HELPER_CASE="$TEST_ROOT/missing-watchlist-helper"
+prepare_case "$MISSING_WATCHLIST_HELPER_CASE"
+rm "$MISSING_WATCHLIST_HELPER_CASE/project/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
+export EVENT_LOG="$MISSING_WATCHLIST_HELPER_CASE/events"
+if run_installer "$MISSING_WATCHLIST_HELPER_CASE" > "$MISSING_WATCHLIST_HELPER_CASE/output" 2>&1; then
+  echo "Installer accepted a missing Watchlist reconciliation helper." >&2
+  exit 1
+fi
+grep -q 'Required installer helper is missing: .*refresh_release_watchlists.py' "$MISSING_WATCHLIST_HELPER_CASE/output"
+[[ ! -e "$EVENT_LOG" ]]
+assert_old_plists_restored "$MISSING_WATCHLIST_HELPER_CASE"
+
 EARLY_STOP_CASE="$TEST_ROOT/early-stop-failure"
 prepare_case "$EARLY_STOP_CASE"
 rm -f "$EARLY_STOP_CASE/LaunchAgents/test.investment-studio.portfolio-web.plist"
@@ -281,6 +302,28 @@ if grep -q '^credential-in-argv$' "$EVENT_LOG"; then
   exit 1
 fi
 
+WATCHLIST_REFRESH_CASE="$TEST_ROOT/watchlist-refresh-failure"
+prepare_case "$WATCHLIST_REFRESH_CASE"
+export EVENT_LOG="$WATCHLIST_REFRESH_CASE/events"
+if WATCHLIST_REFRESH_FAIL=true FAIL_ROLLBACK=false run_installer "$WATCHLIST_REFRESH_CASE" \
+  > "$WATCHLIST_REFRESH_CASE/output" 2>&1; then
+  echo "Installer accepted a failed Watchlist reconciliation." >&2
+  exit 1
+fi
+grep -q '^backup$' "$EVENT_LOG"
+grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^market-refresh:' "$EVENT_LOG"
+grep -q '^watchlist-refresh$' "$EVENT_LOG"
+if grep -q '^snapshot-refresh$\|^audit$' "$EVENT_LOG"; then
+  echo "Installer continued after a failed Watchlist reconciliation." >&2
+  exit 1
+fi
+grep -q '^restore$' "$EVENT_LOG"
+restore_line="$(grep -n '^restore$' "$EVENT_LOG" | cut -d: -f1)"
+restart_line="$(grep -n 'launchctl:bootstrap .*test.investment-studio.home-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
+[[ "$restore_line" -lt "$restart_line" ]]
+assert_old_plists_restored "$WATCHLIST_REFRESH_CASE"
+
 SNAPSHOT_REFRESH_CASE="$TEST_ROOT/snapshot-refresh-failure"
 prepare_case "$SNAPSHOT_REFRESH_CASE"
 export EVENT_LOG="$SNAPSHOT_REFRESH_CASE/events"
@@ -293,6 +336,7 @@ set -e
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
 grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
+grep -q '^watchlist-refresh$' "$EVENT_LOG"
 grep -q '^snapshot-refresh$' "$EVENT_LOG"
 if grep -q '^audit$' "$EVENT_LOG"; then
   echo "Installer ran the audit after a failed snapshot refresh." >&2
@@ -314,6 +358,15 @@ grep -q '^migrate$' "$EVENT_LOG"
 grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
 grep -q '^audit$' "$EVENT_LOG"
 grep -q '^health$' "$EVENT_LOG"
+previous_line=0
+for stage in backup migrate market-refresh watchlist-refresh snapshot-refresh audit health; do
+  stage_line="$(grep -n "^$stage\(:\|$\)" "$EVENT_LOG" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$stage_line" || "$stage_line" -le "$previous_line" ]]; then
+    echo "Installer did not execute backup, migration, market refresh, Watchlist reconciliation, snapshot refresh, audit and health checks in order." >&2
+    exit 1
+  fi
+  previous_line="$stage_line"
+done
 grep -q '^restore-failed$' "$EVENT_LOG"
 if awk 'seen && /launchctl:bootstrap/ { found=1 } /^restore-failed$/ { seen=1 } END { exit found ? 0 : 1 }' "$EVENT_LOG"; then
   echo "Previously loaded services restarted after database rollback failed." >&2

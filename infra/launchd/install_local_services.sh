@@ -28,6 +28,7 @@ NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SNAPSHOT_REFRESH_RUNNER="$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
+WATCHLIST_REFRESH_RUNNER="$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 MARKET_DATA_REFRESH_RUNNER="$PROJECT_ROOT/shared-data/scripts/refresh_market_data_scheduled.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
@@ -72,6 +73,7 @@ for required_file in \
   "$AUDIT_RUNNER" \
   "$MARKET_DATA_REFRESH_RUNNER" \
   "$SNAPSHOT_REFRESH_RUNNER" \
+  "$WATCHLIST_REFRESH_RUNNER" \
   "$SCRIPT_DIR/generate_local_service_plists.py" \
   "$PROJECT_ROOT/infra/scripts/install_market_pipeline.py" \
   "$SCRIPT_DIR/load_runtime_env.sh" \
@@ -309,6 +311,8 @@ PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/pyth
     --updated-by launchd-install \
     --no-downstream-refresh \
     --fail-on-item-failure
+PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON_BIN" "$WATCHLIST_REFRESH_RUNNER"
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER" --recover-interrupted
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \

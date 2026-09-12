@@ -78,6 +78,10 @@ if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/shared-data/scripts/ref
   echo "Cannot find Data release catalog refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
+if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py" ]]; then
+  echo "Cannot find Watchlist release directory reconciliation under PROJECT_ROOT: $PROJECT_ROOT" >&2
+  exit 1
+fi
 
 if [[ -z "$ENV_ROOT" ]]; then
   echo "ENV_ROOT must explicitly name the external runtime environment directory." >&2
@@ -553,6 +557,9 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
   echo "Refreshing release-required FMP security catalogs."
   PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
+  echo "Reconciling release-required Watchlist system directories."
+  PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
   echo "Refreshing release-invalidated Portfolio snapshots."
   PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py" \
