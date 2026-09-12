@@ -1,6 +1,7 @@
 import { useSearchParams } from 'react-router'
 import ResearchPage from '../pages/ResearchPage'
 import type { ResearchReference } from '../lib/researchDossierApi'
+import { setRiskReferenceParams } from '../../../../../packages/ui/src/researchReference'
 
 export type InstrumentAssistantDrawerProps = {
   instrumentId: string
@@ -16,6 +17,7 @@ export default function InstrumentAssistantDrawer({ instrumentId, watchlistId, q
     setParams((params) => {
       const next = new URLSearchParams(params)
       for (const key of ['assistant', 'topic', 'question', 'instruments']) next.delete(key)
+      setRiskReferenceParams(next)
       return next
     }, { replace: true })
     onClose()

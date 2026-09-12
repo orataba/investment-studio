@@ -6,6 +6,7 @@ import { dateLabel } from './ResearchEvidence'
 import './research-themes.css'
 import { fetchJson } from '../lib/api'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import ResearchFollowupClocks from './ResearchFollowupClocks'
 
 const statusLabel = { active: '持续关注', paused: '已暂停', closed: '已结束' }
 type ThemeDraft = ResearchThemeInput & { theme_id?: string }
@@ -72,8 +73,9 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       <p className="research-theme-question" translate="no">{theme.question}</p>
       <p className="sector-research-note"><span translate="no">{theme.author || '未标注作者'}</span> · {theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <time dateTime={theme.created_at}>{dateLabel(theme.created_at)}</time></p>
       {current?.assessment ? <p className="research-theme-assessment"><strong>当前判断</strong> <span translate="no">{current.assessment}</span></p> : <p className="sector-research-note">尚待形成研究判断。</p>}
-      {latest && <p className="research-theme-latest"><strong>最新变化</strong> <time dateTime={latest.recorded_at}>{dateLabel(latest.recorded_at)}</time> · <span translate="no">{latest.title}</span></p>}
+      {latest && <p className="research-theme-latest"><strong>最近研究记录</strong> <span translate="no">{latest.title}</span></p>}
       {current?.next_check && <p className="research-notebook-next"><strong>下一步观察</strong> <span translate="no">{current.next_check}</span></p>}
+      <ResearchFollowupClocks changedAt={theme.last_changed_at} reviewedAt={theme.last_reviewed_at} reviewStatus={theme.last_review_status} />
       {theme.close_reason && <p className="sector-research-note"><strong>结束原因</strong> <span translate="no">{theme.close_reason}</span></p>}
       <details className="research-theme-thread"><summary>主题研究时间线 · {updates.length}</summary>
         {updates.length ? updates.map(update => <ResearchUpdateCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} inTheme />) : <p className="sector-research-note">尚无主题更新。后续事件、判断和复盘会保留在这里。</p>}
@@ -98,8 +100,8 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
 
   const active = data?.themes.filter(theme => theme.status === 'active') || []
   const inactive = data?.themes.filter(theme => theme.status !== 'active') || []
-  return <section className="research-themes" aria-label="持续关注主题">
-    <div className="research-dossier-section-heading"><h3>持续关注主题</h3><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => { setDraft({ title: '', question: '', background: '', responsible_user_id: data?.identity.user_id }); setError(''); setNotice(null) }}>建立主题</button></div>
+  return <section className="research-themes" aria-label="长期主题">
+    <div className="research-dossier-section-heading"><h4>长期主题{active.length > 0 && <span> · {active.length}</span>}</h4><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => { setDraft({ title: '', question: '', background: '', responsible_user_id: data?.identity.user_id }); setError(''); setNotice(null) }}>建立主题</button></div>
     {error && <p role="alert">{error}</p>}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
     {draft && <form className="research-theme-editor" onSubmit={event => void save(event)}>
       <label><span>主题名称</span><input required disabled={saving} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
@@ -110,7 +112,7 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       <div className="research-theme-actions"><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button><button type="submit" disabled={saving}>{saving ? '保存中…' : '保存主题'}</button></div>
     </form>}
     {active.map(themeCard)}
-    {data && !active.length && <p className="sector-research-note">尚无正在关注的主题。可以在这里建立，也可以请研究助手记录值得持续研究的问题。</p>}
+    {data && !active.length && <p className="sector-research-note">暂无正在跟踪的长期主题。独立事项见下方。</p>}
     {inactive.length > 0 && <details className="research-theme-archive"><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(themeCard)}</details>}
   </section>
 }

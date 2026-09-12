@@ -140,6 +140,7 @@ def _due_items(session, instrument_id, context, since, now):
     review = (context.get("reviews") or {}).get(instrument_id) or {}
     dossier = next((item for item in context.get("research_dossiers", []) if item.get("instrument_id") == instrument_id), {})
     notebook = review.get("research") or dossier.get("notebook") or {}
+    inactive_themes = {theme["theme_id"] for theme in dossier.get("themes", []) if theme.get("status") != "active"}
     due = []
     for kind, items, field, status in (
         ("forecast_review", notebook.get("forecasts", []), "review_on", "active"),
@@ -147,7 +148,7 @@ def _due_items(session, instrument_id, context, since, now):
     ):
         for item in items:
             value = item.get(field)
-            if not value or item.get("status", status) != status:
+            if not value or item.get("status", status) != status or item.get("theme_id") in inactive_themes:
                 continue
             if len(str(value)) == 10:
                 # Do not invent a source timezone or an intraday release time from a date.

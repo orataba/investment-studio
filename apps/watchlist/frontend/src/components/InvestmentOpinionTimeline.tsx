@@ -83,7 +83,7 @@ function noteInput(draft: OpinionDraft, analyst: string): InstrumentResearchNote
 
 function editableContext(note: InstrumentResearchNote): InvestmentOpinionResearchContextInput | undefined {
   if (!note.research_context) return undefined
-  const fields: Array<keyof InvestmentOpinionResearchContextInput> = ['theme_id', 'related_note_id', 'related_revision', 'relationship', 'background', 'horizon', 'verification', 'invalidation', 'outcome', 'mechanism_assessment', 'alternative_explanations', 'lesson', 'applicability', 'limitations', 'source_ids']
+  const fields: Array<keyof InvestmentOpinionResearchContextInput> = ['theme_id', 'research_update_id', 'event_case_id', 'event_version_id', 'related_note_id', 'related_revision', 'relationship', 'background', 'horizon', 'verification', 'invalidation', 'outcome', 'mechanism_assessment', 'alternative_explanations', 'lesson', 'applicability', 'limitations', 'source_ids']
   return Object.fromEntries(fields.filter(key => key in note.research_context!).map(key => [key, note.research_context![key]]))
 }
 

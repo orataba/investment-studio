@@ -4,12 +4,13 @@ import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import { getHoldingsWorkspace, type HoldingsWorkspaceResponse } from '../lib/api'
 import PortfolioInstrumentRisk from './PortfolioInstrumentRisk'
+import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import './portfolio-risk-drawer.css'
 
 export default function PortfolioRiskDrawer({ portfolioId, onClose, onAskAssistant }: {
   portfolioId: string
   onClose: () => void
-  onAskAssistant: (instrumentId: string, question: string) => void
+  onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
   const { language } = useLanguage()
   const zh = language === 'zh-Hans'

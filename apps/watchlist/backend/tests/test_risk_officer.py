@@ -399,3 +399,85 @@ def test_risk_input_keeps_longest_underwater_duration_separate_from_max_drawdown
         assert summary["peak_date"] == "2026-06-25" and summary["valley_date"] == "2026-07-30"
         assert "全样本统计" in summary["duration_note"]
         assert record.payload_json == raw and record.payload_json["drawdown_summary"]["max_duration_months"] == 10
+
+
+@pytest.mark.parametrize("instrument_type", ["equity", "etf", "index", "public_fund", "private_fund", "crypto"])
+def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_supported_type(client, monkeypatch, instrument_type):
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app import research_mcp
+    seed(client)
+    with get_session_factory()() as session:
+        asset = session.get(InstrumentDetail, "risk-a")
+        asset.instrument_type = asset.detail_view_type = instrument_type
+        session.add(ResearchTopic(topic_id="retained-research", title="标的研究", instrument_ids=["risk-a"], visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="last-published", topic_id="retained-research", kind="analysis", title="研究",
+            status="completed", created_at=datetime(2026, 9, 8, tzinfo=UTC), context_json={"sector_run": True,
+                "instrument_ids": ["risk-a"], "cutoff": "2026-09-08T00:00:00+00:00", "reviews": {"risk-a": {
+                    "status": "completed", "summary": "中期判断有条件成立", "coverage": [],
+                    "research": {"investment_view": {"risk": "需求修复仍待验证", "source_ids": [],
+                        "versions": [{"risk": "旧版本，不应重复注入"}]}}}}}))
+        session.add(ResearchEntry(entry_id="later-quiet-check", topic_id="retained-research", kind="analysis", title="检查",
+            status="completed", created_at=datetime(2026, 9, 8, 12, tzinfo=UTC), context_json={"sector_run": True,
+                "instrument_ids": ["risk-a"], "cutoff": "2026-09-08T12:00:00+00:00", "reviews": {"risk-a": {
+                    "status": "completed", "summary": "", "coverage": [], "research": None}}}))
+        session.add(ResearchEntry(entry_id="latest-failed", topic_id="retained-research", kind="analysis", title="研究",
+            status="failed", body="本次资料获取失败", created_at=datetime(2026, 9, 9, tzinfo=UTC), context_json={
+                "sector_run": True, "instrument_ids": ["risk-a"], "cutoff": "2026-09-09T00:00:00+00:00"}))
+        session.commit()
+
+        snapshot = service.read_snapshot(session, instrument_id="risk-a")
+
+    tracking = snapshot["instruments"][0]["research_tracking"]
+    assert tracking["latest_check"]["status"] == "failed"
+    assert tracking["latest_check"]["checked_at"] == "2026-09-09T00:00:00+00:00"
+    assert tracking["current_judgment"]["summary"] == "中期判断有条件成立"
+    assert tracking["current_judgment"]["view_updated_at"] == "2026-09-08T00:00:00+00:00"
+    assert tracking["current_judgment"]["investment_view"] == {"risk": "需求修复仍待验证", "source_ids": []}
+    assert "不是独立原始证据" in tracking["note"]
+    assert any("最近一次研究未完成" in message for message in snapshot["limitations"])
+    assert {case["case_id"] for case in snapshot["research"]} == {"research"}
+    assert {case["case_id"] for case in snapshot["coverage"]} == set()  # A research gap is not a newly invented risk case.
+    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True,
+        "risk_inputs": snapshot, "cutoff": "2026-09-09T00:00:00+00:00"})
+    assert research_mcp.read_risk_instrument("risk-a")["current"]["instrument"]["research_tracking"] == tracking
+
+
+def test_new_limited_check_changes_risk_inputs_without_new_event_and_keeps_the_gap(client):
+    from watchlist_app.db.models.workbench import ResearchTopic
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
+        run.context_json = {**run.context_json, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a")}
+        service.apply_result(session, run, reply())
+        session.add(ResearchTopic(topic_id="limited-research", title="研究", instrument_ids=["risk-a"], visibility="team"))
+        session.flush()
+        receipt = {"status": "insufficient_evidence", "summary": "只取得截至9月8日的资讯", "reviewed_update_ids": []}
+        session.add(ResearchEntry(entry_id="limited-check", topic_id="limited-research", kind="analysis", title="检查",
+            status="completed", created_at=datetime(2026, 9, 9, tzinfo=UTC), context_json={"sector_run": True,
+                "instrument_ids": ["risk-a"], "cutoff": "2026-09-09T00:00:00+00:00", "reviews": {"risk-a": {
+                    "status": "limited", "summary": "", "coverage": ["资讯尚未覆盖9月9日"], "reflection": receipt}}}))
+        session.commit()
+
+        state = service.review_workspace(session, instrument_id="risk-a")
+        snapshot = service.read_snapshot(session, instrument_id="risk-a")
+        updated, created = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
+
+        assert state["latest_completed"]["stale"]
+        assert created and updated.entry_id != run.entry_id
+        assert snapshot["instruments"][0]["research_tracking"]["latest_check"]["reflection"] == receipt
+        assert any("覆盖不足" in message for message in snapshot["limitations"])
+        assert any("资讯尚未覆盖9月9日" in message for message in snapshot["limitations"])
+
+
+def test_missing_research_and_normal_nav_disclosure_lag_remain_coverage_context(client):
+    seed(client)
+    with get_session_factory()() as session:
+        session.get(InstrumentDetail, "risk-a").instrument_type = "private_fund"
+        session.commit()
+        snapshot = service.read_snapshot(session, instrument_id="risk-a")
+        tracking = snapshot["instruments"][0]["research_tracking"]
+        assert tracking["latest_check"] is None and tracking["current_judgment"] is None
+        assert "正常净值披露滞后不等于研究失败" in tracking["note"]
+        assert any("研究覆盖尚未确认" in message for message in snapshot["limitations"])
+        assert {case["case_id"] for case in snapshot["research"]} == {"research"}

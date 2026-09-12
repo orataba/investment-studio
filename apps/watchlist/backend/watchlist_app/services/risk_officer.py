@@ -69,6 +69,7 @@ def _portfolio_snapshot(portfolio_id):
 
 def read_snapshot(session, **scope):
     from watchlist_app.api.routes.workbench import risk_workspace
+    from watchlist_app.services.sector_research import review_states
     scope = normalize_scope(**scope)
     key, identifier = next(iter(scope.items()))
     kind = key.removesuffix("_id")
@@ -108,8 +109,32 @@ def read_snapshot(session, **scope):
         ids, name = [identifier], record.instrument_name
     workspace = risk_workspace(instrument_ids=",".join(ids), session=session)
     instruments = sorted(workspace["instruments"], key=lambda item: item["instrument_id"])
+    states = review_states(session) if instruments else {"latest": {}, "last_completed": {}}
+    latest_research, completed_research = states["latest"], states["last_completed"]
     peer_scope = peer_context(session) if instruments else None
     for item in instruments:
+        iid = item["instrument_id"]
+        latest, completed = latest_research.get(iid), completed_research.get(iid)
+        view = ((completed or {}).get("current_research") or {}).get("investment_view")
+        item["research_tracking"] = {
+            "latest_check": {key: latest.get(key) for key in (
+                "run_id", "status", "checked_at", "coverage", "reflection")} if latest else None,
+            "current_judgment": {"summary": completed.get("current_summary") or completed.get("summary", ""),
+                "view_updated_at": completed.get("view_updated_at"), "view_run_id": completed.get("view_run_id"),
+                "investment_view": {key: value for key, value in view.items() if key != "versions"} if view else None}
+                if completed else None,
+            "note": "研究员已保存的判断与复核状态，供风险分析衔接；不是独立原始证据，也不表示本轮重新核实。资料覆盖不足本身不是投资风险，正常净值披露滞后不等于研究失败。",
+        }
+        status = (latest or {}).get("status")
+        gap = {None: "尚无已留存的研究检查，研究覆盖尚未确认",
+            "queued": "本次研究仍在等待，尚未完成新的检查",
+            "running": "本次研究尚未完成，沿用此前已保存的判断",
+            "failed": "最近一次研究未完成，不能视为已核实当前变化",
+            "limited": "最近一次研究覆盖不足，不能视为已完成全面核实"}.get(status)
+        if gap:
+            limitations.append(f"{item['name']}：{gap}；当前研判仍可使用已留存数值与风险事项。")
+        for coverage_note in (latest or {}).get("coverage", []):
+            limitations.append(f"{item['name']}研究覆盖：{coverage_note}")
         risk = item.get("risk")
         if risk and risk.get("drawdown_summary"):
             summary = dict(risk["drawdown_summary"])

@@ -194,6 +194,25 @@ def test_natural_language_horizon_is_not_parsed_into_an_invented_deadline(store)
     assert triggers.research_trigger(session(), "gold", prior, now=stamp(7)) is None
 
 
+@pytest.mark.parametrize("theme_status", ["paused", "closed"])
+def test_inactive_theme_forecast_does_not_restart_its_research_when_due(store, theme_status):
+    forecast = {"key": "theme-forecast", "theme_id": "theme", "claim": "仍需观察", "status": "active",
+        "review_on": "2026-09-03T10:00:00-04:00"}
+    dossier = {"instrument_id": "gold", "themes": [{"theme_id": "theme", "status": theme_status}],
+        "notebook": {"forecasts": [forecast]}}
+    prior = context(cutoff=stamp(3, 12).isoformat(), market_queries=[], research_dossiers=[dossier])
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15)) is None
+
+    # The shared instrument can still require unrelated research at the same time.
+    dossier["notebook"]["forecasts"].append({**forecast, "key": "global-forecast", "theme_id": None})
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15))
+    assert [item["key"] for item in result["reasons"][0]["items"]] == ["global-forecast"]
+
+    dossier["themes"][0]["status"] = "active"
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(3, 15))
+    assert {item["key"] for item in result["reasons"][0]["items"]} == {"theme-forecast", "global-forecast"}
+
+
 def test_fund_observation_date_uses_the_same_nav_check_clock_as_daily_research(store):
     fund_session = SimpleNamespace(scalars=lambda statement: [], get=lambda model, iid:
         SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None))

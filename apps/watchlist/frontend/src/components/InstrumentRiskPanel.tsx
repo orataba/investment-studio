@@ -1,6 +1,7 @@
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
 import { fetchJson } from '../lib/api'
 import { useCanWriteTeam } from './AccountBoundary'
+import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 const request = <T,>(path: string, init?: RequestInit) =>
   fetchJson<T>(`/api${path}`, init)
 export default function InstrumentRiskPanel({
@@ -18,7 +19,7 @@ export default function InstrumentRiskPanel({
   focusInstrumentId?: string
   scopeLabel?: string
   heading?: string | null
-  onAskAssistant?: (id: string, question: string) => void
+  onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
   onChanged?: () => void
   mode?: 'attention' | 'price'
 }) {
@@ -45,9 +46,11 @@ export default function InstrumentRiskPanel({
         instrumentHref={(id, signal) =>
           `/instruments/${encodeURIComponent(id)}?${new URLSearchParams({ tab: signal?.startsWith('sector:') ? 'events' : 'risk', ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
         }
-        assistantHref={(id, question) =>
-          `/assistant?${new URLSearchParams({ instruments: id, question, ...(watchlistId ? { watchlist: watchlistId } : {}) })}`
-        }
+        assistantHref={(id, question, reference) => {
+          const params = new URLSearchParams({ instruments: id, question, ...(watchlistId ? { watchlist: watchlistId } : {}) })
+          setRiskReferenceParams(params, reference)
+          return `/assistant?${params}`
+        }}
       />
   )
 }

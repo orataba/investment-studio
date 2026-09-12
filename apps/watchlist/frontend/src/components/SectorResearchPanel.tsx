@@ -2,14 +2,14 @@ import { useStudioAccount } from './AccountBoundary'
 import { useEffect, useState } from 'react'
 import { fetchJson } from '../lib/api'
 import ResearchDossierPanel from './ResearchDossierPanel'
-import type { AskResearchAssistant, EventSource } from '../lib/researchDossierApi'
+import type { AskResearchAssistant, EventSource, InvestmentView } from '../lib/researchDossierApi'
 export type { EventSource } from '../lib/researchDossierApi'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import './sector-research.css'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 
 type ResearchReflection = { status: 'reviewed' | 'insufficient_evidence'; summary: string; reviewed_update_ids: string[] }
-type Review = { reflection?: ResearchReflection | null; run_id: string; status: string; checked_at: string | null; view_updated_at?: string | null; view_run_id?: string | null; change_kind?: 'none' | 'knowledge' | 'investment'; summary: string; coverage: string[] }
+type Review = { reflection?: ResearchReflection | null; run_id: string; status: string; checked_at: string | null; view_updated_at?: string | null; view_run_id?: string | null; change_kind?: 'none' | 'knowledge' | 'investment'; summary: string; coverage: string[]; current_research?: { investment_view?: InvestmentView | null } | null }
 export type SectorResearch = { instrument_id: string; ticker: string; sector_name: string; latest_review: Review | null; last_completed_review?: Review | null }
 export type EventSnapshot = {
   title: string; body: string; direction: 'risk' | 'opportunity' | 'uncertain'
@@ -153,7 +153,7 @@ export default function SectorResearchPanel({ instrumentId, watchlistId, variant
       : data.sectors.some((sector) => sector.latest_review?.status === 'limited') ? '已更新，覆盖受限'
         : data.sectors.some((sector) => !completedReview(sector)) ? '尚未完成研究'
           : data.sectors.every(sector => sector.latest_review?.change_kind === 'none') ? '已检查，无新增投资变化'
-            : data.sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '资料已更新，投资判断沿用' : '研究已更新'
+            : data.sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '研究资料已更新' : '研究已更新'
   const coverage = [...new Set(data.sectors.flatMap((sector) => [
     ...(sector.latest_review?.coverage || []), ...(completedReview(sector)?.coverage || []),
   ]))]
@@ -188,13 +188,16 @@ export default function SectorResearchPanel({ instrumentId, watchlistId, variant
       {data.sectors.map((sector) => {
         const completed = completedReview(sector)
         const latest = sector.latest_review
+        const investmentView = completed?.current_research?.investment_view
+        const summary = completed?.summary.trim() ? completed.summary : investmentView?.direction
+        const summaryUpdatedAt = completed?.summary.trim() ? completed.view_updated_at || completed.checked_at : investmentView?.updated_at
         return <article key={sector.instrument_id}>
           {data.sectors.length > 1 && <h4>{sector.ticker} · {sector.sector_name}</h4>}
-          {completed?.summary ? <>
-            <p className="sector-conclusion-date">观点更新于 <time dateTime={completed.view_updated_at || completed.checked_at || undefined}>{time(completed.view_updated_at || completed.checked_at)}</time></p>
-            <p className="sector-conclusion-body" translate="no">{completed.summary}</p>
-          </> : <p className="sector-research-note">{completed ? '尚无已发布的投资判断。' : '尚未完成研究。'}</p>}
-          {latest && ['completed', 'limited'].includes(latest.status) && latest.change_kind && <p className="sector-latest-run">本轮检查 <time dateTime={latest.checked_at || undefined}>{time(latest.checked_at)}</time> · {latest.change_kind === 'none' ? latest.status === 'limited' ? '在已覆盖的信息中未发现新增投资变化，资料缺口见研究覆盖' : '未发现新增投资变化' : latest.change_kind === 'knowledge' ? '研究资料已更新，投资判断沿用' : '投资研究已更新'}</p>}
+          {summary?.trim() ? <>
+            <p className="sector-conclusion-date">观点更新于 <time dateTime={summaryUpdatedAt || undefined}>{time(summaryUpdatedAt)}</time></p>
+            <p className="sector-conclusion-body" translate="no">{summary}</p>
+          </> : <p className="sector-research-note">{completed ? '尚未形成研究结论。' : '尚未完成研究。'}</p>}
+          {latest && ['completed', 'limited'].includes(latest.status) && latest.change_kind && <p className="sector-latest-run">本轮检查 <time dateTime={latest.checked_at || undefined}>{time(latest.checked_at)}</time> · {latest.change_kind === 'none' ? latest.status === 'limited' ? '在已覆盖的信息中未发现新增投资变化，资料缺口见研究覆盖' : '未发现新增投资变化' : latest.change_kind === 'knowledge' ? '研究资料已更新' : '投资研究已更新'}</p>}
           {latest && (latest.run_id !== completed?.run_id || latest.status !== completed?.status) && <p className="sector-latest-run" role="status">最近更新：{statusLabels[latest.status] || '状态待核实'} · {time(latest.checked_at)}</p>}
         </article>
       })}

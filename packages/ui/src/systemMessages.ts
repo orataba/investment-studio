@@ -1227,6 +1227,7 @@ export const systemMessages: Record<string, string> = {
   "Linked ledger facts": "关联账本记录",
   "Linked options": "关联期权",
   "Linked": "已关联",
+  "The selected risk item is linked. When sent, its timestamp and supporting evidence will be checked.": "已关联所选风险事项，发送后核对其记录时间并读取对应风险依据。",
   "Loading": "加载中",
   "Loading account positions.": "正在加载账户持仓。",
   "Loading benchmark series…": "正在加载基准序列…",

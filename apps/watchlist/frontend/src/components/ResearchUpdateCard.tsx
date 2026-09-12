@@ -6,7 +6,7 @@ import { SourceList, dateLabel, hasTimeZone } from './ResearchEvidence'
 export const updateKindLabels: Record<ResearchUpdate['kind'], string> = {
   event: '事件', question: '问题进展', judgment: '研究判断', schedule: '观察日程', forecast: '预测', review: '复盘', lesson: '研究经验', theme: '主题', opinion: '投资观点',
 }
-const followUpLabels = { none: '暂不跟进', watch: '继续跟进', resolved: '已结束跟进' }
+const followUpLabels = { none: '当时无需跟进', watch: '当时安排跟进', resolved: '已结束跟进' }
 
 export function updateStatusLabel(update: ResearchUpdate) {
   if (!update.status) return ''
@@ -18,8 +18,8 @@ export function updateStatusLabel(update: ResearchUpdate) {
     return elapsed ? '结果待核实' : '预定事件'
   }
   const labels: Partial<Record<ResearchUpdate['kind'], Record<string, string>>> = {
-    forecast: { active: '持续观察', confirmed: '结果已出现', refuted: '预测未成立', expired: '观察期已结束', withdrawn: '已撤回' },
-    question: { open: '继续研究', supported: '当前证据支持', refuted: '当前证据不支持' },
+    forecast: { active: '当时待验证', confirmed: '结果已出现', refuted: '预测未成立', expired: '观察期已结束', withdrawn: '已撤回' },
+    question: { open: '当时待验证', supported: '当时证据支持', refuted: '当时证据不支持' },
     schedule: { released: '已发布', cancelled: '已取消' },
     theme: { active: '持续关注', paused: '已暂停', closed: '已结束' },
   }
@@ -34,6 +34,8 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const [writing, setWriting] = useState(false)
   const [opinion, setOpinion] = useState('')
   const historical = Boolean(update.superseded || update.withdrawn)
+  const citationCorrected = update.change === 'citation_corrected'
+  const correction = citationCorrected ? update.citation_correction : undefined
   const statusLabel = updateStatusLabel(update)
   const reference = { ...update.reference, research_update_id: update.update_id }
   function saveOpinion(event: FormEvent) {
@@ -45,7 +47,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const body = <>
     {update.body && <p className={`research-update-body${!expandedBody && update.body.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{update.body}</p>}
     {update.body.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
-    {update.next_check && <p className="research-update-next"><strong>下一步观察</strong> <span translate="no">{update.next_check}</span></p>}
+    {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
     {update.scheduled_at && <p className="sector-event-dates"><span>预定时间 <time dateTime={update.scheduled_at}>{dateLabel(update.scheduled_at)}</time></span></p>}
     {(update.occurred_at || update.published_at) && <p className="sector-event-dates">
       {update.occurred_at && <span>事件发生 <time dateTime={update.occurred_at}>{dateLabel(update.occurred_at)}</time></span>}
@@ -70,9 +72,9 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   </>
   return <article className={`research-update-card${historical ? ' research-update-historical' : ''}`} data-update-id={update.update_id}>
     <div className="research-update-meta"><span>{updateKindLabels[update.kind]}{update.analysis_depth === 'brief' && <> · <span>简讯</span></>}</span>
-      <span translate={update.author === '研究员' || !update.author ? undefined : 'no'}>{update.author || (update.author_role === 'researcher' ? '研究员' : '未标注作者')}</span>
-      <span>{update.author_role === 'user' ? '人工判断' : '研究员记录'}</span>
-      <time dateTime={update.recorded_at}>{dateLabel(update.recorded_at)}</time>
+      <span translate={update.author === '研究员' || update.author_role === 'system' || !update.author ? undefined : 'no'}>{update.author || (update.author_role === 'researcher' ? '研究员' : '未标注作者')}</span>
+      <span>{citationCorrected ? '引用修正' : update.author_role === 'system' ? '系统记录修订' : update.author_role === 'user' ? '人工判断' : '研究员记录'}</span>
+      <span>{citationCorrected && <>修正时间 </>}<time dateTime={update.recorded_at}>{dateLabel(update.recorded_at)}</time></span>
       {update.information_type === 'rumor' && <span className="sector-research-limitation">传闻 · 待证实</span>}
       {update.information_type === 'opinion' && <span>来源观点</span>}
       {statusLabel && <span>{statusLabel}</span>}
@@ -80,6 +82,10 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
       {historical && <strong>{update.withdrawn ? '已撤回 · 仅供追溯' : '已修订 · 当时版本'}</strong>}
     </div>
     <h4 translate="no">{update.title}</h4>
+    {correction && <>
+      <p className="sector-research-note">原判断时间 <time dateTime={correction.original_recorded_at}>{dateLabel(correction.original_recorded_at)}</time></p>
+      {correction.reason && <p className="sector-research-note"><strong>修正说明</strong> <span translate="no">{correction.reason}</span></p>}
+    </>}
     {update.withdrawn && update.withdrawal_reason && <p className="sector-research-limitation" translate="no">{update.withdrawal_reason}</p>}
     {update.withdrawn_at && <p className="sector-research-note">撤回时间 <time dateTime={update.withdrawn_at}>{dateLabel(update.withdrawn_at)}</time></p>}
     {!inTheme && update.theme_ids.length > 0 && <div className="research-update-themes">{update.theme_ids.map(id => <a key={id} href={`#research-theme-${encodeURIComponent(id)}`} onClick={() => {

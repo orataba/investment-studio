@@ -1,19 +1,35 @@
 import type { LanguageMessages, LanguagePatternMessages } from '../../../../packages/ui/src/i18n'
 
-export const researchMessages: LanguageMessages = { en: {
+export const researchMessages: LanguageMessages = { 'zh-Hans': {
+  'Configured search endpoint did not execute native web search': '本轮公开网页搜索未能完成，相关信息覆盖受限。',
+}, en: {
+  'Configured search endpoint did not execute native web search': 'Public-web search was unavailable for this check.',
   '本轮复核': 'Review in this run', '已复核既有判断': 'Prior judgments reviewed', '复核证据不足': 'Insufficient evidence for review',
   '问题进展': 'Question update', '观察日程': 'Research calendar',
   '展开分析': 'Expand analysis', '收起分析': 'Collapse analysis', '来源观点': 'Source opinion',
   '研究动态': 'Research activity', '判断依据与期限': 'Assessment, evidence and horizon',
+  '研究资料已更新': 'Research materials updated', '尚未形成研究结论。': 'No research conclusion has been formed yet.',
+  '当前跟踪': 'Current follow-ups', '长期主题': 'Long-term themes', '独立跟进事项': 'Standalone follow-ups',
+  '更新此标的研究时，一并复核当前跟踪。长期主题积累判断；独立事项解决后退出，记录仍保留。': 'Research updates revisit current tracking. Themes accumulate judgments; resolved standalone items leave this view while their history is retained.',
+  '暂无正在跟踪的长期主题。独立事项见下方。': 'No active long-term themes. See standalone follow-ups below.',
+  '当前没有尚待解决的独立事项。已结束事项保留在下方研究动态。': 'No unresolved standalone items. Completed items remain in the research activity below.',
+  '正在读取当前跟进…': 'Loading current follow-ups…', '当前跟进暂时无法读取：': 'Current follow-ups are unavailable: ',
+  '事件跟进': 'Event follow-up', '待解问题': 'Open question', '预测验证': 'Forecast validation',
+  '最近实质进展': 'Last substantive update', '当前判断最近复核': 'Current assessment last reviewed', '当前判断最近复核证据不足': 'Latest review of current assessment lacked evidence', '尚未记录': 'Not recorded',
+  '最近研究记录': 'Latest research record', '继续核查': 'Continue investigating', '继续跟进此事项': 'Continue this follow-up',
+  '当时待验证': 'Pending verification then', '当时证据支持': 'Supported by evidence then', '当时证据不支持': 'Unsupported by evidence then',
+  '当时无需跟进': 'No follow-up required then', '当时安排跟进': 'Follow-up planned then',
   '更新类型': 'Update type', '全部类型': 'All types', '研究判断': 'Research assessment', '预测': 'Forecast', '复盘': 'Review', '研究经验': 'Research lesson', '主题': 'Theme', '事件': 'Event', '简讯': 'Brief',
   '暂不跟进': 'No follow-up needed', '继续跟进': 'Following up', '已结束跟进': 'Follow-up completed',
   '人工判断': 'Human judgment', '研究员记录': 'Researcher record', '未标注作者': 'Author not recorded',
+  '系统': 'System', '系统记录修订': 'System record correction', '引用修正': 'Citation correction',
+  '修正时间': 'Corrected at', '原判断时间': 'Original assessment time', '修正说明': 'Correction note', '原下一步观察': 'Original next observation',
   '已撤回 · 仅供追溯': 'Withdrawn · historical record', '已修订 · 当时版本': 'Superseded · earlier version',
   '查看当时记录': 'Read the earlier record', '分析与研究依据': 'Analysis and evidence', '事件发生': 'Event occurred', '信息发布': 'Information published',
   '追问这条更新': 'Discuss this update', '讨论当时判断': 'Discuss the earlier assessment', '写投资观点': 'Write an investment opinion',
   '请助手建立主题': 'Ask assistant to create a theme', '我的投资判断': 'My investment judgment', '交给助手保存': 'Send to assistant to save',
   '将交给研究助手保存，并关联这条更新；助手完成保存后会显示结果。': 'The assistant will save your opinion with a reference to this update and report the result.',
-  '按研究形成时间排列；事件发生和信息发布日期分别保留。主题中的更新与这里是同一条记录。': 'Ordered by when research was recorded. Event and publication dates are shown separately. Themes share these same records.',
+  '按记录时间排列；事件发生、信息发布和引用修正前的原判断时间分别保留。主题中的更新与这里是同一条记录。': 'Ordered by record time. Event, publication and original assessment times before citation corrections are retained separately. Themes share these same records.',
   '当前范围没有研究更新。检查是否完成及资料覆盖情况，请查看上方研究状态。': 'No research updates in this range. Check the research status above for completion and coverage.',
   '正在读取研究动态…': 'Loading research activity…', '研究动态暂时无法读取：': 'Research activity is unavailable: ',
   '研究员提出': 'Proposed by researcher', '人工建立': 'Created by a team member', '当前判断': 'Current assessment', '最新变化': 'Latest development',
@@ -27,4 +43,5 @@ export const researchMessages: LanguageMessages = { en: {
 export const researchPatterns: LanguagePatternMessages = { en: [
   { match: /^主题研究时间线 · (\d+)$/, replace: 'Theme timeline · $1' },
   { match: /^显示已修订或撤回的记录 · (\d+)$/, replace: 'Include superseded or withdrawn records · $1' },
+  { match: /^关联问题与验证 · (\d+)$/, replace: 'Linked questions and validation · $1' },
 ] }

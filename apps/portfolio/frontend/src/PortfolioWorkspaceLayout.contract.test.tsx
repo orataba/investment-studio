@@ -40,8 +40,8 @@ vi.mock('./lib/preload', () => ({
   preloadPortfolioSection: vi.fn(),
 }))
 vi.mock('./components/PortfolioInstrumentRisk', () => ({
-  default: ({ portfolioId, onAskAssistant }: { portfolioId: string; onAskAssistant: (id: string, question: string) => void }) =>
-    <section aria-label="Risk content" data-portfolio={portfolioId}><button type="button">Inspect risk</button><button type="button" onClick={() => onAskAssistant('asset-1', '这项风险如何影响组合？')}>Ask about risk</button></section>,
+  default: ({ portfolioId, onAskAssistant }: { portfolioId: string; onAskAssistant: (id: string, question: string, reference?: { instrument_id: string; event_case_id: string; event_version_id: string }) => void }) =>
+    <section aria-label="Risk content" data-portfolio={portfolioId}><button type="button">Inspect risk</button><button type="button" onClick={() => onAskAssistant('asset-1', '这项风险如何影响组合？', { instrument_id: 'asset-1', event_case_id: 'event-1', event_version_id: 'event-1:2' })}>Ask about risk</button></section>,
 }))
 
 function CurrentLocation() {
@@ -212,7 +212,7 @@ describe('Portfolio workspace loading contract', () => {
     expect(within(assistant).getByRole('textbox', { name: '向研究助手提问' })).toHaveValue('这项风险如何影响组合？')
     await user.click(within(assistant).getByRole('button', { name: '发送' }))
     await waitFor(() => expect(assistantMocks.write).toHaveBeenCalledWith('/research/topics/chat-3/analysis', expect.objectContaining({
-      page_context: expect.objectContaining({ instrument_id: 'asset-1', start: '2026-08-01', end: '2026-09-01' }),
+      page_context: expect.objectContaining({ instrument_id: 'asset-1', start: '2026-08-01', end: '2026-09-01', research_reference: { instrument_id: 'asset-1', event_case_id: 'event-1', event_version_id: 'event-1:2' } }),
     })))
     await user.keyboard('{Escape}')
     expect(assistant).not.toBeInTheDocument()

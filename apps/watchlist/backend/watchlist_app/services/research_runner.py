@@ -1,5 +1,6 @@
 """Run the existing pinned Harness with research-only tools and a bound input snapshot."""
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -29,6 +30,7 @@ def interrupt_incomplete_runs():
         for run in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["queued", "running"]))):
             run.status = "failed"
             run.body = "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
+            run.completed_at = datetime.now(UTC)
         session.commit()
 
 
@@ -40,6 +42,10 @@ def run_analysis(run_id: str, token: str | None = None):
             _run_analysis(run_id)
     except (IdentityError, HTTPException):
         _fail_authorization(run_id)
+    except Exception as error:
+        logging.getLogger(__name__).exception("Research run did not finish: %s", run_id)
+        summary = "研究运行未完成，本轮没有发布成果；输入与草稿已保留，可重新发起。"
+        _fail_run(run_id, summary, runtime_error={"type": type(error).__name__, "summary": summary})
     finally:
         if token:
             try:
@@ -49,10 +55,17 @@ def run_analysis(run_id: str, token: str | None = None):
 
 
 def _fail_authorization(run_id):
+    _fail_run(run_id, "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。")
+
+
+def _fail_run(run_id, message, *, runtime_error=None):
+    """Finish an abandoned dispatch/publication in a fresh transaction after rollback."""
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, run_id, with_for_update=True)
         if run and run.status in {"queued", "running"}:
-            run.status, run.body = "failed", "账号或研究范围授权不可用，本轮没有发布成果；恢复授权后可重新发起。"
+            run.status, run.body = "failed", message
+            if runtime_error:
+                run.context_json = {**run.context_json, "runtime_error": runtime_error}
             run.completed_at = datetime.now(UTC)
             session.commit()
 
@@ -134,7 +147,6 @@ def _run_analysis(run_id: str):
         outcome = str(error) if risk_run else "研究资料不符合本轮分析范围，本次检查未完成。"
         runtime_error = {"type": type(error).__name__, "summary": outcome}
     except Exception:
-        import logging
         logging.getLogger(__name__).exception("Research input preparation failed")
         outcome = "研究资料读取失败，本次没有完成检查。"
     with principal_context(resolve_token(current_principal().credential, "watchlist")), get_session_factory()() as session:
@@ -159,11 +171,14 @@ def _run_analysis(run_id: str):
                             apply_result(session, run, json.dumps(result, ensure_ascii=False))
                             publication = {"status": "published", "instrument_ids": list(run.context_json.get("reviews", {})),
                                            "message": "已更新共同研究记录，研究追踪与助手将使用同一版本。"}
-                        except ValueError as error:
+                        except Exception as error:
                             session.rollback()
                             run = session.get(ResearchEntry, run_id)
+                            if not isinstance(error, ValueError):
+                                logging.getLogger(__name__).exception("Conversation research publication failed: %s", run_id)
                             publication = {"status": "conflict" if isinstance(error, ResearchVersionConflict) else "failed",
-                                           "message": str(error)}
+                                           "message": str(error) if isinstance(error, ValueError) else
+                                               "共同研究保存未完成，对话回答已保留，本轮未发布研究更新。"}
                     run.context_json = {**run.context_json, "research_publication": publication}
                     outcome = answer
                 except (ValueError, KeyError, TypeError):

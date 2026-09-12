@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import RiskOfficerPanel from './RiskOfficerPanel'
+import type { ResearchAssistantReference } from './researchReference'
 import {
   type RiskAsset,
   type PriceRiskPeriod,
@@ -53,9 +54,9 @@ function CaseRow({
   asset: RiskAsset
   refresh: () => Promise<void>
   request: RiskRequest
-  assistantHref?: (id: string, question: string) => string
+  assistantHref?: (id: string, question: string, reference?: ResearchAssistantReference) => string
   instrumentHref: (id: string, signal?: string) => string
-  onAskAssistant?: (id: string, question: string) => void
+  onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
   const [note, setNote] = useState('')
   const [followUp, setFollowUp] = useState(record.follow_up_date || '')
@@ -63,6 +64,12 @@ function CaseRow({
   const [busy, setBusy] = useState(false)
   const evidence = record.evidence_json
   const sectorEvent = record.signal.startsWith('sector:')
+  const reference: ResearchAssistantReference = {
+    instrument_id: record.instrument_id,
+    ...(sectorEvent && typeof evidence.event_version_id === 'string' && evidence.event_version_id
+      ? { event_case_id: record.case_id, event_version_id: evidence.event_version_id }
+      : { risk_case_id: record.case_id, risk_case_updated_at: record.updated_at }),
+  }
   const direction = ({ risk: '风险', opportunity: '机会', uncertain: '重大不确定性' } as Record<string, string>)[String(evidence.direction)]
   const confidence = ({ confirmed: '已确认', reported: '报道线索', unverified: '待证实' } as Record<string, string>)[String(evidence.confidence)]
   const sources = sectorEvent && Array.isArray(evidence.sources) ? evidence.sources as Array<{ url: string; title: string; published_at: string | null }> : []
@@ -170,12 +177,12 @@ function CaseRow({
         {onAskAssistant ? (
           <button
             className="risk-text-button"
-            onClick={() => onAskAssistant(record.instrument_id, question)}
+            onClick={() => onAskAssistant(record.instrument_id, question, reference)}
           >
             问助手
           </button>
         ) : assistantHref ? (
-          <a href={assistantHref(record.instrument_id, question)}>问助手</a>
+          <a href={assistantHref(record.instrument_id, question, reference)}>问助手</a>
         ) : null}
       </div>
       <details className="risk-follow-up">
@@ -542,8 +549,8 @@ export default function InstrumentRiskPanel({
   query?: string
   request: RiskRequest
   instrumentHref: (id: string, signal?: string) => string
-  assistantHref?: (id: string, question: string) => string
-  onAskAssistant?: (id: string, question: string) => void
+  assistantHref?: (id: string, question: string, reference?: ResearchAssistantReference) => string
+  onAskAssistant?: (id: string, question: string, reference?: ResearchAssistantReference) => void
   onChanged?: () => void
   caseScope?: 'all' | 'traditional'
   attentionLabel?: string

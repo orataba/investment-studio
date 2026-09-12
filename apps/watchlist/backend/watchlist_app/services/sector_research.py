@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from investment_studio_instrument_core.db_models import Instrument
 from investment_studio_instrument_core.listing_contract import (
     MARKET_SCOPE_CALENDARS, MARKET_SCOPE_TIMEZONES, market_scope_for_calendar,
@@ -20,7 +20,7 @@ from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail, 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.sector_market_data import read_sector_market_data
-from watchlist_app.services.sector_estimates import read_estimate_evidence, retained_estimate_sources, usable_estimate_change
+from watchlist_app.services.sector_estimates import retained_estimate_sources, usable_estimate_change
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, retain_notebook, validate_notebook
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions
@@ -77,51 +77,82 @@ def instrument_label(session, iid):
 
 
 def latest_reviews(session, *, completed_only=False):
+    return review_states(session)["last_completed" if completed_only else "latest"]
+
+
+def review_states(session):
+    """Build current and last-published states from one authorized history read."""
     from studio_identity import current_principal
-    from watchlist_app.services.research_access import topic_portfolio_ids
-    result, current_views, allowed_topics = {}, {}, {}
+    from watchlist_app.services.research_access import topic_portfolio_ids_by_topic
+    latest, completed, current_views, current_research = {}, {}, {}, {}
     principal = current_principal()
     team_id = principal.team_id
-    runs = session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis", True if principal.local_unrestricted else ResearchEntry.team_id == team_id)
-                          .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
+    # Status consumers need the published result, not every retained financial table,
+    # original text and model transcript from every historical run.
+    runs = session.execute(select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
+        case((ResearchEntry.status == "failed", ResearchEntry.body), else_="").label("body"),
+        ResearchEntry.context_json["instrument_ids"].label("instrument_ids"),
+        ResearchEntry.context_json["reviews"].label("reviews"),
+        ResearchEntry.context_json["cutoff"].as_string().label("cutoff"),
+        ResearchEntry.context_json["sector_run"].as_boolean().label("sector_run"),
+        ResearchEntry.context_json["research_run"].as_boolean().label("research_run"),
+        ResearchEntry.context_json["recordkeeping_only"].as_boolean().label("recordkeeping_only"),
+    ).where(ResearchEntry.kind == "analysis", True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
+        or_(ResearchEntry.context_json["sector_run"].as_boolean().is_(True),
+            ResearchEntry.context_json["research_run"].as_boolean().is_(True)))
+                          .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc())).all()
+    topic_ids = {run.topic_id for run in runs if run.instrument_ids}
+    topics = session.execute(select(ResearchTopic.topic_id, ResearchTopic.portfolio_id).where(
+        ResearchTopic.topic_id.in_(topic_ids),
+        True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
+    )).all() if topic_ids else []
+    # Include all entries, including older notes and risk conversations, when
+    # excluding portfolio-bound history from team-level research states.
+    portfolio_scopes = topic_portfolio_ids_by_topic(session, topics)
+    allowed_topics = {topic_id for topic_id, portfolios in portfolio_scopes.items() if not portfolios}
     for run in runs:
-        context = run.context_json or {}
+        context = run._mapping
         if not (context.get("sector_run") or context.get("research_run")):
             continue
         published = run.status in {"completed", "draft"}
-        if not context.get("instrument_ids") or (completed_only and not published):
-            continue
-        if run.topic_id not in allowed_topics:
-            topic = session.get(ResearchTopic, run.topic_id)
-            allowed_topics[run.topic_id] = bool(topic and (principal.local_unrestricted or topic.team_id == team_id)
-                                              and not topic_portfolio_ids(session, topic))
-        if not allowed_topics[run.topic_id]:
+        if not context.get("instrument_ids") or run.topic_id not in allowed_topics:
             continue
         for iid in context.get("instrument_ids", []):
-            review = context.get("reviews", {}).get(iid, {})
+            review = (context.get("reviews") or {}).get(iid, {})
             accepted = published and review.get("status") in {"completed", "limited"}
             # A conversation is not a daily check until it actually publishes research.
             if not context.get("sector_run") and not accepted:
+                continue
+            if accepted and iid not in current_research and review.get("research"):
+                current_research[iid] = review["research"]
+            # Restoring citations changes the current notebook, not the fact or
+            # time of a research check or the original investment judgment.
+            if context.get("recordkeeping_only"):
                 continue
             if accepted and iid not in current_views and review.get("summary"):
                 current_views[iid] = {"summary": review["summary"],
                     "view_updated_at": review.get("view_updated_at", context.get("cutoff")),
                     "view_run_id": review.get("view_run_id", run.entry_id)}
-            if iid in result or (completed_only and not accepted):
+            if iid in latest and (not accepted or iid in completed):
                 continue
-            result[iid] = {"run_id": run.entry_id, "status": review.get("status", run.status),
+            state = {"run_id": run.entry_id, "status": review.get("status", run.status),
                 "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
                 "view_updated_at": review.get("view_updated_at"),
                 "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),
                 "coverage": review.get("coverage", []), "research": review.get("research"), "reflection": review.get("reflection")}
-    for iid, review in result.items():
-        view = current_views.get(iid, {})
-        review["current_summary"] = view.get("summary", "")
-        if review["status"] != "failed":
-            review["summary"] = view.get("summary", "")
-        review["view_updated_at"] = view.get("view_updated_at")
-        review["view_run_id"] = view.get("view_run_id")
-    return result
+            latest.setdefault(iid, state)
+            if accepted:
+                completed.setdefault(iid, state.copy())
+    for result in (latest, completed):
+        for iid, review in result.items():
+            view = current_views.get(iid, {})
+            review["current_summary"] = view.get("summary", "")
+            if review["status"] != "failed":
+                review["summary"] = view.get("summary", "")
+            review["view_updated_at"] = view.get("view_updated_at")
+            review["view_run_id"] = view.get("view_run_id")
+            review["current_research"] = current_research.get(iid)
+    return {"latest": latest, "last_completed": completed}
 
 
 def _future(rows, today):
@@ -130,30 +161,37 @@ def _future(rows, today):
 
 
 def sector_snapshot(iid, session, *, as_of=None):
-    raw = read_sector_market_data(session, iid.upper(), as_of=as_of)
+    from watchlist_app.services.sector_estimates import estimate_scope
+    from watchlist_app.services.research_workbench import ANALYST_FOCUS
+    scope = estimate_scope(session, iid)
+    if scope is None:
+        return None
+    raw = read_sector_market_data(session, scope["symbol"], as_of=as_of, instrument_type=scope["instrument_type"])
     if raw is None:
         return None
     today = (as_of or datetime.now(UTC)).astimezone(UTC).date().isoformat()
-    stocks = [h for h in raw["holdings"] if h["holding_type"] == "equity"]
+    stocks = raw["companies"]
     gap_labels = {"no_forward_quarter_estimates": "缺少未来季度预期", "no_forward_annual_estimates": "缺少未来年度预期",
                   "missing_price": "缺少行情", "missing_holdings": "缺少持仓", "missing_etf_info": "缺少ETF资料",
                   "unclassified_holding": "持仓类型待核对"}
-    view = {"instrument_id": iid, "ticker": iid.upper(), "sector_name": SECTORS[iid.upper()][0],
+    sector = SECTORS.get(iid.upper())
+    view = {"instrument_id": iid, "ticker": scope["symbol"], "instrument_type": scope["instrument_type"],
+        "sector_name": sector[0] if sector else scope["name"], "company_symbols": [h["holding_symbol"] for h in stocks],
         "price_as_of": (raw["etf"]["latest_price"] or {}).get("date"),
         "holdings_as_of": max((str(h.get("as_of_date") or "") for h in raw["holdings"]), default="") or None,
         "holdings_observed_on": max((str(h.get("snapshot_date") or "") for h in raw["holdings"]), default="") or None,
         "holdings_date_note": "holdings_as_of仅表示原始资料明确披露的持仓日期；holdings_observed_on是本项目采集观察日，不是持仓报告期或首次披露日期。",
-        "stock_count": len(stocks), "stock_weight_pct": sum(h.get("weight_percent") or 0 for h in stocks),
+        "stock_count": len(stocks), "stock_weight_pct": None if scope["instrument_type"] == "equity" else sum(h.get("weight_percent") or 0 for h in stocks),
         "annual_estimate_count": sum(bool(_future(h["annual_estimates"], today)) for h in stocks),
         "quarterly_estimate_count": sum(bool(_future(h["quarterly_estimates"], today)) for h in stocks),
-        "top_holdings": [{"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"]} for h in stocks[:10]],
-        "research_focus": SECTORS[iid.upper()][1],
+        "top_holdings": [] if scope["instrument_type"] == "equity" else [{"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"]} for h in stocks[:10]],
+        "research_focus": sector[1] if sector else ANALYST_FOCUS[scope["instrument_type"]],
         "data_gaps": [f"{g.get('symbol', '')}：{gap_labels.get(g['kind'], g['kind'])}" for g in raw["gaps"]]}
     companies = {}
     for h in stocks:
         p = h["company_profile"] or {}
         fields = ("estimate_period", "target_period_end", "revenue_avg", "eps_avg", "num_analysts_revenue", "num_analysts_eps",
-                  "collected_at", "source_dataset", "raw_sha256", "historical_use", "currency", "currency_status")
+                  "collected_at", "source_dataset", "raw_sha256", "historical_use", "currency", "currency_status", "currency_source", "source_id", "observed_at", "available_at")
         companies[h["holding_symbol"]] = {"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"],
             "industry": p.get("industry"), "description": p.get("description"), "profile_collected_at": p.get("collected_at"),
             "reporting_currency": p.get("reporting_currency"), "reporting_currency_source": p.get("reporting_currency_source"),
@@ -274,15 +312,18 @@ def bind_research_instruments(session, run, ids):
             computed_metrics.append(computed)
         ensure_mandate(session, iid)
         dossiers.append(read_dossier(session, iid, actor=run_identity(context)))
-        if iid.upper() in SECTORS:
+        if iid.upper() in SECTORS or (asset.get("analyst_estimate_history") or {}).get("supported"):
             snapshot = sector_snapshot(iid, session, as_of=cutoff)
             if snapshot is None:
-                gaps.append(f"{iid.upper()}尚无本项目留存的成分公司与分析师预期快照。")
+                if (asset.get("analyst_estimate_history") or {}).get("supported"):
+                    gaps.append(f"{iid.upper()}尚无本项目留存的公司或披露成分对应的分析师预期快照。")
             else:
                 _, evidence, companies = snapshot
                 inputs.append({**evidence, "source_id": f"sector:{run.entry_id}:{iid}", "snapshot_cutoff": cutoff.isoformat()})
                 company_data[iid] = companies
-                estimates.append(read_estimate_evidence(session, iid, as_of=cutoff))
+                estimate_evidence = asset.get("analyst_estimate_history") or {}
+                if estimate_evidence.get("source_id"):
+                    estimates.append(estimate_evidence)
     prior = session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(added), RiskCase.signal.like("sector:%")))
     context.update(instrument_inputs=[*context.get("instrument_inputs", []), *assets],
         sector_inputs=inputs, sector_company_data=company_data, research_dossiers=dossiers,
@@ -350,6 +391,7 @@ class ResearchReflection(BaseModel):
     status: Literal["reviewed", "insufficient_evidence"]
     summary: str = Field(default="", max_length=2000)
     reviewed_update_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
 
 
 class SectorReview(BaseModel):
@@ -624,7 +666,8 @@ def _validate_research_links(session, run, review, themes):
             check_theme(theme_id, retained_event_link=canonical in prior_theme_ids)
     if review.reflection is not None:
         for update_id in review.reflection.reviewed_update_ids:
-            _validate_update_reference(session, run, review.instrument_id, update_id)
+            original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True)
+            check_theme(original["reference"].get("theme_id"))
 
 
 def _resolve_theme_aliases(review, aliases):
@@ -674,6 +717,8 @@ def validate_result(session, run, parsed: ReviewResult):
         _validate_research_links(session, run, review, themes)
         if review.research is not None:
             validate_notebook(review.research, review.instrument_id, notebook_evidence)
+        if review.reflection is not None:
+            validate_notebook(ResearchNotebook(source_ids=review.reflection.source_ids), review.instrument_id, notebook_evidence)
         for item in review.events:
             key = (review.instrument_id, item.event_key)
             if key in seen:
@@ -697,6 +742,35 @@ def validate_result(session, run, parsed: ReviewResult):
             )) is None:
                 raise ValueError("更新或解除的事件没有原跟进记录")
     return sources, notebook_evidence
+
+
+def shared_market_coverage_gaps(context, *, instrument_id=None):
+    """Report a searched channel's known window, not an absence of market events."""
+    def instant(value):
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+    coverage = context.get("market_coverage") or {}
+    window_end = instant(coverage.get("latest_bundle_window_end"))
+    if window_end is None:
+        return []
+    # Later web reads can advance the run cutoff. Only the actual shared-text
+    # query cutoffs describe the interval this channel was asked to cover.
+    cutoffs = [cutoff for query in context.get("market_queries", [])
+               if instrument_id is None or query.get("instrument_id") in {None, instrument_id}
+               if (cutoff := instant(query.get("cutoff"))) is not None]
+    if not cutoffs or max(cutoffs) <= window_end:
+        return []
+    cutoff = max(cutoffs)
+    received = instant(coverage.get("latest_received_at"))
+    receipt = f"，最后接收资料于 {received.isoformat()}" if received is not None else ""
+    return [f"本轮已检索的共享资讯包覆盖截至 {window_end.isoformat()}{receipt}；"
+            f"从该窗口结束至实际检索截止 {cutoff.isoformat()}，该渠道期间覆盖尚未确认，不能据此认定没有重大新增。"]
 
 
 def apply_result(session, run, reply):
@@ -738,7 +812,8 @@ def apply_result(session, run, reply):
         acquisition_gaps.append("本轮未检索共享资讯或补充来源，不能据此认定无重大新增。")
     reviews = {}
     for review in parsed.reviews:
-        coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps]))
+        coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps,
+            *shared_market_coverage_gaps(context, instrument_id=review.instrument_id)]))
         if context.get("sector_run") and review.reflection is None:
             coverage.append("本轮未记录对既有判断与经验的复核，复盘覆盖尚不明确。")
         elif review.reflection and review.reflection.status == "insufficient_evidence":

@@ -3,14 +3,15 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import SectorResearchPanel, { type SectorResearch, type SectorEventRecord } from './SectorResearchPanel'
 import InstrumentRiskPanel from './InstrumentRiskPanel'
+import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { researchMessages, researchPatterns } from '../researchMessages'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request }))
-vi.mock('./ResearchThemesPanel', () => ({ default: () => null }))
-vi.mock('./ResearchActivityPanel', () => ({ default: () => null }))
+vi.mock('./ResearchTrackingPanel', () => ({ default: () => null }))
 vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: () => null }))
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-06T08:00:00+08:00')) })
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers() })
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '/') })
 const review = (status: string) => ({ run_id: 'run-1', status, checked_at: '2026-09-06T08:00:00+08:00', summary: '需求趋势暂未出现实质变化，继续验证盈利预期。', coverage: ['尚未接入 X 专用来源'] })
 const sector = (overrides: Partial<SectorResearch> = {}): SectorResearch => ({ instrument_id: 'xlk-us', ticker: 'XLK', sector_name: '信息技术', latest_review: review('limited'), ...overrides })
 const event = (overrides: Partial<SectorEventRecord> = {}): SectorEventRecord => ({
@@ -97,6 +98,49 @@ it('qualifies a quiet result when the research had material coverage gaps', asyn
   expect(within(conclusion).getByText(/在已覆盖的信息中未发现新增投资变化/)).toBeTruthy()
   expect(within(conclusion).queryByText('未发现新增投资变化', { exact: true })).toBeNull()
   expect(screen.getByText('未取得最新持仓数据')).toBeTruthy()
+})
+
+it.each([true, false])('uses the saved summary before the published structured assessment (summary present: %s)', async hasSummary => {
+  const viewTime = '2026-09-02T08:00:00+08:00'
+  const summaryTime = '2026-09-03T08:00:00+08:00'
+  const investmentView = { direction: '估值有吸引力，但需核实净息差的稳定性。', horizon: '中期', attractiveness: '估值折价',
+    risk: '信用成本与净息差', conviction: '中等', assumptions: [], source_ids: ['retained-snapshot'], updated_at: viewTime }
+  const checked = { ...review('completed'), change_kind: 'knowledge' as const, summary: hasSummary ? review('completed').summary : '',
+    view_updated_at: hasSummary ? summaryTime : null, current_research: { investment_view: investmentView } }
+  request.mockResolvedValue(payload([], { instrument_id: '600036-sh', latest_review: checked, last_completed_review: checked }))
+  render(<SectorResearchPanel instrumentId="600036-sh" />)
+  await load()
+  const conclusion = screen.getByRole('region', { name: '当前研究结论' })
+  expect(within(conclusion).getByText(hasSummary ? checked.summary : investmentView.direction).getAttribute('translate')).toBe('no')
+  expect(conclusion.querySelector('time')?.dateTime).toBe(hasSummary ? summaryTime : viewTime)
+  expect(within(conclusion).getByText(/研究资料已更新/)).toBeTruthy()
+  expect(conclusion.textContent).not.toContain('沿用')
+  expect(screen.queryByText('尚无已发布的投资判断。')).toBeNull()
+  expect(screen.queryByText('尚未形成研究结论。')).toBeNull()
+})
+
+it('only shows an empty conclusion when neither a published summary nor an assessment exists', async () => {
+  const checked = { ...review('completed'), change_kind: 'knowledge' as const, summary: '', current_research: { investment_view: null } }
+  request.mockResolvedValue(payload([], { latest_review: checked, last_completed_review: checked }))
+  render(<SectorResearchPanel instrumentId="600036-sh" />)
+  await load()
+  expect(screen.getByText('尚未形成研究结论。')).toBeTruthy()
+  expect(screen.getByText('信息技术 · 研究资料已更新')).toBeTruthy()
+  expect(screen.queryByText(/投资判断沿用/)).toBeNull()
+})
+
+it('translates the updated knowledge and empty-conclusion labels in both directions', async () => {
+  window.history.replaceState(null, '', '/?lang=en')
+  const checked = { ...review('completed'), change_kind: 'knowledge' as const, summary: '' }
+  request.mockResolvedValue(payload([], { latest_review: checked, last_completed_review: checked }))
+  render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector /><SectorResearchPanel instrumentId="600036-sh" /></LanguageProvider>)
+  await load()
+  expect(screen.getByText('No research conclusion has been formed yet.')).toBeTruthy()
+  expect(screen.getAllByText(/Research materials updated/).length).toBeGreaterThan(0)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await load()
+  expect(screen.getByText('尚未形成研究结论。')).toBeTruthy()
+  expect(screen.getByText('信息技术 · 研究资料已更新')).toBeTruthy()
 })
 
 it('enables fund research updates while preserving saved research', async () => {

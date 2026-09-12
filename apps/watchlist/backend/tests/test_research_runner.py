@@ -229,3 +229,66 @@ def test_chat_runner_retains_answer_when_independent_reviewer_declines_publicati
         assert run.status == "draft" and run.body == answer
         assert run.context_json["research_publication"]["status"] == "failed"
         assert "reviews" not in run.context_json
+
+
+@pytest.mark.parametrize("surface", ["sector", "risk", "conversation"])
+def test_unexpected_publication_failure_rolls_back_and_finishes_the_run(client, monkeypatch, surface):
+    from watchlist_app.services import risk_officer
+    context = {"sector_run": surface == "sector", "risk_run": surface == "risk", "retained": "original-input"}
+    if surface == "risk":
+        context["submitted_risk_review"] = {"summary": "retained draft"}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="unexpected-failure-topic", title="研究"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="unexpected-failure", topic_id="unexpected-failure-topic", kind="analysis",
+            title="研究", status="queued", context_json=context))
+        session.commit()
+    monkeypatch.setattr(sector_research, "prepare_run", lambda _: None)
+    monkeypatch.setattr(risk_officer, "prepare_run", lambda _: None)
+    class CompletedProcess:
+        returncode = 0
+        def communicate(self, timeout):
+            return json.dumps({"answer": "讨论完成", "research_result": {"reviews": []}}), ""
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: CompletedProcess())
+    def broken_publish(session, run, result):
+        run.context_json = {**run.context_json, "partially_published": True}
+        session.flush()
+        raise RuntimeError("private-provider-detail")
+    monkeypatch.setattr(sector_research, "apply_result", broken_publish)
+    monkeypatch.setattr(risk_officer, "apply_result", broken_publish)
+
+    runner.run_analysis("unexpected-failure")
+
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, "unexpected-failure")
+        assert run.completed_at is not None
+        assert run.context_json["retained"] == "original-input"
+        assert "partially_published" not in run.context_json
+        if surface == "conversation":
+            assert run.status == "draft" and run.body == "讨论完成"
+            assert run.context_json["research_publication"]["status"] == "failed"
+        else:
+            assert run.status == "failed"
+            assert run.context_json["runtime_error"]["type"] == "RuntimeError"
+        assert "private-provider-detail" not in json.dumps(run.context_json) + run.body
+
+
+def test_restart_marks_only_incomplete_runs_failed_with_a_terminal_clock(client):
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="restart-topic", title="研究"))
+        session.flush()
+        for status in ("queued", "running", "completed", "draft", "failed"):
+            session.add(ResearchEntry(entry_id=f"restart-{status}", topic_id="restart-topic", kind="analysis",
+                title="研究", status=status, body="original", context_json={"retained": True}))
+        session.commit()
+
+    runner.interrupt_incomplete_runs()
+
+    with get_session_factory()() as session:
+        for status in ("queued", "running"):
+            run = session.get(ResearchEntry, f"restart-{status}")
+            assert run.status == "failed" and run.completed_at is not None
+            assert run.context_json["retained"] is True
+        for status in ("completed", "draft", "failed"):
+            run = session.get(ResearchEntry, f"restart-{status}")
+            assert run.status == status and run.body == "original"

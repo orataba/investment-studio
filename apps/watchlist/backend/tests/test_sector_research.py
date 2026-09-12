@@ -436,7 +436,8 @@ def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
     assert {"xlk", "xlf"}.issubset({item["instrument_id"] for item in context["catalogue"]})
     assert context["instrument_ids"] == ["xlk"]
     assert "sector_company_data" not in context
-    assert context["sector_estimate_evidence"][0]["status"] == "no_snapshot"
+    assert context["sector_estimate_evidence"] == []
+    assert context["instrument_inputs"][0]["analyst_estimate_history"]["status"] == "no_snapshot"
 
 
 def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(client, monkeypatch):

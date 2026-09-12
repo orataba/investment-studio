@@ -45,7 +45,7 @@ def _descriptor(observation):
     return {key: value for key, value in observation.items() if key != "companies"}
 
 
-def compare_estimate_snapshots(iid, current, previous=None):
+def compare_estimate_snapshots(iid, current, previous=None, *, instrument_type="etf"):
     """Return changes only for identical company/frequency/period/metric/currency.
 
     Currency-free provider values remain observable leads, not verified monetary
@@ -57,7 +57,7 @@ def compare_estimate_snapshots(iid, current, previous=None):
     changes, observations, unmatched, metrics = [], [], [], []
     gaps = set()
     def weight(symbols):
-        return sum(companies[symbol].get("weight_percent") or 0 for symbol in symbols)
+        return None if instrument_type == "equity" else sum(companies[symbol].get("weight_percent") or 0 for symbol in symbols)
     for frequency in _FREQUENCIES:
         for metric, (analyst_field, unit) in _METRICS.items():
             available, comparable, changed, unknown_currency = set(), set(), set(), set()
@@ -132,18 +132,19 @@ def compare_estimate_snapshots(iid, current, previous=None):
                     unmatched.append({"symbol": symbol, "frequency": frequency, "target_period_end": period,
                         "metric": metric, "previous_value": row[metric], "current_value": None,
                         "reason": "removed_company_coverage" if symbol not in companies else "missing_current_coverage"})
-    if any(company.get("weight_percent") is None for company in companies.values()):
+    if instrument_type != "equity" and any(company.get("weight_percent") is None for company in companies.values()):
         gaps.add("current_weight_missing")
     if not latest:
         gaps.add("current_estimates_missing")
     return {"instrument_id": iid, "supported": True, "provider": "FMP",
         "company_symbols": sorted(set(companies) | set(old_companies)),
         "source_id": f"estimates:{current['observation_id']}:{iid}", "source_type": "analyst_estimate_changes",
-        "title": f"FMP · {iid.upper()}成分公司预期观测对照",
+        "title": f"FMP · {iid.upper()}{'公司' if instrument_type == 'equity' else '成分公司'}预期观测对照",
         "status": "baseline" if previous is None else "comparable" if any(row["comparable_company_count"] for row in metrics) else "limited",
         "current_snapshot": _descriptor(current), "previous_snapshot": _descriptor(previous) if previous else None,
         "coverage": {"current_company_count": len(companies), "equity_weight_pct": weight(companies),
-                     "weight_basis": "Current ETF holdings, percentage points; non-equity positions are not renormalized.", "metrics": metrics},
+                     "weight_basis": "Not applicable to a single company; no portfolio or fund weight is implied." if instrument_type == "equity" else
+                         "Current disclosed fund holdings, percentage points; non-equity positions are not renormalized.", "metrics": metrics},
         "changes": changes, "observations": observations, "unmatched": unmatched,
         "gaps": [_GAP_LABELS[code] for code in sorted(gaps)], "gap_codes": sorted(gaps),
         "semantics": ["采集观察由数据维护任务逐次保存，与是否运行研究无关；财期是预测对象，collected_at是实际采集时间。",
@@ -154,22 +155,42 @@ def compare_estimate_snapshots(iid, current, previous=None):
             "这些是两次观测之间的变化，不是精确发布日期或实际调整时刻；未合成ETF EPS，也未判断投资材料性。"]}
 
 
+def estimate_scope(session, instrument_id):
+    """Resolve a real FMP identity; never turn an index or a fund name into a company."""
+    from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+    instrument = get_shared_instrument(instrument_id) if session is not None else None
+    if instrument is not None:
+        if instrument.get("instrument_type") not in {"equity", "etf", "public_fund"}:
+            return None
+        symbol = next((str(item["identifier_value"]).removeprefix("fmp:") for item in instrument.get("identifiers", [])
+                       if item.get("identifier_type") == "provider_symbol" and str(item.get("identifier_value", "")).startswith("fmp:")), None)
+        if not symbol:
+            return None
+        return {"symbol": symbol.upper(), "instrument_type": instrument["instrument_type"], "name": instrument.get("instrument_name")}
+    if instrument_id.upper() in SECTOR_ETF_TICKERS:
+        return {"symbol": instrument_id.upper(), "instrument_type": "etf", "name": instrument_id.upper()}
+    return None
+
+
 def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = None):
     """Compare the latest two collections available at the research cutoff."""
     iid = instrument_id.strip().lower()
-    empty = {"instrument_id": iid, "supported": iid.upper() in SECTOR_ETF_TICKERS, "provider": "FMP",
+    scope = estimate_scope(session, instrument_id)
+    empty = {"instrument_id": iid, "supported": scope is not None, "provider": "FMP",
              "current_snapshot": None, "previous_snapshot": None, "coverage": {},
              "changes": [], "observations": [], "unmatched": [], "gaps": []}
     if not empty["supported"]:
-        return {**empty, "status": "unsupported", "gaps": ["该标的尚未接入这11只美股行业ETF的FMP预期快照；A股及其他ETF不能套用。"]}
+        return {**empty, "status": "unsupported", "gaps": ["该标的没有适用且已登记的FMP公司预期来源；不能用相似公司或ETF替代。"]}
     cutoff = as_of if as_of is not None else datetime.now(UTC)
     if cutoff.tzinfo is None:
         raise ValueError("Estimate history cutoff must include a timezone.")
-    market = read_sector_market_data(session, iid.upper(), as_of=cutoff)
+    market = read_sector_market_data(session, scope["symbol"], as_of=cutoff, instrument_type=scope["instrument_type"])
     if market is None:
-        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的ETF共享持仓及公司预期观测。"]}
+        return {**empty, "status": "no_snapshot", "gaps": ["截至当前时点尚无可用的本公司或披露持仓对应的公司观测。"]}
     companies = {row["holding_symbol"]: {"name": row["holding_name"], "weight_percent": row.get("weight_percent"),
-        "annual_estimates": [], "quarterly_estimates": []} for row in market["holdings"] if row["holding_type"] == "equity"}
+        "annual_estimates": [], "quarterly_estimates": []} for row in market["companies"]}
+    if not companies:
+        return {**empty, "supported": False, "status": "not_applicable", "gaps": ["本次披露没有已核实的股票公司敞口，不对债券、黄金、商品或未知持仓套用EPS预期。"]}
     store = numeric_store()
     captures = store.observations("analyst_estimates", symbols=list(companies), as_of=cutoff, limit=2)["observations"]
     if not captures:
@@ -208,9 +229,9 @@ def read_estimate_evidence(session, instrument_id, *, as_of: datetime | None = N
             "holdings_observed_on": max((str(row.get("snapshot_date") or "") for row in market["holdings"]), default="") or None}
     current = observation(current_companies, current_clocks, "current")
     previous = observation(previous_companies, previous_clocks, "previous") if previous_clocks else None
-    result = compare_estimate_snapshots(iid, current, previous)
+    result = compare_estimate_snapshots(iid, current, previous, instrument_type=scope["instrument_type"])
     return {**result, "as_of": cutoff.isoformat(), "source_ids": sorted(set(source_ids)),
-            "comparison_basis": "Latest two complete source captures for each company and forecast frequency; current ETF weights."}
+            "comparison_basis": "Latest two complete source captures for each company and forecast frequency; fund weights only when applicable."}
 
 
 def retained_estimate_sources(context):

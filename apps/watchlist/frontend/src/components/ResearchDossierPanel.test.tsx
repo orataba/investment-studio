@@ -10,8 +10,7 @@ import { announceResearchPublication } from '../lib/researchUpdates'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request, API_BASE_URL: '' }))
-vi.mock('./ResearchThemesPanel', () => ({ default: () => null }))
-vi.mock('./ResearchActivityPanel', () => ({ default: () => null }))
+vi.mock('./ResearchTrackingPanel', () => ({ default: () => null }))
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers() })
 const question = { key: 'cloud-cash', question: '云投入能否转化为现金回报？', assessment: '收入已有改善，现金回收仍待验证。', evidence_for: ['新增合同增长。'], evidence_against: ['折旧负担仍在增加。'], next_check: '对照下一期现金流及资本开支。', status: 'open' as const, source_ids: ['original-1'] }
 const notebook: SavedResearchNotebook = { run_id: 'completed-1', checked_at: '2026-09-06T08:00:00+08:00', fundamental_view: '底层需求仍在增长，需要核实回报质量。', key_drivers: ['客户现金回报'], valuation_view: '当前估值需要收入兑现。', questions: [question], important_changes: ['新合同提高了下一季收入可见度。'], next_research: ['核实新增合同转化情况。'], source_ids: ['original-1'], sources: [{ source_id: 'original-1', title: '公司原始报告', url: 'https://example.com/original', published_at: '2026-09-05', retrieved_at: '2026-09-06T07:00:00+08:00' }] }

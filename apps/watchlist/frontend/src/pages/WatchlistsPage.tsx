@@ -42,6 +42,7 @@ import {
 } from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
 import ResearchPage from './ResearchPage'
+import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
 import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
@@ -2489,10 +2490,11 @@ export default function WatchlistsPage() {
     if (id) next.set('risk_instrument', id)
     else next.delete('risk_instrument')
     for (const key of ['assistant', 'topic', 'instruments', 'question']) next.delete(key)
+    setRiskReferenceParams(next)
     setWatchlistSearchParams(next)
   }
 
-  function openAssistant(id?: string, question?: string) {
+  function openAssistant(id?: string, question?: string, reference?: ResearchAssistantReference) {
     setSelectorMenuOpen(false)
     const next = new URLSearchParams(watchlistSearchParams)
     next.set('assistant', '1')
@@ -2502,6 +2504,7 @@ export default function WatchlistsPage() {
     else next.delete('instruments')
     if (question) next.set('question', question)
     else next.delete('question')
+    setRiskReferenceParams(next, reference)
     setWatchlistSearchParams(next)
   }
 
@@ -2528,6 +2531,7 @@ export default function WatchlistsPage() {
       {watchlistSearchParams.get('assistant') === '1' && <ResearchPage watchlistId={watchlistId} onClose={() => {
         const next = new URLSearchParams(watchlistSearchParams)
         next.delete('assistant'); next.delete('topic'); next.delete('instruments'); next.delete('question')
+        setRiskReferenceParams(next)
         setWatchlistSearchParams(next)
       }} />}
       {watchlistSearchParams.get('risk') === '1' && <WatchlistRiskDrawer

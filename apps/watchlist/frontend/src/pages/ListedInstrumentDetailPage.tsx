@@ -1283,7 +1283,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             {risk?.data_quality?.gap_count ? <div className="listed-source-alert">{zh ? '历史行情存在缺口，曲线仅反映已取得的观测值。' : 'History has gaps; the curve reflects available observations only.'}</div> : null}
             <GrowthChart bars={canonicalCloseAnalysisBars} kind="drawdown" />
           </section>
-          <InstrumentRiskPanel instrumentId={instrumentId} mode="price" onAskAssistant={(_id, question) => openAssistant(question)} />
+          <InstrumentRiskPanel instrumentId={instrumentId} mode="price" onAskAssistant={(_id, question, reference) => openAssistant(question, reference)} />
         </div>
       ) : null}
 

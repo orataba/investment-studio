@@ -1,15 +1,14 @@
-import { useEffect, useState, useCallback, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchMandateRecord from './ResearchMandateRecord'
 import InvestmentResearchState from './InvestmentResearchState'
-import ResearchThemesPanel from './ResearchThemesPanel'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import { SourceList, dateLabel, sourceUrl, hasTimeZone } from './ResearchEvidence'
-import ResearchActivityPanel from './ResearchActivityPanel'
+import ResearchTrackingPanel from './ResearchTrackingPanel'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
-import { addResearchMaterial, getResearchDossier, uploadResearchMaterial, type AskResearchAssistant, type HistoricalResearchCase, type NotebookSource, type ResearchCatalyst, type ResearchDossier, type ResearchMaterial, type ResearchQuestion, type ResearchTheme, type SavedResearchNotebook } from '../lib/researchDossierApi'
+import { addResearchMaterial, getResearchDossier, uploadResearchMaterial, type AskResearchAssistant, type HistoricalResearchCase, type NotebookSource, type ResearchCatalyst, type ResearchDossier, type ResearchMaterial, type ResearchQuestion, type SavedResearchNotebook } from '../lib/researchDossierApi'
 
-const questionStatus = { open: '继续研究', supported: '当前证据支持', refuted: '当前证据不支持' }
+const questionStatus = { open: '当时待验证', supported: '当时证据支持', refuted: '当时证据不支持' }
 
 function Catalyst({ catalyst, sources, onAskAssistant, instrumentId }: { catalyst: ResearchCatalyst; sources: NotebookSource[]; instrumentId?: string; onAskAssistant?: AskResearchAssistant }) {
   const now = new Date()
@@ -144,8 +143,6 @@ function HistoricalCase({ record, onAskAssistant }: { record: HistoricalResearch
 
 export default function ResearchDossierPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant }) {
   const canWrite = useStudioAccount()?.team_role !== 'reader'
-  const [themeNames, setThemeNames] = useState<Record<string, string>>({})
-  const onThemesLoaded = useCallback((themes: ResearchTheme[]) => setThemeNames(Object.fromEntries(themes.map(theme => [theme.theme_id, theme.title]))), [])
   const [dossier, setDossier] = useState<ResearchDossier | null>(null)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -177,8 +174,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   return <div className="research-dossier-panel">
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
     {notebook?.investment_view && <details className="research-current-dimensions"><summary>判断依据与期限</summary><InvestmentResearchState mode="view" instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} sources={selectedSources(ids)} />} onAskAssistant={ask} /></details>}
-    <ResearchThemesPanel onThemesLoaded={onThemesLoaded} instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={onAskAssistant} sources={ids => <SourceList instrumentId={instrumentId} sources={ids.map(id => sources.find(source => source.source_id === id) || { source_id: id })} />} />
-    <ResearchActivityPanel themeNames={themeNames} instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={onAskAssistant} />
+    <ResearchTrackingPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={onAskAssistant} sources={ids => <SourceList instrumentId={instrumentId} sources={ids.map(id => sources.find(source => source.source_id === id) || { source_id: id })} />} />
     <details className="research-dossier-archive" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>研究档案<span>研究底稿、方法、材料与历史案例</span></summary>
       {expanded && <div className="research-dossier-archive-body">

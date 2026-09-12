@@ -36,6 +36,7 @@ class ThemePatch(BaseModel):
     background: str | None = Field(default=None, max_length=6000)
     status: str | None = Field(default=None, pattern="^(active|paused|closed)$")
     responsible_user_id: str | None = None
+    close_reason: str | None = Field(default=None, max_length=2000)
 
 
 class AnalystThemeUpdate(BaseModel):
@@ -102,14 +103,20 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
         session.refresh(entry, with_for_update=True)
         old = theme_record(entry)
         updates = payload.model_dump(exclude_unset=True)
+        close_reason = updates.pop("close_reason", old.get("close_reason", ""))
+        if close_reason is None:
+            raise ValueError("结束原因不能设为null；清空说明请使用空字符串")
         value = ThemeInput.model_validate({**{key: old[key] for key in ThemeInput.model_fields}, **updates})
-        if all(old[key] == item for key, item in value.model_dump().items()) and old.get("managed_by", "user") == "user":
+        close_reason = close_reason.strip() if value.status == "closed" else ""
+        if (all(old[key] == item for key, item in value.model_dump().items())
+                and old.get("close_reason", "") == close_reason and old.get("managed_by", "user") == "user"):
             return old
         context = deepcopy(entry.context_json)
         context["versions"] = [*context.get("versions", []), {key: item for key, item in old.items() if key != "versions"}]
         context["revision_number"] = context.get("revision_number", 1) + 1
     else:
         value = ThemeInput.model_validate(payload.model_dump())
+        close_reason = ""
         entry = ResearchEntry(entry_id=uuid4().hex, topic_id=topic.topic_id, kind="note", status="recorded", created_at=timestamp,
                               team_id=actor["team_id"], author_user_id=actor["user_id"], responsible_user_id=actor["user_id"])
         session.add(entry)
@@ -122,7 +129,7 @@ def save_theme(session, instrument_id, payload, *, theme_id=None, actor=None, pr
                 raise ValueError("负责人须为当前团队的有效成员")
         entry.responsible_user_id = value.responsible_user_id
     entry.title, entry.body = value.title, value.question
-    entry.context_json = {**context, "background": value.background, "theme_status": value.status,
+    entry.context_json = {**context, "background": value.background, "theme_status": value.status, "close_reason": close_reason,
                           "origin": context.get("origin", "user"), "managed_by": "user",
                           "recorded_via": "editor", "updated_by_user_id": actor["user_id"],
                           "updated_by": actor["display_name"], "updated_by_role": "user",
@@ -237,8 +244,9 @@ def themes_view(session, instrument_id, *, actor=None):
     actor = actor or research_identity()
     notes = SQLAlchemyInstrumentResearchRepository().list_notes(session, instrument_id)
     themes = theme_index(session, instrument_id, actor=actor)
-    from watchlist_app.services.research_activity import research_activity
+    from watchlist_app.services.research_activity import research_activity, review_receipts, judgment_changed_at, judgment_review_receipt
     updates = research_activity(session, instrument_id, actor=actor)["updates"]
+    receipts = review_receipts(session, instrument_id) if themes else {}
     for theme in themes:
         theme["notes"] = [_serialize_note(note) for note in notes if (current_principal().local_unrestricted or note.team_id == actor["team_id"])
                           and (note.research_context or {}).get("theme_id") == theme["theme_id"]]
@@ -246,9 +254,15 @@ def themes_view(session, instrument_id, *, actor=None):
         theme["updates"] = [row for row in updates if theme["theme_id"] in row["theme_ids"]]
         current = next((row for row in theme["updates"] if row["kind"] == "question"
                         and row["reference"].get("theme_id") == theme["theme_id"]
-                        and not row.get("superseded")), None)
+                        and not row.get("superseded") and not row.get("withdrawn")), None)
+        progress = [row for row in theme["updates"] if row["kind"] != "theme"
+                    and not row.get("superseded") and not row.get("withdrawn")]
+        theme["last_changed_at"] = max((judgment_changed_at(row) for row in progress), default=None)
+        theme["last_reviewed_at"] = None
+        if current:
+            theme.update(judgment_review_receipt(current, receipts))
         theme["current_assessment"] = ({"assessment": current.get("body", ""),
             "next_check": current.get("next_check", ""), "status": current.get("status"),
-            "updated_at": current.get("recorded_at"),
+            "updated_at": judgment_changed_at(current),
             "source_ids": [source["source_id"] for source in current.get("sources", [])]} if current else None)
     return {"identity": actor, "themes": themes}

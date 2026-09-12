@@ -1,6 +1,7 @@
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import InstrumentRiskPanel from './InstrumentRiskPanel'
 import { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
+import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 
 export default function WatchlistRiskDrawer({
   watchlistId,
@@ -16,7 +17,7 @@ export default function WatchlistRiskDrawer({
   instrumentId?: string
   focusInstrumentId?: string
   onClose: () => void
-  onAskAssistant: (id: string, question: string) => void
+  onAskAssistant: (id: string, question: string, reference?: ResearchAssistantReference) => void
   onChanged?: () => void
 }) {
   const dialogRef = useModalDialog(true, onClose)

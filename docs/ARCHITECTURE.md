@@ -79,7 +79,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 - 直接读写 `watchlist`
 - 直接读取 `instrument_data`
-- 当前已发布范围是 `public_fund / private_fund / etf / equity / index`；其他共享资产可以存在于共享资产数据，但不进入 Watchlist 主工作面
+- 当前已发布范围是 `public_fund / private_fund / etf / equity / index / crypto`；加密资产现货当前数据合同为 BTC/USD，直接债券和商品不进入主工作面，其 ETF／基金／指数载体按登记类型研究
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架
 - 维护研究对话、标的资料档案、持续研究底稿、原始证据及其日期、助手运行快照和风险跟进；沿用 ResearchTopic / ResearchEntry，PM 观点与自动研究分别保存
 - 每日研究与列表、可访问组合的风控研判复用既有 08:30 worker，单标的风控按需运行；研究助手可读取档案和风控结论，底稿按实际完成逐步积累，不宣称全部登记标的均已深研

@@ -31,6 +31,7 @@ import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
 import PortfolioRiskDrawer from './PortfolioRiskDrawer'
 import PortfolioAssistantDrawer from './PortfolioAssistantDrawer'
+import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import PortfolioMembersSettings from './PortfolioMembersSettings'
 import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
@@ -416,7 +417,7 @@ export default function PortfolioWorkspaceLayout({
     }
   }
 
-  function openAssistant(instrumentId?: string, question?: string) {
+  function openAssistant(instrumentId?: string, question?: string, reference?: ResearchAssistantReference) {
     const next = new URLSearchParams({ portfolio: resolvedPortfolioId, tab: activeSection })
     for (const key of ['currency', 'benchmark', 'start', 'end', 'as_of_date', 'account_id']) {
       const value = pageParams.get(key) ?? (key === 'start' || key === 'end' ? pageParams.get(`${key}_date`) : null)
@@ -425,6 +426,7 @@ export default function PortfolioWorkspaceLayout({
     if (holdingId) next.set('holding_id', holdingId)
     if (instrumentId) next.set('instruments', instrumentId)
     if (question) next.set('question', question)
+    setRiskReferenceParams(next, reference)
     setAssistantParams(next)
   }
 

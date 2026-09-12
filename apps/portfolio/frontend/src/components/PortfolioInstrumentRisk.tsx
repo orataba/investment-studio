@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import RiskPanel from '../../../../../packages/ui/src/InstrumentRiskPanel'
+import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import {
   type RiskWorkspace,
   percent,
@@ -22,7 +23,7 @@ export default function PortfolioInstrumentRisk({
 }: {
   portfolioId: string
   workspace: HoldingsWorkspaceResponse
-  onAskAssistant: (instrumentId: string, question: string) => void
+  onAskAssistant: (instrumentId: string, question: string, reference?: ResearchAssistantReference) => void
 }) {
   const access = usePortfolioAccess()
   const session = usePortfolioSession()
@@ -63,8 +64,8 @@ export default function PortfolioInstrumentRisk({
         request={request}
         query={query}
         heading="持仓风险关注"
-        instrumentHref={(id) =>
-          buildWatchlistInstrumentDetailUrl(id, { tab: 'risk' })
+        instrumentHref={(id, signal) =>
+          buildWatchlistInstrumentDetailUrl(id, { tab: signal?.startsWith('sector:') ? 'events' : 'risk' })
         }
         onAskAssistant={onAskAssistant}
         scopeLabel="当前组合持仓"

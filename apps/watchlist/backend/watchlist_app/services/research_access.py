@@ -32,15 +32,23 @@ def require_portfolio(portfolio_id):
 
 
 def topic_portfolio_ids(session, topic):
+    return topic_portfolio_ids_by_topic(session, [topic])[topic.topic_id]
+
+
+def topic_portfolio_ids_by_topic(session, topics):
     # Before account isolation, populated conversations could change portfolio.
     # Retained history and attachments keep every original scope. Query scope
     # scalars only, not the private research text, to authorize aggregate reads.
-    portfolio_ids = {topic.portfolio_id} if topic.portfolio_id else set()
+    portfolio_ids = {topic.topic_id: {topic.portfolio_id} if topic.portfolio_id else set() for topic in topics}
+    if not portfolio_ids:
+        return portfolio_ids
     scopes = session.execute(select(
+        ResearchEntry.topic_id,
         ResearchEntry.context_json["portfolio_id"].as_string(),
         ResearchEntry.context_json["risk_scope"]["portfolio_id"].as_string(),
-    ).where(ResearchEntry.topic_id == topic.topic_id)).all()
-    portfolio_ids.update(value for row in scopes for value in row if value)
+    ).where(ResearchEntry.topic_id.in_(portfolio_ids))).all()
+    for topic_id, portfolio_id, risk_portfolio_id in scopes:
+        portfolio_ids[topic_id].update(value for value in (portfolio_id, risk_portfolio_id) if value)
     return portfolio_ids
 
 

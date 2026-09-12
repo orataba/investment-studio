@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from functools import lru_cache
 import re
 
-from investment_studio_instrument_core.listing_contract import SECTOR_ETF_TICKERS
 from studio_market.config import MarketSettings
 from studio_market.numeric import NumericStore
 
@@ -64,17 +63,18 @@ def holding_type(name, symbol, profile):
     return "unclassified"
 
 
-def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None) -> dict | None:
+def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = None, instrument_type: str = "etf") -> dict | None:
     ticker = ticker.strip().upper()
-    if ticker not in SECTOR_ETF_TICKERS:
-        raise ValueError("Only the 11 US Select Sector SPDR ETFs are supported")
+    if instrument_type not in {"equity", "etf", "public_fund"}:
+        raise ValueError("Company estimates require an equity or disclosed equity fund holdings")
+    issuer = instrument_type == "equity"
     cutoff = as_of or datetime.now(UTC)
     if cutoff.tzinfo is None:
         raise ValueError("Sector reference cutoff must include a timezone.")
     store = numeric_store()
-    holdings = all_rows(store, "etf_holdings", symbols=[ticker], as_of=cutoff)
-    info_rows = store.latest("etf_info", symbols=[ticker], as_of=cutoff)["rows"]
-    if not holdings and not info_rows:
+    holdings = [] if issuer else all_rows(store, "etf_holdings", symbols=[ticker], as_of=cutoff)
+    info_rows = [] if issuer else store.latest("etf_info", symbols=[ticker], as_of=cutoff)["rows"]
+    if not issuer and not holdings and not info_rows:
         return None
     symbols = sorted({ticker, *(row["holding_symbol"] for row in holdings if row.get("holding_symbol"))})
     profiles = {row["symbol"]: source_fields(row) for row in store.latest(
@@ -85,8 +85,12 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
     estimates = defaultdict(list)
     for row in all_rows(store, "analyst_estimates", symbols=symbols, as_of=cutoff):
         estimates[row["symbol"]].append(enrich_estimate(row, statements.get(row["symbol"])))
+    if issuer and ticker not in profiles and ticker not in estimates:
+        return None
     gaps, normalized = [], []
-    for row in holdings:
+    subjects = [{"holding_symbol": ticker, "holding_name": (profiles.get(ticker) or {}).get("company_name") or ticker,
+                 "holding_key": ticker, "weight_percent": None}] if issuer else holdings
+    for row in subjects:
         symbol = row.get("holding_symbol")
         profile = profiles.get(symbol)
         statement = statements.get(symbol)
@@ -94,7 +98,7 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
             profile = {**profile, "reporting_currency": (statement or {}).get("reported_currency"),
                        "reporting_currency_source": {"source_id": statement["source_id"],
                            "statement_date": statement["period_end"], "collected_at": statement["observed_at"]} if statement else None}
-        kind = holding_type(row.get("holding_name"), symbol, profile)
+        kind = "equity" if issuer else holding_type(row.get("holding_name"), symbol, profile)
         item = {**source_fields(row), "holding_type": kind, "shares_number": row.get("shares"),
                 "as_of_date": row.get("report_date"), "company_profile": profile,
                 "annual_estimates": sorted((r for r in estimates[symbol] if r["estimate_period"] == "annual"), key=lambda r:r["target_period_end"]),
@@ -110,15 +114,15 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
                 if not any(r["target_period_end"] >= cutoff.date().isoformat() for r in item[field]):
                     gaps.append({"kind": f"no_forward_{period}_estimates", "symbol": symbol})
     normalized.sort(key=lambda r: (-(r.get("weight_percent") or 0), r["holding_key"]))
-    if not holdings:
+    if not issuer and not holdings:
         gaps.append({"kind": "missing_holdings", "symbol": ticker})
-    if not info_rows:
+    if not issuer and not info_rows:
         gaps.append({"kind": "missing_etf_info", "symbol": ticker})
     if ticker not in prices:
         gaps.append({"kind": "missing_price", "symbol": ticker})
     facts = [*holdings, *info_rows, *profiles.values(), *prices.values(), *statements.values(),
              *(row for rows in estimates.values() for row in rows)]
-    return {"ticker": ticker,
+    return {"ticker": ticker, "instrument_type": instrument_type,
         "source": {"provider": "FMP", "storage": "market_data + Parquet", "as_of": cutoff.isoformat(),
                    "collected_at": max((row["observed_at"] for row in facts), default=None),
                    "read_at": datetime.now(UTC).isoformat(),
@@ -130,8 +134,10 @@ def read_sector_market_data(session, ticker: str, *, as_of: datetime | None = No
                        "estimate_currency": "Provider currency or explicit inference from an available income statement; never quote currency.",
                        "target_period_end": "Forecast fiscal period, not publication or acquisition time."}},
         "etf": {"info": source_fields(info_rows[0]) if info_rows else None, "latest_price": prices.get(ticker)},
-        "holdings": normalized,
+        "holdings": [] if issuer else normalized,
+        "companies": [row for row in normalized if row["holding_type"] == "equity"],
         "dataset_status": [{"dataset": dataset, "status": "available" if rows else "missing", "row_count": len(rows)}
                            for dataset, rows in (("etf_holdings", holdings), ("etf_info", info_rows),
-                               ("company_profiles", profiles), ("us_eod_daily", prices), ("analyst_estimates", estimates))],
+                               ("company_profiles", profiles), ("us_eod_daily", prices), ("analyst_estimates", estimates))
+                           if not issuer or dataset not in {"etf_holdings", "etf_info"}],
         "gaps": gaps}

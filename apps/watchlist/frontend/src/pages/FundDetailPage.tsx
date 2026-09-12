@@ -6907,7 +6907,7 @@ export default function FundDetailPage({
 
       {activeTab === 'performance' ? (
         <section className="panel instrument-risk-shell">
-          <InstrumentRiskPanel instrumentId={fundId} mode="price" onAskAssistant={(_instrumentId, question) => openAssistant(question)} />
+          <InstrumentRiskPanel instrumentId={fundId} mode="price" onAskAssistant={(_instrumentId, question, reference) => openAssistant(question, reference)} />
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
             <div className="instrument-risk-section-header instrument-risk-rolling-header">

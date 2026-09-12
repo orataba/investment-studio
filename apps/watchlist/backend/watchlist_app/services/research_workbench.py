@@ -124,7 +124,7 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
         asset["reference_data"] = get_shared_reference_data(iid, as_of=as_of)
         if asset["instrument_type"] in {"public_fund", "private_fund"}:
             asset["performance_evidence"] = performance_evidence(session, iid, peer_scope=fund_peer_scope)
-        if asset["instrument_type"] == "etf":
+        if asset["instrument_type"] in {"equity", "etf", "public_fund"}:
             asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of)
         for name, model in (("summary", InstrumentSummaryReadModel), ("performance", InstrumentPerformanceReadModel),
                             ("exposure", InstrumentExposureReadModel), ("holdings", InstrumentExposureHoldingsReadModel)):
@@ -152,6 +152,24 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
     return serialize_payload({"assets": assets})
 
 
+def _current_risk_reference(session: Session, reference: dict) -> dict:
+    """Bind the current risk card, while its stored timestamp still matches the page."""
+    case = session.scalar(select(RiskCase).where(RiskCase.case_id == reference["risk_case_id"]).with_for_update())
+    if case is None or case.instrument_id != reference["instrument_id"]:
+        raise ValueError("引用的风险事项不属于当前标的或已不存在，请刷新风险页后重试")
+    if case.signal.startswith("sector:"):
+        raise ValueError("研究事件应引用其已保存的事件版本，请刷新风险页后重试")
+    supplied = datetime.fromisoformat(str(reference["risk_case_updated_at"]).replace("Z", "+00:00"))
+    # Database timestamps are UTC; SQLite fixtures return them without tzinfo.
+    expected = supplied.replace(tzinfo=supplied.tzinfo or UTC).astimezone(UTC)
+    updated = case.updated_at.replace(tzinfo=case.updated_at.tzinfo or UTC).astimezone(UTC)
+    if expected != updated:
+        raise ValueError("风险事项在页面打开后已有更新，请刷新风险页后再发起研究")
+    return {"reference_kind": "current_snapshot", "bound_at": datetime.now(UTC),
+        "case": {column.name: getattr(case, column.name) for column in case.__table__.columns},
+        "usage_note": "这是用户选中的当前风险事项完整快照，已核对事项归属和更新时间；不是不可变历史研究版本。后续风险变化不改写本轮快照，历史判断须另读明确的研究或事件版本。"}
+
+
 def conversation_context(session: Session, topic: ResearchTopic, question: str, watchlist_id: str | None, page_context: dict | None = None):
     entries = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic.topic_id).order_by(ResearchEntry.created_at)))
     if watchlist_id is None:
@@ -159,6 +177,7 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     from watchlist_app.services.research_identity import research_identity
     reference = (page_context or {}).get("research_reference") or {}
     linked_update = None
+    linked_risk = _current_risk_reference(session, reference) if reference.get("risk_case_id") else None
     if reference.get("research_update_id"):
         from watchlist_app.services.research_activity import resolve_research_update
         linked_update = resolve_research_update(session, reference["instrument_id"], reference["research_update_id"])
@@ -171,6 +190,7 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
         "research_run": True, "instrument_ids": list(topic.instrument_ids), "cutoff": datetime.now(UTC),
         "page_context": page_context,
         "referenced_research_update": linked_update,
+        "referenced_risk_case": linked_risk,
         "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
                            "guidance": ANALYST_FOCUS.get(instrument.instrument_type)}
                           for iid in topic.instrument_ids if (instrument := session.get(InstrumentDetail, iid))],

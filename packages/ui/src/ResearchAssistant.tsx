@@ -2,22 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useModalDialog } from './useModalDialog'
 import InfoHint from './InfoHint'
 import NoticeToast, { type NoticeToastMessage } from './NoticeToast'
+import { readRiskReferenceParams, setRiskReferenceParams, type ResearchAssistantReference } from './researchReference'
 import './notice-toast.css'
 import './research-assistant.css'
 
-export type ResearchAssistantReference = {
-  instrument_id: string
-  research_update_id?: string
-  event_case_id?: string
-  event_version_id?: string
-  notebook_version_id?: string
-  investment_view_version_id?: string
-  forecast_key?: string
-  forecast_version_id?: string
-  theme_id?: string
-  pm_note_id?: string
-  pm_note_revision?: number
-}
+export type { ResearchAssistantReference } from './researchReference'
 
 export type ResearchAssistantNote = {
   instrumentId: string
@@ -161,7 +150,7 @@ export default function ResearchAssistant({
   const [connections, setConnections] = useState<Connections | null>(null)
   const [detail, setDetail] = useState<Conversation | null>(null)
   const [question, setQuestion] = useState(initialQuestion ?? params.get('question') ?? '')
-  const [pendingReference, setPendingReference] = useState(researchReference)
+  const [pendingReference, setPendingReference] = useState(() => researchReference || readRiskReferenceParams(params, instrumentId || (params.get('instruments')?.split(',').length === 1 ? params.get('instruments')! : undefined)))
   const publishedEntries = useRef(new Set<string>())
   const [portfolioId, setPortfolioId] = useState(params.get('portfolio') || '')
   const [focusIds, setFocusIds] = useState<string[]>(
@@ -285,9 +274,13 @@ export default function ResearchAssistant({
     if (topicId) next.set('topic', topicId)
     else next.delete('topic')
     next.delete('question')
+    if (clearQuestion) setRiskReferenceParams(next)
     onParamsChange(next)
     setHistoryOpen(false)
-    if (clearQuestion) setQuestion('')
+    if (clearQuestion) {
+      setQuestion('')
+      setPendingReference(undefined)
+    }
     setNotice(null)
     if (!topicId) {
       setFocusIds(instrumentId ? [instrumentId] : params.get('instruments')?.split(',').filter(Boolean) || [])
@@ -606,7 +599,7 @@ export default function ResearchAssistant({
           </form>
         )}
       </div>
-      {pendingReference && <p className="assistant-scope">已关联研究追踪中的{pendingReference.pm_note_id ? '投资经理观点版本' : pendingReference.research_update_id ? '研究更新版本' : pendingReference.event_version_id ? '事件版本' : pendingReference.theme_id ? '持续关注主题' : pendingReference.forecast_version_id ? '预测版本' : pendingReference.investment_view_version_id ? '历史观点' : '当前研究'}，发送后将直接读取对应判断与依据。</p>}
+      {pendingReference && <p className="assistant-scope">{pendingReference.risk_case_id ? '已关联所选风险事项，发送后核对其记录时间并读取对应风险依据。' : <>已关联研究追踪中的{pendingReference.pm_note_id ? '投资经理观点版本' : pendingReference.research_update_id ? '研究更新版本' : pendingReference.event_version_id ? '事件版本' : pendingReference.theme_id ? '持续关注主题' : pendingReference.forecast_version_id ? '预测版本' : pendingReference.investment_view_version_id ? '历史观点' : '当前研究'}，发送后将直接读取对应判断与依据。</>}</p>}
       <form
         className="assistant-composer"
         onSubmit={(e) => {

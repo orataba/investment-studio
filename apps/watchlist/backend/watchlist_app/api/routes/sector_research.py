@@ -34,8 +34,8 @@ def sector_estimates(instrument_id: str, session: Session = Depends(get_db_sessi
 @router.get("/sector-research")
 def sector_research(instrument_id: str | None = None, watchlist_id: str | None = None, session: Session = Depends(get_db_session)):
     ids = service.scoped_ids(session, instrument_id, watchlist_id)
-    reviews = service.latest_reviews(session)
-    completed = service.latest_reviews(session, completed_only=True)
+    states = service.review_states(session)
+    reviews, completed = states["latest"], states["last_completed"]
     sectors = [{"instrument_id": iid, "ticker": iid.upper(), "sector_name": service.instrument_label(session, iid),
                 "latest_review": reviews.get(iid), "last_completed_review": completed.get(iid)} for iid in ids]
     available = bool(ids)
@@ -201,6 +201,14 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
     run = current_run(session, run_id, writing=True)
     try:
         service.validate_result(session, run, request)
+        # Enforce the current automatic submission contract without rewriting
+        # historical runs or requiring a daily receipt from a conversation.
+        if run.context_json.get("sector_run"):
+            missing = [review.instrument_id for review in request.reviews if review.reflection is None]
+            if missing:
+                raise ValueError("自动研究每个标的都必须提交 reflection 复核记录；以下标的缺少："
+                    + "、".join(missing)
+                    + "。请补充 status=reviewed 或 insufficient_evidence，并说明实际复核结果或证据缺口后重新提交。")
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     run.context_json = {**run.context_json, "submitted_draft": service.draft_payload(request)}

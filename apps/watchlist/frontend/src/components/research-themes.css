@@ -1,5 +1,19 @@
 .research-themes { padding: 16px 0; }
 .research-themes h3 { margin: 0; font-size: 15px; }
+.research-current-tracking { padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.research-current-tracking > h3 { margin: 0 0 8px; font-size: 15px; }
+.research-themes .research-dossier-section-heading h4, .research-current-followups > h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.research-current-followups { padding: 12px 0; }
+.research-current-followup { padding: 14px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+.research-current-followup:last-child { border-bottom: 0; }
+.research-current-followup p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.research-current-followup .research-notebook-next { font-size: 12px; }
+.research-current-followup .research-notebook-next > strong { margin-right: 8px; font-weight: 500; }
+.research-followup-clocks { display: flex; gap: 6px 18px; flex-wrap: wrap; margin-top: 8px; }
+.research-current-related { margin: 10px 0; font-size: 13px; }
+.research-current-related > summary { cursor: pointer; color: var(--muted, #64748b); }
+.research-current-related > div { border-left: 2px solid var(--line, #e2e8f0); margin: 12px 0; padding-left: 12px; }
+.research-current-related h5 { margin: 0; font-size: 13px; }
 .research-theme-record { padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
 .research-theme-record p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .research-theme-record details { margin-top: 12px; }

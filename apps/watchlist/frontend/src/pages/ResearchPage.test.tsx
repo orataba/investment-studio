@@ -113,8 +113,42 @@ it('carries the selected prediction version into shared research and reports its
   window.removeEventListener(RESEARCH_UPDATED, updated)
 })
 
+it.each(['新对话', '历史对话'])('clears a selected research version when switching to %s', async (destination) => {
+  const reference = { instrument_id: 'fund-a', theme_id: 'old-theme', research_update_id: 'old-event:1' }
+  render(<MemoryRouter><ResearchPage instrumentId="fund-a" initialQuestion="核查这个事件" researchReference={reference} /></MemoryRouter>)
+  await waitFor(() => expect(screen.getByRole('button', { name: '发送' }).hasAttribute('disabled')).toBe(false))
+  expect(screen.getByText(/已关联研究追踪中的/)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: destination }))
+  if (destination === '历史对话') {
+    fireEvent.click(within(screen.getByRole('navigation', { name: '历史对话' })).getByRole('button', { name: /基金研究/ }))
+    await screen.findByText('重点标的：基金 A')
+  }
+  expect(screen.queryByText(/已关联研究追踪中的/)).toBeNull()
+  fireEvent.change(screen.getByRole('textbox', { name: '向研究助手提问' }), { target: { value: '研究一个新问题' } })
+  await waitFor(() => expect(screen.getByRole('button', { name: '发送' }).hasAttribute('disabled')).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: '发送' }))
+  await waitFor(() => expect(mocks.write).toHaveBeenCalledWith('/research/topics/chat-1/analysis', expect.objectContaining({
+    question: '研究一个新问题',
+    page_context: { surface: 'instrument', instrument_id: 'fund-a', watchlist_id: null, portfolio_id: null },
+  })))
+})
+
+it.each([
+  { event_case_id: 'event-1', event_version_id: 'event-1:2' },
+  { risk_case_id: 'drawdown-1', risk_case_updated_at: '2026-09-12T08:00:00Z' },
+])('carries the selected risk reference from a list entry to the shared assistant: %j', async (fields) => {
+  const params = new URLSearchParams({ instruments: 'fund-a', watchlist: '3', question: '核查所选风险' })
+  for (const [key, value] of Object.entries(fields)) if (value) params.set(key, value)
+  render(<MemoryRouter initialEntries={[`/assistant?${params}`]}><ResearchPage /></MemoryRouter>)
+  await waitFor(() => expect(screen.getByRole('button', { name: '发送' }).hasAttribute('disabled')).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: '发送' }))
+  await waitFor(() => expect(mocks.write).toHaveBeenCalledWith('/research/topics/chat-1/analysis', expect.objectContaining({
+    page_context: expect.objectContaining({ surface: 'watchlist', watchlist_id: '3', research_reference: { instrument_id: 'fund-a', ...fields } }),
+  })))
+})
+
 it('continues an existing conversation and saves a reply as a note only after editing and submission', async () => {
-  entries = [{ ...answer, context_json: { page_context: { research_reference: { instrument_id: 'fund-a', theme_id: 'theme-original', pm_note_id: 'pm-original', pm_note_revision: 2 } } } }]
+  entries = [{ ...answer, context_json: { page_context: { research_reference: { instrument_id: 'fund-a', theme_id: 'theme-original', pm_note_id: 'pm-original', pm_note_revision: 2, research_update_id: 'event:1:2', event_case_id: 'event-1', event_version_id: 'event-1:2' } } } }]
   render(
     <MemoryRouter initialEntries={['/assistant?topic=chat-1']}>
       <ResearchPage />
@@ -134,7 +168,7 @@ it('continues an existing conversation and saves a reply as a note only after ed
         source_entry_id: 'reply-1',
         note: expect.objectContaining({
           note_type: 'thesis_update',
-          research_context: { theme_id: 'theme-original', relationship: 'update', related_note_id: 'pm-original', related_revision: 2 },
+          research_context: { theme_id: 'theme-original', relationship: 'update', related_note_id: 'pm-original', related_revision: 2, research_update_id: 'event:1:2', event_case_id: 'event-1', event_version_id: 'event-1:2' },
           body: '人工核查后仍待补充底层敞口。',
           source_refs: 'Watchlist 助手对话 chat-1 / 回复 reply-1',
         }),

@@ -780,6 +780,9 @@ export type InstrumentResearchNote = {
 
 export type InvestmentOpinionResearchContextInput = {
   theme_id?: string | null
+  research_update_id?: string | null
+  event_case_id?: string | null
+  event_version_id?: string | null
   related_note_id?: string | null
   related_revision?: number | null
   relationship?: 'initial' | 'update' | 'review' | 'lesson'

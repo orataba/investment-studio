@@ -60,10 +60,17 @@ def test_theme_lifecycle_retains_versions_without_repeating_unchanged_updates(re
     from watchlist_app.services.research_themes import theme_index
     with get_session_factory()() as session:
         assert theme_index(session, "fund-us-agg", active_only=True) == []
-    closed = client.patch(path, json={"status": "closed", "background": "暂不继续跟进"}).json()
+    response = client.patch(path, json={"status": "closed", "close_reason": "暂不继续跟进"})
+    assert response.status_code == 200, response.text
+    closed = response.json()
+    assert closed["close_reason"] == "暂不继续跟进" and closed["background"] == theme["background"]
     assert closed["revision_number"] == 3 and [v["status"] for v in closed["versions"]] == ["active", "paused"]
+    assert client.patch(path, json={"status": "closed", "close_reason": closed["close_reason"]}).json() == closed
+    corrected = client.patch(path, json={"close_reason": "已解决当前问题，暂不继续跟进"}).json()
+    assert corrected["revision_number"] == 4 and corrected["versions"][-1]["close_reason"] == closed["close_reason"]
     resumed = client.patch(path, json={"status": "active"}).json()
-    assert resumed["revision_number"] == 4
+    assert resumed["revision_number"] == 5 and resumed["close_reason"] == ""
+    assert resumed["versions"][-1]["close_reason"] == corrected["close_reason"]
     assert client.get(_themes()).json()["themes"][0]["theme_id"] == theme["theme_id"]
 
 
@@ -94,6 +101,11 @@ def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
         with pytest.raises(ValueError, match="人工维护"):
             save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", status="active"))
         assert theme_index(session, "fund-us-agg")[0]["status"] == "paused"
+    # A person can resume the paused topic; its creator and original history remain intact.
+    resumed = research_client.patch(f"{_themes()}/{theme['theme_id']}", json={"status": "active"})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "active" and resumed.json()["managed_by"] == "user"
+    assert resumed.json()["origin"] == "researcher" and resumed.json()["close_reason"] == ""
 
 
 def test_analyst_cannot_rewrite_user_theme_or_use_foreign_instrument_key(research_client):

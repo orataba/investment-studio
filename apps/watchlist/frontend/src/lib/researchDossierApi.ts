@@ -1,4 +1,5 @@
 import { fetchJson, type InstrumentResearchNote } from './api'
+import type { ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 
 // Published research keeps the clock actually retained with its source evidence.
 type EstimateSnapshot = { observation_id?: string; collected_at?: string; run_id?: string; read_at?: string | null; cutoff?: string | null }
@@ -35,11 +36,7 @@ export type ResearchQuestion = {
   source_ids: string[]
 }
 
-export type ResearchReference = {
-  instrument_id: string; notebook_version_id?: string; investment_view_version_id?: string; forecast_key?: string; forecast_version_id?: string
-  theme_id?: string; pm_note_id?: string; pm_note_revision?: number
-  research_update_id?: string; event_case_id?: string; event_version_id?: string
-}
+export type ResearchReference = ResearchAssistantReference
 export type AskResearchAssistant = (question: string, reference?: ResearchReference) => void
 export type ResearchRevision = { version_id?: string; created_at?: string | null; updated_at?: string | null; source_run_id?: string }
 export type InvestmentView = ResearchRevision & {
@@ -136,6 +133,8 @@ export type ResearchTheme = ResearchThemeInput & {
   created_at: string; updated_at: string; revision_number: number
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
   origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
+  last_reviewed_at?: string | null; last_changed_at?: string | null
+  last_review_status?: 'reviewed' | 'insufficient_evidence' | null
   current_assessment?: { assessment: string; next_check: string; status: string; updated_at: string; source_ids: string[] } | null
 }
 export type ResearchThemesResponse = {
@@ -194,14 +193,29 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
 
 export type ResearchUpdate = {
   update_id: string; kind: 'event' | 'question' | 'forecast' | 'review' | 'lesson' | 'theme' | 'opinion' | 'judgment' | 'schedule'
-  title: string; body: string; recorded_at: string; theme_ids: string[]; author: string; author_role: 'researcher' | 'user'
+  title: string; body: string; recorded_at: string; theme_ids: string[]; author: string; author_role: 'researcher' | 'user' | 'system'
   sources: EventSource[]; reference: ResearchReference
   occurred_at?: string | null; published_at?: string | null; next_check?: string
   follow_up?: 'none' | 'watch' | 'resolved'; analysis_depth?: 'brief' | 'analysis'
   direction?: 'risk' | 'opportunity' | 'uncertain'; confidence?: string; change?: string; information_type?: 'fact' | 'opinion' | 'rumor' | null
   details?: Array<{ label: string; text: string }>; superseded?: boolean; withdrawn?: boolean
   status?: string; scheduled_at?: string; withdrawal_reason?: string; withdrawn_at?: string
+  citation_correction?: {
+    source_run_id: string; source_notebook_version_id: string; source_update_id: string
+    reason: string; corrected_at: string; original_recorded_at: string
+  }
+}
+export type CurrentResearchFollowup = {
+  followup_id: string; kind: 'event' | 'question' | 'forecast' | 'schedule'
+  title: string; assessment: string; next_check: string; theme_ids: string[]
+  latest_update: ResearchUpdate; related_updates: ResearchUpdate[]
+  last_changed_at: string; last_reviewed_at?: string | null
+  last_review_status?: 'reviewed' | 'insufficient_evidence' | null
+  last_review_summary?: string
+}
+export type ResearchActivityResponse = {
+  instrument_id: string; updates: ResearchUpdate[]; current_followups: CurrentResearchFollowup[]
 }
 export function getResearchActivity(instrumentId: string, signal?: AbortSignal) {
-  return fetchJson<{ instrument_id: string; updates: ResearchUpdate[] }>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })
+  return fetchJson<ResearchActivityResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })
 }

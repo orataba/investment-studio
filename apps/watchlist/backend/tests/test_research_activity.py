@@ -23,7 +23,7 @@ def activity_client(client, monkeypatch):
     return client
 
 
-def publish(session, *, events=None, research=None, themes=None):
+def publish(session, *, events=None, research=None, themes=None, reflection=None):
     from watchlist_app.services.research_dossier import _notebooks
     from watchlist_app.services.research_themes import theme_index
     run, _ = service.begin_run(session, ["xlk"])
@@ -35,7 +35,7 @@ def publish(session, *, events=None, research=None, themes=None):
         "research_dossiers": [{"instrument_id": "xlk", "notebook": previous, "themes": theme_index(session, "xlk")}],
         "web_evidence": [{"operation": "search", "sources": []}, {"operation": "fetch", "sources": [source]}]}
     row = {"instrument_id": "xlk", "change_kind": "knowledge", "events": events or [],
-           "reflection": {"status": "reviewed", "summary": "已检查相关判断", "reviewed_update_ids": []}}
+           "reflection": reflection or {"status": "reviewed", "summary": "已检查相关判断", "reviewed_update_ids": []}}
     if research is not None:
         row["research"] = research
     if themes is not None:
@@ -193,3 +193,125 @@ def test_explicitly_cleared_judgment_does_not_remain_current_in_activity(activit
         retained = next(row for row in judgments if row["update_id"] == original["update_id"])
         assert retained["body"] == original["body"] and retained["superseded"]
         assert not any(not row.get("superseded") and row.get("status") != "withdrawn" for row in judgments)
+
+
+def test_current_followups_show_unresolved_work_without_requiring_a_theme(activity_client):
+    with get_session_factory()() as session:
+        publish(session, events=[event(), event(event_key="brief", follow_up="none", next_watch="")],
+            research={"questions": [{"key": "transmission", "question": "融资成本会否传导", "assessment": "尚无结论",
+                "next_check": "核对经营披露"}]})
+    data = activity_client.get("/api/research/instruments/xlk/activity").json()
+    assert {row["kind"] for row in data["current_followups"]} == {"event", "question"}
+    assert all(row["last_reviewed_at"] is None for row in data["current_followups"])
+    assert len(data["updates"]) == 3
+
+
+def test_current_followups_group_event_questions_and_hide_finished_work(activity_client):
+    with get_session_factory()() as session:
+        publish(session, events=[event()], research={"questions": [{"key": "terms", "event_key": "financing",
+            "question": "资金如何使用", "assessment": "用途未明", "next_check": "取得说明"}]})
+        current = research_activity(session, "xlk", include_followups=True)["current_followups"]
+        assert len(current) == 1 and len(current[0]["related_updates"]) == 1
+        assert current[0]["related_updates"][0]["kind"] == "question"
+        publish(session, events=[event(action="resolved", follow_up="resolved")], research={"questions": [
+            {"key": "terms", "event_key": "financing", "question": "资金如何使用", "assessment": "用途已核实",
+             "status": "supported", "next_check": ""}]})
+        assert research_activity(session, "xlk", include_followups=True)["current_followups"] == []
+        assert len(research_activity(session, "xlk")["updates"]) == 4
+
+
+def test_exact_receipt_advances_check_clock_without_inventing_progress(activity_client):
+    with get_session_factory()() as session:
+        publish(session, events=[event()])
+        before = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
+        run = publish(session, reflection={"status": "insufficient_evidence", "summary": "原文尚未更新",
+            "reviewed_update_ids": [before["followup_id"]]})
+        after = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
+        assert after["last_changed_at"] == before["last_changed_at"]
+        assert after["last_reviewed_at"] == run.completed_at.isoformat()
+        assert after["last_review_status"] == "insufficient_evidence"
+        assert after["last_review_summary"] == "原文尚未更新"
+        publish(session, events=[event(action="updated", body="资金用途出现新披露")])
+        changed = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
+        assert changed["last_reviewed_at"] is None  # An old-version receipt cannot check a new judgment.
+
+
+def test_active_themes_own_work_but_paused_dedicated_questions_stay_paused(activity_client):
+    theme = activity_client.post("/api/research/instruments/xlk/themes", json={"title": "长期资金效果", "question": "能否改善经营"}).json()
+    with get_session_factory()() as session:
+        publish(session, research={"questions": [{"key": "capacity", "theme_id": theme["theme_id"],
+            "question": "能否改善经营", "assessment": "需更多证据", "next_check": "核对披露"}]})
+        original = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "question")
+        run = publish(session, reflection={"status": "reviewed", "summary": "假设未变", "reviewed_update_ids": [original["update_id"]]})
+        assert research_activity(session, "xlk", include_followups=True)["current_followups"] == []
+        from watchlist_app.services.research_themes import themes_view
+        projected = themes_view(session, "xlk")["themes"][0]
+        assert projected["last_changed_at"] == original["recorded_at"]
+        assert projected["last_reviewed_at"] == run.completed_at.isoformat()
+    assert activity_client.patch(f"/api/research/instruments/xlk/themes/{theme['theme_id']}", json={"status": "paused"}).status_code == 200
+    data = activity_client.get("/api/research/instruments/xlk/activity").json()
+    assert data["current_followups"] == []
+    assert any(row["kind"] == "question" for row in data["updates"])
+
+
+def test_quiet_check_keeps_current_research_distinct_from_its_own_increment(activity_client):
+    with get_session_factory()() as session:
+        publish(session, research={"investment_view": {"direction": "假设等待证据", "risk": "成本传导待验证"}})
+        quiet = publish(session)
+        latest = service.latest_reviews(session)["xlk"]
+        assert latest["run_id"] == quiet.entry_id and latest["research"] is None
+        assert latest["current_research"]["investment_view"]["risk"] == "成本传导待验证"
+
+
+def test_activity_clock_normalizes_database_and_source_offsets_before_ordering():
+    from datetime import datetime
+    from watchlist_app.services.research_activity import _time
+    assert _time(datetime.fromisoformat('2026-09-12T08:30:00+08:00')) == _time('2026-09-12T00:30:00Z')
+    assert _time(datetime.fromisoformat('2026-09-11T21:00:00-04:00')) > _time('2026-09-12T00:30:00Z')
+
+
+@pytest.mark.parametrize("status", ["paused", "closed"])
+def test_review_agenda_excludes_inactive_theme_pm_checks_but_preserves_original_opinions(activity_client, status):
+    from watchlist_app.services.research_dossier import read_dossier
+    client = activity_client
+    theme = client.post("/api/research/instruments/xlk/themes", json={"title": "资金改善", "question": "资金是否改善经营"}).json()
+    for title, context in (("主题内投资观点", {"theme_id": theme["theme_id"]}), ("独立投资观点", {})):
+        response = client.post("/api/instruments/xlk/research/notes", json={"note": {
+            "note_date": "2026-09-09", "title": title, "body": "仍需核实经营效果。", "research_context": context}})
+        assert response.status_code == 200, response.text
+    with get_session_factory()() as session:
+        before = read_dossier(session, "xlk")
+        assert {row["title"] for row in before["review_agenda"]["pm_views"]} == {"主题内投资观点", "独立投资观点"}
+    change = {"status": status, **({"close_reason": "暂不继续此主题"} if status == "closed" else {})}
+    assert client.patch(f"/api/research/instruments/xlk/themes/{theme['theme_id']}", json=change).status_code == 200
+    with get_session_factory()() as session:
+        dossier = read_dossier(session, "xlk")
+        assert [row["title"] for row in dossier["review_agenda"]["pm_views"]] == ["独立投资观点"]
+        assert {row["title"] for row in dossier["pm_views"]} == {"主题内投资观点", "独立投资观点"}
+        original = next(row for row in research_activity(session, "xlk")["updates"]
+                        if row["kind"] == "opinion" and row["title"] == "主题内投资观点")
+        with pytest.raises(ValueError, match="暂停或结束"):
+            publish(session, reflection={"status": "reviewed", "summary": "复核暂停主题观点",
+                "reviewed_update_ids": [original["update_id"]]})
+
+
+def test_event_receipt_does_not_check_its_grouped_question_or_theme_judgment(activity_client):
+    from watchlist_app.services.research_activity import review_receipts
+    from watchlist_app.services.research_themes import themes_view
+    client = activity_client
+    theme = client.post("/api/research/instruments/xlk/themes", json={"title": "经营改善", "question": "资金能否改善经营"}).json()
+    with get_session_factory()() as session:
+        publish(session, events=[event()], research={"questions": [
+            {"key": "terms", "event_key": "financing", "question": "资金如何使用", "assessment": "用途未明", "next_check": "取得说明"},
+            {"key": "capacity", "theme_id": theme["theme_id"], "question": "经营能否改善", "assessment": "效果待证", "next_check": "经营披露"}]})
+        current = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
+        child = current["related_updates"][0]
+        reviewed = publish(session, reflection={"status": "reviewed", "summary": "只复核了原事件条款",
+            "reviewed_update_ids": [current["followup_id"]]})
+        after = research_activity(session, "xlk", include_followups=True)["current_followups"][0]
+        assert after["last_reviewed_at"] == reviewed.completed_at.isoformat()
+        assert child["update_id"] not in review_receipts(session, "xlk")
+        assert themes_view(session, "xlk")["themes"][0]["last_reviewed_at"] is None
+        publish(session, reflection={"status": "insufficient_evidence", "summary": "子问题仍缺证据",
+            "reviewed_update_ids": [child["update_id"]]})
+        assert research_activity(session, "xlk", include_followups=True)["current_followups"][0]["last_reviewed_at"] == after["last_reviewed_at"]

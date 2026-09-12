@@ -349,6 +349,7 @@ def _research_records(session: Session, instrument_id: str):
     team_id = principal.team_id
     records = session.scalars(select(ResearchEntry).where(
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]), True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
+        ResearchEntry.context_json["reviews"][instrument_id]["research"].as_string().is_not(None),
     ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
     allowed_topics = {}
     for record in records:

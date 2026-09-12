@@ -5,6 +5,16 @@ import pytest
 
 from watchlist_app.services import sector_market_data as market
 from watchlist_app.services.sector_estimates import read_estimate_evidence
+from watchlist_app.db.session import get_session_factory
+
+
+def register_company_source(iid, kind, symbol):
+    from .conftest import canonical_quote_policy, seed_shared_instrument
+    seed_shared_instrument({"instrument_id": iid, "instrument_name": f"Registered {symbol}",
+        "instrument_type": kind, "currency": "CNY" if symbol.endswith(".SS") else "USD",
+        "exchange_code": "XSHG" if symbol.endswith(".SS") else "ARCX",
+        "quote_selection_policy": canonical_quote_policy(kind),
+        "identifiers": [{"identifier_type": "provider_symbol", "identifier_value": f"fmp:{symbol}", "is_primary": True}]})
 
 
 @pytest.fixture
@@ -47,8 +57,7 @@ def test_shared_latest_and_historical_cutoff_do_not_mix_captures(market_store):
     assert market.read_sector_market_data(None, "XLK")["holdings"][0]["annual_estimates"][0]["revenue_avg"] == 150
     assert market.read_sector_market_data(None, "XLK", as_of=datetime(2026, 9, 4, tzinfo=UTC)) is None
     assert market.read_sector_market_data(None, "XLE") is None
-    with pytest.raises(ValueError, match="11"):
-        market.read_sector_market_data(None, "SPY")
+    assert market.read_sector_market_data(None, "SPY") is None
     with pytest.raises(ValueError, match="timezone"):
         market.read_sector_market_data(None, "XLK", as_of=datetime(2026, 9, 5))
 
@@ -67,3 +76,79 @@ def test_two_captures_compare_without_running_research_or_registering_constituen
     earlier = read_estimate_evidence(None, "xlk", as_of=datetime(2026, 9, 5, 12, tzinfo=UTC))
     assert earlier["status"] == "baseline" and not earlier["changes"]
     assert read_estimate_evidence(None, "512880")["status"] == "unsupported"
+
+
+@pytest.mark.parametrize("iid,kind,symbol", [("600036-sh", "equity", "600036.SS"), ("broad-market", "etf", "SPY")])
+def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_tools(client, market_store, monkeypatch, iid, kind, symbol):
+    from watchlist_app.services import sector_research as service
+    from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+    from watchlist_app.db.models import InstrumentDetail
+    from watchlist_app.db.models.workbench import ResearchEntry
+    _, ingest = market_store
+    register_company_source(iid, kind, symbol)
+    company = symbol if kind == "equity" else "AAA"
+    currency = "CNY" if kind == "equity" else "USD"
+    if kind == "etf":
+        ingest("etf_info", [{"symbol": symbol, "name": "Broad market ETF"}])
+        ingest("etf_holdings", [
+            {"etf_symbol": symbol, "holding_key": "AAA", "holding_symbol": "AAA", "holding_name": "Alpha", "weight_percent": 80, "snapshot_date": "2026-09-05"},
+            {"etf_symbol": symbol, "holding_key": "cash", "holding_symbol": "", "holding_name": "US DOLLAR", "weight_percent": 20, "snapshot_date": "2026-09-05"}])
+    else:
+        ingest("company_profiles", [{"symbol": symbol, "company_name": "招商银行", "currency": currency, "is_etf": False, "is_fund": False}])
+    ingest("financial_statements", [{"symbol": company, "statement_type": "income", "period_end": "2026-06-30", "fiscal_year": 2026,
+                                    "fiscal_period": "Q2", "reported_currency": currency}], "2026-09-04T08:00:00+00:00")
+    for day, value in ((5, 100), (6, 110)):
+        ingest("analyst_estimates", [{"symbol": company, "estimate_period": "annual", "target_period_end": "2027-12-31",
+            "revenue_avg": value, "eps_avg": 2, "num_analysts_revenue": 10, "num_analysts_eps": 9,
+            "raw_sha256": str(day) * 64}], f"2026-09-0{day}T08:00:00+00:00")
+    with get_session_factory()() as session:
+        result = read_estimate_evidence(session, iid, as_of=datetime(2026, 9, 6, 12, tzinfo=UTC))
+        assert result["status"] == "comparable" and result["company_symbols"] == [company]
+        assert result["changes"][0]["delta"] == 10 and result["changes"][0]["currency"] == currency
+        assert datetime.fromisoformat(result["changes"][0]["current_collected_at"]) == datetime(2026, 9, 6, 8, tzinfo=UTC)
+        assert result["changes"][0]["current_currency_source"]["statement_date"] == "2026-06-30"
+        assert result["coverage"]["equity_weight_pct"] == (None if kind == "equity" else 80)
+        if kind == "equity":
+            assert all(row["current_weight_pct"] is None for row in result["coverage"]["metrics"])
+        snapshot = service.sector_snapshot(iid, session)
+        assert snapshot[1]["company_symbols"] == [company]
+        if kind == "equity":
+            assert snapshot[1]["holdings"] == [] and snapshot[1]["top_holdings"] == []
+            assert not any(row["dataset"].startswith("etf_") for row in snapshot[1]["dataset_status"])
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type=kind, detail_view_type=kind,
+                                     instrument_name=f"Registered {symbol}", metadata_json={}))
+        session.commit()
+        monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
+        run, _ = service.begin_run(session, [iid])
+        rid = run.entry_id
+    service.prepare_run(rid)
+    context = client.get(f"/api/research/runs/{rid}/context").json()
+    assert context["instrument_inputs"][0]["analyst_estimate_history"]["company_symbols"] == [company]
+    response = client.get(f"/api/research/runs/{rid}/sector-company/{iid}/{company}")
+    assert response.status_code == 200
+    retained = response.json()
+    assert retained["source_id"] == f"fmp:{rid}:{iid}:{company}"
+    row = next(row for row in retained["company"]["annual_estimates"] if row["target_period_end"] == "2027-12-31")
+    assert row["revenue_avg"] == 110 and row["currency"] == currency and row["raw_sha256"]
+    assert row["source_id"] and row["currency_source"]["source_id"]
+    assert client.get(f"/api/research/runs/{rid}/sector-company/{iid}/UNRELATED").status_code == 404
+    with get_session_factory()() as session:
+        retained_context = session.get(ResearchEntry, rid).context_json
+        assert set(retained_context["sector_company_data"][iid]) == {company}
+        assert retained_context["sector_estimate_evidence"][0]["company_symbols"] == [company]
+    if kind == "etf":
+        assert get_shared_instrument("aaa") is None
+
+
+@pytest.mark.parametrize("iid,symbol,name", [("tlt", "TLT", "US TREASURY NOTE"), ("gold", "GLD", "GOLD BULLION"), ("oil", "USO", "WTI FUTURE")])
+def test_non_equity_fund_exposure_does_not_become_company_estimates(client, market_store, iid, symbol, name):
+    _, ingest = market_store
+    register_company_source(iid, "etf", symbol)
+    ingest("etf_info", [{"symbol": symbol, "name": name}])
+    ingest("etf_holdings", [{"etf_symbol": symbol, "holding_key": "non-equity", "holding_symbol": "UNKNOWN", "holding_name": name,
+                             "weight_percent": 100, "snapshot_date": "2026-09-05"}])
+    with get_session_factory()() as session:
+        result = read_estimate_evidence(session, iid)
+    assert result["status"] == "not_applicable" and not result["supported"]
+    assert not result["changes"] and not result["coverage"]
+    assert "EPS" in result["gaps"][0]

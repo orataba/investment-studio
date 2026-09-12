@@ -1,12 +1,13 @@
 import WatchlistRiskDrawer from './WatchlistRiskDrawer'
+import type { AskResearchAssistant } from '../lib/researchDossierApi'
 
 export default function InstrumentRiskDrawer({ instrumentId, instrumentName, watchlistId, onClose, onAskAssistant }: {
   instrumentId: string
   instrumentName: string
   watchlistId?: string
   onClose: () => void
-  onAskAssistant: (question: string) => void
+  onAskAssistant: AskResearchAssistant
 }) {
   return <WatchlistRiskDrawer instrumentId={instrumentId} watchlistId={watchlistId} watchlistName={instrumentName}
-    onClose={onClose} onAskAssistant={(_id, question) => onAskAssistant(question)} />
+    onClose={onClose} onAskAssistant={(_id, question, reference) => onAskAssistant(question, reference)} />
 }

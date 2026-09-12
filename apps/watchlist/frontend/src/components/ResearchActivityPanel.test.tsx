@@ -81,6 +81,36 @@ it('uses exact update and event versions for questions, themes and the user’s 
   expect(ask).toHaveBeenLastCalledWith(expect.stringContaining('以下是我的判断：\n整合成本上升，但目前不改变我的中期判断。'), update().reference)
 })
 
+it.each(['question', 'judgment'] as const)('identifies a %s citation correction without changing the original assessment or date', async kind => {
+  const originalTime = '2026-08-01T09:00:00+08:00'
+  const corrected = update({
+    update_id: 'research:correction-1', kind, change: 'citation_corrected', author: '系统', author_role: 'system',
+    title: '原判断标题', body: '原判断正文保持原样。', follow_up: undefined,
+    occurred_at: undefined, published_at: undefined,
+    sources: [{ source_id: 'original', title: '已核证依据', url: 'https://example.com/original' }],
+    reference: { instrument_id: '600036-sh', research_update_id: 'research:correction-1' },
+    citation_correction: { source_run_id: 'old-run', source_notebook_version_id: 'old-notebook',
+      source_update_id: 'research:old', reason: '恢复独立核证结果中已保存的依据引用。',
+      corrected_at: update().recorded_at, original_recorded_at: originalTime },
+  })
+  mocks.get.mockResolvedValue({ instrument_id: '600036-sh', updates: [corrected] })
+  const ask = vi.fn()
+  render(<ResearchActivityPanel instrumentId="600036-sh" onAskAssistant={ask} />)
+  const article = (await screen.findByRole('heading', { name: '原判断标题' })).closest('article')!
+  expect(within(article).getByText('引用修正')).toBeTruthy()
+  expect(within(article).getByText('系统')).toBeTruthy()
+  expect(within(article).queryByText('研究员记录')).toBeNull()
+  expect(within(article).getByText('原判断正文保持原样。')).toBeTruthy()
+  expect(within(article).getByText(/^修正时间/).querySelector('time')?.dateTime).toBe(corrected.recorded_at)
+  expect(within(article).getByText(/^原判断时间/).querySelector('time')?.dateTime).toBe(originalTime)
+  expect(within(article).getByText('原下一步观察')).toBeTruthy()
+  expect(within(article).getByText(corrected.citation_correction!.reason)).toBeTruthy()
+  fireEvent.click(within(article).getByText('分析与研究依据'))
+  expect(within(article).getByRole('link', { name: '已核证依据' }).getAttribute('href')).toBe('https://example.com/original')
+  fireEvent.click(within(article).getByRole('button', { name: '追问这条更新' }))
+  expect(ask).toHaveBeenLastCalledWith(expect.any(String), corrected.reference)
+})
+
 it('lets readers discuss records while keeping shared opinion and theme writes unavailable', () => {
   mocks.account.mockReturnValue({ team_role: 'reader' })
   render(<ResearchUpdateCard update={update()} onAskAssistant={vi.fn()} />)
@@ -104,7 +134,7 @@ it('refreshes only the relevant instrument and retains current records when a la
 it('shows brief events without inventing follow-up requirements and rejects unsafe source links', () => {
   render(<ResearchUpdateCard update={update({ analysis_depth: 'brief', follow_up: 'none', next_check: '', sources: [{ source_id: 'link', title: '不安全链接', url: 'javascript:alert(1)' }] })} />)
   expect(screen.getByText('简讯').parentElement?.textContent).toBe('事件 · 简讯')
-  expect(screen.getByText('暂不跟进')).toBeTruthy()
+  expect(screen.getByText('当时无需跟进')).toBeTruthy()
   expect(screen.queryByText('下一步观察')).toBeNull()
   fireEvent.click(screen.getByText('分析与研究依据'))
   expect(screen.queryByRole('link', { name: '不安全链接' })).toBeNull()
@@ -180,7 +210,7 @@ it('makes status-only forecast revisions and calendar outcomes visible and prese
   const { rerender } = render(<ResearchUpdateCard update={update({ kind: 'forecast', status: 'refuted', body: '事前预测。' })} />)
   expect(screen.getByText('预测未成立')).toBeTruthy()
   rerender(<ResearchUpdateCard update={update({ kind: 'question', status: 'refuted' })} />)
-  expect(screen.getByText('当前证据不支持')).toBeTruthy()
+  expect(screen.getByText('当时证据不支持')).toBeTruthy()
   rerender(<ResearchUpdateCard update={update({ kind: 'schedule', status: 'scheduled', scheduled_at: '2026-09-09' })} />)
   expect(screen.getByText('预定事件')).toBeTruthy()
   expect(screen.queryByText('结果待核实')).toBeNull()

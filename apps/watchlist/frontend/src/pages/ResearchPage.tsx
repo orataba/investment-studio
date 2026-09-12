@@ -26,6 +26,9 @@ function saveNote({ instrumentId, entryId, topicId, title, body, reference }: Re
       follow_up_date: null,
       research_context: reference?.instrument_id === instrumentId ? {
         theme_id: reference.theme_id,
+        research_update_id: reference.research_update_id,
+        event_case_id: reference.event_case_id,
+        event_version_id: reference.event_version_id,
         ...(reference.pm_note_id && reference.pm_note_revision ? {
           relationship: 'update',
           related_note_id: reference.pm_note_id,

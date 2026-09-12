@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
@@ -75,6 +75,18 @@ class ResearchReferenceInput(BaseModel):
     investment_view_version_id: str | None = None
     forecast_key: str | None = None
     forecast_version_id: str | None = None
+    risk_case_id: str | None = Field(default=None, min_length=1)
+    risk_case_updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def distinct_current_risk_reference(self):
+        if bool(self.risk_case_id) != bool(self.risk_case_updated_at):
+            raise ValueError("风险事项引用须同时包含事项标识和页面读取的更新时间，请刷新后重试")
+        if self.risk_case_id and any((self.research_update_id, self.event_case_id, self.event_version_id,
+                self.theme_id, self.pm_note_id, self.pm_note_revision, self.notebook_version_id,
+                self.investment_view_version_id, self.forecast_key, self.forecast_version_id)):
+            raise ValueError("当前风险快照不能与历史研究版本混为同一个引用")
+        return self
 
 
 class PageContextInput(BaseModel):
@@ -308,8 +320,11 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
             request.watchlist_id = page.watchlist_id
     if not session.scalar(select(ResearchEntry.entry_id).where(ResearchEntry.topic_id == topic_id, ResearchEntry.kind == "analysis")):
         topic.title = request.question.strip()[:80]
-    context = conversation_context(session, topic, request.question, request.watchlist_id,
-                                   request.page_context.model_dump(mode="json", exclude_none=True) if request.page_context else None)
+    try:
+        context = conversation_context(session, topic, request.question, request.watchlist_id,
+                                       request.page_context.model_dump(mode="json", exclude_none=True) if request.page_context else None)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, team_id=topic.team_id, kind="analysis", title=request.question, body="", source="DeepSeek Harness", status="queued", created_at=now(), context_json=context)
     session.add(record)
     topic.updated_at = now()
@@ -553,7 +568,14 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
             if previous is not None:
                 item["drawdown_change_pp"] = float(current) - previous
                 item["previous_observation_date"] = points[-2]["date"]
-    return {"instruments": instruments, "cases": [dump(x) for x in session.scalars(cases_query)]}
+    cases = []
+    from watchlist_app.services.sector_research import event_record
+    for case in session.scalars(cases_query):
+        value = dump(case)
+        if case.signal.startswith("sector:"):
+            value["evidence_json"] = {**value["evidence_json"], "event_version_id": event_record(case)["event_version_id"]}
+        cases.append(value)
+    return {"instruments": instruments, "cases": cases}
 
 
 @router.put("/risk/rules/{instrument_id}")

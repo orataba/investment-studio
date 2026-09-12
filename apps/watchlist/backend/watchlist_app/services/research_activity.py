@@ -14,7 +14,7 @@ from watchlist_app.services.research_identity import research_identity
 
 def _time(value):
     if isinstance(value, datetime):
-        return value.replace(tzinfo=value.tzinfo or UTC).isoformat()
+        return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC).isoformat()
     if not value:
         return ""
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -77,6 +77,7 @@ def _notebook_updates(session, iid, events):
     metadata = {"version_id", "versions", "created_at", "updated_at", "source_run_id"}
     for run, notebook in reversed(list(_research_records(session, iid))):
         sources = {source["source_id"]: source for source in notebook.get("sources", [])}
+        correction = (run.context_json.get("citation_correction") or {}) if run.context_json.get("recordkeeping_only") else {}
         for field, (kind, title_key, body_key) in definitions.items():
             if field == "investment_view" and not notebook.get(field):
                 chain = (field, "investment-view")
@@ -99,7 +100,7 @@ def _notebook_updates(session, iid, events):
                 update = _base(iid, identifier, kind, title, row.get(body_key, ""), recorded_at,
                     theme_ids=[row["theme_id"]] if row.get("theme_id") else [],
                     sources=_source_views([sources[sid] for sid in row.get("source_ids", []) if sid in sources]),
-                    next_check=row.get("next_check", ""), run_id=run.entry_id,
+                    next_check=row.get("next_check") or (row.get("observation_condition") or row.get("horizon", "") if kind == "forecast" else ""), run_id=run.entry_id,
                     status=row.get("status"), scheduled_at=row.get("scheduled_at"),
                     change="updated" if chain in chains else "new",
                     details=_details(**{"支持依据": row.get("evidence_for"), "反向证据": row.get("evidence_against"),
@@ -110,6 +111,11 @@ def _notebook_updates(session, iid, events):
                         "投资吸引力": row.get("attractiveness"), "风险判断": row.get("risk"), "判断把握": row.get("conviction"),
                         "日程结果": row.get("outcome") if kind == "schedule" else None}))
                 update["reference"]["notebook_version_id"] = notebook.get("version_id", run.entry_id)
+                corrected = correction.get("updates", {}).get(f"{field}:{row['key']}")
+                if corrected:
+                    update.update(change="citation_corrected", author="系统", author_role="system",
+                        recorded_at=_time(correction["corrected_at"]),
+                        citation_correction={**{key: value for key, value in correction.items() if key != "updates"}, **corrected})
                 if row.get("theme_id"):
                     update["reference"]["theme_id"] = row["theme_id"]
                 if row.get("pm_note_id"):
@@ -184,7 +190,7 @@ def _opinion_updates(session, iid, actor):
     return updates
 
 
-def research_activity(session, instrument_id, *, actor=None):
+def research_activity(session, instrument_id, *, actor=None, include_followups=False):
     actor = actor or research_identity()
     events = _event_updates(session, instrument_id)
     updates = [*events, *_notebook_updates(session, instrument_id, events),
@@ -198,8 +204,91 @@ def research_activity(session, instrument_id, *, actor=None):
             # Shared events only contribute theme_ids, not an exclusive assignment.
             if linked["reference"].get("theme_id") and not row["reference"].get("theme_id"):
                 row["reference"]["theme_id"] = linked["reference"]["theme_id"]
-    return serialize_payload({"instrument_id": instrument_id,
-        "updates": sorted(by_id.values(), key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)})
+    result = {"instrument_id": instrument_id,
+        "updates": sorted(by_id.values(), key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)}
+    if include_followups:
+        result["current_followups"] = current_followups(session, instrument_id, result["updates"], actor=actor)
+    return serialize_payload(result)
+
+
+def review_receipts(session, instrument_id):
+    """Only a published receipt for an exact judgment proves that it was checked."""
+    from sqlalchemy import func, select
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.services.research_access import topic_portfolio_ids
+    principal = current_principal()
+    review = ResearchEntry.context_json["reviews"][instrument_id]
+    rows = session.execute(select(ResearchEntry.topic_id, ResearchEntry.completed_at,
+        ResearchEntry.context_json["cutoff"].as_string(), review["reflection"]).where(
+            ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
+            review["status"].as_string().in_(["completed", "limited"]),
+            True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
+        ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
+    receipts, allowed = {}, {}
+    for topic_id, completed_at, cutoff, reflection in rows:
+        if not isinstance(reflection, dict):
+            continue
+        if topic_id not in allowed:
+            topic = session.get(ResearchTopic, topic_id)
+            allowed[topic_id] = bool(topic and (principal.local_unrestricted or topic.team_id == principal.team_id)
+                                     and not topic_portfolio_ids(session, topic))
+        if not allowed[topic_id]:
+            continue
+        for identifier in reflection.get("reviewed_update_ids", []):
+            receipts.setdefault(identifier, {"last_reviewed_at": _time(completed_at or cutoff),
+                "last_review_status": reflection.get("status"),
+                "last_review_summary": reflection.get("summary", "")})
+    return receipts
+
+
+def judgment_changed_at(update):
+    return (update.get("citation_correction") or {}).get("original_recorded_at") or update["recorded_at"]
+
+
+def judgment_review_receipt(update, receipts):
+    original = (update.get("citation_correction") or {}).get("source_update_id")
+    return receipts.get(update["update_id"]) or receipts.get(original, {})
+
+
+def current_followups(session, instrument_id, updates, *, actor=None):
+    """Current work is a projection of the same records, independent of timeline filters."""
+    from watchlist_app.services.research_themes import theme_index
+    themes = {row["theme_id"]: row["status"] for row in theme_index(session, instrument_id, actor=actor)}
+    active = {identifier for identifier, status in themes.items() if status == "active"}
+    receipts = review_receipts(session, instrument_id)
+    pending = []
+    for row in updates:
+        if row.get("superseded") or row.get("withdrawn"):
+            continue
+        if not ((row["kind"] == "event" and row.get("follow_up") == "watch")
+                or (row["kind"] == "question" and row.get("status") == "open")
+                or (row["kind"] == "forecast" and row.get("status") == "active")
+                or (row["kind"] == "schedule" and row.get("status") == "scheduled")):
+            continue
+        dedicated = row["reference"].get("theme_id")
+        if dedicated in themes and themes[dedicated] != "active":
+            continue
+        if active.intersection(row["theme_ids"]):
+            continue
+        pending.append(row)
+    events = {row["reference"]["event_case_id"]: row for row in pending if row["kind"] == "event"}
+    children = {}
+    for row in pending:
+        case_id = row["reference"].get("event_case_id")
+        if row["kind"] != "event" and case_id in events:
+            children.setdefault(case_id, []).append(row)
+    result = []
+    for row in pending:
+        case_id = row["reference"].get("event_case_id")
+        if row["kind"] != "event" and case_id in events:
+            continue
+        related = children.get(case_id, []) if row["kind"] == "event" else []
+        result.append({"followup_id": row["update_id"], "kind": row["kind"], "title": row["title"],
+            "assessment": row["body"], "next_check": row.get("next_check", ""),
+            "theme_ids": row["theme_ids"], "latest_update": row, "related_updates": related,
+            "last_changed_at": max(judgment_changed_at(item) for item in [row, *related]),
+            "last_reviewed_at": None, **judgment_review_receipt(row, receipts)})
+    return sorted(result, key=lambda row: (row["last_changed_at"], row["followup_id"]), reverse=True)
 
 
 def resolve_research_update(session, instrument_id, update_id, *, actor=None):
@@ -225,7 +314,9 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None):
     from watchlist_app.services.research_themes import theme_index
     inactive_themes = {theme["theme_id"] for theme in theme_index(session, instrument_id, actor=actor)
                        if theme["status"] != "active"}
-    current = [row for row in research_activity(session, instrument_id, actor=actor)["updates"]
+    updates = research_activity(session, instrument_id, actor=actor)["updates"]
+    assignments = {row["update_id"]: row["reference"].get("theme_id") for row in updates}
+    current = [row for row in updates
                if not row.get("superseded") and not row.get("withdrawn")
                and not (row["kind"] in {"question", "forecast", "lesson"}
                         and row["reference"].get("theme_id") in inactive_themes)]
@@ -242,5 +333,6 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None):
         "existing_lessons": [{"update_id": row["update_id"], "lesson": row["body"]} for row in current if row["kind"] == "lesson"],
         "pm_views": [{"update_id": f"opinion:{row['note_id']}:{row['revision_number']}",
                        "title": row["title"], "author": row.get("author"), "follow_up_date": row.get("follow_up_date")}
-                     for row in pm_views],
+                     for row in pm_views if assignments.get(f"opinion:{row['note_id']}:{row['revision_number']}",
+                         (row.get("research_context") or {}).get("theme_id")) not in inactive_themes],
         "instruction": "每轮自动研究检查相关未决判断和待跟进事项；新证据、反证、结果或观察期限触发必要复盘。到期但资料不足不是判断错误。原判断及已有经验不是事实依据，逐项对照新原文；没有实质变化不生成复盘文章。"}

@@ -92,7 +92,7 @@ it('limits risk attention to actual holdings and writes follow-up to the shared 
   )
   expect(screen.queryByRole('link', { name: '问助手' })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
-  expect(ask).toHaveBeenCalledWith(id, expect.stringContaining(record.title))
+  expect(ask).toHaveBeenCalledWith(id, expect.stringContaining(record.title), { instrument_id: id, risk_case_id: record.case_id, risk_case_updated_at: record.updated_at })
 })
 
 it('renders the same research risk and sources for a held instrument and removes it after exit', async () => {
@@ -115,6 +115,7 @@ it('renders the same research risk and sources for a held instrument and removes
     evidence_json: {
       direction: 'risk',
       confidence: 'reported',
+      event_version_id: 'watchlist-baba-policy:2',
       sources: [{ title: '已留存的公司公告', url: 'https://example.com/baba-disclosure', published_at: '2026-09-06T09:00:00+08:00' }],
     },
     history_json: [],
@@ -134,14 +135,18 @@ it('renders the same research risk and sources for a held instrument and removes
     instrument_core: instrumentFixture({ instrument_id: 'sold-equity', instrument_type: 'equity' }),
     quantity: 0,
   })
+  const ask = vi.fn()
   const view = (quantity: number) => <MemoryRouter><PortfolioInstrumentRisk
     portfolioId="3"
-    onAskAssistant={vi.fn()}
+    onAskAssistant={ask}
     workspace={holdingsWorkspaceFixture({ rows: [{ ...holding, quantity }, soldHolding] })}
   /></MemoryRouter>
   const { rerender } = render(view(2))
 
   await screen.findByText(record.body)
+  expect(screen.getByRole('link', { name: record.title })).toHaveAttribute('href', expect.stringContaining('tab=events'))
+  fireEvent.click(screen.getByRole('button', { name: '问助手' }))
+  expect(ask).toHaveBeenCalledWith('baba', expect.any(String), { instrument_id: 'baba', event_case_id: record.case_id, event_version_id: 'watchlist-baba-policy:2' })
   expect(request).toHaveBeenCalledWith('/risk?instrument_ids=baba', undefined)
   for (const title of ['未列入风险的机会', '已经解除的风险', '已经处理的事项']) {
     expect(screen.queryByText(title)).not.toBeInTheDocument()
@@ -164,7 +169,7 @@ it('opens the assistant from the risk drawer without closing or resetting the ri
   getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ rows: [holding] }))
   request.mockResolvedValue({
     instruments: [{ instrument_id: id, name: '当前持仓' }],
-    cases: [{ case_id: 'case', instrument_id: id, title: '价格影响待核实', body: '等待披露', signal: 'manual', severity: 'attention', trigger_active: true, status: 'open', evidence_json: {}, history_json: [] }],
+    cases: [{ case_id: 'case', instrument_id: id, title: '价格影响待核实', body: '等待披露', signal: 'manual', severity: 'attention', trigger_active: true, status: 'open', updated_at: '2026-09-12T08:00:00Z', evidence_json: {}, history_json: [] }],
   })
   const ask = vi.fn(), close = vi.fn()
   render(<LanguageProvider enableDomTranslation={false}><PortfolioRiskDrawer portfolioId="3" onClose={close} onAskAssistant={ask} /></LanguageProvider>)
@@ -173,7 +178,7 @@ it('opens the assistant from the risk drawer without closing or resetting the ri
   fireEvent.click(screen.getByText('跟进与证据'))
   fireEvent.change(screen.getByRole('textbox', { name: '处理记录' }), { target: { value: '尚未保存的跟进' } })
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
-  expect(ask).toHaveBeenCalledWith(id, expect.stringContaining('价格影响待核实'))
+  expect(ask).toHaveBeenCalledWith(id, expect.stringContaining('价格影响待核实'), { instrument_id: id, risk_case_id: 'case', risk_case_updated_at: '2026-09-12T08:00:00Z' })
   expect(close).not.toHaveBeenCalled()
   expect(screen.getByRole('dialog')).toBe(drawer)
   expect(screen.getByRole('textbox', { name: '处理记录' })).toHaveValue('尚未保存的跟进')

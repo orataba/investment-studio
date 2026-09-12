@@ -58,7 +58,7 @@ it('scopes instrument detail risk to the instrument even when opened from a list
   expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=source-list')
   expect(container.querySelector('.risk-readings')?.hasAttribute('open')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
-  expect(ask).toHaveBeenCalledWith(expect.stringContaining('标的 A'))
+  expect(ask).toHaveBeenCalledWith(expect.stringContaining('标的 A'), { instrument_id: 'a', risk_case_id: 'a', risk_case_updated_at: '2026-09-04' })
 })
 it('keeps the full originating list when locating an instrument and closes only from outside', async () => {
   request.mockResolvedValue({
@@ -89,7 +89,7 @@ it('keeps the full originating list when locating an instrument and closes only 
   expect(screen.queryByRole('combobox', { name: '筛选标的' })).toBeNull()
   expect(screen.queryByRole('combobox', { name: '关联组合' })).toBeNull()
   fireEvent.click(screen.getAllByRole('button', { name: '问助手' })[0])
-  expect(ask).toHaveBeenCalledWith('b', expect.stringContaining('标的 B'))
+  expect(ask).toHaveBeenCalledWith('b', expect.stringContaining('标的 B'), { instrument_id: 'b', risk_case_id: 'b', risk_case_updated_at: '2026-09-04' })
   expect(close).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('dialog').parentElement!)
   expect(close).toHaveBeenCalledOnce()
@@ -160,7 +160,7 @@ it.each([
   request.mockResolvedValue({
     instruments: [{ instrument_id: 'xlk-us', name: 'XLK 信息技术' }],
     cases: [{ ...caseFor('xlk-us'), signal: 'sector:cloud-demand', evidence_json: {
-      direction, confidence, next_watch: '关注下一次云业务指引。',
+      direction, confidence, next_watch: '关注下一次云业务指引。', event_version_id: 'xlk-us:3',
       sources: [
         { title: '公司最新指引', url: 'https://example.com/earnings', published_at: '2026-09-06T08:00:00+08:00' },
         { title: '不支持的链接', url: 'javascript:alert(1)', published_at: null },
@@ -178,7 +178,7 @@ it.each([
   expect(screen.getByRole('link', { name: 'xlk-us 风险事项' }).getAttribute('href')).toBe('/instruments/xlk-us?tab=events&watchlist=sectors')
   expect(screen.getByText('关注下一次云业务指引。')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
-  expect(ask).toHaveBeenCalledWith('xlk-us', expect.stringContaining(`的${label}事项`))
+  expect(ask).toHaveBeenCalledWith('xlk-us', expect.stringContaining(`的${label}事项`), { instrument_id: 'xlk-us', event_case_id: 'xlk-us', event_version_id: 'xlk-us:3' })
   fireEvent.click(screen.getByText('跟进与证据'))
   expect(screen.getByText(`证据状态：${confidenceLabel}`)).toBeTruthy()
   expect(screen.getByRole('link', { name: '公司最新指引' }).getAttribute('href')).toBe('https://example.com/earnings')
