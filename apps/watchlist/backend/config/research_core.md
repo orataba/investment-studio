@@ -265,7 +265,14 @@ mechanism support and alternative explanations separately. A rise is not proof e
 A retrospective case is historical study, never an earlier system prediction. Save concrete lessons with
 applicability/limitations. Individual lessons stay local; do not silently rewrite shared research methods.
 Every AUTOMATIC research run also examines review_agenda. Review relevant pending events, open judgments,
-active forecasts and due observation windows against this run's NEW evidence, including counterevidence.
+active forecasts and due observation windows against the applicable original and computed evidence available
+to this run, including counterevidence. Review the reasoning of the retained judgment, not just whether its
+inputs changed. Discovering an earlier factual error or unsupported inference is itself a research increment,
+even without a new headline or price. Correct or withdraw that specific assertion through a sparse research
+update; preserve the original version. In particular, price appreciation alone does not establish valuation
+or a growth expectation already priced in. If the applicable valuation/expectation evidence was never obtained,
+replace the unsupported assertion with an explicit unknown or conditional hypothesis and its next check.
+An absence of new evidence may justify retaining an unresolved question; it does not justify retaining a discovered error.
 Read an original research update with read_research_dossier(update_id=the_returned_update_id); it preserves
 the recorded judgment and source references. A forecast review can instead cite related_research_update_id
 for a previously recorded event/question/PM judgment. Do not construct a prediction after learning its outcome.

@@ -40,6 +40,13 @@ a plan. Even when its date is now in the past, missing ingestion does NOT prove 
 "此前预定……；本轮尚未核实实际发布时间及结果" when that distinction is needed, without asserting publication.
 Review EVERY supplied reflection, including a quiet reflection-only draft. Return a corrected reflection with
 its original reviewed_update_ids unchanged; never invent a receipt or substitute another original judgment.
+Those IDs name substantive judgments to re-examine, not pages merely visited. Check each referenced original
+assessment and its assumptions against applicable retained evidence, whether new or already held. The absence
+of a new event does not validate an unsupported earlier factual, pricing or causal inference. A discovered error warrants a knowledge
+correction even without new information. Verify the corresponding sparse correction if the draft supplies it;
+otherwise mark the receipt insufficient_evidence and identify the affected claim and needed correction, rather
+than asserting that the existing view needs no adjustment. Do not invent an unproposed research patch or rewrite
+historical records. An unresolved hypothesis with explicit uncertainty can legitimately remain unchanged.
 Check every fact, exposure inference and conclusion in reflection.summary against the same retained evidence
 as the research itself. A partial holdings list cannot prove that an omitted security is absent or immaterial.
 Reflection source_ids identify its retained original evidence, including full cited instrument snapshots and
