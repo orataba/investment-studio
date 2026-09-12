@@ -1,12 +1,7 @@
 - id: agent-default-model
   config:
-    provider: deepseek-official
-    model: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' ? 'deepseek-v4-pro' : 'deepseek-v4-flash-vision-exp'"
-- id: llm-deepseek
-  config:
-    thinking: enabled
-    reasoningEffort: high
-    maxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' ? 65536 : 32768"
+    provider: studio-deepseek
+    model: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' ? 'deepseek-v4-pro' : 'deepseek-v4-flash'"
 - id: system-prompt
   config:
     persona: |-

@@ -264,6 +264,9 @@ class InstrumentResearchNoteContextInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     theme_id: str | None = None
+    research_update_id: str | None = None
+    event_case_id: str | None = None
+    event_version_id: str | None = None
     related_note_id: str | None = None
     related_revision: int | None = Field(default=None, ge=1)
     relationship: Literal["initial", "update", "review", "lesson"] = "initial"

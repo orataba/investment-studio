@@ -37,6 +37,7 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources
 
 class ResearchQuestion(BaseModel):
     theme_id: str | None = None
+    event_key: str | None = None
     pm_note_id: str | None = None
     pm_note_revision: int | None = Field(default=None, ge=1)
 
@@ -79,6 +80,8 @@ class InvestmentView(BaseModel):
 
 
 class ResearchForecast(BaseModel):
+    theme_id: str | None = None
+    event_key: str | None = None
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     claim: str = Field(min_length=1, max_length=4000)
     variable: str = Field(default="", max_length=1000)
@@ -98,16 +101,28 @@ class ResearchForecast(BaseModel):
 
 
 class ForecastReview(BaseModel):
+    theme_id: str | None = None
+    event_key: str | None = None
+    related_research_update_id: str | None = None
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
-    forecast_key: str = Field(min_length=1)
-    forecast_version_id: str = Field(min_length=1)
+    forecast_key: str | None = Field(default=None, min_length=1)
+    forecast_version_id: str | None = Field(default=None, min_length=1)
     outcome: str = Field(min_length=1, max_length=4000)
     mechanism_assessment: str = Field(default="", max_length=4000)
     alternative_explanations: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def forecast_reference(self):
+        if bool(self.forecast_key) != bool(self.forecast_version_id):
+            raise ValueError("复盘关联预测时须同时给出预测标识和原始版本")
+        return self
+
 
 class ResearchLesson(BaseModel):
+    theme_id: str | None = None
+    event_key: str | None = None
+    related_research_update_id: str | None = None
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     lesson: str = Field(min_length=1, max_length=4000)
     applicability: str = Field(default="", max_length=3000)
@@ -184,7 +199,7 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
                 continue
             research = review.get("research") or {}
             references.update(notebook_source_ids(research))
-            for row in review.get("events", []):
+            for row in [*review.get("events", []), *review.get("themes", [])]:
                 references.update(row.get("source_ids", []))
         for capture in reversed(context.get("web_evidence", [])):
             if capture.get("operation") != "fetch":
@@ -423,6 +438,8 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
     for item in [*value["forecast_reviews"], *value["lessons"]]:
         if item.get("forecast_key") and (item["forecast_key"], item.get("forecast_version_id")) not in prior_forecasts:
             raise ValueError("复盘或经验必须关联此前已保存的预测原版本，不能将事后新建预测作为事前记录")
+    if any(not (item.get("forecast_key") or item.get("related_research_update_id")) for item in value["forecast_reviews"]):
+        raise ValueError("复盘需要关联此前已保存的预测版本或研究判断记录")
     for field, model in (("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson)):
         old = {row["key"]: row for row in previous.get(field, [])}
         incoming = {row["key"] for row in value[field]}

@@ -49,23 +49,40 @@ it('pauses and resumes a theme without removing its history and submits only the
   await screen.findByRole('button', { name: '暂停关注' })
 })
 
-it('keeps PM judgments distinct from researcher progress and follows up with exact canonical references', async () => {
-  const pmNote = { note_id: 'pm-1', note_date: '2026-09-01', note_type: 'thesis_update' as const, title: '中期信用担忧值得关注', body: '中期偏多黄金，短期方向未判断。', summary: '', author: 'Shaw', author_user_id: identity.user_id,
-    created_at: '2026-09-05T10:00:00Z', updated_at: '2026-09-05T10:00:00Z', revision_number: 2, importance: 'medium' as const, tags: [], source_refs: '', people: '', follow_up_date: null, updated_by: null,
-    research_context: { theme_id: 'theme-credit', relationship: 'initial' as const, horizon: '未来一个季度', verification: '观察长债与美元是否持续背离。', invalidation: '实际利率重新占主导。' } }
-  api.get.mockResolvedValue({ identity, themes: [theme({ notes: [pmNote], research_progress: [{ run_id: 'run-2', recorded_at: '2026-09-06T08:00:00Z', assessment: '当前证据仍不足以排除实际利率压制。', next_check: '核实收益率变化的分解。', status: 'open', source_ids: [] }] })] })
+it('keeps PM judgments and researcher updates in one theme thread with exact canonical references', async () => {
+  const assessment = '当前证据仍不足以排除实际利率压制。'
+  const opinion = { update_id: 'opinion:pm-1:2', kind: 'opinion' as const, title: '中期信用担忧值得关注', body: '中期偏多黄金，短期方向未判断。', recorded_at: '2026-09-05T10:00:00Z', author: 'Shaw', author_role: 'user' as const, theme_ids: ['theme-credit'], sources: [], reference: { instrument_id: 'gold', theme_id: 'theme-credit', pm_note_id: 'pm-1', pm_note_revision: 2 }, details: [{ label: '判断期限', text: '未来一个季度' }] }
+  const update = { ...opinion, update_id: 'question:q1:1', kind: 'question' as const, title: '实际利率是否仍占主导', body: assessment, author: '研究员', author_role: 'researcher' as const, recorded_at: '2026-09-06T08:00:00Z', reference: { instrument_id: 'gold', theme_id: 'theme-credit', notebook_version_id: 'n1' } }
+  api.get.mockResolvedValue({ identity, themes: [theme({ origin: 'user', current_assessment: { assessment, next_check: '核实收益率变化的分解。', status: 'open', updated_at: update.recorded_at, source_ids: [] }, updates: [opinion, update] })] })
   const ask = vi.fn()
-  render(<ResearchThemesPanel instrumentId="gold" onAskAssistant={ask} />)
-  await screen.findByText('当前证据仍不足以排除实际利率压制。')
-  fireEvent.click(screen.getByText('投资经理的观点与复盘 · 1'))
-  expect(screen.getByText(pmNote.body)).toBeTruthy()
-  expect(screen.getByText(/实际记录 2026-09-05 10:00/)).toBeTruthy()
-  fireEvent.click(screen.getByText('背景、验证与经验'))
-  expect(screen.getByText('未来一个季度')).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: '讨论这条观点' }))
-  expect(ask).toHaveBeenLastCalledWith(expect.any(String), { instrument_id: 'gold', theme_id: 'theme-credit', pm_note_id: 'pm-1', pm_note_revision: 2 })
+  const { container } = render(<ResearchThemesPanel instrumentId="gold" onAskAssistant={ask} />)
+  await screen.findByText('核实收益率变化的分解。')
+  const thread = screen.getByText('主题研究时间线 · 2').closest('details')!
+  expect(thread.open).toBe(false)
+  fireEvent.click(screen.getByText('主题研究时间线 · 2'))
+  expect([...thread.querySelectorAll('[data-update-id]')].map(node => node.getAttribute('data-update-id'))).toEqual([update.update_id, opinion.update_id])
+  const pm = within(thread).getByRole('heading', { name: opinion.title }).closest('article')!
+  expect(within(pm).getByText('人工判断')).toBeTruthy()
+  expect(within(pm).getByText(opinion.body)).toBeTruthy()
+  fireEvent.click(within(pm).getByText('分析与研究依据'))
+  expect(within(pm).getByText('未来一个季度')).toBeTruthy()
+  fireEvent.click(within(pm).getByRole('button', { name: '追问这条更新' }))
+  expect(ask).toHaveBeenLastCalledWith(expect.any(String), { ...opinion.reference, research_update_id: opinion.update_id })
   fireEvent.click(screen.getByRole('button', { name: '讨论这个主题' }))
   expect(ask).toHaveBeenLastCalledWith(expect.any(String), { instrument_id: 'gold', theme_id: 'theme-credit' })
+  expect(container.querySelector('#research-theme-theme-credit')).not.toBeNull()
+})
+
+it('records the reason when a person ends a theme and keeps its history', async () => {
+  api.get.mockResolvedValue({ identity, themes: [theme()] })
+  api.update.mockResolvedValue(theme({ status: 'closed', close_reason: '研究问题已经解决。' }))
+  render(<ResearchThemesPanel instrumentId="gold" />)
+  await screen.findByRole('heading', { name: theme().title })
+  fireEvent.click(screen.getByText('背景与主题管理'))
+  fireEvent.click(screen.getByRole('button', { name: '结束主题' }))
+  fireEvent.change(screen.getByLabelText('结束原因'), { target: { value: '研究问题已经解决。' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存并结束' }))
+  await waitFor(() => expect(api.update).toHaveBeenCalledWith('gold', 'theme-credit', { status: 'closed', close_reason: '研究问题已经解决。' }))
 })
 
 it('refreshes only the affected instrument and keeps team themes read-only for reader accounts', async () => {

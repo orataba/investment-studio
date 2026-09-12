@@ -34,6 +34,13 @@ investment_studio_load_env_file \
   DEEPSEEK_ \
   INVESTMENT_STUDIO_PORTFOLIO_COPILOT_
 : "${DEEPSEEK_API_KEY:?portfolio-copilot.env must set DEEPSEEK_API_KEY}"
+export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4-pro}"
+case "$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME" in
+  deepseek-v4-pro|deepseek-v4-flash)
+    echo "当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。" >&2
+    exit 78
+    ;;
+esac
 
 mkdir -p "$copilot_dsh_home"
 chmod 700 "$copilot_dsh_home"
@@ -44,7 +51,6 @@ export DSH_TOOLS_MODE=native
 export DSH_TELEMETRY_DISABLED=1
 export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PORTFOLIO_ID="$copilot_portfolio_id"
 export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_BATCH_ID="$copilot_batch_id"
-export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="deepseek-v4-flash-vision-exp"
 
 copilot_task="Analyze the portfolio screenshot batch bound to this restricted MCP process. Follow the review workflow and submit one analysis revision."
 
@@ -83,5 +89,6 @@ done
 exec /usr/bin/env -i "${copilot_exec_env[@]}" \
   "$copilot_pnpm" dlx --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs @deepseek-ai/dsh@0.1.1-rc.2 \
   --profile headless \
+  --patch "$copilot_project_root/infra/config/deepseek_harness.patch.yml" \
   --patch "$copilot_patch" \
   "$copilot_task"

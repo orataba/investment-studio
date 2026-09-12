@@ -64,6 +64,9 @@ class CompletionInput(BaseModel):
 
 
 class ResearchReferenceInput(BaseModel):
+    research_update_id: str | None = None
+    event_case_id: str | None = None
+    event_version_id: str | None = None
     theme_id: str | None = None
     pm_note_id: str | None = None
     pm_note_revision: int | None = Field(default=None, ge=1)
@@ -287,6 +290,17 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
             raise HTTPException(422, "当前页面与对话关联的标的不一致，请重新打开该标的的研究助手")
         if page.research_reference and page.research_reference.instrument_id not in topic.instrument_ids:
             raise HTTPException(422, "引用的研究记录不在对话关联标的内")
+        if page.research_reference:
+            from watchlist_app.services.research_activity import resolve_research_update, resolve_event_reference
+            ref = page.research_reference
+            try:
+                linked = resolve_research_update(session, ref.instrument_id, ref.research_update_id) if ref.research_update_id else None
+                if ref.event_case_id or ref.event_version_id:
+                    event = resolve_event_reference(session, ref.instrument_id, ref.event_case_id, ref.event_version_id)
+                    if linked and linked["reference"].get("event_version_id") != event["reference"]["event_version_id"]:
+                        raise ValueError("引用的研究更新与事件版本不一致")
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
         if page.surface == "watchlist":
             if not page.watchlist_id or (request.watchlist_id and page.watchlist_id != request.watchlist_id):
                 raise HTTPException(422, "当前页面与对话关联的观察列表不一致")
@@ -335,7 +349,7 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
 
 
 @router.get("/research/runs/{run_id}/dossier/{instrument_id}")
-def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, version_id: str | None = None,
+def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
                 session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_notebook import dossier_outline, dossier_source
     record = require(session, ResearchEntry, run_id)
@@ -345,6 +359,18 @@ def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, v
     if dossier is None:
         raise HTTPException(404, "请先读取该标的以绑定本轮研究档案")
     try:
+        if sum(bool(value) for value in (source_id, version_id, update_id)) > 1:
+            raise ValueError("请选择一个原文、底稿版本或研究更新读取")
+        if update_id:
+            from watchlist_app.services.research_activity import resolve_research_update
+            from watchlist_app.services.research_identity import run_identity
+            update = resolve_research_update(session, instrument_id, update_id, actor=run_identity(record.context_json))
+            if datetime.fromisoformat(update["recorded_at"]) > datetime.fromisoformat(record.context_json["cutoff"]):
+                raise ValueError("该研究更新在本轮截止时间之后形成，请在新一轮读取")
+            # Current supersession/withdrawal flags may reflect later research.
+            # Return the dated record, without asserting its state at an earlier cutoff.
+            return {"kind": "research_update", "value": {key: value for key, value in update.items()
+                    if key not in {"superseded", "withdrawn", "withdrawal_reason", "withdrawn_at"}}}
         if version_id:
             from watchlist_app.services.research_dossier import read_dossier_version
             from watchlist_app.services.research_identity import run_identity

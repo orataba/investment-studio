@@ -63,6 +63,8 @@ def test_every_harness_explicitly_delegates_the_single_run_credential():
     for name in ("research", "sector", "risk"):
         patch = (runner.ROOT / f"apps/watchlist/backend/config/{name}_harness.patch.yml").read_text()
         assert "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN" in patch
+        assert "DEEPSEEK_BASE_URL: !!js process.env.DEEPSEEK_BASE_URL" in patch
+        assert "DEEPSEEK_SEARCH_URL: !!js process.env.DEEPSEEK_SEARCH_URL" in patch
 
 
 def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monkeypatch, tmp_path):
@@ -84,6 +86,8 @@ def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monke
      {"type": "ValidationError", "summary": "事实核证结果格式不完整。", "diagnostic": "missing: reviews", "exit_code": 1}),
     ({"type": "FactReviewProcessExit", "summary": "本地事实核证进程退出，未生成核证结果；请检查研究运行环境。"},
      {"type": "FactReviewProcessExit", "summary": "本地事实核证进程退出，未生成核证结果；请检查研究运行环境。", "exit_code": 1}),
+    ({"type": "MissingResearchDraft", "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。"},
+     {"type": "MissingResearchDraft", "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。", "exit_code": 1}),
     (None, {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": 1}),
 ])
 def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypatch, marker, expected):
@@ -94,6 +98,7 @@ def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypat
             title="行业检查", status="queued", context_json={"sector_run": True, "retained": "input"}))
         session.commit()
     monkeypatch.setattr(sector_research, "prepare_run", lambda run_id: None)
+    monkeypatch.setattr(sector_research, "apply_result", lambda *args: pytest.fail("A failed process must not publish research"))
     private_stderr = "provider failure api_key=fixture-private-secret\nraw model contents must stay private"
     stderr = private_stderr
     if marker:
@@ -119,9 +124,11 @@ def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypat
         assert run.context_json["retained"] == "input"
         assert expected["summary"] in run.body
         assert "模型连接" not in run.body
-        if marker:
+        if marker and marker["type"] != "MissingResearchDraft":
             assert "事实核证失败" in run.body
             assert "missing: reviews" not in run.body
+        else:
+            assert "事实核证失败" not in run.body
         stored = json.dumps(run.context_json, ensure_ascii=False) + run.body
         assert "fixture-private-secret" not in stored
         assert "raw model contents" not in stored

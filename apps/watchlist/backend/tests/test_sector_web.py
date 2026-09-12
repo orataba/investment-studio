@@ -25,8 +25,16 @@ def page_transport(monkeypatch, html, *, headers=None, status=200):
     monkeypatch.setattr(web, "_exchange", exchange)
 
 
-def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monkeypatch, public_dns):
+@pytest.mark.parametrize("base,endpoint", [(None, "https://api.deepseek.com/anthropic/v1/messages"),
+    ("https://provider.example/v1/", "https://provider.example/anthropic/v1/messages"),
+    ("https://provider.example", "https://provider.example/anthropic/v1/messages")])
+def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monkeypatch, public_dns, base, endpoint):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    monkeypatch.delenv("DEEPSEEK_SEARCH_URL", raising=False)
+    if base is None:
+        monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", base)
     results = [{"type": "web_search_result", "url": f"https://news.example/{i}",
                 "title": f"Source {i}", "page_age": "2 days ago"} for i in range(10)]
     payload = {"content": [
@@ -55,11 +63,12 @@ def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monke
     assert all("fabricated" not in s["url"] for s in result["sources"])
     assert result["coverage"] == []
     parsed, address, _, request = requests[0]
-    assert parsed.geturl() == "https://api.deepseek.com/anthropic/v1/messages"
+    assert parsed.geturl() == endpoint
     assert address == "93.184.216.34" and request["method"] == "POST"
     assert request["headers"]["x-api-key"] == "fixture-secret"
     assert request["headers"]["authorization"] == "Bearer fixture-secret"
     assert request["headers"]["anthropic-version"] == "2023-06-01"
+    assert json.loads(request["body"])["model"] == "deepseek-v4-flash"
     assert json.loads(request["body"])["tools"] == [
         {"type": "web_search_20250305", "name": "web_search", "max_uses": 2},
     ]
@@ -76,6 +85,22 @@ def test_search_prose_is_not_search_evidence_and_redirects_are_not_followed(monk
     monkeypatch.delenv("DEEPSEEK_API_KEY")
     with pytest.raises(web.SectorWebError, match="not configured"):
         web.search_web("news")
+
+
+def test_configured_search_endpoint_tool_call_is_not_executed_search_evidence(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://provider.example/v1")
+    monkeypatch.setenv("DEEPSEEK_SEARCH_URL", "https://provider.example/v1/messages")
+    requests = []
+    def request(url, **kwargs):
+        requests.append((url, kwargs))
+        return 200, {}, json.dumps({"stop_reason": "tool_use", "content": [{"type": "tool_use",
+            "name": "web_search", "input": {"query": "news"}}]}).encode()
+    monkeypatch.setattr(web, "_request", request)
+    with pytest.raises(web.SectorWebError, match="did not execute native web search"):
+        web.search_web("news")
+    assert len(requests) == 1 and requests[0][0] == "https://provider.example/v1/messages"
+    assert json.loads(requests[0][1]["body"])["model"] == "deepseek-v4-flash"
 
 
 def test_original_publication_is_distinct_from_modification_and_http_dates(monkeypatch, public_dns):

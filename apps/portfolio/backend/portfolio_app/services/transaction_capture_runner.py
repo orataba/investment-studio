@@ -73,6 +73,15 @@ def run_transaction_capture_analysis(
             batch_id=batch_id,
             run_token=run_token,
         )
+        if return_code == 78 and not timed_out:
+            finish_transaction_capture_analysis_run(
+                portfolio_id=portfolio_id,
+                batch_id=batch_id,
+                attempt=attempt,
+                succeeded=False,
+                error="当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。",
+            )
+            return
         revision_created = has_transaction_capture_agent_revision(
             portfolio_id=portfolio_id,
             batch_id=batch_id,

@@ -86,6 +86,13 @@ def themes(instrument_id: str, session: Session = Depends(get_db_session)):
     return themes_view(session, instrument_id)
 
 
+@router.get("/research/instruments/{instrument_id}/activity")
+def activity(instrument_id: str, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_activity import research_activity
+    require_instrument(session, instrument_id)
+    return research_activity(session, instrument_id)
+
+
 @router.post("/research/instruments/{instrument_id}/themes", status_code=201)
 def create_theme(instrument_id: str, request: ThemeInput, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)

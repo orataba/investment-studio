@@ -157,11 +157,20 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     if watchlist_id is None:
         watchlist_id = next((x.context_json.get("watchlist_id") for x in reversed(entries) if x.kind == "analysis"), None)
     from watchlist_app.services.research_identity import research_identity
+    reference = (page_context or {}).get("research_reference") or {}
+    linked_update = None
+    if reference.get("research_update_id"):
+        from watchlist_app.services.research_activity import resolve_research_update
+        linked_update = resolve_research_update(session, reference["instrument_id"], reference["research_update_id"])
+    elif reference.get("event_case_id"):
+        from watchlist_app.services.research_activity import resolve_event_reference
+        linked_update = resolve_event_reference(session, reference["instrument_id"], reference["event_case_id"], reference.get("event_version_id"))
     return serialize_payload({
         "research_actor": research_identity(),
         "topic_id": topic.topic_id, "question": question, "as_of_date": (page_context or {}).get("as_of_date") or date.today(), "requested_at": datetime.now(UTC),
         "research_run": True, "instrument_ids": list(topic.instrument_ids), "cutoff": datetime.now(UTC),
         "page_context": page_context,
+        "referenced_research_update": linked_update,
         "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
                            "guidance": ANALYST_FOCUS.get(instrument.instrument_type)}
                           for iid in topic.instrument_ids if (instrument := session.get(InstrumentDetail, iid))],

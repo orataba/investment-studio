@@ -1,0 +1,27 @@
+# The standard OpenAI-compatible adapter retains streamed tool names/IDs when a
+# gateway emits empty ID or null name fields in later argument deltas.
+- id: llm-deepseek
+  disabled: true
+
+- id: llm-pi-ai
+  config:
+    providers:
+      studio-deepseek:
+        apiKeyEnv: DEEPSEEK_API_KEY
+        api: openai-completions
+        baseURL: !!js process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
+        reasoning: high
+        defaultContextWindow: 1000000
+        defaultMaxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' ? 65536 : 32768"
+        compat:
+          thinkingFormat: deepseek
+          supportsReasoningEffort: true
+          requiresReasoningContentOnAssistantMessages: true
+          maxTokensField: max_tokens
+        models:
+          - id: deepseek-v4-pro
+            reasoningEfforts:
+              high: high
+          - id: deepseek-v4-flash
+            reasoningEfforts:
+              high: high

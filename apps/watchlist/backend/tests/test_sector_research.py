@@ -97,12 +97,13 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         add_sources(run,source_id="old-refetched-id",published_at=old_publication)
         service.apply_result(session,run,result(sources=["old-refetched-id"],action="updated",recording_type="update",
             published_at=old_publication,occurred_at="2020-05-30"))
-        assert len(case.history_json) == 2 and case.evidence_json["information_type"] == "rumor"
+        assert len(case.history_json) == 3 and case.evidence_json["information_type"] == "fact"
+        assert case.history_json[1]["snapshot"]["information_type"] == "rumor"
         service.apply_result(session,run,result())
-        assert case.trigger_active and len(case.history_json) == 2
+        assert case.evidence_json["follow_up"] == "watch" and not case.trigger_active and len(case.history_json) == 3
         from watchlist_app.services.risk_workbench import refresh_risk_cases
         refresh_risk_cases(session,["xlk"])
-        assert case.trigger_active
+        assert case.evidence_json["follow_up"] == "watch" and not case.trigger_active
         add_sources(run,source_id="follow-up",published_at=None,time_status="unknown")
         service.apply_result(session,run,result(sources=["follow-up"],action="resolved",recording_type="update",
             body="原文澄清此前传闻，相关不确定性已经解除。"))
@@ -111,7 +112,7 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         session.commit()
     response = client.get("/api/sector-research?instrument_id=xlk").json()
     stored = response["events"][0]
-    assert len(stored["history"]) == 3 and stored["history"][0]["snapshot"]["occurred_at"] == "2020-05-30"
+    assert len(stored["history"]) == 4 and stored["history"][0]["snapshot"]["occurred_at"] == "2020-05-30"
     assert not stored["trigger_active"] and stored["status"] == "resolved"
 
 
@@ -146,6 +147,251 @@ def test_legacy_events_remain_readable_without_fabricated_history_snapshots(clie
     assert stored["information_type"] is None and stored["published_at"] is None and stored["occurred_at"] is None
     assert stored["history"] == [{"at":"2026-08-01T12:00:00+00:00","action":"new","detail":"原有历史记录","snapshot":None}]
     assert not stored["trigger_active"]
+
+
+def test_brief_follow_up_and_risk_trigger_are_independent_with_stable_versions(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        add_sources(run)
+        service.apply_result(session, run, result(sources=["web-one"], analysis_depth="brief", follow_up="none", next_watch=""))
+        session.flush()
+        case = session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
+        brief = service.event_record(case)
+        assert brief["follow_up"] == "none" and brief["analysis_depth"] == "brief"
+        assert brief["status"] == "recorded" and not brief["trigger_active"]
+        assert brief["event_version_id"] == f"{case.case_id}:1"
+        assert brief["recorded_at"] == brief["history"][0]["at"]
+        assert brief["event_version_id"] == brief["history"][0]["snapshot"]["event_version_id"]
+        service.apply_result(session, run, result(sources=["web-one"], action="updated", follow_up="watch",
+            next_watch="等待后续正式指引", analysis_depth="analysis"))
+        opportunity = service.event_record(case)
+        assert opportunity["follow_up"] == "watch" and not opportunity["trigger_active"]
+        assert opportunity["event_version_id"] == f"{case.case_id}:2"
+        service.apply_result(session, run, result(sources=["web-one"], action="updated", direction="risk"))
+        risk = service.event_record(case)
+        assert risk["follow_up"] == "watch" and risk["trigger_active"]
+        assert risk["event_version_id"] == f"{case.case_id}:3"
+        assert risk["history"][0]["snapshot"] == brief["history"][0]["snapshot"]
+
+
+def test_research_publication_creates_multiple_themes_and_preserves_sparse_links(client, monkeypatch):
+    from watchlist_app.services.research_dossier import read_dossier
+    from watchlist_app.services.research_themes import theme_index
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        add_sources(run)
+        payload = json.loads(result(sources=["web-one"], follow_up="none", next_watch="", theme_ids=["ai-demand", "margins"]))
+        payload["reviews"][0].update(themes=[
+            {"theme_key": "ai-demand", "title": "AI需求与投入回报", "question": "新增需求能否支撑持续投入？", "source_ids": ["web-one"]},
+            {"theme_key": "margins", "title": "利润分配变化", "question": "成本与定价权如何变化？"},
+        ], research={"questions": [{"key": "verify-demand", "theme_id": "ai-demand", "event_key": "new-policy",
+            "question": "投入能否转化为收入？", "assessment": "仍需后续数据", "next_check": "下一次指引", "source_ids": ["web-one"]}]})
+        draft = service.ReviewResult.model_validate(payload)
+        service.validate_result(session, run, draft)
+        assert theme_index(session, "xlk") == [], "Accepting a draft must not publish its themes"
+        service.apply_result(session, run, json.dumps(payload))
+        session.commit()
+        themes = {theme["theme_key"]: theme for theme in theme_index(session, "xlk")}
+        assert set(themes) == {"ai-demand", "margins"}
+        assert all(theme["origin"] == theme["managed_by"] == "researcher" and theme["author_user_id"] is None for theme in themes.values())
+        case = session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
+        ids = [themes[key]["theme_id"] for key in ("ai-demand", "margins")]
+        assert case.evidence_json["theme_ids"] == ids
+        dossier = read_dossier(session, "xlk")
+        assert dossier["notebook"]["questions"][0]["theme_id"] == ids[0]
+        assert run.context_json["reviews"]["xlk"]["themes"][0]["source_ids"] == ["web-one"]
+        next_run, _ = service.begin_run(session, ["xlk"])
+        next_run.context_json = {**next_run.context_json, "research_dossiers": [read_dossier(session, "xlk")],
+                                 "prior_events": [service.event_record(case)]}
+        add_sources(next_run)
+        sparse = service.ReviewResult.model_validate_json(result(sources=["web-one"], action="updated", body="新原文补充了影响范围。"))
+        submitted = service.draft_payload(sparse)
+        assert "theme_ids" not in submitted["reviews"][0]["events"][0]
+        assert "follow_up" not in submitted["reviews"][0]["events"][0]
+        service.apply_result(session, next_run, json.dumps(submitted))
+        assert case.evidence_json["theme_ids"] == ids and case.evidence_json["follow_up"] == "none"
+        assert len(theme_index(session, "xlk")) == 2
+
+
+def test_invalid_theme_reference_does_not_publish_new_theme_or_event(client, monkeypatch):
+    from watchlist_app.services.research_themes import theme_index
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        add_sources(run)
+        payload = json.loads(result(sources=["web-one"], theme_ids=["foreign-theme"]))
+        payload["reviews"][0]["themes"] = [{"theme_key": "valid-new", "title": "需求持续性", "question": "需求是否持续？"}]
+        with pytest.raises(ValueError, match="未读取"):
+            service.apply_result(session, run, json.dumps(payload))
+        assert theme_index(session, "xlk") == []
+        assert session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy")) is None
+
+
+def test_new_reflection_is_saved_without_manufacturing_an_event(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"])
+        payload = {"reviews": [{"instrument_id": "xlk", "reflection": {
+            "status": "insufficient_evidence", "summary": "原判断尚无可观察结果，暂不提炼经验。", "reviewed_update_ids": []}}]}
+        service.apply_result(session, run, json.dumps(payload))
+        review = run.context_json["reviews"]["xlk"]
+        assert review["change_kind"] == "none" and review["summary"] == ""
+        assert review["reflection"]["status"] == "insufficient_evidence"
+        assert "原判断尚无可观察结果，暂不提炼经验。" in review["coverage"]
+        assert service.events_for_instruments(session, ["xlk"]) == []
+
+
+def test_review_can_bind_an_actual_prior_event_judgment_without_fabricating_a_forecast(client, monkeypatch):
+    from watchlist_app.services.research_dossier import read_dossier
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        original, _ = service.begin_run(session, ["xlk"])
+        add_sources(original)
+        service.apply_result(session, original, result(sources=["web-one"]))
+        session.commit()
+        event = service.events_for_instruments(session, ["xlk"])[0]
+        update_id = f"event:{event['event_version_id']}"
+        prior_cutoff = original.context_json["cutoff"]
+        with pytest.raises(ValueError, match="事前判断"):
+            service._validate_update_reference(session, original, "xlk", update_id)
+        next_run, _ = service.begin_run(session, ["xlk"])
+        next_run.context_json = {**next_run.context_json, "research_dossiers": [read_dossier(session, "xlk")], "prior_events": [event]}
+        add_sources(next_run)
+        valid_cutoff = next_run.context_json["cutoff"]
+        next_run.context_json = {**next_run.context_json, "cutoff": prior_cutoff}
+        with pytest.raises(ValueError, match="事前判断"):
+            service._validate_update_reference(session, next_run, "xlk", update_id)
+        next_run.context_json = {**next_run.context_json, "cutoff": valid_cutoff}
+        next_run.context_json = {**next_run.context_json, "input_snapshot_cutoff": prior_cutoff}
+        with pytest.raises(ValueError, match="事前判断"):
+            service._validate_update_reference(session, next_run, "xlk", update_id)
+        next_run.context_json = {key: value for key, value in next_run.context_json.items() if key != "input_snapshot_cutoff"}
+        payload = {"reviews": [{"instrument_id": "xlk", "change_kind": "knowledge", "research": {
+            "forecast_reviews": [{"key": "policy-outcome", "event_key": "new-policy", "related_research_update_id": update_id,
+                "outcome": "最新披露尚不能支持最初的收入改善假设。", "mechanism_assessment": "需区分政策生效与收入兑现。", "source_ids": ["web-one"]}]},
+            "reflection": {"status": "reviewed", "reviewed_update_ids": [update_id]}}]}
+        service.apply_result(session, next_run, json.dumps(payload))
+        session.commit()
+        saved = read_dossier(session, "xlk")["notebook"]["forecast_reviews"][0]
+        assert saved["related_research_update_id"] == update_id and saved["forecast_key"] is None
+        assert len(service.events_for_instruments(session, ["xlk"])[0]["history"]) == 1
+        assert next_run.context_json["reviews"]["xlk"]["change_kind"] == "knowledge"
+
+
+def test_stale_event_version_cannot_overwrite_a_newer_published_assessment(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        original, _ = service.begin_run(session, ["xlk"])
+        add_sources(original)
+        service.apply_result(session, original, result(sources=["web-one"]))
+        session.commit()
+        case = session.scalar(select(RiskCase).where(RiskCase.signal == "sector:new-policy"))
+        before = service.event_record(case)
+        next_run, _ = service.begin_run(session, ["xlk"])
+        next_run.context_json = {**next_run.context_json, "prior_events": [before]}
+        add_sources(next_run)
+        case.body = "另一轮研究已经修正判断。"
+        case.evidence_json = {**case.evidence_json, "event_version_id": f"{case.case_id}:2"}
+        case.history_json = [*case.history_json, {"at": datetime.now(UTC).isoformat(), "action": "updated",
+            "snapshot": {**case.evidence_json, "body": case.body}}]
+        session.flush()
+        with pytest.raises(service.ResearchVersionConflict, match="事件"):
+            service.apply_result(session, next_run, result(sources=["web-one"], action="updated", body="过期输入下的新判断"))
+        assert case.body == "另一轮研究已经修正判断。" and len(case.history_json) == 2
+
+
+def test_brief_updates_do_not_replace_the_instrument_investment_conclusion(client, monkeypatch):
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        first, _ = service.begin_run(session, ["xlk"])
+        service.apply_result(session, first, json.dumps({"reviews": [{"instrument_id": "xlk", "change_kind": "investment", "summary": "原有全标的投资判断"}]}))
+        session.commit()
+        second, _ = service.begin_run(session, ["xlk"])
+        add_sources(second)
+        service.apply_result(session, second, result(sources=["web-one"], analysis_depth="brief", follow_up="none", next_watch=""))
+        review = second.context_json["reviews"]["xlk"]
+        assert review["summary"] == "原有全标的投资判断" and review["change_kind"] == "knowledge"
+        assert review["view_run_id"] == first.entry_id
+
+
+@pytest.mark.parametrize("use_alias", [True, False])
+def test_analyst_can_close_own_active_theme_with_final_question_and_event_in_one_publication(client, monkeypatch, use_alias):
+    from watchlist_app.services.research_dossier import read_dossier
+    from watchlist_app.services.research_themes import theme_index
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        first, _ = service.begin_run(session, ["xlk"])
+        add_sources(first)
+        initial = json.loads(result(sources=["web-one"], theme_ids=["policy-effect"]))
+        initial["reviews"][0]["themes"] = [{"theme_key": "policy-effect", "title": "政策兑现", "question": "新政策能否改善收入？"}]
+        service.apply_result(session, first, json.dumps(initial))
+        session.commit()
+        theme = theme_index(session, "xlk")[0]
+        ref = theme["theme_key"] if use_alias else theme["theme_id"]
+        second, _ = service.begin_run(session, ["xlk"])
+        second.context_json = {**second.context_json, "research_dossiers": [read_dossier(session, "xlk")],
+                               "prior_events": service.events_for_instruments(session, ["xlk"])}
+        add_sources(second)
+        final = json.loads(result(sources=["web-one"], action="resolved", theme_ids=[ref], body="后续披露完成了原问题的核实。"))
+        final["reviews"][0].update(themes=[{"theme_key": "policy-effect", "theme_id": theme["theme_id"],
+            "status": "closed", "close_reason": "所需验证已完成，后续纳入一般背景研究"}], research={"questions": [{
+                "key": "policy-outcome", "theme_id": ref, "question": theme["question"], "assessment": "现有证据支持改善但不证明唯一原因",
+                "status": "supported", "next_check": "", "source_ids": ["web-one"]}]})
+        service.apply_result(session, second, json.dumps(final))
+        session.commit()
+        assert theme_index(session, "xlk")[0]["status"] == "closed"
+        assert service.events_for_instruments(session, ["xlk"])[0]["follow_up"] == "resolved"
+        assert read_dossier(session, "xlk")["notebook"]["questions"][0]["theme_id"] == theme["theme_id"]
+
+
+@pytest.mark.parametrize("status", ["paused", "closed"])
+def test_automatic_publication_cannot_reopen_or_advance_a_previously_inactive_theme(client, monkeypatch, status):
+    from watchlist_app.services.research_dossier import read_dossier
+    from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        theme = save_analyst_theme(session, "xlk", AnalystThemeUpdate(theme_key="inactive-policy", title="旧政策研究",
+            question="是否值得继续研究？", status=status, close_reason="原研究已结束" if status == "closed" else ""))
+        session.commit()
+        run, _ = service.begin_run(session, ["xlk"])
+        run.context_json = {**run.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
+        with pytest.raises(ValueError, match="不能由自动研究"):
+            service.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": "xlk", "themes": [
+                {"theme_key": theme["theme_key"], "status": "active"}]}]}))
+        with pytest.raises(ValueError, match="暂停或结束"):
+            service.apply_result(session, run, json.dumps({"reviews": [{"instrument_id": "xlk", "research": {"questions": [{
+                "key": "unrequested-followup", "theme_id": theme["theme_id"], "question": theme["question"],
+                "assessment": "未经恢复便继续更新", "next_check": "后续披露"}]}}]}))
+
+
+def test_shared_event_can_keep_inactive_theme_reference_without_reopening_or_new_assignment(client, monkeypatch):
+    from watchlist_app.services.research_dossier import read_dossier
+    from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme, theme_index
+    seed_sector(client, monkeypatch)
+    with get_session_factory()() as session:
+        themes = [save_theme(session, "xlk", ThemeInput(title=title, question=title)) for title in ("需求变化", "利润变化")]
+        session.commit()
+        first, _ = service.begin_run(session, ["xlk"])
+        first.context_json = {**first.context_json, "research_dossiers": [read_dossier(session, "xlk")]}
+        add_sources(first)
+        service.apply_result(session, first, result(sources=["web-one"], theme_ids=[theme["theme_id"] for theme in themes]))
+        save_theme(session, "xlk", ThemePatch(status="paused"), theme_id=themes[0]["theme_id"])
+        session.commit()
+        second, _ = service.begin_run(session, ["xlk"])
+        second.context_json = {**second.context_json, "research_dossiers": [read_dossier(session, "xlk")],
+                               "prior_events": service.events_for_instruments(session, ["xlk"])}
+        add_sources(second)
+        service.apply_result(session, second, result(sources=["web-one"], action="updated", body="同一事件有了新的公开披露。"))
+        session.commit()
+        current = service.events_for_instruments(session, ["xlk"])[0]
+        assert current["theme_ids"] == [theme["theme_id"] for theme in themes]
+        assert current["body"] == "同一事件有了新的公开披露。"
+        assert next(theme for theme in theme_index(session, "xlk") if theme["theme_id"] == themes[0]["theme_id"])["status"] == "paused"
+        with pytest.raises(ValueError, match="暂停或结束"):
+            service.validate_result(session, second, service.ReviewResult.model_validate_json(
+                result(sources=["web-one"], event_key="new-assignment", theme_ids=[themes[0]["theme_id"]])))
 
 
 def test_opening_compiler_byline_does_not_qualify_as_an_original():

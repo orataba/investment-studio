@@ -423,9 +423,15 @@ def test_completed_revision_recovers_a_run_interrupted_before_status_update(clie
     assert detail.json()["analysis_run_error"] is None
 
 
+@pytest.mark.parametrize(("return_code", "expected_error"), [
+    (0, "The agent finished without producing a review revision."),
+    (78, "当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。"),
+])
 def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     client,
     monkeypatch,
+    return_code,
+    expected_error,
 ) -> None:
     from portfolio_app.services import transaction_capture_runner
     from portfolio_app.services.transaction_captures import (
@@ -441,7 +447,7 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     monkeypatch.setattr(
         transaction_capture_runner,
         "_run_harness_process",
-        lambda **_kwargs: (0, False),
+        lambda **_kwargs: (return_code, False),
     )
 
     transaction_capture_runner.run_transaction_capture_analysis(
@@ -460,9 +466,8 @@ def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     assert result["analysis_run_status"] == "failed"
     assert result["analysis_run_started_at"] is not None
     assert result["analysis_run_completed_at"] is not None
-    assert result["analysis_run_error"] == (
-        "The agent finished without producing a review revision."
-    )
+    assert result["analysis_run_error"] == expected_error
+    assert result["latest_analysis_revision"] == 0
 
 
 @pytest.mark.parametrize(

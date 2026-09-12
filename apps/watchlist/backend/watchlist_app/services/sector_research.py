@@ -22,6 +22,7 @@ from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.sector_market_data import read_sector_market_data
 from watchlist_app.services.sector_estimates import read_estimate_evidence, retained_estimate_sources, usable_estimate_change
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, retain_notebook, validate_notebook
+from watchlist_app.services.research_themes import AnalystThemeUpdate
 from watchlist_app.services.calculation_frequency import _market_calendar_sessions
 
 TOPIC_ID = "us-sector-daily-review"
@@ -78,19 +79,24 @@ def instrument_label(session, iid):
 def latest_reviews(session, *, completed_only=False):
     from studio_identity import current_principal
     from watchlist_app.services.research_access import topic_portfolio_ids
-    result, current_views = {}, {}
+    result, current_views, allowed_topics = {}, {}, {}
     principal = current_principal()
     team_id = principal.team_id
     runs = session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis", True if principal.local_unrestricted else ResearchEntry.team_id == team_id)
                           .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
     for run in runs:
         context = run.context_json or {}
-        topic = session.get(ResearchTopic, run.topic_id)
-        if not topic or (not principal.local_unrestricted and topic.team_id != team_id) or topic_portfolio_ids(session, topic):
-            continue
         if not (context.get("sector_run") or context.get("research_run")):
             continue
         published = run.status in {"completed", "draft"}
+        if not context.get("instrument_ids") or (completed_only and not published):
+            continue
+        if run.topic_id not in allowed_topics:
+            topic = session.get(ResearchTopic, run.topic_id)
+            allowed_topics[run.topic_id] = bool(topic and (principal.local_unrestricted or topic.team_id == team_id)
+                                              and not topic_portfolio_ids(session, topic))
+        if not allowed_topics[run.topic_id]:
+            continue
         for iid in context.get("instrument_ids", []):
             review = context.get("reviews", {}).get(iid, {})
             accepted = published and review.get("status") in {"completed", "limited"}
@@ -107,7 +113,7 @@ def latest_reviews(session, *, completed_only=False):
                 "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
                 "view_updated_at": review.get("view_updated_at"),
                 "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),
-                "coverage": review.get("coverage", []), "research": review.get("research")}
+                "coverage": review.get("coverage", []), "research": review.get("research"), "reflection": review.get("reflection")}
     for iid, review in result.items():
         view = current_views.get(iid, {})
         review["current_summary"] = view.get("summary", "")
@@ -316,7 +322,10 @@ class SectorEvent(BaseModel):
     direction: Literal["risk", "opportunity", "uncertain"]
     title: str = Field(min_length=1, max_length=250)
     body: str = Field(min_length=1, max_length=5000)
-    next_watch: str = Field(min_length=1, max_length=1500)
+    next_watch: str = Field(default="", max_length=1500)
+    follow_up: Literal["none", "watch", "resolved"] = "watch"
+    analysis_depth: Literal["brief", "analysis"] = "analysis"
+    theme_ids: list[str] = Field(default_factory=list)
     confidence: Literal["confirmed", "reported", "unverified"]
     information_type: Literal["fact", "opinion", "rumor"]
     recording_type: Literal["new", "update", "backfill"]
@@ -337,12 +346,20 @@ class SectorEvent(BaseModel):
         return parsed.astimezone(UTC).isoformat()
 
 
+class ResearchReflection(BaseModel):
+    status: Literal["reviewed", "insufficient_evidence"]
+    summary: str = Field(default="", max_length=2000)
+    reviewed_update_ids: list[str] = Field(default_factory=list)
+
+
 class SectorReview(BaseModel):
     instrument_id: str
     summary: str = Field(default="", max_length=2000)
     change_kind: Literal["none", "knowledge", "investment"] = "none"
     coverage: list[str] = Field(default_factory=list)
     events: list[SectorEvent] = Field(default_factory=list)
+    themes: list[AnalystThemeUpdate] = Field(default_factory=list)
+    reflection: ResearchReflection | None = None
     research: ResearchNotebook | None = None
 
 
@@ -354,6 +371,13 @@ def draft_payload(result: ReviewResult):
     """Keep research deltas sparse: omitted fields retain the existing knowledge."""
     payload = result.model_dump(mode="json")
     for model, row in zip(result.reviews, payload["reviews"]):
+        row["events"] = [event.model_dump(mode="json", exclude_unset=True) for event in model.events]
+        if "themes" in model.model_fields_set:
+            row["themes"] = [theme.model_dump(mode="json", exclude_unset=True) for theme in model.themes]
+        else:
+            row.pop("themes", None)
+        if "reflection" not in model.model_fields_set:
+            row.pop("reflection", None)
         if model.research is not None:
             row["research"] = model.research.model_dump(mode="json", exclude_unset=True)
     return payload
@@ -400,19 +424,38 @@ def _source_views(sources):
             for source in sources]
 
 
-def _snapshot_view(snapshot):
-    return {**snapshot, "sources": _source_views(snapshot.get("sources") or []), "coverage": snapshot.get("coverage") or []}
+def event_version_id(case_id: str, revision: int) -> str:
+    return f"{case_id}:{revision}"
+
+
+def _event_follow_up(value):
+    return value.get("follow_up") or ("resolved" if value.get("status") == "resolved" or value.get("action") == "resolved"
+                                      else "watch" if value.get("trigger_active", True) else "none")
+
+
+def _snapshot_view(snapshot, *, case_id=None, revision=None, recorded_at=None):
+    return {**snapshot, "follow_up": _event_follow_up(snapshot), "analysis_depth": snapshot.get("analysis_depth", "analysis"),
+            "theme_ids": snapshot.get("theme_ids") or [],
+            "event_version_id": snapshot.get("event_version_id") or (event_version_id(case_id, revision) if case_id and revision else None),
+            "recorded_at": snapshot.get("recorded_at") or recorded_at or snapshot.get("discovered_at"),
+            "sources": _source_views(snapshot.get("sources") or []), "coverage": snapshot.get("coverage") or []}
 
 
 def event_record(case):
     evidence = case.evidence_json or {}
-    history = [{**entry, "snapshot": _snapshot_view(entry["snapshot"]) if entry.get("snapshot") else None}
-               for entry in case.history_json or []]
+    history = [{**entry, "snapshot": _snapshot_view(entry["snapshot"], case_id=case.case_id, revision=index + 1,
+                                                     recorded_at=entry.get("at")) if entry.get("snapshot") else None}
+               for index, entry in enumerate(case.history_json or [])]
     return {"case_id": case.case_id, "instrument_id": case.instrument_id,
         "event_key": case.signal.removeprefix("sector:"), "title": case.title, "body": case.body,
         "direction": evidence.get("direction", "uncertain"), "information_type": evidence.get("information_type"),
         "confidence": evidence.get("confidence"), "next_watch": evidence.get("next_watch", ""),
         "status": case.status, "trigger_active": case.trigger_active,
+        "follow_up": _event_follow_up({"status": case.status, "trigger_active": case.trigger_active, **evidence}),
+        "analysis_depth": evidence.get("analysis_depth", "analysis"), "theme_ids": evidence.get("theme_ids") or [],
+        "event_version_id": evidence.get("event_version_id") or event_version_id(case.case_id, max(1, len(history))),
+        "recorded_at": evidence.get("recorded_at") or evidence.get("progress_at") or
+            (history[-1].get("at") if history else None) or (case.created_at.isoformat() if case.created_at else None),
         "withdrawn": bool(evidence.get("withdrawn")), "withdrawal_reason": evidence.get("withdrawal_reason"),
         "withdrawn_at": evidence.get("withdrawn_at"),
         "published_at": evidence.get("published_at"), "occurred_at": evidence.get("occurred_at"),
@@ -431,7 +474,7 @@ def events_for_instruments(session, ids):
 
 def _same_progress(case, item, sources):
     evidence = case.evidence_json or {}
-    fields = ("direction", "information_type", "confidence", "published_at", "occurred_at")
+    fields = ("direction", "information_type", "confidence", "published_at", "occurred_at", "next_watch")
     # Fetch IDs and collection times change every run; the cited publication does not.
     def identities(rows):
         publications = {(row.get("document_id") or row.get("url"), row.get("version_id") or row.get("published_at"))
@@ -451,11 +494,148 @@ def _same_progress(case, item, sources):
                      json.dumps(observations(row.get("data", {})), sort_keys=True, ensure_ascii=False))
                     for row in rows if row.get("source_type") == "computed_metric"}
         return publications | estimate_points | computed
-    previous = [{**evidence, "body": case.body},
-                *(entry["snapshot"] for entry in case.history_json or [] if entry.get("snapshot"))]
+    # Compare the current assessment. Returning to a prior view is a new revision,
+    # even when its wording and admissible sources match a historical snapshot.
+    previous = [{"status": case.status, "trigger_active": case.trigger_active, **evidence, "body": case.body}]
     return any(" ".join(row["body"].split()) == " ".join(item.body.split())
                and all(row.get(key) == getattr(item, key) for key in fields)
+               and _event_follow_up(row) == item.follow_up
+               and row.get("analysis_depth", "analysis") == item.analysis_depth
+               and set(row.get("theme_ids") or []) == set(item.theme_ids)
                and identities(row.get("sources", [])) == identities(sources) for row in previous)
+
+
+def _effective_event(item, case):
+    values = item.model_dump(mode="json")
+    if case is not None:
+        previous = event_record(case)
+        for field in ("follow_up", "analysis_depth", "theme_ids", "next_watch"):
+            if field not in item.model_fields_set:
+                values[field] = previous[field]
+    if item.action == "resolved":
+        if "follow_up" in item.model_fields_set and item.follow_up != "resolved":
+            raise ValueError("结束事件的action与follow_up必须一致")
+        values["follow_up"] = "resolved"
+    if values["follow_up"] == "watch" and not values["next_watch"].strip():
+        raise ValueError("持续跟进的事件需要明确下一步观察；无需跟进时使用follow_up=none")
+    return SectorEvent.model_validate(values)
+
+
+def _theme_scope(session, run, review):
+    from watchlist_app.services.research_themes import analyst_theme_target, analyst_theme_values
+    from watchlist_app.services.research_identity import research_identity
+    team_id = research_identity()["team_id"]
+    dossier = next((d for d in run.context_json.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+    themes = {item["theme_id"]: item for item in dossier.get("themes", []) if item.get("team_id", team_id) == team_id}
+    keys = [item.theme_key for item in review.themes]
+    if len(keys) != len(set(keys)):
+        raise ValueError("同一关注主题在本轮重复出现")
+    normalized = lambda value: " ".join(value.split()).casefold()
+    for update in review.themes:
+        previous = analyst_theme_target(session, review.instrument_id, update)
+        if previous and previous["theme_id"] not in themes:
+            raise ValueError("研究主题在本轮未读取，请基于最新研究档案更新")
+        if previous and run.context_json.get("sector_run") and previous["status"] != "active":
+            raise ValueError("原本已暂停或结束的主题不能由自动研究更新或恢复")
+        if update.theme_key in themes and (not previous or themes[update.theme_key]["theme_id"] != previous["theme_id"]):
+            raise ValueError("新主题的本轮别名不能覆盖已有主题标识")
+        values = analyst_theme_values(update, previous)
+        if not previous and any(normalized(item["title"]) == normalized(values["title"])
+                                or normalized(item["question"]) == normalized(values["question"]) for item in themes.values()):
+            raise ValueError("已有同名或相同问题的关注主题，请关联原主题而不是重复建立")
+        projected = {**(previous or {"theme_id": update.theme_key, "origin": "researcher", "managed_by": "researcher"}),
+                     **values, "_closing_in_run": bool(previous and previous["status"] == "active" and values["status"] in {"paused", "closed"})}
+        themes[update.theme_key] = projected
+        if previous:
+            themes[previous["theme_id"]] = projected
+    return themes
+
+
+def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False):
+    from watchlist_app.services.research_activity import resolve_research_update
+    value = resolve_research_update(session, instrument_id, update_id)
+    if not value:
+        raise ValueError("找不到当前标的此前已发布的研究判断记录")
+    if judgment and value.get("kind") == "theme":
+        raise ValueError("主题建立或状态记录不是事前判断，请关联主题内具体研究判断或事件版本")
+    recorded_at = value.get("recorded_at")
+    original_cutoff = run.context_json.get("input_snapshot_cutoff", run.context_json["cutoff"])
+    if (not recorded_at or datetime.fromisoformat(recorded_at.replace("Z", "+00:00")) > datetime.fromisoformat(original_cutoff)
+            or value.get("run_id") == run.entry_id):
+        raise ValueError("复盘需要关联本轮开始前已发布的研究判断，不能把事后记录当作事前判断")
+    return value
+
+
+def _validate_research_links(session, run, review, themes):
+    from watchlist_app.services.research_notebook import _merge_partial, _forecast_versions
+    context = run.context_json
+    dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+    notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
+    event_keys = {item.event_key for item in review.events} | {item.signal.removeprefix("sector:") for item in
+        session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
+
+    def check_theme(theme_id, *, retained_event_link=False):
+        if theme_id and theme_id not in themes:
+            raise ValueError("研究判断关联了本轮未读取的关注主题")
+        if (context.get("sector_run") and theme_id and themes[theme_id]["status"] != "active"
+                and not themes[theme_id].get("_closing_in_run") and not retained_event_link):
+            raise ValueError("已暂停或结束的关注主题不再自动更新")
+
+    if review.research is not None:
+        forecast_versions = _forecast_versions(dossier.get("notebook") or {})
+        for field in ("questions", "forecasts", "forecast_reviews", "lessons"):
+            previous = {item["key"]: item for item in (dossier.get("notebook") or {}).get(field, [])}
+            for model in getattr(review.research, field):
+                row = _merge_partial(model, previous.get(model.key))
+                check_theme(row.get("theme_id"))
+                if row.get("event_key") and row["event_key"] not in event_keys:
+                    raise ValueError("研究判断关联的事件不属于当前标的")
+                if row.get("related_research_update_id"):
+                    original = _validate_update_reference(session, run, review.instrument_id, row["related_research_update_id"], judgment=True)
+                    check_theme(original["reference"].get("theme_id"))
+                if field in {"forecast_reviews", "lessons"} and row.get("forecast_key") and (
+                        row["forecast_key"], row.get("forecast_version_id")) not in forecast_versions:
+                    raise ValueError("复盘或经验必须关联此前已保存的预测原版本，不能将事后新建预测作为事前记录")
+                if field in {"forecast_reviews", "lessons"} and row.get("forecast_key"):
+                    check_theme(forecast_versions[(row["forecast_key"], row["forecast_version_id"])].get("theme_id"))
+                if field == "forecast_reviews" and not (row.get("forecast_key") or row.get("related_research_update_id")):
+                    raise ValueError("复盘需要关联此前已保存的预测版本或研究判断记录")
+                if row.get("pm_note_id"):
+                    note = notes.get(row["pm_note_id"])
+                    revisions = {item["revision_number"] for item in (note or {}).get("versions", [])}
+                    if not note or row.get("pm_note_revision") not in revisions:
+                        raise ValueError("请关联本轮已读取的投资经理观点及其原始版本")
+                    note_theme = (note.get("research_context") or {}).get("theme_id")
+                    theme_id = row.get("theme_id")
+                    if theme_id and note_theme != themes[theme_id]["theme_id"]:
+                        raise ValueError("研究判断的主题与投资经理原观点不一致")
+                    check_theme(note_theme)
+    for item in review.events:
+        case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
+                                                     RiskCase.signal == f"sector:{item.event_key}"))
+        effective = _effective_event(item, case)
+        if len(effective.theme_ids) != len(set(effective.theme_ids)):
+            raise ValueError("同一事件的关注主题引用重复")
+        prior_theme_ids = set(event_record(case)["theme_ids"]) if case else set()
+        for theme_id in effective.theme_ids:
+            # Pausing a theme stops its assigned research, not later facts about
+            # a shared event. Retain existing references without reopening it.
+            canonical = themes.get(theme_id, {}).get("theme_id", theme_id)
+            check_theme(theme_id, retained_event_link=canonical in prior_theme_ids)
+    if review.reflection is not None:
+        for update_id in review.reflection.reviewed_update_ids:
+            _validate_update_reference(session, run, review.instrument_id, update_id)
+
+
+def _resolve_theme_aliases(review, aliases):
+    for event in review.events:
+        if "theme_ids" in event.model_fields_set:
+            event.theme_ids = list(dict.fromkeys(aliases.get(value, value) for value in event.theme_ids))
+    if review.research:
+        for field in ("questions", "forecasts", "forecast_reviews", "lessons"):
+            for item in getattr(review.research, field):
+                if item.theme_id:
+                    item.theme_id = aliases.get(item.theme_id, item.theme_id)
 
 
 def validate_result(session, run, parsed: ReviewResult):
@@ -488,26 +668,12 @@ def validate_result(session, run, parsed: ReviewResult):
     seen = set()
     # Validate the full reply before changing any persistent event.
     for review in parsed.reviews:
+        themes = _theme_scope(session, run, review)
+        for update in review.themes:
+            validate_notebook(ResearchNotebook(source_ids=update.source_ids), review.instrument_id, notebook_evidence)
+        _validate_research_links(session, run, review, themes)
         if review.research is not None:
             validate_notebook(review.research, review.instrument_id, notebook_evidence)
-            dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
-            themes = {item["theme_id"]: item for item in dossier.get("themes", [])}
-            notes = {item["note_id"]: item for item in dossier.get("pm_views", [])}
-            for question in review.research.questions:
-                if question.theme_id and question.theme_id not in themes:
-                    raise ValueError("研究判断关联了本轮未读取的关注主题")
-                if context.get("sector_run") and question.theme_id and themes[question.theme_id]["status"] != "active":
-                    raise ValueError("已暂停或结束的关注主题不再自动更新")
-                if question.pm_note_id:
-                    note = notes.get(question.pm_note_id)
-                    revisions = {item["revision_number"] for item in (note or {}).get("versions", [])}
-                    if not note or question.pm_note_revision not in revisions:
-                        raise ValueError("请关联本轮已读取的投资经理观点及其原始版本")
-                    note_theme = (note.get("research_context") or {}).get("theme_id")
-                    if question.theme_id and note_theme != question.theme_id:
-                        raise ValueError("研究判断的主题与投资经理原观点不一致")
-                    if context.get("sector_run") and note_theme and themes.get(note_theme, {}).get("status") != "active":
-                        raise ValueError("已暂停或结束主题下的观点不再自动复核")
         for item in review.events:
             key = (review.instrument_id, item.event_key)
             if key in seen:
@@ -545,7 +711,7 @@ def apply_result(session, run, reply):
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
     for review in parsed.reviews:
-        if review.research is None and not review.events and review.change_kind != "investment":
+        if review.research is None and not review.events and not review.themes and review.change_kind != "investment":
             continue
         bound = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
         current = read_dossier(session, review.instrument_id)
@@ -554,6 +720,18 @@ def apply_result(session, run, reply):
             after = current.get(key) or {}
             if before.get("version_id", before.get("run_id")) != after.get("version_id", after.get("run_id")):
                 raise ResearchVersionConflict("研究记录在本轮分析期间已有更新，本轮草稿已保留；请基于最新版本继续研究。")
+        theme_links = review.themes or bool(bound.get("themes") and (review.research is not None or review.events))
+        if theme_links and {item["theme_id"]: item["revision_number"] for item in bound.get("themes", [])} != {
+                item["theme_id"]: item["revision_number"] for item in current.get("themes", [])}:
+            raise ResearchVersionConflict("关注主题在本轮分析期间已有更新，本轮草稿已保留；请基于最新主题继续研究。")
+        if "prior_events" in context:
+            prior_events = {item["event_key"]: item for item in context["prior_events"] if item["instrument_id"] == review.instrument_id}
+            current_events = {item["event_key"]: item for item in events_for_instruments(session, [review.instrument_id])}
+            for event in review.events:
+                before, after = prior_events.get(event.event_key), current_events.get(event.event_key)
+                before_id = before.get("event_version_id") or event_version_id(before["case_id"], max(1, len(before.get("history", [])))) if before else None
+                if before_id != (after or {}).get("event_version_id"):
+                    raise ResearchVersionConflict("事件判断在本轮分析期间已有更新，本轮草稿已保留；请基于最新事件版本继续研究。")
     previous_reviews = latest_reviews(session, completed_only=True)
     acquisition_gaps = [gap for e in context.get("web_evidence", []) for gap in e.get("coverage", [])]
     if context.get("sector_run") and not context.get("market_queries") and not any(e.get("operation") == "search" for e in context.get("web_evidence", [])):
@@ -561,35 +739,50 @@ def apply_result(session, run, reply):
     reviews = {}
     for review in parsed.reviews:
         coverage = list(dict.fromkeys([*review.coverage, *acquisition_gaps]))
+        if context.get("sector_run") and review.reflection is None:
+            coverage.append("本轮未记录对既有判断与经验的复核，复盘覆盖尚不明确。")
+        elif review.reflection and review.reflection.status == "insufficient_evidence":
+            coverage.append(review.reflection.summary or "既有判断的复核证据不足，暂不形成结果结论。")
+        from watchlist_app.services.research_themes import save_analyst_theme
+        aliases, changed_themes, published_themes = {}, False, []
+        theme_scope = _theme_scope(session, run, review)
+        for update in review.themes:
+            previous = theme_scope[update.theme_key]
+            saved = save_analyst_theme(session, review.instrument_id, update, provenance={"source_run_id": run.entry_id})
+            aliases[update.theme_key] = saved["theme_id"]
+            published_themes.append({key: saved[key] for key in ("theme_id", "theme_key", "source_ids")})
+            changed_themes = changed_themes or saved["theme_id"] != previous["theme_id"] or saved["revision_number"] != previous.get("revision_number")
+        _resolve_theme_aliases(review, aliases)
         changed_events = False
         for item in review.events:
             signal = f"sector:{item.event_key}"
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal == signal).order_by(RiskCase.created_at.desc()))
+            item = _effective_event(item, case)
             item_sources = [sources[s] for s in item.source_ids]
             if case is not None and _same_progress(case, item, item_sources) and (item.action != "resolved" or not case.trigger_active):
                 continue
             discovered_at = datetime.now(UTC).isoformat()
-            action = "new" if case is None else "resolved" if item.action == "resolved" else "updated"
+            action = "new" if case is None else "resolved" if item.follow_up == "resolved" else "updated"
+            case_id = case.case_id if case else uuid4().hex
+            revision = len(case.history_json or []) + 1 if case else 1
             from watchlist_app.services.market_evidence import source_reference
             snapshot = {**item.model_dump(mode="json"), "action": action, "sources": [source_reference(source) for source in item_sources],
                 "coverage": coverage, "discovered_at": discovered_at, "run_id": run.entry_id,
-                "checked_at": context["cutoff"]}
+                "checked_at": context["cutoff"], "recorded_at": discovered_at,
+                "event_version_id": event_version_id(case_id, revision)}
             first_discovered = ((case.evidence_json or {}).get("discovered_at") or
                                 (case.created_at.isoformat() if case.created_at else None)) if case else None
             if case is None:
-                case = RiskCase(case_id=uuid4().hex, instrument_id=review.instrument_id, signal=signal, status="open", history_json=[], trigger_active=True)
+                case = RiskCase(case_id=case_id, instrument_id=review.instrument_id, signal=signal, status="open", history_json=[], trigger_active=False)
                 session.add(case)
             case.title, case.body, case.severity = item.title, item.body, "attention"
             case.evidence_json = {**snapshot, "importance": "high", "discovered_at": first_discovered or discovered_at,
                                   "progress_at": discovered_at}
             factual_date = item.occurred_at or item.published_at
             case.observed_on = date.fromisoformat(factual_date[:10]) if factual_date else None
-            case.trigger_active = item.action != "resolved"
-            case.resolved_at = datetime.now(UTC) if item.action == "resolved" else None
-            if item.action != "resolved":
-                case.status = "open"
-            else:
-                case.status = "resolved"
+            case.trigger_active = item.follow_up == "watch" and item.direction in {"risk", "uncertain"}
+            case.resolved_at = datetime.now(UTC) if item.follow_up == "resolved" else None
+            case.status = "resolved" if item.follow_up == "resolved" else "open" if item.follow_up == "watch" else "recorded"
             case.history_json = [*(case.history_json or []), {"at": discovered_at, "action": action,
                 "detail": item.body, "snapshot": {**snapshot, "status": case.status, "trigger_active": case.trigger_active}}]
             changed_events = True
@@ -599,16 +792,17 @@ def apply_result(session, run, reply):
             from watchlist_app.services.research_dossier import save_mandate
             save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False, origin="research")
         prior = previous_reviews.get(review.instrument_id) or {}
-        publishes = review.change_kind == "investment" or changed_events
+        publishes = review.change_kind == "investment"
         # An explicit quiet/knowledge update cannot turn a paraphrase into a new PM article.
         summary = review.summary if publishes and review.summary.strip() else prior.get("summary", "")
         changed = publishes and bool(review.summary.strip()) and review.summary != prior.get("summary")
         reviews[review.instrument_id] = {"status": "limited" if coverage else "completed", "summary": summary,
             "view_updated_at": context["cutoff"] if changed else prior.get("view_updated_at"),
             "view_run_id": run.entry_id if changed else prior.get("view_run_id"),
-            "change_kind": "investment" if publishes else "knowledge" if notebook and (
+            "change_kind": "investment" if publishes else "knowledge" if changed_events or changed_themes or notebook and (
                 notebook.get("version_id") != (dossier.get("notebook") or {}).get("version_id") or review.research.mandate_update) else "none",
-            "coverage": coverage, "market_coverage": context.get("market_coverage"), "research": notebook}
+            "coverage": coverage, "market_coverage": context.get("market_coverage"), "research": notebook,
+            "themes": published_themes, "reflection": review.reflection.model_dump(mode="json") if review.reflection else None}
     run.context_json = {**context, "reviews": reviews}
     run.body = "\n\n".join(f"{iid.upper()} · {instrument_label(session, iid)}\n{review['summary']}" for iid, review in reviews.items())
     run.status = "completed"

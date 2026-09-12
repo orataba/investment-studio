@@ -87,8 +87,7 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     assert packets[0]["instrument_inputs"] == [{"instrument_id": "xle", "name": "XLE", "analyst_focus": "Use actual disclosed exposure.",
                                                "holdings": {"report_period": "2026-06-30"}}]
     assert {s["source_id"] for s in packets[0]["sources"]} == {
-        "source-1", "fmp:test-run:xle:XOM", "instrument:test-run:xle", "instrument:test-run:xlk",
-        "sector:test-run:xle", "sector:test-run:xlk"}
+        "source-1", "fmp:test-run:xle:XOM"}
     receipts = [payload for suffix, payload in retained_run if suffix == "sector-evidence"]
     assert receipts == [
         {"operation": "review", "review": {"draft": original}},
@@ -195,9 +194,10 @@ def test_zero_events_skips_both_api_and_model_and_rejects_trailing_junk(monkeypa
         review.review_output(json.dumps(original) + "\ntrailing commentary")
 
 
-def test_cli_retains_raw_draft_before_validation_and_prints_only_safe_error(monkeypatch, retained_run, capsys):
-    raw = "Invalid model final containing private-sentinel"
+@pytest.mark.parametrize("raw", ["Invalid model final containing private-sentinel", json.dumps(draft())])
+def test_cli_missing_structured_draft_retains_raw_output_without_entering_review(monkeypatch, retained_run, capsys, raw):
     monkeypatch.setattr(review.sys, "stdin", StringIO(raw))
+    monkeypatch.setattr(review, "review_output", lambda *args: pytest.fail("A missing submission must not enter fact review"))
     with pytest.raises(SystemExit) as error:
         review.main()
     assert error.value.code == 1
@@ -205,7 +205,8 @@ def test_cli_retains_raw_draft_before_validation_and_prints_only_safe_error(monk
     captured = capsys.readouterr()
     assert captured.out == "" and "private-sentinel" not in captured.err
     details = json.loads(captured.err.removeprefix("SECTOR_REVIEW_ERROR "))
-    assert details["type"] == "ValueError" and details["summary"]
+    assert details == {"type": "MissingResearchDraft",
+                       "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。"}
 
 
 def test_cli_uses_accepted_structured_draft_instead_of_model_prose(monkeypatch, capsys):
@@ -229,8 +230,15 @@ def test_model_failure_is_propagated_after_preserving_original_draft(monkeypatch
     assert retained_run[-1][1] == {"operation": "review", "review": {"draft": draft()}}
 
 
-def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch):
+@pytest.mark.parametrize("base,endpoint", [(None, "https://api.deepseek.com/chat/completions"),
+    ("https://provider.example/v1/", "https://provider.example/v1/chat/completions"),
+    ("https://provider.example", "https://provider.example/chat/completions")])
+def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base, endpoint):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    if base is None:
+        monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", base)
     requests, receipts = [], []
     monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload: receipts.append((rid, suffix, payload)))
 
@@ -246,7 +254,7 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch):
     assert requests[0][1]["timeout"] == 180
     assert payload["model"] == "deepseek-v4-pro" and payload["max_tokens"] == 16000
     assert payload["thinking"] == {"type": "enabled"} and payload["reasoning_effort"] == "high"
-    assert requests[0][0] == "https://api.deepseek.com/chat/completions"
+    assert requests[0][0] == endpoint
     assert payload["response_format"] == {"type": "json_object"}
     assert "tools" not in payload
     schema = json.loads(payload["messages"][1]["content"])["response_schema"]
@@ -439,3 +447,285 @@ def test_reviewer_can_drop_unsupported_research_without_clearing_the_previous_vi
     assert review._apply_checks(original, result, [])['reviews'][0]['research'] == {}
     original['reviews'][0]['research'] = {'investment_view': None}
     assert review._apply_checks(original, result, [])['reviews'][0]['research'] == {'investment_view': None}
+
+
+@pytest.mark.parametrize("existing_theme", [False, True], ids=["rejected-new-theme", "rejected-existing-theme-update"])
+def test_rejected_theme_keeps_supported_event_and_preserves_only_valid_links(monkeypatch, retained_run, existing_theme):
+    candidate = event(theme_ids=["demand", "unrelated-theme"])
+    document = draft([candidate])
+    document["reviews"][0]["themes"] = [{"theme_key": "demand", "title": "需求持续性",
+        "question": "新增订单能否转化为持续收入", "source_ids": ["source-1"]}]
+    api = review._api_request
+
+    def with_themes(run_id, suffix, payload=None):
+        result = api(run_id, suffix, payload)
+        if suffix == "context?originals=true":
+            result["research_dossiers"] = [{"instrument_id": "xle", "themes": [
+                {"theme_id": "unrelated-theme", "theme_key": "capacity"},
+                *([{"theme_id": "existing-demand", "theme_key": "demand"}] if existing_theme else []),
+            ]}]
+        return result
+
+    reviewed = checked([{"event_key": candidate["event_key"], "decision": "keep",
+        "reason": "事件有依据，但无需建立或改写主题", "event": candidate}])
+    reviewed["reviews"][0]["themes"] = []
+    monkeypatch.setattr(review, "_api_request", with_themes)
+    monkeypatch.setattr(review, "_call_reviewer", lambda packet: reviewed)
+    result = review.review_output(json.dumps(document))["reviews"][0]
+
+    expected_links = ["existing-demand", "unrelated-theme"] if existing_theme else ["unrelated-theme"]
+    assert result["themes"] == []
+    assert result["events"] == [{**candidate, "theme_ids": expected_links}]
+
+
+@pytest.mark.parametrize("field,body_field", [("forecast_reviews", "outcome"), ("lessons", "lesson")])
+def test_sparse_reflection_reads_inherited_original_before_review_without_expanding_patch(monkeypatch, field, body_field):
+    original_update = {"update_id": "opinion:pm-note:1", "instrument_id": "stock", "kind": "opinion",
+        "recorded_at": "2026-09-01T00:00:00+00:00", "body": "当时保存的判断，与目前观点不同"}
+    patch = {"key": "demand-check", body_field: "新披露仍未能验证原判断"}
+    paper = {field: [patch]}
+    document = {"reviews": [{"instrument_id": "stock", "research": paper}]}
+    context = {"research_run": True, "instrument_ids": ["stock"], "cutoff": "2026-09-09T00:00:00+00:00",
+        "research_dossiers": [{"instrument_id": "stock", "notebook": {field: [{
+            "key": "demand-check", body_field: "此前仍待验证", "related_research_update_id": original_update["update_id"],
+        }]}}]}
+    reviewed = {"reviews": [{"instrument_id": "stock", "coverage": [], "decisions": [], "research": paper}]}
+    reads, packets = [], []
+
+    def api(run_id, suffix, payload=None):
+        assert run_id == "reflection-run"
+        if suffix == "context?originals=true":
+            return deepcopy(context)
+        if suffix.startswith("dossier/stock?"):
+            from urllib.parse import parse_qs, urlsplit
+            assert parse_qs(urlsplit(suffix).query) == {"update_id": [original_update["update_id"]]}
+            reads.append(suffix)
+            return {"kind": "research_update", "value": deepcopy(original_update)}
+        assert suffix == "sector-evidence"
+        return payload
+
+    def check(packet):
+        assert len(reads) == 1
+        packets.append(packet)
+        return reviewed
+
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "reflection-run")
+    monkeypatch.setattr(review, "_api_request", api)
+    monkeypatch.setattr(review, "_call_reviewer", check)
+    result = review.review_output(json.dumps(document))["reviews"][0]
+
+    assert packets[0]["prior_research_updates"] == [original_update]
+    assert result["research"] == paper
+    assert "related_research_update_id" not in result["research"][field][0]
+
+
+@pytest.mark.parametrize("field,body_field", [("forecast_reviews", "outcome"), ("lessons", "lesson")])
+@pytest.mark.parametrize("explicit_reference", [False, True], ids=["inherited-reference", "explicit-reference"])
+def test_reviewer_cannot_retarget_reflection_to_another_original(field, body_field, explicit_reference):
+    proposed = {"key": "demand-check", body_field: "待核证的复盘判断"}
+    if explicit_reference:
+        proposed["related_research_update_id"] = "opinion:pm-note:1"
+    paper = {field: [proposed]}
+    document = {"reviews": [{"instrument_id": "stock", "events": [], "research": paper}]}
+    corrected = {**proposed, body_field: "仅保留证据支持的分析", "related_research_update_id": "opinion:other-note:2"}
+    checked_result = {"reviews": [{"instrument_id": "stock", "coverage": [], "decisions": [],
+        "research": {field: [corrected]}}]}
+
+    result = review._apply_checks(document, checked_result, [])["reviews"][0]["research"][field][0]
+
+    assert result[body_field] == corrected[body_field]
+    assert result.get("related_research_update_id") == proposed.get("related_research_update_id")
+    assert ("related_research_update_id" in result) is explicit_reference
+
+
+def test_reflection_only_check_is_independently_corrected_against_actual_acquisition(monkeypatch):
+    original_reflection = {"status": "reviewed", "summary": "QCOM未列入前75大持仓，因此影响可忽略，今日没有重大新闻。",
+        "reviewed_update_ids": ["research:prior-judgment"]}
+    document = {"reviews": [{"instrument_id": "xlk", "reflection": original_reflection}]}
+    prior = {"update_id": "research:prior-judgment", "kind": "question", "body": "需要核实真实持仓影响"}
+    coverage = {"latest_bundle_window_end": "2026-09-08", "latest_received": "2026-09-09"}
+    queries = [{"query": "XLK", "total": 0, "cutoff": "2026-09-12T00:00:00+00:00"}]
+    tool_evidence = [{"source_id": "market:actual-read", "tool": "market", "retrieved_at": "2026-09-12T00:00:00+00:00",
+        "result": {"as_of": "2026-09-08", "limitations": ["仅代表配置的市场"]}}]
+    context = {"sector_run": True, "instrument_ids": ["xlk"], "cutoff": "2026-09-12T00:00:00+00:00",
+        "market_queries": queries, "market_coverage": coverage, "tool_evidence": tool_evidence,
+        "web_evidence": [{"operation": "error", "query": "latest news", "coverage": ["检索未执行"]}]}
+    corrected = {"status": "insufficient_evidence", "summary": "最新资讯覆盖停留在9月9日，部分持仓不能确定总敞口，本轮未核实后续影响。",
+        "reviewed_update_ids": original_reflection["reviewed_update_ids"]}
+    requests, packets = [], []
+    def api(run_id, suffix, payload=None):
+        requests.append(suffix)
+        if suffix == "context?originals=true": return context
+        if suffix.startswith("dossier/xlk?"): return {"value": prior}
+        return payload
+    def reviewer(packet):
+        packets.append(packet)
+        return {"reviews": [{"instrument_id": "xlk", "coverage": ["资讯覆盖不足"], "decisions": [],
+            "reflection": corrected}]}
+    monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "receipt-run")
+    monkeypatch.setattr(review, "_api_request", api)
+    monkeypatch.setattr(review, "_call_reviewer", reviewer)
+    output = review.review_output(json.dumps(document))["reviews"][0]
+    assert len(packets) == 1 and packets[0]["prior_research_updates"] == [prior]
+    assert packets[0]["acquisition"]["market_coverage"] == coverage
+    assert packets[0]["acquisition"]["market_queries"] == queries
+    assert packets[0]["acquisition"]["web_operations"][0]["coverage"] == ["检索未执行"]
+    assert packets[0]["tool_evidence"] == tool_evidence
+    assert output["reflection"] == corrected
+    assert original_reflection["summary"] not in json.dumps(output, ensure_ascii=False)
+    assert output["summary"] == "" and output["events"] == [] and output["research"] is None
+    assert output["change_kind"] == "none"
+
+
+@pytest.mark.parametrize("corrected", [{}, {"reflection": None}])
+def test_reviewer_cannot_leave_reflection_claims_unreviewed(corrected):
+    document = {"reviews": [{"instrument_id": "xlk", "events": [], "reflection": {
+        "status": "reviewed", "summary": "尚未核实的事实与投资推断", "reviewed_update_ids": []}}]}
+    checked_result = {"reviews": [{"instrument_id": "xlk", "coverage": [], "decisions": [], **corrected}]}
+    with pytest.raises(ValueError, match="examine the supplied reflection"):
+        review._apply_checks(document, checked_result, [])
+
+
+def test_reviewer_cannot_invent_or_retarget_a_reflection_receipt():
+    receipt = {"status": "reviewed", "summary": "已对照原判断", "reviewed_update_ids": ["research:other-version"]}
+    corrected = {"reviews": [{"instrument_id": "xlk", "coverage": [], "decisions": [], "reflection": receipt}]}
+    invented = {"reviews": [{"instrument_id": "xlk", "events": [], "research": {}}]}
+    with pytest.raises(ValueError, match="invent a reflection"):
+        review._apply_checks(invented, corrected, [])
+    original = {"reviews": [{"instrument_id": "xlk", "events": [], "reflection": {
+        **receipt, "reviewed_update_ids": ["research:original-version"]}}]}
+    with pytest.raises(ValueError, match="retarget a reflection"):
+        review._apply_checks(original, corrected, [])
+
+
+def test_empty_reflection_receipt_still_requires_its_status_to_be_reviewed():
+    receipt = {"status": "reviewed", "summary": "", "reviewed_update_ids": []}
+    document = {"reviews": [{"instrument_id": "xlk", "events": [], "reflection": receipt}]}
+    corrected = {"reviews": [{"instrument_id": "xlk", "coverage": [], "decisions": [], "reflection": receipt}]}
+    assert review._needs_review(document["reviews"][0])
+    result = review._apply_checks(document, corrected, [])["reviews"][0]
+    assert result["reflection"] == receipt and result["summary"] == "" and result["research"] is None
+
+
+def test_receipt_keeps_original_reference_order_without_rejecting_an_equivalent_review():
+    receipt = {"status": "reviewed", "summary": "已对照原判断", "reviewed_update_ids": ["research:first", "research:second"]}
+    document = {"reviews": [{"instrument_id": "xlk", "events": [], "reflection": receipt}]}
+    corrected = {"reviews": [{"instrument_id": "xlk", "coverage": [], "decisions": [],
+        "reflection": {**receipt, "reviewed_update_ids": list(reversed(receipt["reviewed_update_ids"]))}}]}
+    result = review._apply_checks(document, corrected, [])["reviews"][0]
+    assert result["reflection"]["reviewed_update_ids"] == receipt["reviewed_update_ids"]
+
+
+def test_quiet_packet_keeps_complete_dated_holdings_and_only_actually_read_originals():
+    holdings = [{"holding_symbol": f"S{index}", "weight_percent": index / 100,
+        "as_of_date": "2026-06-30", "snapshot_date": "2026-09-09"} for index in range(84)]
+    original = {"source_id": "actually-read", "source_type": "public_source",
+        "text": "FULL_CURRENT_ORIGINAL", "published_at": "2026-09-09"}
+    history = {"source_ids": ["unrelated-estimate"], "changes": [], "observations": [
+        {"symbol": "S83", "reason": "baseline", "raw": "UNRELATED_ESTIMATE_ROW"}], "unmatched": []}
+    theme = {"theme_id": "persistent-theme", "theme_key": "demand", "status": "active"}
+    saved_review = {"key": "old-review", "outcome": "仍待核实",
+        "related_research_update_id": "research:old-original", "versions": [
+            {"version_id": "old-version", "outcome": "OLD_VERSION_BODY"}]}
+    context = {"cutoff": "2026-09-12T00:00:00+00:00", "sector_inputs": [{
+        "instrument_id": "xlk", "holdings": holdings, "holdings_as_of": "2026-06-30",
+        "holdings_observed_on": "2026-09-09", "leading_companies": [{"raw": "UNRELATED_COMPANY_ESTIMATES"}]}],
+        "instrument_inputs": [{"instrument_id": "xlk", "name": "XLK",
+            "holdings": {"report_period": "2026-06-30", "data": holdings},
+            "analyst_estimate_history": history, "reference_data": {"source": "retained",
+                "sections": {"profile": {"asset_type": "ETF"}, "financials": ["RAW_FINANCIAL_SEQUENCE"],
+                    "holdings": holdings}}}],
+        "sector_company_data": {"xlk": {"S83": {"raw": "UNRELATED_ALL_COMPANY_DATA"}}},
+        "sector_estimate_evidence": [{"source_id": "unrelated-estimate", "current_snapshot": ["UNRELATED_ESTIMATE_ORIGINAL"]}],
+        "web_evidence": [{"operation": "search", "sources": [{"source_id": "search-only", "text": "SEARCH_SNIPPET"}]},
+            {"operation": "fetch", "sources": [original]}],
+        "market_text_sources": [original],
+        "research_dossiers": [{"instrument_id": "xlk", "themes": [theme],
+            "prior_sources": [{"source_id": "unread-history", "source_type": "public_source",
+                "text": "UNREAD_HISTORICAL_ORIGINAL", "instrument_id": "xlk"}],
+            "notebook": {"forecast_reviews": [saved_review]},
+            "notebook_history": [{"body": "OLD_FULL_NOTEBOOK"}]}]}
+    before = deepcopy(context)
+
+    packet = review._evidence_packet(context, [{"instrument_id": "xlk", "events": [],
+        "reflection": {"status": "insufficient_evidence", "summary": "覆盖不足", "reviewed_update_ids": []}}], "bounded-run")
+
+    assert context == before
+    assert packet["sector_inputs"][0]["holdings"] == holdings
+    assert packet["sector_inputs"][0]["holdings_as_of"] == "2026-06-30"
+    assert packet["sector_inputs"][0]["holdings_observed_on"] == "2026-09-09"
+    assert packet["instrument_inputs"][0]["holdings"] == {"report_period": "2026-06-30"}
+    assert packet["instrument_inputs"][0]["reference_data"]["sections"] == {"profile": {"asset_type": "ETF"}}
+    assert packet["research_dossiers"][0]["themes"] == [theme]
+    assert packet["research_dossiers"][0]["notebook"]["forecast_reviews"][0] == {
+        **saved_review, "versions": [{"version_id": "old-version"}]}
+    assert [source["source_id"] for source in packet["sources"]] == ["actually-read"]
+    encoded = json.dumps(packet)
+    assert encoded.count("FULL_CURRENT_ORIGINAL") == 1
+    assert encoded.count('"holding_symbol": "S83"') == 1
+    for excluded in ("UNRELATED_ESTIMATE_ROW", "UNRELATED_COMPANY_ESTIMATES", "UNRELATED_ALL_COMPANY_DATA",
+                     "UNRELATED_ESTIMATE_ORIGINAL", "UNREAD_HISTORICAL_ORIGINAL", "RAW_FINANCIAL_SEQUENCE",
+                     "OLD_VERSION_BODY", "OLD_FULL_NOTEBOOK", "SEARCH_SNIPPET"):
+        assert excluded not in encoded
+
+
+def test_explicit_original_and_snapshot_evidence_remain_complete_without_body_duplicates(monkeypatch):
+    text = "LONG_ORIGINAL_BEGIN" + "完整原始材料" * 12000 + "LONG_ORIGINAL_END"
+    original = {"source_id": "archived-full", "source_type": "public_source", "instrument_id": "xlk",
+        "text": text, "published_at": "2026-09-08", "time_status": "date_only"}
+    rows = [{"date": f"2026-08-{index + 1:02d}", "value": index} for index in range(31)]
+    asset = {"instrument_id": "xlk", "name": "XLK", "reference_data": {"sections": {"financials": rows}}}
+    metric = {"source_id": "measured-risk", "source_type": "computed_metric", "instrument_id": "xlk",
+        "as_of": "2026-09-09", "methodology": "Retained complete measurement", "data": {"observations": rows}}
+    estimate = {"source_id": "cited-estimate", "source_type": "analyst_estimate_changes",
+        "instrument_id": "xlk", "current_snapshot": rows, "previous_snapshot": rows,
+        "changes": [{"metric": "eps", "delta": 0.5}]}
+    context = {"cutoff": "2026-09-12T00:00:00+00:00", "instrument_inputs": [asset],
+        "computed_metrics": [metric], "sector_estimate_evidence": [estimate, {"source_id": "unrelated-estimate",
+            "current_snapshot": ["UNRELATED_ESTIMATE_ORIGINAL"]}],
+        "research_dossiers": [{"instrument_id": "xlk", "prior_sources": [original],
+            "notebook": {"sources": [original]}}],
+        "prior_events": [{"instrument_id": "xlk", "body": "原事件判断", "sources": [original],
+            "history": [{"sources": [original]}], "evidence": {"sources": [original]}}]}
+    monkeypatch.setattr(review, "_api_request", lambda run_id, suffix, payload=None: deepcopy(original))
+
+    packet = review._evidence_packet(context, [{"instrument_id": "xlk", "events": [], "research": {
+        "source_ids": ["archived-full", "instrument:bounded-run:xlk", "measured-risk", "cited-estimate"]}}], "bounded-run")
+
+    sources = {source["source_id"]: source for source in packet["sources"]}
+    assert sources["archived-full"] == original
+    assert sources["instrument:bounded-run:xlk"]["snapshot"] == asset
+    assert sources["measured-risk"] == metric
+    assert sources["cited-estimate"] == estimate
+    assert "unrelated-estimate" not in sources
+    encoded = json.dumps(packet, ensure_ascii=False)
+    assert encoded.count(text) == 1
+    assert "UNRELATED_ESTIMATE_ORIGINAL" not in encoded
+
+
+def test_reflection_original_sources_join_selected_evidence_once(monkeypatch):
+    source = {"source_id": "original-judgment-source", "source_type": "public_source", "instrument_id": "xlk",
+        "text": "EXACT_ORIGINAL_EVIDENCE", "published_at": "2026-09-01"}
+    original = {"update_id": "research:prior-version", "body": "当时保存的判断", "sources": [source]}
+    context = {"cutoff": "2026-09-12T00:00:00+00:00", "research_dossiers": [{
+        "instrument_id": "xlk", "prior_sources": [source], "notebook": {"sources": [source]}}]}
+    calls = []
+    def api(run_id, suffix, payload=None):
+        from urllib.parse import parse_qs, urlsplit
+        query = parse_qs(urlsplit(suffix).query)
+        calls.append(query)
+        if "update_id" in query:
+            return {"value": original}
+        assert query == {"source_id": [source["source_id"]]}
+        return source
+    monkeypatch.setattr(review, "_api_request", api)
+
+    packet = review._evidence_packet(context, [{"instrument_id": "xlk", "events": [], "reflection": {
+        "status": "reviewed", "summary": "核对原判断", "reviewed_update_ids": [original["update_id"]]}}], "bounded-run")
+
+    assert calls == [{"update_id": [original["update_id"]]}, {"source_id": [source["source_id"]]}]
+    assert packet["sources"] == [source]
+    assert packet["prior_research_updates"][0]["body"] == original["body"]
+    assert packet["prior_research_updates"][0]["sources"][0]["source_id"] == source["source_id"]
+    assert "text" not in packet["prior_research_updates"][0]["sources"][0]
+    assert json.dumps(packet).count(source["text"]) == 1

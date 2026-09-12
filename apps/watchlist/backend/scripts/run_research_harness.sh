@@ -47,7 +47,7 @@ export DSH_PERMISSION_MODE=read-only
 export DSH_TOOLS_MODE=native
 export DSH_TELEMETRY_DISABLED=1
 export INVESTMENT_STUDIO_RESEARCH_RUN_ID="$research_run_id"
-export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="deepseek-v4-flash-vision-exp"
+export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4-pro}"
 
 copilot_research_persona="$(< "$copilot_project_root/apps/watchlist/backend/config/research_core.md")"
 copilot_task="Read the shared research context and answer the current question in Chinese with evidence. Use the same instrument dossier and tools as research tracking. This conversation is private. Publish a durable research increment only when this user explicitly asks to save it to team research: record that instruction with authorize_team_research before submit_research_review. Never publish portfolio-derived discussion to team research. The application saves your answer and separately reports the common factual review/publication result."
@@ -78,6 +78,7 @@ copilot_exec_env=(
 )
 for copilot_optional_env in \
   DEEPSEEK_BASE_URL \
+  DEEPSEEK_SEARCH_URL \
   HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
   http_proxy https_proxy all_proxy no_proxy \
   NPM_CONFIG_REGISTRY PNPM_HOME \
@@ -92,6 +93,7 @@ done
 copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
   "$copilot_pnpm" dlx --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs @deepseek-ai/dsh@0.1.1-rc.2 \
   --profile headless \
+  --patch "$copilot_project_root/infra/config/deepseek_harness.patch.yml" \
   --patch "$copilot_patch" \
   "$copilot_task")
 if [[ "${2:-}" != "risk" ]]; then

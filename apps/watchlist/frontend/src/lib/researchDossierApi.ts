@@ -1,5 +1,29 @@
 import { fetchJson, type InstrumentResearchNote } from './api'
 
+// Published research keeps the clock actually retained with its source evidence.
+type EstimateSnapshot = { observation_id?: string; collected_at?: string; run_id?: string; read_at?: string | null; cutoff?: string | null }
+export type EventSource = {
+  source_id?: string; url?: string; title?: string; published_at?: string | null
+  published_at_raw?: string | null; retrieved_at?: string | null; discovered_at?: string | null; time_status?: string
+  source_type?: string; document_id?: string; version_id?: string
+  as_of?: string | null
+  measurement?: {
+    current?: { date: string; volatility_pct: number } | null
+    previous?: { date: string; volatility_pct: number } | null
+    change_pp?: number | null; five_session_change_pp?: number | null
+    historical_reference?: { start_date: string; end_date: string; median_pct: number; minimum_pct: number; maximum_pct: number } | null
+  }
+  methodology?: { half_life_sessions?: number; annualization?: number } | null
+  current_snapshot?: EstimateSnapshot | null
+  previous_snapshot?: EstimateSnapshot | null
+  changes?: Array<{
+    symbol: string; name?: string | null; frequency: string; target_period_end: string; metric: string; currency: string | null
+    previous_value: number; current_value: number; delta_pct: number | null
+    previous_collected_at: string | null; current_collected_at: string | null; analyst_count_changed: boolean | null
+    current_currency_status?: string
+  }>
+}
+
 export type ResearchQuestion = {
   key: string
   question: string
@@ -14,6 +38,7 @@ export type ResearchQuestion = {
 export type ResearchReference = {
   instrument_id: string; notebook_version_id?: string; investment_view_version_id?: string; forecast_key?: string; forecast_version_id?: string
   theme_id?: string; pm_note_id?: string; pm_note_revision?: number
+  research_update_id?: string; event_case_id?: string; event_version_id?: string
 }
 export type AskResearchAssistant = (question: string, reference?: ResearchReference) => void
 export type ResearchRevision = { version_id?: string; created_at?: string | null; updated_at?: string | null; source_run_id?: string }
@@ -101,7 +126,7 @@ export type ResearchDossier = {
 export type ResearchMaterialInput = { title: string; body: string; source: string; published_at?: string; effective_date?: string }
 
 export type ResearchThemeInput = {
-  title: string; question: string; background?: string; status?: 'active' | 'paused' | 'closed'; responsible_user_id?: string | null
+  title: string; question: string; background?: string; status?: 'active' | 'paused' | 'closed'; responsible_user_id?: string | null; close_reason?: string
 }
 export type ResearchThemeProgress = {
   run_id: string; recorded_at: string; assessment: string; next_check: string; status: string; source_ids: string[]
@@ -110,6 +135,8 @@ export type ResearchTheme = ResearchThemeInput & {
   theme_id: string; instrument_id: string; status: 'active' | 'paused' | 'closed'; author_user_id: string; author: string
   created_at: string; updated_at: string; revision_number: number
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
+  origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
+  current_assessment?: { assessment: string; next_check: string; status: string; updated_at: string; source_ids: string[] } | null
 }
 export type ResearchThemesResponse = {
   identity: { user_id: string; display_name: string; mode: 'account'; local_unrestricted?: boolean; team_id?: string; team_role?: 'admin' | 'member' | 'reader' }
@@ -163,4 +190,18 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
   for (const [key, value] of Object.entries(material)) if (value) body.append(key, value)
   // Let the browser supply the multipart boundary instead of the JSON default.
   return fetchJson<ResearchMaterial>(`${dossierPath(instrumentId)}/files`, { method: 'POST', headers: {}, body })
+}
+
+export type ResearchUpdate = {
+  update_id: string; kind: 'event' | 'question' | 'forecast' | 'review' | 'lesson' | 'theme' | 'opinion' | 'judgment' | 'schedule'
+  title: string; body: string; recorded_at: string; theme_ids: string[]; author: string; author_role: 'researcher' | 'user'
+  sources: EventSource[]; reference: ResearchReference
+  occurred_at?: string | null; published_at?: string | null; next_check?: string
+  follow_up?: 'none' | 'watch' | 'resolved'; analysis_depth?: 'brief' | 'analysis'
+  direction?: 'risk' | 'opportunity' | 'uncertain'; confidence?: string; change?: string; information_type?: 'fact' | 'opinion' | 'rumor' | null
+  details?: Array<{ label: string; text: string }>; superseded?: boolean; withdrawn?: boolean
+  status?: string; scheduled_at?: string; withdrawal_reason?: string; withdrawn_at?: string
+}
+export function getResearchActivity(instrumentId: string, signal?: AbortSignal) {
+  return fetchJson<{ instrument_id: string; updates: ResearchUpdate[] }>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })
 }

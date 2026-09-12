@@ -37,7 +37,8 @@ def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, **c
         "next_watch": "核对后续持仓披露和指数编制说明。", "confidence": "confirmed", "information_type": "fact",
         "recording_type": "backfill", "published_at": "2026-06-01", "occurred_at": None,
         "source_ids": sources, **changes}]
-    return json.dumps({"reviews": [{"instrument_id": iid, "summary": summary, "coverage": [], "events": events,
+    return json.dumps({"reviews": [{"instrument_id": iid, "summary": summary,
+                                   "change_kind": "investment" if events else "none", "coverage": [], "events": events,
                                    "research": None}]})
 
 

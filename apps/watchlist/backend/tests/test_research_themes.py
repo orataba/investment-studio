@@ -67,6 +67,49 @@ def test_theme_lifecycle_retains_versions_without_repeating_unchanged_updates(re
     assert client.get(_themes()).json()["themes"][0]["theme_id"] == theme["theme_id"]
 
 
+def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme, theme_index
+    with get_session_factory()() as session:
+        theme = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
+            theme_key="term-premium", title="期限溢价变化", question="期限溢价上升是否持续？", background="区分实际利率与期限溢价"))
+        assert theme["origin"] == theme["managed_by"] == "researcher" and theme["author"] == "研究员"
+        revised = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", background="补充主导机制的假设"))
+        assert revised["theme_id"] == theme["theme_id"] and revised["question"] == theme["question"]
+        assert revised["revision_number"] == 2 and len(theme_index(session, "fund-us-agg")) == 1
+        with pytest.raises(ValueError, match="原因"):
+            save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", status="closed"))
+        closed = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
+            theme_key="term-premium", status="closed", close_reason="原问题已得到足够证据回答，后续进入背景观察"))
+        assert closed["status"] == "closed" and closed["close_reason"]
+        paused = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", status="paused"))
+        assert paused["close_reason"] == "" and paused["status"] == "paused"
+        session.commit()
+    # Even repeating an already-paused status is an explicit human control decision.
+    response = research_client.patch(f"{_themes()}/{theme['theme_id']}", json={"status": "paused"})
+    assert response.status_code == 200, response.text
+    manual = response.json()
+    assert manual["origin"] == "researcher" and manual["managed_by"] == "user"
+    with get_session_factory()() as session:
+        with pytest.raises(ValueError, match="人工维护"):
+            save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", status="active"))
+        assert theme_index(session, "fund-us-agg")[0]["status"] == "paused"
+
+
+def test_analyst_cannot_rewrite_user_theme_or_use_foreign_instrument_key(research_client):
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme
+    user_theme = _theme(research_client)
+    with get_session_factory()() as session:
+        with pytest.raises(ValueError, match="人工维护"):
+            save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
+                theme_key="credit", theme_id=user_theme["theme_id"], question="改为研究员的新问题"))
+        with pytest.raises(LookupError, match="主题"):
+            save_analyst_theme(session, "sxv264", AnalystThemeUpdate(
+                theme_key="credit", theme_id=user_theme["theme_id"], question="错误标的下的新问题"))
+    assert research_client.get(_themes()).json()["themes"][0]["question"] == user_theme["question"]
+
+
 def test_theme_identity_and_instrument_cannot_be_forged(research_client, monkeypatch):
     client = research_client
     theme = _theme(client)

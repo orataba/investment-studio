@@ -48,5 +48,6 @@ exec /usr/bin/env -i "${briefing_env[@]}" "$briefing_pnpm" dlx \
   --allow-build=@deepseek-ai/dsh-subprocess-local --allow-build=@google/genai \
   --allow-build=koffi --allow-build=node-pty --allow-build=protobufjs \
   @deepseek-ai/dsh@0.1.1-rc.2 \
-  --profile headless --patch "$briefing_root/apps/briefing/backend/config/briefing_harness.patch.yml" \
+  --profile headless --patch "$briefing_root/infra/config/deepseek_harness.patch.yml" \
+  --patch "$briefing_root/apps/briefing/backend/config/briefing_harness.patch.yml" \
   "$briefing_task"

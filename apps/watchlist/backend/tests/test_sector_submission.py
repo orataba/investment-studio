@@ -173,7 +173,10 @@ def test_submission_tool_uses_structured_payload_and_returns_validation_detail(m
     monkeypatch.setattr(research_mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or
                         {"status": "pending_fact_review"})
     assert research_mcp.submit_research_review(parsed)["status"] == "pending_fact_review"
-    assert calls == [("sector-draft", parsed.model_dump(mode="json"))]
+    assert calls == [("sector-draft", {"reviews": [{
+        "instrument_id": "xlk", "summary": '关于 "AI" 的判断', "change_kind": "none",
+        "coverage": [], "events": [], "research": None,
+    }]})]
 
     def rejected(*args):
         raise HTTPError("http://localhost/api", 422, "Unprocessable Entity", {},

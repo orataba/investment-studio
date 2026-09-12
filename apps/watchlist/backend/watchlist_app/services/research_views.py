@@ -1,6 +1,6 @@
 """Preserve PM ownership and the original judgment referenced by a later review."""
 from copy import deepcopy
-from datetime import UTC
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from studio_identity import current_principal
@@ -34,13 +34,27 @@ def prepare_note_values(session, instrument_id, payload, *, actor=None, record=N
     else:
         context = {**old_context, **payload.research_context.model_dump(exclude_unset=True)}
     theme_id = context.get("theme_id")
+    from watchlist_app.services.research_activity import resolve_research_update, resolve_event_reference
+    linked = None
+    if context.get("research_update_id"):
+        linked = resolve_research_update(session, instrument_id, context["research_update_id"], actor=actor)
+    if context.get("event_case_id") or context.get("event_version_id"):
+        event = resolve_event_reference(session, instrument_id, context.get("event_case_id"), context.get("event_version_id"))
+        if linked and linked["reference"].get("event_version_id") != event["reference"]["event_version_id"]:
+            raise ValueError("引用的研究更新与事件版本不一致")
+        linked = linked or event
+    if linked:
+        if record is not None and datetime.fromisoformat(linked["recorded_at"]) > record.created_at.replace(tzinfo=record.created_at.tzinfo or UTC):
+            raise ValueError("不能将后来形成的研究更新写成原观点的事前依据")
+        context["research_update_title"] = linked["title"]
+        context["research_update_recorded_at"] = linked["recorded_at"]
     if theme_id:
         get_theme(session, instrument_id, theme_id, actor=actor)
     related_id, revision = context.get("related_note_id"), context.get("related_revision")
     if bool(related_id) != bool(revision):
         raise ValueError("关联原观点时须同时指定观点和当时的版本")
-    if context.get("relationship", "initial") != "initial" and not related_id:
-        raise ValueError("观点更新、复盘和经验需要关联一条原始观点")
+    if context.get("relationship", "initial") != "initial" and not related_id and not linked:
+        raise ValueError("观点更新、复盘和经验需要关联一条原始观点或研究更新")
     if related_id:
         if record is not None and related_id == record.note_id:
             raise ValueError("新的判断或复盘请追加记录，不能关联自身")

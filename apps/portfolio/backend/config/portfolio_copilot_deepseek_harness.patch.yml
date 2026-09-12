@@ -4,14 +4,8 @@
 
 - id: agent-default-model
   config:
-    provider: deepseek-official
-    model: deepseek-v4-flash-vision-exp
-
-- id: llm-deepseek
-  config:
-    thinking: enabled
-    reasoningEffort: high
-    maxTokens: 32768
+    provider: studio-deepseek
+    model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4-pro'
 
 - id: system-prompt
   config:

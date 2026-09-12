@@ -7,6 +7,9 @@ import './research-assistant.css'
 
 export type ResearchAssistantReference = {
   instrument_id: string
+  research_update_id?: string
+  event_case_id?: string
+  event_version_id?: string
   notebook_version_id?: string
   investment_view_version_id?: string
   forecast_key?: string
@@ -603,7 +606,7 @@ export default function ResearchAssistant({
           </form>
         )}
       </div>
-      {pendingReference && <p className="assistant-scope">已关联研究追踪中的{pendingReference.pm_note_id ? '投资经理观点版本' : pendingReference.theme_id ? '持续关注主题' : pendingReference.forecast_version_id ? '预测版本' : pendingReference.investment_view_version_id ? '历史观点' : '当前研究'}，发送后将直接读取对应判断与依据。</p>}
+      {pendingReference && <p className="assistant-scope">已关联研究追踪中的{pendingReference.pm_note_id ? '投资经理观点版本' : pendingReference.research_update_id ? '研究更新版本' : pendingReference.event_version_id ? '事件版本' : pendingReference.theme_id ? '持续关注主题' : pendingReference.forecast_version_id ? '预测版本' : pendingReference.investment_view_version_id ? '历史观点' : '当前研究'}，发送后将直接读取对应判断与依据。</p>}
       <form
         className="assistant-composer"
         onSubmit={(e) => {

@@ -9,13 +9,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 LOADER = Path('infra/launchd/load_runtime_env.sh')
+PROVIDER_PATCH = Path('infra/config/deepseek_harness.patch.yml')
 
 
-@pytest.mark.parametrize('app,watchlist_mode,reviewer_fails', [
-    ('portfolio', None, False), ('watchlist', None, False), ('watchlist', 'sector', False),
-    ('watchlist', 'risk', False), ('watchlist', 'sector', True), ('briefing', None, False),
+@pytest.mark.parametrize('app,watchlist_mode,reviewer_fails,configured_model', [
+    ('portfolio', None, False, 'test-vision-model'),
+    ('watchlist', None, False, None), ('watchlist', 'sector', False, 'deepseek-v4-flash'),
+    ('watchlist', 'risk', False, None), ('watchlist', 'sector', True, None), ('briefing', None, False, None),
 ])
-def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, watchlist_mode, reviewer_fails):
+def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, watchlist_mode, reviewer_fails, configured_model):
     if app == 'portfolio':
         runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
         patch_path = Path('apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml')
@@ -38,7 +40,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         api_key = prefix + 'API_BASE_URL'
         api_url = 'http://127.0.0.1:8110/api/briefing'
     project = tmp_path / 'relocated studio'
-    for relative in (runner, patch_path, LOADER):
+    for relative in (runner, patch_path, LOADER, PROVIDER_PATCH):
         target = project / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)
@@ -57,7 +59,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         )
         python.chmod(0o700)
     secret = tmp_path / 'portfolio-copilot.env'
-    secret.write_text('DEEPSEEK_API_KEY=test-key\n', encoding='utf-8')
+    secret.write_text('DEEPSEEK_API_KEY=test-key\nDEEPSEEK_BASE_URL=https://provider.example/v1\n'
+        'DEEPSEEK_SEARCH_URL=https://provider.example/v1/messages\n' +
+        (f'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME={configured_model}\n' if configured_model else ''), encoding='utf-8')
     secret.chmod(0o600)
     pnpm = tmp_path / 'pnpm'
     pnpm.write_text(
@@ -80,6 +84,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL': 'private-database',
         'FMP_API_KEY': 'private-market-key',
     }
+    env.pop('INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME', None)
     result = subprocess.run(
         ['/bin/bash', str(project / runner), *args],
         env=env, cwd=tmp_path, check=False, capture_output=True, text=True,
@@ -98,8 +103,11 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     if app == 'portfolio':
         assert runtime_env[prefix + 'PORTFOLIO_ID'] == 'portfolio-test'
         assert runtime_env[prefix + 'BATCH_ID'] == 'batch-test'
+        assert runtime_env[prefix + 'MODEL_NAME'] == (configured_model or 'deepseek-v4-pro')
     elif app == 'watchlist':
         assert runtime_env[prefix + 'RUN_ID'] == 'run-test'
+        assert runtime_env['INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME'] == (configured_model or 'deepseek-v4-pro')
+        assert runtime_env['DEEPSEEK_SEARCH_URL'] == 'https://provider.example/v1/messages'
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
         reviewer_args = [json.loads(line.removeprefix('FACT_REVIEW_ARGS ')) for line in result.stderr.splitlines()
                          if line.startswith('FACT_REVIEW_ARGS ')]
@@ -111,9 +119,43 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     assert 'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN' not in runtime_env
     assert 'INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE' not in runtime_env
     assert runtime_env['DEEPSEEK_API_KEY'] == 'test-key'
+    assert runtime_env['DEEPSEEK_BASE_URL'] == 'https://provider.example/v1'
     assert 'INVESTMENT_STUDIO_PORTFOLIO_DATABASE_URL' not in runtime_env
     assert 'FMP_API_KEY' not in runtime_env
     assert str(project / patch_path) in captured['args']
+    assert captured['args'].index(str(project / PROVIDER_PATCH)) < captured['args'].index(str(project / patch_path))
     patch = (project / patch_path).read_text(encoding='utf-8')
     assert f"command: !!js process.env.{prefix}PROJECT_ROOT + '/.venv/bin/python'" in patch
     assert f"cwd: !!js process.env.{prefix}PROJECT_ROOT + '/apps/{app}/backend'" in patch
+
+
+@pytest.mark.parametrize('configured_model', [None, 'deepseek-v4-pro', 'deepseek-v4-flash'])
+def test_portfolio_text_models_stop_before_starting_harness(tmp_path, configured_model):
+    runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
+    project = tmp_path / 'relocated studio'
+    for relative in (runner, LOADER):
+        target = project / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, target)
+    secret = tmp_path / 'portfolio-copilot.env'
+    secret.write_text('DEEPSEEK_API_KEY=test-key\n' +
+        (f'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME={configured_model}\n' if configured_model else ''), encoding='utf-8')
+    secret.chmod(0o600)
+    started = tmp_path / 'model-started'
+    pnpm = tmp_path / 'pnpm'
+    pnpm.write_text(f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(started)!r}).write_text("started")\n')
+    pnpm.chmod(0o700)
+    env = {
+        **os.environ,
+        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_PNPM': str(pnpm),
+        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE': str(secret),
+        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_DSH_HOME': str(tmp_path / 'harness'),
+        'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_RUN_TOKEN': 'scoped-task-token',
+    }
+    env.pop('INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME', None)
+    result = subprocess.run(['/bin/bash', str(project / runner), 'portfolio-test', 'batch-test'],
+                            env=env, cwd=tmp_path, check=False, capture_output=True, text=True)
+    assert result.returncode == 78
+    assert result.stdout == ''
+    assert result.stderr.strip() == '当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。'
+    assert not started.exists()

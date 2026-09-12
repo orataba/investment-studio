@@ -62,7 +62,7 @@ function LessonBody({ lesson, sources }: { lesson: ResearchLesson; sources: Sour
   </>
 }
 
-export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean }) {
+export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full' }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records' }) {
   const view = notebook.investment_view
   const forecasts = notebook.forecasts || []
   const activeForecasts = forecasts.filter(item => item.status === 'active')
@@ -71,16 +71,16 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const lessons = notebook.lessons || []
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
-    {view && <section className="research-notebook-current" aria-label={historical ? '当时投资判断' : '当前投资判断'}>
-      <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>
+    {view && mode !== 'records' && <section className="research-notebook-current" aria-label={historical ? '当时投资判断' : '当前投资判断'}>
+      {mode !== 'view' && <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>}
       <p className="sector-research-note">观点更新于 <time dateTime={view.updated_at || undefined}>{dateLabel(view.updated_at)}</time></p>
       <ViewBody view={view} />
       {(view.assumptions.length > 0 || view.source_ids.length > 0) && <details><summary>关键假设与依据</summary><ul className="research-dossier-list">{view.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources(view.source_ids)}</details>}
       {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(historical ? '请复核这份历史底稿中的投资判断。先按当时已知信息审视判断，再区分后来出现的变化与遗漏。' : '请复核当前投资判断。结合新的信息与当前定价，说明后续方向、吸引力或风险是否需要调整；没有实质变化时直接说明。', reference)}>{historical ? '追问当时的观点' : '追问当前观点'}</button>}
       {Boolean(view.versions?.length) && <details className="research-dossier-record"><summary>观点修订历史 · {view.versions!.length} 次</summary>{view.versions!.map(version => <article key={version.version_id}><h4>{dateLabel(version.updated_at)}</h4><ViewBody view={version} />{version.assumptions.length > 0 && <><h4>当时的关键假设</h4><ul className="research-dossier-list">{version.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}{sources(version.source_ids)}{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请复核这个历史观点。先按当时已知信息审视原判断，再区分后来出现的变化与遗漏；不要把后来的结果当作当时已知。', { ...reference, investment_view_version_id: version.version_id })}>追问当时的观点</button>}</article>)}</details>}
     </section>}
-    {activeForecasts.length > 0 && <section className="research-notebook-current" aria-label={historical ? '当时持续预测' : '持续预测'}><h3>{historical ? '当时持续预测' : '持续预测'}</h3>{activeForecasts.map(forecast => <ForecastRecord key={forecast.key} {...{ forecast, reference, sources, onAskAssistant }} />)}</section>}
-    {(concludedForecasts.length > 0 || reviews.length > 0 || lessons.length > 0) && <details className="research-dossier-archive"><summary>预测复盘与研究经验</summary>
+    {mode !== 'view' && activeForecasts.length > 0 && <section className="research-notebook-current" aria-label={historical ? '当时持续预测' : '持续预测'}><h3>{historical ? '当时持续预测' : '持续预测'}</h3>{activeForecasts.map(forecast => <ForecastRecord key={forecast.key} {...{ forecast, reference, sources, onAskAssistant }} />)}</section>}
+    {mode !== 'view' && (concludedForecasts.length > 0 || reviews.length > 0 || lessons.length > 0) && <details className="research-dossier-archive"><summary>预测复盘与研究经验</summary>
       {concludedForecasts.map(forecast => <ForecastRecord key={forecast.key} {...{ forecast, reference, sources, onAskAssistant }} />)}
       {reviews.map(review => <article className="research-notebook-question" key={review.key}><h4>预测复盘</h4><ReviewBody {...{ review, forecasts, sources }} />
         {Boolean(review.versions?.length) && <details className="research-dossier-record"><summary>复盘修订历史 · {review.versions!.length} 次</summary>{review.versions!.map(version => <article key={version.version_id}><ReviewBody review={version} {...{ forecasts, sources }} /></article>)}</details>}

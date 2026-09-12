@@ -112,7 +112,7 @@ def _run_analysis(run_id: str):
                     break
             if any(line.strip() == "dsh: QUOTA: Insufficient Balance" for line in (errors or "").splitlines()):
                 runtime_error = {"type": "InsufficientBalance", "summary": "DeepSeek账户余额不足，本次分析未完成。充值后可重新更新。", "exit_code": process.returncode}
-            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance"} else "") + runtime_error["summary"]
+            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "MissingResearchDraft"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
         elif reply.strip() or risk_run:

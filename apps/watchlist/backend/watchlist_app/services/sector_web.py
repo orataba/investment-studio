@@ -15,8 +15,8 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
+from watchlist_app.services.deepseek_config import deepseek_endpoint
 
-_SEARCH_URL = "https://api.deepseek.com/anthropic/v1/messages"
 _TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_TEXT_CHARS = 12000
@@ -95,7 +95,7 @@ def search_web(query: str) -> dict:
         }]}],
         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
     }
-    status, _, payload = _request(_SEARCH_URL, method="POST", headers={
+    status, _, payload = _request(deepseek_endpoint(search=True), method="POST", headers={
         "x-api-key": key, "authorization": f"Bearer {key}",
         "anthropic-version": "2023-06-01", "content-type": "application/json",
         "accept": "application/json", "user-agent": "InvestmentStudio-SectorResearch/1.0",
@@ -113,6 +113,8 @@ def search_web(query: str) -> dict:
     results = [block for block in blocks if isinstance(block, dict)
                and block.get("type") == "web_search_tool_result"]
     if not results:
+        if any(isinstance(block, dict) and block.get("type") == "tool_use" for block in blocks):
+            raise SectorWebError("Configured search endpoint did not execute native web search")
         raise SectorWebError("DeepSeek returned no structured web search result blocks")
     snippets = {}
     for block in blocks:

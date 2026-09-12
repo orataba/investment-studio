@@ -11,7 +11,7 @@ def estimate_overview(evidence, *, detail_tool):
         symbols.update(row["symbol"] for row in evidence.get(table, []) if row.get("symbol"))
     changes = Counter((row["frequency"], row["metric"], "increase" if row["delta"] > 0 else "decrease")
                       for row in evidence.get("changes", []))
-    return {**{key: value for key, value in evidence.items() if key not in TABLES},
+    return {**{key: value for key, value in evidence.items() if key not in {*TABLES, "source_ids"}},
         "company_symbols": sorted(symbols),
         "change_counts": [{"frequency": frequency, "metric": metric, "direction": direction, "count": count}
                           for (frequency, metric, direction), count in sorted(changes.items())],
@@ -48,6 +48,6 @@ def estimate_company(evidence, symbol):
         columns = sorted({key for row in rows for key in row} - common.keys())
         tables[table] = {"common": common, "columns": columns,
                          "rows": [[row.get(key) for key in columns] for row in rows]}
-    return {**{key: value for key, value in evidence.items() if key not in {*TABLES, "company_symbols"}},
+    return {**{key: value for key, value in evidence.items() if key not in {*TABLES, "company_symbols", "source_ids"}},
         "symbol": symbol, "tables": tables, "currency_source_receipts": receipts,
         "row_format": "每行按columns顺序读取，并合并同表common字段；*_currency_source_index指向currency_source_receipts。保留全部该公司对照行；无行表示本对照未记录该公司变化或覆盖差异，不是零预期。"}

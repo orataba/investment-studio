@@ -350,11 +350,9 @@ def _research_records(session: Session, instrument_id: str):
     records = session.scalars(select(ResearchEntry).where(
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]), True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
     ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()))
+    allowed_topics = {}
     for record in records:
         context = record.context_json or {}
-        topic = session.get(ResearchTopic, record.topic_id)
-        if not topic or (not principal.local_unrestricted and topic.team_id != team_id) or topic_portfolio_ids(session, topic):
-            continue
         review = context.get("reviews", {}).get(instrument_id, {})
         research = review.get("research")
         if (not (context.get("sector_run") or context.get("research_run"))
@@ -362,6 +360,12 @@ def _research_records(session: Session, instrument_id: str):
                 or (not context.get("research_run") and (record.status != "completed" or record.topic_id not in {
                     "us-sector-daily-review", f"instrument-events:{instrument_id}"}))
                 or review.get("status") not in {"completed", "limited"} or not isinstance(research, dict) or not research):
+            continue
+        if record.topic_id not in allowed_topics:
+            topic = session.get(ResearchTopic, record.topic_id)
+            allowed_topics[record.topic_id] = bool(topic and (principal.local_unrestricted or topic.team_id == team_id)
+                                                  and not topic_portfolio_ids(session, topic))
+        if not allowed_topics[record.topic_id]:
             continue
         yield record, research
 
@@ -487,6 +491,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
                   "reuse_limitations": history_limitations} for case in atlas["cases"]]
     notebook, notebook_history = _notebooks(session, instrument_id, include_history)
     cases.extend(_review_cases(instrument_id, notebook))
+    from watchlist_app.services.research_activity import review_agenda
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
         "instrument_type": instrument.instrument_type, "frameworks": frameworks,
         "mandate": read_mandate(session, instrument_id, frameworks=frameworks), "materials": materials,
@@ -494,4 +499,5 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         "historical_cases": cases, "historical_case_limitations": history_limitations,
         "notebook": notebook, "notebook_history": notebook_history,
         "themes": theme_index(session, instrument_id, actor=actor), "pm_views": pm_views,
+        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor),
         "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

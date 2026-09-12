@@ -28,6 +28,7 @@ def _large_evidence(*, changed):
                 **({"delta": 10, "delta_pct": 10 / (100 + period) * 100, "percent_change_status": "available", "analyst_count_changed": True}
                    if changed else {"reason": "new_period_coverage"})})
     estimate = {"instrument_id": "xlk", "source_id": "estimates:current:xlk", "supported": True,
+        "source_ids": [f"estimate:retained:{row['symbol']}:{index}:{row['raw_sha256']}" for index, row in enumerate(rows)],
         "current_snapshot": {"observation_id": "current"}, "previous_snapshot": {"observation_id": "previous"},
         "coverage": {"current_company_count": 95}, "semantics": ["采集时点不等于发布日期。"],
         "changes": rows if changed else [], "observations": [], "unmatched": [] if changed else rows,
@@ -41,9 +42,12 @@ def _large_evidence(*, changed):
 def test_large_overview_and_company_drilldown_preserve_all_rows_below_harness_limit(monkeypatch, changed):
     evidence = _large_evidence(changed=changed)
     original = deepcopy(evidence)
+    original_estimate = original["result"]["assets"][0]["analyst_estimate_history"]
+    assert _bytes(original_estimate["source_ids"]) > 50_000
     monkeypatch.setattr(mcp, "request", lambda *args: evidence)
     overview = mcp.read_instrument_research(["xlk"])
     estimate = overview["result"]["assets"][0]["analyst_estimate_history"]
+    assert "source_ids" not in estimate and estimate["source_id"] == original_estimate["source_id"]
     assert estimate["company_symbols"] == [f"C{number:03}" for number in range(95)]
     assert sum(estimate["row_counts"].values()) == 5700
     assert estimate["coverage"] == {"current_company_count": 95}
@@ -53,6 +57,7 @@ def test_large_overview_and_company_drilldown_preserve_all_rows_below_harness_li
     assert _bytes(overview) < 50_000
     detail = mcp.read_instrument_research(["xlk"], estimate_symbol="c094")
     compact = detail["result"]["assets"][0]["analyst_estimate_history"]
+    assert "source_ids" not in compact and compact["source_id"] == original_estimate["source_id"]
     table = "changes" if changed else "unmatched"
     data = compact["tables"][table]
     decoded = []

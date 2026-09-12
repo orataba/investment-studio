@@ -5,6 +5,7 @@ import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 
 import InputModality from '../../../../packages/ui/src/InputModality'
 import App from './App'
+import { researchMessages, researchPatterns } from './researchMessages'
 import './index.css'
 import '../../../../packages/ui/src/language.css'
 import '../../../../packages/ui/src/notice-toast.css'
@@ -18,7 +19,7 @@ const routerBasename = import.meta.env.BASE_URL === '/'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <LanguageProvider>
+    <LanguageProvider messages={researchMessages} patterns={researchPatterns}>
       <InputModality />
       <BrowserRouter basename={routerBasename}>
         <App />

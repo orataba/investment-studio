@@ -312,15 +312,15 @@ def submit_risk_review(result: RiskReview) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def read_research_dossier(instrument_id: str, source_id: str | None = None, version_id: str | None = None) -> dict:
-    """Read this instrument's maintained working view, research methods, open questions and material/case index. Pass a returned source_id to read its original text or full historical case. Frameworks are methods, past AI views are hypotheses; neither is independent factual evidence. Historical cases are not current events. Both entrances read this run's retained dossier snapshot. Pass version_id to read an archived notebook/view/forecast with its original information cutoff; later knowledge does not become prior evidence."""
+def read_research_dossier(instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None) -> dict:
+    """Read this instrument's maintained working view, themes, review agenda and material/case index. Pass a returned source_id for original text, version_id for an archived notebook/view/forecast, or update_id for the exact published research update referenced by an event, review or agenda. Choose only one selector. Past AI/PM judgments are hypotheses, not independent factual evidence. Both entrances use this run's retained dossier and cutoff; later knowledge never becomes prior evidence."""
     context = request("context")
     if context.get("risk_run"):
         raise ValueError("风控研判仅使用已绑定的风险快照")
     if not any(d["instrument_id"] == instrument_id for d in context.get("research_dossiers", [])):
         request("tools", {"tool": "instruments", "instrument_ids": [instrument_id]})
     from urllib.parse import urlencode
-    params = {k: v for k, v in {"source_id": source_id, "version_id": version_id}.items() if v}
+    params = {k: v for k, v in {"source_id": source_id, "version_id": version_id, "update_id": update_id}.items() if v}
     suffix = f"dossier/{quote(instrument_id, safe='')}"
     return request(suffix + ("?" + urlencode(params) if params else ""))
 

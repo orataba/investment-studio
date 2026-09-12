@@ -2,14 +2,8 @@
 
 - id: agent-default-model
   config:
-    provider: deepseek-official
-    model: deepseek-v4-flash-vision-exp
-
-- id: llm-deepseek
-  config:
-    thinking: enabled
-    reasoningEffort: high
-    maxTokens: 32768
+    provider: studio-deepseek
+    model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4-pro'
 
 - id: system-prompt
   config:
@@ -96,5 +90,7 @@
           INVESTMENT_STUDIO_RESEARCH_RUN_ID: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_ID
           INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN
           DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
+          DEEPSEEK_BASE_URL: !!js process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
+          DEEPSEEK_SEARCH_URL: !!js process.env.DEEPSEEK_SEARCH_URL || ''
         toolCallTimeoutMs: 180000
         failOnStartupError: true
