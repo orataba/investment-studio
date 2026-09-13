@@ -342,6 +342,30 @@ stopped and retains the private recovery directory. Successful safety backups
 remain under `${XDG_STATE_HOME:-~/.local/state}/investment-studio/postgres-backups/`
 unless `INVESTMENT_STUDIO_SYSTEMD_BACKUP_ROOT` is explicitly set.
 
+Retain a verified snapshot of the currently accepted database baseline, the latest
+pre-upgrade backup(s) and upgrade archive needed for rollback, and the previous
+formal recovery point. Retire redundant intermediate full dumps only after the
+migration, application readiness and data acceptance checks have succeeded.
+Before deletion, verify the retained manifests' schema scope and archive checksums,
+and decode each retained dump with `pg_restore --file=/dev/null <archive>`; a table
+of contents alone does not check all compressed data. Confirm that the referenced
+external object root and separately protected credentials remain available.
+Never delete backups automatically by age during backup creation or a failed rollout.
+
+A routine online `pg_dump` uses an MVCC snapshot: normal application writes may
+continue while no DDL or migration is running. Coordinated migration and restore
+still require the writer shutdown documented above. Custom-format dumps are already
+compressed; do not blanket-recompress dumps, Parquet files or gzip archives. When
+estimating cleanup savings, account for shared hard links and confirm actual free
+space afterward with `df`; summed directory sizes can count the same blocks twice.
+
+Use native journald limits in a system configuration drop-in under `[Journal]`:
+`SystemMaxUse=512M`, `SystemKeepFree=5G`, and `MaxRetentionSec=30day`.
+After applying it, verify the effective configuration with
+`systemd-analyze cat-config systemd/journald.conf` and usage with `journalctl --disk-usage`.
+These limits constrain journals, not other files; retain the existing logrotate
+and Regime artifact-pruning policies for their respective outputs.
+
 `RUN_MIGRATIONS=false` is available only for maintenance workflows that have
 already applied and verified the same release migrations separately; staged unit
 publication and old-unit rollback still remain transactional in that mode.

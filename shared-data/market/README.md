@@ -177,9 +177,24 @@ archive. Directory catch-up deletes each incoming temporary ZIP after successful
 import, before any later publication creates an outgoing archive. Do not retain
 both an incoming bootstrap copy and a second outgoing copy on a constrained
 server. Keep the one published bootstrap until the other Studio installation has
-verified its full import and a recovery copy exists. No automatic archive deletion
-or history eviction is performed; measure the completed data directory and
-PostgreSQL size before first publication, then monitor the actual increment rate.
+verified its full import and a recovery copy exists. Operators can then retire its
+ZIP and checksum after upgrading all configured receivers to support retired
+payloads. Under the outbox publish lock, atomically publish the retired index
+before deleting the ZIP and checksum, so interrupted cleanup only leaves extra
+payload files. Retain the index entry's original name, SHA, bytes and batch IDs,
+adding `payload_state: "retired"`, `retired_at` in UTC and `retirement_reason`.
+Retained batch IDs prevent republication. A replica
+must have every retired batch ready, even if an old delivery receipt survives;
+otherwise synchronization reports `NumericBootstrapRequired` and the missing IDs.
+For a new or restored replica, explicitly run `numeric export-bundle` on the
+collector's retained immutable store with `--batch-ids` for those missing IDs,
+transfer and verify the new archive using its own checksum, then run
+`numeric import-bundle` on the replica and resume sync. Re-exported ZIPs have a new
+identity; never reuse the retired ZIP's checksum. Recovery material must include
+the batch catalog, Parquet and referenced raw objects, not only a database dump.
+No automatic archive deletion or history eviction is performed; measure the
+completed data directory and PostgreSQL size before first publication, then
+monitor the actual increment rate.
 
 ## Interrupted price revision recovery
 

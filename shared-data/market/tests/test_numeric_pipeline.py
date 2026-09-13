@@ -128,6 +128,108 @@ def test_directory_catches_up_all_missed_bundles_and_resumes_after_failure(tmp_p
     source.close();target.close()
 
 
+@pytest.fixture
+def retired_numeric_bootstrap(tmp_path):
+    source=make_store(tmp_path,'bootstrap-source')
+    try:
+        for day,value in [(1,10),(2,20)]:
+            source.ingest('analyst_price_targets',[[dict(symbol='AAPL',last_month_avg_price_target=value,
+                collected_at=datetime(2026,9,day,tzinfo=timezone.utc))]],source='fixture')
+        delivery.publish_pending(source.settings)
+        remote=source.settings.data_root/'numeric/outbox'
+        index=json.loads((remote/'index.json').read_text())
+        item=index['bundles'][0]
+        recovery=tmp_path/'retained-bootstrap.zip'
+        shutil.copyfile(remote/item['name'],recovery)
+        item.update(payload_state='retired',retired_at='2026-09-13T06:00:00+00:00',
+                    retirement_reason='Replica imported all batches; verified recovery objects retained.')
+        delivery._atomic_json(remote/'index.json',index)
+        (remote/item['name']).unlink()
+        (remote/(item['name']+'.sha256')).unlink()
+        yield source,remote,item,recovery
+    finally:
+        source.close()
+
+
+def test_publisher_retains_retired_batch_identity_without_regenerating_payload(retired_numeric_bootstrap):
+    source,remote,item,_=retired_numeric_bootstrap
+    assert delivery.publish_pending(source.settings)['status']=='no_new_batches'
+    assert not (remote/item['name']).exists()
+    source.ingest('analyst_price_targets',[[dict(symbol='AAPL',last_month_avg_price_target=30,
+        collected_at=datetime(2026,9,3,tzinfo=timezone.utc))]],source='fixture')
+    assert delivery.publish_pending(source.settings)['batch_count']==1
+    index=json.loads((remote/'index.json').read_text())
+    assert len(index['bundles'])==2 and index['bundles'][0]==item
+    assert set(index['bundles'][1]['batch_ids']).isdisjoint(item['batch_ids'])
+    assert not (remote/item['name']).exists()
+
+
+@pytest.mark.parametrize('seen_receipt',[False,True])
+def test_caught_up_replica_skips_retired_payload(tmp_path,monkeypatch,retired_numeric_bootstrap,seen_receipt):
+    _,remote,item,recovery=retired_numeric_bootstrap
+    target=make_store(tmp_path,'caught-up')
+    try:
+        delivery.import_bundle(target.settings,recovery)
+        state_path=target.settings.data_root/'delivery-status.json'
+        origin='trusted-host:/outbox'
+        if seen_receipt:
+            delivery._atomic_json(state_path,{'numeric':{origin:{item['name']:item['sha256']}},'text':{}})
+        copied=[]
+        def copy(host,path,destination,timeout):
+            copied.append(Path(path).name)
+            shutil.copyfile(remote/Path(path).name,destination)
+        monkeypatch.setattr(delivery,'_copy',copy)
+        result=delivery.pull_numeric_directory(target.settings,host='trusted-host',remote_dir='/outbox')
+        assert result['status']=='caught_up' and result['new_bundles']==0
+        assert copied==['index.json']
+        assert json.loads(state_path.read_text())['numeric'][origin][item['name']]==item['sha256']
+        assert target.latest('analyst_price_targets')['rows'][0]['last_month_avg_price_target']==20
+    finally:
+        target.close()
+
+
+@pytest.mark.parametrize('seen_receipt',[False,True])
+def test_missing_retired_batch_exposes_bootstrap_guidance_even_with_receipt(
+    tmp_path,monkeypatch,retired_numeric_bootstrap,seen_receipt,
+):
+    source,remote,item,_=retired_numeric_bootstrap
+    target=make_store(tmp_path,'partly-restored')
+    try:
+        partial=tmp_path/'partial-bootstrap.zip'
+        delivery.export_bundle(source.settings,partial,batch_ids=item['batch_ids'][:1])
+        delivery.import_bundle(target.settings,partial)
+        state_path=target.settings.data_root/'delivery-status.json'
+        if seen_receipt:
+            delivery._atomic_json(state_path,{'numeric':{'trusted-host:/outbox':{item['name']:item['sha256']}},'text':{}})
+        before=state_path.read_bytes() if state_path.exists() else None
+        copied=[]
+        def copy(host,path,destination,timeout):
+            copied.append(Path(path).name)
+            shutil.copyfile(remote/Path(path).name,destination)
+        monkeypatch.setattr(delivery,'_copy',copy)
+        monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ROLE','replica')
+        monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_NUMERIC_HOST','trusted-host')
+        monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_NUMERIC_REMOTE_DIR','/outbox')
+        monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_MI_INBOX_DIR',str(tmp_path/'text-inbox'))
+        monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_MI_HOST',raising=False)
+        monkeypatch.setattr(pipeline,'import_text_directory',lambda *args,**kwargs:{'status':'caught_up'})
+        result=pipeline.run(target.settings,'sync')
+        stage=result['stages'][0]
+        assert result['status']=='failed' and stage['status']=='failed'
+        failure=stage['result']
+        assert failure['error_type']=='NumericBootstrapRequired'
+        assert failure['missing_batch_ids']==item['batch_ids'][1:]
+        assert 'export-bundle' in failure['error'] and 'import-bundle' in failure['error']
+        assert 'own checksum' in failure['error'] and 'rerun sync' in failure['error']
+        assert failure['new_bundles']==0 and failure['receipts']==[]
+        assert copied==['index.json']
+        assert (state_path.read_bytes() if state_path.exists() else None)==before
+        saved=json.loads((target.settings.data_root/'pipeline-status.json').read_text())
+        assert saved['sync']['stages'][0]['result']==failure
+    finally:
+        target.close()
+
+
 def test_incremental_cursor_uses_whole_market_completed_batches(tmp_path):
     store=make_store(tmp_path,'store')
     row=dict(symbol='SPY',date=date(2026,9,4),open=100,high=100,low=100,close=100,adjusted_close=100,volume=1)

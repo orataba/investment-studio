@@ -100,10 +100,28 @@ def pull_numeric_directory(settings,*,host: str,remote_dir: str,timeout: int=360
             name=item["name"]
             if not re.fullmatch(r"[A-Za-z0-9_.-]+\.zip",name):raise ValueError("Invalid numeric bundle filename")
             if not re.fullmatch(r"[a-f0-9]{64}",item["sha256"]):raise ValueError("Invalid numeric bundle checksum")
+            if name in seen and seen[name]!=item["sha256"]:
+                raise ValueError("Published numeric bundle changed identity")
+            missing=sorted(set(item['batch_ids'])-ready_ids)
+            if item.get('payload_state')=='retired' and missing:
+                # A restored database can lack batches even when an old delivery
+                # receipt survives. Retired payloads require an explicit bootstrap.
+                return {
+                    'status':'failed','error_type':'NumericBootstrapRequired',
+                    'error':(
+                        f'Retired numeric payload {name} requires {len(missing)} missing ready batches. '
+                        'On the collector, run bin/investment-studio market numeric export-bundle '
+                        '/absolute/new-bootstrap.zip --batch-ids <comma-separated missing_batch_ids>. '
+                        'Transfer and verify the new archive using its own checksum, then run '
+                        'bin/investment-studio market numeric import-bundle /absolute/new-bootstrap.zip '
+                        'on this replica and rerun sync. Do not reuse the retired archive checksum.'
+                    ),
+                    'bundle':name,'missing_batch_ids':missing,
+                    'new_bundles':len(receipts),'receipts':receipts,'already_present':already_present,
+                }
             if name in seen:
-                if seen[name]!=item["sha256"]:raise ValueError("Published numeric bundle changed identity")
                 continue
-            if set(item['batch_ids'])<=ready_ids:
+            if not missing:
                 # The initial source and replica can already own these exact
                 # immutable batches. Do not transfer a second full bootstrap.
                 seen[name]=item['sha256'];already_present.append(name)
