@@ -2011,7 +2011,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
         className="holding-name-stack"
         title={`${instrumentTrendCoverageLabel(row)}. ${instrumentTrendReasonLabel(row)}`}
       >
-        <span>{holdingName(row)}</span>
+        <span translate="no">{holdingName(row)}</span>
       </div>
     ),
     sortValue: (row) => holdingName(row),

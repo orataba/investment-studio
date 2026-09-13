@@ -7330,7 +7330,7 @@ export default function TransactionsPage() {
 
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
-                    <span>Received Amount ({resolvedCounterpartyCurrency || 'Target'})</span>
+                    <span>{fcnLabel('Received Amount', '收到金额')} ({resolvedCounterpartyCurrency || fcnLabel('Target', '目标币种')})</span>
                     <input
                       type="number"
                       min="0"
@@ -7396,7 +7396,7 @@ export default function TransactionsPage() {
 
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
-                    <span>FX Rate ({resolvedTransactionCurrency}/{resolvedCounterpartyCurrency || 'Target'})</span>
+                    <span>{fcnLabel('FX Rate', '汇率')} ({resolvedTransactionCurrency}/{resolvedCounterpartyCurrency || fcnLabel('Target', '目标币种')})</span>
                     <input
                       type="number"
                       min="0"

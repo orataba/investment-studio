@@ -382,9 +382,9 @@ export default function OverviewAssetMix({
               <tr>
                 <th>Category</th>
                 <th>Lines</th>
-                <th>Signed NAV Amount ({workspace.base_currency})</th>
+                <th><span>Signed NAV Amount</span> ({workspace.base_currency})</th>
                 <th>Portfolio Weight</th>
-                <th>Day Change ({workspace.base_currency})</th>
+                <th><span>Day Change</span> ({workspace.base_currency})</th>
                 <th>Forward RC</th>
                 <th>Valuation Coverage</th>
               </tr>

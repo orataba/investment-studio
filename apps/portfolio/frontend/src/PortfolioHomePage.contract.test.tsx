@@ -1,12 +1,13 @@
 import { act, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { LanguageProvider } from '../../../../packages/ui/src/i18n'
+import { LanguageProvider, LanguageSelector } from '../../../../packages/ui/src/i18n'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioHomePage from './pages/PortfolioHomePage'
 import OptionOutcomePrompt from './components/OptionOutcomePrompt'
+import { HOLDINGS_SECTION_COLUMN_KEYS } from './components/HoldingsSectionTables'
 import {
   fcnContractFixture,
   holdingFixture,
@@ -282,6 +283,97 @@ describe('Holdings rendered page contract', () => {
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogFixture())
     apiMocks.getPortfolioTableViewStore.mockImplementation(async () => ({ store: null }))
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
+  })
+
+  it('translates currency-qualified holdings fields while preserving user names across language changes', async () => {
+    window.history.replaceState(null, '', '/?lang=en')
+    const fcn = fcnHolding()
+    const option = writtenOptionHolding()
+    const workspace = holdingsWorkspaceFixture({
+      base_currency: 'CNY',
+      rows: [
+        holdingFixture({ instrument_core: instrumentFixture({ instrument_name: 'Base Value (CNY)' }) }),
+        {
+          ...fcn,
+          derivative_contract: {
+            ...fcn.derivative_contract!,
+            contract_name: 'Securities Subtotal (CNY)',
+            account_id: 'Historical Carrying Basis (CNY)',
+          },
+        },
+        {
+          ...option,
+          derivative_contract: {
+            ...option.derivative_contract!,
+            contract_name: 'Cash & Settlement Subtotal (CNY)',
+          },
+        },
+        cashHolding({
+          line_id: 'cash:CNY',
+          instrument_core: instrumentFixture({
+            instrument_id: 'cash:CNY',
+            instrument_type: 'cash',
+            instrument_name: 'Cash (CNY)',
+            currency: 'CNY',
+          }),
+        }),
+      ],
+    })
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    apiMocks.getPortfolioTableViewStore.mockImplementation(async (_portfolioId, scope) => {
+      const columns = scope === 'holdings_fcn'
+        ? HOLDINGS_SECTION_COLUMN_KEYS.fcn
+        : scope === 'holdings_options' ? HOLDINGS_SECTION_COLUMN_KEYS.options : null
+      return {
+        store: columns ? {
+          activeViewId: 'custom:all',
+          views: [{ id: 'custom:all', name: 'My Fields (CNY)', state: { columns } }],
+        } : null,
+      }
+    })
+    render(
+      <>
+        <LanguageSelector />
+        <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
+          <Routes>
+            <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+          </Routes>
+        </MemoryRouter>
+      </>,
+    )
+    await waitForHoldings()
+    expect(await screen.findByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+    const cashTable = await screen.findByRole('table', { name: '现金与结算持仓' })
+    const fcnTable = screen.getByRole('table', { name: 'FCN持仓' })
+    const optionTable = screen.getByRole('table', { name: '期权持仓' })
+    await waitFor(() => {
+      expect(screen.getByText('证券小计 (CNY)')).toBeInTheDocument()
+      expect(within(cashTable).getByRole('columnheader', { name: '本位币价值 (CNY)' })).toBeInTheDocument()
+      expect(within(cashTable).getByRole('columnheader', { name: '汇兑成本基础 (CNY)' })).toBeInTheDocument()
+      expect(within(cashTable).getByRole('columnheader', { name: '未实现汇兑损益 (CNY)' })).toBeInTheDocument()
+      expect(within(cashTable).getByRole('button', { name: '现金 (CNY)' })).toBeInTheDocument()
+      expect(within(cashTable).getByText('现金与结算小计 (CNY)')).toBeInTheDocument()
+      for (const table of [fcnTable, optionTable]) {
+        for (const name of ['带方向净值金额 (CNY)', '历史账面基础 (CNY)', '账面汇率折算 (CNY)']) {
+          expect(within(table).getByRole('columnheader', { name })).toBeInTheDocument()
+        }
+      }
+      expect(within(optionTable).getByRole('columnheader', { name: '执行价名义金额 (CNY)' })).toBeInTheDocument()
+      expect(within(fcnTable).getByText('FCN小计 (CNY)')).toBeInTheDocument()
+      expect(within(optionTable).getByText('期权小计 (CNY)')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: 'Base Value (CNY)' })).toBeInTheDocument()
+    expect(within(fcnTable).getByRole('button', { name: 'Securities Subtotal (CNY)' })).toBeInTheDocument()
+    expect(within(fcnTable).getByText('Historical Carrying Basis (CNY)')).toBeInTheDocument()
+    expect(within(optionTable).getByRole('button', { name: 'Cash & Settlement Subtotal (CNY)' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+    const englishCashTable = await screen.findByRole('table', { name: 'Cash and settlement holdings' })
+    expect(within(englishCashTable).getByRole('button', { name: 'Cash (CNY)' })).toBeInTheDocument()
+    expect(within(englishCashTable).getByRole('columnheader', { name: 'FX Cost Basis (CNY)' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
   })
 
   it('renders each populated category with aligned table controls and title counts', async () => {
@@ -941,7 +1033,7 @@ describe('Holdings rendered page contract', () => {
     }
     const fcnNameCell = within(fcnTable).getByRole('cell', { name: 'Alpha FCN' })
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
-    const underlyingCell = within(fcnTable).getByText('Alpha Fund').closest('td')!
+    const underlyingCell = within(fcnTable).getByRole('link', { name: 'Alpha Fund' }).closest('td')!
     expect(underlyingCell).toHaveTextContent('Spot $110.0000')
     expect(underlyingCell).toHaveTextContent('Strike $100.0000 (100.00%)')
     expect(underlyingCell).toHaveTextContent('KI $70.0000 (70.00%)')

@@ -441,7 +441,7 @@ export default function OptionOutcomePrompt({
                 ) : null}
                 {outcome === 'cash_settled' ? (
                   <label>
-                    Settlement amount ({currency})
+                    <span>Settlement amount</span> ({currency})
                     <input type="number" min="0.00000001" step="any" value={cashAmount} onChange={(changeEvent) => setCashAmount(changeEvent.target.value)} />
                   </label>
                 ) : null}

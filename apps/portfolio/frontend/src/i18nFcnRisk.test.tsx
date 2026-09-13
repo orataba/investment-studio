@@ -77,3 +77,27 @@ it('keeps account field labels separate from count classifiers and uses account 
     expect(screen.queryByText('个持仓账户')).toBeNull()
   })
 })
+
+it('translates only declared currency-qualified system fields and keeps every currency code', async () => {
+  render(
+    <LanguageProvider>
+      <LanguageSelector />
+      <span>Base Value (USD)</span>
+      <span>FX Cost Basis (HKD)</span>
+      <span>Options Subtotal (JPY)</span>
+      <span>Custom Value (USD)</span>
+      <span>Cash (USD)</span>
+      <span>Base Value (customer currency)</span>
+    </LanguageProvider>,
+  )
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => {
+    expect(screen.getByText('本位币价值 (USD)')).toBeTruthy()
+    expect(screen.getByText('汇兑成本基础 (HKD)')).toBeTruthy()
+    expect(screen.getByText('期权小计 (JPY)')).toBeTruthy()
+  })
+  // Cash is translated only by the holdings component after checking canonical identity.
+  for (const name of ['Custom Value (USD)', 'Cash (USD)', 'Base Value (customer currency)']) {
+    expect(screen.getByText(name)).toBeTruthy()
+  }
+})

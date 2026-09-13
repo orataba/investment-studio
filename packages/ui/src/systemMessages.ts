@@ -1,5 +1,17 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "Base Value": "本位币价值",
+  "FX Cost Basis": "汇兑成本基础",
+  "FX Rate": "汇率",
+  "Unrealized FX P&L": "未实现汇兑损益",
+  "Historical Carrying Basis": "历史账面基础",
+  "Carrying FX Translation": "账面汇率折算",
+  "FCN Subtotal": "FCN小计",
+  "Options Subtotal": "期权小计",
+  "Cash & Settlement Subtotal": "现金与结算小计",
+  "FCN holdings": "FCN持仓",
+  "Option holdings": "期权持仓",
+  "Cash and settlement holdings": "现金与结算持仓",
   "Research inputs changed during calculation; rerun with the current inputs.": "计算期间研究输入已变化；请使用当前输入重新运行研究。",
   "Planning taxonomy structure, active assignments, active SAA/TAA target configuration, portfolio facts, or market-data inputs changed after this run was created; rerun Research.": "本次研究建立后，规划分类结构、有效分类归属、有效 SAA/TAA 目标配置、组合事实或市场数据输入已变化；请重新运行研究。",
   "Failed to rename portfolio.": "组合重命名失败。",

@@ -17,6 +17,17 @@ import { baseAmountForRow } from '../lib/holdingAmounts'
 import { isOptionObligationHolding } from '../lib/holdingPresentation'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 import { useHorizontalTablePan } from '../../../../../packages/ui/src/useHorizontalTablePan'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
+
+const USER_CONTENT_COLUMN_KEYS = new Set([
+  'contract',
+  'description',
+  'account',
+  'external_reference',
+  'issuer',
+  'counterparty',
+  'related_instrument',
+])
 
 type FixedColumn = {
   key: string
@@ -444,6 +455,7 @@ function linkedInstrumentName(
   return (
     <Link
       className="holding-instrument-link"
+      translate="no"
       draggable={false}
       to={holdingDetailPath(workspace, instrumentId)}
     >
@@ -575,6 +587,7 @@ function FixedHoldingsTable({
                 <td
                   key={column.key}
                   data-column-key={column.key}
+                  translate={USER_CONTENT_COLUMN_KEYS.has(column.key) ? 'no' : undefined}
                   className={
                     column.align === 'right'
                       ? 'numeric-cell'
@@ -630,6 +643,7 @@ export default function HoldingsSectionTables({
   onSelectHolding,
   onVisibleColumnsChange,
 }: HoldingsSectionTablesProps) {
+  const { t } = useLanguage()
   const namesById = instrumentNamesById(workspace)
   const fcnRows = derivativeRows.filter(
     (row) => row.derivative_contract?.contract_type === 'fcn',
@@ -744,7 +758,7 @@ export default function HoldingsSectionTables({
             {deliveryBuffer ? (
               <small title="Spot / delivery strike - 1. This monitors current price distance and does not confirm a delivery event.">
                 <span>Delivery buffer</span>{' · '}
-                {deliveryBuffer.instrument_name}: {' '}
+                <span translate="no">{deliveryBuffer.instrument_name}</span>: {' '}
                 {signedDistance(deliveryBuffer.distance_to_strike_pct, 'delivery strike')}
               </small>
             ) : null}
@@ -1105,7 +1119,16 @@ export default function HoldingsSectionTables({
       key: 'description',
       label: 'Description',
       opensDetail: true,
-      render: (row) => row.instrument_core?.instrument_name ?? row.line_id,
+      render: (row) => {
+        const instrument = row.instrument_core
+        const currency = instrument?.currency
+        // The backend generates this cash identity; security and account names remain user content.
+        return instrument?.instrument_type === 'cash'
+          && instrument.instrument_id === `cash:${currency}`
+          && instrument.instrument_name === `Cash (${currency})`
+          ? `${t('Cash')} (${currency})`
+          : instrument?.instrument_name ?? row.line_id
+      },
     },
     { key: 'type', label: 'Type', render: holdingKindLabel },
     { key: 'currency', label: 'Currency', align: 'center', render: holdingCurrency },
