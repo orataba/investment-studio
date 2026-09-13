@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest'
-import { afterEach, vi } from 'vitest'
+import { afterEach, beforeEach, vi } from 'vitest'
 import { cleanup } from '@testing-library/react'
+import { LANGUAGE_COOKIE_NAME, LANGUAGE_STORAGE_KEY } from '../../../../../packages/ui/src/i18n'
 
 function createStorageStub(): Storage {
   const values = new Map<string, string>()
@@ -36,10 +37,27 @@ Object.defineProperty(window, 'sessionStorage', {
   value: createStorageStub(),
 })
 
+function resetLanguagePreference() {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('lang')
+  url.searchParams.delete('language')
+  window.history.replaceState(null, '', url)
+  document.cookie = `${LANGUAGE_COOKIE_NAME}=; path=/; max-age=0`
+  document.documentElement.lang = 'en'
+  document.documentElement.dataset.language = 'en'
+}
+
+beforeEach(() => {
+  resetLanguagePreference()
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'en')
+  document.cookie = `${LANGUAGE_COOKIE_NAME}=en; path=/; samesite=lax`
+})
+
 afterEach(() => {
   cleanup()
   window.localStorage.clear()
   window.sessionStorage.clear()
+  resetLanguagePreference()
 })
 
 Object.defineProperty(window, 'matchMedia', {

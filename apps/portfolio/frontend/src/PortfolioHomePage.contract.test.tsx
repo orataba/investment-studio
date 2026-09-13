@@ -286,7 +286,6 @@ describe('Holdings rendered page contract', () => {
   })
 
   it('translates currency-qualified holdings fields while preserving user names across language changes', async () => {
-    window.history.replaceState(null, '', '/?lang=en')
     const fcn = fcnHolding()
     const option = writtenOptionHolding()
     const workspace = holdingsWorkspaceFixture({
@@ -320,10 +319,12 @@ describe('Holdings rendered page contract', () => {
       ],
     })
     apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    const sectionViewsReady = deferred<void>()
     apiMocks.getPortfolioTableViewStore.mockImplementation(async (_portfolioId, scope) => {
       const columns = scope === 'holdings_fcn'
         ? HOLDINGS_SECTION_COLUMN_KEYS.fcn
         : scope === 'holdings_options' ? HOLDINGS_SECTION_COLUMN_KEYS.options : null
+      if (columns) await sectionViewsReady.promise
       return {
         store: columns ? {
           activeViewId: 'custom:all',
@@ -331,18 +332,27 @@ describe('Holdings rendered page contract', () => {
         } : null,
       }
     })
-    render(
-      <>
-        <LanguageSelector />
-        <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
-          <Routes>
-            <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
-          </Routes>
-        </MemoryRouter>
-      </>,
-    )
-    await waitForHoldings()
-    expect(await screen.findByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
+    await act(async () => {
+      render(
+        <>
+          <LanguageSelector />
+          <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
+            <Routes>
+              <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+            </Routes>
+          </MemoryRouter>
+        </>,
+      )
+    })
+    expect(apiMocks.getPortfolioTableViewStore).toHaveBeenCalledWith('3', 'holdings_fcn')
+    expect(apiMocks.getPortfolioTableViewStore).toHaveBeenCalledWith('3', 'holdings_options')
+    expect(screen.queryByRole('columnheader', { name: 'Strike Notional (CNY)' })).not.toBeInTheDocument()
+
+    // The page appears before saved section views load. Resolve those requests and flush
+    // their React updates before testing columns outside the default view.
+    await act(async () => sectionViewsReady.resolve())
+    expect(screen.getAllByRole('button', { name: /View\s*: My Fields \(CNY\)/ })).toHaveLength(2)
+    expect(screen.getByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
     const cashTable = await screen.findByRole('table', { name: '现金与结算持仓' })
