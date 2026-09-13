@@ -115,6 +115,8 @@ prepare_case() {
     '  *pg_roles*) printf "%s\n" 1 ;;' \
     '  *pg_database*) printf "%s\n" 1 ;;' \
     '  *pg_namespace*) printf "%s\n" instrument_registry platform portfolio watchlist ;;' \
+    '  # Real psql consumes the rollback stream; early exit can SIGPIPE pg_restore.' \
+    '  *--single-transaction*) cat >/dev/null ;;' \
     '  *"DROP SCHEMA"*) printf "drop-schemas\n" >> "$EVENT_LOG" ;;' \
     'esac' \
     'exit 0' \
