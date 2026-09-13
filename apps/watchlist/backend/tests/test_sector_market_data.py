@@ -146,6 +146,8 @@ def test_estimate_currencies_reuse_one_complete_bound_statement_history(market_s
 @pytest.mark.parametrize("iid,kind,symbol", [("600036-sh", "equity", "600036.SS"), ("broad-market", "etf", "SPY")])
 def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_tools(client, market_store, monkeypatch, iid, kind, symbol):
     from watchlist_app.services import sector_research as service
+    from watchlist_app.services import sector_fact_review as fact_review
+    from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook
     from watchlist_app.services.shared_instrument_registry import get_shared_instrument
     from watchlist_app.db.models import InstrumentDetail
     from watchlist_app.db.models.workbench import ResearchEntry
@@ -187,20 +189,52 @@ def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_
         run, _ = service.begin_run(session, [iid])
         rid = run.entry_id
     service.prepare_run(rid)
-    context = client.get(f"/api/research/runs/{rid}/context").json()
+    context = client.get(f"/api/research/runs/{rid}/context?originals=true").json()
+    assert "sector_company_data" not in context
     assert context["instrument_inputs"][0]["analyst_estimate_history"]["company_symbols"] == [company]
-    response = client.get(f"/api/research/runs/{rid}/sector-company/{iid}/{company}")
+    response = client.get(f"/api/research/runs/{rid}/sector-company/{iid}/{company.lower()}")
     assert response.status_code == 200
     retained = response.json()
     assert retained["source_id"] == f"fmp:{rid}:{iid}:{company}"
+    assert retained["source_type"] == "company_snapshot"
+    assert retained["instrument_id"] == iid and retained["source_run_id"] == rid
     row = next(row for row in retained["company"]["annual_estimates"] if row["target_period_end"] == "2027-12-31")
     assert row["revenue_avg"] == 110 and row["currency"] == currency and row["raw_sha256"]
     assert row["source_id"] and row["currency_source"]["source_id"]
     assert client.get(f"/api/research/runs/{rid}/sector-company/{iid}/UNRELATED").status_code == 404
+    assert client.get(f"/api/research/runs/{rid}/sector-company/unbound/{company}").status_code == 404
     with get_session_factory()() as session:
         retained_context = session.get(ResearchEntry, rid).context_json
         assert set(retained_context["sector_company_data"][iid]) == {company}
         assert retained_context["sector_estimate_evidence"][0]["company_symbols"] == [company]
+        assert research_sources(retained_context, rid)[retained["source_id"]] == retained
+
+    # The production context deliberately excludes company data. Exercise the
+    # real on-demand API, then the same notebook and receipt checks as publication.
+    calls = []
+    def api(run_id, suffix, payload=None):
+        assert run_id == rid and payload is None
+        calls.append(suffix)
+        response = client.get(f"/api/research/runs/{run_id}/{suffix}")
+        assert response.status_code == 200
+        return response.json()
+    monkeypatch.setattr(fact_review, "_api_request", api)
+    proposed = {"instrument_id": iid, "change_kind": "knowledge", "events": [],
+        "research": {"fundamental_view": "已取得成分收入与EPS预测；预测仍需后续兑现。", "source_ids": [retained["source_id"]]},
+        "reflection": {"status": "reviewed", "summary": "已核对本轮取得的公司预测及其财期、币种。",
+                       "source_ids": [retained["source_id"]]}}
+    packet = fact_review._evidence_packet(context, [proposed], rid)
+    sources = {source["source_id"]: source for source in packet["sources"]}
+    assert calls == [f"sector-company/{iid}/{company}"]
+    assert sources[retained["source_id"]] == retained
+    validate_notebook(ResearchNotebook.model_validate(proposed["research"]), iid, sources)
+    with pytest.raises(ValueError, match="其他标的"):
+        validate_notebook(ResearchNotebook(source_ids=[retained["source_id"]]), "unbound", sources)
+    checked = {**proposed, "summary": "", "coverage": [], "decisions": []}
+    checked.pop("events")
+    verified = fact_review._apply_checks({"reviews": [proposed]}, {"reviews": [checked]}, packet["sources"])
+    assert verified["reviews"][0]["research"] == proposed["research"]
+    assert verified["reviews"][0]["reflection"]["source_ids"] == [retained["source_id"]]
     if kind == "etf":
         assert get_shared_instrument("aaa") is None
 

@@ -355,6 +355,13 @@ def _original_source(source: dict, iid: str, cutoff: datetime | None = None) -> 
     return True
 
 
+def company_source(run_id: str, instrument_id: str, symbol: str, company: dict) -> dict:
+    """The retained company read and full-run source index share one identity."""
+    return {"source_id": f"fmp:{run_id}:{instrument_id}:{symbol}",
+        "instrument_id": instrument_id, "source_run_id": run_id,
+        "source_type": "company_snapshot", "title": f"FMP · {symbol} 公司资料与预期", "company": company}
+
+
 def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     """Only original evidence is reusable; methods and AI summaries are not sources."""
     sources = {}
@@ -391,9 +398,8 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
             "run_cutoff": asset.get("snapshot_cutoff", context["cutoff"]), "snapshot": {k: v for k, v in asset.items() if k != "research_focus"}}
     for iid, companies in context.get("sector_company_data", {}).items():
         for symbol, company in companies.items():
-            sid = f"fmp:{run_id}:{iid}:{symbol}"
-            sources[sid] = {"source_id": sid, "instrument_id": iid, "source_run_id": run_id,
-                "source_type": "company_snapshot", "title": f"FMP · {symbol} 公司资料与预期", "company": company}
+            source = company_source(run_id, iid, symbol, company)
+            sources[source["source_id"]] = source
     sources.update(retained_estimate_sources(context))
     for capture in context.get("web_evidence", []):
         if capture.get("operation") == "fetch":

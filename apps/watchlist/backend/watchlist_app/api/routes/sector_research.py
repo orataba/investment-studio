@@ -262,8 +262,9 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
 
 @router.get("/research/runs/{run_id}/sector-company/{instrument_id}/{symbol}")
 def sector_company(run_id: str, instrument_id: str, symbol: str, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_notebook import company_source
     run = current_run(session, run_id)
     company = run.context_json.get("sector_company_data", {}).get(instrument_id, {}).get(symbol.upper())
     if company is None:
         raise HTTPException(404, "本次成分快照没有该股票的公司资料")
-    return {"source_id": f"fmp:{run_id}:{instrument_id}:{symbol.upper()}", "company": company}
+    return company_source(run_id, instrument_id, symbol.upper(), company)

@@ -55,7 +55,8 @@ def retained_run(monkeypatch):
         if suffix == "context?originals=true":
             return deepcopy(context)
         if suffix == "sector-company/xle/XOM":
-            return {"source_id": "fmp:test-run:xle:XOM", "company": {"symbol": "XOM", "annual_estimates": []}}
+            from watchlist_app.services.research_notebook import company_source
+            return company_source(run_id, "xle", "XOM", {"symbol": "XOM", "annual_estimates": []})
         assert suffix == "sector-evidence" and payload["operation"] == "review"
         return payload
 
