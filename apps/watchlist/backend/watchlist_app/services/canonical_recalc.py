@@ -1717,7 +1717,7 @@ def _latest_selection_snapshot(
     return {
         **_selection_metadata(selection),
         "date": as_of_date.isoformat(),
-        "value": round(float(value), 4),
+        "value": float(value),
         "currency": str(latest_point.get("currency") or "") or None,
     }
 
@@ -1757,7 +1757,10 @@ def _build_chart_payload(
                 "quote_basis": metadata.get("quote_basis"),
                 "role": metadata.get("role"),
                 "points": [
-                    {"date": point["as_of_date"].isoformat(), "value": round(point["value"], 4)}
+                    # These levels are calculation inputs for interactive return
+                    # windows, not formatted labels. Rounding small spot prices
+                    # here changes returns and can erase positive observations.
+                    {"date": point["as_of_date"].isoformat(), "value": float(point["value"])}
                     for point in nav_points
                 ],
             }

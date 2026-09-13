@@ -6,7 +6,7 @@ export const safeUrl = (value?: string) => {
   try { const url = new URL(value || ''); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
 }
 
-export function SourceEvidence({ source, onClose, onSource }: { source: Source; onClose: () => void; onSource: (sourceId: string) => void }) {
+export function SourceEvidence({ source, onClose, onSource, canReadSources = true }: { source: Source; onClose: () => void; onSource: (sourceId: string) => void; canReadSources?: boolean }) {
   const { language } = useLanguage()
   const copy = (zh: string, en: string) => language === 'zh-Hans' ? zh : en
   const display = (value: unknown) => typeof value === 'number' ? value.toLocaleString(language === 'zh-Hans' ? 'zh-CN' : 'en-GB', { maximumFractionDigits: 8 }) : typeof value === 'string' && value ? value : '—'
@@ -65,7 +65,7 @@ export function SourceEvidence({ source, onClose, onSource }: { source: Source; 
     {providerName && <p>{copy('来源', 'Source')} · <span translate="no">{providerName}</span></p>}
     {originalUrl && <a href={originalUrl} target="_blank" rel="noreferrer">{copy('打开原始链接', 'Open original link')} ↗</a>}
     {fields.length > 0 && <dl className="source-dates">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{display(value)}</dd></div>)}</dl>}
-    {sourceIds.length > 0 && <div className="source-links">{sourceIds.map((id, index) => <button key={`${id}-${index}`} onClick={() => onSource(id)}>{market ? index === 0 ? copy('查看起始价格来源', 'View starting price source') : copy('查看截至价格来源', 'View ending price source') : copy('查看原始数值来源', 'View original value source')}</button>)}</div>}
+    {canReadSources && sourceIds.length > 0 && <div className="source-links">{sourceIds.map((id, index) => <button key={`${id}-${index}`} onClick={() => onSource(id)}>{market ? index === 0 ? copy('查看起始价格来源', 'View starting price source') : copy('查看截至价格来源', 'View ending price source') : copy('查看原始数值来源', 'View original value source')}</button>)}</div>}
     {clocks.length > 0 && <dl className="source-dates">{clocks.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{display(value)}</dd></div>)}</dl>}
     {source.withdrawn === true && <p className="error" role="alert">{copy('这份来源已撤回；这里保留报告使用的版本。', 'This source was withdrawn; the version used by the report is retained here.')}</p>}
     {source.content_text ? <details className="retained-original"><summary>{copy('查看留存原文', 'Read retained text')}</summary><div className="original-text" translate="no">{source.content_text}</div></details> : !market && !macro && !numeric && <p className="muted">{copy('这份来源没有可读取的正文。', 'No readable text is available for this source.')}</p>}

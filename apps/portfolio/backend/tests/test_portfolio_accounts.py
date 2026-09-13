@@ -141,6 +141,21 @@ def test_membership_change_and_revocation_are_immediate(secured):
         assert event.actor_user_id == 'alice'
 
 
+def test_rename_requires_editor_and_preserves_current_access(secured):
+    client, _, a, b = secured
+    path = f'/api/portfolios/{a}'
+    assert client.patch(path, headers=headers('bob'), json={'name': 'No authority'}).status_code == 403
+    assert client.patch(f'/api/portfolios/{b}', headers=headers(), json={'name': 'Hidden'}).status_code == 404
+    client.put(f'/api/portfolios/{a}/members/bob', headers=headers(), json={'role': 'editor'})
+    response = client.patch(path, headers=headers('bob'), json={'name': ' 新名称 '})
+    assert response.status_code == 200
+    assert response.json()['portfolio_id'] == a
+    assert response.json()['portfolio_name'] == '新名称'
+    assert response.json()['access']['role'] == 'editor'
+    assert response.json()['access']['can_edit'] is True
+    assert response.json()['access']['can_manage'] is False
+
+
 def test_last_active_manager_requires_handover(secured):
     client, _, a, _ = secured
     own = f'/api/portfolios/{a}/members/alice'

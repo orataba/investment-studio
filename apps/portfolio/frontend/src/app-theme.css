@@ -461,7 +461,7 @@
 .taxonomy-topbar select,
 .taxonomy-topbar input,
 .portfolio-settings-grid select,
-.portfolio-create-grid input {
+.portfolio-settings-grid input {
   border-radius: 0;
   background: #ffffff;
   box-shadow: none;

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-studio-briefing-backend"
-version = "0.1.0"
+version = "1.1.0"
 description = "Investment Studio market briefings"
 requires-python = ">=3.12"
 dependencies = ["alembic>=1.16,<2", "fastapi>=0.115,<1", "mcp>=2,<3", "pydantic-settings>=2.10,<3", "psycopg[binary]>=3.2,<4", "sqlalchemy>=2,<3", "uvicorn[standard]>=0.34,<1"]

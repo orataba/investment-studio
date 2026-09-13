@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
@@ -471,7 +472,7 @@ export default function MonitoringPage() {
           </div>
         ) : null}
         {error ? <div className="error-state">{error}</div> : null}
-        {loading && !dashboard ? <LoadingOverlay label="Loading monitoring dashboard" /> : null}
+        {loading && !dashboard ? <LoadingOverlay /> : null}
         {!loading && dashboard ? (
           <div className="monitoring-overview-grid">
             {overviewRows.map((item) => (
@@ -501,7 +502,7 @@ export default function MonitoringPage() {
               </div>
             </div>
             {visibleWatchlists.length ? (
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
@@ -542,7 +543,7 @@ export default function MonitoringPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             ) : (
               <div className="empty-state">No watchlists available yet.</div>
             )}
@@ -556,7 +557,7 @@ export default function MonitoringPage() {
               </div>
             </div>
             {visibleResearchQueue.length ? (
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
@@ -610,7 +611,7 @@ export default function MonitoringPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             ) : (
               <div className="empty-state">No scheduled research reviews or follow-ups.</div>
             )}
@@ -624,7 +625,7 @@ export default function MonitoringPage() {
               </div>
             </div>
             {visibleNeedsAttentionInstruments.length ? (
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
@@ -695,7 +696,7 @@ export default function MonitoringPage() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             ) : (
               <div className="empty-state">No refresh or quote coverage issues right now.</div>
             )}
@@ -709,7 +710,7 @@ export default function MonitoringPage() {
               </div>
             </div>
             {visibleMissingMetadataInstruments.length ? (
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
@@ -754,7 +755,7 @@ export default function MonitoringPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             ) : (
               <div className="empty-state">
                 No required classification or investment-research metadata is missing right now.
@@ -770,7 +771,7 @@ export default function MonitoringPage() {
               </div>
             </div>
             {visibleOpenRecalcJobs.length ? (
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
@@ -837,7 +838,7 @@ export default function MonitoringPage() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             ) : (
               <div className="empty-state">No queued, running, or failed recalc jobs.</div>
             )}

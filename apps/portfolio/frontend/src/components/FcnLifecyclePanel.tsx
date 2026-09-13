@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -65,7 +66,7 @@ export default function FcnLifecyclePanel({ portfolioId, positionReferenceId, as
               ] as const).map(([label, value]) => <div key={label}><dt>{t(label)}</dt><dd>{label === 'Contract charges' ? formatCurrency(value, lifecycle.currency) : formatSignedCurrency(value, lifecycle.currency)}</dd></div>)}
             </dl>
           </details>
-          {lifecycle.deliveries.length > 0 && <div className="table-shell portfolio-security-table-shell">
+          {lifecycle.deliveries.length > 0 && <HorizontalTableScroll className="table-shell portfolio-security-table-shell">
             <table className="holdings-table"><caption>{t('Delivery status')}</caption><thead><tr><th>{t('Security')}</th><th>{t('Quantity')}</th><th>{t('Economic effective date')}</th><th>{t('Delivery date')}</th><th>{t('Status')}</th><th>{t('Acquisition charges')}</th></tr></thead>
               <tbody>{lifecycle.deliveries.map((delivery, index) => <tr key={`${delivery.transaction_id}-${index}`}>
                 <td><Link translate="no" to={`${buildPortfolioHoldingDetailPath(portfolioId, delivery.instrument_id)}?as_of_date=${asOfDate}`}>{delivery.instrument_name}</Link></td>
@@ -74,9 +75,9 @@ export default function FcnLifecyclePanel({ portfolioId, positionReferenceId, as
                 <td>{formatCurrency(delivery.capitalized_charges, delivery.currency)}</td>
               </tr>)}</tbody>
             </table>
-          </div>}
+          </HorizontalTableScroll>}
           {lifecycle.deliveries.some((delivery) => delivery.status === 'pending') && <p className="holding-detail-note">{t('Pending shares already carry market risk; they are not yet available for sale.')}</p>}
-          {lifecycle.stocks.length > 0 && <div className="table-shell portfolio-security-table-shell">
+          {lifecycle.stocks.length > 0 && <HorizontalTableScroll className="table-shell portfolio-security-table-shell">
             <table className="holdings-table"><caption>{t('Shares attributed to this FCN')}</caption><thead><tr><th>{t('Security')}</th><th>{t('Remaining quantity')}</th><th>{t('Sold quantity')}</th><th>{t('Market value')} · {lifecycle.currency}</th><th>{t('Realized P/L')} · {lifecycle.currency}</th><th>{t('Unrealized P/L')} · {lifecycle.currency}</th></tr></thead>
               <tbody>{lifecycle.stocks.map((stock) => <tr key={`${stock.account_id}-${stock.instrument_id}`}>
                 <td><Link translate="no" to={`${buildPortfolioHoldingDetailPath(portfolioId, stock.instrument_id)}?as_of_date=${asOfDate}`}>{stock.instrument_name}</Link><small className="portfolio-detail-meta" style={{ display: 'block', marginTop: 4 }} translate="no">{stock.account_name}</small></td>
@@ -84,7 +85,7 @@ export default function FcnLifecyclePanel({ portfolioId, positionReferenceId, as
                 <td className={signedValueClass(stock.realized_pnl)}>{formatSignedCurrency(stock.realized_pnl, lifecycle.currency)}</td><td className={signedValueClass(stock.unrealized_pnl)}>{formatSignedCurrency(stock.unrealized_pnl, lifecycle.currency)}</td>
               </tr>)}</tbody>
             </table>
-          </div>}
+          </HorizontalTableScroll>}
           {lifecycle.warnings.length > 0 && <p className="form-error">{t('Lifecycle result is incomplete:')} {lifecycle.warnings.map(warningText).join(' · ')}</p>}
         </article>
       ))}

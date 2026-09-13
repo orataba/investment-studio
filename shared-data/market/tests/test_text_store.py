@@ -72,6 +72,53 @@ def test_producer_name_is_metadata_under_one_protocol(store, tmp_path):
     assert store.read("text:v1")["content_text"] == document()[1].decode()
 
 
+@pytest.mark.parametrize("transport", ["inbox", "ssh"])
+def test_delivery_recovers_restored_database_despite_newer_receipts(tmp_path, monkeypatch, transport):
+    import shutil
+    from types import SimpleNamespace
+    from studio_market.config import MarketSettings
+    from studio_market.numeric import delivery
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    archive = bundle(inbox / "initial.zip", [document()])
+    with zipfile.ZipFile(archive) as zipped:
+        identifier = json.loads(zipped.read("manifest.json"))["bundle_id"]
+    archive = archive.rename(inbox / (identifier + ".zip"))
+    archive.with_suffix(".zip.sha256").write_text(digest(archive.read_bytes()) + "  " + archive.name + "\n")
+    settings = MarketSettings(f"sqlite:///{tmp_path / 'text.db'}", tmp_path / "data")
+    store = TextStore(settings)
+    metadata.create_all(store.engine)
+    copied = []
+
+    def remote(command, **kwargs):
+        if command[0] == "ssh":
+            return SimpleNamespace(stdout=archive.name + "\n")
+        name = Path(command[-2]).name
+        copied.append(name)
+        shutil.copyfile(inbox / name, command[-1])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(delivery.subprocess, "run", remote)
+    deliver = (lambda: delivery.import_text_directory(settings, directory=inbox)) if transport == "inbox" else (
+        lambda: delivery.pull_text_directory(settings, host="trusted-feed", remote_dir="/outbox"))
+    try:
+        assert deliver()["new_bundles"] == 1
+        assert store.search()["total"] == 1
+        assert deliver()["new_bundles"] == 0
+        # Simulate restoring the text schemas, preserving the external raw objects
+        # and newer delivery-status.json, as in an ordinary database recovery.
+        metadata.drop_all(store.engine)
+        metadata.create_all(store.engine)
+        assert deliver()["new_bundles"] == 1
+        assert store.search()["total"] == 1
+        assert deliver()["new_bundles"] == 0
+        if transport == "ssh":
+            assert copied.count(archive.name) == 2
+    finally:
+        store.close()
+
+
 def test_redelivery_correction_withdrawal_and_explicit_history(store, tmp_path):
     first = bundle(tmp_path / "first.zip", [document()])
     store.import_bundle(first)

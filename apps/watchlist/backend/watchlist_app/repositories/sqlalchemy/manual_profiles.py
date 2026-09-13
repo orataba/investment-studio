@@ -2,14 +2,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.manual_profiles import InstrumentManualProfile
 
 
 class SQLAlchemyInstrumentManualProfileRepository:
     def get(self, session: Session, instrument_id: str) -> InstrumentManualProfile | None:
         return session.get(InstrumentManualProfile, instrument_id)
+
+    def get_for_update(self, session: Session, instrument_id: str) -> InstrumentManualProfile | None:
+        # The instrument already exists even before its first manual profile.
+        # Lock it before reading JSON so concurrent appends and first inserts
+        # cannot replace one another, then refresh any earlier cached snapshot.
+        session.execute(select(InstrumentDetail.instrument_id).where(
+            InstrumentDetail.instrument_id == instrument_id,
+        ).with_for_update())
+        return session.get(InstrumentManualProfile, instrument_id, populate_existing=True)
 
     def upsert(
         self,
@@ -23,7 +34,7 @@ class SQLAlchemyInstrumentManualProfileRepository:
         nav_settings_json: dict[str, object] | None = None,
         updated_by: str | None = None,
     ) -> InstrumentManualProfile:
-        record = self.get(session, instrument_id)
+        record = self.get_for_update(session, instrument_id)
         now = datetime.now(UTC).replace(microsecond=0)
         if record is None:
             record = InstrumentManualProfile(

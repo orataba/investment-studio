@@ -11,11 +11,14 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import defer
+from investment_studio_instrument_core.db_models import Instrument
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
+    AccountRecordModel,
+    DerivativeContractRecordModel,
     PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
     ResearchRunRecordModel,
@@ -26,6 +29,7 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
+    _portfolio_source_instrument_ids,
     _run_portfolio_daily_snapshot_recalculation_synchronously,
     ensure_portfolio_daily_snapshots,
 )
@@ -66,7 +70,7 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
-RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 2
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 3
 logger = logging.getLogger(__name__)
 DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
     {
@@ -629,11 +633,41 @@ def _planning_state_fingerprint(
             PortfolioInstrumentUniverseRecordModel.status == "active",
         )
     ).all()
+    source_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
+    source_instrument_ids.update(item.instrument_id for item in instrument_universe)
+    settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+    if settings is not None and settings.backtest_benchmark_instrument_id:
+        source_instrument_ids.add(settings.backtest_benchmark_instrument_id)
+    portfolio = session.get(PortfolioRecordModel, portfolio_id)
+    if portfolio is None:
+        return None
     state = {
         "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
         "as_of_date": as_of_date.isoformat(),
         "taxonomy_configuration": taxonomy_configuration,
         "analytics_policy_version": analytics_policy_version(portfolio_id, session=session),
+        # Dates alone do not detect an amended/deleted historical transaction.
+        # Reuse canonical row versions and shared source watermarks; a refresh
+        # request itself is not evidence that any financial input changed.
+        "financial_inputs": {
+            "portfolio": [portfolio.base_currency, portfolio.inception_date, portfolio.risk_policy_json],
+            "transactions": [tuple(row) for row in session.execute(select(
+                TransactionRecordModel.transaction_id, TransactionRecordModel.row_version,
+            ).where(TransactionRecordModel.portfolio_id == portfolio_id,
+                TransactionRecordModel.trade_date <= as_of_date).order_by(TransactionRecordModel.transaction_id))],
+            "accounts": [tuple(row) for row in session.execute(select(
+                AccountRecordModel.account_id, AccountRecordModel.account_category,
+                AccountRecordModel.currency, AccountRecordModel.cost_basis_method,
+                AccountRecordModel.opened_at, AccountRecordModel.closed_at, AccountRecordModel.status,
+            ).where(AccountRecordModel.portfolio_id == portfolio_id).order_by(AccountRecordModel.account_id))],
+            "contracts": [tuple(row) for row in session.execute(select(
+                DerivativeContractRecordModel.derivative_contract_id, DerivativeContractRecordModel.row_version,
+            ).where(DerivativeContractRecordModel.portfolio_id == portfolio_id).order_by(DerivativeContractRecordModel.derivative_contract_id))],
+            "market_sources": [tuple(row) for row in session.execute(select(
+                Instrument.instrument_id, Instrument.market_data_updated_at, Instrument.calculation_inputs_updated_at,
+            ).where(or_(Instrument.instrument_id.in_(source_instrument_ids), Instrument.instrument_type == "fx"))
+                .order_by(Instrument.instrument_id))],
+        },
         "research_instrument_eligibility": sorted(
             [
                 {
@@ -693,8 +727,8 @@ def _research_run_reliability(
         reasons.append("The current planning taxonomy state is unavailable; rerun after repairing Research settings.")
     elif run_planning_state_fingerprint != current_planning_state_fingerprint:
         reasons.append(
-            "Planning taxonomy structure, active assignments, or active SAA/TAA target configuration changed "
-            "after this run was created."
+            "Planning taxonomy structure, active assignments, active SAA/TAA target configuration, "
+            "portfolio facts, or market-data inputs changed after this run was created; rerun Research."
         )
 
     if request_payload:
@@ -2237,6 +2271,14 @@ def run_portfolio_research(
                 _instrument_detail_cache=instrument_detail_cache,
             )
             solution.update(backtest_payload)
+            with session_factory() as verification_session:
+                latest_fingerprint = _planning_state_fingerprint(
+                    verification_session, portfolio_id=portfolio_id,
+                    planning_taxonomy_id=run_row.planning_taxonomy_id,
+                    as_of_date=effective_as_of_date,
+                )
+            if latest_fingerprint != planning_state_fingerprint:
+                raise ValueError("Research inputs changed during calculation; rerun with the current inputs.")
             detail = _build_current_target_detail(
                 context,
                 planning_taxonomy_name=planning_taxonomy_name,

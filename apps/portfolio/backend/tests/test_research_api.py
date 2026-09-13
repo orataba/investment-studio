@@ -3307,7 +3307,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     with session_factory() as session:
         stored_run = session.get(ResearchRunRecordModel, run_payload["research_run_id"])
         assert stored_run is not None
-        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 2
+        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 3
         assert stored_run.request_payload_json["planning_state_fingerprint"].startswith("sha256:")
 
 
@@ -3401,8 +3401,8 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
     assert selected_run["reliability_state"] == "stale"
     assert selected_run["is_current"] is False
     assert selected_run["reliability_reasons"] == [
-        "Planning taxonomy structure, active assignments, or active SAA/TAA target configuration changed "
-        "after this run was created."
+        "Planning taxonomy structure, active assignments, active SAA/TAA target configuration, "
+        "portfolio facts, or market-data inputs changed after this run was created; rerun Research."
     ]
 
 

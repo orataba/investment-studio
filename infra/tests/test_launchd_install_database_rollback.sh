@@ -93,6 +93,8 @@ prepare_case() {
     'from pathlib import Path' \
     'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
     '    handle.write("watchlist-refresh\n")' \
+    'import sys' \
+    'assert "--recover-interrupted" in sys.argv' \
     'raise SystemExit(1 if os.environ.get("WATCHLIST_REFRESH_FAIL") == "true" else 0)' \
     > "$project_root/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 

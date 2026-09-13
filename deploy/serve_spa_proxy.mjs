@@ -61,9 +61,15 @@ function resolveStaticPath(pathname) {
   if (candidate !== distRoot && !candidate.startsWith(distRoot + sep)) {
     return indexPath
   }
-  if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) {
-    return candidate
+  try {
+    if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) {
+      return candidate
+    }
+  } catch (error) {
+    if (error.code === 'ENAMETOOLONG' || error.code === 'EINVAL') return null
+    throw error
   }
+  if (decoded.startsWith('/assets/')) return false
   return indexPath
 }
 
@@ -110,10 +116,22 @@ createServer((request, response) => {
     proxyApi(request, response)
     return
   }
-  const staticPath = resolveStaticPath(request.url || '/')
+  let staticPath
+  try {
+    staticPath = resolveStaticPath(request.url || '/')
+  } catch {
+    response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+    response.end('File temporarily unavailable')
+    return
+  }
   if (staticPath === null) {
     response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
     response.end('Malformed request path')
+    return
+  }
+  if (staticPath === false) {
+    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+    response.end('File unavailable')
     return
   }
   sendFile(response, staticPath)

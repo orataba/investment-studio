@@ -332,6 +332,7 @@ button:disabled {
 
 .portfolio-settings-grid label {
   display: grid;
+  align-content: start;
   gap: 6px;
   min-width: 0;
 }
@@ -387,7 +388,7 @@ button:disabled {
   width: min(620px, 100%);
 }
 
-.portfolio-create-grid input {
+.portfolio-settings-grid input {
   width: 100%;
   min-height: 32px;
   padding: 6px 8px;
@@ -397,7 +398,7 @@ button:disabled {
   color: var(--portfolio-ink);
 }
 
-.portfolio-create-grid input:focus {
+.portfolio-settings-grid input:focus {
   border-color: var(--portfolio-accent);
   outline: none;
   box-shadow: 0 0 0 1px var(--portfolio-accent) inset;

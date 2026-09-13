@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
@@ -62,6 +63,7 @@ import {
 type WatchlistBreadcrumbContext = {
   watchlistId: string
   watchlistName: string
+  isSystem?: boolean
 }
 
 type Props = {
@@ -482,7 +484,7 @@ function DataTable({
   return (
     <section className="panel listed-data-panel">
       <div className="panel-header"><div className="panel-title">{title}</div></div>
-      <div className="table-shell">
+      <HorizontalTableScroll className="table-shell">
         <table className="listed-data-table">
           <thead><tr>{visibleColumns.map((column) => <th key={column.key}>{column.label || formatLabel(column.key)}</th>)}</tr></thead>
           <tbody>
@@ -491,7 +493,7 @@ function DataTable({
             ))}
           </tbody>
         </table>
-      </div>
+      </HorizontalTableScroll>
     </section>
   )
 }
@@ -734,7 +736,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const performanceMetricPeriodSnapshots = useMemo(
     () => buildPerformanceMetricPeriodSnapshots(calculationSeries, {
       continuousDaily: isCrypto,
-      pathRiskAvailable: risk?.data_quality?.status === 'ready',
+      // Crypto's complete UTC calendar is validated inside each window. An
+      // older gap still withholds SI risk without invalidating a complete month.
+      pathRiskAvailable: risk?.data_quality?.status === 'ready' || (
+        isCrypto && risk?.data_quality?.status === 'partial_missing_observations'
+      ),
     }),
     [calculationSeries, isCrypto, risk?.data_quality?.status],
   )
@@ -913,7 +919,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const latestOpinion = latestInvestmentOpinion(research)
   const zh = language === 'zh-Hans'
 
-  if (loading) return <LoadingOverlay label="Loading market detail" />
+  if (loading) return <LoadingOverlay />
 
   const chartPanel = (
     <section className="panel listed-chart-panel">
@@ -991,7 +997,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           {watchlistContext ? (
             <>
               <span className="watchlist-breadcrumb-separator">/</span>
-              <Link to={buildWatchlistPath(watchlistContext.watchlistId)} className="watchlist-breadcrumb-link">{watchlistContext.watchlistName}</Link>
+              <Link to={buildWatchlistPath(watchlistContext.watchlistId)} className="watchlist-breadcrumb-link" translate={watchlistContext.isSystem ? undefined : 'no'}>{watchlistContext.watchlistName}</Link>
             </>
           ) : null}
           <span className="watchlist-breadcrumb-separator">/</span>
@@ -1117,7 +1123,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                       ))}
                     </select>
                   </label>
-                  {settingsLoading ? <div className="instrument-settings-loading">Loading settings…</div> : null}
+                  {settingsLoading ? <div className="instrument-settings-loading">Loading</div> : null}
                 </div>
               </section>
             </div>
@@ -1199,7 +1205,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                 </div>
               </div>
               <div className="instrument-performance-section-body">
-                <div className="table-shell instrument-performance-table-shell">
+                <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                   <table className="terminal-table terminal-table-compact instrument-metrics-table">
                     <thead>
                       <tr>
@@ -1222,7 +1228,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
               </div>
             </section> : <DataTable title={zh ? '区间收益' : 'Period Returns'} rows={(performance?.trailing_returns ?? []).map(row => ({ ...row, window: ['3Y', '5Y'].includes(String(row.window)) ? `${row.window} ${zh ? '（年化）' : '(annualized)'}` : row.window }))} columns={TRAILING_RETURN_COLUMNS} />}
 
@@ -1235,7 +1241,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               </div>
               <div className="instrument-performance-section-body">
                 {monthlyReturnMatrixRows.length ? (
-                  <div className="table-shell instrument-performance-table-shell">
+                  <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                     <table className="terminal-table terminal-table-compact instrument-heatmap-table">
                       <thead>
                         <tr>
@@ -1269,7 +1275,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 ) : (
                   <div className="instrument-placeholder">
                     {zh ? '取得相邻月末数据后显示月度收益。' : 'Monthly returns appear when adjacent month-end observations are available.'}

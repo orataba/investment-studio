@@ -67,6 +67,8 @@ shared instruments / local evidence / holdings ingest
 注意：
 
 - `move` / `copy` 现在会严格校验 source membership
+- 自定义列表支持重命名，名称去除首尾空白后为 1–200 个字符；重命名不改变稳定 ID、成员、视图、设置和研究。系统名单由登记目录维护，不能手动重命名。
+- 名单名称由团队可写账号维护；显示顺序和视图为个人设置。视图写入先锁定所属列表，系统视图首次保存为个人覆盖时同样校验当前可见视图的名称冲突；并发首次保存只建立一份个人覆盖。
 - custom view id 会做 path-safe slug 化
 - 复制 watchlist 时会按相同规则规范化源 custom view id
 
@@ -141,6 +143,8 @@ Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为�
 - `documents`
 
 这些内容服务于 detail overlay，不等价于原始事实。
+
+手工资料写入使用所属标的行锁，首次建档也遵守同一顺序。文件索引追加与净值设置局部更新先锁定再读取最新内容，避免并发提交丢失另一份上传或覆盖其他设置。
 
 投资研究已经成为独立领域：
 
@@ -224,6 +228,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `POST /api/watchlists/reorder`
 - `POST /api/watchlists/{watchlist_id}/copy`
 - `DELETE /api/watchlists/{watchlist_id}`
+- `PATCH /api/watchlists/{watchlist_id}`（仅更新 `name`）
 - `GET /api/watchlists/{watchlist_id}`
 - `GET /api/watchlists/{watchlist_id}/views`
 - `POST /api/watchlists/{watchlist_id}/items`
@@ -322,6 +327,10 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `POST /api/recalc/instruments/{instrument_id}/execute`
 - `GET /api/recalc/jobs`
 - `GET /api/recalc/jobs/{job_id}`
+
+计算源代次和物化版本分别决定结果是否过期。详情读取会对旧结果排队修复；后台 worker 启动后也按批扫描全部 active 本地标的，保证没有页面访问时仍会收敛。首个读请求可以在重建完成前返回旧快照，因此发布不能仅依赖此异步路径。
+
+安装器在停止托管写入进程后调用 `backend/scripts/refresh_release_watchlists.py --recover-interrupted`：明确恢复被停写中断的重算租约，再同步系统目录，再使用已存储的 canonical 输入对缺失或旧版本的 chart / watchlist row 执行 `all` 重算，验证版本后整体提交。失败则连同租约恢复一起回滚该事务并阻止发布。不传恢复参数时不会抢占仍标记 running 的任务；常规 worker 的心跳超时规则保持不变。该步骤不抓取新行情、不运行 AI 研究，不改用户自定义名称、名单成员、个人视图或研究观点；自定义名单中失效的计算结果同样被重建。
 
 ## 7. 当前前端路由
 

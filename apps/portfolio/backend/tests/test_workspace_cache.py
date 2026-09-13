@@ -115,6 +115,7 @@ def test_cached_risk_basis_retains_existing_ttl_and_value_size_budget(cache_cont
 
 def test_cache_hit_checks_actual_source_freshness(monkeypatch):
     state = SimpleNamespace(
+        portfolio_name="Portfolio",
         daily_snapshot_status="current", refresh_request_id=None,
         refreshed_at="generation-1", refreshed_from=date(2026, 1, 1),
         refreshed_to=date(2026, 9, 6), source_stale=False,

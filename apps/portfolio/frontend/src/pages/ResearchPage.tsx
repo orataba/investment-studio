@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
@@ -2173,7 +2174,7 @@ export default function ResearchPage() {
                       +
                     </button>
                   </div>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-robustness-table">
                       <thead>
                         <tr>
@@ -2263,7 +2264,7 @@ export default function ResearchPage() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </div>
                 {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               </fieldset>
@@ -2354,7 +2355,7 @@ export default function ResearchPage() {
                     <strong>{formatMaybePercent(backtest?.metrics?.period_return)}</strong>
                   </div>
                 </div>
-                <div className="table-shell">
+                <HorizontalTableScroll className="table-shell">
                   <table className="transactions-table research-solved-table">
                     <thead>
                       <tr>
@@ -2397,13 +2398,13 @@ export default function ResearchPage() {
                       )}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
                 <details className="research-table-disclosure">
                   <summary>
                     <span>Instrument-level Solution</span>
                     <span>{solvedInstrumentRows.length} rows · weights, capital, risk and rebalance direction</span>
                   </summary>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-instrument-solution-table">
                       <thead>
                         <tr>
@@ -2447,7 +2448,7 @@ export default function ResearchPage() {
                         })}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </details>
               </section>
 
@@ -2536,7 +2537,7 @@ export default function ResearchPage() {
                     <div className="panel-header panel-header-inline">
                       <div><div className="panel-title">Solver Diagnostics</div></div>
                     </div>
-                    <div className="table-shell">
+                    <HorizontalTableScroll className="table-shell">
                       <table className="transactions-table research-solver-diagnostics-table">
                         <thead>
                           <tr>
@@ -2565,7 +2566,7 @@ export default function ResearchPage() {
                           ))}
                         </tbody>
                       </table>
-                    </div>
+                    </HorizontalTableScroll>
                   </section>
 
               <section className="performance-block-grid research-validation-grid">
@@ -2579,7 +2580,7 @@ export default function ResearchPage() {
                   <p className="section-caption">
                     Historical taxonomy and targets are effective-dated. Risk settings are fixed for this run; delayed NAV publication and fund dealing restrictions are not simulated.
                   </p>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-validation-summary-table">
                       <tbody>
                         <tr>
@@ -2646,13 +2647,13 @@ export default function ResearchPage() {
                         </tr>
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </div>
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Execution & Costs</div></div>
                   </div>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-execution-table">
                       <thead>
                         <tr>
@@ -2687,7 +2688,7 @@ export default function ResearchPage() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </div>
               </section>
 
@@ -2696,7 +2697,7 @@ export default function ResearchPage() {
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Robustness</div></div>
                   </div>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-robustness-results-table">
                       <thead>
                         <tr>
@@ -2731,7 +2732,7 @@ export default function ResearchPage() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </div>
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
@@ -2750,7 +2751,7 @@ export default function ResearchPage() {
                     <span>OOS Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
                     <span>OOS Max DD <strong>{formatMaybePercent(walkForward?.oos_metrics?.max_drawdown)}</strong></span>
                   </div>
-                  <div className="table-shell">
+                  <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-walk-forward-table">
                       <thead>
                         <tr>
@@ -2781,7 +2782,7 @@ export default function ResearchPage() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </div>
               </section>
 

@@ -90,16 +90,20 @@ class SQLAlchemyRecalcJobRepository:
         session: Session,
         *,
         timeout_seconds: float | None,
+        recover_interrupted: bool = False,
     ) -> int:
-        if timeout_seconds is None or timeout_seconds <= 0:
+        # Explicit release recovery is valid only after all managed writers
+        # have stopped. Normal workers must continue respecting live leases.
+        if not recover_interrupted and (timeout_seconds is None or timeout_seconds <= 0):
             return 0
-        cutoff = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=timeout_seconds)
         bind = session.get_bind()
-        stmt = select(RecalcJob).where(
-            RecalcJob.job_status == "running",
-            RecalcJob.started_at.is_not(None),
-            func.coalesce(RecalcJob.heartbeat_at, RecalcJob.started_at) < cutoff,
-        )
+        stmt = select(RecalcJob).where(RecalcJob.job_status == "running")
+        if not recover_interrupted:
+            cutoff = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=timeout_seconds)
+            stmt = stmt.where(
+                RecalcJob.started_at.is_not(None),
+                func.coalesce(RecalcJob.heartbeat_at, RecalcJob.started_at) < cutoff,
+            )
         if bind.dialect.name == "postgresql":
             stmt = stmt.with_for_update(skip_locked=True)
         records = session.scalars(stmt).all()
@@ -111,7 +115,11 @@ class SQLAlchemyRecalcJobRepository:
             record.heartbeat_at = None
             record.lease_token = None
             record.finished_at = None
-            record.error_message = "Recovered stale running job after worker interruption."
+            record.error_message = (
+                "Recovered interrupted running job during stopped-worker release."
+                if recover_interrupted
+                else "Recovered stale running job after worker interruption."
+            )
         session.flush()
         return len(records)
 

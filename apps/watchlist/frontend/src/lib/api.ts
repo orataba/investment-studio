@@ -1194,6 +1194,13 @@ export function copyWatchlist(watchlistId: string) {
   })
 }
 
+export function renameWatchlist(watchlistId: string, name: string) {
+  return fetchJson<WatchlistRecord>(`/api/watchlists/${encodeURIComponent(watchlistId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
 export function deleteWatchlist(watchlistId: string) {
   return fetchJson<WatchlistDeleteResponse>(`/api/watchlists/${watchlistId}`, {
     method: 'DELETE',

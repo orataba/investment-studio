@@ -1,4 +1,4 @@
-import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
@@ -14,6 +14,7 @@ import {
 import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import { useWatchlistForegroundRefresh } from '../lib/useWatchlistForegroundRefresh'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 function isSystemWatchlist(watchlist: WatchlistRecord) {
@@ -21,6 +22,8 @@ function isSystemWatchlist(watchlist: WatchlistRecord) {
 }
 
 export default function WatchlistEntryPage() {
+  const { language } = useLanguage()
+  const zh = language === 'zh-Hans'
   const canWriteTeam = useCanWriteTeam()
   const navigate = useNavigate()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
@@ -36,10 +39,11 @@ export default function WatchlistEntryPage() {
   const [isCreatingWatchlist, setIsCreatingWatchlist] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<WatchlistRecord | null>(null)
+  const [renamingWatchlist, setRenamingWatchlist] = useState<WatchlistRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   useWatchlistForegroundRefresh(
-    loading ? null : 'entry',
+    loading || renamingWatchlist ? null : 'entry',
     (records) => {
       setWatchlists(records)
       setError(null)
@@ -223,7 +227,7 @@ export default function WatchlistEntryPage() {
           <h1 className="watchlist-entry-title">All Watchlists</h1>
           <span className="watchlist-entry-hero-meta">
             {loading
-              ? 'Loading watchlists…'
+              ? 'Loading'
               : error
                 ? 'Watchlist totals unavailable'
                 : `${watchlists.length} Watchlists · ${totalProducts} Securities`}
@@ -337,6 +341,12 @@ export default function WatchlistEntryPage() {
                         Copy Watchlist
                       </button>
                       {!systemWatchlist ? (
+                        <button type="button" onClick={() => {
+                          setRenamingWatchlist(watchlist)
+                          setMenuOpenId(null)
+                        }}>{zh ? '重命名关注列表' : 'Rename Watchlist'}</button>
+                      ) : null}
+                      {!systemWatchlist ? (
                         <button
                           type="button"
                           onClick={() => {
@@ -430,6 +440,7 @@ export default function WatchlistEntryPage() {
                   ref={createNameRef}
                   className="form-input"
                   value={createWatchlistName}
+                  maxLength={200}
                   onChange={(event) => setCreateWatchlistName(event.target.value)}
                   placeholder="Coverage"
                 />
@@ -470,6 +481,13 @@ export default function WatchlistEntryPage() {
           </div>
         </div>
       ) : null}
+      {renamingWatchlist && <RenameWatchlistDialog key={renamingWatchlist.watchlist_id}
+        watchlist={renamingWatchlist} onCancel={() => setRenamingWatchlist(null)}
+        onSaved={(saved) => {
+          setWatchlists((current) => current.map((item) => item.watchlist_id === saved.watchlist_id ? { ...item, name: saved.name } : item))
+          setRenamingWatchlist(null)
+          setNotice(zh ? '关注列表已重命名。' : 'Watchlist renamed.')
+        }} />}
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         title="Delete Watchlist"

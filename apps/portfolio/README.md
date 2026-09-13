@@ -17,6 +17,7 @@ Portfolio 不直接写 Registry market facts，也不复用 Watchlist 的名单�
 
 - FCN 和 Option 是 Portfolio-local immutable contracts；只有 underlying/deliverable 证券引用 Registry；
 - Portfolio 的 reporting/base currency 在组合 Settings 管理；切换后交易事实币种不变，所有旧口径派生快照失效并全量重算；
+- 组合编辑者可在组合列表或组合内设置中重命名；名称去除首尾空格后为 1 至 200 个字符，组合 ID、授权、交易与历史快照不变。仅修改名称不会触发金融重算，列表、选择器和缓存中的名称同步更新；
 - 经人工确认的期权实物行权或指派由一个原子命令生成零现金期权关闭和按行权价成交的股票腿，并保留严格一对一关联；FCN 实物交付在同一兑付记录保存实际证券、确认价值、现金尾差及必要的汇率，不能用虚构现金兑付及独立买股替代；
 - 已有期权空头使用 `opening_written` 导入期初账面负债，不重复记录历史权利金现金；FCN 敲入观察使用 `knock_in_observation`，不提前清仓；
 - 账户出现资产交易后不允许切换成本法并重述历史。Option 的交割方式、行权风格以及 FCN 观察条款按已确认合约保存；未知条款明确保留为未确认；
@@ -30,7 +31,7 @@ Portfolio 不直接写 Registry market facts，也不复用 Watchlist 的名单�
 - Taxonomy/TargetSet 是 planning truth，Research 消费它们，不建立第二套目标体系；
 - Research 先成功提交结果，再清理请求时间更早且已结束的运行及其产物；仍在运行的任务和较新请求不被旧任务删除。发布失败会回滚本次修改并保留上一份有效结果；
 - Portfolio taxonomy 与 Watchlist taxonomy 的节点、assignment 和版本完全独立，同名不代表关联；
-- 条件不足的收益、风险和研究结果明确 unavailable，不用旧算法、等权或不完整样本兜底。
+- 条件不足的收益、风险和研究结果明确 unavailable，不用旧算法、等权或不完整样本兜底。Research 的当前性校验同时覆盖分类目标、历史交易行版本、账户及合约、本位币和风险设置、研究标的及 FX 的共享来源版本；计算过程中这些输入变更会终止本次发布并保留上一份有效结果。来源水位不提供按日期的局部修订信息，因此固定分析日的研究在相关来源更新后也需重算确认。
 
 ## 文档
 

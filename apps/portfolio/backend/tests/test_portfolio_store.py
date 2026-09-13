@@ -136,6 +136,7 @@ def test_updating_base_currency_invalidates_all_derived_snapshots(client) -> Non
     )
     assert update_response.status_code == 200
     assert update_response.json()["base_currency"] == "CNY"
+    assert update_response.json()["access"]["can_manage"] is True
     assert update_response.json()["nav"] is None
 
     with session_factory() as session:
@@ -157,6 +158,47 @@ def test_updating_base_currency_invalidates_all_derived_snapshots(client) -> Non
         json={"base_currency": "CNY"},
     )
     assert missing_response.status_code == 404
+
+
+def test_rename_preserves_identity_snapshots_and_refresh_generation(client, monkeypatch) -> None:
+    from portfolio_app.services import workspace_cache
+    portfolio_id = "investment-studio"
+    client.get("/api/workspace/summary", params={"portfolio_id": portfolio_id})
+    with get_session_factory()() as session:
+        before = portfolio_store._serialize_portfolio_row(session.get(PortfolioRecordModel, portfolio_id))
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        request_id = state.refresh_request_id
+        snapshot_count = daily_snapshots._snapshot_count(session, portfolio_id)
+    fingerprint = workspace_cache._snapshot_fingerprint(portfolio_id)
+    response = client.patch(f"/api/portfolios/{portfolio_id}", json={"name": "  新组合名称  "})
+    assert response.status_code == 200, response.text
+    assert response.json()["portfolio_id"] == portfolio_id
+    assert response.json()["portfolio_name"] == "新组合名称"
+    assert response.json()["access"]["can_edit"] is True
+    with get_session_factory()() as session:
+        after = portfolio_store._serialize_portfolio_row(session.get(PortfolioRecordModel, portfolio_id))
+        assert {key: value for key, value in after.items() if key != "portfolio_name"} == {key: value for key, value in before.items() if key != "portfolio_name"}
+        assert session.get(PortfolioCalculationStateModel, portfolio_id).refresh_request_id == request_id
+        assert daily_snapshots._snapshot_count(session, portfolio_id) == snapshot_count
+    assert workspace_cache._snapshot_fingerprint(portfolio_id) != fingerprint
+    assert client.get("/api/workspace/summary", params={"portfolio_id": portfolio_id}).json()["portfolio_name"] == "新组合名称"
+
+
+@pytest.mark.parametrize("payload", [{}, {"name": " "}, {"name": "a" * 201}, {"name": None}, {"base_currency": None}, {"portfolio_id": "replacement"}])
+def test_portfolio_settings_reject_invalid_or_empty_changes(client, payload) -> None:
+    response = client.patch("/api/portfolios/investment-studio", json=payload)
+    assert response.status_code == 422
+
+
+def test_list_day_return_capital_preserves_external_withdrawal_denominator(client) -> None:
+    with get_session_factory()() as session:
+        snapshot = _seed_daily_snapshot(portfolio_id="investment-studio", as_of_date=date(2026, 1, 2), nav=60, daily_twr=0.1)
+        snapshot.snapshot_json = {**snapshot.snapshot_json, "beginning_nav": 100, "external_cash_in": 0, "external_cash_out": 50, "delta": 10}
+        session.add(snapshot)
+        session.commit()
+    portfolio = next(item for item in client.get("/api/portfolios").json() if item["portfolio_id"] == "investment-studio")
+    assert portfolio["day_change_value"] == 10
+    assert portfolio["day_return_capital"] == 100
 
 
 def test_reset_store_rejects_missing_or_duplicate_transaction_sequence() -> None:
@@ -637,3 +679,20 @@ def test_live_portfolio_as_of_ignores_stale_cached_portfolio_date(monkeypatch) -
         accounts=[account],
         transactions=transactions,
     ) == date(2026, 4, 28)
+
+
+def test_last_portfolio_can_be_deleted_without_seed_or_global_order_rewrite(client):
+    response = client.delete('/api/portfolios/investment-studio')
+    assert response.status_code == 200, response.text
+    assert client.get('/api/portfolios').json() == []
+
+
+def test_portfolio_directory_hides_stale_generation_values(client):
+    portfolio_id = 'investment-studio'
+    assert client.get('/api/workspace/summary', params={'portfolio_id': portfolio_id}).status_code == 200
+    daily_snapshots.mark_portfolio_daily_snapshots_stale(portfolio_id, dirty_from=date(2026, 4, 1))
+    response = client.get('/api/portfolios')
+    assert response.status_code == 200
+    item = next(row for row in response.json() if row['portfolio_id'] == portfolio_id)
+    assert item['portfolio_name']
+    assert item['nav'] is None and item['day_change_value'] is None and item['day_change_pct'] is None

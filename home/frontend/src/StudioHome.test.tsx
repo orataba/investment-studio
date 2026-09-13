@@ -6,6 +6,9 @@ import StudioHome, { StudioLinks } from './StudioHome'
 import appCatalog from '../../apps.json'
 import LoginPage, { destinationAfterLogin } from './LoginPage'
 import { resolveWorkspaceUrl } from '../../../packages/ui/src/navigation'
+import ActivatePage from './ActivatePage'
+import AccountPage from './AccountPage'
+import { homeMessages } from './messages'
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -73,7 +76,7 @@ describe('StudioHome', () => {
 
   it('shows a loading message before the entry list is available', () => {
     expect(renderToStaticMarkup(<LanguageProvider><StudioHome /></LanguageProvider>))
-      .toContain('Loading workspaces')
+      .toContain('aria-busy="true"')
   })
 
   it('renders a full login form', () => {
@@ -91,6 +94,22 @@ describe('StudioHome', () => {
     expect(markup).toContain('name="username"')
     expect(markup).toContain('name="password"')
     expect(markup).toContain('Enter Investment Studio')
+  })
+
+  it.each([
+    { language: 'en', title: 'Set your account password', loginCode: 'Authentication code (if enabled)', accountTitle: 'Account and team' },
+    { language: 'zh-Hans', title: '设置账号密码', loginCode: '二步验证码（已启用时填写）', accountTitle: '账号与团队' },
+  ])('renders identity pages in $language and waits for the account before showing signed-out UI', ({ language, title, loginCode, accountTitle }) => {
+    vi.stubGlobal('window', { location: { hostname: '127.0.0.1', protocol: 'http:', search: `?lang=${language}`, hash: '#token=example' } })
+    const page = (child: React.ReactNode) => renderToStaticMarkup(<LanguageProvider messages={homeMessages}>{child}</LanguageProvider>)
+    const activate = page(<ActivatePage />)
+    expect(activate).toContain(title)
+    expect(activate).toContain('class="language-switcher"')
+    expect(page(<LoginPage />)).toContain(loginCode)
+    const account = page(<AccountPage />)
+    expect(account).toContain(accountTitle)
+    expect(account).toContain('aria-busy="true"')
+    expect(account).not.toContain('href="/login"')
   })
 
   it('preserves the complete authenticated deep link including every query filter', () => {

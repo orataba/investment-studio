@@ -12,6 +12,11 @@ class WatchlistCreateRequest(BaseModel):
     description: str | None = None
 
 
+class WatchlistRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+
 class WatchlistItemsCreateRequest(BaseModel):
     instrument_ids: list[str] = Field(default_factory=list, max_length=2000)
 

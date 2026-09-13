@@ -1,12 +1,8 @@
-type LoadingOverlayProps = {
-  label?: string
-}
-
-export default function LoadingOverlay({ label = 'Loading' }: LoadingOverlayProps) {
+export default function LoadingOverlay() {
   return (
-    <div className="watchlist-loading-overlay" role="status" aria-live="polite">
+    <div className="watchlist-loading-overlay" role="status" aria-live="polite" aria-busy="true">
       <span className="watchlist-loading-spinner" aria-hidden="true" />
-      <span>{label}</span>
+      <span>Loading</span>
     </div>
   )
 }

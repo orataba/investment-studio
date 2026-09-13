@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { getPortfolioTailRisk, type PortfolioTailRisk } from '../lib/tailRiskApi'
@@ -99,12 +100,12 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
         <p>{zh
           ? '仅重放真实同周期的证券总回报及汇率变化，未填充行情。各情景等概率；VaR 使用经验分位数，ES 保留分位边界的部分概率。当前仓位固定，未使用组合实际历史绩效或时间平方根缩放。'
           : 'Only observed, synchronized total-return and FX changes are replayed, without filling prices. Scenarios have equal probabilities; VaR uses the empirical quantile and ES preserves fractional boundary probability. Exposures are fixed today; actual portfolio history and square-root-of-time scaling are not used.'}</p>
-        <div className="portfolio-tail-risk-table-wrap"><table><thead><tr>
+        <HorizontalTableScroll className="portfolio-tail-risk-table-wrap"><table><thead><tr>
           <th>{zh ? '持仓' : 'Holding'}</th><th>{zh ? '市值 / NAV' : 'Value / NAV'}</th><th>{zh ? '日频样本' : 'Daily samples'}</th><th>{zh ? '覆盖' : 'Coverage'}</th>
         </tr></thead><tbody>{data.rows.map((row, index) => <tr key={`${row.holding_id}:${index}`}>
           <td>{row.name}</td><td>{percent(row.weight)}</td><td>{row.status === 'modeled' ? number(row.observation_count, 0) : '—'}</td>
           <td>{row.reason ? label(row.reason) : zh ? '已建模' : 'Modeled'}</td>
-        </tr>)}</tbody></table></div>
+        </tr>)}</tbody></table></HorizontalTableScroll>
       </details>
     </>}
   </section>

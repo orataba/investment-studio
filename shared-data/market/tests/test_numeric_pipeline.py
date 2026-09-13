@@ -125,6 +125,18 @@ def test_directory_catches_up_all_missed_bundles_and_resumes_after_failure(tmp_p
     result=delivery.pull_numeric_directory(target.settings,host='trusted-host',remote_dir='/outbox')
     assert result['new_bundles']==0 and len(result['already_present'])==2
     assert copied==['index.json']
+    # A database restored to an earlier point can retain newer transfer receipts.
+    # Reuse the on-disk receipt with an empty database and recover both bundles.
+    restored=make_store(tmp_path,'restored')
+    restored.settings.data_root.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(target.settings.data_root/'delivery-status.json',
+                    restored.settings.data_root/'delivery-status.json')
+    copied.clear()
+    result=delivery.pull_numeric_directory(restored.settings,host='trusted-host',remote_dir='/outbox')
+    assert result['new_bundles']==2
+    assert restored.latest('analyst_price_targets')['rows'][0]['last_month_avg_price_target']==20
+    assert copied==['index.json',*[item['name'] for item in index['bundles']]]
+    restored.close()
     source.close();target.close()
 
 
@@ -321,6 +333,7 @@ def test_authenticated_sftp_inbox_ignores_partial_and_records_only_success(tmp_p
     checksum='a'*64;name='mi-text-'+checksum+'.zip'
     (inbox/(name+'.partial')).write_bytes(b'in flight')
     calls=[]
+    monkeypatch.setattr(TextStore,'imported_bundle_ids',lambda self: {Path(item[0]).stem for item in calls})
     monkeypatch.setattr(TextStore,'import_bundle',lambda self,path,expected_sha256: calls.append((path.name,expected_sha256)) or {'imported':1})
     assert delivery.import_text_directory(settings,directory=inbox)['new_bundles']==0
     (inbox/(name+'.sha256')).write_text(checksum+'  '+name+'\n')

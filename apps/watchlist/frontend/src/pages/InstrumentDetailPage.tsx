@@ -17,6 +17,7 @@ import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 type WatchlistBreadcrumbContext = {
   watchlistId: string
   watchlistName: string
+  isSystem?: boolean
 }
 
 export default function InstrumentDetailPage() {
@@ -49,6 +50,7 @@ export default function InstrumentDetailPage() {
               ? {
                   watchlistId,
                   watchlistName: watchlist?.name || watchlistId,
+                  isSystem: watchlist?.owner_type === 'system',
                 }
               : null,
           )
@@ -75,7 +77,7 @@ export default function InstrumentDetailPage() {
   }, [instrumentId, watchlistId])
 
   if (loading) {
-    return <LoadingOverlay label="Loading detail" />
+    return <LoadingOverlay />
   }
 
   if (error || !instrument) {
@@ -140,7 +142,7 @@ export default function InstrumentDetailPage() {
         {watchlistId ? (
           <>
             <span className="watchlist-breadcrumb-separator">/</span>
-            <Link to={buildWatchlistPath(watchlistId)} className="watchlist-breadcrumb-link">
+            <Link to={buildWatchlistPath(watchlistId)} className="watchlist-breadcrumb-link" translate={watchlistContext?.isSystem ? undefined : 'no'}>
               {watchlistContext?.watchlistName || watchlistId}
             </Link>
           </>

@@ -36,6 +36,7 @@ export function destinationAfterLogin() {
 }
 
 export default function LoginPage() {
+  const { t } = useLanguage()
   const { language } = useLanguage()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -64,7 +65,7 @@ export default function LoginPage() {
       })
       if (!response.ok) {
         setError(response.status === 401
-          ? '用户名、密码或二步验证码不正确。'
+          ? t("The username, password or authentication code is incorrect.")
           : 'Sign-in is temporarily unavailable. Please try again later.')
         return
       }
@@ -86,10 +87,10 @@ export default function LoginPage() {
         </div>
         <div className="login-copy">
           <span>Private workspace</span>
-          <h1 id="login-title">{local ? '本机全权限' : 'Sign in'}</h1>
-          <p>{local ? '本机工作台无需登录。' : 'Enter your username and password to access Investment Studio.'}</p>
+          <h1 id="login-title">{local ? t("Local unrestricted access") : 'Sign in'}</h1>
+          <p>{local ? t("The local workspace does not require sign-in.") : 'Enter your username and password to access Investment Studio.'}</p>
         </div>
-        {local ? <a href={withLanguage(destinationAfterLogin(), language)}>进入工作台</a> : <form className="login-form" onSubmit={handleSubmit}>
+        {local ? <a href={withLanguage(destinationAfterLogin(), language)}>{t("Open workspaces")}</a> : <form className="login-form" onSubmit={handleSubmit}>
           <label>
             <span>Username</span>
             <input
@@ -112,7 +113,7 @@ export default function LoginPage() {
               required
             />
           </label>
-          <label><span>二步验证码（已启用时填写）</span><input name="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={event => setOtp(event.target.value)} /></label>
+          <label><span>{t("Authentication code (if enabled)")}</span><input name="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={event => setOtp(event.target.value)} /></label>
           {error ? <p className="login-error" role="alert">{error}</p> : null}
           <button disabled={submitting} type="submit">
             {submitting ? 'Signing in…' : 'Enter Investment Studio'}

@@ -36,6 +36,137 @@ from investment_studio_instrument_core import instrument_store as shared_store
 pytestmark = pytest.mark.postgresql_integration
 
 
+def test_postgres_release_recovery_is_atomic_and_fences_interrupted_lease(postgres_watchlist_env, monkeypatch):
+    import importlib.util
+    from sqlalchemy import select
+    from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
+    from watchlist_app.db.models.recalc import RecalcJob
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService, RecalcJobAlreadyRunningError
+    from watchlist_app.services.materialization_policy import WATCHLIST_MATERIALIZATION_VERSION
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    spec = importlib.util.spec_from_file_location("pg_release_watchlists", BACKEND_ROOT / "scripts/refresh_release_watchlists.py")
+    release = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release)
+    iid, factory = postgres_watchlist_env["instrument_id"], get_session_factory()
+    repo, recalc = SQLAlchemyRecalcJobRepository(), CanonicalRecalcService()
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
+            instrument_name="Release recovery", is_active=True, metadata_json={}))
+        session.commit()
+        recalc.execute_recalc(session, instrument_id=iid, job_type="all", trigger_type="test",
+            trigger_ref_type=None, trigger_ref_id=None, commit=True)
+        session.get(InstrumentChartReadModel, iid).materialization_version = "watchlist-materialization/v11"
+        job = repo.create(session, recalc_job_id="release-interrupted", job_type="all", instrument_id=iid,
+            trigger_type="test", trigger_ref_type=None, trigger_ref_id=None, job_status="queued", priority=100,
+            dedupe_key=make_recalc_dedupe_key(job_type="all", instrument_id=iid), payload_json={})
+        repo.mark_running(session, job)
+        old_lease = job.lease_token
+        session.commit()
+    def snapshot():
+        with factory() as session:
+            return {model.__tablename__: sorted((dict(row) for row in session.execute(select(model.__table__)).mappings()), key=repr)
+                for model in (RecalcJob, InstrumentChartReadModel, Watchlist, WatchlistItem, WatchlistRowReadModel)}
+    before = snapshot()
+    with pytest.raises(RecalcJobAlreadyRunningError):
+        release.main()
+    assert snapshot() == before
+    original = CanonicalRecalcService._execute_recalc_job
+    def abort_after_write(self, session, **kwargs):
+        original(self, session, **kwargs)
+        raise RuntimeError("Injected after canonical write")
+    monkeypatch.setattr(CanonicalRecalcService, "_execute_recalc_job", abort_after_write)
+    with pytest.raises(RuntimeError, match="Injected after canonical write"):
+        release.main(recover_interrupted=True)
+    assert snapshot() == before
+    monkeypatch.setattr(CanonicalRecalcService, "_execute_recalc_job", original)
+    assert release.main(recover_interrupted=True) == 0
+    with factory() as session:
+        job = session.get(RecalcJob, "release-interrupted")
+        assert job.job_status == "completed"
+        assert job.lease_token != old_lease
+        assert not repo.mark_completed(session, job, lease_token=old_lease)
+        assert not repo.touch_heartbeat(session, job.recalc_job_id, old_lease)
+        assert session.get(InstrumentChartReadModel, iid).materialization_version == WATCHLIST_MATERIALIZATION_VERSION
+
+
+def test_concurrent_initial_view_saves_share_one_personal_override(postgres_watchlist_env):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import select
+    from studio_identity import current_principal, principal_context
+    from watchlist_app.api.contracts import WatchlistViewCreateRequest
+    from watchlist_app.api.routes.watchlists import update_view_for_watchlist
+    from watchlist_app.db.models.watchlists import WatchlistView
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
+    actor, ready, factory = current_principal(), Barrier(2), get_session_factory()
+    with factory() as session:
+        SQLAlchemyWatchlistRepository().create(session, watchlist_id="concurrent-view", name="Views",
+            description=None, owner_type="team", owner_id="default", default_view_id="overview")
+        session.commit()
+    def save():
+        with principal_context(actor), factory() as session:
+            ready.wait(timeout=5)
+            return update_view_for_watchlist("concurrent-view", "overview",
+                WatchlistViewCreateRequest(name="My columns"), session)["view_id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ids = list(pool.map(lambda _: save(), range(2)))
+    assert ids[0] == ids[1]
+    with factory() as session:
+        personal = list(session.scalars(select(WatchlistView).where(
+            WatchlistView.watchlist_id == "concurrent-view", WatchlistView.author_user_id == actor.user_id)))
+        assert len(personal) == 1
+        assert personal[0].base_view_id == "concurrent-view::overview"
+
+
+@pytest.mark.parametrize("existing_profile", [False, True])
+def test_manual_profile_appends_wait_for_other_writer_and_refresh_cached_json(postgres_watchlist_env, existing_profile):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.manual_profiles import SQLAlchemyInstrumentManualProfileRepository
+    iid = postgres_watchlist_env["instrument_id"]
+    repo, factory = SQLAlchemyInstrumentManualProfileRepository(), get_session_factory()
+    with factory() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type="public_fund", detail_view_type="public_fund",
+            instrument_name="Concurrent Documents", metadata_json={}))
+        session.flush()
+        if existing_profile:
+            repo.upsert(session, instrument_id=iid, documents_payload_json={"current_documents": []})
+        session.commit()
+    entered = Event()
+    def second_upload():
+        with factory() as session:
+            cached = repo.get(session, iid)
+            assert (cached is not None) == existing_profile
+            entered.set()
+            current = repo.get_for_update(session, iid)
+            documents = [*(current.documents_payload_json or {}).get("current_documents", []), "second.pdf"]
+            repo.upsert(session, instrument_id=iid, documents_payload_json={"current_documents": documents})
+            session.commit()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with factory() as session:
+            repo.get_for_update(session, iid)
+            future = pool.submit(second_upload)
+            assert entered.wait(5)
+            try:
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=0.2)
+                repo.upsert(session, instrument_id=iid, documents_payload_json={"current_documents": ["first.pdf"]},
+                    people_payload_json={"manager": "Retained profile"})
+                session.commit()
+            finally:
+                session.rollback()
+        future.result(timeout=5)
+    with factory() as session:
+        saved = repo.get(session, iid)
+        assert saved.documents_payload_json["current_documents"] == ["first.pdf", "second.pdf"]
+        assert saved.people_payload_json == {"manager": "Retained profile"}
+
+
 def test_dossier_writer_waits_for_publication_and_preserves_new_user_focus(postgres_watchlist_env):
     from concurrent.futures import ThreadPoolExecutor, TimeoutError
     from threading import Event

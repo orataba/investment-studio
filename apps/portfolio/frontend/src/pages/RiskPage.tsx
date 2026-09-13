@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useParams } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -3134,7 +3135,7 @@ export default function RiskPage() {
                 </article>
               </div>
               {analyticsScope?.excluded_rows.length ? (
-                <div className="table-shell risk-scope-table-shell">
+                <HorizontalTableScroll className="table-shell risk-scope-table-shell">
                   <table className="transactions-table risk-scope-table">
                     <thead>
                       <tr>
@@ -3157,7 +3158,7 @@ export default function RiskPage() {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
               ) : null}
               {topLevelRiskContributionRows.length ? (
                 <>
@@ -3171,7 +3172,7 @@ export default function RiskPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="table-shell risk-scope-table-shell">
+                  <HorizontalTableScroll className="table-shell risk-scope-table-shell">
                     <table className="transactions-table risk-scope-table">
                       <thead>
                         <tr>
@@ -3192,7 +3193,7 @@ export default function RiskPage() {
                         ))}
                       </tbody>
                     </table>
-                  </div>
+                  </HorizontalTableScroll>
                 </>
               ) : null}
             </section>

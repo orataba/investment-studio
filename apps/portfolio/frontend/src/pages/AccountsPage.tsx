@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router'
@@ -849,7 +850,7 @@ export default function AccountsPage() {
                         <span>{countLabel(visiblePositions.length, 'line')}</span>
                       </div>
                       {visiblePositions.length ? (
-                        <div className="table-shell">
+                        <HorizontalTableScroll className="table-shell">
                           <table className="accounts-data-table accounts-responsive-table account-position-table">
                             <thead>
                               <tr>
@@ -870,7 +871,7 @@ export default function AccountsPage() {
                               ))}
                             </tbody>
                           </table>
-                        </div>
+                        </HorizontalTableScroll>
                       ) : (
                         <div className="account-empty-state">No open positions in this account.</div>
                       )}
@@ -904,7 +905,7 @@ export default function AccountsPage() {
                         </div>
                       </div>
                       {directTransactions.length ? (
-                        <div className="table-shell">
+                        <HorizontalTableScroll className="table-shell">
                           <table className="accounts-data-table accounts-responsive-table account-transaction-table">
                             <thead>
                               <tr>
@@ -926,7 +927,7 @@ export default function AccountsPage() {
                               ))}
                             </tbody>
                           </table>
-                        </div>
+                        </HorizontalTableScroll>
                       ) : (
                         <div className="account-empty-state">No transactions are booked directly to this account.</div>
                       )}
@@ -960,7 +961,7 @@ export default function AccountsPage() {
                         </div>
                       </div>
                       {visibleLedgerPostings.length ? (
-                        <div className="table-shell">
+                        <HorizontalTableScroll className="table-shell">
                           <table className="accounts-data-table accounts-responsive-table account-ledger-table">
                             <thead>
                               <tr>
@@ -982,7 +983,7 @@ export default function AccountsPage() {
                               ))}
                             </tbody>
                           </table>
-                        </div>
+                        </HorizontalTableScroll>
                       ) : (
                         <div className="account-empty-state">No ledger entries for this account.</div>
                       )}

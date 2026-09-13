@@ -70,6 +70,7 @@ textarea {
 
 .home-actions {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
@@ -222,18 +223,15 @@ textarea {
   display: grid;
   place-items: center;
   padding: 24px;
-  background:
-    radial-gradient(circle at 12% 10%, rgba(42, 103, 145, .15), transparent 36%),
-    linear-gradient(145deg, #f8fafc 0%, #eef3f7 52%, #e6edf3 100%);
+  background: #ffffff;
 }
 
 .login-panel {
   width: min(440px, 100%);
   padding: 38px 40px 42px;
-  border: 1px solid rgba(148, 163, 184, .55);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, .96);
-  box-shadow: 0 24px 70px rgba(15, 23, 42, .12);
+  border: 1px solid var(--studio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
 }
 
 .login-brand {
@@ -256,7 +254,7 @@ textarea {
 
 .login-brand strong {
   font-size: 17px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .login-copy {
@@ -296,7 +294,7 @@ textarea {
   width: 100%;
   padding: 12px 13px;
   border: 1px solid var(--studio-line-strong);
-  border-radius: 5px;
+  border-radius: 0;
   color: var(--studio-ink);
   background: #ffffff;
 }
@@ -391,7 +389,7 @@ textarea {
   }
 }
 
-.account-shell { max-width: 1080px; margin: 0 auto; }
+.account-shell { margin: 0 auto; }
 .account-section { margin: 28px 0; padding: 24px 0; border-top: 1px solid var(--studio-line); }
 .account-section h2 { margin: 0 0 14px; font-size: 20px; }
 .account-section-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -399,12 +397,21 @@ textarea {
 .account-section p { line-height: 1.65; color: var(--studio-muted); }
 .account-form { display: grid; gap: 14px; max-width: 540px; margin: 20px 0; }
 .account-form label { display: grid; gap: 7px; font-size: 14px; }
+.account-form > button { justify-self: start; }
+.account-shell h1, .account-shell h2, .account-shell h3 { font-weight: 500; }
 .account-shell input, .account-shell select, .account-shell textarea { padding: 10px 12px; border: 1px solid var(--studio-line-strong); background: white; color: var(--studio-ink); width: 100%; min-width: 0; }
-.account-shell button:not(.investment-studio-info-hint) { padding: 9px 13px; margin: 3px 8px 3px 0; border: 1px solid var(--studio-line-strong); color: var(--studio-ink); background: white; cursor: pointer; }
+.account-shell button:not(.investment-studio-info-hint) { min-height: 30px; padding: 5px 10px; margin: 3px 8px 3px 0; border: 1px solid var(--studio-line-strong); border-radius: 0; color: var(--studio-ink); background: transparent; cursor: pointer; font-weight: 400; }
+.account-shell button:not(.investment-studio-info-hint):hover:not(:disabled), .account-shell button:focus-visible { border-color: var(--studio-accent); color: var(--studio-accent); }
 .account-shell button:disabled { opacity: .5; cursor: default; }
 .account-table-wrap { overflow-x: auto; }
 .account-shell table { border-collapse: collapse; width: 100%; text-align: left; }
 .account-shell th, .account-shell td { border-bottom: 1px solid var(--studio-line); padding: 12px 8px; }
+.account-shell th:first-child, .account-shell td:first-child { position: sticky; left: 0; z-index: 1; background: #fff; box-shadow: inset -1px 0 var(--studio-line); }
 .account-shell td small { display: block; color: var(--studio-muted); margin-top: 5px; }
 .account-message, .account-invitation { padding: 14px; border: 1px solid var(--studio-line-strong); overflow-wrap: anywhere; }
 .account-secret { display: block; padding: 12px; background: #eef3f7; overflow-wrap: anywhere; }
+.home-links-skeleton { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; min-height: 220px; }
+.home-links-skeleton > span, .account-skeleton > span { display: block; background: var(--studio-band); border: 1px solid var(--studio-line); }
+.account-skeleton { display: grid; gap: 18px; padding-top: 22px; }
+.account-skeleton > span { height: 86px; }
+@media (max-width: 760px) { .home-links-skeleton { grid-template-columns: 1fr; } .home-links-skeleton > span { height: 150px; } }

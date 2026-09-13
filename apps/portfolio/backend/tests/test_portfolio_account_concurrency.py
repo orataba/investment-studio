@@ -55,3 +55,15 @@ def test_concurrent_self_demotion_preserves_last_manager(postgres_portfolio_env,
             PortfolioMembershipModel.role == "manager",
         )).all()
         assert len(managers) == 1
+
+
+def test_concurrent_portfolio_creation_allocates_distinct_namesakes(postgres_portfolio_env):
+    from portfolio_app.services.portfolio_store import create_portfolio
+    ready = Barrier(2)
+    def create(_index):
+        ready.wait(timeout=5)
+        return create_portfolio('Concurrent namesake', base_currency='USD', inception_date=date(2026, 1, 1))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        portfolios = list(executor.map(create, range(2)))
+    assert len({row['portfolio_id'] for row in portfolios}) == 2
+    assert all(row['portfolio_name'] == 'Concurrent namesake' for row in portfolios)

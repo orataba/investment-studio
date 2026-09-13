@@ -559,7 +559,8 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
     "$PYTHON_BIN" "$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
   echo "Reconciling release-required Watchlist system directories."
   PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
+    "$PYTHON_BIN" "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py" \
+      --recover-interrupted
   echo "Refreshing release-invalidated Portfolio snapshots."
   PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py" \

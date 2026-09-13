@@ -97,6 +97,11 @@ class TextStore:
             self._insert(connection, document_events, {"version_id": document["version_id"], "event_id": event_id})
         return bool(result.rowcount)
 
+    def imported_bundle_ids(self) -> set[str]:
+        """Committed imports, which may be older than external delivery receipts after restore."""
+        with self.engine.connect() as connection:
+            return set(connection.scalars(select(bundles.c.bundle_id)))
+
     def import_bundle(self, path: str | Path, *, expected_sha256: str | None = None) -> dict:
         manifest, objects, package_digest = load_bundle(path, expected_sha256)
         received_at = datetime.now(UTC)

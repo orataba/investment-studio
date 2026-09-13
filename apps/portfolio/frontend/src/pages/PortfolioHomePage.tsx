@@ -54,7 +54,7 @@ import {
   type PortfolioTaxonomyNodeRecord,
 } from '../lib/api'
 import { baseAmountForRow, normalizedCurrency } from '../lib/holdingAmounts'
-import { useHorizontalTablePan } from '../lib/useHorizontalTablePan'
+import { useHorizontalTablePan } from '../../../../../packages/ui/src/useHorizontalTablePan'
 import {
   holdingUsesEventValuation,
   isOptionObligationHolding,

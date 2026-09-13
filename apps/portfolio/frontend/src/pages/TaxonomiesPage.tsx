@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router'
@@ -3402,7 +3403,7 @@ export default function TaxonomiesPage() {
                 </div>
               ) : null}
 
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="transactions-table taxonomy-tree-table taxonomy-levels-table">
                   <thead>
                     <tr>
@@ -3514,7 +3515,7 @@ export default function TaxonomiesPage() {
                     ) : null}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
 
             </section>
           ) : null}

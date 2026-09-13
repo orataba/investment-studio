@@ -27,7 +27,7 @@ async def lifespan(_app):
 
 def create_app(settings=None):
     settings = settings or get_settings()
-    app = FastAPI(title="Investment Studio Briefing", lifespan=lifespan)
+    app = FastAPI(title="Investment Studio Briefing", version="1.1.0", lifespan=lifespan)
     @app.exception_handler(IdentityError)
     async def identity_error(_request, error):
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers={"Cache-Control": "no-store"})

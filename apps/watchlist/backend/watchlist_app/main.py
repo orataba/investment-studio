@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Investment Studio Watchlist backend with shared instruments, read models, and persistence scaffolding.",
+    description="Investment Studio Watchlist: instrument monitoring, research, risk review, and materialized analytics.",
     lifespan=lifespan,
 )
 

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortfolioAccessProvider from './components/PortfolioAccessProvider'
 import PortfolioSessionProvider from './components/PortfolioSessionProvider'
 import PortfolioMembersSettings from './components/PortfolioMembersSettings'
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 
 const api = vi.hoisted(() => ({ clearPortfolioApiCache: vi.fn(), getPortfolioAccess: vi.fn(), getPortfolioSession: vi.fn(), getPortfolioMembers: vi.fn(), getPortfolioMemberCandidates: vi.fn(), setPortfolioMember: vi.fn(), removePortfolioMember: vi.fn() }))
 vi.mock('./lib/api', () => api)
@@ -97,13 +98,13 @@ describe('Portfolio account boundaries', () => {
     api.setPortfolioMember.mockResolvedValue({})
     api.removePortfolioMember.mockRejectedValue(new Error('请先指定另一位管理者'))
     const user = userEvent.setup()
-    render(<PortfolioMembersSettings portfolioId="a" />)
+    render(<LanguageProvider enableDomTranslation={false}><PortfolioMembersSettings portfolioId="a" /></LanguageProvider>)
     await screen.findByText('甲经理')
-    await user.selectOptions(screen.getByLabelText('添加成员'), 'bob')
-    await user.selectOptions(screen.getByLabelText('权限'), 'viewer')
-    await user.click(screen.getByRole('button', { name: '授予权限' }))
+    await user.selectOptions(screen.getByLabelText('Add member'), 'bob')
+    await user.selectOptions(screen.getByLabelText('Role'), 'viewer')
+    await user.click(screen.getByRole('button', { name: 'Grant access' }))
     await waitFor(() => expect(api.setPortfolioMember).toHaveBeenCalledWith('a', 'bob', 'viewer'))
-    await user.click(screen.getByRole('button', { name: '移除权限' }))
+    await user.click(screen.getByRole('button', { name: 'Remove access' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('请先指定另一位管理者')
   })
 

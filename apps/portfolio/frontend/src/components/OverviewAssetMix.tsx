@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import type { CSSProperties } from 'react'
 
 import type {
@@ -375,7 +376,7 @@ export default function OverviewAssetMix({
           rows={summary.categories}
           classificationComplete={summary.classificationComplete}
         />
-        <div className="table-shell overview-asset-mix-table-shell">
+        <HorizontalTableScroll className="table-shell overview-asset-mix-table-shell">
           <table className="overview-asset-mix-table" aria-label="Asset mix summary">
             <thead>
               <tr>
@@ -421,7 +422,7 @@ export default function OverviewAssetMix({
               ))}
             </tbody>
           </table>
-        </div>
+        </HorizontalTableScroll>
       </div>
     </section>
   )

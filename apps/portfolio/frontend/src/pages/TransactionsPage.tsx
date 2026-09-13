@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useSecurityCatalog } from '../lib/useSecurityCatalog'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
@@ -4399,7 +4400,7 @@ export default function TransactionsPage() {
         {!ledgerError && transactionsWorkspace ? (
           <div className="transaction-workbench-grid">
             <section className={`transaction-ledger-panel ${loadingTransactions ? 'transaction-ledger-panel-refreshing' : ''}`}>
-              <div className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
+              <HorizontalTableScroll className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
                 <table className="transactions-table transaction-ledger-table">
                   <thead>
                     <tr>
@@ -4596,7 +4597,7 @@ export default function TransactionsPage() {
                     ) : null}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </section>
 
             <aside className="transaction-inspector" aria-label="Selected transaction details">

@@ -6,6 +6,7 @@ type PrivateFundDetailPageProps = {
   watchlistContext?: {
     watchlistId: string
     watchlistName?: string | null
+    isSystem?: boolean
   } | null
   corporateActions?: CorporateActionEvent[]
 }

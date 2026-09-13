@@ -15,6 +15,7 @@ from watchlist_app.api.contracts import (
     WatchlistItemsDeleteRequest,
     WatchlistItemsMoveRequest,
     WatchlistReorderRequest,
+    WatchlistRenameRequest,
     WatchlistViewCreateRequest,
 )
 from watchlist_app.api.presenters import (
@@ -150,8 +151,8 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _require_watchlist(session: Session, watchlist_id: str):
-    record = watchlist_repository.get(session, watchlist_id)
+def _require_watchlist(session: Session, watchlist_id: str, *, for_update: bool = False):
+    record = watchlist_repository.get(session, watchlist_id, for_update=for_update)
     if record is None:
         raise HTTPException(status_code=404, detail="Watchlist not found")
     return record
@@ -299,6 +300,15 @@ def _assert_mutable_watchlist(watchlist_id: str) -> None:
             status_code=400,
             detail=f"{spec.name} is system-maintained and cannot be manually edited.",
         )
+
+
+def _validated_watchlist_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Watchlist name is required.")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="Watchlist name must be 200 characters or fewer.")
+    return name
 
 
 def _create_watchlist_with_retry(
@@ -653,9 +663,7 @@ def create_watchlist_record(
     payload: WatchlistCreateRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Watchlist name is required.")
+    name = _validated_watchlist_name(payload.name)
     default_view_id = "overview"
     record = _create_watchlist_with_retry(
         session,
@@ -667,6 +675,19 @@ def create_watchlist_record(
     return present_watchlist(
         watchlist_repository.get(session, record.watchlist_id) or record
     )
+
+
+@router.patch("/{watchlist_id}")
+def rename_watchlist_record(
+    watchlist_id: str,
+    payload: WatchlistRenameRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    record = _require_watchlist(session, watchlist_id)
+    _assert_mutable_watchlist(watchlist_id)
+    record.name = _validated_watchlist_name(payload.name)
+    session.commit()
+    return present_watchlist(record)
 
 
 @router.post("/reorder")
@@ -851,7 +872,7 @@ def add_items_to_watchlist(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Watchlist currently supports public funds, private funds, ETFs, stocks, and indexes only: {unsupported_label}. "
+                f"Watchlist currently supports public funds, private funds, ETFs, stocks, indexes, and spot crypto only: {unsupported_label}. "
                 "Use backend maintenance for shared asset data, then add supported instruments here."
             ),
         )
@@ -1040,7 +1061,7 @@ def create_view_for_watchlist(
     payload: WatchlistViewCreateRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_watchlist(session, watchlist_id)
+    _require_watchlist(session, watchlist_id, for_update=True)
     view_name = payload.name.strip()
     if not view_name:
         raise HTTPException(status_code=400, detail="Watchlist view name is required")
@@ -1071,7 +1092,8 @@ def update_view_for_watchlist(
     payload: WatchlistViewCreateRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_watchlist(session, watchlist_id)
+    # Serialize initial personal overrides and name validation across tabs.
+    _require_watchlist(session, watchlist_id, for_update=True)
     view_name = payload.name.strip()
     if not view_name:
         raise HTTPException(status_code=400, detail="Watchlist view name is required")
@@ -1089,6 +1111,12 @@ def update_view_for_watchlist(
         if personal:
             existing_view = personal
             view_id = present_watchlist_view(personal)["view_id"]
+    if any(
+        item.watchlist_view_id != existing_view.watchlist_view_id
+        and item.name.strip().casefold() == view_name.casefold()
+        for item in _personal_views(session, watchlist_id)
+    ):
+        raise HTTPException(status_code=409, detail="Watchlist view name already exists")
     if existing_view.author_user_id is None:
         from uuid import uuid4
         record = watchlist_repository.create_view(session, watchlist_id=watchlist_id, view_id="personal-" + uuid4().hex,
@@ -1099,12 +1127,6 @@ def update_view_for_watchlist(
         record.author_user_id, record.base_view_id = current_principal().user_id, existing_view.watchlist_view_id
         session.commit()
         return present_watchlist_view(record)
-    if any(
-        item.watchlist_view_id != existing_view.watchlist_view_id
-        and item.name.strip().casefold() == view_name.casefold()
-        for item in _personal_views(session, watchlist_id)
-    ):
-        raise HTTPException(status_code=409, detail="Watchlist view name already exists")
     try:
         columns = _ensure_required_columns([item.model_dump() for item in payload.columns])
         record = watchlist_repository.update_view(

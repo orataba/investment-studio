@@ -151,6 +151,44 @@ afterEach(() => {
 })
 
 describe('ListedInstrumentDetailPage index view', () => {
+  it.each([false, true])('validates crypto risk within each window instead of inheriting an older gap (recent gap: %s)', async (recentGap) => {
+    const recent = Array.from({ length: 62 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 6, 1 + index)).toISOString().slice(0, 10),
+      value: 100 + index + (index % 2 ? -2 : 0),
+    })).filter((_, index) => !recentGap || index !== 58)
+    const points = [{ date: '2025-01-01', value: 50 }, ...recent]
+    apiMocks.getInstrumentChart.mockResolvedValueOnce({
+      instrument_id: 'btcusd', currency: 'USD', base_series_type: 'price_close',
+      selected_series: { label: 'Spot Price', return_kind: 'price_return' },
+      date_range: { start: points[0].date, end: points[points.length - 1].date },
+      series: [{ name: 'Bitcoin', points }], available_compare_targets: [],
+    })
+    apiMocks.getInstrumentRisk.mockResolvedValueOnce({
+      data_quality: { status: 'partial_missing_observations', gap_count: recentGap ? 2 : 1 },
+      risk_metrics: [], current_drawdown: null, calculation_frequency_profile: null,
+    })
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={{
+        requested_instrument_id: 'btcusd', canonical_instrument_id: 'btcusd',
+        instrument_name: 'Bitcoin', instrument_type: 'crypto', primary_identifier: 'BTCUSD',
+        detail_view_type: 'crypto', detail_subject_id: 'btcusd', detail_supported: true,
+        support_reason: '', corporate_actions: [],
+      }} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await screen.findByRole('img', { name: 'Crypto spot price chart' })
+    fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$/ })[0])
+    const table = container.querySelector('.instrument-metrics-table') as HTMLElement
+    for (const label of ['Ann. Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Max DD']) {
+      const cells = within(table).getByText(label).closest('tr')!.querySelectorAll('td strong')
+      // 1M is complete only without the recent missing UTC day; SI has an old
+      // gap in both cases. No forward fill or lower-frequency substitute.
+      expect(cells[1].textContent === '—').toBe(recentGap)
+      expect(cells[cells.length - 1].textContent).toBe('—')
+    }
+    const returns = within(table).getByText('Period Return').closest('tr')!.querySelectorAll('td strong')
+    expect(returns[1].textContent).not.toBe('—')
+  })
+
   it('keeps index endpoint returns but withholds matrix path risk when canonical sessions are missing', async () => {
     apiMocks.getInstrumentRisk.mockResolvedValueOnce({
       data_quality: { status: 'partial_missing_observations', gap_count: 1 },

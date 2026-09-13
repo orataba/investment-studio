@@ -166,7 +166,7 @@ describe('WatchlistsPage loading', () => {
     )
     expect(new Set(criteriaKeys).size).toBe(criteriaKeys.length)
     expect(apiMocks.runScreenerQuery.mock.calls[0][0].selected_fields).toContain('attr.risk_attention')
-    expect(screen.getByRole('button', { name: 'Fund 1 有关注事项，查看风险提示' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'View risk alerts for Fund 1' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '风险关注：升序' })).toBeNull()
     const title = screen.getByRole('heading', { name: 'All Private Funds', level: 1 })
     const tools = screen.getByRole('group', { name: 'Current workspace tools' })

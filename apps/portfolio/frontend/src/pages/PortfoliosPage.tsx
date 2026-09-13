@@ -1,4 +1,4 @@
-import { LanguageSelector } from '../../../../../packages/ui/src/i18n'
+import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
@@ -20,6 +20,7 @@ import { usePortfolioSession } from '../components/PortfolioSessionProvider'
 import PortfolioMembersSettings from '../components/PortfolioMembersSettings'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
 
@@ -51,6 +52,8 @@ function isValidIsoDate(value: string) {
 
 export default function PortfoliosPage() {
   const navigate = useNavigate()
+  const { language } = useLanguage()
+  const text = (en: string, zh: string) => language === 'zh-Hans' ? zh : en
   const currentSession = usePortfolioSession()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -58,6 +61,7 @@ export default function PortfoliosPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -68,10 +72,17 @@ export default function PortfoliosPage() {
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [settingsPortfolio, setSettingsPortfolio] = useState<PortfolioEntryRecord | null>(null)
+  const [settingsName, setSettingsName] = useState('')
   const [settingsBaseCurrency, setSettingsBaseCurrency] = useState<SupportedPortfolioCurrency>('CNY')
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const settingsDialogRef = useModalDialog(Boolean(settingsPortfolio), () => {
+    if (!settingsSaving) setSettingsPortfolio(null)
+  })
+  const createDialogRef = useModalDialog(createOpen, () => {
+    if (!creating) setCreateOpen(false)
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -117,6 +128,9 @@ export default function PortfoliosPage() {
 
   const resolvedPortfolios = portfolios
   const baseCurrencies = new Set(resolvedPortfolios.map((item) => item.base_currency))
+  const commonAsOfDate = resolvedPortfolios.length > 0 && resolvedPortfolios.every(
+    (item) => item.as_of_date != null && item.as_of_date === resolvedPortfolios[0].as_of_date,
+  )
   const commonBaseCurrency = baseCurrencies.size === 1
     ? resolvedPortfolios[0]?.base_currency
     : undefined
@@ -125,6 +139,7 @@ export default function PortfoliosPage() {
       !error &&
       resolvedPortfolios.length &&
       commonBaseCurrency &&
+      commonAsOfDate &&
       resolvedPortfolios.every((item) => item.nav != null),
   )
   const totalNav = aggregateAvailable
@@ -134,9 +149,13 @@ export default function PortfoliosPage() {
     aggregateAvailable && resolvedPortfolios.every((item) => item.day_change_value != null)
       ? resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
       : null
-  const totalDayChangePct = totalNav != null && totalDayChange != null && totalNav !== 0
-    ? totalDayChange / (totalNav - totalDayChange || totalNav)
-    : null
+  const totalReturnCapital = aggregateAvailable && resolvedPortfolios.every(
+    (item) => item.day_return_capital != null && item.day_return_capital > 0 && item.day_change_pct != null,
+  ) ? resolvedPortfolios.reduce((sum, item) => sum + item.day_return_capital!, 0) : null
+  const totalDayChangePct = aggregateAvailable && resolvedPortfolios.length === 1
+    ? resolvedPortfolios[0].day_change_pct
+    : totalReturnCapital != null && totalDayChange != null
+      ? totalDayChange / totalReturnCapital : null
   const totalNavLabel = loading
     ? 'Loading…'
     : error
@@ -147,10 +166,12 @@ export default function PortfoliosPage() {
           ? 'Recalculating'
           : !commonBaseCurrency
             ? 'Multiple base currencies'
+            : !commonAsOfDate
+              ? text('Different valuation dates', '估值日期不同')
             : formatCurrency(totalNav, commonBaseCurrency)
   const totalChangeLabel = aggregateAvailable
     ? `${formatSignedCurrency(totalDayChange, commonBaseCurrency)} (${formatPercent(totalDayChangePct)})`
-    : !loading && !error && resolvedPortfolios.length && !commonBaseCurrency
+    : !loading && !error && resolvedPortfolios.length && (!commonBaseCurrency || !commonAsOfDate)
       ? 'Totals shown per portfolio'
       : ''
   const totalChangeClassName =
@@ -160,34 +181,28 @@ export default function PortfoliosPage() {
         ? 'portfolio-entry-change-positive'
         : 'portfolio-entry-change-neutral'
 
-  function movePortfolio(sourceId: string, targetId: string) {
-    if (sourceId === targetId) {
+  async function movePortfolio(sourceId: string, targetId: string) {
+    if (sourceId === targetId || reordering) {
       return
     }
 
-    let nextOrder: PortfolioEntryRecord[] = []
-    setPortfolios((current) => {
-      const sourceIndex = current.findIndex((item) => item.portfolio_id === sourceId)
-      const targetIndex = current.findIndex((item) => item.portfolio_id === targetId)
-      if (sourceIndex === -1 || targetIndex === -1) {
-        return current
-      }
-      const next = [...current]
-      const [moved] = next.splice(sourceIndex, 1)
-      next.splice(targetIndex, 0, moved)
-      nextOrder = next
-      return next
-    })
-
-    if (nextOrder.length) {
-      void reorderPortfolios(nextOrder.map((item) => item.portfolio_id)).catch((requestError) => {
-        setError(
-          requestError instanceof Error
-            ? requestError.message
-            : 'Failed to reorder portfolios.',
-        )
-        void getPortfolios().then(setPortfolios).catch(() => undefined)
-      })
+    const sourceIndex = portfolios.findIndex((item) => item.portfolio_id === sourceId)
+    const targetIndex = portfolios.findIndex((item) => item.portfolio_id === targetId)
+    if (sourceIndex === -1 || targetIndex === -1) return
+    const previousOrder = portfolios.map((item) => item.portfolio_id)
+    const nextOrder = [...portfolios]
+    const [moved] = nextOrder.splice(sourceIndex, 1)
+    nextOrder.splice(targetIndex, 0, moved)
+    setPortfolios(nextOrder)
+    setReordering(true)
+    try {
+      await reorderPortfolios(nextOrder.map((item) => item.portfolio_id))
+    } catch (requestError) {
+      // Restore only order: concurrent settings changes must retain their new values.
+      setPortfolios((current) => [...current].sort((a, b) => previousOrder.indexOf(a.portfolio_id) - previousOrder.indexOf(b.portfolio_id)))
+      setNotice({ id: Date.now(), message: requestError instanceof Error ? requestError.message : 'Failed to reorder portfolios.', tone: 'error' })
+    } finally {
+      setReordering(false)
     }
   }
 
@@ -270,6 +285,7 @@ export default function PortfoliosPage() {
 
   function openPortfolioSettings(portfolio: PortfolioEntryRecord) {
     setSettingsPortfolio(portfolio)
+    setSettingsName(portfolio.portfolio_name)
     setSettingsBaseCurrency(portfolio.base_currency as SupportedPortfolioCurrency)
     setSettingsError(null)
     setMenuOpenId(null)
@@ -280,17 +296,26 @@ export default function PortfoliosPage() {
     if (!settingsPortfolio || settingsSaving) {
       return
     }
+    const name = settingsName.trim()
+    if (!name || name.length > 200) {
+      setSettingsError(text('Portfolio name must contain 1 to 200 characters.', '组合名称须为 1 至 200 个字符。'))
+      return
+    }
     setSettingsSaving(true)
     setSettingsError(null)
     try {
+      const baseCurrencyChanged = settingsBaseCurrency !== settingsPortfolio.base_currency
       const updated = await updatePortfolioSettings(settingsPortfolio.portfolio_id, {
-        base_currency: settingsBaseCurrency,
+        ...(name !== settingsPortfolio.portfolio_name ? { name } : {}),
+        ...(baseCurrencyChanged ? { base_currency: settingsBaseCurrency } : {}),
       })
       setPortfolios((current) =>
         current.map((item) => (item.portfolio_id === updated.portfolio_id ? updated : item)),
       )
       setSettingsPortfolio(null)
-      setNotice({ id: Date.now(), message: `Base currency changed to ${updated.base_currency}; historical values are recalculating.`, tone: 'success' })
+      setNotice({ id: Date.now(), message: baseCurrencyChanged
+        ? `Base currency changed to ${updated.base_currency}; historical values are recalculating.`
+        : text('Portfolio settings updated.', '组合设置已更新。'), tone: 'success' })
     } catch (requestError) {
       setSettingsError(
         requestError instanceof Error
@@ -314,7 +339,7 @@ export default function PortfoliosPage() {
           <LanguageSelector />
         </div>
         <div className="portfolio-entry-hero">
-          <h1 className="portfolio-entry-title">我可访问的组合</h1>
+          <h1 className="portfolio-entry-title">{text('My Portfolios', '我可访问的组合')}</h1>
           {currentSession && <span className="portfolio-access-label">{currentSession.display_name}</span>}
           <span className="portfolio-entry-nav">{totalNavLabel}</span>
           {totalChangeLabel ? <span className={totalChangeClassName}>{totalChangeLabel}</span> : null}
@@ -329,7 +354,7 @@ export default function PortfoliosPage() {
           <article
             key={portfolio.portfolio_id}
             className={`portfolio-entry-card ${draggingId === portfolio.portfolio_id ? 'entry-card-dragging' : ''}`}
-            draggable
+            draggable={!reordering}
             onDragStart={() => setDraggingId(portfolio.portfolio_id)}
             onDragEnd={() => setDraggingId(null)}
             onDragOver={(event) => event.preventDefault()}
@@ -341,22 +366,22 @@ export default function PortfoliosPage() {
             }}
           >
             <div className="portfolio-entry-card-leading">
-              <div className="portfolio-entry-grip" aria-label={`Reorder ${portfolio.portfolio_name}`}>
+              <div className="portfolio-entry-grip" translate="no" aria-label={text(`Reorder ${portfolio.portfolio_name}`, `调整 ${portfolio.portfolio_name} 的顺序`)}>
                 <button
                   type="button"
                   onClick={() => movePortfolioByOffset(portfolio.portfolio_id, -1)}
-                  disabled={resolvedPortfolios[0]?.portfolio_id === portfolio.portfolio_id}
-                  aria-label={`Move ${portfolio.portfolio_name} up`}
-                  title="Move up"
+                  disabled={reordering || resolvedPortfolios[0]?.portfolio_id === portfolio.portfolio_id}
+                  aria-label={text(`Move ${portfolio.portfolio_name} up`, `上移 ${portfolio.portfolio_name}`)}
+                  title={text('Move up', '上移')}
                 >
                   ↑
                 </button>
                 <button
                   type="button"
                   onClick={() => movePortfolioByOffset(portfolio.portfolio_id, 1)}
-                  disabled={resolvedPortfolios[resolvedPortfolios.length - 1]?.portfolio_id === portfolio.portfolio_id}
-                  aria-label={`Move ${portfolio.portfolio_name} down`}
-                  title="Move down"
+                  disabled={reordering || resolvedPortfolios[resolvedPortfolios.length - 1]?.portfolio_id === portfolio.portfolio_id}
+                  aria-label={text(`Move ${portfolio.portfolio_name} down`, `下移 ${portfolio.portfolio_name}`)}
+                  title={text('Move down', '下移')}
                 >
                   ↓
                 </button>
@@ -365,13 +390,17 @@ export default function PortfoliosPage() {
                 <button
                   type="button"
                   className="workspace-selector-menu-trigger"
+                  translate="no"
                   onClick={() => setMenuOpenId((current) => (current === portfolio.portfolio_id ? null : portfolio.portfolio_id))}
-                  aria-label={`${portfolio.portfolio_name} actions`}
+                  aria-label={text(`${portfolio.portfolio_name} actions`, `${portfolio.portfolio_name} 操作`)}
                 >
                   ...
                 </button>
                 {menuOpenId === portfolio.portfolio_id ? (
                   <div className="workspace-selector-menu">
+                    <button type="button" disabled={!portfolio.access?.can_edit} onClick={() => openPortfolioSettings(portfolio)}>
+                      {text('Rename Portfolio', '重命名组合')}
+                    </button>
                     <button
                       type="button"
                       disabled={!portfolio.access?.can_edit}
@@ -448,6 +477,8 @@ export default function PortfoliosPage() {
       {settingsPortfolio ? (
         <div className="portfolio-settings-modal-backdrop">
           <section
+            ref={settingsDialogRef}
+            tabIndex={-1}
             className="portfolio-settings-modal"
             role="dialog"
             aria-modal="true"
@@ -471,12 +502,18 @@ export default function PortfoliosPage() {
                 </div>
               ) : null}
               <div className="portfolio-settings-grid">
+                <label htmlFor="portfolio-settings-name">
+                  <span>{text('Portfolio Name', '组合名称')}</span>
+                  <input id="portfolio-settings-name" autoFocus required maxLength={200} value={settingsName}
+                    disabled={settingsSaving} onChange={(event) => setSettingsName(event.target.value)} />
+                </label>
                 <label htmlFor="portfolio-base-currency">
                   <span>Base Currency</span>
                   <select
                     id="portfolio-base-currency"
                     aria-label="Base Currency"
                     value={settingsBaseCurrency}
+                    disabled={settingsSaving}
                     onChange={(event) =>
                       setSettingsBaseCurrency(event.target.value as SupportedPortfolioCurrency)
                     }
@@ -501,9 +538,11 @@ export default function PortfoliosPage() {
                 </button>
                 <button
                   type="submit"
+                  className="button-primary"
                   disabled={
                     settingsSaving ||
-                    settingsBaseCurrency === settingsPortfolio.base_currency
+                    !settingsName.trim() ||
+                    (settingsBaseCurrency === settingsPortfolio.base_currency && settingsName.trim() === settingsPortfolio.portfolio_name)
                   }
                 >
                   {settingsSaving ? 'Saving…' : 'Save Settings'}
@@ -517,6 +556,8 @@ export default function PortfoliosPage() {
       {createOpen ? (
         <div className="portfolio-settings-modal-backdrop">
           <section
+            ref={createDialogRef}
+            tabIndex={-1}
             className="portfolio-settings-modal portfolio-create-modal"
             role="dialog"
             aria-modal="true"
@@ -546,6 +587,7 @@ export default function PortfoliosPage() {
                     id="create-portfolio-name"
                     autoFocus
                     required
+                    maxLength={200}
                     value={createName}
                     onChange={(event) => setCreateName(event.target.value)}
                   />
@@ -585,7 +627,7 @@ export default function PortfoliosPage() {
                 >
                   Cancel
                 </button>
-                <button type="submit" disabled={creating}>
+                <button type="submit" className="button-primary" disabled={creating}>
                   {creating ? 'Creating…' : 'Create Portfolio'}
                 </button>
               </footer>

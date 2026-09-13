@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { accountStorageKey, useCanWriteTeam } from '../components/AccountBoundary'
 import InstrumentRiskPanel from '../components/InstrumentRiskPanel'
 import {
@@ -1185,7 +1186,7 @@ function ReferenceDataTable({
           <div className="instrument-section-title">{title}</div>
         </div>
       </div>
-      <div className="table-shell">
+      <HorizontalTableScroll className="table-shell">
         <table className="instrument-data-table">
           <thead>
             <tr>{columns.map((column) => <th key={column}>{formatLabel(column)}</th>)}</tr>
@@ -1198,7 +1199,7 @@ function ReferenceDataTable({
             ))}
           </tbody>
         </table>
-      </div>
+      </HorizontalTableScroll>
     </section>
   )
 }
@@ -2782,6 +2783,7 @@ type FundDetailPageProps = {
   watchlistContext?: {
     watchlistId: string
     watchlistName?: string | null
+    isSystem?: boolean
   } | null
   corporateActions?: CorporateActionEvent[]
 }
@@ -3760,7 +3762,7 @@ export default function FundDetailPage({
   if (loading) {
     return (
       <div className="terminal-page">
-        <LoadingOverlay label={fundType === 'public_fund' ? 'Loading public fund detail' : 'Loading private fund detail'} />
+        <LoadingOverlay />
       </div>
     )
   }
@@ -5708,6 +5710,7 @@ export default function FundDetailPage({
                 <Link
                   to={buildWatchlistPath(watchlistContext.watchlistId)}
                   className="instrument-detail-backlink"
+                  translate={watchlistContext.isSystem ? undefined : 'no'}
                 >
                   {watchlistContext.watchlistName || watchlistContext.watchlistId}
                 </Link>
@@ -5764,7 +5767,7 @@ export default function FundDetailPage({
               >
                 {fundDetailTabLabel(fundType, tab, language, localize(language, TAB_LABELS[tab]))}
                 {tab === activeTab && loadingSectionKeys.has(`${detailBundleKey}:${activeDataSection}`) ? (
-                  <span className="fund-section-loading" role="status" aria-label={`Loading ${localize(language, TAB_LABELS[tab]).toLowerCase()} data…`}>…</span>
+                  <span className="fund-section-loading" role="status" aria-label="Loading">…</span>
                 ) : null}
               </button>
             ))}
@@ -5920,7 +5923,7 @@ export default function FundDetailPage({
                       </label>
                     ))
                   ) : (
-                    <div className="instrument-settings-loading">Loading taxonomy...</div>
+                    <div className="instrument-settings-loading">Loading</div>
                   )}
                   {taxonomyDraftNodeId && !taxonomyDraftNode?.is_leaf ? (
                     <div className="instrument-settings-loading">
@@ -6438,7 +6441,7 @@ export default function FundDetailPage({
                             </button>
                           </div>
                         </div>
-                        <div className="table-shell instrument-research-table-shell">
+                        <HorizontalTableScroll className="table-shell instrument-research-table-shell">
                           <table className="terminal-table terminal-table-compact instrument-research-table instrument-chart-note-table">
                             <thead>
                               <tr>
@@ -6471,7 +6474,7 @@ export default function FundDetailPage({
                               ))}
                             </tbody>
                           </table>
-                        </div>
+                        </HorizontalTableScroll>
                       </div>
                     ) : null}
 
@@ -6796,7 +6799,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-performance-section-body">
-              <div className="table-shell instrument-performance-table-shell">
+              <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-metrics-table">
                   <thead>
                     <tr>
@@ -6835,7 +6838,7 @@ export default function FundDetailPage({
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </div>
           </section>
 
@@ -6848,7 +6851,7 @@ export default function FundDetailPage({
             </div>
             <div className="instrument-performance-section-body">
               {monthlyReturnMatrixRows.length ? (
-                <div className="table-shell instrument-performance-table-shell">
+                <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                   <table className="terminal-table terminal-table-compact instrument-heatmap-table">
                     <thead>
                       <tr>
@@ -6892,7 +6895,7 @@ export default function FundDetailPage({
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
               ) : (
                 <div className="instrument-fallback-block">
                   <div className="instrument-fallback-copy">
@@ -7039,7 +7042,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-price-section-body">
-              <div className="table-shell instrument-price-table-shell">
+              <HorizontalTableScroll className="table-shell instrument-price-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-price-schedule-table">
                   <tbody>
                     {feeTermFields.map((field) => (
@@ -7138,7 +7141,7 @@ export default function FundDetailPage({
                     </tr>
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </div>
           </section>
         </section>
@@ -7202,7 +7205,7 @@ export default function FundDetailPage({
                 <div className="instrument-section-title">Current Positions</div>
               </div>
             </div>
-            <div className="table-shell">
+            <HorizontalTableScroll className="table-shell">
               <table className="terminal-table terminal-table-compact">
                 <thead>
                   <tr>
@@ -7243,7 +7246,7 @@ export default function FundDetailPage({
                   )}
                 </tbody>
               </table>
-            </div>
+            </HorizontalTableScroll>
           </section>
         </section>
         </>
@@ -7302,7 +7305,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-people-section-body">
-              <div className="table-shell instrument-profile-table-shell">
+              <HorizontalTableScroll className="table-shell instrument-profile-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
                   <tbody>
                     {peopleHeaderFields.map((field) => (
@@ -7361,7 +7364,7 @@ export default function FundDetailPage({
                     </tr>
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </div>
           </section>
         </section>
@@ -7418,7 +7421,7 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-strategy-section-body">
-              <div className="table-shell instrument-profile-table-shell">
+              <HorizontalTableScroll className="table-shell instrument-profile-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
                   <tbody>
                     <tr>
@@ -7524,7 +7527,7 @@ export default function FundDetailPage({
                     </tr>
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </div>
           </section>
         </section>
@@ -7614,7 +7617,7 @@ export default function FundDetailPage({
               </form>
             ) : null}
 
-            <div className="table-shell instrument-documents-list-shell">
+            <HorizontalTableScroll className="table-shell instrument-documents-list-shell">
               <table className="terminal-table terminal-table-compact instrument-data-table instrument-documents-list-table">
                 <thead>
                   <tr>
@@ -7666,7 +7669,7 @@ export default function FundDetailPage({
                   )}
                 </tbody>
               </table>
-            </div>
+            </HorizontalTableScroll>
           </section>
         </section>
           </div>
@@ -7683,7 +7686,7 @@ export default function FundDetailPage({
                 </div>
                 <span className="muted">Adjusted series handles returns; confirmed events adjust portfolio units.</span>
               </div>
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="instrument-data-table">
                   <thead>
                     <tr>
@@ -7710,7 +7713,7 @@ export default function FundDetailPage({
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
               {corporateActions.some((event) => event.status === 'detected') ? (
                 <div className="instrument-corporate-action-warning">
                   Detected events are informational only and never change portfolio quantities until issuer,

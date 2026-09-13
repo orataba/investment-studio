@@ -69,6 +69,8 @@ printf '%s\n' \
   'from pathlib import Path' \
   'with Path(environ["EVENT_LOG"]).open("a", encoding="utf-8") as event_log:' \
   '    event_log.write("watchlist-refresh\n")' \
+  'import sys' \
+  'assert "--recover-interrupted" in sys.argv' \
   'raise SystemExit(1 if environ.get("WATCHLIST_REFRESH_FAIL") == "true" else 0)' \
   > "$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
 

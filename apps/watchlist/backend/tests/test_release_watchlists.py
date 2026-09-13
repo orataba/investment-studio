@@ -6,15 +6,16 @@ from pathlib import Path
 import sys
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, event, select, text, update
 
 from investment_studio_instrument_core.db_models import Instrument
 from watchlist_app.api.routes import watchlists
 from watchlist_app.db.models import InstrumentDetail, WatchlistItem
-from watchlist_app.db.models.read_models import WatchlistRowReadModel
+from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import Watchlist, WatchlistUserSettings, WatchlistView, WatchlistViewColumn
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryError
+from watchlist_app.services.materialization_policy import WATCHLIST_MATERIALIZATION_VERSION
 
 from .conftest import TEST_SHARED_INSTRUMENTS, seed_shared_instrument
 
@@ -27,8 +28,22 @@ def _load(path, name):
     return module
 
 
-def _release():
-    return _load(Path(__file__).resolve().parents[1] / "scripts/refresh_release_watchlists.py", "release_watchlists").main()
+def _release(**kwargs):
+    module = _load(Path(__file__).resolve().parents[1] / "scripts/refresh_release_watchlists.py", "release_watchlists")
+    with get_session_factory()() as session:
+        engine = session.get_bind()
+    # Python sqlite3 legacy mode does not BEGIN for the first SELECT. A first
+    # nested SAVEPOINT can otherwise commit on release, unlike production PG.
+    # Exercise the intended outer transaction rather than that driver artifact.
+    def begin(connection):
+        connection.exec_driver_sql("BEGIN")
+    if engine.dialect.name == "sqlite":
+        event.listen(engine, "begin", begin)
+    try:
+        return module.main(**kwargs)
+    finally:
+        if engine.dialect.name == "sqlite":
+            event.remove(engine, "begin", begin)
 
 
 def _audit(session):
@@ -97,6 +112,80 @@ def test_release_reconciles_registry_before_live_gate_and_preserves_user_state(c
 def _snapshot_custom(session, watchlist_id):
     return [dict(row) for model in [Watchlist, WatchlistItem, WatchlistRowReadModel]
             for row in session.execute(select(model.__table__).where(model.watchlist_id == watchlist_id)).mappings()]
+
+
+def test_release_rebuilds_invalidated_chart_and_custom_rows_from_stored_source(client):
+    assert client.get("/api/watchlists").status_code == 200
+    custom = client.post("/api/watchlists", json={"name": "Keep custom name"}).json()["watchlist_id"]
+    assert client.post(f"/api/watchlists/{custom}/items", json={"instrument_ids": ["sxv264"]}).status_code == 200
+    with get_session_factory()() as session:
+        chart = session.get(InstrumentChartReadModel, "sxv264")
+        expected = chart.payload_json
+        chart.payload_json = {"series": []}
+        chart.materialization_version = "watchlist-materialization/v11"
+        session.get(WatchlistRowReadModel, (custom, "sxv264")).materialization_version = "watchlist-materialization/v11"
+        session.commit()
+        protected = _snapshot(session, [Instrument, Watchlist, WatchlistItem, WatchlistView, WatchlistViewColumn])
+    assert _release() == 0
+    with get_session_factory()() as session:
+        chart = session.get(InstrumentChartReadModel, "sxv264")
+        assert chart.materialization_version == WATCHLIST_MATERIALIZATION_VERSION
+        assert chart.payload_json == expected
+        assert session.get(WatchlistRowReadModel, (custom, "sxv264")).materialization_version == WATCHLIST_MATERIALIZATION_VERSION
+        assert _snapshot(session, [Instrument, Watchlist, WatchlistItem, WatchlistView, WatchlistViewColumn]) == protected
+
+
+def test_release_recalc_failure_rolls_back_directory_and_read_models(client, monkeypatch):
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+
+    assert client.get("/api/watchlists").status_code == 200
+    assert client.post("/api/recalc/instruments/sxv264/execute", json={"job_type": "all"}).status_code == 200
+    with get_session_factory()() as session:
+        session.get(Watchlist, "index").name = "Old label"
+        session.get(InstrumentChartReadModel, "sxv264").materialization_version = "watchlist-materialization/v11"
+        session.commit()
+        before = _snapshot(session, [Watchlist, WatchlistItem, WatchlistRowReadModel, InstrumentChartReadModel])
+    def fail(self, session, **kwargs):
+        raise RuntimeError("Injected recalc failure")
+    monkeypatch.setattr(CanonicalRecalcService, "execute_recalc", fail)
+    with pytest.raises(RuntimeError, match="Injected recalc failure"):
+        _release()
+    with get_session_factory()() as session:
+        assert _snapshot(session, [Watchlist, WatchlistItem, WatchlistRowReadModel, InstrumentChartReadModel]) == before
+
+
+def test_release_requires_explicit_stopped_worker_recovery_and_fences_old_lease(client):
+    from watchlist_app.db.models.recalc import RecalcJob
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.canonical_recalc import RecalcJobAlreadyRunningError
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    assert client.get("/api/watchlists").status_code == 200
+    assert client.post("/api/recalc/instruments/sxv264/execute", json={"job_type": "all"}).status_code == 200
+    repository = SQLAlchemyRecalcJobRepository()
+    with get_session_factory()() as session:
+        session.get(InstrumentChartReadModel, "sxv264").materialization_version = "watchlist-materialization/v11"
+        job = repository.create(
+            session, recalc_job_id="release-interrupted", job_type="all", instrument_id="sxv264",
+            trigger_type="manual", trigger_ref_type=None, trigger_ref_id=None, job_status="queued",
+            priority=100, dedupe_key=make_recalc_dedupe_key(job_type="all", instrument_id="sxv264"), payload_json={},
+        )
+        repository.mark_running(session, job)
+        old_lease = job.lease_token
+        session.commit()
+        before = _snapshot(session, [RecalcJob, InstrumentChartReadModel])
+    with pytest.raises(RecalcJobAlreadyRunningError):
+        _release()
+    with get_session_factory()() as session:
+        assert _snapshot(session, [RecalcJob, InstrumentChartReadModel]) == before
+    assert _release(recover_interrupted=True) == 0
+    with get_session_factory()() as session:
+        job = session.get(RecalcJob, "release-interrupted")
+        assert job.job_status == "completed"
+        assert job.lease_token != old_lease
+        assert not repository.mark_completed(session, job, lease_token=old_lease)
+        assert not repository.touch_heartbeat(session, job.recalc_job_id, old_lease)
+        assert session.get(InstrumentChartReadModel, "sxv264").materialization_version == WATCHLIST_MATERIALIZATION_VERSION
 
 
 @pytest.mark.parametrize("failure", ["registry", "materialization"])

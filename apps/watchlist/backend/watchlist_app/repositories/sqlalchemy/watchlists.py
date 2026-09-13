@@ -126,12 +126,14 @@ class SQLAlchemyWatchlistRepository:
         )
         return session.scalars(stmt).all()
 
-    def get(self, session: Session, watchlist_id: str) -> Watchlist | None:
+    def get(self, session: Session, watchlist_id: str, *, for_update: bool = False) -> Watchlist | None:
         stmt = (
             select(Watchlist)
             .options(selectinload(Watchlist.items), selectinload(Watchlist.views))
             .where(Watchlist.watchlist_id == watchlist_id)
         )
+        if for_update:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return session.scalars(stmt).first()
 
     def list_views(self, session: Session, watchlist_id: str) -> Sequence[WatchlistView]:
@@ -404,19 +406,6 @@ class SQLAlchemyWatchlistRepository:
         session.delete(record)
         session.flush()
         return True
-
-    def reorder(self, session: Session, *, watchlist_ids: list[str]) -> Sequence[Watchlist]:
-        records = self.list(session)
-        by_id = {item.watchlist_id: item for item in records}
-        ordered_ids = [watchlist_id for watchlist_id in watchlist_ids if watchlist_id in by_id]
-        remaining_ids = [item.watchlist_id for item in records if item.watchlist_id not in ordered_ids]
-        final_ids = ordered_ids + remaining_ids
-
-        for index, watchlist_id in enumerate(final_ids):
-            by_id[watchlist_id].sort_order = index
-
-        session.flush()
-        return self.list(session)
 
     def add_items(
         self,

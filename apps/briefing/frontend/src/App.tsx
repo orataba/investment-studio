@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import HorizontalTableScroll from '../../../../packages/ui/src/HorizontalTableScroll'
 import InfoHint from '../../../../packages/ui/src/InfoHint'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import { LanguageSelector, useLanguage } from '../../../../packages/ui/src/i18n'
@@ -119,11 +120,11 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
     </section>)}
     <section className="report-section">
       <div className="section-heading"><h2>{copy('市场表现', 'Market performance')}</h2><InfoHint label={copy('市场表现口径', 'Market performance basis')} detail={copy('各市场按实际收盘日计算价格涨跌，不含分红；点击资产可查看价格口径。', 'Price changes use each market’s actual closing dates and exclude dividends. Select an asset for its price basis.')} /></div>
-      {displayedMarketRows.length ? <div className="table-scroll"><table><thead><tr><th>{copy('资产', 'Asset')}</th><th>{copy('起始日', 'Start')}</th><th>{copy('截至日', 'As of')}</th><th className="number">{copy('收盘', 'Close')}</th><th className="number">{detail.report_type === 'weekly' ? copy('本周涨跌', 'Week to date') : copy('日涨跌', 'Daily change')}</th></tr></thead><tbody>
+      {displayedMarketRows.length ? <HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('资产', 'Asset')}</th><th>{copy('起始日', 'Start')}</th><th>{copy('截至日', 'As of')}</th><th className="number">{copy('收盘', 'Close')}</th><th className="number">{detail.report_type === 'weekly' ? copy('本周涨跌', 'Week to date') : copy('日涨跌', 'Daily change')}</th></tr></thead><tbody>
         {displayedMarketRows.map(({ row, index }) => <tr key={row.symbol}><td><button className="table-source" onClick={() => onSource(`market-row:${index}`)}>{row.label}</button><small>{row.symbol}</small></td><td>{row.start_date}</td><td>{row.end_date}</td><td className="number">{row.end_close.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td className={`number ${row.return_pct < 0 ? 'negative' : 'positive'}`}>{signed(row.return_pct)}</td></tr>)}
-      </tbody></table></div> : <p className="muted">{copy('当前没有可计算的行情数据。', 'No market series can be calculated for this report.')}</p>}
+      </tbody></table></HorizontalTableScroll> : <p className="muted">{copy('当前没有可计算的行情数据。', 'No market series can be calculated for this report.')}</p>}
     </section>
-    {detail.macro_rows.length > 0 && <section className="report-section"><h2>{copy('宏观数据', 'Macro data')}</h2><div className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{detail.macro_rows.map((row, index) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></div></section>}
+    {detail.macro_rows.length > 0 && <section className="report-section"><h2>{copy('宏观数据', 'Macro data')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{detail.macro_rows.map((row, index) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
   </>
 }
 
@@ -202,10 +203,10 @@ export default function App() {
     return () => controller.abort()
   }, [selected, sourceId, canReadSources])
   useEffect(() => {
-    if (!rows.some(row => pending(row.status))) return
+    if (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status))) return
     const timer = window.setInterval(() => setRevision(value => value + 1), 5000)
     return () => window.clearInterval(timer)
-  }, [rows])
+  }, [rows, detail?.status])
   function choose(id: string, replace = false) {
     if (id === selected) return
     setSelected(id); setDetail(null); closeSource(); setError(''); setDetailError('')
@@ -224,8 +225,12 @@ export default function App() {
   function showSource(id: string) {
     if (!canReadSources) {
       const [kind, index] = id.split(':')
-      const row = kind === 'market-row' ? detail?.market_rows[Number(index)] : kind === 'macro-row' ? detail?.macro_rows[Number(index)] : undefined
-      if (row) setSource({ ...row, source_id: id, source_type: kind === 'market-row' ? 'market_row' : 'macro_row' })
+      // Public editions expose the retained numeric row, including citations
+      // to its underlying source IDs, without requesting private source input.
+      const market = kind === 'market-row' ? detail?.market_rows[Number(index)] : detail?.market_rows.find(row => row.source_ids.includes(id))
+      const macro = kind === 'macro-row' ? detail?.macro_rows[Number(index)] : detail?.macro_rows.find(row => row.source_ids.includes(id))
+      const row = market || macro
+      if (row) setSource({ ...row, source_id: id, source_type: market ? 'market_row' : 'macro_row' })
       return
     }
     if (id !== sourceId) { setSource(null); setSourceError('') }
@@ -260,7 +265,7 @@ export default function App() {
       if (event.target === event.currentTarget) closeSource()
     }}>
       <div ref={sourceRef} role="dialog" aria-modal="true" tabIndex={-1} className="source-panel" aria-label={copy('来源原文', 'Source evidence')} aria-busy={!source && !sourceError}>
-        {source ? <SourceEvidence source={source} onClose={closeSource} onSource={showSource} /> : <>
+        {source ? <SourceEvidence source={source} onClose={closeSource} onSource={showSource} canReadSources={canReadSources} /> : <>
           <div className="source-panel-title"><h2>{copy('来源原文', 'Source evidence')}</h2><button onClick={closeSource} aria-label={copy('关闭来源', 'Close source')}>×</button></div>
           {sourceError ? <p role="alert" className="error">{sourceError}</p> : <p role="status" className="muted">{copy('加载中', 'Loading')}</p>}
         </>}

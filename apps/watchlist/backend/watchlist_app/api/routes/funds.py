@@ -548,7 +548,7 @@ async def upload_fund_document(
     try:
         uploaded_at = datetime.now(timezone.utc).isoformat()
         download_url = _instrument_document_download_url(instrument_id, stored_file_name)
-        record = manual_profile_repository.get(session, instrument_id)
+        record = manual_profile_repository.get_for_update(session, instrument_id)
         payload = serialize_payload(record.documents_payload_json) if record is not None else _default_documents_payload()
 
         current_documents = list(payload.get("current_documents") or [])
@@ -646,7 +646,7 @@ def upsert_fund_nav_settings(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
-    record = manual_profile_repository.get(session, instrument_id)
+    record = manual_profile_repository.get_for_update(session, instrument_id)
     current_payload = _normalize_nav_settings_payload(
         record.nav_settings_json if record is not None else None
     )

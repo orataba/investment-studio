@@ -1511,13 +1511,18 @@ def _serialize_portfolio_row_with_materialized_summary(
 ) -> dict[str, object]:
     payload = _serialize_portfolio_row(item)
     state = session.get(PortfolioCalculationStateModel, item.portfolio_id)
-    if state is not None and state.daily_snapshot_status == "failed":
-        # Import here because daily_snapshots also consumes Portfolio facts.
+    if state is not None:
         from portfolio_app.services.daily_snapshots import _state_requires_refresh
 
-        if not _state_requires_refresh(session, item.portfolio_id):
-            payload["valuation_blocked_from"] = state.dirty_from.isoformat()
-            payload["valuation_blocked_reason"] = state.error_message
+        if _state_requires_refresh(session, item.portfolio_id):
+            # Portfolio navigation stays available while recalculating, but a
+            # previous source generation must not masquerade as current NAV.
+            payload.update(nav=None, day_change_value=None, day_change_pct=None,
+                           day_return_capital=None, coverage_state="unavailable")
+            return payload
+    if state is not None and state.daily_snapshot_status == "failed":
+        payload["valuation_blocked_from"] = state.dirty_from.isoformat() if state.dirty_from else None
+        payload["valuation_blocked_reason"] = state.error_message
     latest_snapshot = default_portfolio_snapshot(session, item.portfolio_id)
     if latest_snapshot is None:
         payload["nav"] = None
@@ -1533,6 +1538,14 @@ def _serialize_portfolio_row_with_materialized_summary(
     # misclassify subscriptions, withdrawals, and inception funding as return.
     payload["day_change_value"] = _safe_float(snapshot.get("delta"))
     payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr"))
+    beginning_nav = _safe_float(snapshot.get("beginning_nav"))
+    external_cash_in = _safe_float(snapshot.get("external_cash_in"))
+    payload["day_return_capital"] = (
+        beginning_nav + external_cash_in
+        if beginning_nav is not None and external_cash_in is not None
+        and payload["day_change_pct"] is not None
+        else None
+    )
     payload["coverage_state"] = str(
         snapshot.get("valuation_coverage_state") or "unavailable"
     )
@@ -4038,6 +4051,14 @@ def _initialize_created_portfolio_access(session, portfolio_id: str) -> None:
     initialize_access(session, portfolio_id, principal)
 
 
+def _lock_portfolio_id_allocation(session) -> None:
+    # Names can resolve to the same slug, including the first portfolio. There
+    # is no existing portfolio row to lock in that case; serialize PostgreSQL
+    # ID allocation across create and copy until their transaction commits.
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(select(func.pg_advisory_xact_lock(func.hashtext("portfolio_record.id_allocation"))))
+
+
 def create_portfolio(
     name: str | None = None,
     *,
@@ -4046,6 +4067,7 @@ def create_portfolio(
 ) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        _lock_portfolio_id_allocation(session)
         portfolios = session.scalars(select(PortfolioRecordModel)).all()
         resolved_name = (name or "").strip() or "新组合"
         base_id = _slugify(resolved_name)
@@ -4078,13 +4100,17 @@ def create_portfolio(
         return _serialize_portfolio_row(record)
 
 
-def update_portfolio_base_currency(
+def update_portfolio_settings(
     portfolio_id: str,
     *,
-    base_currency: str,
+    name: str | None = None,
+    base_currency: str | None = None,
 ) -> dict[str, object] | None:
-    normalized_currency = str(base_currency or "").strip().upper()
-    if normalized_currency not in SUPPORTED_FX_CURRENCIES:
+    normalized_name = name.strip() if name is not None else None
+    if normalized_name is not None and not 1 <= len(normalized_name) <= 200:
+        raise ValueError("Portfolio name must contain 1 to 200 characters.")
+    normalized_currency = base_currency.strip().upper() if base_currency is not None else None
+    if normalized_currency is not None and normalized_currency not in SUPPORTED_FX_CURRENCIES:
         raise ValueError("Unsupported portfolio base currency.")
 
     session_factory = get_session_factory()
@@ -4096,7 +4122,10 @@ def update_portfolio_base_currency(
         )
         if record is None:
             return None
-        if record.base_currency == normalized_currency:
+        if normalized_name is not None:
+            record.portfolio_name = normalized_name
+        if normalized_currency is None or record.base_currency == normalized_currency:
+            session.commit()
             return _serialize_portfolio_row_with_materialized_summary(
                 session,
                 record,
@@ -4133,6 +4162,9 @@ def update_portfolio_base_currency(
 def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        _lock_portfolio_id_allocation(session)
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            return None
         portfolios = session.scalars(
             select(PortfolioRecordModel).order_by(
                 PortfolioRecordModel.sort_order,
@@ -4623,17 +4655,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
 def delete_portfolio(portfolio_id: str) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
-        portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
-                PortfolioRecordModel.sort_order,
-                PortfolioRecordModel.portfolio_id,
-            )
-        ).all()
-        if len(portfolios) <= 1:
-            raise ValueError("At least one portfolio must remain.")
-
-        target = next((item for item in portfolios if item.portfolio_id == portfolio_id), None)
-        if target is None:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             return False
 
         session.execute(
@@ -4670,17 +4692,6 @@ def delete_portfolio(portfolio_id: str) -> bool:
         session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_id == portfolio_id))
 
-        remaining = [
-            item
-            for item in session.scalars(
-                select(PortfolioRecordModel).order_by(
-                    PortfolioRecordModel.sort_order,
-                    PortfolioRecordModel.portfolio_id,
-                )
-            ).all()
-        ]
-        for index, item in enumerate(remaining):
-            item.sort_order = index
         session.commit()
         return True
 

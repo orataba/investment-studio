@@ -34,6 +34,7 @@ export function StudioLinks({ apps }: { apps: StudioApp[] }) {
 }
 
 export default function StudioHome() {
+  const { t } = useLanguage()
   const [apps, setApps] = useState<StudioApp[] | null>(null)
   const [error, setError] = useState('')
   const [account, setAccount] = useState<{ display_name: string, local_unrestricted?: boolean } | null>(null)
@@ -70,9 +71,9 @@ export default function StudioHome() {
         <div className="home-actions">
           <LanguageSelector />
           {account ? <>
-            <a href={appPath('/account')}>{account.display_name} · 账号与团队</a>
-            {account.local_unrestricted ? <span>本机全权限</span> : <button className="home-logout" type="button" onClick={logout}>Sign out</button>}
-          </> : <a href={appPath('/login')}>登录</a>}
+            <a href={appPath('/account')}><span translate="no">{account.display_name}</span> · {t("Account and team")}</a>
+            {account.local_unrestricted ? <span>{t("Local unrestricted access")}</span> : <button className="home-logout" type="button" onClick={logout}>Sign out</button>}
+          </> : <a href={appPath('/login')}>{t("Sign in")}</a>}
         </div>
       </header>
       <section className="home-intro">
@@ -81,7 +82,7 @@ export default function StudioHome() {
         <p>Research markets, monitor assets, and manage your portfolios.</p>
       </section>
       {error ? <p role="alert">{error}</p> : apps === null ? (
-        <p role="status">Loading workspaces…</p>
+        <div className="home-links-skeleton" role="status" aria-busy="true" aria-label={t('Loading')}>{[0, 1, 2, 3].map(key => <span key={key} />)}</div>
       ) : apps.length === 0 ? (
         <p>No workspaces are configured.</p>
       ) : <StudioLinks apps={apps} />}

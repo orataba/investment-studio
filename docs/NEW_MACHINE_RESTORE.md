@@ -15,7 +15,7 @@
 
 此 runbook 恢复 Studio 管理的业务与共享数据。Regime 自有模型数据库、runtime 和部署仍由子模块维护；它读取及写入的公共市场资料归 Studio 管理。恢复共享分区前须另外停止或等待 Regime source writer。Mac 和云端的 Portfolio/Watchlist 私有事实独立，不能用公共数据同步或云端 dump 覆盖本机私有账本。
 
-当前完整 dump 包含 `identity`、`instrument_data`、`data_ingestion`、`portfolio`、`watchlist`、`market_data`、`market_text`、`briefing` 八个 schema。迁移前的备份可分别使用旧名 `instrument_registry`、`platform` 代替前两个分区，恢复后会运行原地改名迁移；同一分区的新旧名不能同时存在。缺少整个摄取分区的制品无法恢复抓取游标和原始证据，不是有效恢复制品。
+当前完整 dump 包含 `identity`、`instrument_data`、`data_ingestion`、`portfolio`、`watchlist`、`market_data`、`market_text`、`briefing` 八个 schema。迁移前的备份可分别使用旧名 `instrument_registry`、`platform` 代替 `instrument_data`、`data_ingestion` 分区，恢复后会运行原地改名迁移；同一分区的新旧名不能同时存在。缺少整个摄取分区的制品无法恢复抓取游标和原始证据，不是有效恢复制品。
 
 Secrets 放在受控目录，目录权限 `0700`、文件权限 `0600`。backend 目录不得出现 `.env` 或软链接。数据库密码写入当前用户的 `0600` `.pgpass`，不进入连接 URL 或 shell history。
 
@@ -115,7 +115,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
   .venv/bin/python infra/scripts/audit_live_data.py --fail-on-warning --json
 ```
 
-恢复入口和托管服务安装器已经在停写、备份与回滚边界内应用 migration；live-data audit 会核对六条
+恢复入口和托管服务安装器已经在停写、备份与回滚边界内应用 migration；live-data audit 会核对七条
 migration chain 的版本。不要对刚恢复的业务库裸跑 `migration-heads`：该门禁会执行 upgrade，专项 migration
 验证应按 [Database Workflow](./DATABASE_WORKFLOW.md) 使用独立测试数据库。
 

@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
 
@@ -1740,7 +1741,7 @@ export default function OverviewPage() {
                 <div className="portfolio-detail-toolbar portfolio-section-toolbar overview-section-toolbar">
                   <div className="panel-title">Monthly Return Matrix</div>
                 </div>
-                <div className="table-shell">
+                <HorizontalTableScroll className="table-shell">
                   <table className="transactions-table performance-return-matrix-table">
                     <thead>
                       <tr>
@@ -1791,7 +1792,7 @@ export default function OverviewPage() {
                       )}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
               </section>
 
               <div className="overview-panel-grid">
@@ -1839,7 +1840,7 @@ export default function OverviewPage() {
                     Data Columns
                   </button>
                 </div>
-                <div className="table-shell">
+                <HorizontalTableScroll className="table-shell">
                   <table className="transactions-table">
                     <thead>
                       <tr>
@@ -1869,7 +1870,7 @@ export default function OverviewPage() {
                       )}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalTableScroll>
               </section>
             </div>
           </>

@@ -124,7 +124,7 @@ describe('Portfolio workspace loading contract', () => {
     expect(within(tools).getByRole('button', { name: 'Portfolio Settings' })).toHaveTextContent('Settings')
     expect(screen.queryByRole('button', { name: '成员权限' })).not.toBeInTheDocument()
     expect(screen.queryByText('管理者')).not.toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '组合权限' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Portfolio access' })).not.toBeInTheDocument()
     expect(apiMocks.getPortfolioMembers).not.toHaveBeenCalled()
     expect(tools.closest('.portfolio-header-row')?.querySelector('.portfolio-name')).toHaveTextContent('Contract Portfolio')
     expect(trigger.closest('.workspace-app-heading')).toBeNull()
@@ -340,7 +340,7 @@ describe('Portfolio workspace loading contract', () => {
     await user.click(screen.getByRole('button', { name: 'Portfolio Settings' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Portfolio Settings' })
-    expect(within(dialog).getByRole('region', { name: '组合权限' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('region', { name: 'Portfolio access' })).toBeInTheDocument()
     await waitFor(() => expect(apiMocks.getPortfolioMembers).toHaveBeenCalledWith('3'))
     await within(dialog).findByText(/Transactions keep their original currencies/)
     await user.selectOptions(

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     research_regime_api_url: str | None = None
 
     app_name: str = "Investment Studio Watchlist API"
-    app_version: str = "0.1.0"
+    app_version: str = "1.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5173"
     database_url: str

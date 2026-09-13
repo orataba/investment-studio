@@ -59,7 +59,7 @@ function ResearchRunSources({ review, instruments, expanded }: { review: Review;
     <p className="sector-research-note">对应研究截至 {time(review.checked_at)} · {instruments.join('、')}</p>
     {instruments.length > 1 && <p className="sector-research-note">这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。</p>}
     {error ? <p className="sector-research-limitation" role="alert">原文列表暂时无法读取：{error}</p>
-      : sources === null ? <p className="sector-research-note">正在读取已保存的原文记录…</p>
+      : sources === null ? <p className="sector-research-note">Loading</p>
         : sources.length ? <ul className="sector-event-sources">{sources.map((source, index) => <li key={`${source.source_id}:${source.version_id || ''}:${index}`}>
           {sourceHref(source.url) ? <a href={sourceHref(source.url)} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : <span translate="no">{source.title || '已保存的来源记录'}</span>}
           <small>发布 <time dateTime={source.published_at || undefined}>{source.published_at ? time(source.published_at) : '时间未知'}</time> · 取得 <time dateTime={source.retrieved_at || undefined}>{source.retrieved_at ? time(source.retrieved_at) : '时间未知'}</time></small>
@@ -135,7 +135,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     finally { setStarting(false) }
   }
 
-  if (!data && !error && query && variant === 'timeline') return <p className="sector-research-note" role="status">正在读取研究追踪…</p>
+  if (!data && !error && query && variant === 'timeline') return <p className="sector-research-note" role="status">Loading</p>
   if (!data?.sectors.length) return data?.message ? <p className="sector-research-limitation">{data.message}</p> : error ? <p role="alert">研究追踪暂时无法读取：{error}</p>
     : data && variant === 'timeline' ? <section className="sector-research-panel" aria-label="研究追踪"><h2>研究追踪</h2><p className="sector-research-note">尚未完成研究。</p>{instrumentId && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} onAskAssistant={onAskAssistant} />}</section> : null
   const statusSummary = busy ? '研究更新中'

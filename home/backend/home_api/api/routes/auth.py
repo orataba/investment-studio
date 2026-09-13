@@ -140,6 +140,13 @@ def current(db: Session, request: Request, admin: bool = False) -> dict:
     principal, kind, _ = resolve_request_identity(db, request, "home")
     if kind not in {"session", "local"} or principal["kind"] != "user":
         raise HTTPException(403, "此操作需要本人登录会话。")
+    if admin:
+        # Membership changes and admin operations share the team lock. Re-read
+        # the credential and role after waiting: the caller may have been
+        # disabled or demoted by the operation that just released this lock.
+        db.scalar(select(Team).where(Team.id == principal["team_id"]).with_for_update())
+        db.expire_all()
+        principal, _, _ = resolve_request_identity(db, request, "home")
     if admin and principal["team_role"] != "admin":
         raise HTTPException(403, "需要团队管理员权限。")
     if admin:

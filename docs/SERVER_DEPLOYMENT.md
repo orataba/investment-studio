@@ -38,6 +38,7 @@ Build the four frontend bundles before installing web services:
 export VITE_HOME_URL=https://yunguyungu.com
 export VITE_WATCHLIST_URL=https://watchlist.yunguyungu.com
 export VITE_PORTFOLIO_URL=https://portfolio.yunguyungu.com
+export VITE_REGIME_URL=https://regime.yunguyungu.com
 export VITE_BRIEFING_URL=https://briefing.yunguyungu.com
 npm --prefix home/frontend ci
 npm --prefix home/frontend run build -- --manifest

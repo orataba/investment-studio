@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { Fragment, useEffect, useRef, useState } from 'react'
 
 import {
@@ -144,7 +145,7 @@ export default function InstrumentResearchAttributes({
           </div>
         ) : (
           <div className="instrument-placeholder instrument-research-placeholder">
-            {language === 'zh-Hans' ? '正在加载研究字段…' : 'Loading research fields…'}
+            {language === 'zh-Hans' ? '加载中' : 'Loading'}
           </div>
         )}
       </section>
@@ -214,7 +215,7 @@ export default function InstrumentResearchAttributes({
                 <div className="instrument-section-title">{meta.subtitle}</div>
               </div>
             </div>
-            <div className="table-shell instrument-research-table-shell instrument-product-tags-table-shell">
+            <HorizontalTableScroll className="table-shell instrument-research-table-shell instrument-product-tags-table-shell">
               <table className="terminal-table terminal-table-compact instrument-research-table instrument-product-tags-table">
                 <thead>
                   <tr><th>Field</th><th>Value</th></tr>
@@ -329,7 +330,7 @@ export default function InstrumentResearchAttributes({
                   ))}
                 </tbody>
               </table>
-            </div>
+            </HorizontalTableScroll>
           </section>
         )
       })}

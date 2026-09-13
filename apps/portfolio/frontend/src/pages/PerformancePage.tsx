@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
@@ -1479,7 +1480,7 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
   return (
     <div className="performance-metric-table-grid">
       {sections.map((section) => (
-        <div className="performance-metric-table-shell" key={section.label}>
+        <HorizontalTableScroll className="performance-metric-table-shell" key={section.label}>
           <div className="performance-metric-column-title">{section.label}</div>
           <table
             className={`performance-metric-table ${section.label === 'Return' ? 'performance-metric-table-return' : ''} ${
@@ -1523,7 +1524,7 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </HorizontalTableScroll>
       ))}
     </div>
   )
@@ -3024,7 +3025,7 @@ function PerformancePage() {
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}
-              <div className="table-shell">
+              <HorizontalTableScroll className="table-shell">
                 <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
@@ -3063,7 +3064,7 @@ function PerformancePage() {
                     )}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
             </section>
           </div>
         ) : null}

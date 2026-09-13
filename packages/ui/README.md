@@ -27,6 +27,8 @@
   标题或指标旁的 16px 正圆叹号：悬停、聚焦和点击显示同一份锚定说明，点击可固定，Escape / 外点关闭，不改变页面布局或打开模态窗口。Portfolio、Watchlist、Briefing 共用；Regime 以原生页面实现相同交互。
 - `DownloadFormatMenu` / `tableExport`
   下载格式选择与表格导出基础能力。
+- `HorizontalTableScroll` / `useHorizontalTablePan`
+  宽表滚动容器与鼠标横移交互。只在实际溢出时启用；控件、表头及原生拖放保留自身操作，Shift 拖动保留文字选择，触摸板和触屏保持原生滚动。包装组件支持调用方 ref，并在溢出时提供键盘聚焦。
 - `requestIdentity` / `serialTaskQueue`
   防止过期请求覆盖当前状态，并串行化需要按次序完成的前端任务。
 

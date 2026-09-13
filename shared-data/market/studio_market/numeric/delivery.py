@@ -119,7 +119,9 @@ def pull_numeric_directory(settings,*,host: str,remote_dir: str,timeout: int=360
                     'bundle':name,'missing_batch_ids':missing,
                     'new_bundles':len(receipts),'receipts':receipts,'already_present':already_present,
                 }
-            if name in seen:
+            # Delivery receipts can outlive a restored database. Only the
+            # committed ready batches establish that no import is needed.
+            if name in seen and not missing:
                 continue
             if not missing:
                 # The initial source and replica can already own these exact
@@ -149,9 +151,10 @@ def pull_text_directory(settings,*,host: str,remote_dir: str)->dict:
     names=sorted(name for name in listing.stdout.splitlines() if name)
     receipts=[];store=TextStore(settings)
     try:
+        imported=store.imported_bundle_ids()
         for name in names:
             if not re.fullmatch(r"mi-text-[a-f0-9]{64}\.zip",name):raise ValueError("Invalid MI bundle filename")
-            if name in seen:continue
+            if name in seen and Path(name).stem in imported:continue
             result=pull_bundle(store,host=host,remote_path=remote_dir+"/"+name)
             receipts.append({"name":name,**result});seen[name]=datetime.now(timezone.utc).isoformat()
             _atomic_json(state_path,state)
@@ -170,10 +173,11 @@ def import_text_directory(settings, *, directory: str | Path) -> dict:
     receipts = []
     store = TextStore(settings)
     try:
+        imported = store.imported_bundle_ids()
         for path in sorted(directory.glob("mi-text-*.zip")):
             if not re.fullmatch(r"mi-text-[a-f0-9]{64}\.zip", path.name) or path.is_symlink():
                 raise ValueError("Invalid MI inbox archive")
-            if path.name in seen:
+            if path.name in seen and path.stem in imported:
                 continue
             receipt = path.with_name(path.name + ".sha256")
             if receipt.is_symlink():

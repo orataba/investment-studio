@@ -123,11 +123,11 @@ describe('Portfolios rendered page contract', () => {
     )
 
     await screen.findByText('Portfolio A')
-    expect(screen.queryByRole('region', { name: '组合权限' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Portfolio access' })).not.toBeInTheDocument()
     expect(apiMocks.getPortfolioMembers).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Portfolio A actions' }))
     await user.click(screen.getByRole('button', { name: 'Portfolio Settings' }))
-    expect(screen.getByRole('region', { name: '组合权限' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Portfolio access' })).toBeInTheDocument()
     await waitFor(() => expect(apiMocks.getPortfolioMembers).toHaveBeenCalledWith('portfolio-a'))
 
     expect(screen.getByRole('dialog', { name: 'Portfolio Settings' })).toHaveTextContent(
@@ -162,4 +162,57 @@ describe('Portfolios rendered page contract', () => {
     expect(screen.queryByRole('dialog', { name: 'Delete Portfolio' })).not.toBeInTheDocument()
     expect(apiMocks.deletePortfolio).not.toHaveBeenCalled()
   })
+})
+
+const editablePortfolio = {
+  portfolio_id: 'portfolio-a', portfolio_name: 'Portfolio A',
+  access: { can_read: true, can_edit: true, can_manage: true },
+  base_currency: 'USD', inception_date: '2026-01-01', as_of_date: '2026-09-01',
+  nav: 60, day_change_value: 10, day_change_pct: 0.1, day_return_capital: 100, securities_count: 2, sort_order: 0,
+}
+
+it('renames without changing currency, retains controls, and supports cancel and failure', async () => {
+  apiMocks.getPortfolios.mockResolvedValue([editablePortfolio])
+  apiMocks.updatePortfolioSettings.mockRejectedValueOnce(new Error('Please retry')).mockResolvedValue({ ...editablePortfolio, portfolio_name: 'Renamed Portfolio' })
+  const user = userEvent.setup()
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+  await user.click(await screen.findByRole('button', { name: 'Portfolio A actions' }))
+  await user.click(screen.getByRole('button', { name: 'Rename Portfolio' }))
+  await user.clear(screen.getByLabelText('Portfolio Name'))
+  expect(screen.getByRole('button', { name: 'Save Settings' })).toBeDisabled()
+  await user.type(screen.getByLabelText('Portfolio Name'), '  Renamed Portfolio  ')
+  await user.click(screen.getByRole('button', { name: 'Save Settings' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Please retry')
+  expect(screen.getByLabelText('Portfolio Name')).toHaveValue('  Renamed Portfolio  ')
+  await user.click(screen.getByRole('button', { name: 'Save Settings' }))
+  await waitFor(() => expect(apiMocks.updatePortfolioSettings).toHaveBeenLastCalledWith('portfolio-a', { name: 'Renamed Portfolio' }))
+  await user.click(await screen.findByRole('button', { name: 'Renamed Portfolio actions' }))
+  await user.click(screen.getByRole('button', { name: 'Rename Portfolio' }))
+  await user.type(screen.getByLabelText('Portfolio Name'), ' unsaved')
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('dialog', { name: 'Portfolio Settings' })).not.toBeInTheDocument()
+  expect(screen.getByText('Renamed Portfolio')).toBeInTheDocument()
+})
+
+it('persists successive ordering changes and restores order on failed save', async () => {
+  apiMocks.getPortfolios.mockResolvedValue([editablePortfolio, { ...editablePortfolio, portfolio_id: 'portfolio-b', portfolio_name: 'Portfolio B' }])
+  apiMocks.reorderPortfolios.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Cannot save order'))
+  const user = userEvent.setup()
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+  await user.click(await screen.findByRole('button', { name: 'Move Portfolio B up' }))
+  await waitFor(() => expect(apiMocks.reorderPortfolios).toHaveBeenLastCalledWith(['portfolio-b', 'portfolio-a']))
+  await user.click(screen.getByRole('button', { name: 'Move Portfolio A up' }))
+  expect(await screen.findByText('Cannot save order')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Move Portfolio B up' })).toBeDisabled()
+})
+
+it('uses beginning capital for aggregate returns and keeps different valuation dates separate', async () => {
+  apiMocks.getPortfolios.mockResolvedValue([editablePortfolio, { ...editablePortfolio, portfolio_id: 'portfolio-b', portfolio_name: 'Portfolio B' }])
+  const view = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+  expect(await screen.findByText('+$20.00 (10.00%)')).toBeInTheDocument()
+  view.unmount()
+  apiMocks.getPortfolios.mockResolvedValue([editablePortfolio, { ...editablePortfolio, portfolio_id: 'portfolio-b', portfolio_name: 'Portfolio B', as_of_date: '2026-08-31' }])
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><PortfoliosPage /></MemoryRouter></LanguageProvider>)
+  expect(await screen.findByText('Different valuation dates')).toBeInTheDocument()
+  expect(screen.queryByText('+$20.00 (10.00%)')).not.toBeInTheDocument()
 })

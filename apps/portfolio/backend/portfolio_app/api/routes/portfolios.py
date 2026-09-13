@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from portfolio_app.api.contracts import (
     PortfolioRiskPolicyRecord,
@@ -15,7 +15,7 @@ from portfolio_app.services.portfolio_store import (
     create_portfolio,
     delete_portfolio,
     list_portfolios,
-    update_portfolio_base_currency,
+    update_portfolio_settings as store_update_portfolio_settings,
 )
 from portfolio_app.services.portfolio_access import visible_ids, require_access, get_preference, save_preference, actor
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, update_portfolio_risk_policy
@@ -25,9 +25,14 @@ router = APIRouter()
 
 
 class PortfolioCreateRequest(BaseModel):
-    name: str | None = None
+    name: str = Field(min_length=1, max_length=200)
     base_currency: SupportedCurrency
     inception_date: date
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("inception_date")
     @classmethod
@@ -42,7 +47,20 @@ class PortfolioReorderRequest(BaseModel):
 
 
 class PortfolioSettingsUpdateRequest(BaseModel):
-    base_currency: SupportedCurrency
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    base_currency: SupportedCurrency | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set or any(getattr(self, key) is None for key in self.model_fields_set):
+            raise ValueError("Provide a portfolio name or base currency; values cannot be null.")
+        return self
 
 
 @router.get("/session")
@@ -96,15 +114,15 @@ def update_portfolio_settings(
     payload: PortfolioSettingsUpdateRequest,
 ) -> dict[str, object]:
     try:
-        record = update_portfolio_base_currency(
+        record = store_update_portfolio_settings(
             portfolio_id,
-            base_currency=payload.base_currency,
+            **payload.model_dump(exclude_unset=True),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    return record
+    return {**record, "access": require_access(portfolio_id)}
 
 
 @router.get("/{portfolio_id}/risk-policy", response_model=PortfolioRiskPolicyRecord)

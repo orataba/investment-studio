@@ -1,8 +1,10 @@
+import { LanguageSelector, useLanguage } from '../../../packages/ui/src/i18n'
 import { type FormEvent, useEffect, useState } from 'react'
 import { accountRequest } from './accountApi'
 import { appPath } from './appPath'
 
 export default function ActivatePage() {
+  const { t } = useLanguage()
   const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') || '')
   useEffect(() => {
     // Keep one-time secrets out of server logs, referrers and the visible address.
@@ -15,25 +17,25 @@ export default function ActivatePage() {
   const [busy, setBusy] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (password !== confirmation) { setMessage('两次密码不一致。'); return }
+    if (password !== confirmation) { setMessage(t("The passwords do not match.")); return }
     setBusy(true)
     try {
       await accountRequest('/activate', 'POST', { token, password })
       setSaved(true)
-      setMessage('密码已设置，请登录。已登录的其他设备也已退出。')
+      setMessage(t("Your password has been set. Sign in to continue. Other devices have been signed out."))
     } catch (error) { setMessage((error as Error).message) }
     finally { setBusy(false) }
   }
   return <main className="login-shell"><section className="login-panel">
-    <strong>Investment Studio</strong><h1>设置账号密码</h1>
-    <p>邀请和密码重置链接仅能使用一次，有效期为 24 小时。</p>
+    <div className="login-brand"><strong>Investment Studio</strong><LanguageSelector /></div><h1>{t("Set your account password")}</h1>
+    <p>{t("Invitation and password reset links can be used once and expire after 24 hours.")}</p>
     {!saved && token ? <form className="login-form" onSubmit={submit}>
-      <label>新密码<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={password} onChange={event => setPassword(event.target.value)} /></label>
-      <label>再次输入<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label>
-      <button disabled={busy}>{busy ? '正在保存…' : '设置密码'}</button>
+      <label>{t("New password")}<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={password} onChange={event => setPassword(event.target.value)} /></label>
+      <label>{t("Confirm password")}<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={confirmation} onChange={event => setConfirmation(event.target.value)} /></label>
+      <button disabled={busy}>{busy ? t("Saving…") : t("Set password")}</button>
     </form> : null}
-    {!token ? <p role="alert">链接缺少凭证，请使用管理员提供的完整链接。</p> : null}
+    {!token ? <p role="alert">{t("The link is missing its credential. Use the complete link provided by your administrator.")}</p> : null}
     {message ? <p role="status">{message}</p> : null}
-    <a href={appPath('/login')}>返回登录</a>
+    <a href={appPath('/login')}>{t("Back to sign in")}</a>
   </section></main>
 }

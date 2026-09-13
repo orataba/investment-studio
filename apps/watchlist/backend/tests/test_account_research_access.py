@@ -189,6 +189,8 @@ def test_display_views_and_watchlist_order_are_personal_even_for_readers(account
     copied = client.post(f"/api/watchlists/{first}/copy").json()["watchlist_id"]
     assert all(view["name"] != payload["name"] for view in client.get(f"/api/watchlists/{copied}").json()["views"])
     as_user(client, "reader")
+    assert client.patch(f"/api/watchlists/{second}", json={"name": "Reader rename"}).status_code == 403
+    assert client.get(f"/api/watchlists/{second}").json()["name"] == "Team two"
     assert client.post(f"/api/watchlists/{second}/views", json=payload).status_code == 200
     assert client.post(f"/api/watchlists/{second}/items", json={"instrument_ids": ["fund-us-agg"]}).status_code == 403
 

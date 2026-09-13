@@ -81,11 +81,11 @@ it('keeps section loading beside the active tab without adding an in-flow notice
   api.performance.mockImplementationOnce(() => new Promise(resolve => { resolvePerformance = resolve }))
   const { container } = show('/instruments/fund-1?tab=risk')
   const title = await screen.findByRole('heading', { level: 1, name: '测试基金 TEST' })
-  const status = await screen.findByRole('status', { name: /Loading .* data/ })
+  const status = await screen.findByRole('status', { name: 'Loading' })
   expect(status.closest('.instrument-detail-tab-active')).not.toBeNull()
   expect(container.querySelector('.inline-notice[role="status"]')).toBeNull()
   resolvePerformance({ growth_chart_series: [], annual_returns: [], trailing_returns: [], ranking: null, peer_comparison: null, calculation_frequency_profile: null, snapshot_metadata: null })
-  await waitFor(() => expect(screen.queryByRole('status', { name: /Loading .* data/ })).toBeNull())
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
   expect(screen.getByRole('heading', { level: 1, name: '测试基金 TEST' })).toBe(title)
 })
 

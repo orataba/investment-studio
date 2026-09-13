@@ -1719,7 +1719,7 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
     target_payload = target_rows.json()
     assert target_payload["total_rows"] == 1
     assert target_payload["rows"][0]["instrument_name"] == "SXV264 Total Return Fund"
-    assert target_payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
+    assert target_payload["rows"][0]["latest_quote"] == 101.236476
     assert target_payload["rows"][0]["latest_quote_date"] == "2026-04-14"
 
 
@@ -1785,7 +1785,7 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
     target_payload = target_rows.json()
     assert target_payload["total_rows"] == 1
     assert target_payload["rows"][0]["instrument_name"] == "SXV264 Total Return Fund"
-    assert target_payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
+    assert target_payload["rows"][0]["latest_quote"] == 101.236476
     assert target_payload["rows"][0]["latest_quote_date"] == "2026-04-14"
 
 
@@ -1907,9 +1907,9 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     payload = screener.json()
     assert payload["total_rows"] == 1
     assert payload["rows"][0]["ticker_or_isin"] == "SXV264"
-    assert payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
+    assert payload["rows"][0]["latest_quote"] == 101.236476
     assert payload["rows"][0]["latest_quote_date"] == "2026-04-14"
-    assert payload["rows"][0]["latest_cumulative_nav"] == pytest.approx(101.2365, abs=1e-6)
+    assert payload["rows"][0]["latest_cumulative_nav"] == 101.236476
     assert payload["rows"][0]["latest_cumulative_nav_date"] == "2026-04-14"
     assert payload["rows"][0]["metric_as_of_date"] == "2026-04-14"
     assert payload["rows"][0]["data_freshness_status"] == "stale"

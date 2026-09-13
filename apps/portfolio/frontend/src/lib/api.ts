@@ -126,6 +126,7 @@ export type PortfolioEntryRecord = {
   nav: number | null
   day_change_value: number | null
   day_change_pct: number | null
+  day_return_capital?: number | null
   securities_count: number
   sort_order: number
   default_planning_taxonomy_id?: string | null
@@ -138,7 +139,8 @@ export type PortfolioCreatePayload = {
 }
 
 export type PortfolioSettingsUpdatePayload = {
-  base_currency: SupportedPortfolioCurrency
+  name?: string
+  base_currency?: SupportedPortfolioCurrency
 }
 
 export type HoldingsSummaryCard = {

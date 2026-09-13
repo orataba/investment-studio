@@ -168,6 +168,31 @@ def test_admin_reset_revokes_session_from_overlapping_login(postgres_identity):
         )) is not None
 
 
+@pytest.mark.parametrize("change", [{"role": "reader"}, {"active": False}])
+@pytest.mark.parametrize("operation", ["invite", "reset"])
+def test_admin_operation_rechecks_permission_after_waiting_for_team_change(postgres_identity, change, operation):
+    data = postgres_identity
+    engine = data["engine"]
+    remove_permission = lambda: call_route(engine, lambda db: auth.update_member(
+        data["admin_id"], auth.MemberPatch(**change), request(data["owner_session"]), db,
+    ))
+    if operation == "invite":
+        action = lambda: call_route(engine, lambda db: auth.invite(
+            auth.InviteRequest(username="unwanted-admin", display_name="Unwanted", role="admin"),
+            request(data["admin_session"]), db,
+        ))
+    else:
+        action = lambda: call_route(engine, lambda db: auth.reset_member(
+            data["member_id"], request(data["admin_session"]), db,
+        ))
+    assert interleave(engine, remove_permission, action, held_table="teams", waiting_table="teams") == (
+        200, 401 if change.get("active") is False else 403,
+    )
+    with Session(engine) as db:
+        assert db.scalar(select(User).where(User.username == "unwanted-admin")) is None
+        assert db.scalar(select(OneTimeToken).where(OneTimeToken.user_id == data["member_id"])) is None
+
+
 def test_owner_handover_and_member_reset_use_the_same_team_lock_order(postgres_identity):
     data = postgres_identity
     engine = data["engine"]
@@ -191,7 +216,7 @@ def test_concurrent_owner_handovers_cannot_overwrite_the_first_transfer(postgres
             auth.TransferRequest(user_id=target, password=PASSWORD), request(data["owner_session"]), db,
         ))
     assert interleave(engine, lambda: transfer(data["member_id"]), lambda: transfer(data["admin_id"]),
-                      held_table="teams", waiting_table="teams") == (200, 409)
+                      held_table="teams", waiting_table="teams") == (200, 403)
     with Session(engine) as db:
         assert db.get(Team, "default").owner_user_id == data["member_id"]
 

@@ -1,5 +1,17 @@
 // System UI copy only. User content must be marked translate="no".
 export const systemMessages: Record<string, string> = {
+  "Research inputs changed during calculation; rerun with the current inputs.": "计算期间研究输入已变化；请使用当前输入重新运行研究。",
+  "Planning taxonomy structure, active assignments, active SAA/TAA target configuration, portfolio facts, or market-data inputs changed after this run was created; rerun Research.": "本次研究建立后，规划分类结构、有效分类归属、有效 SAA/TAA 目标配置、组合事实或市场数据输入已变化；请重新运行研究。",
+  "Failed to rename portfolio.": "组合重命名失败。",
+  "Portfolio name must be 200 characters or fewer.": "组合名称不能超过 200 个字符。",
+  "Portfolio name is required.": "请输入组合名称。",
+  "Portfolio renamed.": "组合已重命名。",
+  "Rename Portfolio": "重命名组合",
+  "Failed to rename watchlist.": "关注列表重命名失败。",
+  "Watchlist name must be 200 characters or fewer.": "关注列表名称不能超过 200 个字符。",
+  "Watchlist name is required.": "请输入关注列表名称。",
+  "Watchlist renamed.": "关注列表已重命名。",
+  "Rename Watchlist": "重命名关注列表",
   "Missing {source}/{target} FX on {date}": "缺少{date}的{source}/{target}汇率",
   "Missing valuation for {instrument}": "缺少{instrument}的估值",
   "Source share quantities are unavailable for a pooled lot": "合并批次缺少可追溯的来源股数",
@@ -3375,6 +3387,7 @@ export const systemMessages: Record<string, string> = {
 
 // Original system values are retained in storage; aliases localize their display only.
 export const systemSourceAliases: Record<string, string> = {
+  "待分类": "Unclassified",
   "原生加密资产": "Native Crypto Assets",
   "All 公募": "All Public Funds",
   "All 私募": "All Private Funds",

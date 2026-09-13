@@ -10,7 +10,7 @@ from threading import RLock
 from time import monotonic
 from typing import TypeVar
 
-from portfolio_app.db.models import PortfolioCalculationStateModel
+from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
     _state_requires_refresh,
@@ -44,7 +44,7 @@ def _date_key(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, str | None, str | None, str | None] | None:
+def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, ...] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
@@ -52,7 +52,11 @@ def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, str | None, st
             return None
         if _state_requires_refresh(session, portfolio_id):
             return None
+        portfolio = session.get(PortfolioRecordModel, portfolio_id)
+        if portfolio is None:
+            return None
         return (
+            portfolio.portfolio_name,
             state.refresh_request_id,
             state.refreshed_at,
             _date_key(state.refreshed_from),
@@ -111,7 +115,7 @@ def _cache_key(
     portfolio_id: str,
     surface: str,
     args: tuple[Hashable, ...],
-    fingerprint: tuple[str | None, str | None, str | None, str | None],
+    fingerprint: tuple[str | None, ...],
 ) -> tuple[Hashable, ...]:
     return (get_session_factory(), portfolio_id, surface, *args, *fingerprint)
 

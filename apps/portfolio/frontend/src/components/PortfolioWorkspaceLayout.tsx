@@ -113,6 +113,8 @@ export default function PortfolioWorkspaceLayout({
   const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
   const [settingsBaseCurrency, setSettingsBaseCurrency] =
     useState<SupportedPortfolioCurrency>('CNY')
+  const [settingsName, setSettingsName] = useState('')
+  const [loadedRiskPolicy, setLoadedRiskPolicy] = useState<PortfolioRiskPolicyRecord | null>(null)
   const [riskPolicyLookbackDays, setRiskPolicyLookbackDays] = useState(String(DEFAULT_RISK_POLICY_WINDOW_DAYS))
   const [riskPolicyMissingReturnPolicy, setRiskPolicyMissingReturnPolicy] =
     useState<PortfolioResearchMissingReturnPolicy>('strict')
@@ -339,6 +341,8 @@ export default function PortfolioWorkspaceLayout({
     setRiskSettingsOpen(true)
     setRiskSettingsLoading(true)
     setRiskSettingsError(null)
+    setSettingsName(portfolioName)
+    setLoadedRiskPolicy(null)
     if (
       activeSummary
       && SUPPORTED_PORTFOLIO_CURRENCIES.includes(
@@ -350,6 +354,7 @@ export default function PortfolioWorkspaceLayout({
     try {
       const policy = await getPortfolioRiskPolicy(resolvedPortfolioId)
       applyRiskPolicy(policy)
+      setLoadedRiskPolicy(policy)
     } catch (error) {
       setRiskSettingsError(extractErrorMessage(error))
     } finally {
@@ -359,7 +364,12 @@ export default function PortfolioWorkspaceLayout({
 
   async function handleSaveRiskSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!resolvedPortfolioId) {
+    if (!resolvedPortfolioId || riskSettingsSaving || riskSettingsLoading) {
+      return
+    }
+    const name = settingsName.trim()
+    if (!name || name.length > 200) {
+      setRiskSettingsError(language === 'zh-Hans' ? '组合名称须为 1 至 200 个字符。' : 'Portfolio name must contain 1 to 200 characters.')
       return
     }
     const parsedLookbackDays = Number(riskPolicyLookbackDays)
@@ -372,30 +382,39 @@ export default function PortfolioWorkspaceLayout({
     setRiskSettingsError(null)
     try {
       const baseCurrencyChanged = settingsBaseCurrency !== activeSummary?.base_currency
-      const [policy] = await Promise.all([
-        updatePortfolioRiskPolicy(resolvedPortfolioId, {
+      const nameChanged = name !== portfolioName
+      const riskPolicyChanged = loadedRiskPolicy != null && (
+        loadedRiskPolicy.covariance_model_id !== riskPolicyModelId ||
+        loadedRiskPolicy.lookback_days !== resolvedLookbackDays ||
+        loadedRiskPolicy.missing_return_policy !== riskPolicyMissingReturnPolicy ||
+        loadedRiskPolicy.contribution_mode !== riskPolicyContributionMode
+      )
+      if (baseCurrencyChanged || nameChanged) {
+        const updated = await updatePortfolioSettings(resolvedPortfolioId, {
+          ...(nameChanged ? { name } : {}),
+          ...(baseCurrencyChanged ? { base_currency: settingsBaseCurrency } : {}),
+        })
+        setPortfolioOptions((current) => current.map((item) => item.portfolio_id === updated.portfolio_id
+          ? { ...item, portfolio_name: updated.portfolio_name } : item))
+        setSummary((current) => current?.portfolio_id === updated.portfolio_id
+          ? { ...current, portfolio_name: updated.portfolio_name, base_currency: updated.base_currency } : current)
+        if (baseCurrencyChanged) setSummaryRevision((current) => current + 1)
+      }
+      if (riskPolicyChanged) {
+        const policy = await updatePortfolioRiskPolicy(resolvedPortfolioId, {
           covariance_model_id: riskPolicyModelId,
           lookback_days: resolvedLookbackDays,
           calculation_frequency: 'daily',
           missing_return_policy: riskPolicyMissingReturnPolicy,
           contribution_mode: riskPolicyContributionMode,
-        }),
-        baseCurrencyChanged
-          ? updatePortfolioSettings(resolvedPortfolioId, {
-              base_currency: settingsBaseCurrency,
-            })
-          : Promise.resolve(null),
-      ])
-      applyRiskPolicy(policy)
-      window.dispatchEvent(
-        new CustomEvent('portfolio-risk-policy-updated', {
-          detail: {
-            portfolioId: resolvedPortfolioId,
-            policy,
-          },
-        }),
-      )
-      setSummaryRevision((current) => current + 1)
+        })
+        applyRiskPolicy(policy)
+        setLoadedRiskPolicy(policy)
+        window.dispatchEvent(new CustomEvent('portfolio-risk-policy-updated', {
+          detail: { portfolioId: resolvedPortfolioId, policy },
+        }))
+        setSummaryRevision((current) => current + 1)
+      }
       setRiskSettingsOpen(false)
       setSelectorNotice(
         baseCurrencyChanged
@@ -499,6 +518,12 @@ export default function PortfolioWorkspaceLayout({
                   </div>
                   {selectorMenuOpen ? (
                     <div className="workspace-selector-menu">
+                      <button type="button" disabled={!access?.can_edit || summaryBusy} onClick={() => {
+                        setSelectorMenuOpen(false)
+                        void handleOpenRiskSettings()
+                      }}>
+                        {language === 'zh-Hans' ? '重命名组合' : 'Rename Portfolio'}
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -642,6 +667,11 @@ export default function PortfolioWorkspaceLayout({
                   <form className="portfolio-settings-form" onSubmit={(event) => void handleSaveRiskSettings(event)}>
                     <div className="portfolio-settings-grid">
                       <label className="portfolio-settings-field-wide">
+                        <span>{language === 'zh-Hans' ? '组合名称' : 'Portfolio Name'}</span>
+                        <input autoFocus required maxLength={200} value={settingsName} disabled={riskSettingsSaving}
+                          onChange={(event) => setSettingsName(event.target.value)} />
+                      </label>
+                      <label className="portfolio-settings-field-wide">
                         <span>Reporting / Base Currency</span>
                         <select
                           aria-label="Reporting / Base Currency"
@@ -670,7 +700,7 @@ export default function PortfolioWorkspaceLayout({
                         <select
                           value={riskPolicyLookbackDays}
                           onChange={(event) => setRiskPolicyLookbackDays(event.target.value)}
-                          disabled={riskSettingsSaving}
+                          disabled={riskSettingsSaving || !loadedRiskPolicy}
                         >
                           {RISK_WINDOW_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -686,7 +716,7 @@ export default function PortfolioWorkspaceLayout({
                           onChange={(event) =>
                             setRiskPolicyMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)
                           }
-                          disabled={riskSettingsSaving}
+                          disabled={riskSettingsSaving || !loadedRiskPolicy}
                         >
                           {RISK_MISSING_RETURN_POLICY_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -700,7 +730,7 @@ export default function PortfolioWorkspaceLayout({
                         <select
                           value={riskPolicyModelId}
                           onChange={(event) => setRiskPolicyModelId(event.target.value as PortfolioRiskCovarianceModel)}
-                          disabled={riskSettingsSaving}
+                          disabled={riskSettingsSaving || !loadedRiskPolicy}
                         >
                           {RISK_MODEL_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -716,7 +746,7 @@ export default function PortfolioWorkspaceLayout({
                           onChange={(event) =>
                             setRiskPolicyContributionMode(event.target.value as PortfolioRiskContributionMode)
                           }
-                          disabled={riskSettingsSaving}
+                          disabled={riskSettingsSaving || !loadedRiskPolicy}
                         >
                           {RISK_CONTRIBUTION_MODE_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -734,7 +764,7 @@ export default function PortfolioWorkspaceLayout({
                       >
                         Cancel
                       </button>
-                      <button type="submit" className="button-primary" disabled={riskSettingsSaving}>
+                      <button type="submit" className="button-primary" disabled={riskSettingsSaving || !settingsName.trim()}>
                         {riskSettingsSaving ? 'Saving…' : 'Save Settings'}
                       </button>
                     </div>

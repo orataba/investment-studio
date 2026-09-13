@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -334,7 +335,7 @@ export default function DerivativeHoldingOverview({
           <div><span className="portfolio-security-section-kicker">{t('Underlying risk')}</span><h2>{t('FCN current state')}</h2></div>
           {riskPill(t(fcnRiskLabel(risk?.risk_state)), warning)}
         </div>
-        <div className="table-shell">
+        <HorizontalTableScroll className="table-shell">
           <table className="holdings-table fcn-monitor-table">
             <thead><tr><th>{t('Underlying')}</th><th>{t('Current')}</th><th>{t('Vs initial')}</th><th>{t('Strike distance')}</th><th>{t('KI distance')}</th><th>{t('KO distance')}</th><th>{t('Spot date')}</th></tr></thead>
             <tbody>{(risk?.underlyings ?? []).map((underlying) => {
@@ -349,7 +350,7 @@ export default function DerivativeHoldingOverview({
               <td>{underlying.quote_as_of_date ?? '—'}<small>{t(formatLabel(underlying.quote_status))}</small></td>
             </tr>})}</tbody>
           </table>
-        </div>
+        </HorizontalTableScroll>
         <p className="holding-detail-note">{t('Distances = spot / contractual level − 1. Positive means above the level. Missing terms stay blank; these are price distances, not probabilities.')}</p>
         <p className="holding-detail-note">{t('A barrier crossing on this chart does not confirm knock-in, knock-out or stock delivery. Observation rules and confirmed contract events determine the outcome.')}</p>
       </section>

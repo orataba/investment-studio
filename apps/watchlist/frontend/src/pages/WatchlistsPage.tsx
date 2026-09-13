@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
@@ -42,6 +43,7 @@ import {
   summarizeMetricAsOfDates,
 } from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
+import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import ResearchPage from './ResearchPage'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
@@ -568,17 +570,22 @@ function renderCell(
   field: FieldRegistryRecord | undefined,
   row: Record<string, unknown>,
   openRisk: (id: string) => void,
+  zh: boolean,
 ) {
   if (fieldKey === 'instrument_name') {
     return (
       <span className="watchlist-instrument-name"><Link translate="no" to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
         {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
-      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)} aria-label={`${value || instrumentId} 有关注事项，查看风险提示`} title="有重点事项仍需关注 · 点击查看"><WorkspaceToolIcon kind="risk" /></button>}</span>
+      </Link>{row['attr.risk_attention'] === 'attention' && <button className="watchlist-risk-indicator" onClick={() => openRisk(instrumentId)}
+        aria-label={zh ? `${value || instrumentId} 有关注事项，查看风险提示` : `View risk alerts for ${value || instrumentId}`}
+        title={zh ? '有重点事项仍需关注 · 点击查看' : 'Open risk alerts'}><WorkspaceToolIcon kind="risk" /></button>}</span>
     )
   }
 
   if (fieldKey === 'instrument_type') {
-    const labels: Record<string, string> = { private_fund: '私募基金', public_fund: '公募基金', equity: '股票', etf: 'ETF', index: '指数' }
+    const labels: Record<string, string> = zh
+      ? { private_fund: '私募基金', public_fund: '公募基金', equity: '股票', etf: 'ETF', index: '指数', crypto: '加密资产' }
+      : { private_fund: 'Private Fund', public_fund: 'Public Fund', equity: 'Stock', etf: 'ETF', index: 'Index', crypto: 'Crypto' }
     return labels[String(value)] || String(value || '—')
   }
 
@@ -848,6 +855,7 @@ export default function WatchlistsPage() {
   const [modalError, setModalError] = useState<string | null>(null)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [pendingDeleteWatchlist, setPendingDeleteWatchlist] = useState<WatchlistRecord | null>(null)
+  const [renamingWatchlist, setRenamingWatchlist] = useState<WatchlistRecord | null>(null)
   const [deletingWatchlist, setDeletingWatchlist] = useState(false)
   const [pendingDeleteItems, setPendingDeleteItems] = useState<PendingDeleteItems | null>(null)
   const [deletingItems, setDeletingItems] = useState(false)
@@ -857,7 +865,7 @@ export default function WatchlistsPage() {
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
   const [reloadToken, setReloadToken] = useState(0)
   useWatchlistForegroundRefresh(
-    !loading && watchlistDetailOwnerId === watchlistId ? watchlistId : null,
+    !loading && !renamingWatchlist && watchlistDetailOwnerId === watchlistId ? watchlistId : null,
     (records) => {
       setWatchlists(records)
       setError(null)
@@ -2521,7 +2529,7 @@ export default function WatchlistsPage() {
   if (loading) {
     return (
       <div className="watchlists-page">
-        <LoadingOverlay label="Loading watchlists" />
+        <LoadingOverlay />
       </div>
     )
   }
@@ -2612,6 +2620,12 @@ export default function WatchlistsPage() {
                   Copy Watchlist
                 </button>
                 {!activeWatchlistIsSystem ? (
+                  <button type="button" disabled={!canWriteTeam} onClick={() => {
+                    setRenamingWatchlist(activeWatchlist)
+                    setSelectorMenuOpen(false)
+                  }}>{zh ? '重命名关注列表' : 'Rename Watchlist'}</button>
+                ) : null}
+                {!activeWatchlistIsSystem ? (
                   <button
                     type="button"
                     disabled={!canWriteTeam}
@@ -2643,6 +2657,7 @@ export default function WatchlistsPage() {
               <div className="watchlist-switcher-chip watchlist-switcher-chip-active" key={watchlist.watchlist_id}>
                 <Link
                   className="watchlist-switcher-chip-label watchlist-switcher-chip-label-active"
+                  translate={watchlist.owner_type === 'system' ? undefined : 'no'}
                   to={buildWatchlistPath(watchlist.watchlist_id)}
                 >
                   {watchlist.name}
@@ -2653,6 +2668,7 @@ export default function WatchlistsPage() {
                 type="button"
                 key={watchlist.watchlist_id}
                 className="watchlist-switcher-chip watchlist-switcher-chip-inactive"
+                translate={watchlist.owner_type === 'system' ? undefined : 'no'}
                 onClick={() => navigate(buildWatchlistPath(watchlist.watchlist_id))}
               >
                 {watchlist.name}
@@ -3054,7 +3070,7 @@ export default function WatchlistsPage() {
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
 
-        <div className="table-shell" ref={tableShellRef}>
+        <HorizontalTableScroll className="table-shell" ref={tableShellRef}>
           <table className="terminal-table watchlists-table" style={{ minWidth: `${watchlistTableMinWidth}px` }}>
             <colgroup>
               <col style={{ width: `${WATCHLIST_SELECT_COLUMN_WIDTH}px` }} />
@@ -3085,7 +3101,7 @@ export default function WatchlistsPage() {
                   const width = displayColumnWidths[column]
                   const sortMode = sortabilityByKey.get(column) || 'none'
                   const sortAction = nextSortAction(sortField === column, sortDirection)
-                  const columnLabel = fieldLabelByKey.get(column) || formatLabel(column)
+                  const columnLabel = t(fieldLabelByKey.get(column) || formatLabel(column))
                   return (
                     <th
                       key={column}
@@ -3327,6 +3343,7 @@ export default function WatchlistsPage() {
                                     fieldByKey.get(column),
                                     row,
                                     openRisk,
+                                    zh,
                                   )}
                                 </td>
                               )
@@ -3341,7 +3358,7 @@ export default function WatchlistsPage() {
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="watchlists-table-loading">
                     <span className="watchlists-table-loading-bar" />
-                    <span>Loading watchlist data…</span>
+                    <span>Loading</span>
                   </td>
                 </tr>
               ) : (
@@ -3355,7 +3372,7 @@ export default function WatchlistsPage() {
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalTableScroll>
         {screenerResult ? (
           <div className="watchlists-pagination">
             <div className="watchlists-pagination-summary">
@@ -3745,6 +3762,7 @@ export default function WatchlistsPage() {
                 <input
                   className="form-input"
                   value={createWatchlistName}
+                  maxLength={200}
                   onChange={(event) => setCreateWatchlistName(event.target.value)}
                   placeholder="Coverage"
                 />
@@ -4047,6 +4065,14 @@ export default function WatchlistsPage() {
         }}
         onConfirm={handleDeleteSelectedItems}
       />
+      {renamingWatchlist && <RenameWatchlistDialog key={renamingWatchlist.watchlist_id}
+        watchlist={renamingWatchlist} onCancel={() => setRenamingWatchlist(null)}
+        onSaved={(saved) => {
+          setWatchlists((current) => current.map((item) => item.watchlist_id === saved.watchlist_id ? { ...item, name: saved.name } : item))
+          setWatchlistDetail((current) => current?.watchlist_id === saved.watchlist_id ? { ...current, name: saved.name } : current)
+          setRenamingWatchlist(null)
+          setNotice(zh ? '关注列表已重命名。' : 'Watchlist renamed.')
+        }} />}
       <ConfirmDialog
         open={Boolean(pendingDeleteWatchlist)}
         title="Delete Watchlist"

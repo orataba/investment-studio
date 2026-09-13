@@ -1,0 +1,24 @@
+.horizontal-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.horizontal-table-scroll[data-table-overflow="true"] {
+  cursor: grab;
+}
+
+.horizontal-table-scroll[data-table-panning="true"] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.horizontal-table-scroll thead,
+.horizontal-table-scroll [draggable="true"] {
+  cursor: auto;
+}
+
+.horizontal-table-scroll:focus-visible {
+  outline: 2px solid var(--studio-accent, #2563eb);
+  outline-offset: 2px;
+}

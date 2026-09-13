@@ -140,6 +140,8 @@
 - benchmark 必须对齐到同一个 `as_of_date`；
 - 系统不得把 `T` 日股票收盘与 `T+1` 日 FX 或 benchmark 静默混用。
 
+组合列表只在全部组合本位币、可靠估值日相同且净值完整时展示合计。合计日收益率使用当日投资损益合计除以各组合 `beginning_nav + external_cash_in` 之和，且每个组合须有合法日收益率与正分母；不能用期末净值减损益反推分母，否则当日赎回会夸大收益率。币种或估值日不一致时保留各组合独立摘要。
+
 ### 2.1.3 Valuation Basis vs Total-Return Basis
 
 共享层允许同一资产同时维护多种 quote basis，例如：

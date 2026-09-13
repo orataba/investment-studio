@@ -312,7 +312,7 @@ PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/pyth
     --no-downstream-refresh \
     --fail-on-item-failure
 PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
-  "$PYTHON_BIN" "$WATCHLIST_REFRESH_RUNNER"
+  "$PYTHON_BIN" "$WATCHLIST_REFRESH_RUNNER" --recover-interrupted
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER" --recover-interrupted
 INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \

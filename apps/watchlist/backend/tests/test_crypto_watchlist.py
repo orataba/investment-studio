@@ -125,3 +125,25 @@ def test_registered_crypto_has_native_detail_status_and_price_return_series(clie
     assert risk.json()["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(365.25)
     with pytest.raises(RuntimeError, match="Crypto research or taxonomy assignments exist"):
         command.downgrade(_migration_config(), "20260908_0056")
+
+
+def test_tiny_spot_prices_keep_precision_and_chart_returns_match_canonical_performance(client):
+    points = [("2025-01-01", "0.000000764"), ("2026-01-01", "0.00000123456")]
+    seed_shared_instrument({
+        "instrument_id": "tiny-spot", "instrument_name": "Tiny Spot", "instrument_type": "crypto", "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "TINYUSD", "is_primary": True}],
+        "market_data": [{"metric_family": "price", "quote_basis": "close", "as_of_date": day,
+            "value": value, "currency": "USD", "price_unit": "per_unit", "price_scale": "1", "status": "complete"}
+            for day, value in points], "lifecycle_state": {"status": "active"},
+    })
+    assert client.post("/api/instruments/tiny-spot/resolve").status_code == 200
+    assert client.post("/api/recalc/instruments/tiny-spot/execute", json={"job_type": "all"}).status_code == 200
+    chart = client.get("/api/instruments/tiny-spot/chart").json()
+    levels = chart["series"][0]["points"]
+    assert levels == [{"date": day, "value": float(value)} for day, value in points]
+    assert chart["latest_values"]["valuation"]["value"] == float(points[-1][1])
+    performance = client.get("/api/instruments/tiny-spot/performance").json()
+    annualized = next(row["investment_nav"] for row in performance["trailing_returns"] if row["window"] == "Ann.")
+    # Exactly one calendar year: chart endpoint and canonical annualized returns
+    # must agree even when every raw price is below four decimal places.
+    assert annualized == pytest.approx((levels[-1]["value"] / levels[0]["value"] - 1) * 100, abs=1e-6)

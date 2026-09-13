@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -1278,7 +1279,7 @@ export default function PortfolioHoldingDetailPage() {
                 </Link>
               </div>
             </div>
-            <div className="table-shell portfolio-security-table-shell">
+            <HorizontalTableScroll className="table-shell portfolio-security-table-shell">
               <table className="holdings-table portfolio-security-transactions-table">
                 <thead>
                   <tr>
@@ -1410,7 +1411,7 @@ export default function PortfolioHoldingDetailPage() {
                   )}
                 </tbody>
               </table>
-            </div>
+            </HorizontalTableScroll>
           </section>
         ) : null}
 
@@ -1423,7 +1424,7 @@ export default function PortfolioHoldingDetailPage() {
           >
             {ownOptionObligations.length > 0 ? <section className="holding-written-history">
               <div className="portfolio-security-panel-head"><div><span className="portfolio-security-section-kicker">{t('Premium ledger')}</span><h2>{t('Written position history')}</h2><p>{t('Written option batches, remaining obligations and matched closing results.')}</p></div></div>
-              <div className="table-shell"><table className="holdings-table portfolio-security-transactions-table">
+              <HorizontalTableScroll className="table-shell"><table className="holdings-table portfolio-security-transactions-table">
                 <thead><tr><th>{t('Opened / Account')}</th><th>{t('Status')}</th><th>{t('Open contracts')}</th><th>{t('Remaining premium basis')}</th><th>{t('Carrying liability')}</th><th>{t('Realized P/L')}</th></tr></thead>
                 <tbody>{ownOptionObligations.map((obligation) => <tr key={obligation.obligation_id}>
                   <td>{obligation.opened_at ?? '—'}<small translate="no">{accountNameById.get(obligation.account_id) ?? obligation.account_id}</small></td>
@@ -1431,7 +1432,7 @@ export default function PortfolioHoldingDetailPage() {
                   <td>{formatCurrency(obligation.premium_basis_remaining, obligation.derivative_contract.currency)}</td><td>{formatCurrency(obligation.carrying_liability, obligation.derivative_contract.currency)}</td>
                   <td className={signedValueClass(obligation.realized_pnl)}>{formatSignedCurrency(obligation.realized_pnl, obligation.derivative_contract.currency)}</td>
                 </tr>)}</tbody>
-              </table></div>
+              </table></HorizontalTableScroll>
               <p className="holding-detail-note">{t('Written realized P/L includes closing charges. Opening fees are expensed separately; see Period P/L for the net result.')}</p>
             </section> : null}
             {!writtenLotsOnly ? <>
@@ -1485,7 +1486,7 @@ export default function PortfolioHoldingDetailPage() {
             </div>
 
             <div className="position-lot-workbench">
-              <div className="table-shell portfolio-security-table-shell">
+              <HorizontalTableScroll className="table-shell portfolio-security-table-shell">
                 <table className="holdings-table position-lots-table portfolio-security-lots-table">
                   <thead>
                     <tr>
@@ -1572,7 +1573,7 @@ export default function PortfolioHoldingDetailPage() {
                     )}
                   </tbody>
                 </table>
-              </div>
+              </HorizontalTableScroll>
               <aside className="position-lot-inspector">
                 {selectedPositionLot ? (
                   <>

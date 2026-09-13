@@ -17,7 +17,7 @@ export default function App() {
   return (
     <AccountBoundary><div className="app-shell">
       <main className="page-shell page-shell-terminal">
-        <Suspense fallback={<LoadingOverlay label="Loading page" />}>
+        <Suspense fallback={<LoadingOverlay />}>
           <Routes>
             <Route path="/assistant" element={<ResearchPage />} />
             <Route path="/" element={<WatchlistEntryPage />} />

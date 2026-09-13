@@ -93,6 +93,9 @@ def test_proxy_survives_invalid_path_missing_build_and_backend_failure(proxy):
     request, dist, backend = proxy
     assert request("/%00")[0] == 400
     assert request("/%ZZ")[0] == 400
+    assert request("/" + "x" * 300)[0] == 400
+    assert request("/assets/old-chunk.js")[0] == 404
+    assert request("/instruments/600036.SH") == (200, b"workspace")
     (dist / "index.html").unlink()
     assert request("/missing")[0] == 404
     (dist / "index.html").write_text("rebuilt")

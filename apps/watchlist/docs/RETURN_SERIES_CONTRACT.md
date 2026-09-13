@@ -10,6 +10,8 @@ Watchlist 主图把所选区间锚点归一为 `100` 的增长指数，不展示
 
 `cumulative_return_pct(t) = growth_index(t) - 100`
 
+Canonical chart 的原始 level 与最新估值保留源数据经数值解析后的精度，不能提前按固定小数位四舍五入。区间交互及矩阵仍用这些 level 计算收益；小额现货价格尤其不能被舍入为零。小数位格式化仅用于界面标签，不写回计算序列。
+
 - `total_return_nav`、`adjusted_close` 标记为 `Cumulative Total Return`。
 - 指数的 `close`、`last` 只是供应商字段身份，不决定经济收益口径。必须读取 Registry 的
   `source_settings.return_semantics`：`total_return` 标记为 `Cumulative Total Return`，
@@ -83,6 +85,7 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 - `crypto` 是原生资产类型，与股票、ETF 和指数分开登记。当前维护的 BTC/USD 序列以美元/枚 BTC 报价，`return_semantics=price_return`；不把 BTC/USD 与 BTC/USDT 混接，也不把现货包装为 ETF 或指数。
 - `market_calendar=24/7`，每个 UTC 自然日均应有观察值，包括周末。采集投影只接受早于当前 UTC 日期的已完成日线；当日未完成价格不进入这条收盘研究序列。新鲜度以 UTC 前一日为预期最新日，不能套用纽约股票交易日。
 - 连续日频风险的年化观察数为 `365.25`；通用风险计算仍按 `观察间隔数 / 实际跨度天数 × 365.25` 推导频率。缺失任何预期 UTC 日线即标记缺口，不把周末当休市，也不以降低年化观察数掩盖缺失。收益年化仍使用第 2 节的完整日历周年规则。
+- Metrics Matrix 按各自窗口逐日验证完整性。历史早期缺口继续使 SI 的路径风险不可用，但不使缺口之后完整的 1W/1M 等窗口失效；没有补点或插值。后端全历史风险仍保留原来的覆盖不足状态。
 - BTC/USD 当前点由共享 `market_series_daily` 投影，canonical provider 标识来源序列，日期标识观察日；原始版本、采集批次和按获知时间查询的历史版本保留在 numeric 存储。canonical 当前点会随来源修订更新，并未逐点绑定不可变的原始批次；不能单靠当前点重建历史 PIT。可复核的研究须使用当时冻结的研究输入及原始来源版本。
 - Watchlist 的登记、行情与研究支持不授予 Portfolio 交易能力；当前 Portfolio 的交易选项及录入校验排除 `crypto`。
 

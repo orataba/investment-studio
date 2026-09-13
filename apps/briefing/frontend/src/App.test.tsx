@@ -308,3 +308,33 @@ it('does not reopen the sidebar when a source response arrives after it was clos
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(screen.queryByText('迟到的原文。')).toBeNull()
 })
+
+it('opens retained numeric citations for public readers without fetching private source inputs', async () => {
+  const report = structuredClone(detail)
+  report.report!.sections[0].groups![0].items[0].source_ids = ['numeric:close1']
+  const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: false, can_generate: false, can_read_sources: false }
+    : url.includes('/reports?') ? { rows: [report], total: 1 } : report }))
+  vi.stubGlobal('fetch', fetcher)
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  fireEvent.click(screen.getAllByRole('button', { name: '标普500 ETF' })[0])
+  const modal = await screen.findByRole('dialog')
+  expect(modal.textContent).toContain('标普500 ETF')
+  expect(modal.textContent).toContain('102.5')
+  expect(within(modal).queryByRole('button', { name: '查看起始价格来源' })).toBeNull()
+  expect(fetcher.mock.calls.some(([url]) => url.includes('/sources/'))).toBe(false)
+})
+
+it('polls a pending deep-linked edition even when it is outside the loaded index page', async () => {
+  window.history.replaceState(null, '', '/?lang=en&report=pending-old')
+  const pendingEdition = { ...detail, report_id: 'pending-old', status: 'running', report: null }
+  const interval = vi.spyOn(window, 'setInterval')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { harness_available: true, can_generate: false, can_read_sources: false }
+    : url.includes('/reports?') ? { rows: [detail], total: 40 } : pendingEdition })))
+  page(<App />)
+  await screen.findByRole('heading', { name: 'Daily research briefing | 2026-09-07' })
+  expect(screen.getByText('Generating')).toBeTruthy()
+  expect(interval.mock.calls.some(([, milliseconds]) => milliseconds === 5000)).toBe(true)
+})

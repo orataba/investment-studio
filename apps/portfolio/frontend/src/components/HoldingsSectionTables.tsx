@@ -16,7 +16,7 @@ import type { HoldingsWorkspaceResponse, PortfolioHoldingRow } from '../lib/api'
 import { baseAmountForRow } from '../lib/holdingAmounts'
 import { isOptionObligationHolding } from '../lib/holdingPresentation'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
-import { useHorizontalTablePan } from '../lib/useHorizontalTablePan'
+import { useHorizontalTablePan } from '../../../../../packages/ui/src/useHorizontalTablePan'
 
 type FixedColumn = {
   key: string

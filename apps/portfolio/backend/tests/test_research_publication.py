@@ -108,3 +108,63 @@ def test_failed_research_publish_rolls_back_pruning_and_preserves_previous_repor
         assert failed.detail_json is None and failed.artifacts_json == []
         assert not (research._research_outputs_root() / PORTFOLIO_ID / failed.research_run_id).exists()
     assert first_report.read_text() == saved_text
+
+@pytest.mark.parametrize("changed_input", ["transaction", "deletion", "market_source", "base_currency"])
+def test_research_fingerprint_detects_historical_financial_input_changes(client, changed_input):
+    from datetime import date
+    from investment_studio_instrument_core.db_models import Instrument
+    from portfolio_app.db.models import PortfolioRecordModel, TransactionRecordModel
+    taxonomy_id, nodes = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, nodes)
+    def fingerprint():
+        with get_session_factory()() as session:
+            return research._planning_state_fingerprint(session, portfolio_id=PORTFOLIO_ID,
+                planning_taxonomy_id=taxonomy_id, as_of_date=date(2026, 4, 15))
+    original = fingerprint()
+    with get_session_factory()() as session:
+        if changed_input in {"transaction", "deletion"}:
+            transaction = session.scalars(select(TransactionRecordModel).where(
+                TransactionRecordModel.portfolio_id == PORTFOLIO_ID,
+                TransactionRecordModel.trade_date <= date(2026, 4, 15))).first()
+            if changed_input == "transaction":
+                transaction.row_version += 1
+                transaction.gross_amount += 1
+            else:
+                session.delete(transaction)
+        elif changed_input == "market_source":
+            instrument = session.get(Instrument, 'equity-us-abbv')
+            instrument.market_data_updated_at = '2026-09-13T08:00:00+00:00'
+        else:
+            session.get(PortfolioRecordModel, PORTFOLIO_ID).base_currency = 'CNY'
+        session.commit()
+    assert fingerprint() != original
+
+
+def test_research_input_change_during_calculation_preserves_previous_run(client, monkeypatch):
+    from portfolio_app.db.models import TransactionRecordModel
+    taxonomy_id, nodes = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, nodes)
+    response = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
+        "planning_taxonomy_id": taxonomy_id, "comparator_taxonomy_node_id": nodes["Risk Assets"],
+        "as_of_date": "2026-04-15", "lookback_days": 30,
+        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+    })
+    assert response.status_code == 200
+    first = client.post(f"/api/portfolios/{PORTFOLIO_ID}/research/runs", json={})
+    assert first.status_code == 200, first.text
+    first_id = first.json()["research_run_id"]
+    original = research.solve_current_target_weights
+    def mutate_after_solve(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with get_session_factory()() as session:
+            row = session.scalars(select(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == PORTFOLIO_ID)).first()
+            row.row_version += 1
+            session.commit()
+        return result
+    monkeypatch.setattr(research, "solve_current_target_weights", mutate_after_solve)
+    response = client.post(f"/api/portfolios/{PORTFOLIO_ID}/research/runs", json={})
+    assert response.status_code == 400
+    assert "inputs changed" in response.json()["detail"]
+    with get_session_factory()() as session:
+        assert session.get(ResearchRunRecordModel, first_id).status == 'completed'
+    assert (research._research_outputs_root() / PORTFOLIO_ID / first_id / 'report.md').exists()

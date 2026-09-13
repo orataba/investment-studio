@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useState } from 'react'
 import { getInstrumentReferenceData } from '../lib/api'
 import { readWorkbench } from '../lib/workbenchApi'
@@ -57,9 +58,9 @@ export default function EstimateHistoryPanel({ instrumentId, language }: { instr
         <p>{zh ? `另有 ${evidence.observations.length} 项待核实数值差异、${evidence.unmatched.length} 项财期或覆盖变化，未计为预期上修或下修。` : `${evidence.observations.length} unverified differences and ${evidence.unmatched.length} period or coverage changes are excluded from revisions.`}</p>
         {evidence.changes.some((row) => row.current_currency_status === 'inferred_from_reporting_currency')
           ? <p>{zh ? '部分预期币种按公司财报币种推定，来源已留存；预期接口本身未直接披露币种。' : 'Some estimate currencies are inferred from company financial statements, with sources retained. The estimates endpoint does not disclose currency directly.'}</p> : null}
-        {evidence.changes.length ? <div className="listed-estimate-table"><table><thead><tr>{(zh ? ['公司 / 财期', '指标', '前值 → 当前', '变化'] : ['Company / period', 'Metric', 'Previous → current', 'Change']).map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>
+        {evidence.changes.length ? <HorizontalTableScroll className="listed-estimate-table"><table><thead><tr>{(zh ? ['公司 / 财期', '指标', '前值 → 当前', '变化'] : ['Company / period', 'Metric', 'Previous → current', 'Change']).map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>
           {evidence.changes.map((row) => <tr key={`${row.symbol}-${row.frequency}-${row.target_period_end}-${row.metric}`}><td>{row.symbol}<br />{row.target_period_end} · {row.frequency === 'annual' ? (zh ? '年度' : 'Annual') : (zh ? '季度' : 'Quarterly')}</td><td>{row.metric === 'eps_avg' ? 'EPS' : (zh ? '营收' : 'Revenue')} ({row.currency})</td><td>{row.previous_value.toLocaleString()} → {row.current_value.toLocaleString()}{row.analyst_count_changed ? <small>{zh ? ' · 分析师样本数也有变化' : ' · Analyst count changed'}</small> : null}</td><td>{row.delta_pct == null ? (zh ? '基数非正，不计算百分比' : 'Nonpositive base') : `${row.delta_pct > 0 ? '+' : ''}${row.delta_pct.toFixed(2)}%`}</td></tr>)}
-        </tbody></table></div> : null}
+        </tbody></table></HorizontalTableScroll> : null}
       </>}
       <p>{zh ? '每次后台采集保留独立观察，源采集时间和预测财期分别记录；快照差异不等于精确调整时点，也不自动构成投资机会。' : 'Each data collection is retained as a separate observation. Source collection time and forecast period are distinct. Differences do not establish an exact revision time or an investment opportunity.'}</p>
     </> : null}

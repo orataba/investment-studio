@@ -1,3 +1,4 @@
+import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -87,7 +88,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
         {data.status !== 'complete' || scope?.status !== 'complete' ? <span className="concentration-status concentration-status-unavailable">{text('Incomplete coverage', '覆盖不完整')}</span> : null}
       </div>
       {coverage.length ? <details className="concentration-coverage"><summary>{text('Coverage and calculation notes', '覆盖与计算说明')} ({coverage.length})</summary><ul>{coverage.map((note) => <li key={note}>{concentrationMessage(note, zh)}</li>)}</ul></details> : null}
-      {visibleRows.length ? <div className="concentration-table-wrap"><table className="concentration-table" aria-label={text('Concentration exposures and limits', '集中度敞口及限额')}>
+      {visibleRows.length ? <HorizontalTableScroll className="concentration-table-wrap"><table className="concentration-table" aria-label={text('Concentration exposures and limits', '集中度敞口及限额')}>
         <thead><tr><th>{text('Member', '成员')}</th><th>{text('Exposure', '敞口分布')}</th><th>{text('Current / NAV', '当前 / NAV')}</th><th>{text('Watch', '关注线')}</th><th>{text('Limit', '上限')}</th><th>{text('Headroom', '剩余额度')}</th><th>{text('Status', '状态')}</th></tr></thead>
         <tbody>{visibleRows.map((row) => <tr key={row.entity_id}>
           <td><div className="concentration-row-name" style={{ paddingLeft: `${Math.min(row.depth ?? 0, 8) * 14}px` }}>
@@ -103,7 +104,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
           <td title={row.exposure_base == null ? `${text('Known exposure', '已知敞口')} ${formatCurrency(row.known_exposure_base, data.base_currency)}` : formatCurrency(row.exposure_base, data.base_currency)}>{row.weight == null && row.lower_bound_weight != null ? `≥ ${formatPercent(row.lower_bound_weight)}` : formatPercent(row.weight)}</td><td>{formatPercent(row.watch_weight)}</td><td>{formatPercent(row.limit_weight)}</td><td>{formatPercent(row.headroom_weight)}</td>
           <td><span className={`concentration-status concentration-status-${row.status}`}>{statuses[row.status]}</span>{row.coverage.length ? <InfoHint label={text('Row coverage', '此行覆盖说明')} detail={row.coverage.map((note) => concentrationMessage(note, zh)).join(' · ')} /> : null}</td>
         </tr>)}</tbody>
-      </table></div> : !loading ? <div className="risk-chart-empty">{text('No exposure in this scope.', '此范围暂无敞口。')}</div> : null}
+      </table></HorizontalTableScroll> : !loading ? <div className="risk-chart-empty">{text('No exposure in this scope.', '此范围暂无敞口。')}</div> : null}
     </> : null}
     {detail && data ? <SourceDrawer row={detail} currency={data.base_currency} underlyingNames={new Map(data.fcn_contracts.flatMap((contract) => contract.underlyings.map((item) => [item.instrument_id, item.name] as const)))} onClose={() => setDetail(null)} /> : null}
   </section>
