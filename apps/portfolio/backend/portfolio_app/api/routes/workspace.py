@@ -25,7 +25,10 @@ from portfolio_app.services.instrument_charts import (
     build_instrument_holdings_market_profile_from_detail,
     empty_instrument_holdings_market_profile,
 )
-from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
+from portfolio_app.services.risk_basis import (
+    calculation_frequency_profile_for_instruments,
+    observation_coverage_from_dates,
+)
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
     get_cached_holdings_analytics_workspace,
@@ -723,6 +726,7 @@ def _materialized_holdings_workspace_response(
     workspace: dict[str, object],
     *,
     risk_basis_profile: dict[str, object],
+    instrument_details: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     response = deepcopy(workspace)
     response.pop("price_chart_range", None)
@@ -735,6 +739,20 @@ def _materialized_holdings_workspace_response(
         response,
         calculation_frequency=calculation_frequency,
     )
+    # Coverage is response metadata, not a change to valuation or return facts.
+    # Annotate already-published histories without rebuilding the ledger.
+    for row in response.get("rows", []):
+        series = row.get("instrument_return_series_all")
+        if not isinstance(series, dict) or "observation_coverage" in series:
+            continue
+        instrument_id = (row.get("instrument_core") or {}).get("instrument_id")
+        detail = instrument_details.get(instrument_id) or {}
+        dates = [series.get("first_return_start_date")]
+        dates.extend(point.get("date") for point in series.get("points", []))
+        series["observation_coverage"] = observation_coverage_from_dates(
+            [parsed for raw in dates if (parsed := _parse_iso_date(raw)) is not None],
+            source_settings=detail.get("source_settings"),
+        )
     return response
 
 
@@ -1042,6 +1060,7 @@ def _build_holdings_analytics_workspace(
                 response = _materialized_holdings_workspace_response(
                     materialized_workspace,
                     risk_basis_profile=risk_basis_profile,
+                    instrument_details=instrument_details,
                 )
                 scoped_response = _enrich_holdings_analytics_scope(
                     response,

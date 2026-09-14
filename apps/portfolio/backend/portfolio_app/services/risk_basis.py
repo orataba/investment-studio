@@ -60,6 +60,30 @@ def _missing_observation_dates(
     return missing_dates, "calendar_day_threshold"
 
 
+def observation_coverage_from_dates(
+    dates: list[date], *, source_settings: object,
+) -> dict[str, object]:
+    """Describe the exact selected history, without clipping or sampling gaps.
+
+    This metadata is evaluated against each requested risk window downstream.
+    Dates outside that window are historical diagnostics, not a global veto.
+    """
+    ordered_dates = sorted(set(dates))
+    calendar, event_driven = _source_schedule(source_settings)
+    if event_driven:
+        missing_dates, basis = [], "event_driven"
+    else:
+        missing_dates, basis = _missing_observation_dates(
+            ordered_dates, market_calendar=calendar,
+        )
+    return {
+        "start_date": ordered_dates[0].isoformat() if ordered_dates else None,
+        "end_date": ordered_dates[-1].isoformat() if ordered_dates else None,
+        "gap_dates": [item.isoformat() for item in missing_dates],
+        "gap_detection_basis": basis,
+    }
+
+
 def calculation_frequency_profile_for_instruments(
     instrument_ids: list[str] | set[str] | tuple[str, ...],
     *,
@@ -158,6 +182,8 @@ def calculation_frequency_profile_from_observation_dates(
         instrument_count=len(source_frequency_by_instrument),
     )
     profile["instrument_ids"] = normalized_instrument_ids
+    profile["window_start_date"] = start_date.isoformat()
+    profile["window_end_date"] = end_date.isoformat()
     profile["source_frequency_by_instrument"] = source_frequency_by_instrument
     profile["requested_instrument_count"] = len(normalized_instrument_ids)
     profile["resolved_instrument_count"] = len(source_frequency_by_instrument)

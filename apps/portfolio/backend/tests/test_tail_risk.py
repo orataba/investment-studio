@@ -233,3 +233,152 @@ def test_route_preserves_financial_read_and_validates_query_parameters():
     assert len(router.routes) == 1
     assert isinstance(router.routes[0], FinancialReadRoute)
     assert router.routes[0].path == "/{portfolio_id}/tail-risk"
+
+
+def verified_calendar_days(monkeypatch):
+    monkeypatch.setattr(service, "market_calendar_sessions", lambda _calendar, start, end:
+                        tuple(start + timedelta(days=i) for i in range((end - start).days + 1)))
+    return {"source_settings": {"expected_frequency": "daily", "market_calendar": "TEST"}}
+
+
+def test_short_history_is_not_reported_as_a_full_requested_year_window(monkeypatch):
+    detail = verified_calendar_days(monkeypatch)
+    source = workspace([holding(value=1000, returns=points([-.01] * 40, start=AS_OF - timedelta(days=40)))])
+    for lookback in [365, 1095, 1825]:
+        result = service.project_portfolio_tail_risk(source, lookback_days=lookback, instrument_details={"a": detail})
+        assert result["status"] == "available" and result["coverage_status"] == "complete"
+        assert result["var_amount"] == 10
+        assert result["history_coverage_status"] == "partial"
+        assert result["observation_count"] == 40
+        assert result["expected_common_observation_count"] == lookback
+        assert result["uncovered_leading_observation_count"] == lookback - 40
+        assert result["missing_internal_observation_count"] == 0
+        assert result["uncovered_trailing_observation_count"] == 0
+        assert result["actual_history_days"] == 40
+        assert result["history_span_fraction"] == pytest.approx(40 / lookback)
+        assert result["sources"][0]["history_coverage_status"] == "partial"
+        assert "requested_history_partially_covered" in result["limitations"]
+    complete = service.project_portfolio_tail_risk(source, lookback_days=40, instrument_details={"a": detail})
+    assert complete["history_coverage_status"] == "complete"
+    assert complete["uncovered_observation_count"] == 0
+
+
+def test_history_coverage_separates_leading_internal_and_trailing_absence(monkeypatch):
+    detail = verified_calendar_days(monkeypatch)
+    sample = points([-.01] * 40, start=AS_OF - timedelta(days=50))
+    del sample[20]
+    result = service.project_portfolio_tail_risk(workspace([holding(returns=sample)]),
+                                               lookback_days=60, instrument_details={"a": detail})
+    assert result["observation_count"] == 39
+    assert result["expected_common_observation_count"] == 60
+    assert result["uncovered_observation_count"] == 21
+    assert result["uncovered_leading_observation_count"] == 10
+    assert result["missing_internal_observation_count"] == 1
+    assert result["uncovered_trailing_observation_count"] == 10
+
+
+def test_coverage_uses_common_market_sessions_without_inventing_holiday_gaps(monkeypatch):
+    calendars = {
+        "A": [date(2026, 9, day) for day in [1, 2, 3, 4, 7, 8]],
+        "B": [date(2026, 9, day) for day in [1, 2, 4, 7, 8]],
+    }
+    monkeypatch.setattr(service, "market_calendar_sessions", lambda name, *_: tuple(calendars[name]))
+    rows, details = [], {}
+    for iid, sessions in calendars.items():
+        sample = [{"start_date": left, "date": right, "value": -.01} for left, right in zip(sessions, sessions[1:])]
+        rows.append(holding(iid, returns=sample))
+        details[iid] = {"source_settings": {"expected_frequency": "daily", "market_calendar": iid}}
+    result = service.project_portfolio_tail_risk(workspace(rows), confidence=.5, lookback_days=7, instrument_details=details)
+    assert result["observation_count"] == result["expected_common_observation_count"] == 3
+    assert result["history_coverage_status"] == "complete"
+    assert result["uncovered_observation_count"] == 0
+
+
+def test_security_fx_alignment_losses_are_disclosed_even_for_one_security(monkeypatch):
+    detail = verified_calendar_days(monkeypatch)
+    details, fx = fx_inputs(missing_day=20)
+    details["a"] = detail
+    details["fx-usd-cny"]["source_settings"] = detail["source_settings"]
+    result = service.project_portfolio_tail_risk(workspace([holding(value=1000, currency="USD")], as_of=date(2026, 7, 11)),
+                                               lookback_days=40, instrument_details=details, fx_payload=fx)
+    assert result["observation_count"] == 38
+    assert result["var_amount"] == pytest.approx(.1)
+    assert result["history_coverage_status"] == "partial"
+    assert result["missing_internal_observation_count"] == 2
+    assert result["rows"][0]["unmatched_fx_period_count"] == 2
+    assert result["rows"][0]["fx_rejected_period_count"] == 1
+    assert result["rows"][0]["first_scenario_start_date"] == "2026-06-01"
+    assert result["rows"][0]["last_scenario_end_date"] == "2026-07-11"
+    assert "unmatched_security_fx_periods_removed" in result["limitations"]
+    assert "unverified_fx_intervals_removed" in result["limitations"]
+
+
+@pytest.mark.parametrize(("left_calendar", "right_calendar", "explicit_calendar", "expected_status", "expected_count"), [
+    ("24/5", "24/5", None, "complete", 3),
+    ("24/7", "24/7", None, "complete", 5),
+    ("24/5", "24/7", None, "unverified", 2),
+    ("24/7", "24/5", None, "unverified", 2),
+    ("24/5", "24/7", "24/5", "complete", 3),
+])
+def test_fx_pivot_uses_both_resolved_calendars_not_just_equal_source_settings(
+    left_calendar, right_calendar, explicit_calendar, expected_status, expected_count,
+):
+    start, end = date(2026, 9, 4), date(2026, 9, 9)
+    details = {}
+    for iid, calendar, currency, initial, direction in [
+        ("fx-usd-eur", left_calendar, "EUR", .9, -1), ("fx-usd-cny", right_calendar, "CNY", 7.0, 1),
+    ]:
+        sessions = service.market_calendar_sessions(explicit_calendar or calendar, start, end)
+        detail = _fx_detail(iid, currency, [(day.isoformat(), initial * (1.01 ** (direction * i))) for i, day in enumerate(sessions)])
+        detail["exchange_code"] = calendar
+        detail["source_settings"] = {"expected_frequency": "daily"}
+        # Provider settings can differ without changing a proven daily horizon;
+        # conversely identical settings cannot hide different fallback calendars.
+        if left_calendar == right_calendar:
+            detail["source_settings"]["provider_marker"] = iid
+        if explicit_calendar:
+            detail["source_settings"]["market_calendar"] = explicit_calendar
+        details[iid] = detail
+    fx = {"rates": [
+        {"source_kind": "direct", "base_currency": "USD", "quote_currency": "EUR", "instrument_id": "fx-usd-eur"},
+        {"source_kind": "direct", "base_currency": "USD", "quote_currency": "CNY", "instrument_id": "fx-usd-cny"},
+    ]}
+    result = service.project_portfolio_tail_risk(
+        workspace([holding(value=1000, currency="EUR", holding_category="cash_and_settlement")], as_of=end),
+        confidence=.5, lookback_days=5, instrument_details=details, fx_payload=fx,
+    )
+    assert result["status"] == "available"
+    assert result["history_coverage_status"] == expected_status
+    assert result["observation_count"] == expected_count
+    assert result["var_amount"] == pytest.approx(-20.1)
+    assert result["rows"][0]["fx_instrument_ids"] == ["fx-usd-cny", "fx-usd-eur"]
+    if expected_status == "unverified":
+        # Friday–Monday is one 24/5 session but three 24/7 sessions. It cannot
+        # enter the daily sample; Tuesday/Wednesday boundaries remain usable.
+        assert result["first_scenario_start_date"] == "2026-09-07"
+        assert result["expected_common_observation_count"] is None
+        assert result["rows"][0]["fx_rejected_period_count"] == 1
+        assert "requested_history_calendar_unverified" in result["limitations"]
+        assert "unverified_fx_intervals_removed" in result["limitations"]
+    else:
+        assert result["first_scenario_start_date"] == "2026-09-04"
+        assert result["expected_common_observation_count"] == expected_count
+        assert result["rows"][0]["fx_rejected_period_count"] == 0
+
+
+def test_unknown_calendar_does_not_claim_a_known_expected_history_count():
+    result = service.project_portfolio_tail_risk(workspace([holding()]))
+    assert result["status"] == "available"
+    assert result["history_coverage_status"] == "unverified"
+    assert result["expected_common_observation_count"] is None
+    assert result["uncovered_observation_count"] is None
+    assert "requested_history_calendar_unverified" in result["limitations"]
+
+
+def test_unmodeled_derivative_keeps_its_contract_name_in_coverage():
+    result = service.project_portfolio_tail_risk(workspace([holding(), {
+        "derivative_contract_id": "fcn-1", "derivative_contract": {"contract_name": "My FCN"},
+        "market_value_base": 200, "holding_category": "derivatives",
+    }]))
+    assert result["rows"][1]["name"] == "My FCN"
+    assert result["rows"][1]["reason"] == "derivative_fair_value_unmodeled"

@@ -16,6 +16,7 @@ from portfolio_app.services.market_data import (
     market_calendar_sessions,
     resolve_quote_series,
 )
+from portfolio_app.services.risk_basis import observation_coverage_from_dates
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
 HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
@@ -957,6 +958,7 @@ def build_instrument_trend_metrics_from_detail(
         as_of_date=as_of_date,
         holding_start_date=holding_start_date,
         calculation_frequency=calculation_frequency,
+        source_settings=detail.get("source_settings"),
     )
 
 
@@ -966,6 +968,7 @@ def _build_instrument_trend_metrics_from_selection(
     as_of_date: date,
     holding_start_date: date | None,
     calculation_frequency: CalculationFrequency,
+    source_settings: object,
 ) -> dict[str, object]:
     selected_points = list(selection.points)
     selected_basis = selection.selected_basis
@@ -1073,11 +1076,17 @@ def _build_instrument_trend_metrics_from_selection(
             as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
-        "instrument_return_series_all": _return_series_payload(
-            selected_points,
-            calculation_frequency=calculation_frequency,
-            final_date=end_date,
-        ),
+        "instrument_return_series_all": {
+            **_return_series_payload(
+                selected_points,
+                calculation_frequency=calculation_frequency,
+                final_date=end_date,
+            ),
+            "observation_coverage": observation_coverage_from_dates(
+                [point["date"] for point in selected_points],
+                source_settings=source_settings,
+            ),
+        },
         "instrument_holding_return_series": (
             _return_series_payload(
                 holding_points,
@@ -1348,6 +1357,7 @@ def build_instrument_holdings_market_profile_from_detail(
             as_of_date=as_of_date,
             holding_start_date=holding_start_date,
             calculation_frequency=calculation_frequency,
+            source_settings=detail.get("source_settings"),
         ),
     }
 

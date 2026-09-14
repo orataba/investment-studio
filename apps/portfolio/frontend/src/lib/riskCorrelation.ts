@@ -5,6 +5,7 @@ import {
   type GroupReturnSeries,
 } from './riskReturnAlignment'
 import { assessRiskWindowCoverage } from './riskWindowCoverage'
+import { returnWindowInputIssues, windowDiagnostics, type RiskWindowDiagnostics } from './riskWindowData'
 
 export type CorrelationMatrix = {
   groups: Array<{
@@ -46,6 +47,7 @@ export type CorrelationMatrixBuildResult = {
   scopeMemberCount: number
   alignedObservationCount: number
   issues: CorrelationMatrixCoverageIssue[]
+  diagnostics: RiskWindowDiagnostics
 }
 
 export function sampleCovariance(leftValues: number[], rightValues: number[]) {
@@ -160,6 +162,10 @@ export function buildCorrelationMatrix(
   frequency: CalculationFrequency,
 ): CorrelationMatrixBuildResult {
   const scopeIssues = [...scope.issues]
+  const diagnostics = (dates: string[], issues: CorrelationMatrixCoverageIssue[]) => windowDiagnostics({
+    asOfDate, lookbackDays, frequency, dates, scopeMemberCount: scope.memberCount, issues,
+    firstPeriodStartDate: dates.length ? scope.series[0]?.periodStartByDate.get(dates[0]) : null,
+  })
   if (!asOfDate) {
     scopeIssues.push(
       correlationCoverageIssue({
@@ -174,15 +180,16 @@ export function buildCorrelationMatrix(
       scopeMemberCount: scope.memberCount,
       alignedObservationCount: 0,
       issues: scopeIssues,
+      diagnostics: diagnostics([], scopeIssues),
     }
   }
-  if (!scope.memberCount) {
+  if (scope.memberCount < 2) {
     scopeIssues.push(
       correlationCoverageIssue({
         memberKey: 'scope',
         memberLabel: 'Selected scope',
         reason: 'scope_unavailable',
-        coverageReason: 'Correlation matrix scope has no active non-cash members.',
+        coverageReason: 'Correlation comparison requires at least two members in the selected scope.',
       }),
     )
   }
@@ -198,6 +205,7 @@ export function buildCorrelationMatrix(
       return weightDelta || left.item.groupLabel.localeCompare(right.item.groupLabel)
     })
   assessedSeries.forEach(({ item, coverage }) => {
+    scopeIssues.push(...returnWindowInputIssues(item, asOfDate, lookbackDays))
     if (!coverage.ok) {
       scopeIssues.push(
         correlationCoverageIssue({
@@ -313,7 +321,10 @@ export function buildCorrelationMatrix(
     })
   })
 
-  const sampleCoverage = assessRiskWindowCoverage(sampleDates, asOfDate, lookbackDays, frequency)
+  const sampleCoverage = assessRiskWindowCoverage(
+    sampleDates, asOfDate, lookbackDays, frequency, undefined,
+    sampleDates.length ? assessedSeries[0]?.item.periodStartByDate.get(sampleDates[0]) : null,
+  )
   if (!sampleCoverage.ok && assessedSeries.length) {
     scopeIssues.push(
       correlationCoverageIssue({
@@ -324,12 +335,19 @@ export function buildCorrelationMatrix(
       }),
     )
   }
-  if (scopeIssues.length || assessedSeries.length !== scope.memberCount) {
+  if (assessedSeries.length !== scope.memberCount && !scopeIssues.length) {
+    scopeIssues.push(correlationCoverageIssue({
+      memberKey: 'scope', memberLabel: 'Selected scope', reason: 'missing_member',
+      coverageReason: 'The supplied return series do not include every member of the selected scope.',
+    }))
+  }
+  if (scopeIssues.length) {
     return {
       matrix: emptyCorrelationMatrix(),
       scopeMemberCount: scope.memberCount,
       alignedObservationCount: 0,
       issues: scopeIssues,
+      diagnostics: diagnostics(sampleDates, scopeIssues),
     }
   }
 
@@ -346,7 +364,7 @@ export function buildCorrelationMatrix(
             memberKey: `${rowSeries.item.groupKey}:${columnSeries.item.groupKey}`,
             memberLabel: `${rowSeries.item.groupLabel} × ${columnSeries.item.groupLabel}`,
             reason: 'calculation_unavailable',
-            coverageReason: 'Correlation is unavailable for the strict aligned sample.',
+            coverageReason: 'Correlation is undefined because at least one member has zero return variation in this window.',
           }),
         )
       }
@@ -360,6 +378,7 @@ export function buildCorrelationMatrix(
       scopeMemberCount: scope.memberCount,
       alignedObservationCount: sampleDates.length,
       issues: calculationIssues,
+      diagnostics: diagnostics(sampleDates, calculationIssues),
     }
   }
 
@@ -377,5 +396,6 @@ export function buildCorrelationMatrix(
     scopeMemberCount: scope.memberCount,
     alignedObservationCount: sampleDates.length,
     issues: [],
+    diagnostics: diagnostics(sampleDates, []),
   }
 }

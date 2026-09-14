@@ -163,6 +163,12 @@ export type ReturnSeriesPoint = {
 export type HoldingReturnSeries = {
   first_return_start_date?: string | null
   points: ReturnSeriesPoint[]
+  observation_coverage?: {
+    start_date: string | null
+    end_date: string | null
+    gap_dates: string[]
+    gap_detection_basis: string
+  }
 }
 
 export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
@@ -1011,6 +1017,8 @@ export type HoldingsWorkspaceResponse = {
   coverage_note: string
   quality_warnings: string[]
   risk_basis?: {
+    window_start_date?: string
+    window_end_date?: string
     requested_frequency: PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
     default_frequency: PortfolioCalculationFrequency
@@ -1286,6 +1294,8 @@ export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
   default_planning_taxonomy_id?: string | null
   risk_basis?: {
+    window_start_date?: string
+    window_end_date?: string
     requested_frequency: PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
     default_frequency: PortfolioCalculationFrequency

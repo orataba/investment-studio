@@ -6,6 +6,13 @@ export type ReturnPoint = {
   start_date?: string | null
 }
 
+export type ReturnObservationCoverage = {
+  start_date: string | null
+  end_date: string | null
+  gap_dates: string[]
+  gap_detection_basis: string
+}
+
 export type GroupReturnSeries = {
   groupKey: string
   groupLabel: string
@@ -15,6 +22,9 @@ export type GroupReturnSeries = {
   latestWeight: number | null
   observationCount: number
   sourceMembers?: GroupReturnSeries[]
+  inputPoints?: ReturnPoint[]
+  observationCoverage?: ReturnObservationCoverage
+  unavailablePeriods?: Array<{ date: string; reason: string }>
 }
 
 export function localDateIso(input = new Date()) {

@@ -12,6 +12,10 @@ export type PortfolioTailRiskRow = {
   rejected_period_count: number
   calendar_basis: string | null
   fx_instrument_ids: string[]
+  fx_rejected_period_count: number
+  unmatched_fx_period_count: number
+  first_scenario_start_date: string | null
+  last_scenario_end_date: string | null
 }
 
 export type PortfolioTailRisk = {
@@ -27,6 +31,14 @@ export type PortfolioTailRisk = {
   lookback_days: number
   window_start_date: string
   window_end_date: string
+  history_coverage_status: 'complete' | 'partial' | 'unavailable' | 'unverified'
+  expected_common_observation_count: number | null
+  uncovered_observation_count: number | null
+  uncovered_leading_observation_count: number | null
+  missing_internal_observation_count: number | null
+  uncovered_trailing_observation_count: number | null
+  actual_history_days: number | null
+  history_span_fraction: number | null
   first_scenario_start_date: string | null
   last_scenario_end_date: string | null
   observation_count: number

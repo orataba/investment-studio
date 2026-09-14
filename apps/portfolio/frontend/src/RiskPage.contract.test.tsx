@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { fireEvent, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
   getHoldingsWorkspace: vi.fn(),
   requestInstrumentRisk: vi.fn().mockResolvedValue({ instruments: [], cases: [] }),
   getPortfolioAccountsWorkspace: vi.fn(),
+  getPortfolioPerformance: vi.fn(),
   getPortfolioTaxonomyCatalog: vi.fn(),
   getPortfolioInstruments: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
@@ -93,7 +94,10 @@ function twoHoldingWorkspace(secondHolding = betaHolding()) {
 }
 
 async function findCorrelationUnavailable() {
-  return screen.findByRole('status', { name: /Correlation matrix unavailable/ })
+  const status = await within(await screen.findByRole('region', { name: 'Correlation analysis' })).findByRole('status')
+  const disclosure = within(status).getByText('View reasons and affected instruments')
+  if (!disclosure.closest('details')?.open) await userEvent.setup().click(disclosure)
+  return status
 }
 
 const accountsWorkspace = {
@@ -345,6 +349,10 @@ describe('Risk rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.removeItem('investment_studio.portfolio.risk.target-taxonomy.3')
+    localStorage.removeItem('investment_studio.portfolio.risk.settings.v1')
+    apiMocks.getPortfolioPerformance.mockResolvedValue({ portfolio_id: '3', base_currency: 'USD',
+      summary: { risk_calculation_frequency: 'daily', risk_metric_basis: 'market_risk_return' },
+      daily_series: returnPoints.map((point) => ({ as_of_date: point.date, market_risk_daily_return: point.value, market_risk_return_coverage_state: 'complete', market_risk_return_chain_continuous: true, market_risk_return_observation_eligible: true })) })
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [
@@ -380,6 +388,22 @@ describe('Risk rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
+  it('changes the matrix observation cutoff and explains dates outside available history', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(twoHoldingWorkspace())
+    renderRiskPage()
+      const cutoff = await screen.findByLabelText('Matrix as of')
+    const historicalDate = isoDateDaysBefore(5)
+    fireEvent.change(cutoff, { target: { value: historicalDate } })
+    expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).getByLabelText('Analysis sample')).toHaveTextContent(historicalDate)
+    fireEvent.change(cutoff, { target: { value: '2099-01-01' } })
+    expect(cutoff).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText(/No return observation exists on this date/)).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).getByLabelText('Analysis sample')).not.toHaveTextContent('2099-01-01')
+    await userEvent.click(screen.getByRole('button', { name: 'Latest' }))
+    expect(cutoff).toHaveValue('2026-07-15')
+    expect(cutoff).toHaveAttribute('aria-invalid', 'false')
+  })
+
   it('keeps quality details in the Risk Health heading and opens them on request', async () => {
     const user = userEvent.setup()
     const warning = 'Corporate action review required: confirm the issuer evidence.'
@@ -389,7 +413,7 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const hint = await screen.findByRole('button', { name: /Data quality warning:/ })
-    expect(hint.closest('.panel-title')).toHaveTextContent('Risk Health')
+    expect(hint.closest('.panel-title')).toHaveTextContent('Current Holdings Risk')
     expect(screen.queryByText(warning)).not.toBeInTheDocument()
     await user.click(hint)
     expect(within(screen.getByRole('tooltip')).getByText(warning)).toBeVisible()
@@ -423,7 +447,7 @@ describe('Risk rendered page contract', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
   })
 
-  it('fails closed when every active member shares a provider observation gap', () => {
+  it('keeps frequency resolution separate from whole-history provider gap coverage', () => {
     const workspace = twoHoldingWorkspace()
     workspace.risk_basis = {
       ...workspace.risk_basis!,
@@ -435,10 +459,8 @@ describe('Risk rendered page contract', () => {
 
     const result = riskFrequencyProfileFromHoldingsWorkspace(workspace)
 
-    expect(result.errors).toEqual([
-      'Risk basis partial - 2 instrument(s) have observation gaps',
-    ])
-    expect(result.value.statusLabel).toBe('Risk basis unavailable')
+    expect(result.errors).toEqual([])
+    expect(result.value.statusLabel).toBe('Daily risk basis')
   })
 
   it('does not let a provider gap on a policy-excluded holding block the eligible risk sleeve', () => {
@@ -483,7 +505,7 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Daily risk basis')
   })
 
-  it('keeps a blocking risk-basis reason on hover instead of repeating it as an alert', async () => {
+  it('discloses historical provider gaps without marking every risk window unavailable', async () => {
     const workspace = twoHoldingWorkspace()
     workspace.risk_basis = {
       ...workspace.risk_basis!,
@@ -491,17 +513,13 @@ describe('Risk rendered page contract', () => {
       gap_count: 2,
       gap_instrument_ids: ['asset-1', 'asset-2'],
       status_label: 'Risk basis partial - 2 instrument(s) have observation gaps',
+      gap_details: [{ instrument_id: 'asset-1', gap_count: 1, gap_detection_basis: 'market_calendar:TEST', gap_date_sample: ['2026-04-01'] }],
     }
     apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
 
     renderRiskPage()
 
-    const riskHealth = await screen.findByRole('region', { name: 'Risk health' })
-    const status = within(riskHealth).getByText(/Risk basis unavailable/)
-    expect(status).toHaveAttribute(
-      'title',
-      expect.stringContaining('Risk basis partial - 2 instrument(s) have observation gaps'),
-    )
+    expect(await screen.findByText(/Historical source coverage/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
@@ -592,7 +610,7 @@ describe('Risk rendered page contract', () => {
     expect(scopeSelect).toHaveValue('__current_holdings__')
     expect(within(scopeSelect).getByRole('option', { name: 'Current Holdings' })).toBeInTheDocument()
     expect(within(scopeSelect).getByRole('option', { name: 'Full Universe' })).toBeInTheDocument()
-    expect(await screen.findAllByText('Alpha Fund')).not.toHaveLength(0)
+    expect(await findCorrelationUnavailable()).toHaveTextContent('at least two members')
     expect(screen.queryByText('Beta Fund')).not.toBeInTheDocument()
     const matrixSection = screen.getByText('Correlation Matrix').closest('section')
     expect(matrixSection).not.toBeNull()
@@ -623,16 +641,9 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveTextContent('Correlation matrix unavailable')
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('Full-history return series is missing'),
-    )
-    expect(coverageStatus).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('no members or dates were dropped'),
-    )
+    expect(coverageStatus).toHaveTextContent('Beta Fund')
+    expect(coverageStatus).toHaveTextContent('Full-history return series is missing')
+    expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).queryByRole('table')).not.toBeInTheDocument()
   })
 
   it('fails closed when a non-cash position has quantity but no allocation or base value', async () => {
@@ -652,10 +663,7 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('Alpha Fund: Current holding is missing its current portfolio weight.'),
-    )
+    expect(coverageStatus).toHaveTextContent('Current holding is missing its current portfolio weight.')
   })
 
   it('does not silently drop an active Full Universe member with missing history', async () => {
@@ -675,12 +683,12 @@ describe('Risk rendered page contract', () => {
     const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
     await user.selectOptions(scopeSelect, '__full_universe__')
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('active universe payload'))
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('All 2 scope members'))
+    expect(coverageStatus).toHaveTextContent('Beta Fund')
+    expect(coverageStatus).toHaveTextContent('active universe payload')
+    expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('fails closed on misaligned member dates and lists the first dates plus total count', async () => {
+  it('fails closed on misaligned member dates and lists the affected member and dates', async () => {
     const missingDate = isoDateDaysBefore(5)
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       twoHoldingWorkspace(
@@ -691,12 +699,9 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Return dates do not match'))
-    expect(coverageStatus).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining(`Missing dates (1 total): ${missingDate}`),
-    )
+    expect(coverageStatus).toHaveTextContent('Beta Fund')
+    expect(coverageStatus).toHaveTextContent('Return dates do not match')
+    expect(coverageStatus).toHaveTextContent(missingDate)
   })
 
   it('fails closed when equal end dates represent different return periods', async () => {
@@ -717,12 +722,9 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const coverageStatus = await findCorrelationUnavailable()
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining('Beta Fund'))
-    expect(coverageStatus).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('scope members do not share one period identity'),
-    )
-    expect(coverageStatus).toHaveAttribute('aria-label', expect.stringContaining(mismatchedDate))
+    expect(coverageStatus).toHaveTextContent('Beta Fund')
+    expect(coverageStatus).toHaveTextContent('scope members do not share one period identity')
+    expect(coverageStatus).toHaveTextContent(mismatchedDate)
   })
   it('switches target taxonomy locally and hides disabled risk targets without changing model scope or NAV', async () => {
     const user = userEvent.setup()
@@ -805,6 +807,84 @@ describe('Risk rendered page contract', () => {
     expect(screen.getByRole('region', { name: 'Risk health' }).textContent).toBe(healthBefore)
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(holdingsReads)
     expect(screen.getByRole('button', { name: /Target drift risk basis:/ })).toHaveAccessibleName(expect.stringContaining('analytics exclusion rules are not applied again'))
+  })
+
+  it('loads taxonomy market history at the holdings cutoff, not the wall-clock date', async () => {
+    renderRiskPage()
+    await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {
+      include_market_profile: true, as_of_date: '2026-07-15',
+    }))
+  })
+
+  it('keeps actual-path loading errors isolated from current-holdings rolling estimates', async () => {
+    apiMocks.getPortfolioPerformance.mockRejectedValue(new Error('Actual history service unavailable'))
+    renderRiskPage()
+    expect(await screen.findByText('Actual history service unavailable')).toBeInTheDocument()
+    const perspective = screen.getByRole('combobox', { name: 'Rolling risk perspective' })
+    expect(perspective).toHaveValue('realized')
+    await userEvent.setup().selectOptions(perspective, 'current')
+    expect(screen.queryByText('Actual history service unavailable')).not.toBeInTheDocument()
+    expect(await screen.findByRole('img', { name: 'Annualized Volatility' })).toBeInTheDocument()
+  })
+
+  it('compares assets in a leaf classification without inheriting an out-of-scope currency failure', async () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.rows.push(holdingFixture({ line_id: 'holding:gamma', allocation: 0.1,
+      instrument_core: instrumentFixture({ instrument_id: 'gamma', instrument_name: 'Gamma', currency: 'HKD' }),
+      instrument_return_series_all: null }))
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      taxonomy_nodes: [...taxonomyCatalog.taxonomy_nodes, { ...taxonomyCatalog.taxonomy_nodes[0], taxonomy_node_id: 'other', node_name: 'Other' }],
+      taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments,
+        { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'beta-assignment', target_entity_id: 'asset-2' },
+        { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'gamma-assignment', target_entity_id: 'gamma', taxonomy_node_id: 'other' }],
+    })
+    renderRiskPage()
+    await findCorrelationUnavailable()
+    await userEvent.setup().selectOptions(screen.getByRole('combobox', { name: 'Matrix scope' }), 'risk-assets')
+    await waitFor(() => expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).queryByRole('status')).not.toBeInTheDocument())
+    expect(screen.getAllByText('Alpha Fund').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Beta Fund').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Gamma')).not.toBeInTheDocument()
+  })
+
+  it('excludes zero-exposure rows from the selected classification member count', async () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.rows.push(holdingFixture({ line_id: 'holding:closed', quantity: 0, allocation: 0, market_value_base: 0,
+      instrument_core: instrumentFixture({ instrument_id: 'closed', instrument_name: 'Closed Position' }),
+      instrument_return_series_all: null }))
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      taxonomy_assignments: [...taxonomyCatalog.taxonomy_assignments,
+        { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'beta-assignment', target_entity_id: 'asset-2' },
+        { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'closed-assignment', target_entity_id: 'closed' }],
+    })
+    renderRiskPage()
+    await userEvent.setup().selectOptions(await screen.findByRole('combobox', { name: 'Matrix scope' }), 'risk-assets')
+    expect(await within(screen.getByRole('region', { name: 'Correlation analysis' })).findByRole('table')).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByText('Closed Position')).not.toBeInTheDocument()
+  })
+
+  it('invalidates the previous benchmark immediately while another selection is loading', async () => {
+    const first = { instrument_id: 'first', instrument_name: 'First Benchmark', instrument_type: 'index', currency: 'USD', identifiers: [], latest_market_data: [] }
+    const second = { ...first, instrument_id: 'second', instrument_name: 'Second Benchmark' }
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [first, second] })
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValueOnce({ portfolio_id: '3', instrument_core: first,
+      as_of_date: '2026-07-15', range_key: 'all', currency: 'USD', chart_basis: 'close', return_semantics: 'price_return',
+      coverage_state: 'complete', points: returnPoints.map((point, index) => ({ date: point.date, value: 100 + index })) })
+      .mockImplementationOnce(() => new Promise(() => {}))
+    const user = userEvent.setup()
+    renderRiskPage()
+    const search = await screen.findByRole('searchbox', { name: 'Compare benchmark' })
+    await user.type(search, 'First')
+    await user.click(await screen.findByRole('button', { name: /First Benchmark/ }))
+    await waitFor(() => expect(document.querySelector('.rolling-risk-line-benchmark')).not.toBeNull())
+    await user.clear(search)
+    await user.type(search, 'Second')
+    await user.click(await screen.findByRole('button', { name: /Second Benchmark/ }))
+    await waitFor(() => expect(apiMocks.getPortfolioInstrumentPriceChart).toHaveBeenCalledTimes(2))
+    expect(document.querySelector('.rolling-risk-line-benchmark')).toBeNull()
   })
 
 })

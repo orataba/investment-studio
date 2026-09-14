@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from portfolio_app.services import risk_basis
 
@@ -123,3 +123,30 @@ def test_market_calendar_does_not_treat_a_shared_holiday_as_a_gap(
     assert profile["coverage_state"] == "complete"
     assert profile["gap_count"] == 0
     assert profile["gap_instrument_ids"] == []
+
+
+def test_observation_coverage_preserves_all_old_gaps_without_summary_truncation(monkeypatch) -> None:
+    start = date(2024, 1, 1)
+    sessions = [start + timedelta(days=index) for index in range(800)]
+    gaps = sessions[10:35]
+    actual = [item for item in sessions if item not in gaps]
+    monkeypatch.setattr(risk_basis, "_market_calendar_sessions", lambda *_args: sessions)
+
+    coverage = risk_basis.observation_coverage_from_dates(
+        actual, source_settings={"expected_frequency": "daily", "market_calendar": "XTEST"},
+    )
+
+    assert coverage == {
+        "start_date": actual[0].isoformat(), "end_date": actual[-1].isoformat(),
+        "gap_dates": [item.isoformat() for item in gaps],
+        "gap_detection_basis": "market_calendar:XTEST",
+    }
+
+
+def test_event_driven_source_does_not_invent_expected_daily_gaps() -> None:
+    coverage = risk_basis.observation_coverage_from_dates(
+        [date(2026, 1, 2), date(2026, 3, 2)],
+        source_settings={"expected_frequency": "event_driven", "market_calendar": "XSHG"},
+    )
+    assert coverage["gap_dates"] == []
+    assert coverage["gap_detection_basis"] == "event_driven"

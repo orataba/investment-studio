@@ -48,8 +48,9 @@ def empirical_tail(losses: list[float], confidence: float) -> dict[str, object]:
               "tail_observation_count": ceil(mass),
               "tail_max_observation_weight": min(1.0, 1 / mass) if mass else None,
               "var": None, "expected_shortfall": None}
-    # A tail containing less than one observed scenario cannot resolve even its
-    # first order statistic. Larger samples remain estimates, never safety gates.
+    # Below one scenario of tail mass, empirical VaR/ES would both use only the
+    # maximum loss. Suppress that unresolved tail by product policy; the empirical
+    # quantile is mathematically defined. Larger samples do not imply adequacy.
     if mass < 1:
         return result
     rank = ceil(confidence * count - 1e-10) - 1
@@ -69,7 +70,7 @@ def _daily_periods(points, *, detail, start_date, end_date):
     # Registry's event_driven denotes a delivery schedule, not a weekly return
     # horizon. Such sources still need actual one-day observation boundaries.
     if frequency and frequency not in {"daily", "event_driven", "business_daily", "trading_daily"}:
-        return {}, {"reason": "non_daily_source", "rejected_period_count": len(points), "calendar_basis": None}
+        return {}, {"reason": "non_daily_source", "rejected_period_count": len(points), "calendar_basis": None}, None
     calendar = str(settings.get("market_calendar") or (detail or {}).get("exchange_code") or "")
     sessions = market_calendar_sessions(calendar, start_date, end_date) if calendar else None
     session_pairs = set(zip(sessions, sessions[1:])) if sessions is not None else None
@@ -77,16 +78,16 @@ def _daily_periods(points, *, detail, start_date, end_date):
     periods, rejected, seen_ends = {}, 0, set()
     for point in points:
         if not isinstance(point, dict):
-            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}
+            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         try:
             start, end = _date(point.get("start_date")), _date(point.get("date"))
         except (ValueError, TypeError):
-            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}
+            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         if end > end_date or start < start_date or end <= start_date:
             continue
         value = _number(point.get("value"))
         if start >= end or value is None or value < -1 or end in seen_ends:
-            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}
+            return {}, {"reason": "invalid_return_period", "rejected_period_count": len(points), "calendar_basis": calendar_basis}, session_pairs
         seen_ends.add(end)
         one_day = (start, end) in session_pairs if session_pairs is not None else (end - start).days == 1
         if not one_day:
@@ -94,7 +95,7 @@ def _daily_periods(points, *, detail, start_date, end_date):
             continue
         periods[(start, end)] = value
     return periods, {"reason": None if periods else "no_verified_daily_returns",
-                     "rejected_period_count": rejected, "calendar_basis": calendar_basis}
+                     "rejected_period_count": rejected, "calendar_basis": calendar_basis}, session_pairs
 
 
 def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
@@ -124,9 +125,43 @@ def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
     right, right_ids, right_detail = _fx_rate_series("USD", base_currency, direct=direct, details=details, as_of_date=as_of_date)
     # Both source legs must have an actual observation at each boundary.
     rates = {day: left[day] * right[day] for day in left.keys() & right.keys()}
-    # An unknown calendar deliberately falls back to consecutive calendar days.
-    matching_settings = (left_detail or {}).get("source_settings") == (right_detail or {}).get("source_settings")
-    return rates, sorted(set(left_ids + right_ids)), left_detail if matching_settings else None
+    # Both legs must prove the same daily horizon, including the exchange-code
+    # calendar fallback used by _daily_periods. Equal source_settings alone does
+    # not establish this: one leg may trade during the other's non-session days.
+    # Otherwise keep the existing explicitly unverified consecutive-date basis.
+    def daily_basis(detail):
+        settings = (detail or {}).get("source_settings") or {}
+        return (
+            str(settings.get("expected_frequency") or "").lower(),
+            str(settings.get("market_calendar") or (detail or {}).get("exchange_code") or ""),
+        )
+
+    matching_basis = daily_basis(left_detail) == daily_basis(right_detail)
+    return rates, sorted(set(left_ids + right_ids)), left_detail if matching_basis else None
+
+
+def _history_coverage(common, expected, *, start_date, end_date):
+    ordered = sorted(common, key=lambda period: period[1])
+    first = ordered[0][0] if ordered else None
+    last = ordered[-1][1] if ordered else None
+    missing = expected - common if expected is not None else None
+    # Expected periods come from verified source calendars, never from filling
+    # market observations. Leading absence may be a young fund or short source
+    # history; it is not asserted to be a missing NAV before the fund existed.
+    leading = sum(period[1] <= first for period in missing) if missing is not None and first else None
+    trailing = sum(period[0] >= last for period in missing) if missing is not None and last else None
+    internal = len(missing) - leading - trailing if leading is not None and trailing is not None else None
+    status = "unavailable" if not common else "unverified" if expected is None else "partial" if missing else "complete"
+    return {
+        "history_coverage_status": status,
+        "expected_common_observation_count": len(expected) if expected is not None else None,
+        "uncovered_observation_count": len(missing) if missing is not None else None,
+        "uncovered_leading_observation_count": leading,
+        "missing_internal_observation_count": internal,
+        "uncovered_trailing_observation_count": trailing,
+        "actual_history_days": (last - first).days if first and last else None,
+        "history_span_fraction": (last - first).days / (end_date - start_date).days if first and last else None,
+    }
 
 
 def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
@@ -149,10 +184,12 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         kind = str(core.get("instrument_type") or "").lower()
         category = holding.get("holding_category")
         row = {"holding_id": holding.get("position_reference_id") or holding.get("derivative_contract_id") or holding.get("line_id") or str(index),
-               "instrument_id": iid, "name": core.get("instrument_name") or iid or "—",
+               "instrument_id": iid, "name": core.get("instrument_name") or (holding.get("derivative_contract") or {}).get("contract_name") or iid or "—",
                "market_value_base": value, "weight": value / nav if value is not None and nav and nav > 0 else None,
                "status": "excluded", "reason": None, "observation_count": 0,
-               "rejected_period_count": 0, "calendar_basis": None, "fx_instrument_ids": []}
+               "rejected_period_count": 0, "calendar_basis": None, "fx_instrument_ids": [],
+               "fx_rejected_period_count": 0, "unmatched_fx_period_count": 0,
+               "first_scenario_start_date": None, "last_scenario_end_date": None}
         rows.append(row)
         if holding.get("derivative_contract_id") or category == "derivatives" or kind in {"fcn", "option"}:
             row["reason"] = "derivative_fair_value_unmodeled"
@@ -173,10 +210,11 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         detail = details.get(iid) or {}
         if monetary:
             local = None
+            expected = None
             metadata = {"rejected_period_count": 0, "calendar_basis": None}
         else:
             points = (holding.get("instrument_return_series_all") or {}).get("points") or []
-            local, metadata = _daily_periods(points, detail=detail, start_date=start_date, end_date=as_of_date)
+            local, metadata, expected = _daily_periods(points, detail=detail, start_date=start_date, end_date=as_of_date)
             row.update(metadata)
             if not local:
                 continue
@@ -186,14 +224,18 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             ordered = sorted(rates)
             fx_points = [{"start_date": left, "date": right, "value": rates[right] / rates[left] - 1}
                          for left, right in zip(ordered, ordered[1:])]
-            fx_returns, fx_metadata = _daily_periods(fx_points, detail=fx_detail, start_date=start_date, end_date=as_of_date)
+            fx_returns, fx_metadata, fx_expected = _daily_periods(fx_points, detail=fx_detail, start_date=start_date, end_date=as_of_date)
+            row["fx_rejected_period_count"] = fx_metadata["rejected_period_count"]
+            row["unmatched_fx_period_count"] = len(local.keys() - fx_returns.keys()) if local is not None else 0
             if not fx_returns:
                 row["reason"] = "missing_aligned_fx_returns"
                 continue
             if local is None:
                 local = fx_returns
+                expected = fx_expected
                 row.update(fx_metadata)
             else:
+                expected = expected & fx_expected if expected is not None and fx_expected is not None else None
                 local = {period: (1 + local[period]) * (1 + fx_returns[period]) - 1
                          for period in local.keys() & fx_returns.keys()}
             if not local:
@@ -202,15 +244,20 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         if not local:
             row["reason"] = "no_verified_daily_returns"
             continue
-        row.update(status="modeled", reason=None, observation_count=len(local))
-        modeled.append((row, local))
+        row.update(status="modeled", reason=None, observation_count=len(local),
+                   first_scenario_start_date=min(period[0] for period in local).isoformat(),
+                   last_scenario_end_date=max(period[1] for period in local).isoformat())
+        modeled.append((row, local, expected))
 
-    common = set.intersection(*(set(series) for _, series in modeled)) if modeled else set()
+    common = set.intersection(*(set(series) for _, series, _ in modeled)) if modeled else set()
+    expected_common = (set.intersection(*(expected for _, _, expected in modeled))
+                       if modeled and all(expected is not None for _, _, expected in modeled) else None)
+    history = _history_coverage(common, expected_common, start_date=start_date, end_date=as_of_date)
     ordered_periods = sorted(common, key=lambda item: item[1])
-    losses = [-sum(row["market_value_base"] * series[period] for row, series in modeled) for period in ordered_periods]
+    losses = [-sum(row["market_value_base"] * series[period] for row, series, _ in modeled) for period in ordered_periods]
     distribution = empirical_tail(losses, confidence)
     excluded = [row for row in rows if row["status"] == "excluded"]
-    modeled_gross = sum(abs(row["market_value_base"]) for row, _ in modeled)
+    modeled_gross = sum(abs(row["market_value_base"]) for row, _, _ in modeled)
     excluded_gross = (sum(abs(row["market_value_base"]) for row in excluded)
                       if all(row["market_value_base"] is not None for row in excluded) else None)
     total_gross = sum(abs(row["market_value_base"]) for row in rows if row["market_value_base"] is not None)
@@ -226,8 +273,16 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         issues.append("partial_market_risk_coverage")
     if any(row["rejected_period_count"] for row in rows):
         issues.append("non_daily_or_unverified_intervals_removed")
-    if modeled and any(row["observation_count"] != len(common) for row, _ in modeled):
+    if any(row["fx_rejected_period_count"] for row in rows):
+        issues.append("unverified_fx_intervals_removed")
+    if any(row["unmatched_fx_period_count"] for row in rows):
+        issues.append("unmatched_security_fx_periods_removed")
+    if modeled and any(row["observation_count"] != len(common) for row, _, _ in modeled):
         issues.append("common_period_intersection")
+    if history["history_coverage_status"] == "partial":
+        issues.append("requested_history_partially_covered")
+    elif history["history_coverage_status"] == "unverified":
+        issues.append("requested_history_calendar_unverified")
     latest = ordered_periods[-1][1] if ordered_periods else None
     if latest and latest < as_of_date:
         issues.append("scenario_history_ends_before_as_of")
@@ -240,6 +295,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
         "method": "historical_simulation_current_exposures", "horizon": "one_observed_market_session",
         "confidence": confidence, "lookback_days": lookback_days,
         "window_start_date": start_date.isoformat(), "window_end_date": as_of_date.isoformat(),
+        **history,
         "first_scenario_start_date": ordered_periods[0][0].isoformat() if ordered_periods else None,
         "last_scenario_end_date": latest.isoformat() if latest else None,
         "observation_count": distribution["observation_count"],
@@ -269,6 +325,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             "observation_count": distribution["observation_count"],
             "tail_effective_observations": distribution["tail_effective_observations"],
             "coverage_status": "partial" if excluded else "complete",
+            **history,
             "result_status": "available" if available else "unavailable",
             "date_basis": "Current signed holdings at the stated date; actual historical one-session return intervals within the requested window. Calendar-date alignment does not imply identical intraday closing times across markets.",
             "detail_path": f"/portfolios/{quote(str(workspace.get('portfolio_id') or ''), safe='')}/risk",

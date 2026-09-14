@@ -33,6 +33,30 @@ def _noncash_instrument_ids(payload: dict[str, object]) -> set[str]:
     }
 
 
+def test_materialized_return_history_gets_coverage_without_rewriting_published_values() -> None:
+    workspace = {"rows": [{
+        "instrument_core": {"instrument_id": "fund"},
+        "instrument_return_series_all": {
+            "first_return_start_date": "2026-06-23",
+            "points": [
+                {"start_date": "2026-06-23", "date": "2026-06-25", "value": 0.01},
+                {"start_date": "2026-06-25", "date": "2026-06-26", "value": 0.02},
+            ],
+        },
+    }]}
+    response = workspace_routes._materialized_holdings_workspace_response(
+        workspace, risk_basis_profile={"resolved_frequency": "daily"},
+        instrument_details={"fund": {"source_settings": {
+            "expected_frequency": "daily", "market_calendar": "XSHG",
+        }}},
+    )
+    old = workspace["rows"][0]["instrument_return_series_all"]
+    series = response["rows"][0]["instrument_return_series_all"]
+    assert series["observation_coverage"]["gap_dates"] == ["2026-06-24"]
+    assert series["points"] == old["points"]
+    assert "observation_coverage" not in old
+
+
 def _populated_market_profile() -> dict[str, object]:
     profile = instrument_charts.empty_instrument_holdings_market_profile()
     points = [

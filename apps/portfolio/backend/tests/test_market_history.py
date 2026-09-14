@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from portfolio_app.services import instrument_charts
+from portfolio_app.services import instrument_charts, risk_basis
 from portfolio_app.services.instrument_charts import (
     build_instrument_holdings_market_profile_from_detail,
     build_instrument_price_chart_from_detail,
@@ -70,6 +70,33 @@ def _split_event(**overrides: object) -> dict[str, object]:
         "status": "confirmed",
         **overrides,
     }
+
+
+def test_full_return_history_coverage_uses_return_basis_not_valuation_or_holding_dates(monkeypatch) -> None:
+    detail = _detail([
+        _point("total_return_nav", "2026-06-23", "1.00"),
+        _point("official_nav", "2026-06-24", "1.00"),
+        _point("total_return_nav", "2026-06-25", "1.01"),
+        _point("total_return_nav", "2026-06-26", "1.02"),
+    ], instrument_type="private_fund")
+    detail["source_settings"] = {"expected_frequency": "daily", "market_calendar": "XSHG"}
+    detail["quote_selection_policy"]["total_return"] = ["total_return_nav"]
+    for point in detail["market_data"]:
+        point["metric_family"] = "nav"
+    monkeypatch.setattr(risk_basis, "_market_calendar_sessions", lambda *_args: [
+        date(2026, 6, day) for day in (23, 24, 25, 26)
+    ])
+
+    profile = build_instrument_holdings_market_profile_from_detail(
+        detail, instrument_id="fund", as_of_date=date(2026, 6, 26),
+        holding_start_date=date(2026, 6, 25),
+    )
+
+    assert profile["instrument_return_series_all"]["observation_coverage"] == {
+        "start_date": "2026-06-23", "end_date": "2026-06-26",
+        "gap_dates": ["2026-06-24"], "gap_detection_basis": "market_calendar:XSHG",
+    }
+    assert profile["instrument_return_series_all"]["points"][0]["start_date"] == "2026-06-23"
 
 
 @pytest.mark.parametrize(

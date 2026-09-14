@@ -210,6 +210,8 @@ describe('Risk correlation numeric golden contract', () => {
     expect(result.matrix.groups).toEqual([])
     expect(result.scopeMemberCount).toBe(2)
     expect(result.alignedObservationCount).toBe(0)
+    expect(result.diagnostics.status).toBe('unavailable')
+    expect(result.issues[0].reason).toBe('missing_member')
   })
 
   it('fails closed and identifies a missing date regardless of map insertion order', () => {

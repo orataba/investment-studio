@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildCurrentInstrumentReturnSeries } from './pages/RiskPage'
+import { buildRollingRisk } from './lib/rollingRisk'
 import { holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
 
 const alphaPoints = [
@@ -54,9 +55,9 @@ describe('Current-weight rolling risk alignment', () => {
       workspace([alphaPoints[0], alphaPoints[2]]),
     )
 
-    expect(result.value).toEqual([])
-    expect(result.errors.join(' ')).toContain('requires identical return dates')
-    expect(result.errors.join(' ')).toContain('2026-07-21')
+    expect(result.errors).toEqual([])
+    const risk = buildRollingRisk({ series: result.value, asOfDate: '2026-07-22', lookbackDays: 30 })
+    expect(risk.diagnostics.issues.some((issue) => issue.reason === 'misaligned_dates' && issue.missingDates.includes('2026-07-21'))).toBe(true)
   })
 
   it('fails closed when equal end dates represent different return periods', () => {
@@ -68,9 +69,9 @@ describe('Current-weight rolling risk alignment', () => {
 
     const result = buildCurrentInstrumentReturnSeries(workspace(betaPoints))
 
-    expect(result.value).toEqual([])
-    expect(result.errors.join(' ')).toContain('requires one period identity')
-    expect(result.errors.join(' ')).toContain('2026-07-21')
+    expect(result.errors).toEqual([])
+    const risk = buildRollingRisk({ series: result.value, asOfDate: '2026-07-22', lookbackDays: 30 })
+    expect(risk.diagnostics.issues.some((issue) => issue.coverageReason.includes('one period identity') && issue.missingDates.includes('2026-07-21'))).toBe(true)
   })
 
   it('allows different inception dates when all periods align after the latest inception', () => {

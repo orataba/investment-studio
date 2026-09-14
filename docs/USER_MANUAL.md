@@ -338,30 +338,27 @@ Performance 用于真实组合区间复盘。核心口径是日频经营 TWR、�
 
 Calculation 的 Download 可选 CSV 或 Excel，内容严格对应当前 requested/effective 区间、分组、排序和可见列，并在文件名中保留组合、日期和分组口径。它是绩效计算分析文件，不可导入 Transactions，也不会改写任何组合事实。
 
-Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，Research 是规划求解和假设回测。
+Performance 反映真实历史组合。Risk 的实际组合滚动视角使用同一条市场风险收益链；当前持仓回溯、当前风险贡献与尾部情景则使用当前持仓假设。Research 属于规划求解和假设模拟，比较前应先确认口径。
 
 当组合含事件记账型衍生品时，`Total Portfolio Operational Return` 继续完整反映 NAV、衍生品现金结算、coupon、费用和已实现盈亏，用于对账与经营复盘；它不冒充公允价值衍生品收益。`Market Risk Return` 以同一总 NAV 为分母，把衍生品和本币现金视为 0-return capital：衍生品买入/费用/现金结算、FCN coupon 与现金利息从风险 P&L 中剔除，普通证券的价格变化、普通证券 dividend/coupon 和非本币现金 FX 仍保留。只有本币现金或衍生品、没有任何可建模市场资产或非本币货币风险的组合，风险指标显示 unavailable，而不是实际波动率 0。Calculation 的分组波动率、相关性、Beta 与 Realized RC 使用同一条分组市场风险链，不读取经营收益后再按资产类别过滤。
 
 ### 6.7 Risk
 
-Risk 是当前权重口径的风险工作台，使用市场资产历史收益与当前总 NAV 权重。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
+Risk 在同一页面依次展示当前持仓风险、滚动风险、相关性、尾部风险、集中度与目标偏离，来源覆盖和样本明细按需展开。概览与当前风险贡献回答“现在持仓的风险结构如何”；滚动风险默认反映实际组合的市场风险，也可切换为当前持仓回溯。两个视角分别标识，不替代 Performance 的历史归因。
 
 现金和衍生品都会进入组合 NAV、Weight Target 与 Current Drift 的资本权重，但都不设置 Risk Target。现金包含所有账户的现金余额与待交收，衍生品使用 Holdings 的 carrying/liability amount；两者都作为固定系统桶汇总，不读取 taxonomy assignment，也不会重复计数。前瞻组合波动率使用 `market exposure / total NAV`，因此本币现金与衍生品按 0-return capital 稀释组合风险；非本币现金缺少 FX total-return series 时风险不可用。`Risk Target Gap` 只比较承担市场风险的 Securities sleeve；Cash 与 Derivatives 不显示 risk-target row，不进入风险预算 100% 分母。
 
 常用内容：
 
-- Risk Health：看 forward volatility 与样本覆盖、Top-3/HHI 持仓摘要、现金与待交收。
-- rolling volatility / Sharpe：看风险和风险调整收益随时间变化。
-- correlation matrix：默认查看 Current Holdings；需要研究未持有资产时可显式切到 Full Universe。
-- current drift：选择分类，查看实际权重及已启用的权重/风险贡献目标偏移。
-- concentration：在单证券、单 FCN 和任意自定义分类间切换，查看占 NAV 比例、关注线、上限、余量与来源。
-- VaR / ES：用当前持仓重放共同历史证券/汇率情景，同时检查样本量和未建模范围。
-- risk contribution：看各资产或分组对组合风险的贡献。
-- benchmark：选择可用 benchmark 后比较风险曲线。
+- 风险概览：当前模型波动率、建模覆盖、集中度摘要、风险贡献与目标偏离。历史来源缺口可展开查看标的和日期；它不等同于当前模型不可用。
+- 滚动风险：观察窗口直接显示在工具栏。“实际组合”按每日真实持仓与资金变动后的市场风险收益计算；“当前持仓回溯”固定今天的持仓权重重放历史。两者都显示样本日期、观测数及不可用原因。
+- 相关性：当前持仓、全部标的或自定义分类使用同一个完整共同样本。非叶分类比较其直接子分类篮子，叶分类比较其中各资产；只有一个成员时明确提示无法比较，不能误解为数据缺失。历史观察截止日可直接选择，当前权重不会因此变成当时的历史持仓。
+- 尾部风险：当前持仓在共同证券与汇率历史情景中的 VaR / ES，明确区分请求回看上限和实际可用历史。
+- 集中度：在单证券、单 FCN 和自定义分类间切换，查看占 NAV 比例、关注线、上限、余量及来源。未配置限额显示“仅观察”，没有限额的空值不表示缺少行情。
 
-风险结果依赖资产收益序列。Production Risk Model 的 `1M / 3M / 6M / 12M / 24M` 从 holdings as-of date 按自然月回看，不是 30/90 个交易日；起止日都是 EOD boundary，只使用 `(start EOD, as-of EOD]` 的收益行。计算频率优先读取 Instrument Data expected frequency，daily 数据按 instrument 自己的 market calendar 区分休市和缺点；即使所有持仓共同漏掉同一个预期交易日，也不会把“彼此仍对齐”误当成完整数据。若 start 落在周末或休市日，首条收益从此前最近有效收盘连接到此后首个有效交易日；不会虚构非交易日 close，也不会因为最新数据较早就把窗口整体向前挪。缺少历史行情、只有期末净值但没有对应期初净值、期间起止不一致、尾部数据陈旧或缺少 FX 时，结果会明确显示 unavailable。
+风险结果依赖资产收益序列。Production Risk Model 的 `1M / 3M / 6M / 12M / 24M` 从 holdings as-of date 按自然月回看，不是 30/90 个交易日；起止日都是 EOD boundary，只使用 `(start EOD, as-of EOD]` 的收益行。计算使用日频，来源更新安排按 Instrument Data 的 expected frequency 与 market calendar 区分正常停更、休市和缺点；即使所有持仓共同漏掉同一个预期交易日，也不会把“彼此仍对齐”误当成完整数据。若 start 落在周末或休市日，首条收益从此前最近有效收盘连接到此后首个有效交易日；不会虚构非交易日 close，也不会因为最新数据较早就把窗口整体向前挪。缺少历史行情、只有期末净值但没有对应期初净值、期间起止不一致、尾部数据陈旧或缺少 FX 时，结果会明确显示 unavailable。
 
-Forward RC 先对当前 leaf instruments 运行一次组合级 covariance；taxonomy/sleeve 只加总这些资产相对于同一组合 variance 的贡献，不会在分组后重新估计一套风险。Rolling Risk 和 Correlation Matrix 都要求所有 active members 在共同历史内使用完全一致的 period start/end 与日期序列。缺少成员、缺少日期、日期逆序、常数收益或窗口覆盖不足时，页面列出具体成员与日期并保持 unavailable；不会补 0、静默取交集或用每对资产不同的日期拼矩阵。
+Forward RC 先对当前 leaf instruments 运行一次组合级 covariance；taxonomy/sleeve 只加总这些资产相对于同一组合 variance 的贡献，不会在分组后重新估计一套风险。当前持仓滚动风险和相关矩阵只检查所选成员、所选窗口内的完整起止期间与日期序列。窗口外的旧缺口不会阻断完整的短窗口，窗口内缺口仍不能补 0 或静默取交集。实际组合滚动风险则使用已发布的市场风险收益与覆盖标识，不受买入前的资产历史缺口阻断。相关系数遇到常数收益时不可定义；合法的零波动率仍可展示。样本不足、起点不足、日期不齐与零波动分别说明。
 
 Benchmark 对比要求 benchmark 与组合本币一致，并且收益语义已确认为 total return 或 price return。价格收益可以查看，但页面会提示其不含分红；币种不一致或收益语义未知时不绘制比较曲线。
 
@@ -369,7 +366,7 @@ Benchmark 对比要求 benchmark 与组合本币一致，并且收益语义已�
 
 点击集中度设置或进入 Taxonomies，可启用对应范围的限额、设通用值与单项例外，并指定生效日期。默认不预设投资阈值；达到关注线/上限即显示相应状态。生效日期默认使用当前持仓截至日，可修改。浏览分类不改变生产分析范围，DSH 会读取全部分类的有效限额。
 
-VaR / ES 默认三年、95% 置信度，可切一/三/五年和 95%/99%。仅覆盖真实日频证券/FX 情景，不包括 FCN/Option 公允价值变化；查看百分比时同时查看未建模金额。共同样本及尾部观察过少时会披露限制或不返回数值。
+VaR / ES 默认最多回看三年、95% 置信度，可切一/三/五年及 95%/99%。回看选项不是已具备历史年限的承诺；面板并列展示请求与实际起止日期、共同情景数、尾部有效样本和单个情景对 ES 的影响。短历史可形成披露了覆盖限制的估计，不能称作完整三年风险统计。前段历史不足、内部缺口、尾端缺失和无法核验日历分别披露。仅覆盖真实日频证券/FX 情景，不包括 FCN/Option 公允价值变化；查看百分比时同时查看未建模金额。共同样本及尾部观察过少时会披露限制或不返回数值。
 
 ### 6.8 Taxonomies
 
