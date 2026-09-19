@@ -412,8 +412,8 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
     )
     monkeypatch.setattr(
         research_solver,
-        "taxonomy_configuration_as_of",
-        lambda _portfolio_id, _taxonomy_id, _as_of_date: {
+        "capture_current_target_configuration",
+        lambda _portfolio_id, _taxonomy_id: {
             "taxonomy": {
                 "taxonomy_id": "taxonomy-fx-topology",
                 "name": "Planning",

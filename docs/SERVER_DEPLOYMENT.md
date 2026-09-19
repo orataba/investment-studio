@@ -465,12 +465,15 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 ```
 
 The audit is deliberately fail-closed for schema and data integrity. It also
-warns when a portfolio has no effective-dated analytics taxonomy selection or
-when its point-in-time taxonomy configuration/root/unassigned policies are
+warns when a configured portfolio has no current analytics taxonomy selection or
+when its current taxonomy configuration/root/unassigned policies are
 incomplete; `--fail-on-warning` turns that operational warning into a release
 gate. Do not create a default selection in runtime code or by an unreviewed
 SQL backfill. Configure the selection and scope policies through the Portfolio
-Taxonomies API, record the effective date and operator, then rerun the audit.
+Taxonomies API, retain the automatic revision and operator audit, then rerun the audit.
+Taxonomy configuration has no effective-date scheduling. Its migration and every
+subsequent edit invalidate affected analytics from the start of portfolio history;
+complete the resulting snapshot rebuild before release acceptance.
 
 An audit result of `passed` is therefore the data-integrity gate. An audit result
 of `warning` may still allow market-data refresh and ordinary operational pages,

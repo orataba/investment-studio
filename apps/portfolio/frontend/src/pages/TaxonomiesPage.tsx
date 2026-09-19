@@ -65,37 +65,33 @@ type TreeRow = PortfolioTaxonomyNodeRecord & {
 const ROOT_ANALYTICS_POLICY_NODE_ID = '__root__'
 const UNASSIGNED_ANALYTICS_POLICY_NODE_ID = '__unassigned__'
 
-export function resolveEffectiveAnalyticsScopePolicyForNode({
+export function resolveAnalyticsScopePolicyForNode({
   policies,
   nodes,
   taxonomyId,
   nodeId,
-  effectiveDate,
 }: {
   policies: PortfolioAnalyticsScopePolicyRecord[]
   nodes: PortfolioTaxonomyNodeRecord[]
   taxonomyId: string
   nodeId: string
-  effectiveDate: string
 }): PortfolioAnalyticsScopePolicyRecord | null {
-  const effectivePolicyByNodeId = new Map<string, PortfolioAnalyticsScopePolicyRecord>()
+  const currentPolicyByNodeId = new Map<string, PortfolioAnalyticsScopePolicyRecord>()
   policies
     .filter(
       (policy) =>
         policy.taxonomy_id === taxonomyId &&
-        !policy.superseded_by_policy_id &&
-        policy.effective_from <= effectiveDate &&
-        (!policy.effective_to || policy.effective_to >= effectiveDate),
+        !policy.superseded_by_policy_id,
     )
     .sort((left, right) => right.policy_version - left.policy_version)
     .forEach((policy) => {
-      if (!effectivePolicyByNodeId.has(policy.taxonomy_node_id)) {
-        effectivePolicyByNodeId.set(policy.taxonomy_node_id, policy)
+      if (!currentPolicyByNodeId.has(policy.taxonomy_node_id)) {
+        currentPolicyByNodeId.set(policy.taxonomy_node_id, policy)
       }
     })
 
   let candidateNodeId = nodeId
-  let policy = effectivePolicyByNodeId.get(candidateNodeId) ?? null
+  let policy = currentPolicyByNodeId.get(candidateNodeId) ?? null
   const nodesById = new Map(
     nodes
       .filter((node) => node.taxonomy_id === taxonomyId)
@@ -114,7 +110,7 @@ export function resolveEffectiveAnalyticsScopePolicyForNode({
     candidateNodeId =
       nodesById.get(candidateNodeId)?.parent_taxonomy_node_id ??
       ROOT_ANALYTICS_POLICY_NODE_ID
-    policy = effectivePolicyByNodeId.get(candidateNodeId) ?? null
+    policy = currentPolicyByNodeId.get(candidateNodeId) ?? null
   }
   return policy
 }
@@ -707,10 +703,6 @@ export default function TaxonomiesPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionPending, setActionPending] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PendingTaxonomyDelete | null>(null)
-  const [effectiveDate, setEffectiveDate] = useState(() => {
-    const now = new Date()
-    return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
-  })
   const [policyNodeId, setPolicyNodeId] = useState(ROOT_ANALYTICS_POLICY_NODE_ID)
   const [policyRiskEligible, setPolicyRiskEligible] = useState(true)
   const [policyRiskBudgetEligible, setPolicyRiskBudgetEligible] = useState(true)
@@ -721,7 +713,6 @@ export default function TaxonomiesPage() {
     'market' | 'fair_value' | 'carrying' | 'event' | 'obligation' | 'cash' | 'unknown'
   >('market')
   const [policyExclusionReason, setPolicyExclusionReason] = useState('')
-  const [policyEffectiveTo, setPolicyEffectiveTo] = useState('')
 
   const [taxonomyName, setTaxonomyName] = useState('')
   const [taxonomyPickerOpen, setTaxonomyPickerOpen] = useState(false)
@@ -873,15 +864,14 @@ export default function TaxonomiesPage() {
     () => taxonomyAssignments.filter((assignment) => assignment.taxonomy_id === resolvedSelectedTaxonomyId),
     [resolvedSelectedTaxonomyId, taxonomyAssignments],
   )
-  const effectivePolicyForNode = useMemo(() => {
-    return resolveEffectiveAnalyticsScopePolicyForNode({
+  const currentPolicyForNode = useMemo(() => {
+    return resolveAnalyticsScopePolicyForNode({
       policies: analyticsPolicies,
       nodes: selectedTaxonomyNodes,
       taxonomyId: resolvedSelectedTaxonomyId,
       nodeId: policyNodeId,
-      effectiveDate,
     })
-  }, [analyticsPolicies, effectiveDate, policyNodeId, resolvedSelectedTaxonomyId, selectedTaxonomyNodes])
+  }, [analyticsPolicies, policyNodeId, resolvedSelectedTaxonomyId, selectedTaxonomyNodes])
   const holdingsRows = holdingsWorkspace?.rows ?? []
   const instrumentRows = instrumentsResponse?.instruments ?? []
   const instrumentUniverseRows = catalog?.instrument_universe ?? []
@@ -893,13 +883,12 @@ export default function TaxonomiesPage() {
   }, [resolvedSelectedTaxonomyId])
 
   useEffect(() => {
-    if (effectivePolicyForNode) {
-      setPolicyRiskEligible(effectivePolicyForNode.risk_eligible)
-      setPolicyRiskBudgetEligible(effectivePolicyForNode.risk_budget_eligible)
-      setPolicyPerformanceScope(effectivePolicyForNode.performance_scope)
-      setPolicyValuationBasis(effectivePolicyForNode.valuation_basis)
-      setPolicyExclusionReason(effectivePolicyForNode.exclusion_reason ?? '')
-      setPolicyEffectiveTo(effectivePolicyForNode.effective_to ?? '')
+    if (currentPolicyForNode) {
+      setPolicyRiskEligible(currentPolicyForNode.risk_eligible)
+      setPolicyRiskBudgetEligible(currentPolicyForNode.risk_budget_eligible)
+      setPolicyPerformanceScope(currentPolicyForNode.performance_scope)
+      setPolicyValuationBasis(currentPolicyForNode.valuation_basis)
+      setPolicyExclusionReason(currentPolicyForNode.exclusion_reason ?? '')
       return
     }
     const unassigned = policyNodeId === UNASSIGNED_ANALYTICS_POLICY_NODE_ID
@@ -907,9 +896,8 @@ export default function TaxonomiesPage() {
     setPolicyRiskBudgetEligible(!unassigned)
     setPolicyPerformanceScope(unassigned ? 'unallocated' : 'ordinary')
     setPolicyValuationBasis(unassigned ? 'unknown' : 'market')
-    setPolicyExclusionReason(unassigned ? 'No effective taxonomy assignment.' : '')
-    setPolicyEffectiveTo('')
-  }, [effectivePolicyForNode, policyNodeId])
+    setPolicyExclusionReason(unassigned ? 'No current taxonomy assignment.' : '')
+  }, [currentPolicyForNode, policyNodeId])
 
   useEffect(() => {
     const nextDrafts = defaultTargetDraftsFromNodes(selectedTaxonomyNodes)
@@ -2254,7 +2242,6 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       await savePortfolioTaxonomyTargetConfiguration(portfolioId, selectedTaxonomy.taxonomy_id, {
-        effective_from: effectiveDate,
         node_defaults: Object.fromEntries(changedDefaultTargetNodes.map((node) => [
           node.taxonomy_node_id, defaultTargetDraftsByNodeId[node.taxonomy_node_id],
         ])),
@@ -2283,7 +2270,7 @@ export default function TaxonomiesPage() {
   async function handleSaveAnalyticsPolicy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!canEditPortfolio) return
-    if (!portfolioId || !selectedTaxonomy || !effectiveDate) {
+    if (!portfolioId || !selectedTaxonomy) {
       return
     }
     if (
@@ -2308,8 +2295,6 @@ export default function TaxonomiesPage() {
           performance_scope: policyPerformanceScope,
           valuation_basis: policyValuationBasis,
           exclusion_reason: policyExclusionReason.trim() || null,
-          effective_from: effectiveDate,
-          effective_to: policyEffectiveTo || null,
         },
       )
       setNotice('Analytics scope policy saved.')
@@ -2332,7 +2317,6 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       const created = await createPortfolioTaxonomy(portfolioId, {
-        effective_from: effectiveDate,
         name: taxonomyName,
         taxonomy_type: 'custom',
         purpose: null,
@@ -2365,7 +2349,6 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       await updatePortfolioTaxonomy(portfolioId, taxonomy.taxonomy_id, {
-        effective_from: effectiveDate,
         name: nextName,
       })
       setShowTaxonomyRename(false)
@@ -2393,14 +2376,12 @@ export default function TaxonomiesPage() {
     try {
       if (!taxonomy.planning_enabled || taxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL) {
         await updatePortfolioTaxonomy(portfolioId, taxonomy.taxonomy_id, {
-          effective_from: effectiveDate,
           planning_enabled: true,
           budgeting_level: PLANNING_BUDGETING_LEVEL,
         })
       }
       await updatePortfolioDefaultPlanningTaxonomy(portfolioId, {
         taxonomy_id: taxonomyId,
-        effective_from: effectiveDate,
       })
       setNotice(`Default taxonomy set to "${taxonomy.name}".`)
       await reloadWorkspace()
@@ -2437,7 +2418,6 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       const created = await createPortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, {
-        effective_from: effectiveDate,
         node_name: newNodeName,
         parent_taxonomy_node_id: nodeCreateParentId || null,
       })
@@ -2472,7 +2452,6 @@ export default function TaxonomiesPage() {
     setNotice(null)
     try {
       await updatePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, editingNode.taxonomy_node_id, {
-        effective_from: effectiveDate,
         node_name: nodeEditName,
       })
       setShowNodeEdit(false)
@@ -2534,7 +2513,6 @@ export default function TaxonomiesPage() {
         }
         if (!entity.current_assignment) {
           await createPortfolioTaxonomyAssignment(portfolioId, selectedTaxonomy.taxonomy_id, {
-            effective_from: effectiveDate,
             target_scope: 'instrument',
             target_entity_id: entity.entity_id,
             taxonomy_node_id: targetNode.taxonomy_node_id,
@@ -2551,7 +2529,6 @@ export default function TaxonomiesPage() {
           selectedTaxonomy.taxonomy_id,
           entity.current_assignment.assignment_id,
           {
-            effective_from: effectiveDate,
             taxonomy_node_id: targetNode.taxonomy_node_id,
           },
         )
@@ -2642,8 +2619,7 @@ export default function TaxonomiesPage() {
         await deletePortfolioTaxonomy(
           target.portfolioId,
           target.taxonomy.taxonomy_id,
-          effectiveDate,
-        )
+                )
         if (target.wasSelected && currentPortfolioIdRef.current === target.portfolioId) {
           updateSearchParam('taxonomy_id', null)
         }
@@ -2654,8 +2630,7 @@ export default function TaxonomiesPage() {
           target.portfolioId,
           target.taxonomyId,
           target.node.taxonomy_node_id,
-          effectiveDate,
-        )
+                )
         if (currentPortfolioIdRef.current === target.portfolioId) {
           setSelectedNodeId(target.node.parent_taxonomy_node_id ?? null)
         }
@@ -3109,16 +3084,6 @@ export default function TaxonomiesPage() {
                   ) : null}
                 </div>
               </div>
-              <label className="taxonomy-topbar-field">
-                <span>Effective Date:</span>
-                <input
-                  type="date"
-                  value={effectiveDate}
-                  onChange={(event) => setEffectiveDate(event.target.value)}
-                  required
-                  disabled={Boolean(actionPending)}
-                />
-              </label>
               <div className="taxonomy-header-actions">
                 {selectedTaxonomy && <button type="button" className="toolbar-link"
                   disabled={!canEditPortfolio || targetEditMode || Boolean(actionPending) || selectedTaxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id}
@@ -3246,16 +3211,6 @@ export default function TaxonomiesPage() {
                     disabled={!canEditPortfolio}
                     onChange={(event) => setPolicyExclusionReason(event.target.value)}
                     required={!policyRiskEligible || policyPerformanceScope !== 'ordinary'}
-                  />
-                </label>
-                <label>
-                  <span>Effective To</span>
-                  <input
-                    type="date"
-                    min={effectiveDate}
-                    value={policyEffectiveTo}
-                    disabled={!canEditPortfolio}
-                    onChange={(event) => setPolicyEffectiveTo(event.target.value)}
                   />
                 </label>
                 <button

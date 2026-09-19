@@ -18,8 +18,6 @@ from portfolio_app.services.analytics_scope import (
     UNASSIGNED_POLICY_NODE_ID,
 )
 
-EFFECTIVE_FROM = "2026-01-01"
-
 
 def test_market_profile_enrichment_reuses_one_registry_batch(monkeypatch):
     records = [
@@ -90,10 +88,43 @@ def test_market_profile_enrichment_reuses_one_registry_batch(monkeypatch):
     assert "instrument_return_series_all" not in enriched[2]
 
 
+def test_taxonomy_api_has_one_current_configuration_and_keeps_market_data_cutoff(client):
+    schema = client.app.openapi()
+    removed_fields = {"effective_from", "effective_to", "planning_as_of_date", "current_planning"}
+    for name, model in schema["components"]["schemas"].items():
+        if name.startswith(("Taxonomy", "TargetSet", "DefaultPlanningTaxonomy", "AnalyticsScopePolicy", "AnalyticsTaxonomySelection")):
+            assert not removed_fields.intersection(model.get("properties", {})), name
+    catalog_path = "/api/portfolios/{portfolio_id}/taxonomies"
+    for path, operations in schema["paths"].items():
+        if "/taxonomies" not in path:
+            continue
+        for operation in operations.values():
+            assert not removed_fields.intersection(
+                parameter["name"] for parameter in operation.get("parameters", [])
+            ), path
+    assert "as_of_date" in {
+        parameter["name"]
+        for parameter in schema["paths"][catalog_path]["get"]["parameters"]
+    }
+
+    base = "/api/portfolios/investment-studio/taxonomies"
+    created = client.post(base, json={"name": "Current classification"})
+    assert created.status_code == 200, created.text
+    taxonomy_id = created.json()["taxonomy_id"]
+    saved = client.patch(f"{base}/{taxonomy_id}", json={"name": "Updated classification"})
+    assert saved.status_code == 200, saved.text
+    historical = client.get(base, params={"as_of_date": "2000-01-01"})
+    current = client.get(base)
+    assert historical.status_code == current.status_code == 200
+    assert historical.json() == current.json()
+    assert next(item for item in historical.json()["taxonomies"]
+                if item["taxonomy_id"] == taxonomy_id)["name"] == "Updated classification"
+
+
 def test_taxonomy_create_node_assignment_round_trip(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Risk Sleeves",
             "taxonomy_type": "risk_sleeve",
             "primary_assignment_scope": "instrument",
@@ -110,7 +141,7 @@ def test_taxonomy_create_node_assignment_round_trip(client):
 
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_payload['taxonomy_id']}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Defensive",
             "node_code": "DEF",
             "sort_order": 0,
@@ -127,7 +158,6 @@ def test_taxonomy_create_node_assignment_round_trip(client):
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": node_payload["taxonomy_node_id"],
-            "effective_from": "2026-01-01",
         },
     )
     assert assignment_response.status_code == 200
@@ -146,7 +176,7 @@ def test_taxonomy_create_node_assignment_round_trip(client):
 def test_taxonomy_assignment_create_ignores_descriptive_imported_ids(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Imported Assignment IDs",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -157,7 +187,7 @@ def test_taxonomy_assignment_create_ignores_descriptive_imported_ids(client):
 
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Core", "sort_order": 0},
+        json={"node_name": "Core", "sort_order": 0},
     )
     assert node_response.status_code == 200
     node_id = node_response.json()["taxonomy_node_id"]
@@ -191,7 +221,7 @@ def test_taxonomy_assignment_create_ignores_descriptive_imported_ids(client):
 
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": node_id,
@@ -215,7 +245,7 @@ def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
 
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Watchlist Taxonomy",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -224,12 +254,12 @@ def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Research", "sort_order": 0},
+        json={"node_name": "Research", "sort_order": 0},
     )
     node_id = node_response.json()["taxonomy_node_id"]
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "fund-us-watch",
             "taxonomy_node_id": node_id,
@@ -250,7 +280,7 @@ def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
 
     archived_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
-        json={"effective_from": EFFECTIVE_FROM,"status": "archived"},
+        json={"status": "archived"},
     )
     assert archived_response.status_code == 200
     archived_catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
@@ -263,12 +293,11 @@ def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
 
     restored_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
-        json={"effective_from": EFFECTIVE_FROM,"status": "active"},
+        json={"status": "active"},
     )
     assert restored_response.status_code == 200
     delete_response = client.delete(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
-        params={"effective_from": EFFECTIVE_FROM},
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments/{assignment_id}"
     )
     assert delete_response.status_code == 200
     deleted_catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
@@ -326,7 +355,7 @@ def test_taxonomy_deletes_manual_watch_instrument(client):
 def test_taxonomy_delete_node_rejects_parent_with_children(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Sector Map",
             "taxonomy_type": "sector",
             "primary_assignment_scope": "instrument",
@@ -336,13 +365,13 @@ def test_taxonomy_delete_node_rejects_parent_with_children(client):
 
     parent_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Equity", "sort_order": 0},
+        json={"node_name": "Equity", "sort_order": 0},
     )
     parent_node_id = parent_response.json()["taxonomy_node_id"]
 
     child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Healthcare",
             "parent_taxonomy_node_id": parent_node_id,
             "sort_order": 1,
@@ -351,8 +380,7 @@ def test_taxonomy_delete_node_rejects_parent_with_children(client):
     assert child_response.status_code == 200
 
     delete_response = client.delete(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{parent_node_id}",
-        params={"effective_from": EFFECTIVE_FROM},
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{parent_node_id}"
     )
     assert delete_response.status_code == 400
     assert "child nodes" in delete_response.json()["detail"]
@@ -361,7 +389,7 @@ def test_taxonomy_delete_node_rejects_parent_with_children(client):
 def test_taxonomy_delete_node_rejects_assigned_node(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Issuer Groups",
             "taxonomy_type": "issuer",
             "primary_assignment_scope": "instrument",
@@ -371,13 +399,13 @@ def test_taxonomy_delete_node_rejects_assigned_node(client):
 
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Healthcare", "sort_order": 0},
+        json={"node_name": "Healthcare", "sort_order": 0},
     )
     node_id = node_response.json()["taxonomy_node_id"]
 
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": node_id,
@@ -386,8 +414,7 @@ def test_taxonomy_delete_node_rejects_assigned_node(client):
     assert assignment_response.status_code == 200
 
     delete_response = client.delete(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{node_id}",
-        params={"effective_from": EFFECTIVE_FROM},
+        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{node_id}"
     )
     assert delete_response.status_code == 400
     assert "assignments" in delete_response.json()["detail"]
@@ -396,7 +423,7 @@ def test_taxonomy_delete_node_rejects_assigned_node(client):
 def test_taxonomy_rejects_adding_child_under_assigned_node(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Sleeve Tree",
             "taxonomy_type": "risk_sleeve",
             "primary_assignment_scope": "instrument",
@@ -406,13 +433,13 @@ def test_taxonomy_rejects_adding_child_under_assigned_node(client):
 
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Core", "sort_order": 0},
+        json={"node_name": "Core", "sort_order": 0},
     )
     node_id = node_response.json()["taxonomy_node_id"]
 
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": node_id,
@@ -422,7 +449,7 @@ def test_taxonomy_rejects_adding_child_under_assigned_node(client):
 
     child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Child Sleeve",
             "parent_taxonomy_node_id": node_id,
         },
@@ -434,7 +461,7 @@ def test_taxonomy_rejects_adding_child_under_assigned_node(client):
 def test_taxonomy_create_rejects_non_security_scope(client):
     response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Account Planning",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "account",
@@ -448,7 +475,7 @@ def test_taxonomy_create_rejects_non_security_scope(client):
 def test_default_planning_taxonomy_can_be_set_and_cleared(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Core Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -460,7 +487,7 @@ def test_default_planning_taxonomy_can_be_set_and_cleared(client):
 
     set_response = client.put(
         "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"effective_from": EFFECTIVE_FROM,"taxonomy_id": taxonomy_id},
+        json={"taxonomy_id": taxonomy_id},
     )
     assert set_response.status_code == 200
     assert set_response.json()["default_planning_taxonomy_id"] == taxonomy_id
@@ -471,7 +498,7 @@ def test_default_planning_taxonomy_can_be_set_and_cleared(client):
 
     clear_response = client.put(
         "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"effective_from": EFFECTIVE_FROM,"taxonomy_id": None},
+        json={"taxonomy_id": None},
     )
     assert clear_response.status_code == 200
     assert clear_response.json()["default_planning_taxonomy_id"] is None
@@ -502,7 +529,6 @@ def test_selecting_imported_planning_taxonomy_initializes_analytics_state(client
         "/api/portfolios/investment-studio/taxonomies/"
         f"{taxonomy_id}/analytics-scope-policies/{ROOT_POLICY_NODE_ID}",
         json={
-            "effective_from": EFFECTIVE_FROM,
             "risk_eligible": True,
             "risk_budget_eligible": True,
             "performance_scope": "ordinary",
@@ -514,7 +540,7 @@ def test_selecting_imported_planning_taxonomy_initializes_analytics_state(client
 
     response = client.put(
         "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"effective_from": EFFECTIVE_FROM, "taxonomy_id": taxonomy_id},
+        json={"taxonomy_id": taxonomy_id},
     )
     assert response.status_code == 200, response.text
 
@@ -542,13 +568,14 @@ def test_selecting_imported_planning_taxonomy_initializes_analytics_state(client
     assert policies_by_node[UNASSIGNED_POLICY_NODE_ID].risk_eligible is False
     assert policies_by_node[UNASSIGNED_POLICY_NODE_ID].performance_scope == "unallocated"
     assert configuration is not None
-    assert configuration.effective_from == date.fromisoformat(EFFECTIVE_FROM)
+    assert configuration.configuration_version > 0
+    assert not hasattr(configuration, "effective_from")
 
 
 def test_default_planning_taxonomy_rejects_non_planning_taxonomy(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Sector Lens",
             "taxonomy_type": "sector",
             "primary_assignment_scope": "instrument",
@@ -558,7 +585,7 @@ def test_default_planning_taxonomy_rejects_non_planning_taxonomy(client):
 
     response = client.put(
         "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"effective_from": EFFECTIVE_FROM,"taxonomy_id": taxonomy_id},
+        json={"taxonomy_id": taxonomy_id},
     )
     assert response.status_code == 400
     assert "planning-enabled" in response.json()["detail"]
@@ -567,7 +594,7 @@ def test_default_planning_taxonomy_rejects_non_planning_taxonomy(client):
 def test_taxonomy_update_node_and_assignment_round_trip(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Editable Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -579,18 +606,18 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
 
     root_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Root One", "sort_order": 0},
+        json={"node_name": "Root One", "sort_order": 0},
     )
     other_root_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Root Two", "sort_order": 1},
+        json={"node_name": "Root Two", "sort_order": 1},
     )
     root_node_id = root_response.json()["taxonomy_node_id"]
     other_root_node_id = other_root_response.json()["taxonomy_node_id"]
 
     child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Leaf", "parent_taxonomy_node_id": root_node_id, "sort_order": 2},
+        json={"node_name": "Leaf", "parent_taxonomy_node_id": root_node_id, "sort_order": 2},
     )
     child_node_id = child_response.json()["taxonomy_node_id"]
 
@@ -600,14 +627,13 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": child_node_id,
-            "effective_from": "2026-01-01",
         },
     )
     assignment_id = assignment_response.json()["assignment_id"]
 
     update_taxonomy_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Editable Planning Axis 2",
             "purpose": "Updated purpose",
             "root_default_target_dimension": "risk_budget",
@@ -620,7 +646,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
 
     update_node_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{child_node_id}",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Leaf Renamed",
             "parent_taxonomy_node_id": other_root_node_id,
             "sort_order": 3,
@@ -633,7 +659,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
 
     update_assignment_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "status": "archived",
         },
     )
@@ -654,7 +680,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
 def test_security_taxonomy_rejects_cash_bucket_assignments(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Planning With Cash",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -666,7 +692,7 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
 
     cash_node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Liquidity Reserve",
             "default_target_dimension": "risk_budget",
         },
@@ -677,14 +703,14 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
 
     update_node_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{cash_node_payload['taxonomy_node_id']}",
-        json={"effective_from": EFFECTIVE_FROM,"default_target_dimension": "weight"},
+        json={"default_target_dimension": "weight"},
     )
     assert update_node_response.status_code == 200
     assert update_node_response.json()["default_target_dimension"] == "weight"
 
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "cash_bucket",
             "target_entity_id": "cash-usd-main",
             "taxonomy_node_id": cash_node_payload["taxonomy_node_id"],
@@ -697,7 +723,7 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
 def test_target_set_rejects_non_normalized_weight_totals(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Levered Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -709,18 +735,18 @@ def test_target_set_rejects_non_normalized_weight_totals(client):
 
     first_child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Sleeve One", "sort_order": 0},
+        json={"node_name": "Sleeve One", "sort_order": 0},
     )
     second_child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Sleeve Two", "sort_order": 1},
+        json={"node_name": "Sleeve Two", "sort_order": 1},
     )
     first_child_id = first_child_response.json()["taxonomy_node_id"]
     second_child_id = second_child_response.json()["taxonomy_node_id"]
 
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Levered Root Scope",
             "weight_enabled": True,
@@ -746,7 +772,7 @@ def test_target_set_rejects_non_normalized_weight_totals(client):
 def test_target_set_rejects_non_normalized_risk_share_totals(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Risk Share Validation Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -758,18 +784,18 @@ def test_target_set_rejects_non_normalized_risk_share_totals(client):
 
     first_child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Sleeve One", "sort_order": 0},
+        json={"node_name": "Sleeve One", "sort_order": 0},
     )
     second_child_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Sleeve Two", "sort_order": 1},
+        json={"node_name": "Sleeve Two", "sort_order": 1},
     )
     first_child_id = first_child_response.json()["taxonomy_node_id"]
     second_child_id = second_child_response.json()["taxonomy_node_id"]
 
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Invalid Risk Share",
             "weight_enabled": True,
@@ -795,8 +821,8 @@ def test_target_set_rejects_non_normalized_risk_share_totals(client):
 def test_target_set_scope_uses_current_assignment_members(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
-            "name": "Effective Scope Axis",
+        json={
+            "name": "Current Scope Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
             "planning_enabled": True,
@@ -807,7 +833,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
 
     root_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Leaf Sleeve", "sort_order": 0},
+        json={"node_name": "Leaf Sleeve", "sort_order": 0},
     )
     root_node_id = root_response.json()["taxonomy_node_id"]
 
@@ -817,8 +843,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": root_node_id,
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-03-31",
+
         },
     )
     assert first_assignment_response.status_code == 200
@@ -829,7 +854,6 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "target_scope": "instrument",
             "target_entity_id": "fund-us-agg",
             "taxonomy_node_id": root_node_id,
-            "effective_from": "2026-04-01",
         },
     )
     assert second_assignment_response.status_code == 200
@@ -839,8 +863,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
         json={
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
-            "name": "Future Member Scope",
-            "effective_from": "2026-04-01",
+            "name": "Current Member Scope",
             "weight_enabled": True,
             "risk_budget_enabled": False,
             "lines": [
@@ -893,7 +916,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
 def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Integrity Scope Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -904,12 +927,12 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
     sleeve_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Absolute Return", "sort_order": 0},
+        json={"node_name": "Absolute Return", "sort_order": 0},
     )
     sleeve_id = sleeve_response.json()["taxonomy_node_id"]
     first_assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "equity-us-abbv",
             "taxonomy_node_id": sleeve_id,
@@ -919,7 +942,7 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
 
     saa_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": sleeve_id,
             "target_set_type": "saa",
             "name": "Absolute Return SAA",
@@ -936,7 +959,7 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
     assert saa_response.status_code == 200
     taa_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": sleeve_id,
             "target_set_type": "taa",
             "name": "Archived Absolute Return TAA",
@@ -957,7 +980,7 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
 
     second_assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_scope": "instrument",
             "target_entity_id": "fund-us-agg",
             "taxonomy_node_id": sleeve_id,
@@ -981,7 +1004,7 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
 
     repaired_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets/{saa_response.json()['target_set_id']}",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "lines": [
                 {
                     "target_member_type": "instrument",
@@ -1004,7 +1027,7 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
 def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Root Cash Integrity Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -1015,11 +1038,11 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
     defensive_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Defensive", "sort_order": 0},
+        json={"node_name": "Defensive", "sort_order": 0},
     )
     growth_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Growth", "sort_order": 1},
+        json={"node_name": "Growth", "sort_order": 1},
     )
 
     risky_lines = [
@@ -1037,7 +1060,7 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
     for cash_risk_share in (0.0, 0.1):
         invalid_cash_response = client.post(
             f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-            json={"effective_from": EFFECTIVE_FROM,
+            json={
                 "target_set_type": "saa",
                 "name": "Invalid Root Risk Budget",
                 "weight_enabled": False,
@@ -1058,7 +1081,7 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
 
     invalid_cash_placeholder_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Invalid Root Cash Placeholder",
             "weight_enabled": False,
@@ -1079,7 +1102,7 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
 
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Root Risk Budget",
             "weight_enabled": False,
@@ -1095,7 +1118,7 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
 
     tactical_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Tactical", "sort_order": 2},
+        json={"node_name": "Tactical", "sort_order": 2},
     )
     assert tactical_response.status_code == 200
     structurally_drifted_catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
@@ -1116,7 +1139,7 @@ def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
 def test_deleting_default_planning_taxonomy_clears_pointer(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Bridgewater Planning Axis",
             "taxonomy_type": "risk_sleeve",
             "primary_assignment_scope": "instrument",
@@ -1128,11 +1151,11 @@ def test_deleting_default_planning_taxonomy_clears_pointer(client):
 
     set_response = client.put(
         "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"effective_from": EFFECTIVE_FROM,"taxonomy_id": taxonomy_id},
+        json={"taxonomy_id": taxonomy_id},
     )
     assert set_response.status_code == 200
 
-    delete_response = client.delete(f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}", params={"effective_from": EFFECTIVE_FROM})
+    delete_response = client.delete(f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}")
     assert delete_response.status_code == 200
 
     catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
@@ -1143,7 +1166,7 @@ def test_deleting_default_planning_taxonomy_clears_pointer(client):
 def test_target_set_create_update_and_catalog_round_trip(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -1155,29 +1178,29 @@ def test_target_set_create_update_and_catalog_round_trip(client):
 
     core_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Core", "sort_order": 0},
+        json={"node_name": "Core", "sort_order": 0},
     )
     satellite_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Satellite", "sort_order": 1},
+        json={"node_name": "Satellite", "sort_order": 1},
     )
     core_node_id = core_response.json()["taxonomy_node_id"]
     satellite_node_id = satellite_response.json()["taxonomy_node_id"]
 
     growth_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Growth", "parent_taxonomy_node_id": core_node_id, "sort_order": 2},
+        json={"node_name": "Growth", "parent_taxonomy_node_id": core_node_id, "sort_order": 2},
     )
     income_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Income", "parent_taxonomy_node_id": core_node_id, "sort_order": 3},
+        json={"node_name": "Income", "parent_taxonomy_node_id": core_node_id, "sort_order": 3},
     )
     growth_node_id = growth_response.json()["taxonomy_node_id"]
     income_node_id = income_response.json()["taxonomy_node_id"]
 
     saa_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Top Level SAA",
             "weight_enabled": True,
@@ -1201,7 +1224,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
 
     taa_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "taa",
             "name": "Core Sleeve TAA",
@@ -1225,7 +1248,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
 
     update_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets/{saa_target_set_id}",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "lines": [
                 {
                     "taxonomy_node_id": core_node_id,
@@ -1257,7 +1280,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
 def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Leaf Member Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -1269,7 +1292,7 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
 
     root_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Leaf Sleeve", "sort_order": 0},
+        json={"node_name": "Leaf Sleeve", "sort_order": 0},
     )
     root_node_id = root_response.json()["taxonomy_node_id"]
 
@@ -1287,13 +1310,13 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
     ]:
         assignment_response = client.post(
             f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
-            json={"effective_from": EFFECTIVE_FROM, **payload},
+            json={**payload},
         )
         assert assignment_response.status_code == 200
 
     invalid_cash_risk_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
             "name": "Invalid Leaf Sleeve Mix",
@@ -1326,7 +1349,7 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
 
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
             "name": "Leaf Sleeve Mix",
@@ -1367,7 +1390,7 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
 def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "System Buckets Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -1378,7 +1401,7 @@ def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(clie
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "node_name": "Risk Assets",
             "node_code": "RISK",
             "sort_order": 0,
@@ -1389,7 +1412,7 @@ def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(clie
 
     invalid_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "Invalid System Buckets SAA",
             "weight_enabled": True,
@@ -1420,7 +1443,7 @@ def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(clie
 
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "target_set_type": "saa",
             "name": "System Buckets SAA",
             "weight_enabled": True,
@@ -1465,7 +1488,7 @@ def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(clie
 def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "name": "Scoped Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
@@ -1477,29 +1500,29 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
 
     core_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Core", "sort_order": 0},
+        json={"node_name": "Core", "sort_order": 0},
     )
     other_root_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Other Root", "sort_order": 1},
+        json={"node_name": "Other Root", "sort_order": 1},
     )
     core_node_id = core_response.json()["taxonomy_node_id"]
     other_root_node_id = other_root_response.json()["taxonomy_node_id"]
 
     growth_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Growth", "parent_taxonomy_node_id": core_node_id, "sort_order": 2},
+        json={"node_name": "Growth", "parent_taxonomy_node_id": core_node_id, "sort_order": 2},
     )
     income_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Income", "parent_taxonomy_node_id": core_node_id, "sort_order": 3},
+        json={"node_name": "Income", "parent_taxonomy_node_id": core_node_id, "sort_order": 3},
     )
     growth_node_id = growth_response.json()["taxonomy_node_id"]
     income_node_id = income_response.json()["taxonomy_node_id"]
 
     invalid_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "saa",
             "name": "Incomplete Scope",
@@ -1518,7 +1541,7 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
 
     valid_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
+        json={
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "saa",
             "name": "Core Scope",
@@ -1540,7 +1563,7 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
 
     move_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{growth_node_id}",
-        json={"effective_from": EFFECTIVE_FROM,"parent_taxonomy_node_id": other_root_node_id},
+        json={"parent_taxonomy_node_id": other_root_node_id},
     )
     assert move_response.status_code == 400
     assert "target-set configuration" in move_response.json()["detail"]

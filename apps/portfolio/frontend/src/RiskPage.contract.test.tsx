@@ -202,8 +202,6 @@ const taxonomyCatalog = {
       performance_scope: 'ordinary',
       valuation_basis: 'market',
       exclusion_reason: null,
-      effective_from: '2020-01-01',
-      effective_to: null,
       policy_version: 1,
       superseded_by_policy_id: null,
       created_at: '2020-01-01T00:00:00Z',
@@ -838,7 +836,7 @@ describe('Risk rendered page contract', () => {
   it('loads taxonomy market history at the holdings cutoff, not the wall-clock date', async () => {
     renderRiskPage()
     await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {
-      include_market_profile: true, as_of_date: '2026-07-15', current_planning: true,
+      include_market_profile: true, as_of_date: '2026-07-15',
     }))
   })
 

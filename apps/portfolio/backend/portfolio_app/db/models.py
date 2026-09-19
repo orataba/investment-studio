@@ -17,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1179,10 +1180,6 @@ class AnalyticsScopePolicyRecordModel(Base):
     __tablename__ = "analytics_scope_policy_record"
     __table_args__ = (
         CheckConstraint(
-            "effective_to IS NULL OR effective_to >= effective_from",
-            name="ck_analytics_scope_policy_effective_range",
-        ),
-        CheckConstraint(
             "performance_scope IN ('ordinary', 'derivative_lifecycle', "
             "'operational_only', 'unallocated')",
             name="ck_analytics_scope_policy_performance_scope",
@@ -1202,9 +1199,16 @@ class AnalyticsScopePolicyRecordModel(Base):
             "portfolio_id",
             "taxonomy_id",
             "taxonomy_node_id",
-            "effective_from",
-            "effective_to",
             "superseded_by_policy_id",
+        ),
+        Index(
+            "uq_analytics_scope_policy_current",
+            "portfolio_id",
+            "taxonomy_id",
+            "taxonomy_node_id",
+            unique=True,
+            postgresql_where=text("superseded_by_policy_id IS NULL"),
+            sqlite_where=text("superseded_by_policy_id IS NULL"),
         ),
     )
 
@@ -1223,8 +1227,6 @@ class AnalyticsScopePolicyRecordModel(Base):
     performance_scope: Mapped[str] = mapped_column(String, nullable=False)
     valuation_basis: Mapped[str] = mapped_column(String, nullable=False)
     exclusion_reason: Mapped[str | None] = mapped_column(String)
-    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     superseded_by_policy_id: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
@@ -1237,10 +1239,6 @@ class AnalyticsScopePolicyRecordModel(Base):
 class AnalyticsTaxonomySelectionRecordModel(Base):
     __tablename__ = "analytics_taxonomy_selection_record"
     __table_args__ = (
-        CheckConstraint(
-            "effective_to IS NULL OR effective_to >= effective_from",
-            name="ck_analytics_taxonomy_selection_effective_range",
-        ),
         UniqueConstraint(
             "portfolio_id",
             "selection_version",
@@ -1249,9 +1247,14 @@ class AnalyticsTaxonomySelectionRecordModel(Base):
         Index(
             "ix_analytics_taxonomy_selection_resolve",
             "portfolio_id",
-            "effective_from",
-            "effective_to",
             "superseded_by_selection_id",
+        ),
+        Index(
+            "uq_analytics_taxonomy_selection_current",
+            "portfolio_id",
+            unique=True,
+            postgresql_where=text("superseded_by_selection_id IS NULL"),
+            sqlite_where=text("superseded_by_selection_id IS NULL"),
         ),
     )
 
@@ -1264,8 +1267,6 @@ class AnalyticsTaxonomySelectionRecordModel(Base):
         nullable=False,
     )
     taxonomy_id: Mapped[str | None] = mapped_column(String)
-    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
     superseded_by_selection_id: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
@@ -1278,10 +1279,6 @@ class AnalyticsTaxonomySelectionRecordModel(Base):
 class TaxonomyConfigurationRevisionModel(Base):
     __tablename__ = "taxonomy_configuration_revision"
     __table_args__ = (
-        CheckConstraint(
-            "effective_to IS NULL OR effective_to >= effective_from",
-            name="ck_taxonomy_configuration_revision_effective_range",
-        ),
         UniqueConstraint(
             "portfolio_id",
             "configuration_version",
@@ -1291,9 +1288,15 @@ class TaxonomyConfigurationRevisionModel(Base):
             "ix_taxonomy_configuration_revision_resolve",
             "portfolio_id",
             "taxonomy_id",
-            "effective_from",
-            "effective_to",
             "superseded_by_revision_id",
+        ),
+        Index(
+            "uq_taxonomy_configuration_revision_current",
+            "portfolio_id",
+            "taxonomy_id",
+            unique=True,
+            postgresql_where=text("superseded_by_revision_id IS NULL"),
+            sqlite_where=text("superseded_by_revision_id IS NULL"),
         ),
     )
 
@@ -1309,8 +1312,6 @@ class TaxonomyConfigurationRevisionModel(Base):
         String,
         nullable=False,
     )
-    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
     configuration_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     superseded_by_revision_id: Mapped[str | None] = mapped_column(String)

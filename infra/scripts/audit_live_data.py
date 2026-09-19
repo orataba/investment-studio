@@ -33,7 +33,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "identity": "20260919_0002",
     "instrument_data": "20260908_0035",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260908_0063",
+    "portfolio": "20260920_0064",
     "watchlist": "20260914_0058",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
@@ -286,7 +286,7 @@ AUDIT_CHECK_NAMES = (
     "reserved_cash_taxonomy_nodes",
     "taxonomy_assignment_overlap",
     "current_unassigned_planning_holdings",
-    "analytics_scope_missing_effective_selection",
+    "analytics_scope_missing_current_selection",
     "analytics_scope_incomplete_configuration",
     "price_bar_contract",
     "corporate_action_event_integrity",
@@ -613,15 +613,13 @@ def _count_check(
 
 
 def _current_unassigned_planning_holdings_query() -> str:
-    planning_timezone = _sql_text_literal(os.getenv(
+    valuation_timezone = _sql_text_literal(os.getenv(
         "INVESTMENT_STUDIO_PORTFOLIO_DEFAULT_TRADE_TIMEZONE", "Asia/Shanghai",
     ).strip())
     return f"""
         WITH latest AS (
             SELECT DISTINCT ON (snapshot.portfolio_id)
-                snapshot.portfolio_id, snapshot.as_of_date,
-                greatest(snapshot.as_of_date,
-                    (CURRENT_TIMESTAMP AT TIME ZONE {planning_timezone})::date) AS planning_as_of_date
+                snapshot.portfolio_id, snapshot.as_of_date
             FROM portfolio.portfolio_daily_snapshot snapshot
             JOIN portfolio.portfolio_record portfolio USING (portfolio_id)
             WHERE snapshot.valuation_coverage_state = 'complete'
@@ -629,11 +627,10 @@ def _current_unassigned_planning_holdings_query() -> str:
               AND NOT coalesce((snapshot.snapshot_json ->> 'stale_price_flag')::boolean, false)
               AND NOT coalesce((snapshot.snapshot_json ->> 'stale_fx_flag')::boolean, false)
               AND snapshot.as_of_date <= (CURRENT_TIMESTAMP AT TIME ZONE
-                  coalesce(nullif(portfolio.valuation_timezone, ''), {planning_timezone}))::date
+                  coalesce(nullif(portfolio.valuation_timezone, ''), {valuation_timezone}))::date
             ORDER BY snapshot.portfolio_id, snapshot.as_of_date DESC
         ), current_holdings AS (
-            SELECT DISTINCT holding.portfolio_id, holding.instrument_id,
-                latest.as_of_date, latest.planning_as_of_date
+            SELECT DISTINCT holding.portfolio_id, holding.instrument_id
             FROM portfolio.portfolio_daily_holding_snapshot holding
             JOIN latest ON latest.portfolio_id = holding.portfolio_id
                        AND latest.as_of_date = holding.as_of_date
@@ -641,32 +638,22 @@ def _current_unassigned_planning_holdings_query() -> str:
               AND holding.holding_kind = 'position'
               AND holding.holding_json ->> 'valuation_basis' = 'market_quote'
               AND holding.quantity <> 0
-        ), planning_configurations AS (
-            SELECT configuration.portfolio_id, configuration.taxonomy_id,
-                configuration.configuration_json::jsonb AS configuration_json
-            FROM portfolio.taxonomy_configuration_revision configuration
-            JOIN latest USING (portfolio_id)
-            WHERE configuration.superseded_by_revision_id IS NULL
-              AND configuration.effective_from <= latest.planning_as_of_date
-              AND (configuration.effective_to IS NULL
-                   OR configuration.effective_to >= latest.planning_as_of_date)
-              AND configuration.configuration_json -> 'taxonomy' ->> 'status' = 'active'
-              AND (configuration.configuration_json -> 'taxonomy' ->> 'planning_enabled')::boolean
         )
         SELECT count(*)
         FROM current_holdings holding
-        JOIN planning_configurations configuration USING (portfolio_id)
-        WHERE NOT EXISTS (
+        JOIN portfolio.taxonomy_record taxonomy USING (portfolio_id)
+        WHERE taxonomy.status = 'active' AND taxonomy.planning_enabled
+          AND NOT EXISTS (
             SELECT 1
-            FROM jsonb_array_elements(coalesce(
-                configuration.configuration_json -> 'taxonomy_assignments', '[]'::jsonb)) assignment
-            JOIN jsonb_array_elements(coalesce(
-                configuration.configuration_json -> 'taxonomy_nodes', '[]'::jsonb)) node
-              ON node ->> 'taxonomy_node_id' = assignment ->> 'taxonomy_node_id'
-             AND node ->> 'status' = 'active'
-            WHERE assignment ->> 'target_scope' = 'instrument'
-              AND assignment ->> 'target_entity_id' = holding.instrument_id
-              AND assignment ->> 'status' = 'active'
+            FROM portfolio.taxonomy_assignment_record assignment
+            JOIN portfolio.taxonomy_node_record node
+              ON node.taxonomy_node_id = assignment.taxonomy_node_id
+             AND node.taxonomy_id = assignment.taxonomy_id
+             AND node.status = 'active'
+            WHERE assignment.taxonomy_id = taxonomy.taxonomy_id
+              AND assignment.target_scope = 'instrument'
+              AND assignment.target_entity_id = holding.instrument_id
+              AND assignment.status = 'active'
         )
     """
 
@@ -680,10 +667,10 @@ def _planning_holdings_readiness_check(cursor: psycopg.Cursor[Any]) -> AuditChec
         limit="root_solve_ready_requires_zero",
         detail=(
             "Root Research target solve is not ready while any held security lacks an active "
-            "assignment in the effective current planning revision; the solver rejects it "
+            "assignment in the current planning configuration; the solver rejects it "
             "and the workbench discloses the missing coverage. This is user configuration "
-            "readiness, not a failed database integrity check. Valuation and planning dates "
-            "remain independent; future revisions are excluded."
+            "readiness, not a failed database integrity check. Current targets apply regardless "
+            "of the holdings valuation date."
         ),
     )
 
@@ -3382,7 +3369,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
-                    name="analytics_scope_missing_effective_selection",
+                    name="analytics_scope_missing_current_selection",
                     query="""
                         SELECT count(*)
                         FROM portfolio.portfolio_record portfolio
@@ -3393,20 +3380,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             WHERE selection.portfolio_id = portfolio.portfolio_id
                               AND selection.taxonomy_id IS NOT NULL
                               AND selection.superseded_by_selection_id IS NULL
-                              AND selection.effective_from <=
-                                  coalesce(portfolio.as_of_date, CURRENT_DATE)
-                              AND (
-                                  selection.effective_to IS NULL
-                                  OR selection.effective_to >=
-                                     coalesce(portfolio.as_of_date, CURRENT_DATE)
-                              )
                         )
                     """,
                     detail=(
-                        "A portfolio declaring an analytics taxonomy needs an explicit selection "
-                        "effective on its valuation date for materialized Holdings/Risk integrity. "
-                        "This checks historical valuation inputs, not current Research readiness; "
-                        "the runtime fails closed without a selection."
+                        "A portfolio declaring an analytics taxonomy needs an explicit current "
+                        "selection for Holdings/Risk integrity; the runtime fails closed without it."
                     ),
                     warning_only=True,
                 )
@@ -3416,40 +3394,22 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     cursor,
                     name="analytics_scope_incomplete_configuration",
                     query="""
-                        WITH effective_selection AS (
-                            SELECT DISTINCT ON (portfolio.portfolio_id)
-                                   portfolio.portfolio_id,
-                                   coalesce(portfolio.as_of_date, CURRENT_DATE) AS as_of_date,
-                                   selection.taxonomy_id
-                            FROM portfolio.portfolio_record portfolio
-                            JOIN portfolio.analytics_taxonomy_selection_record selection
-                              ON selection.portfolio_id = portfolio.portfolio_id
-                             AND selection.taxonomy_id IS NOT NULL
-                             AND selection.superseded_by_selection_id IS NULL
-                             AND selection.effective_from <=
-                                 coalesce(portfolio.as_of_date, CURRENT_DATE)
-                             AND (
-                                 selection.effective_to IS NULL
-                                 OR selection.effective_to >=
-                                    coalesce(portfolio.as_of_date, CURRENT_DATE)
-                             )
-                            ORDER BY portfolio.portfolio_id,
-                                     selection.effective_from DESC,
-                                     selection.selection_version DESC
+                        WITH current_selection AS (
+                            SELECT DISTINCT ON (selection.portfolio_id)
+                                   selection.portfolio_id, selection.taxonomy_id
+                            FROM portfolio.analytics_taxonomy_selection_record selection
+                            WHERE selection.taxonomy_id IS NOT NULL
+                              AND selection.superseded_by_selection_id IS NULL
+                            ORDER BY selection.portfolio_id, selection.selection_version DESC
                         )
                         SELECT count(*)
-                        FROM effective_selection selection
+                        FROM current_selection selection
                         WHERE NOT EXISTS (
                             SELECT 1
-                            FROM portfolio.taxonomy_configuration_revision configuration
-                            WHERE configuration.portfolio_id = selection.portfolio_id
-                              AND configuration.taxonomy_id = selection.taxonomy_id
-                              AND configuration.superseded_by_revision_id IS NULL
-                              AND configuration.effective_from <= selection.as_of_date
-                              AND (
-                                  configuration.effective_to IS NULL
-                                  OR configuration.effective_to >= selection.as_of_date
-                              )
+                            FROM portfolio.taxonomy_record taxonomy
+                            WHERE taxonomy.portfolio_id = selection.portfolio_id
+                              AND taxonomy.taxonomy_id = selection.taxonomy_id
+                              AND taxonomy.status = 'active'
                         )
                            OR NOT EXISTS (
                             SELECT 1
@@ -3458,11 +3418,6 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                               AND policy.taxonomy_id = selection.taxonomy_id
                               AND policy.taxonomy_node_id = '__root__'
                               AND policy.superseded_by_policy_id IS NULL
-                              AND policy.effective_from <= selection.as_of_date
-                              AND (
-                                  policy.effective_to IS NULL
-                                  OR policy.effective_to >= selection.as_of_date
-                              )
                         )
                            OR NOT EXISTS (
                             SELECT 1
@@ -3471,18 +3426,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                               AND policy.taxonomy_id = selection.taxonomy_id
                               AND policy.taxonomy_node_id = '__unassigned__'
                               AND policy.superseded_by_policy_id IS NULL
-                              AND policy.effective_from <= selection.as_of_date
-                              AND (
-                                  policy.effective_to IS NULL
-                                  OR policy.effective_to >= selection.as_of_date
-                              )
                         )
                     """,
                     detail=(
-                        "The valuation-date analytics selection needs a point-in-time taxonomy "
-                        "configuration plus effective root and unassigned scope policies for "
-                        "materialized Holdings/Risk integrity. Current Research planning uses "
-                        "its separately disclosed planning date."
+                        "The current analytics selection requires an active taxonomy plus current "
+                        "root and unassigned scope policies. Historical displays use this same configuration."
                     ),
                     warning_only=True,
                 )
@@ -3549,73 +3497,22 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     ),
                 )
             )
-            has_assignment_windows = _column_exists(
-                cursor,
-                "portfolio",
-                "taxonomy_assignment_record",
-                "effective_from",
-            ) and _column_exists(
-                cursor,
-                "portfolio",
-                "taxonomy_assignment_record",
-                "effective_to",
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="taxonomy_assignment_overlap",
+                    query="""
+                        SELECT count(*)
+                        FROM (
+                            SELECT taxonomy_id, target_scope, target_entity_id
+                            FROM portfolio.taxonomy_assignment_record
+                            GROUP BY taxonomy_id, target_scope, target_entity_id
+                            HAVING count(*) > 1
+                        ) duplicates
+                    """,
+                    detail="One entity may have only one assignment in a taxonomy's current configuration.",
+                )
             )
-            if has_assignment_windows:
-                checks.append(
-                    _count_check(
-                        cursor,
-                        name="taxonomy_assignment_overlap",
-                        query="""
-                            WITH assignments AS (
-                                SELECT
-                                    assignment.*,
-                                    coalesce(effective_from, '-infinity'::date) AS valid_from,
-                                    coalesce(effective_to, 'infinity'::date) AS valid_to
-                                FROM portfolio.taxonomy_assignment_record assignment
-                                WHERE status = 'active'
-                            )
-                            SELECT count(*)
-                            FROM assignments left_assignment
-                            JOIN assignments right_assignment
-                              ON left_assignment.assignment_id < right_assignment.assignment_id
-                             AND left_assignment.taxonomy_id = right_assignment.taxonomy_id
-                             AND left_assignment.target_scope = right_assignment.target_scope
-                             AND left_assignment.target_entity_id = right_assignment.target_entity_id
-                             AND daterange(
-                                 left_assignment.valid_from,
-                                 left_assignment.valid_to,
-                                 '[]'
-                             ) && daterange(
-                                 right_assignment.valid_from,
-                                 right_assignment.valid_to,
-                                 '[]'
-                             )
-                        """,
-                        detail=(
-                            "One entity cannot have overlapping active assignments in one taxonomy."
-                        ),
-                    )
-                )
-            else:
-                checks.append(
-                    _count_check(
-                        cursor,
-                        name="taxonomy_assignment_overlap",
-                        query="""
-                            SELECT count(*)
-                            FROM (
-                                SELECT taxonomy_id, target_scope, target_entity_id
-                                FROM portfolio.taxonomy_assignment_record
-                                GROUP BY taxonomy_id, target_scope, target_entity_id
-                                HAVING count(*) > 1
-                            ) duplicates
-                        """,
-                        detail=(
-                            "One entity may have only one assignment in a taxonomy's "
-                            "current-state model."
-                        ),
-                    )
-                )
             checks.append(_planning_holdings_readiness_check(cursor))
 
             checks.append(

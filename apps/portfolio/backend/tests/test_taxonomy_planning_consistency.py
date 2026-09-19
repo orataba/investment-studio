@@ -6,7 +6,6 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, TaxonomyConfigurationRevisionModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import valuation_clock
 from .test_research_api import _create_planning_taxonomy, _create_target_sets
 
 
@@ -39,7 +38,7 @@ def test_target_configuration_is_atomic_and_publishes_one_revision(client):
     target = _target_change(client, taxonomy_id, nodes)
     original_catalog = client.get(f'{BASE}/taxonomies').json()
     before = _revision_state(taxonomy_id)
-    payload = {'effective_from': '2026-04-16', 'node_defaults': {nodes['Risk Assets']: 'risk_budget'},
+    payload = {'node_defaults': {nodes['Risk Assets']: 'risk_budget'},
                'target_sets': [target, {**target, 'target_set_id': None, 'target_set_type': 'saa',
                                       'comparator_taxonomy_node_id': 'missing-node'}]}
     invalid = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json=payload)
@@ -74,8 +73,7 @@ def test_research_discloses_unassigned_holdings_even_when_their_values_net_to_ze
     assert any('2 unassigned security holding(s)' in warning for warning in context['quality_warnings'])
 
 
-def test_current_planning_uses_today_targets_with_yesterday_valuation_and_keeps_pinned_history(client, monkeypatch):
-    monkeypatch.setattr(valuation_clock, 'portfolio_valuation_today', lambda _: date(2026, 4, 16))
+def test_current_targets_apply_to_dynamic_and_pinned_data_dates_and_run_snapshot_is_stable(client):
     taxonomy_id, nodes = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, nodes)
     target = _target_change(client, taxonomy_id, nodes)
@@ -86,7 +84,7 @@ def test_current_planning_uses_today_targets_with_yesterday_valuation_and_keeps_
     previous = client.post(f'{BASE}/research/runs', json={})
     assert previous.status_code == 200, previous.text
     save = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={
-        'effective_from': '2026-04-16', 'target_sets': [target],
+        'target_sets': [target],
     })
     assert save.status_code == 200, save.text
     stale = client.get(f'{BASE}/research/workbench').json()['selected_run']
@@ -100,58 +98,54 @@ def test_current_planning_uses_today_targets_with_yesterday_valuation_and_keeps_
     assert current_targets[nodes['Defensive Equity']]['configured_weight'] == pytest.approx(.51)
     workbench = client.get(f'{BASE}/research/workbench').json()
     assert workbench['current_context']['as_of_date'] == '2026-04-15'
-    assert workbench['current_context']['planning_as_of_date'] == '2026-04-16'
+    assert workbench['current_context']['target_configuration'] == 'current_snapshot'
     assert workbench['selected_run']['is_current'] is True
-    assert '2026-04-16' in current_run['detail']['coverage_note']
+    assert 'same captured current' in current_run['detail']['coverage_note']
 
     response = client.put(f'{BASE}/research/settings', json={**settings, 'as_of_mode': 'pinned', 'as_of_date': '2026-04-15'})
     assert response.status_code == 200, response.text
     pinned = client.post(f'{BASE}/research/runs', json={})
     assert pinned.status_code == 200, pinned.text
     historical_targets = {row['member_id']: row for row in pinned.json()['detail']['member_targets']}
-    assert historical_targets[nodes['Defensive Equity']]['configured_weight'] != pytest.approx(.51)
+    assert historical_targets[nodes['Defensive Equity']]['configured_weight'] == pytest.approx(.51)
     assert pinned.json()['detail']['backtest']['points'] == current_run['detail']['backtest']['points']
-    assert client.get(f'{BASE}/research/workbench').json()['current_context']['planning_as_of_date'] == '2026-04-15'
+    pinned_context = client.get(f'{BASE}/research/workbench').json()['current_context']
+    assert pinned_context['target_snapshot_fingerprint'] == workbench['current_context']['target_snapshot_fingerprint']
+    from portfolio_app.db.models import ResearchRunRecordModel
+    with get_session_factory()() as session:
+        stored_run = session.get(ResearchRunRecordModel, pinned.json()['research_run_id'])
+        snapshot = stored_run.request_payload_json['target_configuration_snapshot']
+        assert snapshot['target_snapshot_fingerprint'] == pinned_context['target_snapshot_fingerprint']
+        assert snapshot['taxonomy_nodes'] and snapshot['taxonomy_assignments']
+        assert snapshot['instrument_analytics_scopes']
+        assert snapshot['captured_at']
+        saved_snapshot = deepcopy(snapshot)
+    for line in target['lines']:
+        line['target_weight'] = .6 if line['target_member_id'] == nodes['Defensive Equity'] else .4
+    assert client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'target_sets': [target]}).status_code == 200
+    with get_session_factory()() as session:
+        stored_run = session.get(ResearchRunRecordModel, pinned.json()['research_run_id'])
+        assert stored_run.request_payload_json['target_configuration_snapshot'] == saved_snapshot
+    changed = client.get(f'{BASE}/research/workbench').json()
+    assert changed['current_context']['target_snapshot_fingerprint'] != saved_snapshot['target_snapshot_fingerprint']
+    assert changed['selected_run']['reliability_state'] == 'stale'
 
 
-def test_current_risk_catalog_excludes_future_targets_and_uses_today_revision(client, monkeypatch):
-    monkeypatch.setattr(valuation_clock, 'portfolio_valuation_today', lambda _: date(2026, 4, 16))
+
+def test_current_target_snapshot_identity_is_stable_until_a_policy_changes(client):
+    from portfolio_app.services.research_inputs import capture_current_target_configuration
     taxonomy_id, nodes = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, nodes)
-    target = _target_change(client, taxonomy_id, nodes)
-    for effective_date, weight in [('2026-04-16', .51), ('2026-04-17', .61)]:
-        for line in target['lines']:
-            line['target_weight'] = weight if line['target_member_id'] == nodes['Defensive Equity'] else 1 - weight
-        response = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={
-            'effective_from': effective_date, 'target_sets': [target],
-        })
-        assert response.status_code == 200, response.text
-    for filters, expected in [({'current_planning': 'true', 'as_of_date': '2026-04-15'}, .51),
-                              ({'planning_as_of_date': '2026-04-17'}, .61)]:
-        response = client.get(f'{BASE}/taxonomies', params=filters)
-        assert response.status_code == 200, response.text
-        catalog = response.json()
-        line = next(item for item in catalog['target_set_lines'] if item['target_set_id'] == target['target_set_id']
-                    and item['target_member_id'] == nodes['Defensive Equity'])
-        assert line['target_weight'] == pytest.approx(expected)
-    # The editor can still see the scheduled draft, and no market timestamp is fabricated.
-    assert client.get(f'{BASE}/taxonomies').json()['planning_as_of_date'] is None
-
-
-def test_scheduled_analytics_policy_invalidates_current_research_when_it_becomes_effective(client):
-    from portfolio_app.services import research
-    taxonomy_id, nodes = _create_planning_taxonomy(client)
-    _create_target_sets(client, taxonomy_id, nodes)
+    before = capture_current_target_configuration(PORTFOLIO, taxonomy_id)
+    repeat = capture_current_target_configuration(PORTFOLIO, taxonomy_id)
+    assert before['captured_at'] != repeat['captured_at']
+    assert before['target_snapshot_fingerprint'] == repeat['target_snapshot_fingerprint']
     response = client.put(f'{BASE}/taxonomies/{taxonomy_id}/analytics-scope-policies/{nodes["Defensive Equity"]}', json={
-        'effective_from': '2026-04-17', 'risk_eligible': False, 'risk_budget_eligible': False,
-        'performance_scope': 'ordinary', 'valuation_basis': 'market', 'exclusion_reason': 'Scheduled scope review',
+        'risk_eligible': False, 'risk_budget_eligible': False,
+        'performance_scope': 'ordinary', 'valuation_basis': 'market', 'exclusion_reason': 'Scope review',
     })
     assert response.status_code == 200, response.text
-    def fingerprint(planning_date):
-        with get_session_factory()() as session:
-            return research._planning_state_fingerprint(session, portfolio_id=PORTFOLIO,
-                planning_taxonomy_id=taxonomy_id, as_of_date=date(2026, 4, 15), planning_as_of_date=planning_date)
-    before_effective = fingerprint(date(2026, 4, 16))
-    after_effective = fingerprint(date(2026, 4, 17))
-    assert before_effective != after_effective
-    assert after_effective == fingerprint(date(2026, 4, 18))
+    changed = capture_current_target_configuration(PORTFOLIO, taxonomy_id)
+    assert before['target_snapshot_fingerprint'] != changed['target_snapshot_fingerprint']
+    assert before['instrument_analytics_scopes']['equity-us-abbv']['risk_eligible'] is True
+    assert changed['instrument_analytics_scopes']['equity-us-abbv']['risk_eligible'] is False

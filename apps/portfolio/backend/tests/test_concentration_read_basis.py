@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from portfolio_app.api.routes import taxonomies as taxonomy_routes
 from portfolio_app.api.routes import workspace as workspace_routes
 from portfolio_app.services import concentration, derivative_holding_risk, instrument_registry, workspace_cache
 
@@ -86,16 +85,17 @@ def reader_basis(monkeypatch):
         def __exit__(self, *_args):
             return None
 
-        def scalars(self, _statement):
-            return records
+        def scalar(self, _statement):
+            return None
+
+        def scalars(self, statement):
+            entity = statement.column_descriptions[0]["entity"]
+            return records if entity is concentration.PortfolioDailyHoldingSnapshotModel else []
 
     monkeypatch.setattr(concentration, "get_session_factory", lambda: Session)
     monkeypatch.setattr(concentration, "read_concentration_settings", lambda *_args, **_kwargs: {
         "revision": 0, "rules": [], "fcn_allocations": [],
     })
-    monkeypatch.setattr(taxonomy_routes, "get_portfolio_taxonomies", lambda *_args, **_kwargs: SimpleNamespace(
-        model_dump=lambda **_kwargs: {"taxonomies": [], "taxonomy_nodes": [], "taxonomy_assignments": []},
-    ))
     monkeypatch.setattr(workspace_routes, "_resolve_holdings_request", lambda *_args, **_kwargs: (
         {"portfolio_id": "p", "as_of_date": cached["as_of_date"]}, date.fromisoformat(cached["as_of_date"]),
     ))

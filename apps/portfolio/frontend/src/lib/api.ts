@@ -1215,8 +1215,6 @@ export type PortfolioAnalyticsScopePolicyRecord = {
   performance_scope: 'ordinary' | 'derivative_lifecycle' | 'operational_only' | 'unallocated'
   valuation_basis: 'market' | 'fair_value' | 'carrying' | 'event' | 'obligation' | 'cash' | 'unknown'
   exclusion_reason?: string | null
-  effective_from: string
-  effective_to?: string | null
   policy_version: number
   superseded_by_policy_id?: string | null
   created_at: string
@@ -1226,8 +1224,6 @@ export type PortfolioAnalyticsTaxonomySelectionRecord = {
   analytics_taxonomy_selection_id: string
   portfolio_id: string
   taxonomy_id?: string | null
-  effective_from: string
-  effective_to?: string | null
   selection_version: number
   superseded_by_selection_id?: string | null
   created_at: string
@@ -1292,7 +1288,6 @@ export type PortfolioInstrumentUniverseRecord = {
 
 export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
-  planning_as_of_date?: string | null
   default_planning_taxonomy_id?: string | null
   risk_basis?: {
     window_start_date?: string
@@ -1320,7 +1315,6 @@ export type PortfolioTaxonomyCatalogResponse = {
 
 export type PortfolioDefaultPlanningTaxonomyUpdatePayload = {
   taxonomy_id?: string | null
-  effective_from: string
 }
 
 export type PortfolioDefaultPlanningTaxonomyResponse = {
@@ -1517,7 +1511,8 @@ export type PortfolioResearchCurrentContextRecord = {
   portfolio_name: string
   base_currency: string
   as_of_date: string
-  planning_as_of_date?: string
+  target_configuration: 'current_snapshot'
+  target_snapshot_fingerprint: string | null
   lookback_start: string
   lookback_end: string
   nav?: number | null
@@ -1716,7 +1711,6 @@ export type PortfolioResearchBacktestExecutionRecord = {
   scheduled_execution_date: string
   actual_execution_date: string
   taxonomy_configuration_version?: number | null
-  taxonomy_configuration_effective_from?: string | null
   target_weights: PortfolioResearchBacktestTargetWeightRecord[]
   cash_target_weight: number
   derivative_target_weight: number
@@ -1746,6 +1740,8 @@ export type PortfolioResearchBacktestContributionReconciliationRecord = {
 
 export type PortfolioResearchBacktestMethodologyRecord = {
   name: string
+  target_configuration?: 'current_snapshot' | null
+  target_snapshot_fingerprint?: string | null
   point_in_time_universe: boolean
   point_in_time_taxonomy: boolean
   decision_rule: string
@@ -1824,7 +1820,7 @@ export type PortfolioResearchBacktestWalkForwardWindowRecord = {
 
 export type PortfolioResearchBacktestWalkForwardRecord = {
   validation_method?: 'rolling_temporal_holdout' | string
-  parameter_selection?: 'fixed_point_in_time_policy' | string
+  parameter_selection?: 'fixed_current_targets' | 'fixed_point_in_time_policy' | string
   parameter_optimization?: boolean
   methodology_note?: string | null
   available: boolean
@@ -1963,7 +1959,6 @@ export type PortfolioResearchArtifactContentResponse = {
 }
 
 export type PortfolioTaxonomyCreatePayload = {
-  effective_from: string
   name: string
   taxonomy_type?: string
   purpose?: string | null
@@ -1976,7 +1971,6 @@ export type PortfolioTaxonomyCreatePayload = {
 }
 
 export type PortfolioTaxonomyNodeCreatePayload = {
-  effective_from: string
   node_name: string
   node_code?: string | null
   parent_taxonomy_node_id?: string | null
@@ -1987,7 +1981,6 @@ export type PortfolioTaxonomyNodeCreatePayload = {
 }
 
 export type PortfolioTaxonomyUpdatePayload = {
-  effective_from: string
   name?: string | null
   taxonomy_type?: string | null
   purpose?: string | null
@@ -1998,7 +1991,6 @@ export type PortfolioTaxonomyUpdatePayload = {
 }
 
 export type PortfolioTaxonomyNodeUpdatePayload = {
-  effective_from: string
   node_name?: string | null
   node_code?: string | null
   parent_taxonomy_node_id?: string | null
@@ -2008,7 +2000,6 @@ export type PortfolioTaxonomyNodeUpdatePayload = {
 }
 
 export type PortfolioTaxonomyAssignmentCreatePayload = {
-  effective_from: string
   target_scope: TaxonomyAssignmentScope
   target_entity_id: string
   taxonomy_node_id: string
@@ -2016,7 +2007,6 @@ export type PortfolioTaxonomyAssignmentCreatePayload = {
 }
 
 export type PortfolioTaxonomyAssignmentUpdatePayload = {
-  effective_from: string
   taxonomy_node_id?: string | null
   status?: string | null
 }
@@ -2049,8 +2039,6 @@ export type PortfolioAnalyticsScopePolicyUpsertPayload = {
   performance_scope: PortfolioAnalyticsScopePolicyRecord['performance_scope']
   valuation_basis: PortfolioAnalyticsScopePolicyRecord['valuation_basis']
   exclusion_reason?: string | null
-  effective_from: string
-  effective_to?: string | null
 }
 
 export type PortfolioAccountCategory = 'cash' | 'security' | 'fcn' | 'option'
@@ -3602,15 +3590,11 @@ export function getPortfolioTaxonomyCatalog(
   filters: {
     include_market_profile?: boolean
     as_of_date?: string
-    current_planning?: boolean
-    planning_as_of_date?: string
   } = {},
 ) {
   const query = buildQuery({
     include_market_profile: filters.include_market_profile ? 'true' : undefined,
     as_of_date: filters.as_of_date,
-    current_planning: filters.current_planning ? 'true' : undefined,
-    planning_as_of_date: filters.planning_as_of_date,
   })
   return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`)
 }
@@ -3748,11 +3732,10 @@ export function createPortfolioTaxonomy(
   })
 }
 
-export function deletePortfolioTaxonomy(portfolioId: string, taxonomyId: string, effectiveFrom: string) {
-  const query = buildQuery({ effective_from: effectiveFrom })
+export function deletePortfolioTaxonomy(portfolioId: string, taxonomyId: string) {
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}${query}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}`,
     {
       method: 'DELETE',
     },
@@ -3805,12 +3788,10 @@ export function deletePortfolioTaxonomyNode(
   portfolioId: string,
   taxonomyId: string,
   taxonomyNodeId: string,
-  effectiveFrom: string,
 ) {
-  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; taxonomy_node_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/nodes/${taxonomyNodeId}${query}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/nodes/${taxonomyNodeId}`,
     {
       method: 'DELETE',
     },
@@ -3852,12 +3833,10 @@ export function deletePortfolioTaxonomyAssignment(
   portfolioId: string,
   taxonomyId: string,
   assignmentId: string,
-  effectiveFrom: string,
 ) {
-  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; assignment_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/assignments/${assignmentId}${query}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/assignments/${assignmentId}`,
     {
       method: 'DELETE',
     },
@@ -3868,7 +3847,6 @@ export function savePortfolioTaxonomyTargetConfiguration(
   portfolioId: string,
   taxonomyId: string,
   payload: {
-    effective_from: string
     node_defaults: Record<string, 'weight' | 'risk_budget'>
     target_sets: PortfolioTargetSetConfigurationPayload[]
   },
@@ -3886,12 +3864,10 @@ export function deletePortfolioTargetSet(
   portfolioId: string,
   taxonomyId: string,
   targetSetId: string,
-  effectiveFrom: string,
 ) {
-  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; target_set_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}${query}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}`,
     {
       method: 'DELETE',
     },

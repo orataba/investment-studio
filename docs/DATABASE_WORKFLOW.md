@@ -84,6 +84,18 @@ schema shape cannot reconstruct the original business facts. Recovery for such
 migrations uses the retained pre-migration eight-schema backup, not a forced
 downgrade.
 
+Portfolio taxonomy upgrades collapse dated configuration into current state: the
+latest saved automatic version for each scope becomes current, including changes
+previously scheduled for a future date. A selection pointing to a subsequently
+deleted, disabled or foreign taxonomy is explicitly unassigned, preserving its
+original audit record. An existing valid legacy default retains that selection.
+Older version payloads remain audit
+records, while effective-date columns and runtime date selection are removed.
+All affected historical analytics are marked for a full rebuild. Financial fact
+dates and saved Research result snapshots are preserved. Recovery uses the
+pre-migration backup because removed effective-date intervals cannot be recreated
+by a schema downgrade.
+
 The destructive dump restore wrapper performs a checksum/archive/target
 preflight, stops managed local services, retains a pre-restore schema backup,
 and automatically rolls back on restore, validation, or migration failure:

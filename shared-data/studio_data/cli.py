@@ -12,16 +12,13 @@ from typing import get_args, get_type_hints
 
 from pydantic import TypeAdapter, ValidationError
 
-from studio_data import contracts
-from studio_data.commands import fx_rates, instruments, securities, status
-from studio_data.services.downstream_notifications import DownstreamRefreshError
-from studio_data.services.instrument_reference import (
-    read_instrument_reference_data,
-    refresh_instrument_reference_data,
-)
+from studio_data.services.downstream_contracts import DownstreamRefreshError
 
 
 def preview_nav(instrument_id: str, file: str):
+    from studio_data import contracts
+    from studio_data.commands import instruments
+
     source = Path(file)
     payload = contracts.StudioNavImportPreviewRequest(
         file_name=source.name,
@@ -37,6 +34,9 @@ def import_nav(
     updated_by: str = "investment-studio-cli",
     status: str | None = None,
 ):
+    from studio_data import contracts
+    from studio_data.commands import instruments
+
     if status is None:
         raise ValueError("Specify --status when applying a NAV file import.")
     source = Path(file)
@@ -51,79 +51,113 @@ def import_nav(
 
 
 # These are explicit operations, not arbitrary imports or arbitrary SQL access.
+# Import only the selected handler: a directory lookup must not initialize NAV
+# importers, market collectors, trading calendars, or the other command groups.
 # The boolean marks data-changing operations requiring --apply.
 COMMANDS = {
-    ("instruments", "list"): (instruments.list_instrument_records, False),
-    ("instruments", "show"): (instruments.get_instrument_record, False),
-    ("instruments", "resolve"): (instruments.resolve_instrument_record, False),
+    ("instruments", "list"): ("studio_data.commands.instruments:list_instrument_records", False),
+    ("instruments", "show"): ("studio_data.commands.instruments:get_instrument_record", False),
+    ("instruments", "resolve"): (
+        "studio_data.commands.instruments:resolve_instrument_record", False,
+    ),
     ("instruments", "resolve-broker"): (
-        instruments.resolve_instrument_by_broker_identity,
+        "studio_data.commands.instruments:resolve_instrument_by_broker_identity",
         False,
     ),
-    ("instruments", "create"): (instruments.create_instrument_record, True),
+    ("instruments", "create"): ("studio_data.commands.instruments:create_instrument_record", True),
     ("instruments", "source-set"): (
-        instruments.update_instrument_source_settings,
+        "studio_data.commands.instruments:update_instrument_source_settings",
         True,
     ),
     ("instruments", "quote-policy-set"): (
-        instruments.update_instrument_quote_selection_policy,
+        "studio_data.commands.instruments:update_instrument_quote_selection_policy",
         True,
     ),
-    ("instruments", "archive"): (instruments.archive_instrument_record, True),
-    ("instruments", "restore"): (instruments.restore_instrument_record, True),
-    ("securities", "search"): (securities.search_security_records, False),
-    ("securities", "add"): (securities.materialize_security_record, True),
-    ("securities", "refresh"): (securities.refresh_security_record, True),
-    ("quotes", "set"): (instruments.upsert_instrument_market_data, True),
-    ("fx", "list"): (fx_rates.list_shared_fx_rates, False),
-    ("fx", "set"): (fx_rates.upsert_shared_fx_rate, True),
+    ("instruments", "archive"): (
+        "studio_data.commands.instruments:archive_instrument_record", True,
+    ),
+    ("instruments", "restore"): (
+        "studio_data.commands.instruments:restore_instrument_record", True,
+    ),
+    ("securities", "search"): (
+        "studio_data.commands.security_search:search_security_records", False,
+    ),
+    ("securities", "add"): ("studio_data.commands.securities:materialize_security_record", True),
+    ("securities", "refresh"): ("studio_data.commands.securities:refresh_security_record", True),
+    ("quotes", "set"): ("studio_data.commands.instruments:upsert_instrument_market_data", True),
+    ("fx", "list"): ("studio_data.commands.fx_rates:list_shared_fx_rates", False),
+    ("fx", "set"): ("studio_data.commands.fx_rates:upsert_shared_fx_rate", True),
     ("nav", "preview"): (preview_nav, False),
     ("nav", "import"): (import_nav, True),
-    ("nav", "import-text"): (instruments.import_instrument_nav_history, True),
-    ("nav", "candidates"): (instruments.list_instrument_nav_action_candidates, False),
+    ("nav", "import-text"): (
+        "studio_data.commands.instruments:import_instrument_nav_history", True,
+    ),
+    ("nav", "candidates"): (
+        "studio_data.commands.instruments:list_instrument_nav_action_candidates", False,
+    ),
     ("nav", "candidate-reject"): (
-        instruments.reject_instrument_nav_action_candidate,
+        "studio_data.commands.instruments:reject_instrument_nav_action_candidate",
         True,
     ),
     ("nav", "candidate-confirm"): (
-        instruments.confirm_instrument_nav_action_candidate,
+        "studio_data.commands.instruments:confirm_instrument_nav_action_candidate",
         True,
     ),
     ("nav", "candidate-resume"): (
-        instruments.resume_instrument_nav_action_candidate_confirmation,
+        "studio_data.commands.instruments:resume_instrument_nav_action_candidate_confirmation",
         True,
     ),
-    ("nav", "action-create"): (instruments.create_instrument_fund_nav_action, True),
-    ("nav", "action-revise"): (instruments.revise_instrument_fund_nav_action, True),
+    ("nav", "action-create"): (
+        "studio_data.commands.instruments:create_instrument_fund_nav_action", True,
+    ),
+    ("nav", "action-revise"): (
+        "studio_data.commands.instruments:revise_instrument_fund_nav_action", True,
+    ),
     ("nav", "evidence-create"): (
-        instruments.create_instrument_fund_nav_reinvestment_evidence,
+        "studio_data.commands.instruments:create_instrument_fund_nav_reinvestment_evidence",
         True,
     ),
     ("nav", "evidence-revise"): (
-        instruments.revise_instrument_fund_nav_reinvestment_evidence,
+        "studio_data.commands.instruments:revise_instrument_fund_nav_reinvestment_evidence",
         True,
     ),
-    ("refresh", "instrument"): (instruments.refresh_instrument_market_data, True),
-    ("refresh", "batch"): (instruments.refresh_instrument_market_data_batch, True),
-    ("reference", "show"): (read_instrument_reference_data, False),
-    ("reference", "refresh"): (refresh_instrument_reference_data, True),
-    ("status", "data"): (status.get_data_status, False),
-    ("status", "email"): (status.get_email_nav_inventory, False),
+    ("refresh", "instrument"): (
+        "studio_data.commands.instruments:refresh_instrument_market_data", True,
+    ),
+    ("refresh", "batch"): (
+        "studio_data.commands.instruments:refresh_instrument_market_data_batch", True,
+    ),
+    ("reference", "show"): (
+        "studio_data.services.instrument_reference:read_instrument_reference_data", False,
+    ),
+    ("reference", "refresh"): (
+        "studio_data.services.instrument_reference:refresh_instrument_reference_data", True,
+    ),
+    ("status", "data"): ("studio_data.commands.status:get_data_status", False),
+    ("status", "email"): ("studio_data.commands.status:get_email_nav_inventory", False),
 }
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(selected: tuple[str, str] | None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="investment-studio", description=__doc__)
     roots = parser.add_subparsers(dest="area", required=True)
     data = roots.add_parser("data", help="Private data maintenance")
     groups = data.add_subparsers(dest="group", required=True)
     actions = {}
-    for (group, action), (handler, writes) in COMMANDS.items():
+    for (group, action), (reference, writes) in COMMANDS.items():
         if group not in actions:
             actions[group] = groups.add_parser(group).add_subparsers(
                 dest="action", required=True
             )
-        command = actions[group].add_parser(action, description=handler.__doc__)
+        command = actions[group].add_parser(action)
+        if (group, action) != selected:
+            continue
+        if isinstance(reference, str):
+            module, name = reference.split(":", 1)
+            handler = getattr(importlib.import_module(module), name)
+        else:
+            handler = reference
+        command.description = handler.__doc__
         command.set_defaults(handler=handler, writes=writes)
         hints = get_type_hints(handler)
         for name, parameter in inspect.signature(handler).parameters.items():
@@ -191,7 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         # options before the filename. Do not partially parse them here.
         if arguments[:3] == ["data", "nav", "import-csv"]:
             return _run_script("import_registered_nav_history_csv", arguments[3:])
-        args = _parser().parse_args(arguments)
+        selected = (
+            (arguments[1], arguments[2])
+            if len(arguments) >= 3 and arguments[0] == "data" else None
+        )
+        args = _parser(selected).parse_args(arguments)
         if args.group == "jobs":
             script = {
                 "run": "refresh_market_data_scheduled",

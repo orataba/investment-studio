@@ -1075,14 +1075,12 @@ function buildNodePath(nodeId: string | null | undefined, nodeById: Map<string, 
 export function buildRiskBudgetEligibleNodeIds({
   catalog,
   taxonomy,
-  referenceDate,
 }: {
   catalog: PortfolioTaxonomyCatalogResponse | null
   taxonomy: PortfolioTaxonomyRecord | null
-  referenceDate: string | null
 }) {
   const eligibleNodeIds = new Set<string>()
-  if (!catalog || !taxonomy || !referenceDate) {
+  if (!catalog || !taxonomy) {
     return eligibleNodeIds
   }
   const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
@@ -1091,9 +1089,7 @@ export function buildRiskBudgetEligibleNodeIds({
     .filter(
       (policy) =>
         policy.taxonomy_id === taxonomy.taxonomy_id &&
-        !policy.superseded_by_policy_id &&
-        policy.effective_from <= referenceDate &&
-        (!policy.effective_to || policy.effective_to >= referenceDate),
+        !policy.superseded_by_policy_id,
     )
     .sort((left, right) => left.policy_version - right.policy_version)
     .forEach((policy) => policyByNodeId.set(policy.taxonomy_node_id, policy))
@@ -1896,7 +1892,7 @@ export default function RiskPage() {
   useEffect(() => {
     if (!portfolioId || !riskWindowEndDate) { setTaxonomyCatalog(null); return }
     let cancelled = false
-    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate, current_planning: true })
+    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate })
       .then((response) => { if (!cancelled) setTaxonomyCatalog(response) })
       .catch((error) => {
         if (!cancelled) setWorkspaceSupportError((current) => [current, error instanceof Error ? error.message : 'Failed to load taxonomy catalog.'].filter(Boolean).join(' '))
@@ -2279,10 +2275,9 @@ export default function RiskPage() {
       return buildRiskBudgetEligibleNodeIds({
         catalog: taxonomyCatalog,
         taxonomy: targetTaxonomy,
-        referenceDate: holdingsWorkspace?.as_of_date ?? null,
       })
     },
-    [targetTaxonomy, defaultPlanningTaxonomy?.taxonomy_id, activeRootTargetSets, holdingsWorkspace?.as_of_date, taxonomyCatalog],
+    [targetTaxonomy, defaultPlanningTaxonomy?.taxonomy_id, activeRootTargetSets, taxonomyCatalog],
   )
   const currentPlanningGroupsResult = useMemo(
     () =>
@@ -2918,7 +2913,6 @@ export default function RiskPage() {
                       title={`${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`}
                     >
                       {targetTaxonomy.name}; {zh ? '估值' : 'Valuation'} {holdingsWorkspace.as_of_date}
-                      {taxonomyCatalog?.planning_as_of_date ? ` · ${zh ? '规划' : 'Planning'} ${taxonomyCatalog.planning_as_of_date}` : ''}
                     </div>
                     {riskGapSummary ? <div className="portfolio-detail-meta" title="Sum of absolute eligible-sleeve risk budget gaps.">
                       {zh ? '风险预算偏移合计' : 'Eligible Risk Budget Gap'} · <span>{riskGapSummary}</span>

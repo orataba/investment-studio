@@ -4855,6 +4855,7 @@ def build_account_workspace(
     selected_account_id: str | None = None,
     base_currency: str = "USD",
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     account_lookup = {str(account["account_id"]): account for account in accounts}
     resolved_selected_account_id = selected_account_id or next(iter(account_lookup.keys()), None)
@@ -4885,9 +4886,8 @@ def build_account_workspace(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    direct_fx_instruments = valuation_fx.fx_direct_instrument_map(
-        get_shared_fx_rates()
-    )
+    if direct_fx_instruments is None:
+        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
     )

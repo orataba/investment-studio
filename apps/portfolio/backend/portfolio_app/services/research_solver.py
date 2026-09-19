@@ -12,11 +12,7 @@ import pandas as pd
 from scipy.optimize import brentq, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
-from portfolio_app.services.analytics_scope import (
-    resolve_instrument_analytics_scopes,
-    taxonomy_configuration_as_of,
-    taxonomy_configuration_revisions_through,
-)
+from portfolio_app.services.research_inputs import capture_current_target_configuration
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
@@ -42,7 +38,6 @@ from portfolio_app.services.portfolio_store import (
     list_transactions,
 )
 from portfolio_app.services.research_eligibility import (
-    contract_only_instrument_ids,
     FORMER_PM_REVIEW_EXECUTION_NOTE,
     RESEARCH_EXECUTION_TARGET_EPSILON,
     enrich_instrument_research_state,
@@ -101,14 +96,15 @@ RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequen
 }
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
 RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
-    "Each rebalance uses the taxonomy membership and target policy revision effective on its decision date.",
-    "An instrument becomes usable only after its effective assignment and first usable market-data observation.",
+    "Every rebalance uses the same current taxonomy membership, targets and eligibility captured for this run.",
+    "Current instrument selection introduces hindsight and survivorship effects; this is a model comparison, not a reconstruction of historical decisions.",
+    "An instrument becomes usable after its first usable market-data observation and the required trailing risk window, regardless of assignment creation date.",
     "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
     "Market observations are EOD period-end returns: holdings earn the return ending before an EOD execution, and newly executed targets start with the next observation.",
     "A scheduled execution is skipped rather than valued from stale NAV when any pre-trade holding lacks a complete EOD return observation; point-in-time coverage is marked partial.",
     "FCN/options are no-trade positions outside covariance and Risk Budget. Their recorded carrying capital changes only on actual derivative lifecycle dates and earns no cash yield; coupon, payoff, issuer loss, FX risk, collateral, and lifecycle liquidity are not modeled. This is not a full-portfolio fair-value backtest.",
-    "Current no-trade taxonomy sleeves are not applied retroactively because the settings have no effective-dated restriction history; the historical simulation uses the effective taxonomy/targets without today's manual freeze state.",
-    "Taxonomy and targets are effective-dated; the selected risk-model and run settings are held fixed across the simulation. EOD source dates do not prove historical publication-time availability, especially for delayed fund NAVs.",
+    "Manual no-trade sleeves affect the current trade proposal only; historical rebalances follow the current model targets without injecting today's actual holdings.",
+    "The captured targets, membership, eligibility, risk model and run settings remain fixed. Market observations and derivative ledger facts retain their own dates. EOD dates do not establish historical publication-time availability, especially for delayed fund NAVs.",
 )
 
 
@@ -217,13 +213,19 @@ class ReturnCoveragePolicyResult:
 
 
 @dataclass(frozen=True)
-class TaxonomyResearchState:
+class ResearchMarketState:
+    base_currency: str
+    as_of_date: date
+    instrument_detail_cache: dict[str, dict[str, object] | None]
+    direct_fx_instruments: dict[tuple[str, str], str]
+
+
+@dataclass(frozen=True)
+class TaxonomyResearchState(ResearchMarketState):
     portfolio_id: str
     planning_taxonomy_id: str
     taxonomy_name: str
     root_default_target_dimension: str
-    base_currency: str
-    as_of_date: date
     node_by_id: dict[str, dict[str, object]]
     children_by_parent: dict[str | None, list[str]]
     node_path_by_id: dict[str, str]
@@ -233,12 +235,10 @@ class TaxonomyResearchState:
     target_sets_by_scope_type: dict[tuple[str | None, str], list[dict[str, object]]]
     target_lines_by_set_id: dict[str, dict[tuple[str, str], dict[str, object]]]
     account_name_by_id: dict[str, str]
-    instrument_detail_cache: dict[str, dict[str, object] | None]
-    direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
     configuration_version: int | None = None
-    configuration_effective_from: date | None = None
+    target_snapshot_fingerprint: str | None = None
     instrument_analytics_scopes: dict[str, dict[str, object]] = field(default_factory=dict)
     # A current-target solve walks the taxonomy recursively.  Current holdings
     # and account values are portfolio-level inputs, so rebuilding both ledgers
@@ -320,7 +320,7 @@ def _instrument_detail_from_cache(
 
 
 def _instrument_detail(
-    state: TaxonomyResearchState,
+    state: ResearchMarketState,
     instrument_id: str,
 ) -> dict[str, object] | None:
     return _instrument_detail_from_cache(
@@ -361,7 +361,7 @@ def _selected_price_points(
 
 
 def _convert_price_to_base(
-    state: TaxonomyResearchState,
+    state: ResearchMarketState,
     *,
     point_date: date,
     value: float,
@@ -388,7 +388,7 @@ def _convert_price_to_base(
 
 
 def _build_instrument_nav_series(
-    state: TaxonomyResearchState,
+    state: ResearchMarketState,
     *,
     instrument_id: str,
     start_date: date,
@@ -3153,7 +3153,7 @@ def _solve_current_scope(
                 and analytics_scope.get("risk_budget_eligible")
             ) and member_key not in zero_target_keys:
                 raise ValueError(
-                    f"{member.label} is not eligible for Research risk allocation under its effective analytics policy: "
+                    f"{member.label} is not eligible for Research risk allocation under its captured analytics policy: "
                     f"{analytics_scope.get('exclusion_reason') or 'risk/risk-budget eligibility is disabled'}."
                 )
             try:
@@ -3926,6 +3926,7 @@ def _current_scope_actuals(
             transactions,
             as_of_date=as_of_date,
             instrument_detail_cache=state.instrument_detail_cache,
+            direct_fx_instruments=state.direct_fx_instruments,
         )
         account_workspace = build_account_workspace(
             state.portfolio_id,
@@ -3934,6 +3935,7 @@ def _current_scope_actuals(
             base_currency=state.base_currency,
             as_of_date=as_of_date,
             instrument_detail_cache=state.instrument_detail_cache,
+            direct_fx_instruments=state.direct_fx_instruments,
         )
 
         position_value_by_instrument: dict[str, float] = {}
@@ -4185,7 +4187,7 @@ def _build_taxonomy_state(
     *,
     planning_taxonomy_id: str,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
     frozen_taxonomy_node_ids: list[str] | None = None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
@@ -4199,26 +4201,20 @@ def _build_taxonomy_state(
         instrument_detail_cache if instrument_detail_cache is not None else {}
     )
 
-    configuration = taxonomy_configuration_as_of(
-        portfolio_id,
-        planning_taxonomy_id,
-        planning_as_of_date or as_of_date,
+    configuration = target_configuration if target_configuration is not None else capture_current_target_configuration(
+        portfolio_id, planning_taxonomy_id,
     )
-    if configuration is None:
-        raise ValueError(
-            "No effective point-in-time taxonomy configuration exists for the selected date."
-        )
     taxonomy = (
         configuration.get("taxonomy")
         if isinstance(configuration.get("taxonomy"), dict)
         else None
     )
     if taxonomy is None:
-        raise ValueError("The effective taxonomy configuration is incomplete.")
+        raise ValueError("The current target configuration is incomplete.")
     if str(taxonomy.get("status") or "") != "active":
-        raise ValueError("The effective taxonomy configuration is inactive or deleted.")
+        raise ValueError("The current target configuration is inactive or deleted.")
     if require_planning_enabled and not bool(taxonomy.get("planning_enabled")):
-        raise ValueError("The effective taxonomy configuration is not planning-enabled.")
+        raise ValueError("The current target configuration is not planning-enabled.")
     node_rows = [
         item
         for item in list(configuration.get("taxonomy_nodes") or [])
@@ -4267,15 +4263,12 @@ def _build_taxonomy_state(
         for item in list(configuration.get("taxonomy_assignments") or [])
         if isinstance(item, dict) and str(item.get("status") or "") == "active"
     ]
-    active_target_ids = {str(item["target_set_id"]) for item in configuration.get("target_sets", [])
-                         if isinstance(item, dict) and item.get("status") == "active"}
-    explicit_members = {str(item["target_member_id"]) for item in configuration.get("target_set_lines", [])
-                        if isinstance(item, dict) and item.get("target_member_type") == "instrument"
-                        and str(item.get("target_set_id")) in active_target_ids}
-    contract_only = contract_only_instrument_ids(portfolio_id, as_of_date=as_of_date,
-                                                  explicitly_selected=explicit_members)
-    assignments = [item for item in assignments if item.get("target_scope") != "instrument"
-                   or item.get("target_entity_id") not in contract_only]
+    contract_only = set(configuration.get("contract_only_instrument_ids") or [])
+    assignments = [
+        item for item in assignments
+        if item.get("target_scope") != TARGET_MEMBER_INSTRUMENT
+        or item.get("target_entity_id") not in contract_only
+    ]
     assignments.sort(
         key=lambda item: (
             str(item.get("taxonomy_node_id") or ""),
@@ -4322,7 +4315,7 @@ def _build_taxonomy_state(
         taxonomy_name=str(taxonomy.get("name") or planning_taxonomy_id),
         root_default_target_dimension=str(taxonomy.get("root_default_target_dimension") or TARGET_DIMENSION_WEIGHT),
         base_currency=valuation_fx.required_currency(
-            portfolio.get("base_currency"), field_name="portfolio base currency"
+            configuration.get("base_currency") or portfolio.get("base_currency"), field_name="portfolio base currency"
         ),
         as_of_date=as_of_date,
         node_by_id=node_by_id,
@@ -4349,19 +4342,8 @@ def _build_taxonomy_state(
             if configuration.get("configuration_version") is not None
             else None
         ),
-        configuration_effective_from=_parse_iso_date(
-            configuration.get("effective_from")
-        ),
-        instrument_analytics_scopes=resolve_instrument_analytics_scopes(
-            portfolio_id,
-            taxonomy_id=planning_taxonomy_id,
-            as_of_date=planning_as_of_date or as_of_date,
-            instrument_ids=[
-                str(item.get("target_entity_id") or "")
-                for item in assignments
-                if item.get("target_scope") == TARGET_MEMBER_INSTRUMENT
-            ],
-        ),
+        target_snapshot_fingerprint=configuration.get("target_snapshot_fingerprint"),
+        instrument_analytics_scopes=deepcopy(configuration.get("instrument_analytics_scopes") or {}),
     )
 
 
@@ -4370,7 +4352,7 @@ def build_research_scope_options(
     *,
     planning_taxonomy_id: str | None,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     if not planning_taxonomy_id:
         return []
@@ -4378,7 +4360,9 @@ def build_research_scope_options(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
-        planning_as_of_date=planning_as_of_date,
+        target_configuration=target_configuration,
+        # Scope labels/membership do not perform valuation or FX conversion.
+        direct_fx_instruments={},
         require_planning_enabled=False,
     )
     options: list[dict[str, object]] = [
@@ -4417,7 +4401,7 @@ def build_research_calculation_frequency_profile(
     planning_taxonomy_id: str | None,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
@@ -4428,9 +4412,10 @@ def build_research_calculation_frequency_profile(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
-        planning_as_of_date=planning_as_of_date,
+        target_configuration=target_configuration,
         instrument_detail_cache=_instrument_detail_cache,
-        direct_fx_instruments=_direct_fx_instruments,
+        # Daily observation availability checks local price points only.
+        direct_fx_instruments=_direct_fx_instruments if _direct_fx_instruments is not None else {},
         require_planning_enabled=False,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
@@ -4960,7 +4945,7 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
     )
 
 
-def _instrument_label(state: TaxonomyResearchState, instrument_id: str) -> str:
+def _instrument_label(state: ResearchMarketState, instrument_id: str) -> str:
     detail = _instrument_detail(state, instrument_id)
     if isinstance(detail, dict):
         return str(detail.get("instrument_name") or instrument_id)
@@ -5082,7 +5067,7 @@ def _build_sampled_benchmark_points(
 
 
 def _build_backtest_benchmark_comparison_from_state(
-    state: TaxonomyResearchState,
+    state: ResearchMarketState,
     *,
     benchmark_instrument_id: str | None,
     portfolio_points: list[dict[str, object]],
@@ -5202,17 +5187,20 @@ def _build_backtest_benchmark_comparison_from_state(
 
 
 def build_research_backtest_benchmark_comparison(
-    portfolio_id: str,
     *,
-    planning_taxonomy_id: str,
+    base_currency: str,
     as_of_date: date,
     benchmark_instrument_id: str,
     portfolio_points: list[dict[str, object]],
 ) -> dict[str, object]:
-    state = _build_taxonomy_state(
-        portfolio_id,
-        planning_taxonomy_id=planning_taxonomy_id,
+    # Saved portfolio points already embody the run's target snapshot. A new
+    # benchmark needs only its own market observations and the saved currency;
+    # rebuilding today's taxonomy would make archived comparisons mutable.
+    state = ResearchMarketState(
+        base_currency=base_currency,
         as_of_date=as_of_date,
+        instrument_detail_cache={},
+        direct_fx_instruments=valuation_fx.fx_direct_instrument_map(get_shared_fx_rates()),
     )
     return _build_backtest_benchmark_comparison_from_state(
         state,
@@ -5221,25 +5209,21 @@ def build_research_backtest_benchmark_comparison(
     )
 
 
-def _historical_backtest_instrument_ids(
-    revisions: list[dict[str, object]],
-    *,
-    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-) -> list[str]:
-    instrument_ids: set[str] = set()
-    for revision in revisions:
-        for assignment in list(revision.get("taxonomy_assignments") or []):
-            if not isinstance(assignment, dict):
-                continue
-            if str(assignment.get("status") or "") != "active":
-                continue
-            if str(assignment.get("target_scope") or "") != TARGET_MEMBER_INSTRUMENT:
-                continue
-            instrument_id = str(assignment.get("target_entity_id") or "").strip()
-            if not instrument_id:
-                continue
-            instrument_ids.add(instrument_id)
-    return sorted(instrument_ids)
+def _current_backtest_instrument_ids(configuration: dict[str, object]) -> list[str]:
+    active_nodes = {
+        str(item["taxonomy_node_id"])
+        for item in configuration.get("taxonomy_nodes", [])
+        if item.get("status") == "active"
+    }
+    contract_only = set(configuration.get("contract_only_instrument_ids") or [])
+    return sorted({
+        str(item["target_entity_id"])
+        for item in configuration.get("taxonomy_assignments", [])
+        if item.get("status") == "active"
+        and item.get("target_scope") == TARGET_MEMBER_INSTRUMENT
+        and str(item.get("taxonomy_node_id")) in active_nodes
+        and str(item.get("target_entity_id")) not in contract_only
+    })
 
 
 def _backtest_target_weights(
@@ -5358,6 +5342,7 @@ def _build_derivative_backtest_context(
     *,
     start_date: date,
     end_date: date,
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     transactions = list_transactions(portfolio_id)
@@ -5434,6 +5419,7 @@ def _build_derivative_backtest_context(
             transactions,
             as_of_date=event_date,
             instrument_detail_cache=instrument_detail_cache,
+            direct_fx_instruments=direct_fx_instruments,
         )
         actual_value_base = _derivative_carrying_value_from_statement(statement)
         target_value = actual_value_base / base_nav
@@ -6028,9 +6014,6 @@ def _replay_backtest_decisions(
                     "taxonomy_configuration_version": decision.get(
                         "taxonomy_configuration_version"
                     ),
-                    "taxonomy_configuration_effective_from": decision.get(
-                        "taxonomy_configuration_effective_from"
-                    ),
                     "target_weights": deepcopy(decision.get("target_weights") or []),
                     "cash_target_weight": target_cash_weight,
                     "derivative_target_weight": derivative_target_weight,
@@ -6168,11 +6151,11 @@ def _normalized_window_points(
 def _rolling_holdout_metadata() -> dict[str, object]:
     return {
         "validation_method": "rolling_temporal_holdout",
-        "parameter_selection": "fixed_point_in_time_policy",
+        "parameter_selection": "fixed_current_targets",
         "parameter_optimization": False,
         "methodology_note": (
             "Training and test dates are temporal diagnostics over the already replayed "
-            "fixed-policy series. No parameters are fitted on the training window and "
+            "fixed current-target series. No parameters are fitted on the training window and "
             "frozen for a separate test rerun; this is not walk-forward optimization."
         ),
     }
@@ -6371,6 +6354,7 @@ def build_current_target_backtest(
     planning_taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
+    target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     calculation_frequency: str = "daily",
     target_dimension: str,
@@ -6394,6 +6378,7 @@ def build_current_target_backtest(
     walk_forward_test_months: int = 6,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    _state: TaxonomyResearchState | None = None,
 ) -> dict[str, object]:
     _validate_research_solve_configuration(
         calculation_frequency=calculation_frequency,
@@ -6413,13 +6398,13 @@ def build_current_target_backtest(
     )
     warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
     methodology = {
-        "name": "Point-in-time target-policy simulation",
-        "point_in_time_universe": True,
-        "point_in_time_taxonomy": True,
+        "name": "Current-target historical simulation",
+        "point_in_time_universe": False,
+        "point_in_time_taxonomy": False,
         "decision_rule": (
             "Each scheduled rebalance, plus each recorded derivative-capital lifecycle date, "
-            "solves weights from only the taxonomy configuration, targets, and market observations "
-            "available on that decision date."
+            "solves weights using the same captured current membership, targets and eligibility "
+            "with only market observations available on that decision date."
         ),
         "execution_rule": (
             "Targets execute at the EOD boundary after the configured calendar-day delay "
@@ -6469,35 +6454,17 @@ def build_current_target_backtest(
         },
     }
 
-    revisions = taxonomy_configuration_revisions_through(
-        portfolio_id,
-        planning_taxonomy_id,
-        as_of_date,
+    configuration = target_configuration if target_configuration is not None else capture_current_target_configuration(
+        portfolio_id, planning_taxonomy_id,
     )
-    if not revisions:
-        empty_backtest = _empty_point_in_time_backtest(
-            rebalance_frequency=frequency,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            warnings=warnings,
-            unavailable_reason=(
-                "Backtest requires at least one effective taxonomy configuration revision on or before the analysis date."
-            ),
-            methodology=methodology,
-        )
-        return {
-            "backtest": empty_backtest,
-            "backtest_benchmark": None,
-            "backtest_relative_metrics": None,
-        }
+    methodology["target_configuration"] = "current_snapshot"
+    methodology["target_snapshot_fingerprint"] = configuration.get("target_snapshot_fingerprint")
 
     shared_detail_cache = (
-        _instrument_detail_cache if _instrument_detail_cache is not None else {}
+        _state.instrument_detail_cache if _state is not None
+        else _instrument_detail_cache if _instrument_detail_cache is not None else {}
     )
-    historical_instrument_ids = _historical_backtest_instrument_ids(
-        revisions,
-        instrument_detail_cache=shared_detail_cache,
-    )
+    historical_instrument_ids = _current_backtest_instrument_ids(configuration)
     if not historical_instrument_ids:
         empty_backtest = _empty_point_in_time_backtest(
             rebalance_frequency=frequency,
@@ -6505,7 +6472,7 @@ def build_current_target_backtest(
             lookback_days=lookback_days,
             warnings=warnings,
             unavailable_reason=(
-                "Backtest requires at least one instrument assignment in the effective taxonomy revision history."
+                "Backtest requires at least one instrument assignment in the captured current target configuration."
             ),
             methodology=methodology,
         )
@@ -6516,14 +6483,15 @@ def build_current_target_backtest(
         }
 
     shared_fx_instruments = (
-        _direct_fx_instruments
-        if _direct_fx_instruments is not None
+        _state.direct_fx_instruments if _state is not None
+        else _direct_fx_instruments if _direct_fx_instruments is not None
         else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
     )
-    final_state = _build_taxonomy_state(
+    final_state = _state if _state is not None else _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        target_configuration=configuration,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         instrument_detail_cache=shared_detail_cache,
@@ -6573,40 +6541,16 @@ def build_current_target_backtest(
             "backtest_relative_metrics": None,
         }
 
-    earliest_revision_date = min(
-        _parse_iso_date(item.get("effective_from")) or as_of_date
-        for item in revisions
-    )
-    # Assignment/policy inception does not erase already available market
-    # history. Each decision independently validates its trailing risk window.
-    earliest_start_date = max(earliest_revision_date, min(portfolio_first_dates))
-    if earliest_start_date > as_of_date:
-        empty_backtest = _empty_point_in_time_backtest(
-            rebalance_frequency=frequency,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            warnings=warnings,
-            unavailable_reason=(
-                "Backtest has no effective configuration and market history by the analysis date."
-            ),
-            methodology=methodology,
-        )
-        return {
-            "backtest": empty_backtest,
-            "backtest_benchmark": None,
-            "backtest_relative_metrics": None,
-        }
-    if frozen_taxonomy_node_ids:
-        warnings.append(
-            "Manual no-trade sleeves are current constraints only and were not backcast into history; "
-            "an effective-dated restriction history is required before they can be replayed."
-        )
+    # Current targets may be simulated over all available historical data,
+    # including observations predating their creation or later reassignment.
+    earliest_start_date = min(portfolio_first_dates)
     derivative_context = (
         _build_derivative_backtest_context(
             portfolio_id,
             start_date=earliest_start_date,
             end_date=as_of_date,
             instrument_detail_cache=shared_detail_cache,
+            direct_fx_instruments=shared_fx_instruments,
         )
         if comparator_taxonomy_node_id is None
         else {"events": [], "nav_points": [], "warnings": []}
@@ -6649,20 +6593,20 @@ def build_current_target_backtest(
                 if comparator_taxonomy_node_id is None
                 else (0.0, 0.0)
             )
-            decision_state = _build_taxonomy_state(
-                portfolio_id,
-                planning_taxonomy_id=planning_taxonomy_id,
+            # The graph and target snapshot are immutable inputs for this run.
+            # Only source observations and valuation caches have a decision clock.
+            decision_state = replace(
+                final_state,
                 as_of_date=rebalance_date,
-                frozen_taxonomy_node_ids=[],
-                top_sleeve_weight_bounds=top_sleeve_weight_bounds,
-                instrument_detail_cache=shared_detail_cache,
-                direct_fx_instruments=shared_fx_instruments,
+                frozen_taxonomy_node_ids=frozenset(),
+                current_valuation_cache={},
             )
             period_solution = solve_current_target_weights(
                 portfolio_id,
                 planning_taxonomy_id=planning_taxonomy_id,
                 comparator_taxonomy_node_id=comparator_taxonomy_node_id,
                 as_of_date=rebalance_date,
+                target_configuration=configuration,
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
                 target_dimension=target_dimension,
@@ -6679,6 +6623,7 @@ def build_current_target_backtest(
                 _fixed_derivative_weight_override=derivative_reference_weight,
                 _instrument_detail_cache=shared_detail_cache,
                 _direct_fx_instruments=shared_fx_instruments,
+                _state=decision_state,
             )
         except ValueError as error:
             if not _is_rebalance_data_gap_error(error):
@@ -6754,9 +6699,6 @@ def build_current_target_backtest(
                 "taxonomy_configuration_version": period_solution.get(
                     "taxonomy_configuration_version"
                 ),
-                "taxonomy_configuration_effective_from": period_solution.get(
-                    "taxonomy_configuration_effective_from"
-                ),
                 "target_weights": target_weights,
                 "derivative_target_value": derivative_target_value,
                 "derivative_reference_weight": derivative_reference_weight,
@@ -6776,7 +6718,7 @@ def build_current_target_backtest(
             warnings=warnings,
             unavailable_reason=(
                 "No scheduled rebalance produced an execution-ready target with sufficient "
-                "point-in-time taxonomy and market history."
+                "captured current targets and dated market history."
             ),
             methodology=methodology,
         )
@@ -6957,7 +6899,7 @@ def solve_current_target_weights(
     planning_taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     calculation_frequency: str = "daily",
     target_dimension: str,
@@ -6974,6 +6916,7 @@ def solve_current_target_weights(
     _fixed_derivative_weight_override: float | None = None,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    _state: TaxonomyResearchState | None = None,
 ) -> dict[str, object]:
     _validate_research_solve_configuration(
         calculation_frequency=calculation_frequency,
@@ -6983,11 +6926,11 @@ def solve_current_target_weights(
         target_volatility=target_volatility,
         max_gross_exposure=max_gross_exposure,
     )
-    state = _build_taxonomy_state(
+    state = _state if _state is not None else _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
-        planning_as_of_date=planning_as_of_date,
+        target_configuration=target_configuration,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         instrument_detail_cache=_instrument_detail_cache,
@@ -7068,13 +7011,9 @@ def solve_current_target_weights(
         "portfolio_id": portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
         "planning_taxonomy_name": state.taxonomy_name,
-        "planning_as_of_date": (planning_as_of_date or as_of_date).isoformat(),
+        "target_configuration": "current_snapshot",
+        "target_snapshot_fingerprint": state.target_snapshot_fingerprint,
         "taxonomy_configuration_version": state.configuration_version,
-        "taxonomy_configuration_effective_from": (
-            state.configuration_effective_from.isoformat()
-            if state.configuration_effective_from is not None
-            else None
-        ),
         "scope": {
             "taxonomy_node_id": comparator_taxonomy_node_id,
             "label": scope_result.scope_label,

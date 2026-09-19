@@ -56,7 +56,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-portfolio-instrument-total-return-windows-v2-gips-funded-segment-boundaries-v4"
     "-position-effective-recognition-bridge-v1"
     "-pending-monetary-holdings-v1"
-    "-effective-analytics-scope-policy-v1"
+    "-current-analytics-scope-policy-v2"
     "-option-cash-settlement-v1"
     "-market-risk-zero-return-cash-derivatives-v2"
     "-daily-mark-to-last-risk-observations-v1"

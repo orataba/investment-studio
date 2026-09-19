@@ -1738,8 +1738,6 @@ class AnalyticsScopePolicyRecord(BaseModel):
         "unknown",
     ]
     exclusion_reason: str | None = None
-    effective_from: date
-    effective_to: date | None = None
     policy_version: int = Field(ge=1)
     superseded_by_policy_id: str | None = None
     created_at: str
@@ -1764,8 +1762,6 @@ class AnalyticsScopePolicyUpsertRequest(BaseModel):
         "unknown",
     ]
     exclusion_reason: str | None = None
-    effective_from: date
-    effective_to: date | None = None
 
     @field_validator("exclusion_reason", mode="before")
     @classmethod
@@ -1776,8 +1772,6 @@ class AnalyticsScopePolicyUpsertRequest(BaseModel):
     def validate_policy(self) -> "AnalyticsScopePolicyUpsertRequest":
         if self.risk_budget_eligible and not self.risk_eligible:
             raise ValueError("risk_budget_eligible requires risk_eligible.")
-        if self.effective_to is not None and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not precede effective_from.")
         if (
             not self.risk_eligible or self.performance_scope != "ordinary"
         ) and not self.exclusion_reason:
@@ -1789,8 +1783,6 @@ class AnalyticsTaxonomySelectionRecord(BaseModel):
     analytics_taxonomy_selection_id: str
     portfolio_id: str
     taxonomy_id: str | None = None
-    effective_from: date
-    effective_to: date | None = None
     selection_version: int = Field(ge=1)
     superseded_by_selection_id: str | None = None
     created_at: str
@@ -1866,7 +1858,6 @@ class TargetSetIntegrityIssueRecord(BaseModel):
 
 class TaxonomyCatalogResponse(BaseModel):
     portfolio_id: str
-    planning_as_of_date: date | None = None
     default_planning_taxonomy_id: str | None = None
     risk_basis: dict[str, object] | None = None
     taxonomies: list[TaxonomyRecord]
@@ -2180,7 +2171,8 @@ class ResearchCurrentContextRecord(BaseModel):
     portfolio_name: str
     base_currency: str
     as_of_date: date
-    planning_as_of_date: date | None = None
+    target_configuration: Literal["current_snapshot"] = "current_snapshot"
+    target_snapshot_fingerprint: str | None = None
     lookback_start: date
     lookback_end: date
     nav: float | None = None
@@ -2379,7 +2371,6 @@ class ResearchBacktestExecutionRecord(BaseModel):
     scheduled_execution_date: str
     actual_execution_date: str
     taxonomy_configuration_version: int | None = None
-    taxonomy_configuration_effective_from: str | None = None
     target_weights: list[ResearchBacktestTargetWeightRecord] = Field(default_factory=list)
     cash_target_weight: float
     derivative_target_weight: float = 0.0
@@ -2409,6 +2400,8 @@ class ResearchBacktestContributionReconciliationRecord(BaseModel):
 
 class ResearchBacktestMethodologyRecord(BaseModel):
     name: str
+    target_configuration: Literal["current_snapshot"] | None = None
+    target_snapshot_fingerprint: str | None = None
     point_in_time_universe: bool
     point_in_time_taxonomy: bool
     decision_rule: str
@@ -2499,7 +2492,7 @@ class ResearchBacktestWalkForwardWindowRecord(BaseModel):
 
 class ResearchBacktestWalkForwardRecord(BaseModel):
     validation_method: Literal["rolling_temporal_holdout"] = "rolling_temporal_holdout"
-    parameter_selection: Literal["fixed_point_in_time_policy"] = "fixed_point_in_time_policy"
+    parameter_selection: Literal["fixed_current_targets", "fixed_point_in_time_policy"] = "fixed_point_in_time_policy"
     parameter_optimization: bool = False
     methodology_note: str | None = None
     available: bool
@@ -2660,7 +2653,6 @@ class ResearchArtifactContentResponse(BaseModel):
 
 class DefaultPlanningTaxonomyUpdateRequest(BaseModel):
     taxonomy_id: str | None = None
-    effective_from: date
 
     @field_validator("taxonomy_id", mode="before")
     @classmethod
@@ -2674,7 +2666,6 @@ class DefaultPlanningTaxonomyResponse(BaseModel):
 
 
 class TaxonomyCreateRequest(BaseModel):
-    effective_from: date
     name: str = Field(min_length=1)
     taxonomy_type: str = "custom"
     purpose: str | None = None
@@ -2703,7 +2694,6 @@ class TaxonomyCreateRequest(BaseModel):
 
 
 class TaxonomyNodeCreateRequest(BaseModel):
-    effective_from: date
     node_name: str = Field(min_length=1)
     node_code: str | None = None
     parent_taxonomy_node_id: str | None = None
@@ -2724,7 +2714,6 @@ class TaxonomyNodeCreateRequest(BaseModel):
 
 
 class TaxonomyUpdateRequest(BaseModel):
-    effective_from: date
     name: str | None = None
     taxonomy_type: str | None = None
     purpose: str | None = None
@@ -2753,7 +2742,6 @@ class TaxonomyUpdateRequest(BaseModel):
 
 
 class TaxonomyNodeUpdateRequest(BaseModel):
-    effective_from: date
     node_name: str | None = None
     node_code: str | None = None
     parent_taxonomy_node_id: str | None = None
@@ -2775,7 +2763,6 @@ class TaxonomyNodeUpdateRequest(BaseModel):
 
 
 class TaxonomyAssignmentCreateRequest(BaseModel):
-    effective_from: date
     target_scope: TaxonomyAssignmentScope
     target_entity_id: str = Field(min_length=1)
     taxonomy_node_id: str = Field(min_length=1)
@@ -2788,7 +2775,6 @@ class TaxonomyAssignmentCreateRequest(BaseModel):
 
 
 class TaxonomyAssignmentUpdateRequest(BaseModel):
-    effective_from: date
     taxonomy_node_id: str | None = None
     status: str | None = None
 
@@ -2865,7 +2851,6 @@ class TaxonomyTargetSetConfigurationInput(BaseModel):
 
 
 class TaxonomyTargetConfigurationRequest(BaseModel):
-    effective_from: date
     node_defaults: dict[str, DefaultTargetDimension] = Field(default_factory=dict)
     target_sets: list[TaxonomyTargetSetConfigurationInput] = Field(default_factory=list)
 
@@ -2880,7 +2865,6 @@ class TaxonomyTargetConfigurationRequest(BaseModel):
 
 
 class TargetSetCreateRequest(BaseModel):
-    effective_from: date
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str = Field(min_length=1)
@@ -2910,7 +2894,6 @@ class TargetSetCreateRequest(BaseModel):
 
 
 class TargetSetUpdateRequest(BaseModel):
-    effective_from: date
     name: str | None = None
     weight_enabled: bool | None = None
     risk_budget_enabled: bool | None = None

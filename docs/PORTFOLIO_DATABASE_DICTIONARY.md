@@ -14,7 +14,7 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 | Audit/idempotency controls | `transaction_change_log`, `transaction_idempotency_record`, `transaction_id_allocator` | Portfolio transaction store |
 | Screenshot evidence and agent drafts | `transaction_capture_record`, `transaction_capture_batch`, `transaction_capture_batch_item`, `transaction_capture_analysis_revision` | Portfolio transaction-capture API and analysis worker |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
-| Planning/research | taxonomy, targets, effective-dated analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
+| Planning/research | current taxonomy, targets, analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
 | Shared asset identity/market facts | `instrument_data.*` | Data maintenance CLI and ingestion jobs |
 
 The `instrument_id` values stored in Portfolio are logical references to reusable market assets in shared Instrument Data. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Instrument Data market assets.
@@ -250,27 +250,27 @@ Monotonic configuration version for one portfolio. Scope-policy, selection, and 
 
 ### `portfolio.analytics_scope_policy_record`
 
-Effective-dated eligibility and valuation policy for an exact taxonomy node or the reserved `__root__` / `__unassigned__` policy nodes. Active ranges for the same policy key may not overlap.
+Current eligibility and valuation policy for an exact taxonomy node or the reserved `__root__` / `__unassigned__` policy nodes. Automatic versions and supersession retain the change audit; runtime reads use the current version without a date filter. A partial unique index enforces one unsuperseded row per portfolio, taxonomy and node.
 
 | Columns |
 |---|
-| **PK** `analytics_scope_policy_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `taxonomy_node_id VARCHAR`; `risk_eligible BOOLEAN`; `risk_budget_eligible BOOLEAN`; `performance_scope VARCHAR`; `valuation_basis VARCHAR`; `exclusion_reason VARCHAR?`; `effective_from DATE`; `effective_to DATE?`; `policy_version INTEGER`; `superseded_by_policy_id VARCHAR?`; `created_at VARCHAR` |
+| **PK** `analytics_scope_policy_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `taxonomy_node_id VARCHAR`; `risk_eligible BOOLEAN`; `risk_budget_eligible BOOLEAN`; `performance_scope VARCHAR`; `valuation_basis VARCHAR`; `exclusion_reason VARCHAR?`; `policy_version INTEGER`; `superseded_by_policy_id VARCHAR?`; `created_at VARCHAR` |
 
 ### `portfolio.analytics_taxonomy_selection_record`
 
-Effective-dated explicit selection of the taxonomy used by analytics. A null `taxonomy_id` is an audited explicit unassignment; absence of an effective row also fails closed.
+Current explicit selection of the taxonomy used by analytics. A null `taxonomy_id` is an audited explicit unassignment; absence of a current row also fails closed. A partial unique index enforces one unsuperseded selection per portfolio.
 
 | Columns |
 |---|
-| **PK** `analytics_taxonomy_selection_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR?`; `effective_from DATE`; `effective_to DATE?`; `selection_version INTEGER`; `superseded_by_selection_id VARCHAR?`; `created_at VARCHAR` |
+| **PK** `analytics_taxonomy_selection_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR?`; `selection_version INTEGER`; `superseded_by_selection_id VARCHAR?`; `created_at VARCHAR` |
 
 ### `portfolio.taxonomy_configuration_revision`
 
-Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets, and target lines used by historical Research and Risk resolution. Runtime analytics must not reconstruct historical policy from the current mutable taxonomy tables.
+Automatically versioned audit snapshot of a taxonomy, its nodes, assignments, target sets and target lines. Current analytics use current configuration throughout their historical observations. A saved Research run freezes its own complete current configuration in `request_payload_json`; reading that archived run does not re-resolve current taxonomy. A partial unique index enforces one unsuperseded audit revision per portfolio and taxonomy.
 
 | Columns |
 |---|
-| **PK** `taxonomy_configuration_revision_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `effective_from DATE`; `effective_to DATE?`; `configuration_version INTEGER`; `configuration_json JSON`; `superseded_by_revision_id VARCHAR?`; `created_at VARCHAR` |
+| **PK** `taxonomy_configuration_revision_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `configuration_version INTEGER`; `configuration_json JSON`; `superseded_by_revision_id VARCHAR?`; `created_at VARCHAR` |
 
 ### `portfolio.concentration_policy_revision`
 
@@ -419,8 +419,8 @@ For a colleague implementing transaction ingestion, the relevant read sequence i
 Do not treat daily snapshots, holdings, lots, postings, or instrument-universe rows as input tables. They are deterministic projections of facts plus Registry data and may be rebuilt.
 
 Before a release is described as Risk-ready, run the read-only audit with
-`--fail-on-warning`. An effective analytics taxonomy selection and its
-point-in-time configuration are business-owned facts; the application does not
+`--fail-on-warning`. A current analytics taxonomy selection and its
+configuration are business-owned facts; the application does not
 invent a default when they are absent. A portfolio with no
 `default_planning_taxonomy_id` is explicitly outside Risk / Research readiness
 and therefore is not reported as a missing-selection warning; runtime analytics

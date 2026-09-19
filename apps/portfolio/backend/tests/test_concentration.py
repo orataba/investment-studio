@@ -188,23 +188,34 @@ def test_portfolio_copy_cannot_silently_drop_dated_concentration_policy(client):
     path = "/api/portfolios/investment-studio/concentration/settings"
     payload = {"expected_revision": 0, "effective_from": "2026-04-01", "rules": [rule("security")], "fcn_allocations": []}
     assert client.put(path, json=payload).status_code == 200
-    with pytest.raises(ValueError, match="effective-dated analytics history"):
+    with pytest.raises(ValueError, match="explicit remapping of concentration policy references"):
         copy_portfolio("investment-studio")
 
 
-def test_historical_concentration_keeps_taxonomy_archived_after_holding_date(client):
+def test_historical_concentration_uses_current_classification_and_keeps_holding_date(client):
     path = "/api/portfolios/investment-studio/taxonomies"
-    payload = {"effective_from": "2026-01-01", "name": "Original industry", "taxonomy_type": "custom", "primary_assignment_scope": "instrument"}
-    created = client.post(path, json=payload)
+    created = client.post(path, json={"name": "Original industry", "taxonomy_type": "custom", "primary_assignment_scope": "instrument"})
     assert created.status_code == 200, created.text
     tid = created.json()["taxonomy_id"]
-    archived = client.patch(f"{path}/{tid}", json={"effective_from": "2026-06-01", "name": "Archived industry", "status": "inactive"})
-    assert archived.status_code == 200, archived.text
-    response = client.get("/api/portfolios/investment-studio/concentration?as_of_date=2026-04-15")
+    read_path = "/api/portfolios/investment-studio/concentration?as_of_date=2026-04-15"
+    before = client.get(read_path)
+    assert before.status_code == 200, before.text
+    original = next(row for row in before.json()["scopes"] if row["taxonomy_id"] == tid)
+    renamed = client.patch(f"{path}/{tid}", json={"name": "Updated industry"})
+    assert renamed.status_code == 200, renamed.text
+    response = client.get(read_path)
     assert response.status_code == 200, response.text
-    scope = next(row for row in response.json()["scopes"] if row["taxonomy_id"] == tid)
-    assert scope["name"] == "Original industry"
-    assert scope["taxonomy_configuration"]["effective_from"] == "2026-01-01"
+    current = next(row for row in response.json()["scopes"] if row["taxonomy_id"] == tid)
+    assert current["name"] == "Updated industry"
+    assert current["taxonomy_configuration"]["configuration_version"] > original["taxonomy_configuration"]["configuration_version"]
+    assert "effective_from" not in current["taxonomy_configuration"]
+    assert response.json()["as_of_date"] == before.json()["as_of_date"] == "2026-04-15"
+    assert response.json()["nav"] == before.json()["nav"]
+    archived = client.patch(f"{path}/{tid}", json={"status": "inactive"})
+    assert archived.status_code == 200, archived.text
+    hidden = client.get(read_path)
+    assert hidden.status_code == 200, hidden.text
+    assert not any(row["taxonomy_id"] == tid for row in hidden.json()["scopes"])
 
 
 def test_risk_context_contains_concentration_and_tail_sources(client):

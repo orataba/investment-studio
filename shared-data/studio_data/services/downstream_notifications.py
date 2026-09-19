@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -11,35 +10,12 @@ from urllib.request import Request, urlopen
 
 from studio_data.core.settings import get_settings
 from studio_identity import IdentityError, service_principal, principal_headers
+from studio_data.services.downstream_contracts import (
+    DownstreamRefreshError, DownstreamRefreshResult, DownstreamRequestFailure,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class DownstreamRequestFailure:
-    url: str
-    message: str
-
-
-@dataclass(frozen=True)
-class DownstreamRefreshResult:
-    request_count: int = 0
-    failures: tuple[DownstreamRequestFailure, ...] = ()
-
-    @property
-    def succeeded(self) -> bool:
-        return not self.failures
-
-
-class DownstreamRefreshError(RuntimeError):
-    def __init__(self, result: DownstreamRefreshResult) -> None:
-        self.result = result
-        failed_urls = ", ".join(item.url for item in result.failures)
-        super().__init__(
-            f"{len(result.failures)} of {result.request_count} downstream refresh requests failed: "
-            f"{failed_urls}"
-        )
 
 
 def _normalized_instrument_ids(instrument_ids: list[str] | None) -> list[str]:

@@ -96,7 +96,7 @@ FCN、长期权和期权卖方义务当前采用明确的 event-accounting bound
 - operational daily return 可以形成独立、明确命名的经营收益链，用于 NAV reconciliation 与经营复盘，但不得命名为完整 fair-value 或 GIPS-informed return，也不得直接输入风险统计；
 - volatility、Sharpe、Sortino、Calmar、risk drawdown、benchmark risk compare 与 realized risk attribution 使用独立 `Market Risk Return`：同一总 NAV 分母中将 base-currency cash 与衍生品作为 0-return capital，并从风险 P&L 分子剔除衍生品 cash result/FCN coupon/charges 和现金利息。普通证券 total return 与普通证券 income 保留，non-base cash FX 仍属于市场风险；
 - 期权实物行权/指派在股票腿形成的 strike-to-market 交割损益及交割费用也从风险分子剔除；否则期权兑现会伪装成股票市场收益。股票交割后真实市场变动照常进入风险链，期权 premium book P&L 与股票 strike book cost 的账本政策保持独立；
-- Holdings 的 event day change、fair value 和 quote identity 必须为空，priced coverage 不包含 event rows；Risk 只对 effective-dated policy 明确标记 `risk_eligible=true` 的 modeled market sleeve 建模，并披露 excluded carrying value/liability、coverage ratio 和 excluded rows；
+- Holdings 的 event day change、fair value 和 quote identity 必须为空，priced coverage 不包含 event rows；Risk 只对 当前 policy 明确标记 `risk_eligible=true` 的 modeled market sleeve 建模，并披露 excluded carrying value/liability、coverage ratio 和 excluded rows；
 - 因此任何包含 material event-valued asset 或 derivative liability 的 operational result 和 `Market Risk Return` 都不能命名为完整 fair-value 或 GIPS-informed TWR。0-return 是明确的风险建模约定，不是对衍生品未知公允价值收益的估计。
 - 当前没有逐日 sleeve cash subledger，ordinary-sleeve TWR 明确 unavailable；从 total operational return 中过滤 derivative rows 不是可接受的 performance scope 计算。
 
@@ -117,7 +117,7 @@ Risk / Research 的风险统计固定使用日频估值路径：1M / 3M 等窗�
 
 Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
 
-Research 的历史结果属于 point-in-time target-policy simulation，不是实际客户组合绩效，也不是 GIPS presentation。每个决策日使用当时生效的 taxonomy configuration、assignments、targets 与当时可见市场数据；模拟现金收益，并从 NAV 扣除配置的 commission、sell-side tax 和 slippage，在 EOD implementation boundary 后的首个共同 observation 假设完整成交。Robustness scenarios 与 rolling temporal holdout OOS 窗口用于揭示摩擦敏感性和时间外推稳定性；holdout 使用固定 policy，不在 training window 内重新拟合参数，因此不等同于 walk-forward optimization。当前没有 order rejection、partial fill、流动性容量或 market-impact 模型。任何报告都必须同时展示这些假设、point-in-time coverage、skipped rebalances、execution records 和 contribution reconciliation，不能把模拟曲线描述为已实现收益或完整执行可行性证明。
+Research 的历史结果属于 current-target historical simulation：本次运行冻结当前分类、成员、目标与求解资格，全段历史使用同一快照，市场观察截止各决策日。它不是实际客户组合绩效或 GIPS presentation，不声称当前目标在历史上已经已知。模拟现金收益、commission、sell-side tax、slippage 与 EOD implementation delay，假设首个共同 observation 完整成交。Robustness 与滚动历史测试窗口分析当前配置的摩擦敏感性和跨时期表现，不代表独立样本外验证或 walk-forward optimization。当前没有 order rejection、partial fill、流动性容量或 market-impact 模型。报告保留目标快照、历史数据覆盖、skipped rebalances、execution records 和 contribution reconciliation。
 
 ### 2.6 风险统计必须来自收益序列
 
@@ -166,8 +166,8 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 风险样本 | `market_risk_return_observation_eligible` 控制 realized risk 的有效收益观察 |
 | 样本协方差 | Risk 页与 Research `sample_covariance` 使用 `n - 1` 样本估计 |
 | Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
-| Scoped forward risk | covariance 只纳入 effective-dated policy 中 `risk_eligible=true` 的市场资产，权重为 signed market exposure / total NAV；衍生品与本币 monetary rows 按 0-return capital，非本币 monetary exposure 或 eligible matrix 不完整时 unavailable |
-| Research historical simulation | 每个 rebalance date point-in-time 重建 universe/taxonomy/targets，计入 cash yield、commission、sell tax、slippage 与 delay，输出 robustness、rolling temporal holdout OOS 和 contribution reconciliation；固定 policy，不声称 walk-forward optimization |
+| Scoped forward risk | covariance 只纳入 当前 policy 中 `risk_eligible=true` 的市场资产，权重为 signed market exposure / total NAV；衍生品与本币 monetary rows 按 0-return capital，非本币 monetary exposure 或 eligible matrix 不完整时 unavailable |
+| Research historical simulation | 当前完整目标快照固定用于全部历史决策；行情按决策日截断，计入 cash yield、commission、sell tax、slippage 与 delay，输出 robustness、滚动历史窗口和 contribution reconciliation；不声称历史目标重放或独立样本外验证 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | Source generation fence | snapshot 计算前、计算后与 publish 前核对源 generation；变化时丢弃并重试，不发布混合世代结果 |
@@ -210,7 +210,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - valuation / return / book-P&L / attribution coverage 是否保持分离；
 - materialized read path 和动态重建校验路径是否结果一致；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
-- Research 历史模拟是否仍使用 point-in-time universe/taxonomy，完整披露现金收益、交易摩擦、延迟、robustness、walk-forward OOS 与尚未建模的成交限制；
+- Research 是否保存并全程使用同一当前目标快照，仍按决策日截断行情，并披露现金收益、交易摩擦、延迟、robustness、滚动历史窗口与尚未建模的成交限制；
 - scoped risk 是否披露 excluded carrying value/liability、coverage 与 excluded rows，且没有 eligible risky holding 时明确 unavailable；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

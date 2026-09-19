@@ -9,23 +9,8 @@ from studio_data.services.fmp import FmpApiError
 from studio_data.services.securities import (
     materialize_security,
     refresh_security_eod,
-    search_securities,
 )
-from studio_data.services.securities.contracts import (
-    SecurityMaterializeRequest,
-    SecuritySearchResponse,
-)
-
-
-def search_security_records(q: str, limit: int = 10) -> SecuritySearchResponse:
-    if not q.strip():
-        raise ValueError("q must not be empty")
-    if not 1 <= limit <= 25:
-        raise ValueError("limit must be between 1 and 25")
-    results, catalog_errors = search_securities(q, limit=limit)
-    return SecuritySearchResponse.model_validate(
-        {"results": results, "catalog_errors": catalog_errors}
-    )
+from studio_data.services.securities.contracts import SecurityMaterializeRequest
 
 
 def materialize_security_record(

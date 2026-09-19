@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date
 
@@ -451,13 +452,40 @@ def test_research_honors_explicit_analytics_scope_exclusion():
         solve_state(state)
 
 
-def test_new_policy_can_use_history_available_before_its_effective_date(monkeypatch):
-    state = allocation_state()
-    monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
-    monkeypatch.setattr(solver, "taxonomy_configuration_revisions_through", lambda *args: [{
-        "effective_from": "2026-06-01",
-        "taxonomy_assignments": [{"target_scope": "instrument", "target_entity_id": key, "status": "active"} for key in ("a", "b")],
-    }])
+def test_current_policy_uses_market_history_without_target_creation_cutoff(monkeypatch):
+    state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({'a'}))
+    graph_before = deepcopy((state.node_by_id, state.direct_assignments_by_node, state.target_lines_by_set_id))
+    period_states = []
+    observed_prices = []
+    original_solve = solver.solve_current_target_weights
+    def solve(*args, **kwargs):
+        period_state = kwargs['_state']
+        assert period_state.as_of_date == kwargs['as_of_date']
+        assert not period_state.frozen_taxonomy_node_ids
+        assert period_state.current_valuation_cache == {}
+        period_state.current_valuation_cache['test_decision_date'] = kwargs['as_of_date']
+        period_states.append(period_state)
+        observations, _ = solver._build_instrument_nav_series(period_state,
+            instrument_id='a', start_date=date(1900, 1, 1), end_date=period_state.as_of_date,
+            warn_on_start_clip=False)
+        assert observations.index[-1] <= period_state.as_of_date
+        observed_prices.append(observations.iloc[-1])
+        return original_solve(*args, **kwargs)
+    monkeypatch.setattr(solver, 'solve_current_target_weights', solve)
+    snapshot = {
+        "taxonomy_nodes": [{"taxonomy_node_id": "node", "status": "active"}],
+        "taxonomy_assignments": [{"taxonomy_node_id": "node", "target_scope": "instrument", "target_entity_id": key, "status": "active"} for key in ("a", "b")],
+    }
+    captures = []
+    builds = []
+    def capture(*args, **kwargs):
+        captures.append(True)
+        return snapshot
+    def build(*args, **kwargs):
+        builds.append(kwargs['target_configuration'])
+        return state
+    monkeypatch.setattr(solver, "capture_current_target_configuration", capture)
+    monkeypatch.setattr(solver, "_build_taxonomy_state", build)
     result = solver.build_current_target_backtest(
         "review", planning_taxonomy_id="review-taxonomy", comparator_taxonomy_node_id=None,
         as_of_date=state.as_of_date, lookback_days=90, target_dimension="weight",
@@ -465,9 +493,21 @@ def test_new_policy_can_use_history_available_before_its_effective_date(monkeypa
         _direct_fx_instruments={},
     )["backtest"]
     assert result["points"]
-    assert result["point_in_time_coverage"]["first_decision_date"] == "2026-06-01"
+    assert result["point_in_time_coverage"]["first_decision_date"] < "2026-06-01"
     assert result["execution_records"][0]["derivative_target_weight"] == pytest.approx(0.0)
     assert result["execution_records"][0]["derivative_no_trade"] is True
+
+    assert captures == [True]
+    assert len(builds) == 1
+    assert len(period_states) > 2
+    assert len({id(item.current_valuation_cache) for item in period_states}) == len(period_states)
+    assert len(set(observed_prices)) > 1
+    assert state.current_valuation_cache == {}
+    assert state.frozen_taxonomy_node_ids == frozenset({'a'})
+    assert (state.node_by_id, state.direct_assignments_by_node, state.target_lines_by_set_id) == graph_before
+    assert all(configuration is snapshot for configuration in builds)
+    assert result['methodology']['target_configuration'] == 'current_snapshot'
+    assert result['walk_forward']['parameter_selection'] == 'fixed_current_targets'
 
 
 def test_rolling_holdout_does_not_drop_first_return_of_each_test_window():
@@ -583,19 +623,10 @@ def test_bounded_risk_budget_returns_verified_nonready_candidate_when_minimax_st
 def test_backtest_executes_the_verified_optimum_under_binding_constraints(monkeypatch):
     state = risk_budget_state(top_bounds={"a": {"min_weight": None, "max_weight": 0.1}})
     monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
-    monkeypatch.setattr(
-        solver,
-        "taxonomy_configuration_revisions_through",
-        lambda *args, **kwargs: [
-            {
-                "effective_from": "2026-06-01",
-                "taxonomy_assignments": [
-                    {"target_scope": "instrument", "target_entity_id": key, "status": "active"}
-                    for key in ("a", "b")
-                ],
-            }
-        ],
-    )
+    monkeypatch.setattr(solver, "capture_current_target_configuration", lambda *args, **kwargs: {
+        "taxonomy_nodes": [{"taxonomy_node_id": "node", "status": "active"}],
+        "taxonomy_assignments": [{"taxonomy_node_id": "node", "target_scope": "instrument", "target_entity_id": key, "status": "active"} for key in ("a", "b")],
+    })
 
     result = solver.build_current_target_backtest(
         "review",
@@ -620,7 +651,7 @@ def test_backtest_executes_the_verified_optimum_under_binding_constraints(monkey
         _direct_fx_instruments={},
     )["backtest"]
 
-    assert result["point_in_time_coverage"]["status"] == "complete"
+    assert result["point_in_time_coverage"]["status"] in {"complete", "partial"}
     assert result["point_in_time_coverage"]["decision_count"] > 0
     assert result["execution_records"]
     first_weights = {
@@ -628,7 +659,8 @@ def test_backtest_executes_the_verified_optimum_under_binding_constraints(monkey
         for item in result["execution_records"][0]["target_weights"]
     }
     assert first_weights["a"] == pytest.approx(0.1, abs=1e-6)
-    assert result["point_in_time_coverage"]["skipped_rebalances"] == []
+    assert all(item["date"] < result["point_in_time_coverage"]["first_decision_date"]
+               for item in result["point_in_time_coverage"]["skipped_rebalances"])
 
 
 def test_overlay_preserves_explicit_derivative_target_and_routes_financing_to_cash():

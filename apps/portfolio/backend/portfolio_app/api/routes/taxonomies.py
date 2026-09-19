@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import cast
+from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -32,10 +32,7 @@ from portfolio_app.api.contracts import (
     TaxonomyTargetConfigurationRequest,
 )
 from portfolio_app.services.analytics_scope import (
-    analytics_policy_version,
-    taxonomy_catalog_as_of,
-    list_analytics_taxonomy_selections,
-    list_analytics_scope_policies,
+    current_taxonomy_catalog,
     replace_analytics_scope_policy,
 )
 from portfolio_app.services.instrument_charts import (
@@ -60,13 +57,8 @@ from portfolio_app.services.portfolio_store import (
     delete_target_set,
     get_portfolio,
     get_taxonomy,
-    list_target_set_lines,
     list_target_set_integrity_issues,
-    list_target_sets,
     list_portfolio_instrument_universe,
-    list_taxonomies,
-    list_taxonomy_assignments,
-    list_taxonomy_nodes,
     set_default_planning_taxonomy,
     update_taxonomy,
     update_taxonomy_assignment,
@@ -74,7 +66,6 @@ from portfolio_app.services.portfolio_store import (
     update_target_set,
     upsert_portfolio_instrument_universe_record,
 )
-from portfolio_app.services.valuation_clock import planning_reference_date
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 
 
@@ -155,20 +146,15 @@ def _enrich_universe_market_profiles(
 def get_portfolio_taxonomies(
     portfolio_id: str,
     include_market_profile: bool = False,
-    as_of_date: date | None = None,
-    current_planning: bool = False,
-    planning_as_of_date: date | None = None,
+    as_of_date: Annotated[date | None, Query(
+        description="Market-profile observation cutoff only; classification and targets always use current configuration.",
+    )] = None,
 ) -> TaxonomyCatalogResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
-    dated_catalog = None
-    if current_planning or planning_as_of_date is not None:
-        reference_date = planning_as_of_date or planning_reference_date(
-            as_of_date or date.fromisoformat(str(portfolio.get("as_of_date") or date.today())[:10]),
-        )
-        dated_catalog = taxonomy_catalog_as_of(portfolio_id, reference_date)
+    catalog = current_taxonomy_catalog(portfolio_id)
 
     universe_records = list_portfolio_instrument_universe(portfolio_id)
     risk_basis_profile = None
@@ -192,33 +178,32 @@ def get_portfolio_taxonomies(
 
     return TaxonomyCatalogResponse(
         portfolio_id=portfolio_id,
-        planning_as_of_date=dated_catalog["planning_as_of_date"] if dated_catalog is not None else None,
-        default_planning_taxonomy_id=(dated_catalog if dated_catalog is not None else portfolio).get("default_planning_taxonomy_id"),
+        default_planning_taxonomy_id=catalog.get("default_planning_taxonomy_id"),
         risk_basis=risk_basis_profile,
-        taxonomies=[TaxonomyRecord.model_validate(item) for item in (dated_catalog["taxonomies"] if dated_catalog is not None else list_taxonomies(portfolio_id))],
-        taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in (dated_catalog["taxonomy_nodes"] if dated_catalog is not None else list_taxonomy_nodes(portfolio_id))],
+        taxonomies=[TaxonomyRecord.model_validate(item) for item in catalog["taxonomies"]],
+        taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in catalog["taxonomy_nodes"]],
         taxonomy_assignments=[
             TaxonomyAssignmentRecord.model_validate(item)
-            for item in (dated_catalog["taxonomy_assignments"] if dated_catalog is not None else list_taxonomy_assignments(portfolio_id))
+            for item in catalog["taxonomy_assignments"]
         ],
-        analytics_scope_policy_version=analytics_policy_version(portfolio_id),
+        analytics_scope_policy_version=catalog["analytics_scope_policy_version"],
         analytics_scope_policies=[
             AnalyticsScopePolicyRecord.model_validate(item)
-            for item in list_analytics_scope_policies(portfolio_id)
+            for item in catalog["analytics_scope_policies"]
         ],
         analytics_taxonomy_selections=[
             AnalyticsTaxonomySelectionRecord.model_validate(item)
-            for item in list_analytics_taxonomy_selections(portfolio_id)
+            for item in catalog["analytics_taxonomy_selections"]
         ],
         instrument_universe=[
             PortfolioInstrumentUniverseRecord.model_validate(item)
             for item in universe_records
         ],
-        target_sets=[TargetSetRecord.model_validate(item) for item in (dated_catalog["target_sets"] if dated_catalog is not None else list_target_sets(portfolio_id))],
-        target_set_lines=[TargetSetLineRecord.model_validate(item) for item in (dated_catalog["target_set_lines"] if dated_catalog is not None else list_target_set_lines(portfolio_id))],
+        target_sets=[TargetSetRecord.model_validate(item) for item in catalog["target_sets"]],
+        target_set_lines=[TargetSetLineRecord.model_validate(item) for item in catalog["target_set_lines"]],
         target_set_integrity_issues=[
             TargetSetIntegrityIssueRecord.model_validate(item)
-            for item in ([] if dated_catalog is not None else list_target_set_integrity_issues(portfolio_id))
+            for item in list_target_set_integrity_issues(portfolio_id)
         ],
     )
 
@@ -234,7 +219,6 @@ def update_default_planning_taxonomy(
         updated_portfolio = set_default_planning_taxonomy(
             portfolio_id,
             payload.taxonomy_id,
-            effective_from=payload.effective_from,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -298,7 +282,6 @@ def create_portfolio_taxonomy(
 
     record = create_taxonomy(
         portfolio_id=portfolio_id,
-        effective_from=payload.effective_from,
         name=payload.name,
         taxonomy_type=payload.taxonomy_type,
         purpose=payload.purpose,
@@ -338,12 +321,10 @@ def update_portfolio_taxonomy(
 def delete_portfolio_taxonomy(
     portfolio_id: str,
     taxonomy_id: str,
-    effective_from: date = Query(...),
 ) -> dict[str, object]:
     deleted = delete_taxonomy(
         portfolio_id,
         taxonomy_id,
-        effective_from=effective_from,
     )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
@@ -367,7 +348,6 @@ def create_portfolio_taxonomy_node(
         record = create_taxonomy_node(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=payload.effective_from,
             parent_taxonomy_node_id=payload.parent_taxonomy_node_id,
             node_name=payload.node_name,
             node_code=payload.node_code,
@@ -410,14 +390,12 @@ def delete_portfolio_taxonomy_node(
     portfolio_id: str,
     taxonomy_id: str,
     taxonomy_node_id: str,
-    effective_from: date = Query(...),
 ) -> dict[str, object]:
     try:
         deleted = delete_taxonomy_node(
             portfolio_id,
             taxonomy_id,
             taxonomy_node_id,
-            effective_from=effective_from,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -451,7 +429,6 @@ def create_portfolio_taxonomy_assignment(
         record = create_taxonomy_assignment(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=payload.effective_from,
             target_scope=payload.target_scope,
             target_entity_id=payload.target_entity_id,
             taxonomy_node_id=payload.taxonomy_node_id,
@@ -491,13 +468,11 @@ def delete_portfolio_taxonomy_assignment(
     portfolio_id: str,
     taxonomy_id: str,
     assignment_id: str,
-    effective_from: date = Query(...),
 ) -> dict[str, object]:
     deleted = delete_taxonomy_assignment(
         portfolio_id,
         taxonomy_id,
         assignment_id,
-        effective_from=effective_from,
     )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
@@ -528,7 +503,6 @@ def create_portfolio_target_set(
         record = create_target_set(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=payload.effective_from,
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             target_set_type=payload.target_set_type,
             name=payload.name,
@@ -572,13 +546,11 @@ def delete_portfolio_target_set(
     portfolio_id: str,
     taxonomy_id: str,
     target_set_id: str,
-    effective_from: date = Query(...),
 ) -> dict[str, object]:
     deleted = delete_target_set(
         portfolio_id,
         taxonomy_id,
         target_set_id,
-        effective_from=effective_from,
     )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
@@ -626,7 +598,7 @@ def save_portfolio_taxonomy_target_configuration(
 ) -> TaxonomyRecord:
     try:
         result = save_taxonomy_target_configuration(portfolio_id, taxonomy_id,
-            effective_from=payload.effective_from, node_defaults=payload.node_defaults,
+            node_defaults=payload.node_defaults,
             target_sets=[item.model_dump() for item in payload.target_sets])
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

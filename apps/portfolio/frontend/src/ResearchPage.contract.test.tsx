@@ -232,6 +232,8 @@ const workbenchFixture = {
     portfolio_name: 'Long-Term Portfolio',
     base_currency: 'USD',
     as_of_date: '2026-07-15',
+    target_configuration: 'current_snapshot',
+    target_snapshot_fingerprint: 'current-target-fixture',
     lookback_start: '2026-07-01',
     lookback_end: '2026-07-15',
     nav: 1024,
@@ -529,7 +531,7 @@ describe('Research rendered page contract', () => {
       '/portfolios/:portfolioId/research',
     )
 
-    const coverageSection = (await screen.findByText('Point-in-Time Coverage')).closest('.portfolio-section-block')
+    const coverageSection = (await screen.findByText('Historical Data Coverage')).closest('.portfolio-section-block')
     expect(coverageSection).not.toBeNull()
     const coverageStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Status Unavailable/ })
     expect(within(coverageStatus).getByText('Unavailable')).toHaveAttribute('title', unavailableReason)
@@ -542,12 +544,41 @@ describe('Research rendered page contract', () => {
     const pendingStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Pending Decisions 1/ })
     expect(within(pendingStatus).getByText('1')).toHaveAttribute('title', 'Scheduled execution is after the cutoff.')
 
-    const oosHeading = screen.getByText('Rolling OOS Holdout')
+    const oosHeading = screen.getByText('Archived Rolling Holdout')
     expect(oosHeading).toHaveAttribute('title', methodologyNote)
     const oosSection = oosHeading.closest('.portfolio-section-block')
     expect(oosSection).not.toBeNull()
     expect(oosSection?.querySelector('.empty-state-cell')).toHaveAttribute('title', unavailableReason)
     expect(within(oosSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
+  })
+
+  it('distinguishes current-target simulation from archived target rules', async () => {
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({
+      ...completedRun,
+      detail: {
+        ...completedRun.detail,
+        backtest: {
+          ...completedRun.detail.backtest,
+          methodology: {
+            name: 'Current-target historical simulation',
+            target_configuration: 'current_snapshot',
+            target_snapshot_fingerprint: 'current-target-fixture',
+            point_in_time_taxonomy: false,
+            point_in_time_universe: false,
+          },
+        },
+      },
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+
+    expect(await screen.findByText('Current-Target Historical Backtest')).toBeInTheDocument()
+    expect(screen.getByText('Current targets')).toBeInTheDocument()
+    expect(screen.getByText('Data Cutoff Mode')).toBeInTheDocument()
+    expect(screen.getByText('Data Cutoff Date')).toBeInTheDocument()
+    expect(screen.getByText('Target Snapshot Version')).toBeInTheDocument()
+    expect(screen.getByText('Rolling Historical Windows')).toBeInTheDocument()
+    expect(screen.queryByText('Archived Historical Backtest')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Historical taxonomy and targets are effective-dated/)).not.toBeInTheDocument()
   })
 
   it('keeps instrument-level rebalance evidence in one expandable solution table', async () => {

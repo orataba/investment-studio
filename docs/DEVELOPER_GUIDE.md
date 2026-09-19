@@ -238,7 +238,7 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 - Documents 只具备现有数据/附件能力，没有完整通用文档工作台；PDF/图片 OCR 和官方指数方法论文档摄取未实现。
 - Portfolio 支持股票／ETF 的显式卖空与回补；不支持直接债券、融资、PE/VC capital call、基金份额转换或衍生品 transfer。
 - FCN/Option 没有 daily fair value、Greeks、自动 barrier/行权或 covariance risk；相关持仓按明确的 carrying/liability 口径披露。
-- Portfolio Research 历史曲线是 point-in-time policy simulation，不是实盘绩效；执行模型不包含拒单、部分成交、容量和 market impact。
+- Portfolio taxonomy 与分析范围采用当前配置，修改后完整重算历史展示；Research 以每次运行保存的当前目标快照做历史模拟，行情按决策日截断，不是历史实际目标的重放或实盘绩效。执行模型不包含拒单、部分成交、容量和 market impact。
 - 共享登录会话由 Home 提供；远程访问须通过配置了 TLS 和页面/API 会话校验的受控入口。
 - 远程访问和供应商 transport 的当前限制以 [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md) 为准。
 

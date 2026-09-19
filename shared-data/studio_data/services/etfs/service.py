@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 
 from studio_data.services.etfs.catalog import get_catalog_etf, search_etf_catalog
-from studio_data.services.fmp import FmpClient, refresh_fmp_eod
+from studio_data.services.fmp.client import FmpClient
 from studio_data.services.fmp.exchanges import exchange_by_code
 from studio_data.services.fmp.profile import listing_quote_contract
 from studio_data.services.instrument_store import (
@@ -260,6 +260,8 @@ def refresh_etf_eod(
         if refreshed is None:
             raise RuntimeError(f"Registry ETF disappeared during refresh: {instrument_id}")
         return refreshed
+    from studio_data.services.fmp.eod import refresh_fmp_eod
+
     return refresh_fmp_eod(
         instrument_id=instrument_id,
         instrument_type="etf",

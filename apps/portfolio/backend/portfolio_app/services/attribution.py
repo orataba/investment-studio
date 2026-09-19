@@ -580,13 +580,12 @@ def merge_group_coverage_state(states: list[str]) -> str:
     return "unavailable"
 
 
-def resolve_taxonomy_group_for_date(
+def resolve_taxonomy_group(
     *,
     taxonomy: dict[str, object],
     taxonomy_nodes_by_id: dict[str, dict[str, object]],
     assignments_by_entity: dict[str, list[dict[str, object]]],
     target_entity_id: str,
-    as_of_date: date,
 ) -> tuple[str, str]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
     active_assignments = [
@@ -596,7 +595,7 @@ def resolve_taxonomy_group_for_date(
     ]
     if len(active_assignments) > 1:
         raise ValueError(
-            f"Multiple active taxonomy assignments overlap for {target_entity_id} on {as_of_date.isoformat()}."
+            f"Multiple active taxonomy assignments exist for {target_entity_id}."
         )
     if not active_assignments:
         return (f"unassigned:{taxonomy_id}", "Unassigned")
@@ -639,67 +638,12 @@ def taxonomy_node_path_label(
     return " / ".join(reversed(path))
 
 
-def is_taxonomy_unassigned_group(group_key: str, taxonomy_id: str) -> bool:
-    return group_key == f"unassigned:{taxonomy_id}"
-
-
-def daily_slice_has_period_end_exposure(daily_slice: dict[str, object]) -> bool:
-    for field_name in (
-        "ending_value_base",
-        "position_market_value_base",
-        "open_cost_basis_base",
-        "cash_balance_base",
-    ):
-        value = _safe_float(daily_slice.get(field_name))
-        if value is not None and abs(value) > 1e-9:
-            return True
-    return False
-
-
-def resolve_period_taxonomy_group_for_slice(
-    *,
-    taxonomy: dict[str, object],
-    taxonomy_nodes_by_id: dict[str, dict[str, object]],
-    assignments_by_entity: dict[str, list[dict[str, object]]],
-    target_scope: str,
-    target_entity_id: str,
-    slice_date: date,
-    assignment_as_of_date: date | None,
-    entities_present_at_assignment_date: set[str],
-) -> tuple[str, str]:
-    taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
-    taxonomy_group_key, taxonomy_group_label = resolve_taxonomy_group_for_date(
-        taxonomy=taxonomy,
-        taxonomy_nodes_by_id=taxonomy_nodes_by_id,
-        assignments_by_entity=assignments_by_entity,
-        target_entity_id=target_entity_id,
-        as_of_date=assignment_as_of_date or slice_date,
-    )
-    if (
-        assignment_as_of_date is not None
-        and target_scope == "instrument"
-        and target_entity_id not in entities_present_at_assignment_date
-        and is_taxonomy_unassigned_group(taxonomy_group_key, taxonomy_id)
-    ):
-        fallback_group_key, fallback_group_label = resolve_taxonomy_group_for_date(
-            taxonomy=taxonomy,
-            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
-            assignments_by_entity=assignments_by_entity,
-            target_entity_id=target_entity_id,
-            as_of_date=slice_date,
-        )
-        if not is_taxonomy_unassigned_group(fallback_group_key, taxonomy_id):
-            return (fallback_group_key, fallback_group_label)
-    return (taxonomy_group_key, taxonomy_group_label)
-
-
 def group_contribution_slices_by_taxonomy(
     *,
     taxonomy: dict[str, object],
     taxonomy_nodes: list[dict[str, object]],
     taxonomy_assignments: list[dict[str, object]],
     base_daily_slices: list[dict[str, object]],
-    assignment_as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
     target_scope = "instrument"
@@ -735,16 +679,6 @@ def group_contribution_slices_by_taxonomy(
     market_risk_eligibility_by_group: dict[
         tuple[date, str], list[bool]
     ] = defaultdict(list)
-    entities_present_at_assignment_date: set[str] = set()
-    if assignment_as_of_date is not None:
-        for base_slice in base_daily_slices:
-            as_of_date = base_slice.get("as_of_date")
-            if as_of_date != assignment_as_of_date:
-                continue
-            base_group_key = str(base_slice.get("group_key") or "")
-            if base_group_key and daily_slice_has_period_end_exposure(base_slice):
-                entities_present_at_assignment_date.add(base_group_key)
-
     for base_slice in base_daily_slices:
         as_of_date = base_slice.get("as_of_date")
         if not isinstance(as_of_date, date):
@@ -759,15 +693,11 @@ def group_contribution_slices_by_taxonomy(
             )
         else:
             taxonomy_group_key, taxonomy_group_label = (
-                resolve_period_taxonomy_group_for_slice(
+                resolve_taxonomy_group(
                     taxonomy=taxonomy,
                     taxonomy_nodes_by_id=taxonomy_nodes_by_id,
                     assignments_by_entity=assignments_by_entity,
-                    target_scope=target_scope,
                     target_entity_id=base_group_key,
-                    slice_date=as_of_date,
-                    assignment_as_of_date=assignment_as_of_date,
-                    entities_present_at_assignment_date=entities_present_at_assignment_date,
                 )
             )
         slice_key = (as_of_date, taxonomy_group_key)

@@ -53,7 +53,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "identity": "20260919_0002",
         "instrument_data": "20260908_0035",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260908_0063",
+        "portfolio": "20260920_0064",
         "watchlist": "20260914_0058",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
@@ -150,7 +150,7 @@ def test_audit_contract_names_cover_registry_0019(
     assert "price_bar_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "holding_valuation_basis_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
-        "analytics_scope_missing_effective_selection"
+        "analytics_scope_missing_current_selection"
         in audit_module.AUDIT_CHECK_NAMES
     )
     assert "analytics_scope_incomplete_configuration" in audit_module.AUDIT_CHECK_NAMES
@@ -464,7 +464,7 @@ def test_twr_audit_cte_projects_daily_twr(
     )
     assert "superseded_by_selection_id IS NULL" in missing_selection_query
     incomplete_configuration_query = next(
-        query for query in queries if "taxonomy_configuration_revision" in query
+        query for query in queries if "WITH current_selection AS" in query
     )
     assert "taxonomy_node_id = '__root__'" in incomplete_configuration_query
     assert "taxonomy_node_id = '__unassigned__'" in incomplete_configuration_query

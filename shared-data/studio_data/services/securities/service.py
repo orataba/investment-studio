@@ -16,7 +16,7 @@ from studio_data.services.etfs import (
     search_etfs,
     sync_etf_catalog,
 )
-from studio_data.services.fmp import FmpClient, refresh_fmp_eod
+from studio_data.services.fmp.client import FmpClient
 from studio_data.services.instrument_store import get_instrument
 
 
@@ -112,6 +112,8 @@ def refresh_security_eod(
             dict(instrument.get("source_settings") or {}).get("source_api_profile") or ""
         ).strip().lower()
         if source_profile == "fmp":
+            from studio_data.services.fmp.eod import refresh_fmp_eod
+
             return refresh_fmp_eod(
                 instrument_id,
                 instrument_type="index",

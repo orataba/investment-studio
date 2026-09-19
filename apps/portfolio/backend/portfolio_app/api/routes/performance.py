@@ -411,7 +411,6 @@ def get_portfolio_period_calculation_groups(
                         taxonomy_id=taxonomy_id,
                         group_key=group_key,
                         base_report=base_contribution_report,
-                        use_period_end_taxonomy_assignments=True,
                         apply_boundary_values=False,
                     )
                 else:
@@ -438,7 +437,6 @@ def get_portfolio_period_calculation_groups(
                         taxonomy_id=taxonomy_id,
                         group_key=group_key,
                         base_report=base_contribution_report,
-                        use_period_end_taxonomy_assignments=True,
                         apply_boundary_values=False,
                     )
                 if base_detail_report is not None:
@@ -453,7 +451,6 @@ def get_portfolio_period_calculation_groups(
                         end_date=end_date,
                         taxonomy_id=taxonomy_id,
                         base_report=base_detail_report,
-                        use_period_end_taxonomy_assignments=True,
                     )
                 else:
                     base_detail_report = build_contribution_report(
@@ -479,7 +476,6 @@ def get_portfolio_period_calculation_groups(
                         end_date=end_date,
                         taxonomy_id=taxonomy_id,
                         base_report=base_detail_report,
-                        use_period_end_taxonomy_assignments=True,
                     )
         calculation_inputs = load_period_calculation_inputs(
             portfolio_id, start_date=start_date, end_date=end_date,

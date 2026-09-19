@@ -107,6 +107,10 @@ def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
     assert result['as_of_date'] == result['workspace']['as_of_date'] == selected.isoformat()
     assert result['concentration']['as_of_date'] == result['tail_risk']['as_of_date'] == selected.isoformat()
     assert all(source['end_date'] == selected.isoformat() for source in result['sources'])
+    assert "planning_as_of_date" not in result
+    assert {row["group_id"] for row in result["targets"]["rows"]} == {"macro", "gold"}
+    target_source = next(source for source in result["sources"] if source["source_id"].endswith(":targets"))
+    assert "当前保存配置" in target_source["date_basis"]
 
 
 @pytest.mark.parametrize("change", ["currency", "model", "date"])

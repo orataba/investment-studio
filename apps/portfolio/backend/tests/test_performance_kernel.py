@@ -4787,8 +4787,6 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -4812,8 +4810,6 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]
@@ -7400,8 +7396,6 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7425,8 +7419,6 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]
@@ -7534,8 +7526,6 @@ def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(cl
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7564,23 +7554,11 @@ def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(cl
     ]
     store["taxonomy_assignments"] = [
         {
-            "assignment_id": "assign-0001",
-            "taxonomy_id": "tax-sector",
-            "target_scope": "instrument",
-            "target_entity_id": "equity-us-test",
-            "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-01-02",
-            "status": "active",
-        },
-        {
             "assignment_id": "assign-0002",
             "taxonomy_id": "tax-sector",
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-growth",
-            "effective_from": "2026-01-03",
-            "effective_to": None,
             "status": "active",
         },
     ]
@@ -7703,8 +7681,6 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7728,8 +7704,6 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
             "target_scope": "instrument",
             "target_entity_id": "equity-us-flow-test",
             "taxonomy_node_id": "tax-sector-core",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]
@@ -7869,8 +7843,6 @@ def test_taxonomy_contribution_and_entries_keep_cash_outside_security_taxonomy(c
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7894,8 +7866,6 @@ def test_taxonomy_contribution_and_entries_keep_cash_outside_security_taxonomy(c
             "target_scope": "instrument",
             "target_entity_id": "equity-us-cash-bucket",
             "taxonomy_node_id": "tax-liquidity-core",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]
@@ -8617,8 +8587,6 @@ def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -8647,23 +8615,11 @@ def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(
     ]
     store["taxonomy_assignments"] = [
         {
-            "assignment_id": "assign-0001",
-            "taxonomy_id": "tax-sector",
-            "target_scope": "instrument",
-            "target_entity_id": "equity-us-test",
-            "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-01-02",
-            "status": "active",
-        },
-        {
             "assignment_id": "assign-0002",
             "taxonomy_id": "tax-sector",
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-growth",
-            "effective_from": "2026-01-03",
-            "effective_to": None,
             "status": "active",
         },
     ]
@@ -9104,8 +9060,6 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9129,8 +9083,6 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
             "target_scope": "instrument",
             "target_entity_id": instrument_id,
             "taxonomy_node_id": "tax-risk-basis-core",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
         for instrument_id in ("equity-us-daily-risk-test", "fund-us-daily-risk-test")
@@ -9479,8 +9431,6 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9504,8 +9454,6 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]
@@ -9766,8 +9714,6 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9796,23 +9742,11 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
     ]
     store["taxonomy_assignments"] = [
         {
-            "assignment_id": "assign-0001",
-            "taxonomy_id": "tax-sector",
-            "target_scope": "instrument",
-            "target_entity_id": "equity-us-test",
-            "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-01-02",
-            "status": "active",
-        },
-        {
             "assignment_id": "assign-0002",
             "taxonomy_id": "tax-sector",
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-growth",
-            "effective_from": "2026-01-03",
-            "effective_to": None,
             "status": "active",
         },
     ]
@@ -9832,7 +9766,7 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
     assert isclose(payload["end_groups"][0]["market_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(client, monkeypatch):
+def test_taxonomy_calculation_groups_use_current_configuration_and_system_cash_group(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -9922,8 +9856,6 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(c
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9952,23 +9884,11 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(c
     ]
     store["taxonomy_assignments"] = [
         {
-            "assignment_id": "assign-0001",
-            "taxonomy_id": "tax-sector",
-            "target_scope": "instrument",
-            "target_entity_id": "equity-us-test",
-            "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-01-02",
-            "status": "active",
-        },
-        {
             "assignment_id": "assign-0002",
             "taxonomy_id": "tax-sector",
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-growth",
-            "effective_from": "2026-01-03",
-            "effective_to": None,
             "status": "active",
         },
     ]
@@ -10004,7 +9924,7 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(c
     assert isclose(groups["__cash__"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_group(client, monkeypatch):
+def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_current_group(client, monkeypatch):
     instrument_id = "equity-us-sold-tax-test"
     portfolio_id = "taxonomy-sold-out-period-end-test"
     instrument_detail = _test_instrument_detail(
@@ -10119,8 +10039,6 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_grou
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10144,8 +10062,6 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_grou
             "target_scope": "instrument",
             "target_entity_id": instrument_id,
             "taxonomy_node_id": "tax-sector-core",
-            "effective_from": "2026-01-02",
-            "effective_to": "2026-01-03",
             "status": "active",
         }
     ]
@@ -10271,7 +10187,7 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
     assert isclose(groups["cash"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monkeypatch):
+def test_period_calculation_drilldown_taxonomy_uses_current_configuration(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -10361,8 +10277,6 @@ def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monk
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10391,23 +10305,11 @@ def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monk
     ]
     store["taxonomy_assignments"] = [
         {
-            "assignment_id": "assign-0001",
-            "taxonomy_id": "tax-sector",
-            "target_scope": "instrument",
-            "target_entity_id": "equity-us-test",
-            "taxonomy_node_id": "tax-sector-value",
-            "effective_from": "2026-01-01",
-            "effective_to": "2026-01-02",
-            "status": "active",
-        },
-        {
             "assignment_id": "assign-0002",
             "taxonomy_id": "tax-sector",
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-growth",
-            "effective_from": "2026-01-03",
-            "effective_to": None,
             "status": "active",
         },
     ]
@@ -10963,8 +10865,6 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
             "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10988,8 +10888,6 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
             "target_scope": "instrument",
             "target_entity_id": "equity-us-test",
             "taxonomy_node_id": "tax-sector-income",
-            "effective_from": "2026-01-01",
-            "effective_to": None,
             "status": "active",
         }
     ]

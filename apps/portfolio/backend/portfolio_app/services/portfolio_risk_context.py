@@ -1,4 +1,4 @@
-"""Read the existing portfolio risk model, planning targets and dated holdings together."""
+"""Read the risk model and dated holdings against the current classification and targets."""
 from datetime import date
 from math import isfinite, sqrt
 from urllib.parse import quote
@@ -7,8 +7,6 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.analytics_scope import taxonomy_catalog_as_of
-from portfolio_app.services.valuation_clock import planning_reference_date
 from portfolio_app.services.risk_model import (
     _daily_mark_to_last_return_matrix, _return_series_with_periods,
     _row_key, estimate_covariance,
@@ -223,13 +221,13 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
         "currency": workspace["base_currency"], "frequency": source_frequency, "detail_path": path}
         for key, title, start_date, source_frequency, date_basis in [
             ("metrics", "组合生产风险与分类风险贡献", window_start, frequency, "当前风险模型收益窗口"),
-            ("targets", "已保存配置目标与当前偏离", None, None, "规划目标按规划日期的生效版本；估值与风险观察按持仓截至日，两日期分别披露"),
+            ("targets", "已保存配置目标与当前偏离", None, None, "目标与分类采用当前保存配置；估值与风险观察保留持仓截至日"),
             ("comparison", "历史持仓按同模型重算的风险变化", comparison["previous_as_of_date"], frequency, "两次实际持仓截至日；各自风险窗口按同一模型滚动重算"),
             ("correlations", "生产风险模型隐含相关性", window_start, frequency, "当前风险模型收益窗口"),
         ]]
     for source in sources:
         if source["source_id"] == f"portfolio-risk:{pid}:targets":
-            source["end_date"] = catalog.get("planning_as_of_date") or current_date
+            source["end_date"] = current_date
             source["valuation_as_of_date"] = current_date
     fields = ["instrument_core", "quantity", "market_value_base", "cost_basis_base", "unrealized_pnl_base", "unrealized_return_base",
         "instrument_holding_start_date", "quote_as_of_date", "risk_eligible", "holding_kind", "derivative_contract_id", "position_reference_id"]
@@ -261,9 +259,6 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
     workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
     catalog = get_portfolio_taxonomies(portfolio_id, include_market_profile=False).model_dump(mode="json")
     with get_session_factory()() as session:
-        holding_date = date.fromisoformat(workspace["as_of_date"])
-        planning_date = planning_reference_date(holding_date, pinned=as_of_date is not None)
-        catalog = {**catalog, **taxonomy_catalog_as_of(portfolio_id, planning_date)}
         previous_date = session.scalar(select(PortfolioDailySnapshotModel.as_of_date).where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
             PortfolioDailySnapshotModel.as_of_date < date.fromisoformat(workspace["as_of_date"]))
@@ -275,7 +270,6 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
         except (HTTPException, PortfolioCalculationUnavailable, ValueError) as exc:
             error = f"历史持仓风险重算暂不可用：{getattr(exc, 'detail', str(exc))}"
     result = project_portfolio_risk(workspace, catalog, previous, previous_error=error)
-    result["planning_as_of_date"] = planning_date.isoformat()
     from portfolio_app.services.concentration import ConcentrationUnavailable, read_portfolio_concentration
     from portfolio_app.services.tail_risk import read_portfolio_tail_risk
     try:
@@ -307,5 +301,5 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
             **_targets(selected_catalog, _groups(workspace, selected_catalog))})
         result["sources"].append({"source_id": target_source_id, "source_type": "portfolio_taxonomy_targets", "portfolio_id": portfolio_id,
             "taxonomy_id": taxonomy["taxonomy_id"], "title": f"{taxonomy['name']} targets", "start_date": None,
-            "end_date": planning_date.isoformat(), "valuation_as_of_date": workspace["as_of_date"], "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"})
+            "end_date": workspace["as_of_date"], "valuation_as_of_date": workspace["as_of_date"], "date_basis": "当前保存目标；日期为对应持仓估值截至日", "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"})
     return result

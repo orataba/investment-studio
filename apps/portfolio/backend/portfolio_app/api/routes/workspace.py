@@ -211,7 +211,6 @@ def _enrich_holdings_analytics_scope(
     ]
     scopes = resolve_instrument_analytics_scopes(
         portfolio_id,
-        as_of_date=as_of_date,
         instrument_ids=[*scope_instrument_ids, *transaction_instrument_ids],
     )
 
@@ -279,7 +278,7 @@ def _enrich_holdings_analytics_scope(
                 "exclusion_reason": (
                     _CASH_SCOPE_SYSTEM_EXCLUSION_REASON
                     if is_cash_or_settlement
-                    else "No effective analytics scope assignment or policy."
+                    else "No current analytics scope assignment or policy."
                 ),
             }
         row.update(

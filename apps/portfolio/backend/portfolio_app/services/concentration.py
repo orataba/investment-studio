@@ -12,7 +12,11 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from portfolio_app.db.models import PortfolioDailyHoldingSnapshotModel
+from portfolio_app.db.models import (
+    PortfolioDailyHoldingSnapshotModel,
+    PortfolioRecordModel,
+    TaxonomyRecordModel,
+)
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.concentration_settings import empty_settings, read_concentration_settings
 
@@ -249,8 +253,7 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
 
 def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None = None, workspace: dict | None = None) -> dict:
     from portfolio_app.api.routes.workspace import _resolve_holdings_request
-    from portfolio_app.api.routes.taxonomies import get_portfolio_taxonomies
-    from portfolio_app.services.analytics_scope import taxonomy_configuration_as_of_in_session
+    from portfolio_app.services.analytics_scope import current_taxonomy_configuration_in_session
     from portfolio_app.services.workspace_cache import get_cached_materialized_holdings_workspace
     from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument_summaries
     if workspace is None:
@@ -264,8 +267,11 @@ def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None =
     if as_of_date is not None and effective_date != as_of_date:
         raise ValueError("Concentration workspace date differs from the requested date.")
     settings = read_concentration_settings(portfolio_id, as_of_date=effective_date)
-    catalog = get_portfolio_taxonomies(portfolio_id, include_market_profile=False).model_dump(mode="json")
     with get_session_factory()() as session:
+        # Taxonomy writers take the same portfolio lock. Read nodes, membership
+        # and their revision together so a concurrent edit cannot mix generations.
+        session.scalar(select(PortfolioRecordModel).where(
+            PortfolioRecordModel.portfolio_id == portfolio_id).with_for_update(read=True))
         records = list(session.scalars(select(PortfolioDailyHoldingSnapshotModel).where(
             PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id,
             PortfolioDailyHoldingSnapshotModel.as_of_date == effective_date)))
@@ -274,21 +280,19 @@ def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None =
                  "position_reference_id": record.position_reference_id, "holding_kind": record.holding_kind,
                  "instrument_id": record.instrument_id, "derivative_contract_id": record.derivative_contract_id,
                  "quantity": record.quantity, "market_value_base": record.market_value_base} for record in records]
-        dated_taxonomies, dated_nodes, dated_assignments, limitations, configurations = [], [], [], {}, {}
-        for taxonomy in catalog["taxonomies"]:
-            tid = taxonomy["taxonomy_id"]
-            configuration = taxonomy_configuration_as_of_in_session(session, portfolio_id, tid, effective_date)
-            if configuration is None:
-                dated_taxonomies.append(taxonomy)
-                limitations[tid] = ["No classification configuration is effective on the holding date."]
-            else:
-                dated_taxonomies.append(configuration.get("taxonomy") or taxonomy)
-                configurations[tid] = {key: configuration.get(key) for key in ("taxonomy_configuration_revision_id", "configuration_version", "effective_from", "effective_to")}
-                dated_nodes.extend(configuration.get("taxonomy_nodes", []))
-                dated_assignments.extend(configuration.get("taxonomy_assignments", []))
-        catalog = {**catalog, "taxonomies": dated_taxonomies, "taxonomy_nodes": dated_nodes, "taxonomy_assignments": dated_assignments,
-                   "concentration_taxonomy_limitations": limitations, "concentration_taxonomy_configurations": configurations}
-    # Concentration uses dated account holdings and contract principal, not return
+        current_taxonomies, current_nodes, current_assignments, configurations = [], [], [], {}
+        taxonomy_ids = session.scalars(select(TaxonomyRecordModel.taxonomy_id).where(
+            TaxonomyRecordModel.portfolio_id == portfolio_id).order_by(TaxonomyRecordModel.taxonomy_id))
+        for tid in taxonomy_ids:
+            configuration = current_taxonomy_configuration_in_session(session, portfolio_id, tid)
+            current_taxonomies.append(configuration["taxonomy"])
+            configurations[tid] = {key: configuration.get(key) for key in ("taxonomy_configuration_revision_id", "configuration_version")}
+            current_nodes.extend(configuration["taxonomy_nodes"])
+            current_assignments.extend(configuration["taxonomy_assignments"])
+        catalog = {"taxonomies": current_taxonomies, "taxonomy_nodes": current_nodes, "taxonomy_assignments": current_assignments,
+                   "concentration_taxonomy_configurations": configurations}
+    # Classifications are current. Holdings, contract principal and limit policies
+    # retain the requested financial date. Concentration does not need return
     # histories or market-risk analytics. Only linked-security display names may
     # need current registry metadata; never replace saved quotes, FX or terms.
     linked_ids, names = set(), {}

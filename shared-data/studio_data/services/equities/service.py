@@ -6,7 +6,7 @@ from studio_data.services.equities.catalog import (
     get_catalog_equity,
     search_equity_catalog,
 )
-from studio_data.services.fmp import FmpClient, refresh_fmp_eod
+from studio_data.services.fmp.client import FmpClient
 from studio_data.services.fmp.exchanges import exchange_by_code
 from studio_data.services.fmp.profile import listing_quote_contract
 from studio_data.services.instrument_store import (
@@ -242,6 +242,8 @@ def refresh_equity_eod(
     full_history: bool = False,
     store=None,
 ) -> dict[str, object]:
+    from studio_data.services.fmp.eod import refresh_fmp_eod
+
     return refresh_fmp_eod(
         instrument_id=instrument_id,
         instrument_type="equity",

@@ -50,7 +50,9 @@ def test_fmp_index_refresh_uses_the_index_contract(monkeypatch) -> None:
         )
         return {"instrument_id": instrument_id}
 
-    monkeypatch.setattr(service, "refresh_fmp_eod", fake_refresh_fmp_eod)
+    from studio_data.services.fmp import eod
+
+    monkeypatch.setattr(eod, "refresh_fmp_eod", fake_refresh_fmp_eod)
     store = object()
 
     result = service.refresh_security_eod(

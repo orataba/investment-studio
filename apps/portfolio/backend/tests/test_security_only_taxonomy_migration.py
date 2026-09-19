@@ -219,5 +219,5 @@ def test_security_only_taxonomy_migration_rejects_legacy_scope_and_enforces_head
             )
         )
 
-    with pytest.raises(RuntimeError, match="Restore the pre-migration database backup"):
+    with pytest.raises(RuntimeError, match="(?i)restore the pre-migration.*backup"):
         command.downgrade(config, "20260810_0047")

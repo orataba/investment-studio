@@ -241,19 +241,17 @@ def test_taxonomy_group_labels_use_full_paths_when_leaf_names_repeat() -> None:
         ],
     }
 
-    equity_key, equity_label = attribution.resolve_taxonomy_group_for_date(
+    equity_key, equity_label = attribution.resolve_taxonomy_group(
         taxonomy=taxonomy,
         taxonomy_nodes_by_id=nodes,
         assignments_by_entity=assignments,
         target_entity_id="equity-fund",
-        as_of_date=date(2026, 1, 2),
     )
-    alternatives_key, alternatives_label = attribution.resolve_taxonomy_group_for_date(
+    alternatives_key, alternatives_label = attribution.resolve_taxonomy_group(
         taxonomy=taxonomy,
         taxonomy_nodes_by_id=nodes,
         assignments_by_entity=assignments,
         target_entity_id="macro-fund",
-        as_of_date=date(2026, 1, 2),
     )
 
     assert equity_key == "equity-growth"
@@ -868,3 +866,33 @@ def test_performance_orchestrator_keeps_portfolio_metadata_boundary(
         "group_key": "broker-1",
         "start_is_close_boundary": False,
     }
+
+
+def test_current_assignment_restates_every_slice_without_changing_financial_dates():
+    taxonomy = {"taxonomy_id": "strategy"}
+    nodes = [
+        {"taxonomy_id": "strategy", "taxonomy_node_id": node, "node_name": node, "status": "active"}
+        for node in ("growth", "defensive")
+    ]
+    slices = [
+        _complete_slice(as_of_date=date(2024, 1, day), group_key="asset", group_label="Asset",
+                        beginning_value=100.0, ending_value=100.0 + day, pnl=float(day), contribution=day / 100.0)
+        for day in (2, 3)
+    ]
+    original = deepcopy(slices)
+    assignment = {"assignment_id": "assignment", "taxonomy_id": "strategy", "target_scope": "instrument",
+                  "target_entity_id": "asset", "taxonomy_node_id": "growth", "status": "active"}
+    saved = attribution.group_contribution_slices_by_taxonomy(
+        taxonomy=taxonomy, taxonomy_nodes=nodes, taxonomy_assignments=[assignment], base_daily_slices=slices,
+    )
+    restated = attribution.group_contribution_slices_by_taxonomy(
+        taxonomy=taxonomy, taxonomy_nodes=nodes,
+        taxonomy_assignments=[{**assignment, "taxonomy_node_id": "defensive"}], base_daily_slices=slices,
+    )
+    assert slices == original
+    assert {row["group_key"] for row in saved} == {"growth"}
+    assert {row["group_key"] for row in restated} == {"defensive"}
+    fields = ("as_of_date", "beginning_value_base", "ending_value_base", "total_pnl", "daily_contribution")
+    assert [tuple(row[field] for field in fields) for row in saved] == [
+        tuple(row[field] for field in fields) for row in restated
+    ]

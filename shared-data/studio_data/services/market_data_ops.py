@@ -3793,7 +3793,7 @@ def refresh_market_data(
 
             return refresh_fmp_crypto_eod(instrument_id, full_history=full_history)
         if str(instrument.get("instrument_type") or "") == "fx":
-            from studio_data.services.fmp import refresh_fmp_fx_eod
+            from studio_data.services.fmp.fx import refresh_fmp_fx_eod
 
             return refresh_fmp_fx_eod(
                 instrument_id,
@@ -3830,7 +3830,7 @@ def refresh_market_data(
 
                 return refresh_fmp_crypto_eod(instrument_id, full_history=full_history)
             if str(instrument.get("instrument_type") or "") == "fx":
-                from studio_data.services.fmp import refresh_fmp_fx_eod
+                from studio_data.services.fmp.fx import refresh_fmp_fx_eod
 
                 return refresh_fmp_fx_eod(
                     instrument_id,

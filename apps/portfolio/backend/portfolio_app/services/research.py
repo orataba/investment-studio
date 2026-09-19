@@ -19,7 +19,6 @@ from investment_studio_instrument_core.db_models import Instrument
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     AccountRecordModel,
-    AnalyticsScopePolicyRecordModel,
     DerivativeContractRecordModel,
     PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
@@ -36,12 +35,11 @@ from portfolio_app.services.daily_snapshots import (
     ensure_portfolio_daily_snapshots,
 )
 from portfolio_app.services.ledger import build_account_workspace
+from portfolio_app.services.instrument_registry import get_registry_instrument_details, get_shared_fx_rates
 from portfolio_app.services.performance import build_holdings_report
-from portfolio_app.services.analytics_scope import (
-    analytics_policy_version,
-    taxonomy_configuration_as_of,
-    taxonomy_configuration_as_of_in_session,
-)
+from portfolio_app.services import valuation_fx
+from portfolio_app.services.asset_deliveries import expand_asset_deliveries
+from portfolio_app.services.research_inputs import capture_current_target_configuration
 from portfolio_app.services.research_solver import (
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -49,6 +47,7 @@ from portfolio_app.services.research_solver import (
     SYSTEM_CASH_TARGET_MEMBER_ID,
     SYSTEM_DERIVATIVE_TARGET_LABEL,
     SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+    _build_taxonomy_state,
     build_research_calculation_frequency_profile,
     build_research_scope_options,
     build_current_target_backtest,
@@ -68,7 +67,6 @@ from portfolio_app.services.portfolio_store import (
 )
 from portfolio_app.services.research_eligibility import derive_research_lifecycle
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
-from portfolio_app.services.valuation_clock import planning_reference_date
 from portfolio_app.services.workspace_cache import get_cached_materialized_performance_report
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
@@ -76,7 +74,7 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
-RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 4
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 5
 logger = logging.getLogger(__name__)
 DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
     {
@@ -614,35 +612,21 @@ def _canonical_reliability_value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _planning_as_of_date(as_of_mode: str, valuation_date: date) -> date:
-    """Current planning decisions use today's policy with the latest valued holdings.
-
-    A pinned analysis and historical simulation retain their dated policy. The
-    valuation clock never advances merely because the planning policy changed.
-    """
-    return planning_reference_date(valuation_date, pinned=as_of_mode == RESEARCH_AS_OF_MODE_PINNED)
-
-
 def _planning_state_fingerprint(
     session,
     *,
     portfolio_id: str,
     planning_taxonomy_id: str | None,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
 ) -> str | None:
     taxonomy_id = str(planning_taxonomy_id or "").strip()
     if not taxonomy_id:
         return None
 
-    taxonomy_configuration = taxonomy_configuration_as_of_in_session(
-        session,
-        portfolio_id,
-        taxonomy_id,
-        planning_as_of_date or as_of_date,
+    configuration = target_configuration if target_configuration is not None else capture_current_target_configuration(
+        portfolio_id, taxonomy_id, session=session,
     )
-    if taxonomy_configuration is None:
-        return None
     instrument_universe = session.scalars(
         select(PortfolioInstrumentUniverseRecordModel).where(
             PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id,
@@ -651,6 +635,14 @@ def _planning_state_fingerprint(
     ).all()
     source_instrument_ids = _portfolio_source_instrument_ids(session, portfolio_id)
     source_instrument_ids.update(item.instrument_id for item in instrument_universe)
+    source_instrument_ids.update(
+        str(item["target_entity_id"]) for item in configuration.get("taxonomy_assignments", [])
+        if item.get("status") == "active" and item.get("target_scope") == "instrument"
+    )
+    source_instrument_ids.update(
+        str(item["target_member_id"]) for item in configuration.get("target_set_lines", [])
+        if item.get("target_member_type") == "instrument"
+    )
     settings = session.get(ResearchSettingsRecordModel, portfolio_id)
     if settings is not None and settings.backtest_benchmark_instrument_id:
         source_instrument_ids.add(settings.backtest_benchmark_instrument_id)
@@ -660,21 +652,7 @@ def _planning_state_fingerprint(
     state = {
         "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
         "as_of_date": as_of_date.isoformat(),
-        "taxonomy_configuration": taxonomy_configuration,
-        "analytics_policy_version": analytics_policy_version(portfolio_id, session=session),
-        # A scheduled policy can become effective without another database write
-        # or a newer market close. Track the actual planning-date policy set.
-        "effective_analytics_policies": [tuple(row) for row in session.execute(select(
-            AnalyticsScopePolicyRecordModel.analytics_scope_policy_id,
-            AnalyticsScopePolicyRecordModel.policy_version,
-        ).where(
-            AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id,
-            AnalyticsScopePolicyRecordModel.taxonomy_id == taxonomy_id,
-            AnalyticsScopePolicyRecordModel.superseded_by_policy_id.is_(None),
-            AnalyticsScopePolicyRecordModel.effective_from <= (planning_as_of_date or as_of_date),
-            or_(AnalyticsScopePolicyRecordModel.effective_to.is_(None),
-                AnalyticsScopePolicyRecordModel.effective_to >= (planning_as_of_date or as_of_date)),
-        ).order_by(AnalyticsScopePolicyRecordModel.analytics_scope_policy_id))],
+        "target_snapshot_fingerprint": configuration["target_snapshot_fingerprint"],
         # Dates alone do not detect an amended/deleted historical transaction.
         # Reuse canonical row versions and shared source watermarks; a refresh
         # request itself is not evidence that any financial input changed.
@@ -929,12 +907,12 @@ def _build_planning_group_snapshot(
     account_rows: list[dict[str, object]],
     portfolio_id: str,
     planning_taxonomy_id: str | None,
-    as_of_date: date,
+    target_configuration: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     if not planning_taxonomy_id:
         return []
 
-    configuration = taxonomy_configuration_as_of(portfolio_id, planning_taxonomy_id, as_of_date) or {}
+    configuration = target_configuration if target_configuration is not None else capture_current_target_configuration(portfolio_id, planning_taxonomy_id)
     node_name_by_id = {
         str(item.get("taxonomy_node_id") or ""): str(item.get("node_name") or "")
         for item in configuration.get("taxonomy_nodes", [])
@@ -1096,7 +1074,7 @@ def _build_planning_target_summary(
     portfolio_id: str,
     *,
     planning_taxonomy_id: str | None,
-    as_of_date: date,
+    target_configuration: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if not planning_taxonomy_id:
         return {
@@ -1105,7 +1083,7 @@ def _build_planning_target_summary(
             "scoped_target_set_count": 0,
         }
 
-    configuration = taxonomy_configuration_as_of(portfolio_id, planning_taxonomy_id, as_of_date) or {}
+    configuration = target_configuration if target_configuration is not None else capture_current_target_configuration(portfolio_id, planning_taxonomy_id)
     configured_target_sets = [
         item
         for item in configuration.get("target_sets", [])
@@ -1129,9 +1107,10 @@ def _build_research_context(
     *,
     planning_taxonomy_id: str | None,
     as_of_date: date,
-    planning_as_of_date: date | None = None,
+    target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1143,12 +1122,26 @@ def _build_research_context(
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
     )
+    # Both financial views use the same request-local inputs. Preserve full FX
+    # validation and each valuation's dated selection while avoiding repeated
+    # whole-history reads and one registry query per historical security.
+    if direct_fx_instruments is None:
+        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
+    missing_instrument_ids = {
+        str(transaction.get("instrument_id"))
+        for transaction in expand_asset_deliveries(transactions)
+        if transaction.get("instrument_id")
+        and str(transaction["instrument_id"]) not in resolved_instrument_detail_cache
+    }
+    if missing_instrument_ids:
+        resolved_instrument_detail_cache.update(get_registry_instrument_details(sorted(missing_instrument_ids)))
     statement = build_holdings_report(
         portfolio,
         accounts,
         transactions,
         as_of_date=as_of_date,
         instrument_detail_cache=resolved_instrument_detail_cache,
+        direct_fx_instruments=direct_fx_instruments,
     )
     account_workspace = build_account_workspace(
         portfolio_id,
@@ -1157,6 +1150,7 @@ def _build_research_context(
         base_currency=str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
         as_of_date=as_of_date,
         instrument_detail_cache=resolved_instrument_detail_cache,
+        direct_fx_instruments=direct_fx_instruments,
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
     performance_report = get_cached_materialized_performance_report(
@@ -1181,17 +1175,20 @@ def _build_research_context(
         research_security_positions,
         base_currency=str(statement.get("base_currency") or "USD"),
     )
+    configuration = target_configuration if target_configuration is not None else (
+        capture_current_target_configuration(portfolio_id, planning_taxonomy_id) if planning_taxonomy_id else None
+    )
     planning_groups = _build_planning_group_snapshot(
         statement_positions,
         account_rows=list(account_workspace.get("accounts") or []),
         portfolio_id=portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
-        as_of_date=planning_as_of_date or as_of_date,
+        target_configuration=configuration,
     )
     planning_target_summary = _build_planning_target_summary(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
-        as_of_date=planning_as_of_date or as_of_date,
+        target_configuration=configuration,
     )
     quality_warnings: list[str] = []
     unassigned_group = next(
@@ -1248,7 +1245,8 @@ def _build_research_context(
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
         "base_currency": str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
         "as_of_date": as_of_date.isoformat(),
-        "planning_as_of_date": (planning_as_of_date or as_of_date).isoformat(),
+        "target_configuration": "current_snapshot",
+        "target_snapshot_fingerprint": (configuration or {}).get("target_snapshot_fingerprint"),
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
         "nav": resolved_nav_base,
@@ -1604,8 +1602,8 @@ def _build_current_target_detail(
         "headline": headline,
         "coverage_note": (
             f"Valuation and market observations through {context.get('as_of_date')}; "
-            f"planning policy effective on {context.get('planning_as_of_date') or context.get('as_of_date')}. "
-            "Current target weights use these separate clocks; historical simulation uses each decision date's policy."
+            "current target weights and historical simulation both use the same captured current "
+            "taxonomy, targets and eligibility. Historical market and ledger inputs retain their own dates."
         ),
         "signals": signals,
         "findings": findings,
@@ -1799,17 +1797,16 @@ def get_research_workbench(
             scope_name_map,
             default_as_of_date=latest_portfolio_as_of_date,
         )
-        planning_date = _planning_as_of_date(
-            str(settings_payload["as_of_mode"]),
-            _date_value(settings_payload.get("as_of_date")) or latest_portfolio_as_of_date,
-        )
+        configuration = capture_current_target_configuration(
+            portfolio_id, str(settings_payload["planning_taxonomy_id"]), session=session,
+        ) if settings_payload.get("planning_taxonomy_id") else None
         production_risk_model = get_portfolio_risk_policy(portfolio_id) or {}
         current_planning_state_fingerprint = _planning_state_fingerprint(
             session,
             portfolio_id=portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
             as_of_date=_date_value(settings_payload.get("as_of_date")) or latest_portfolio_as_of_date,
-            planning_as_of_date=planning_date,
+            target_configuration=configuration,
         )
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
@@ -1868,7 +1865,7 @@ def get_research_workbench(
         portfolio_id,
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        planning_as_of_date=planning_date,
+        target_configuration=configuration,
         lookback_days=risk_lookback_days,
         instrument_detail_cache=instrument_detail_cache,
     )
@@ -1877,7 +1874,7 @@ def get_research_workbench(
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        planning_as_of_date=planning_date,
+        target_configuration=configuration,
         lookback_days=risk_lookback_days,
         _instrument_detail_cache=instrument_detail_cache,
     )
@@ -1893,7 +1890,7 @@ def get_research_workbench(
             portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
             as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-            planning_as_of_date=planning_date,
+            target_configuration=configuration,
         ),
         "calculation_frequency": calculation_frequency_profile,
         "settings": settings_payload,
@@ -2158,13 +2155,12 @@ def run_portfolio_research(
             settings_row,
             default_as_of_date=latest_portfolio_as_of_date,
         )
-        planning_date = _planning_as_of_date(_research_as_of_mode(settings_row), effective_as_of_date)
-        effective_configuration = taxonomy_configuration_as_of_in_session(
-            session, portfolio_id, settings_row.planning_taxonomy_id, planning_date,
+        configuration = capture_current_target_configuration(
+            portfolio_id, str(settings_row.planning_taxonomy_id), session=session,
         ) if settings_row.planning_taxonomy_id else None
         if not any(item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))
-                   for item in (effective_configuration or {}).get("target_sets", [])):
-            raise ValueError("Configure active weight or risk-contribution targets for the selected taxonomy and date before running Research.")
+                   for item in (configuration or {}).get("target_sets", [])):
+            raise ValueError("Configure active weight or risk-contribution targets for the selected taxonomy before running Research.")
         production_risk_model = get_portfolio_risk_policy(portfolio_id)
         risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
         risk_calculation_frequency = "daily"
@@ -2183,7 +2179,7 @@ def run_portfolio_research(
             portfolio_id=portfolio_id,
             planning_taxonomy_id=settings_row.planning_taxonomy_id,
             as_of_date=effective_as_of_date,
-            planning_as_of_date=planning_date,
+            target_configuration=configuration,
         )
         if planning_state_fingerprint is None:
             raise ValueError("The selected planning taxonomy state is unavailable.")
@@ -2207,7 +2203,10 @@ def run_portfolio_research(
                 "planning_taxonomy_id": settings_row.planning_taxonomy_id,
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
-                "planning_as_of_date": planning_date.isoformat(),
+                "target_configuration": "current_snapshot",
+                "target_snapshot_fingerprint": configuration["target_snapshot_fingerprint"],
+                "target_configuration_snapshot": deepcopy(configuration),
+                "base_currency": configuration["base_currency"],
                 "as_of_mode": _research_as_of_mode(settings_row),
                 "lookback_days": risk_lookback_days,
                 "calculation_frequency": risk_calculation_frequency,
@@ -2255,13 +2254,23 @@ def run_portfolio_research(
 
         try:
             instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+            state = _build_taxonomy_state(
+                portfolio_id,
+                planning_taxonomy_id=str(settings_row.planning_taxonomy_id),
+                as_of_date=effective_as_of_date,
+                target_configuration=configuration,
+                frozen_taxonomy_node_ids=settings_row.frozen_taxonomy_node_ids_json or [],
+                top_sleeve_weight_bounds=settings_row.top_sleeve_weight_bounds_json or [],
+                instrument_detail_cache=instrument_detail_cache,
+            )
             context = _build_research_context(
                 portfolio_id,
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip() or None,
                 as_of_date=effective_as_of_date,
-                planning_as_of_date=planning_date,
+                target_configuration=configuration,
                 lookback_days=risk_lookback_days,
                 instrument_detail_cache=instrument_detail_cache,
+                direct_fx_instruments=state.direct_fx_instruments,
             )
             planning_taxonomy_name = taxonomy_name_map.get(str(settings_row.planning_taxonomy_id or "").strip() or "")
             with operation("portfolio_research_solve", portfolio_id=portfolio_id, run_id=run_id):
@@ -2270,7 +2279,7 @@ def run_portfolio_research(
                     planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
                     comparator_taxonomy_node_id=resolved_scope_node_id,
                     as_of_date=effective_as_of_date,
-                    planning_as_of_date=planning_date,
+                    target_configuration=configuration,
                     lookback_days=risk_lookback_days,
                     calculation_frequency=risk_calculation_frequency,
                     missing_return_policy=risk_missing_return_policy,
@@ -2283,6 +2292,7 @@ def run_portfolio_research(
                     top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
                     risk_model_config=deepcopy(production_risk_model or {}),
                     _instrument_detail_cache=instrument_detail_cache,
+                    _state=state,
                 )
             with operation("portfolio_research_backtest", portfolio_id=portfolio_id, run_id=run_id):
                 backtest_payload = build_current_target_backtest(
@@ -2290,6 +2300,7 @@ def run_portfolio_research(
                     planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
                     comparator_taxonomy_node_id=resolved_scope_node_id,
                     as_of_date=effective_as_of_date,
+                    target_configuration=configuration,
                     lookback_days=risk_lookback_days,
                     calculation_frequency=risk_calculation_frequency,
                     missing_return_policy=risk_missing_return_policy,
@@ -2320,6 +2331,7 @@ def run_portfolio_research(
                         settings_row.backtest_walk_forward_test_months
                     ),
                     _instrument_detail_cache=instrument_detail_cache,
+                    _state=state,
                 )
             solution.update(backtest_payload)
             with session_factory() as verification_session:
@@ -2327,7 +2339,6 @@ def run_portfolio_research(
                     verification_session, portfolio_id=portfolio_id,
                     planning_taxonomy_id=run_row.planning_taxonomy_id,
                     as_of_date=effective_as_of_date,
-                    planning_as_of_date=planning_date,
                 )
             if latest_fingerprint != planning_state_fingerprint:
                 raise ValueError("Research inputs changed during calculation; rerun with the current inputs.")
@@ -2414,21 +2425,29 @@ def get_research_backtest_benchmark_comparison(
             raise ValueError("Benchmark comparison requires a non-empty backtest series.")
 
         request_payload = run_row.request_payload_json or {}
-        planning_taxonomy_id = str(
-            run_row.planning_taxonomy_id
-            or (request_payload.get("planning_taxonomy_id") if isinstance(request_payload, dict) else "")
-            or ""
-        ).strip()
-        if not planning_taxonomy_id:
-            raise ValueError("Benchmark comparison requires a planning taxonomy.")
-
-        return build_research_backtest_benchmark_comparison(
-            portfolio_id,
-            planning_taxonomy_id=planning_taxonomy_id,
+        target_snapshot = request_payload.get("target_configuration_snapshot") or {}
+        holding_currencies = {str(item["base_currency"]) for item in detail.get("top_holdings", [])
+                              if isinstance(item, dict) and item.get("base_currency")}
+        saved_currency = target_snapshot.get("base_currency") or request_payload.get("base_currency")
+        if not saved_currency and len(holding_currencies) == 1:
+            saved_currency = next(iter(holding_currencies))
+        currency_warning = None
+        if not saved_currency:
+            saved_currency = portfolio["base_currency"]
+            currency_warning = (
+                "This archived run did not record its reporting currency; benchmark comparison "
+                f"uses the portfolio's current reporting currency ({saved_currency})."
+            )
+        comparison = build_research_backtest_benchmark_comparison(
+            base_currency=saved_currency,
             as_of_date=run_row.as_of_date or _default_as_of_date(portfolio),
             benchmark_instrument_id=benchmark_instrument_id,
             portfolio_points=portfolio_points,
         )
+        if currency_warning and comparison.get("backtest_benchmark"):
+            comparison["backtest_benchmark"]["warnings"].append(currency_warning)
+        return comparison
+
 
 
 def read_research_artifact_content(

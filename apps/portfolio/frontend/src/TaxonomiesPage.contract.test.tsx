@@ -281,6 +281,9 @@ describe('Taxonomies rendered page contract', () => {
     expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).toMatchObject({
       target_sets: [expect.objectContaining({ weight_enabled: true, risk_budget_enabled: false })],
     })
+    expect(screen.queryByLabelText(/effective date/i)).not.toBeInTheDocument()
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).not.toHaveProperty('effective_from')
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).not.toHaveProperty('effective_to')
     expect(apiMocks.updatePortfolioTaxonomy).not.toHaveBeenCalled()
     expect(apiMocks.updatePortfolioDefaultPlanningTaxonomy).not.toHaveBeenCalled()
   })
@@ -429,8 +432,6 @@ describe('Taxonomies rendered page contract', () => {
           performance_scope: 'ordinary',
           valuation_basis: 'market',
           exclusion_reason: null,
-          effective_from: '2000-01-01',
-          effective_to: null,
           policy_version: 1,
           superseded_by_policy_id: null,
           created_at: '2026-01-01T00:00:00Z',
@@ -445,8 +446,6 @@ describe('Taxonomies rendered page contract', () => {
           performance_scope: 'operational_only',
           valuation_basis: 'event',
           exclusion_reason: 'Grandparent policy must not win.',
-          effective_from: '2000-01-01',
-          effective_to: null,
           policy_version: 2,
           superseded_by_policy_id: null,
           created_at: '2026-01-02T00:00:00Z',
@@ -461,8 +460,6 @@ describe('Taxonomies rendered page contract', () => {
           performance_scope: 'derivative_lifecycle',
           valuation_basis: 'obligation',
           exclusion_reason: 'Nearest option ancestor.',
-          effective_from: '2000-01-01',
-          effective_to: null,
           policy_version: 3,
           superseded_by_policy_id: null,
           created_at: '2026-01-03T00:00:00Z',

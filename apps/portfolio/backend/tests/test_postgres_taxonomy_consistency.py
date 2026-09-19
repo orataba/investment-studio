@@ -16,18 +16,18 @@ pytestmark = pytest.mark.postgresql_integration
 
 def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_portfolio_env, monkeypatch):
     portfolio_id = 'taxonomy-concurrent'
-    effective_from = date(2026, 9, 19)
+    inception_date = date(2026, 9, 19)
     with get_session_factory()() as session:
         session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Concurrent planning',
-            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=effective_from))
+            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=inception_date))
         session.commit()
-    taxonomy = portfolio_store.create_taxonomy(portfolio_id, effective_from=effective_from,
+    taxonomy = portfolio_store.create_taxonomy(portfolio_id,
         name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
         planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
         status='active', source_template_ref=None)
     taxonomy_id = taxonomy['taxonomy_id']
     nodes = [portfolio_store.create_taxonomy_node(portfolio_id, taxonomy_id=taxonomy_id,
-        effective_from=effective_from, node_name=name, node_code=None, parent_taxonomy_node_id=None,
+        node_name=name, node_code=None, parent_taxonomy_node_id=None,
         sort_order=ordinal, is_terminal=True, default_target_dimension='weight', status='active')
         for ordinal, name in enumerate(['Equity', 'Rates'])]
     first_inside_revision, second_attempted, release_first = Event(), Event(), Event()
@@ -45,7 +45,7 @@ def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_po
         if index == 1:
             second_attempted.set()
         return portfolio_store.update_taxonomy_node(portfolio_id, taxonomy_id, nodes[index]['taxonomy_node_id'],
-            effective_from=effective_from, node_name=['Global Equity', 'Global Rates'][index])
+            node_name=['Global Equity', 'Global Rates'][index])
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='first-editor') as first_pool, \
             ThreadPoolExecutor(max_workers=1, thread_name_prefix='second-editor') as second_pool:
@@ -72,12 +72,12 @@ def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_po
 
 def test_scope_policy_and_taxonomy_writers_share_portfolio_first_lock_order(postgres_portfolio_env, monkeypatch):
     portfolio_id = 'planning-lock-order'
-    effective_from = date(2026, 9, 19)
+    inception_date = date(2026, 9, 19)
     with get_session_factory()() as session:
         session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Planning lock order',
-            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=effective_from))
+            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=inception_date))
         session.commit()
-    taxonomy = portfolio_store.create_taxonomy(portfolio_id, effective_from=effective_from,
+    taxonomy = portfolio_store.create_taxonomy(portfolio_id,
         name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
         planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
         status='active', source_template_ref=None)
@@ -103,15 +103,14 @@ def test_scope_policy_and_taxonomy_writers_share_portfolio_first_lock_order(post
         return analytics_scope.replace_analytics_scope_policy(portfolio_id, taxonomy_id=taxonomy_id,
             taxonomy_node_id=analytics_scope.ROOT_POLICY_NODE_ID,
             risk_eligible=False, risk_budget_eligible=False, performance_scope='ordinary',
-            valuation_basis='market', exclusion_reason='Excluded by PM', effective_from=effective_from,
-            effective_to=None)
+            valuation_basis='market', exclusion_reason='Excluded by PM')
 
     monkeypatch.setattr(portfolio_store, '_record_taxonomy_configuration_revision_in_session', record)
     monkeypatch.setattr(analytics_scope, '_next_policy_version', next_version)
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix='taxonomy-editor') as taxonomy_pool, \
             ThreadPoolExecutor(max_workers=1, thread_name_prefix='policy-editor') as policy_pool:
         first = taxonomy_pool.submit(portfolio_store.update_taxonomy, portfolio_id, taxonomy_id,
-            effective_from=effective_from, name='Current planning')
+            name='Current planning')
         assert taxonomy_locked.wait(timeout=10)
         second = policy_pool.submit(edit_policy)
         assert policy_attempted.wait(timeout=10)

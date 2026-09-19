@@ -1508,7 +1508,6 @@ def _period_taxonomy_group_resolver(
     taxonomies: list[dict[str, object]] | None,
     taxonomy_nodes: list[dict[str, object]] | None,
     taxonomy_assignments: list[dict[str, object]] | None,
-    as_of_date: date,
 ):
     if axis != "taxonomy":
         return None
@@ -1538,12 +1537,11 @@ def _period_taxonomy_group_resolver(
 
     def resolve(lot: dict[str, object]) -> str:
         target_entity_id = str(lot.get("instrument_id") or "")
-        group_key, _group_label = attribution.resolve_taxonomy_group_for_date(
+        group_key, _group_label = attribution.resolve_taxonomy_group(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
             assignments_by_entity=assignments_by_entity,
             target_entity_id=target_entity_id,
-            as_of_date=as_of_date,
         )
         return group_key
 
@@ -1957,7 +1955,6 @@ def _period_unrealized_capital_gains_by_group(
         taxonomies=taxonomies,
         taxonomy_nodes=taxonomy_nodes,
         taxonomy_assignments=taxonomy_assignments,
-        as_of_date=end_date,
     )
     account_name_map = attribution.account_name_map(accounts)
 
@@ -5372,6 +5369,7 @@ def build_holdings_report(
     include_cash_rows: bool = False,
     calculation_frequency: CalculationFrequency = "daily",
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     base_currency = valuation_fx.required_currency(
         portfolio.get("base_currency"), field_name="portfolio base currency"
@@ -5390,8 +5388,8 @@ def build_holdings_report(
         )
     )
 
-    fx_payload = get_shared_fx_rates()
-    direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
+    if direct_fx_instruments is None:
+        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
     )
@@ -5522,7 +5520,6 @@ def _filter_boundary_positions(
     positions: list[dict[str, object]],
     axis: str | None,
     group_key: str | None,
-    as_of_date: date | None,
     taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]
     | None = None,
     account_name_map: dict[str, str] | None = None,
@@ -5584,9 +5581,6 @@ def _filter_boundary_positions(
         raise ValueError(attribution.CONTRIBUTION_AXIS_ERROR)
     if taxonomy_context is None:
         raise ValueError("taxonomy_id is required when axis=taxonomy.")
-    if as_of_date is None:
-        return list(positions), None
-
     taxonomy, taxonomy_nodes_by_id, assignments_by_entity = taxonomy_context
 
     filtered_positions: list[dict[str, object]] = []
@@ -5595,12 +5589,11 @@ def _filter_boundary_positions(
         instrument_id = str(position.get("instrument_id") or "")
         if not instrument_id:
             continue
-        position_group_key, position_group_label = attribution.resolve_taxonomy_group_for_date(
+        position_group_key, position_group_label = attribution.resolve_taxonomy_group(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
             assignments_by_entity=assignments_by_entity,
             target_entity_id=instrument_id,
-            as_of_date=as_of_date,
         )
         if position_group_key != resolved_group_key:
             continue
@@ -5758,7 +5751,6 @@ def build_period_boundary_holdings_report(
             positions=start_positions,
             axis=resolved_axis,
             group_key=resolved_group_key,
-            as_of_date=resolved_start_date,
             taxonomy_context=taxonomy_context,
             account_name_map=account_name_map,
         )
@@ -5766,7 +5758,6 @@ def build_period_boundary_holdings_report(
             positions=end_positions,
             axis=resolved_axis,
             group_key=resolved_group_key,
-            as_of_date=resolved_end_date,
             taxonomy_context=taxonomy_context,
             account_name_map=account_name_map,
         )
@@ -5806,7 +5797,6 @@ def _group_boundary_holdings_by_taxonomy(
     taxonomy_nodes: list[dict[str, object]],
     taxonomy_assignments: list[dict[str, object]],
     positions: list[dict[str, object]],
-    as_of_date: date,
 ) -> list[dict[str, object]]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
     taxonomy_nodes_by_id = {
@@ -5828,12 +5818,11 @@ def _group_boundary_holdings_by_taxonomy(
         instrument_id = str(position.get("instrument_id") or "")
         if not instrument_id:
             continue
-        group_key, group_label = attribution.resolve_taxonomy_group_for_date(
+        group_key, group_label = attribution.resolve_taxonomy_group(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
             assignments_by_entity=assignments_by_entity,
             target_entity_id=instrument_id,
-            as_of_date=as_of_date,
         )
         group = grouped.setdefault(
             group_key,
@@ -5929,7 +5918,6 @@ def build_period_boundary_groups_report(
             taxonomy_nodes=taxonomy_nodes or [],
             taxonomy_assignments=taxonomy_assignments or [],
             positions=list(report["start_positions"]),
-            as_of_date=resolved_start_date,
         )
         if isinstance(resolved_start_date, date)
         else []
@@ -5940,7 +5928,6 @@ def build_period_boundary_groups_report(
             taxonomy_nodes=taxonomy_nodes or [],
             taxonomy_assignments=taxonomy_assignments or [],
             positions=list(report["end_positions"]),
-            as_of_date=resolved_end_date,
         )
         if isinstance(resolved_end_date, date)
         else []
@@ -7889,7 +7876,6 @@ def build_taxonomy_contribution_report_from_base_report(
     taxonomy_id: str | None,
     group_key: str | None = None,
     base_report: dict[str, object],
-    use_period_end_taxonomy_assignments: bool = False,
     apply_boundary_values: bool = True,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
@@ -7904,26 +7890,17 @@ def build_taxonomy_contribution_report_from_base_report(
     if taxonomy is None:
         raise ValueError("Selected taxonomy was not found.")
     base_daily_slices = list(base_report.get("daily_slices") or [])
-    base_summary = base_report.get("summary") if isinstance(base_report.get("summary"), dict) else {}
-    assignment_as_of_date = (
-        _parse_iso_date(base_summary.get("end_date"))
-        if use_period_end_taxonomy_assignments
-        else None
-    )
     grouped_daily_slices = attribution.group_contribution_slices_by_taxonomy(
         taxonomy=taxonomy,
         taxonomy_nodes=taxonomy_nodes or [],
         taxonomy_assignments=taxonomy_assignments or [],
         base_daily_slices=base_daily_slices,
-        assignment_as_of_date=assignment_as_of_date,
     )
     report = attribution.build_taxonomy_contribution_report(
         taxonomy=taxonomy,
         base_report=base_report,
         grouped_daily_slices=grouped_daily_slices,
     )
-    if use_period_end_taxonomy_assignments:
-        report["_taxonomy_assignment_mode"] = "period_end"
     if apply_boundary_values:
         boundary_report = build_period_boundary_groups_report(
             portfolio,
@@ -8871,7 +8848,6 @@ def _build_taxonomy_calculation_detail_report(
     end_date: date | None,
     taxonomy_id: str | None,
     base_report: dict[str, object] | None = None,
-    use_period_end_taxonomy_assignments: bool = False,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -8905,12 +8881,6 @@ def _build_taxonomy_calculation_detail_report(
         axis=base_axis,
         allow_internal_detail_axis=True,
     )
-    base_summary = resolved_base_report.get("summary") if isinstance(resolved_base_report.get("summary"), dict) else {}
-    assignment_as_of_date = (
-        _parse_iso_date(base_summary.get("end_date"))
-        if use_period_end_taxonomy_assignments
-        else None
-    )
     taxonomy_nodes_by_id = {
         str(node.get("taxonomy_node_id") or ""): node
         for node in taxonomy_nodes or []
@@ -8940,21 +8910,6 @@ def _build_taxonomy_calculation_detail_report(
             target_entity_id, item_kind, detail_item_key = decoded
         return (target_entity_id, item_kind, detail_item_key)
 
-    entities_present_at_assignment_date: set[str] = set()
-    if assignment_as_of_date is not None:
-        for base_slice in list(resolved_base_report.get("daily_slices") or []):
-            as_of_date = base_slice.get("as_of_date")
-            if as_of_date != assignment_as_of_date:
-                continue
-            base_group_key = str(base_slice.get("group_key") or "")
-            if not base_group_key or not attribution.daily_slice_has_period_end_exposure(base_slice):
-                continue
-            resolved_detail_target = detail_target_for_base_group_key(base_group_key)
-            if resolved_detail_target is None:
-                continue
-            target_entity_id, _item_kind, _detail_item_key = resolved_detail_target
-            entities_present_at_assignment_date.add(target_entity_id)
-
     detail_axis = attribution.calculation_detail_axis("taxonomy")
     detail_daily_slices: list[dict[str, object]] = []
     for base_slice in list(resolved_base_report.get("daily_slices") or []):
@@ -8975,15 +8930,11 @@ def _build_taxonomy_calculation_detail_report(
         elif base_slice.get("_system_holding_category") == "derivatives":
             parent_group_key = attribution.SYSTEM_DERIVATIVE_GROUP_KEY
         else:
-            parent_group_key, _parent_group_label = attribution.resolve_period_taxonomy_group_for_slice(
+            parent_group_key, _parent_group_label = attribution.resolve_taxonomy_group(
                 taxonomy=taxonomy,
                 taxonomy_nodes_by_id=taxonomy_nodes_by_id,
                 assignments_by_entity=assignments_by_entity,
-                target_scope="instrument",
                 target_entity_id=target_entity_id,
-                slice_date=as_of_date,
-                assignment_as_of_date=assignment_as_of_date,
-                entities_present_at_assignment_date=entities_present_at_assignment_date,
             )
         detail_slice = dict(base_slice)
         detail_slice["axis"] = detail_axis
@@ -9021,7 +8972,6 @@ def build_taxonomy_calculation_detail_report_from_base_report(
     end_date: date | None,
     taxonomy_id: str | None,
     base_report: dict[str, object],
-    use_period_end_taxonomy_assignments: bool = False,
 ) -> dict[str, object]:
     return _build_taxonomy_calculation_detail_report(
         portfolio,
@@ -9034,7 +8984,6 @@ def build_taxonomy_calculation_detail_report_from_base_report(
         end_date=end_date,
         taxonomy_id=taxonomy_id,
         base_report=base_report,
-        use_period_end_taxonomy_assignments=use_period_end_taxonomy_assignments,
     )
 
 
@@ -9170,7 +9119,6 @@ def _build_period_calculation_child_records(
             start_date=start_date,
             end_date=end_date,
             taxonomy_id=taxonomy_id,
-            use_period_end_taxonomy_assignments=True,
         )
     else:
         return {}
@@ -9533,7 +9481,6 @@ def build_period_calculation_groups_report(
                 end_date=end_date,
                 taxonomy_id=resolved_taxonomy_id,
                 base_report=base_contribution_report,
-                use_period_end_taxonomy_assignments=True,
                 apply_boundary_values=False,
             )
         else:
@@ -9559,46 +9506,20 @@ def build_period_calculation_groups_report(
     boundary_start_values: dict[str, float | None] = {}
     boundary_end_values: dict[str, float | None] = {}
     boundary_labels: dict[str, str] = {}
-    taxonomy_uses_period_end_assignments = (
-        axis == "taxonomy" and contribution_report.get("_taxonomy_assignment_mode") == "period_end"
-    )
-    if axis == "taxonomy" and not taxonomy_uses_period_end_assignments:
-        boundary_report = build_period_boundary_groups_report(
-            portfolio,
-            accounts,
-            transactions,
-            taxonomies=taxonomies,
-            taxonomy_nodes=taxonomy_nodes,
-            taxonomy_assignments=taxonomy_assignments,
-            start_date=start_date,
-            end_date=end_date,
-            taxonomy_id=taxonomy_id,
-        )
-        for item in list(boundary_report.get("start_groups") or []):
-            boundary_group_key = str(item.get("group_key") or "")
-            if not boundary_group_key:
-                continue
-            boundary_start_values[boundary_group_key] = _safe_float(item.get("market_value_base"))
-            boundary_labels[boundary_group_key] = str(item.get("group_label") or boundary_group_key)
-        for item in list(boundary_report.get("end_groups") or []):
-            boundary_group_key = str(item.get("group_key") or "")
-            if not boundary_group_key:
-                continue
-            boundary_end_values[boundary_group_key] = _safe_float(item.get("market_value_base"))
-            boundary_labels[boundary_group_key] = str(item.get("group_label") or boundary_group_key)
-    else:
-        for item in list(contribution_report.get("daily_slices") or []):
-            slice_group_key = str(item.get("group_key") or "")
-            as_of_date = item.get("as_of_date")
-            if not slice_group_key or not isinstance(as_of_date, date):
-                continue
-            boundary_labels[slice_group_key] = str(item.get("group_label") or slice_group_key)
-            if as_of_date == resolved_start_date:
-                boundary_start_values[slice_group_key] = (
-                    _period_initial_value_from_daily_slice(item)
-                )
-            if as_of_date == resolved_end_date:
-                boundary_end_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
+    # Every daily slice already uses the current grouping, including cash and
+    # derivatives; keep its original economic start/end valuation boundaries.
+    for item in list(contribution_report.get("daily_slices") or []):
+        slice_group_key = str(item.get("group_key") or "")
+        as_of_date = item.get("as_of_date")
+        if not slice_group_key or not isinstance(as_of_date, date):
+            continue
+        boundary_labels[slice_group_key] = str(item.get("group_label") or slice_group_key)
+        if as_of_date == resolved_start_date:
+            boundary_start_values[slice_group_key] = (
+                _period_initial_value_from_daily_slice(item)
+            )
+        if as_of_date == resolved_end_date:
+            boundary_end_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
 
     line_map = {
         str(item.get("group_key") or ""): item
@@ -10375,7 +10296,6 @@ def _build_taxonomy_assignment_context(
 def _resolve_calculation_entry_group(
     *,
     axis: str,
-    effective_date: date | None,
     account_id: str | None,
     account_name_map: dict[str, str],
     instrument_id: str | None,
@@ -10423,14 +10343,11 @@ def _resolve_calculation_entry_group(
         return (attribution.SYSTEM_CASH_GROUP_KEY, "Cash")
     taxonomy, taxonomy_nodes_by_id, assignments_by_entity = taxonomy_context
     target_entity_id = instrument_id
-    if effective_date is None:
-        return (f"unassigned:{taxonomy.get('taxonomy_id')}", "Unassigned")
-    return attribution.resolve_taxonomy_group_for_date(
+    return attribution.resolve_taxonomy_group(
         taxonomy=taxonomy,
         taxonomy_nodes_by_id=taxonomy_nodes_by_id,
         assignments_by_entity=assignments_by_entity,
         target_entity_id=target_entity_id,
-        as_of_date=effective_date,
     )
 
 
@@ -10471,7 +10388,6 @@ def _append_calculation_transaction_entry(
     instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
     group_key, group_label = _resolve_calculation_entry_group(
         axis=axis,
-        effective_date=effective_date,
         account_id=account_id,
         account_name_map=account_name_map,
         instrument_id=instrument_id,
@@ -10811,7 +10727,6 @@ def build_contribution_entries_report(
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    effective_date=realization_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,
@@ -11301,7 +11216,6 @@ def build_period_calculation_entries_report(
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    effective_date=realization_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,

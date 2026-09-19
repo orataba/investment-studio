@@ -99,6 +99,7 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 - 直接读写 `portfolio`
 - 直接读取 `instrument_data`
 - 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；本地与云端分别持有各自业务数据
+- Portfolio 管理分类和目标只有当前配置；自动版本用于审计与失效，修改后重述历史派生分析。Research 将当前配置冻结到每次运行，已保存结果不随以后修改漂移；金融事实与来源保留各自日期
 - 在所属应用的 schema 内维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
 - 风险面板经 Watchlist API 读取和更新跟进记录及范围内风控研判；研判读取 Portfolio 实际持仓，市值敞口不等于风险贡献。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败不影响账本和绩效计算
 

@@ -120,7 +120,7 @@ def _seed_mixed_account() -> None:
 def test_migration_splits_mixed_accounts_and_moves_derivative_facts() -> None:
     _seed_mixed_account()
 
-    command.upgrade(_alembic_config(), "head")
+    command.upgrade(_alembic_config(), "20260817_0052")
 
     with get_engine().connect() as connection:
         categories = connection.execute(

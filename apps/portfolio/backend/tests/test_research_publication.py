@@ -170,3 +170,58 @@ def test_research_input_change_during_calculation_preserves_previous_run(client,
     with get_session_factory()() as session:
         assert session.get(ResearchRunRecordModel, first_id).status == 'completed'
     assert (research._research_outputs_root() / PORTFOLIO_ID / first_id / 'report.md').exists()
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_saved_benchmark_comparison_does_not_depend_on_current_taxonomy(client, monkeypatch, legacy):
+    from datetime import date
+    from portfolio_app.services import research_solver
+
+    monkeypatch.setattr(research_solver, 'capture_current_target_configuration',
+                        lambda *args, **kwargs: pytest.fail('Archived comparison must not read current targets'))
+    with get_session_factory()() as session:
+        session.add(ResearchRunRecordModel(
+            research_run_id='archived-comparison', portfolio_id=PORTFOLIO_ID,
+            planning_taxonomy_id=None, status='completed', requested_at='2026-04-15T00:00:00Z',
+            as_of_date=date(2026, 4, 15),
+            request_payload_json={} if legacy else {
+                'target_configuration': 'current_snapshot',
+                'target_configuration_snapshot': {'base_currency': 'USD', 'taxonomy': {'taxonomy_id': 'deleted-taxonomy'}},
+            },
+            detail_json={'backtest': {'points': [
+                {'date': '2026-04-13', 'value': 1.0},
+                {'date': '2026-04-14', 'value': 1.02},
+                {'date': '2026-04-15', 'value': 1.03},
+            ]}},
+        ))
+        session.commit()
+    result = research.get_research_backtest_benchmark_comparison(
+        PORTFOLIO_ID, research_run_id='archived-comparison', benchmark_instrument_id='fund-hk-2800')
+    assert result['backtest_benchmark']['points']
+    assert result['backtest_relative_metrics'] is not None
+    currency_warnings = [value for value in result['backtest_benchmark']['warnings'] if 'reporting currency' in value]
+    assert bool(currency_warnings) is legacy
+
+
+def test_research_fingerprint_tracks_current_target_market_data_without_transaction_history():
+    from datetime import date
+    from sqlalchemy import delete
+    from investment_studio_instrument_core.db_models import Instrument
+    from portfolio_app.db.models import PortfolioInstrumentUniverseRecordModel
+
+    configuration = {
+        'target_snapshot_fingerprint': 'snapshot-test',
+        'taxonomy_assignments': [{'status': 'active', 'target_scope': 'instrument', 'target_entity_id': 'fund-us-watch'}],
+    }
+    with get_session_factory()() as session:
+        session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(
+            PortfolioInstrumentUniverseRecordModel.portfolio_id == PORTFOLIO_ID,
+            PortfolioInstrumentUniverseRecordModel.instrument_id == 'fund-us-watch'))
+        def fingerprint():
+            return research._planning_state_fingerprint(session, portfolio_id=PORTFOLIO_ID,
+                planning_taxonomy_id='current-targets', as_of_date=date(2026, 4, 15),
+                target_configuration=configuration)
+        before = fingerprint()
+        session.get(Instrument, 'fund-us-watch').market_data_updated_at = '2026-09-20T00:00:00Z'
+        session.flush()
+        assert fingerprint() != before

@@ -1708,6 +1708,7 @@ export default function ResearchPage() {
 
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
+  const usesCurrentTargets = backtest?.methodology?.target_configuration === 'current_snapshot'
   const pointInTimeCoverage = backtest?.point_in_time_coverage ?? null
   const skippedRebalances = pointInTimeCoverage?.skipped_rebalances ?? []
   const pendingRebalances = pointInTimeCoverage?.pending_rebalances ?? []
@@ -1796,8 +1797,8 @@ export default function ResearchPage() {
                 <div className="research-command-meta">
                   <QualityWarningsNotice warnings={workbench.current_context.quality_warnings} />
                   <span>{planningTaxonomyName}</span>
-                  <span>{asOfMode === 'dynamic' ? `Latest · ${workbench.as_of_date}` : `Pinned · ${asOfDate || '-'}`}</span>
-                  {workbench.current_context.planning_as_of_date ? <span>{zh ? '规划日期' : 'Planning'} · {workbench.current_context.planning_as_of_date}</span> : null}
+                  <span>{zh ? '数据截至' : 'Data cutoff'} · {asOfMode === 'dynamic' ? workbench.as_of_date : asOfDate || '-'}</span>
+                  <span>{zh ? '当前目标' : 'Current targets'}</span>
                   <span>{capitalModeLabel}</span>
                   <span>{rebalanceLabel} rebalance</span>
                 </div>
@@ -1840,10 +1841,11 @@ export default function ResearchPage() {
                   {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
                     <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行研究前配置目标' : 'Configure targets before running Research'}</Link>
                   )}
+                  <p className="section-caption">{zh ? '研究与回测统一使用本次运行保存的当前目标。日期设置只限定行情和持仓数据。' : 'Research and backtests use the current targets saved with each run. Date settings only limit market and holdings data.'}</p>
                 </div>
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
-                    <span>Date Mode</span>
+                    <span>{zh ? '数据截止方式' : 'Data Cutoff Mode'}</span>
                     <select
                       value={asOfMode}
                       onChange={(event) => {
@@ -1857,12 +1859,12 @@ export default function ResearchPage() {
                         updateRunSetupDraft({ asOfMode: nextMode, asOfDate: nextDate })
                       }}
                     >
-                      <option value="dynamic">Latest available</option>
-                      <option value="pinned">Pinned date</option>
+                      <option value="dynamic">{zh ? '最新可用数据' : 'Latest available data'}</option>
+                      <option value="pinned">{zh ? '指定数据截止日' : 'Selected data cutoff'}</option>
                     </select>
                   </label>
                   <label>
-                    <span>Analysis Date</span>
+                    <span>{zh ? '数据截止日' : 'Data Cutoff Date'}</span>
                     <input
                       type="date"
                       value={asOfDate}
@@ -2495,7 +2497,7 @@ export default function ResearchPage() {
                 <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
                     <div>
-                      <div className="panel-title">Historical Backtest</div>
+                      <div className="panel-title">{usesCurrentTargets ? (zh ? '当前目标历史回测' : 'Current-Target Historical Backtest') : (zh ? '存档历史回测' : 'Archived Historical Backtest')}</div>
                       <div className="panel-subtitle">
                         {backtest?.start_date && backtest.end_date ? `${backtest.start_date} to ${backtest.end_date}` : 'No backtest window'}
                       </div>
@@ -2531,7 +2533,7 @@ export default function ResearchPage() {
               <details className="panel research-evidence-disclosure">
                 <summary>
                   <span>Model & Backtest Evidence</span>
-                  <span>solver diagnostics, point-in-time coverage, costs, robustness, OOS and sleeve paths</span>
+                  <span>solver diagnostics, historical data coverage, costs, robustness, rolling windows and sleeve paths</span>
                 </summary>
                 <div className="research-evidence-body">
                   <section className="portfolio-section-block">
@@ -2573,13 +2575,15 @@ export default function ResearchPage() {
               <section className="performance-block-grid research-validation-grid">
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Point-in-Time Coverage</div></div>
+                    <div><div className="panel-title">Historical Data Coverage</div></div>
                   </div>
                   <p className="section-caption">
                     FCN and options are no-trade, zero-return capital outside covariance and Risk Budget. Capital changes come only from recorded lifecycle dates; coupons, payoffs, credit risk, FX risk, collateral and liquidity remain unmodeled.
                   </p>
                   <p className="section-caption">
-                    Historical taxonomy and targets are effective-dated. Risk settings are fixed for this run; delayed NAV publication and fund dealing restrictions are not simulated.
+                    {usesCurrentTargets
+                      ? 'The current taxonomy, targets and research eligibility are frozen for this run and used throughout its historical simulation. Market observations retain their decision-date cutoff. Delayed NAV publication and fund dealing restrictions are not simulated.'
+                      : 'This archive retains the target rules recorded with the original run. Run Research again to use the current targets throughout the historical simulation.'}
                   </p>
                   <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-validation-summary-table">
@@ -2621,7 +2625,7 @@ export default function ResearchPage() {
                           </td>
                         </tr>
                         <tr>
-                          <th>Configuration Versions</th>
+                          <th>{usesCurrentTargets ? 'Target Snapshot Version' : 'Archived Configuration Versions'}</th>
                           <td>{configurationVersionsUsed.length
                             ? configurationVersionsUsed.join(', ')
                             : 'N/A'}</td>
@@ -2743,14 +2747,14 @@ export default function ResearchPage() {
                         title={walkForward?.methodology_note ?? undefined}
                         tabIndex={walkForward?.methodology_note ? 0 : undefined}
                       >
-                        Rolling OOS Holdout
+                        {usesCurrentTargets ? 'Rolling Historical Windows' : 'Archived Rolling Holdout'}
                       </div>
                     </div>
                   </div>
                   <div className="research-oos-summary">
-                    <span>OOS Return <strong>{formatMaybePercent(walkForward?.oos_metrics?.period_return)}</strong></span>
-                    <span>OOS Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
-                    <span>OOS Max DD <strong>{formatMaybePercent(walkForward?.oos_metrics?.max_drawdown)}</strong></span>
+                    <span>Test-window Return <strong>{formatMaybePercent(walkForward?.oos_metrics?.period_return)}</strong></span>
+                    <span>Test-window Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
+                    <span>Test-window Max DD <strong>{formatMaybePercent(walkForward?.oos_metrics?.max_drawdown)}</strong></span>
                   </div>
                   <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-walk-forward-table">
@@ -2758,8 +2762,8 @@ export default function ResearchPage() {
                         <tr>
                           <th>Training (diagnostic)</th>
                           <th>Test</th>
-                          <th>Configs</th>
-                          <th>OOS Return</th>
+                          <th>{usesCurrentTargets ? 'Target Snapshot' : 'Archived Configs'}</th>
+                          <th>Test-window Return</th>
                           <th>Status</th>
                         </tr>
                       </thead>

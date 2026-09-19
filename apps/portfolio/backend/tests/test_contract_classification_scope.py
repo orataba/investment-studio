@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date
 
 from sqlalchemy import select
@@ -57,8 +58,9 @@ def test_research_ignores_contract_only_assignments_but_keeps_explicit_target_me
         'taxonomy_assignments': [{'taxonomy_node_id': 'leaf', 'target_scope': 'instrument', 'target_entity_id': 'linked-only', 'status': 'active'}],
         'target_sets': [], 'target_set_lines': [],
     }
-    monkeypatch.setattr(research_solver, 'taxonomy_configuration_as_of', lambda *args: configuration)
-    monkeypatch.setattr(research_solver, 'resolve_instrument_analytics_scopes', lambda *args, **kwargs: {})
+    from portfolio_app.services import research_inputs
+    monkeypatch.setattr(research_inputs, 'current_taxonomy_configuration_in_session', lambda *args: deepcopy(configuration))
+    monkeypatch.setattr(research_inputs, 'current_analytics_policies_by_node', lambda *args, **kwargs: {})
     def state():
         return research_solver._build_taxonomy_state('investment-studio', planning_taxonomy_id='test-taxonomy',
             as_of_date=date(2026, 4, 15), direct_fx_instruments={})
@@ -72,7 +74,7 @@ def test_research_ignores_contract_only_assignments_but_keeps_explicit_target_me
 def test_research_can_select_custom_taxonomy_before_targets_but_cannot_run(client):
     base = '/api/portfolios/investment-studio'
     response = client.post(f'{base}/taxonomies', json={
-        'effective_from': '2020-01-01', 'name': 'Industry classification', 'taxonomy_type': 'custom',
+        'name': 'Industry classification', 'taxonomy_type': 'custom',
         'primary_assignment_scope': 'instrument', 'planning_enabled': False,
     })
     assert response.status_code == 200, response.json()

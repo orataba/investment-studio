@@ -60,7 +60,9 @@ from portfolio_app.services.analytics_scope import (
     _ensure_default_scope_policies_in_session,
     _record_taxonomy_configuration_revision_in_session,
     set_analytics_taxonomy_selection_in_session,
-    taxonomy_configuration_as_of_in_session,
+    current_taxonomy_configuration_in_session,
+    _create_scope_policy_in_session,
+    current_analytics_policies_by_node,
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 from portfolio_app.services.transaction_dates import (
@@ -2433,7 +2435,6 @@ def _scope_target_members(
     *,
     taxonomy: TaxonomyRecordModel,
     comparator_taxonomy_node_id: str | None,
-    as_of_date: date | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent_node, child_nodes = _scope_child_nodes(
         session,
@@ -2465,21 +2466,14 @@ def _scope_target_members(
             TaxonomyAssignmentRecordModel.status == "active",
         )
     ).all()
-    if as_of_date is not None:
-        configuration = taxonomy_configuration_as_of_in_session(
-            session, taxonomy.portfolio_id, taxonomy.taxonomy_id, as_of_date,
-        ) or {}
-        active_target_ids = {item["target_set_id"] for item in configuration.get("target_sets", [])
-                             if item.get("status") == "active"}
-        explicit_members = [item["target_member_id"] for item in configuration.get("target_set_lines", [])
-                            if item.get("target_member_type") == "instrument" and item.get("target_set_id") in active_target_ids]
-    else:
-        explicit_members = session.scalars(select(TargetSetLineRecordModel.target_member_id)
-            .join(TargetSetRecordModel, TargetSetRecordModel.target_set_id == TargetSetLineRecordModel.target_set_id)
-            .where(TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
-                   TargetSetRecordModel.status == "active", TargetSetLineRecordModel.target_member_type == "instrument")).all()
+    explicit_members = session.scalars(select(TargetSetLineRecordModel.target_member_id)
+        .join(TargetSetRecordModel, TargetSetRecordModel.target_set_id == TargetSetLineRecordModel.target_set_id)
+        .where(TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
+               TargetSetRecordModel.status == "active", TargetSetLineRecordModel.target_member_type == "instrument")).all()
+    from portfolio_app.services.valuation_clock import portfolio_valuation_today
+    portfolio = session.get(PortfolioRecordModel, taxonomy.portfolio_id)
     contract_only = contract_only_instrument_ids(taxonomy.portfolio_id,
-        as_of_date=as_of_date or date.today(), explicitly_selected=explicit_members, session=session)
+        as_of_date=portfolio_valuation_today(portfolio.valuation_timezone), explicitly_selected=explicit_members, session=session)
     visible_direct_assignments: dict[tuple[str, str], TaxonomyAssignmentRecordModel] = {}
     for assignment in direct_assignments:
         member_key = (str(assignment.target_scope), str(assignment.target_entity_id))
@@ -2511,7 +2505,6 @@ def _validate_target_set_lines(
     status: str,
     lines: list[dict[str, object]],
     exclude_target_set_id: str | None = None,
-    as_of_date: date | None = None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[TaxonomyNodeRecordModel]]:
     if not taxonomy.planning_enabled:
         raise ValueError("Target sets require a planning-enabled taxonomy.")
@@ -2530,7 +2523,6 @@ def _validate_target_set_lines(
         session,
         taxonomy=taxonomy,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
-        as_of_date=as_of_date,
     )
     if not lines:
         raise ValueError("Target set lines are required.")
@@ -2698,7 +2690,6 @@ def _taxonomy_write_session(portfolio_id: str):
 def create_taxonomy(
     portfolio_id: str,
     *,
-    effective_from: date,
     name: str,
     taxonomy_type: str,
     purpose: str | None,
@@ -2729,17 +2720,15 @@ def create_taxonomy(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=record.taxonomy_id,
-            effective_from=effective_from,
         )
         _record_taxonomy_configuration_revision_in_session(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=record.taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -2750,7 +2739,6 @@ def update_taxonomy(
     portfolio_id: str,
     taxonomy_id: str,
     *,
-    effective_from: date,
     _session: Session | None = None,
     name: str | None = UNSET,
     taxonomy_type: str | None = UNSET,
@@ -2798,7 +2786,6 @@ def update_taxonomy(
                     session,
                     portfolio_id=portfolio_id,
                     taxonomy_id=None,
-                    effective_from=effective_from,
                 )
             research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
             if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
@@ -2811,11 +2798,10 @@ def update_taxonomy(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=taxonomy_id,
-                effective_from=effective_from,
             )
             _mark_daily_snapshots_stale(
                 portfolio_id,
-                dirty_from=effective_from,
+                dirty_from=None,
                 session=session,
             )
             session.commit()
@@ -2850,7 +2836,6 @@ def list_taxonomy_nodes(
 def create_taxonomy_node(
     portfolio_id: str,
     *,
-    effective_from: date,
     taxonomy_id: str,
     parent_taxonomy_node_id: str | None,
     node_name: str,
@@ -2898,11 +2883,10 @@ def create_taxonomy_node(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -2914,7 +2898,6 @@ def update_taxonomy_node(
     taxonomy_id: str,
     taxonomy_node_id: str,
     *,
-    effective_from: date,
     _session: Session | None = None,
     node_name: str | None = UNSET,
     node_code: str | None = UNSET,
@@ -3008,11 +2991,10 @@ def update_taxonomy_node(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=taxonomy_id,
-                effective_from=effective_from,
             )
             _mark_daily_snapshots_stale(
                 portfolio_id,
-                dirty_from=effective_from,
+                dirty_from=None,
                 session=session,
             )
             session.commit()
@@ -3392,7 +3374,6 @@ def list_target_set_integrity_issues(
 def create_taxonomy_assignment(
     portfolio_id: str,
     *,
-    effective_from: date,
     taxonomy_id: str,
     target_scope: str,
     target_entity_id: str,
@@ -3451,11 +3432,10 @@ def create_taxonomy_assignment(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -3467,7 +3447,6 @@ def update_taxonomy_assignment(
     taxonomy_id: str,
     assignment_id: str,
     *,
-    effective_from: date,
     taxonomy_node_id: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
@@ -3526,11 +3505,10 @@ def update_taxonomy_assignment(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -3540,7 +3518,6 @@ def update_taxonomy_assignment(
 def create_target_set(
     portfolio_id: str,
     *,
-    effective_from: date,
     _session: Session | None = None,
     taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
@@ -3571,7 +3548,6 @@ def create_target_set(
             risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
             lines=lines,
-            as_of_date=effective_from,
         )
 
         record = TargetSetRecordModel(
@@ -3617,11 +3593,10 @@ def create_target_set(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=taxonomy_id,
-                effective_from=effective_from,
             )
             _mark_daily_snapshots_stale(
                 portfolio_id,
-                dirty_from=effective_from,
+                dirty_from=None,
                 session=session,
             )
             session.commit()
@@ -3633,7 +3608,6 @@ def update_target_set(
     taxonomy_id: str,
     target_set_id: str,
     *,
-    effective_from: date,
     _session: Session | None = None,
     name: str | None = UNSET,
     weight_enabled: bool | None = UNSET,
@@ -3694,7 +3668,6 @@ def update_target_set(
             status=(record.status if status is UNSET else ((status or "active").strip() or "active")),
             lines=resolved_lines,
             exclude_target_set_id=target_set_id,
-            as_of_date=effective_from,
         )
 
         if name is not UNSET and name is not None:
@@ -3740,11 +3713,10 @@ def update_target_set(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=taxonomy_id,
-                effective_from=effective_from,
             )
             _mark_daily_snapshots_stale(
                 portfolio_id,
-                dirty_from=effective_from,
+                dirty_from=None,
                 session=session,
             )
             session.commit()
@@ -3755,7 +3727,6 @@ def save_taxonomy_target_configuration(
     portfolio_id: str,
     taxonomy_id: str,
     *,
-    effective_from: date,
     node_defaults: dict[str, str],
     target_sets: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -3765,18 +3736,18 @@ def save_taxonomy_target_configuration(
         if taxonomy is None or taxonomy.portfolio_id != portfolio_id:
             raise ValueError("Taxonomy not found.")
         if any(item.get("weight_enabled") or item.get("risk_budget_enabled") for item in target_sets):
-            update_taxonomy(portfolio_id, taxonomy_id, effective_from=effective_from,
+            update_taxonomy(portfolio_id, taxonomy_id,
                 planning_enabled=True, budgeting_level="weight_and_risk_budget", _session=session)
         for node_id, dimension in node_defaults.items():
             update_taxonomy_node(portfolio_id, taxonomy_id, node_id,
-                effective_from=effective_from, default_target_dimension=dimension, _session=session)
+                default_target_dimension=dimension, _session=session)
         for item in target_sets:
             target_set_id = item.get("target_set_id")
             enabled = bool(item.get("weight_enabled") or item.get("risk_budget_enabled"))
             if not enabled:
                 if target_set_id:
                     update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
-                        effective_from=effective_from, status="inactive", _session=session)
+                        status="inactive", _session=session)
                 continue
             values = {key: item[key] for key in (
                 "name", "weight_enabled", "risk_budget_enabled", "status", "notes", "lines",
@@ -3789,16 +3760,15 @@ def save_taxonomy_target_configuration(
                         or existing.target_set_type != item["target_set_type"]):
                     raise ValueError("Target set scope changed; reload the taxonomy before saving.")
                 update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
-                    effective_from=effective_from, _session=session, **values)
+                    _session=session, **values)
             else:
                 create_target_set(portfolio_id, taxonomy_id=taxonomy_id,
-                    effective_from=effective_from,
                     comparator_taxonomy_node_id=item.get("comparator_taxonomy_node_id"),
                     target_set_type=str(item["target_set_type"]), _session=session, **values)
         session.flush()
         _record_taxonomy_configuration_revision_in_session(session,
-            portfolio_id=portfolio_id, taxonomy_id=taxonomy_id, effective_from=effective_from)
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=effective_from, session=session)
+            portfolio_id=portfolio_id, taxonomy_id=taxonomy_id)
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=None, session=session)
         session.commit()
         return _serialize_taxonomy_row(taxonomy)
 
@@ -3807,8 +3777,6 @@ def delete_target_set(
     portfolio_id: str,
     taxonomy_id: str,
     target_set_id: str,
-    *,
-    effective_from: date,
 ) -> bool:
     with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
@@ -3834,11 +3802,10 @@ def delete_target_set(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -3848,8 +3815,6 @@ def delete_target_set(
 def delete_taxonomy(
     portfolio_id: str,
     taxonomy_id: str,
-    *,
-    effective_from: date,
 ) -> bool:
     with _taxonomy_write_session(portfolio_id) as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
@@ -3868,7 +3833,6 @@ def delete_taxonomy(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=None,
-                effective_from=effective_from,
             )
         research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
         if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
@@ -3890,14 +3854,13 @@ def delete_taxonomy(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         session.delete(record)
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -3908,8 +3871,6 @@ def delete_taxonomy_node(
     portfolio_id: str,
     taxonomy_id: str,
     taxonomy_node_id: str,
-    *,
-    effective_from: date,
 ) -> bool:
     with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
@@ -3995,11 +3956,10 @@ def delete_taxonomy_node(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -4010,8 +3970,6 @@ def delete_taxonomy_assignment(
     portfolio_id: str,
     taxonomy_id: str,
     assignment_id: str,
-    *,
-    effective_from: date,
 ) -> bool:
     with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
@@ -4043,11 +4001,10 @@ def delete_taxonomy_assignment(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -4057,8 +4014,6 @@ def delete_taxonomy_assignment(
 def set_default_planning_taxonomy(
     portfolio_id: str,
     taxonomy_id: str | None,
-    *,
-    effective_from: date,
 ) -> dict[str, object] | None:
     with _taxonomy_write_session(portfolio_id) as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
@@ -4069,30 +4024,25 @@ def set_default_planning_taxonomy(
             session,
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
         )
         if selection.taxonomy_id is not None:
             _ensure_default_scope_policies_in_session(
                 session,
                 portfolio_id=portfolio_id,
                 taxonomy_id=selection.taxonomy_id,
-                effective_from=effective_from,
             )
-            if taxonomy_configuration_as_of_in_session(
-                session,
-                portfolio_id,
-                selection.taxonomy_id,
-                effective_from,
-            ) is None:
+            configuration = current_taxonomy_configuration_in_session(
+                session, portfolio_id, selection.taxonomy_id,
+            )
+            if configuration is not None and configuration["configuration_version"] is None:
                 _record_taxonomy_configuration_revision_in_session(
                     session,
                     portfolio_id=portfolio_id,
                     taxonomy_id=selection.taxonomy_id,
-                    effective_from=effective_from,
                 )
         _mark_daily_snapshots_stale(
             portfolio_id,
-            dirty_from=effective_from,
+            dirty_from=None,
             session=session,
         )
         session.commit()
@@ -4233,46 +4183,9 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         if source is None:
             return None
 
-        analytics_history_count = int(
-            session.scalar(
-                select(func.count()).select_from(ConcentrationPolicyRevisionModel).where(
-                    ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id
-                )
-            ) or 0
-        ) + int(
-            session.scalar(
-                select(func.count())
-                .select_from(AnalyticsScopePolicyRecordModel)
-                .where(AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id)
-            )
-            or 0
-        ) + int(
-            session.scalar(
-                select(func.count())
-                .select_from(AnalyticsTaxonomySelectionRecordModel)
-                .where(
-                    AnalyticsTaxonomySelectionRecordModel.portfolio_id
-                    == portfolio_id
-                )
-            )
-            or 0
-        ) + int(
-            session.scalar(
-                select(func.count())
-                .select_from(TaxonomyConfigurationRevisionModel)
-                .where(
-                    TaxonomyConfigurationRevisionModel.portfolio_id
-                    == portfolio_id
-                )
-            )
-            or 0
-        )
-        if analytics_history_count:
-            raise ValueError(
-                "Portfolio copy is unavailable when effective-dated analytics "
-                "history exists; taxonomy and policy identities require an "
-                "explicit remapping workflow."
-            )
+        if session.scalar(select(func.count()).select_from(ConcentrationPolicyRevisionModel).where(
+                ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id)):
+            raise ValueError("Portfolio copy requires explicit remapping of concentration policy references.")
 
         copied_name = f"{source.portfolio_name} Copy"
         base_id = _slugify(copied_name)
@@ -4477,6 +4390,21 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     notes=line.notes,
                 )
             )
+
+        session.flush()
+        for source_taxonomy_id, copied_taxonomy_id in taxonomy_id_map.items():
+            for policy in current_analytics_policies_by_node(session, portfolio_id=portfolio_id,
+                    taxonomy_id=source_taxonomy_id).values():
+                _create_scope_policy_in_session(session, portfolio_id=candidate,
+                    taxonomy_id=copied_taxonomy_id,
+                    taxonomy_node_id=taxonomy_node_id_map.get(policy.taxonomy_node_id, policy.taxonomy_node_id),
+                    risk_eligible=policy.risk_eligible, risk_budget_eligible=policy.risk_budget_eligible,
+                    performance_scope=policy.performance_scope, valuation_basis=policy.valuation_basis,
+                    exclusion_reason=policy.exclusion_reason)
+            _ensure_default_scope_policies_in_session(session, portfolio_id=candidate, taxonomy_id=copied_taxonomy_id)
+            _record_taxonomy_configuration_revision_in_session(session, portfolio_id=candidate, taxonomy_id=copied_taxonomy_id)
+        set_analytics_taxonomy_selection_in_session(session, portfolio_id=candidate,
+            taxonomy_id=copied.default_planning_taxonomy_id)
 
         source_transactions = [
             _serialize_transaction_row(item)
