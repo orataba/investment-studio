@@ -15,7 +15,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
-from watchlist_app.services.deepseek_config import deepseek_endpoint
+from watchlist_app.services.deepseek_config import deepseek_endpoint, deepseek_model
 
 _TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -89,7 +89,7 @@ def search_web(query: str) -> dict:
     if not key:
         raise SectorWebError("DEEPSEEK_API_KEY is not configured")
     body = {
-        "model": "deepseek-v4-flash", "max_tokens": 4096,
+        "model": deepseek_model(), "max_tokens": 4096,
         "messages": [{"role": "user", "content": [{
             "type": "text", "text": f"Perform a web search for the query: {query}",
         }]}],

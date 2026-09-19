@@ -16,6 +16,7 @@ import { useWatchlistForegroundRefresh } from '../lib/useWatchlistForegroundRefr
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import WatchlistCreator from '../components/WatchlistCreator'
+import LoadingOverlay from '../components/LoadingOverlay'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 function isSystemWatchlist(watchlist: WatchlistRecord) {
@@ -66,8 +67,9 @@ export default function WatchlistEntryPage() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
 
-    getWatchlists()
+    getWatchlists(controller.signal)
       .then((response) => {
         if (!cancelled) {
           setWatchlists(response)
@@ -85,6 +87,7 @@ export default function WatchlistEntryPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [])
 
@@ -215,6 +218,7 @@ export default function WatchlistEntryPage() {
 
   return (
     <section className="terminal-page">
+      {loading ? <LoadingOverlay /> : null}
       <header className="watchlist-entry-shell">
         <div className="watchlist-breadcrumbs">
           <a data-workspace-link href={HOME_URL} className="watchlist-breadcrumb-link">
@@ -226,13 +230,11 @@ export default function WatchlistEntryPage() {
         </div>
         <div className="watchlist-entry-hero">
           <h1 className="watchlist-entry-title">All Watchlists</h1>
-          <span className="watchlist-entry-hero-meta">
-            {loading
-              ? 'Loading'
-              : error
+          {!loading ? <span className="watchlist-entry-hero-meta">
+            {error
                 ? 'Watchlist totals unavailable'
                 : `${watchlists.length} Watchlists · ${totalProducts} Securities`}
-          </span>
+          </span> : null}
         </div>
       </header>
 

@@ -1571,9 +1571,12 @@ def search_instrument_identities(
     *,
     search: str,
     instrument_types: Iterable[str],
-    limit: int,
+    limit: int | None,
 ) -> list[dict[str, object]]:
-    """Search active identities without loading market data or event histories."""
+    """Search active identities; ``limit=None`` returns the complete directory.
+
+    Identity consumers do not load market data or event histories.
+    """
     types = {value.strip().lower() for value in instrument_types if value.strip()}
     if not types:
         return []
@@ -1607,11 +1610,7 @@ def search_instrument_identities(
             "instrument_type": item.instrument_type,
             "currency": item.currency,
             "exchange_code": item.exchange_code,
-            "identifiers": [{
-                "identifier_type": identifier.identifier_type,
-                "identifier_value": identifier.identifier_value,
-                "is_primary": identifier.is_primary,
-            } for identifier in item.identifiers],
+            "identifiers": _serialize_identifier_rows(item),
         } for item in records]
 
 

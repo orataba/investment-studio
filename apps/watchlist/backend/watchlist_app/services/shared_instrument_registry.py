@@ -91,6 +91,25 @@ def search_shared_instrument_identities(*, search: str, limit: int) -> list[dict
         raise _registry_error("Failed to search shared instrument registry.") from error
 
 
+def list_shared_instrument_identities(
+    *, instrument_type: str | None = None,
+) -> list[dict[str, object]]:
+    """Read the complete supported directory without quotes or event histories."""
+    from watchlist_app.services.instrument_resolution import LOCAL_DETAIL_INSTRUMENT_TYPES
+
+    try:
+        return shared_store.search_instrument_identities(
+            get_session_factory(),
+            search="",
+            instrument_types=(
+                {instrument_type} if instrument_type else LOCAL_DETAIL_INSTRUMENT_TYPES
+            ),
+            limit=None,
+        )
+    except Exception as error:
+        raise _registry_error("Failed to query shared instrument registry identities.") from error
+
+
 def list_shared_active_instrument_ids(
     *,
     instrument_types: set[str] | frozenset[str] | None = None,

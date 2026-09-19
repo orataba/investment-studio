@@ -72,6 +72,8 @@ shared instruments / local evidence / holdings ingest
 - 管理员和协作成员创建的列表归团队共享，所有成员包括只读成员均可见。`created_by_user_id`、`created_by_display_name` 由创建或复制请求的已认证账号写入；显示名保留创建时的归属，重命名不改变创建人，客户端不能提交或修改这两个字段。历史列表无作者证据时两字段均为 null，系统列表不冒认个人作者。
 - custom view id 会做 path-safe slug 化
 - 复制 watchlist 时会按相同规则规范化源 custom view id
+- 每次打开目录都以一次完整的当前资产身份投影同步所有系统名单；单个系统名单只读取对应类型。身份投影包含名称、类型、交易所与标识，不加载行情、公司行动或净值账本。本地身份与默认分类批量比较，只写真实变化；新增、归档和缺失行立即核对，不靠过期时间缓存。
+- 同步只为缺失的股票／加密资产分类补系统默认值，保留用户已有分类与研究。收益、风险与图表继续使用物化读模型及 durable 重算，不在目录请求内重算。
 
 列表显示列、筛选和分组由
 [`watchlist_query_contract.py`](../backend/watchlist_app/services/watchlist_query_contract.py)

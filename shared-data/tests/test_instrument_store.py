@@ -1104,6 +1104,13 @@ def test_identity_search_is_ranked_scoped_and_does_not_load_market_history(isola
         assert "market_data" not in rows[0]
         assert len(statements) == 2  # identities + identifiers; no time series or actions
         statements.clear()
+        complete = shared_store.search_instrument_identities(
+            factory, search="", instrument_types={"public_fund", "equity"}, limit=None,
+        )
+        assert equity["instrument_id"] in {row["instrument_id"] for row in complete}
+        assert len(complete) > 1
+        assert len(statements) == 2
+        assert all("latest_market_data" not in row for row in complete)
         assert shared_store.search_instrument_identities(factory, search="%", instrument_types={"equity"}, limit=12) == []
         assert shared_store.search_instrument_identities(factory, search="GOOGL", instrument_types={"crypto"}, limit=12) == []
     finally:

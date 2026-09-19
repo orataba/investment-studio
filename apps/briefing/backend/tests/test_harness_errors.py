@@ -13,7 +13,7 @@ def test_missing_provider_model_channel_is_actionable_without_fallback(monkeypat
         calls.append(args[0])
         return SimpleNamespace(returncode=1, communicate=lambda **kwargs: (
             "", 'dsh: SERVER: 503: {"code":"model_not_found",'
-            '"message":"No available channel for model deepseek-v4-flash"}\n'
+            '"message":"No available channel for model deepseek-v4.1-flash"}\n'
             'authorization: Bearer private-value\nsk-testcredential',
         ))
 

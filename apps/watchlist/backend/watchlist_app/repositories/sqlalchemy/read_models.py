@@ -25,6 +25,14 @@ def _scoped_view_id(watchlist_id: str, local_view_id: str) -> str:
 
 
 class SQLAlchemyReadModelRepository:
+    def list_watchlist_row_identities(
+        self, session: Session, watchlist_id: str,
+    ) -> Sequence[tuple[str, str]]:
+        return session.execute(select(
+            WatchlistRowReadModel.instrument_id,
+            WatchlistRowReadModel.instrument_type,
+        ).where(WatchlistRowReadModel.watchlist_id == watchlist_id)).all()
+
     def list_watchlist_rows(
         self,
         session: Session,

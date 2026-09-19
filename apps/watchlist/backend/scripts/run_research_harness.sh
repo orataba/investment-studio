@@ -36,7 +36,7 @@ export DSH_PERMISSION_MODE=read-only
 export DSH_TOOLS_MODE=native
 export DSH_TELEMETRY_DISABLED=1
 export INVESTMENT_STUDIO_RESEARCH_RUN_ID="$research_run_id"
-export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4-pro}"
+export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4.1-flash}"
 
 copilot_research_persona="$(< "$copilot_project_root/apps/watchlist/backend/config/research_core.md")"
 copilot_task="Start with read_research_context overview and read its nonempty page_context/selected-reference sections plus relevant history/evidence. Read relevant instrument overviews and dossier mandate/review_agenda sections. Follow next_offset and every deferred.path for selected evidence, repeating the same section/source/version selector. Answer the current question in Chinese with evidence using the same bound dossier and tools as research tracking. This conversation is private. Publish a durable research increment only when this user explicitly asks to save it to team research: record that instruction with authorize_team_research before submit_research_review. Never publish portfolio-derived discussion to team research. The application saves your answer and separately reports the common factual review/publication result."

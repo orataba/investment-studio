@@ -406,17 +406,19 @@ function buildFilterOptions(
 
 async function loadAllScreenerRows(
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ) {
-  return (await loadCompleteScreenerResult(payload)).rows
+  return (await loadCompleteScreenerResult(payload, signal)).rows
 }
 
 async function loadCompleteScreenerResult(
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ScreenerResponse> {
   return runScreenerQuery({
     ...payload,
     fetch_all: true,
-  })
+  }, signal)
 }
 
 function statusClass(value: unknown) {
@@ -787,6 +789,7 @@ export default function WatchlistsPage() {
   const [columnFieldKeys, setColumnFieldKeys] = useState<string[]>([])
   const [filterFieldKeys, setFilterFieldKeys] = useState<string[]>([])
   const [instrumentTaxonomy, setInstrumentTaxonomy] = useState<InstrumentTaxonomyTreeResponse | null>(null)
+  const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [activeViewId, setActiveViewId] = useState(
     () => watchlistSearchParams.get('view') || '',
   )
@@ -820,6 +823,8 @@ export default function WatchlistsPage() {
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectedFilterField, setSelectedFilterField] = useState('')
   const [filterOptionRows, setFilterOptionRows] = useState<Array<Record<string, unknown>>>([])
+  const [filterOptionsLoading, setFilterOptionsLoading] = useState(false)
+  const [filterOptionsError, setFilterOptionsError] = useState<string | null>(null)
   const [saveViewName, setSaveViewName] = useState('')
   const [saveViewDescription, setSaveViewDescription] = useState('')
   const [isSavingView, setIsSavingView] = useState(false)
@@ -1000,20 +1005,20 @@ export default function WatchlistsPage() {
     const observer = new ResizeObserver(updateWidth)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [])
+  }, [loading])
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
 
     async function loadShell() {
       setLoading(true)
       setError(null)
 
       try {
-        const [watchlistData, fieldRegistryData, taxonomyData] = await Promise.all([
-          getWatchlists(),
+        const [watchlistData, fieldRegistryData] = await Promise.all([
+          getWatchlists(controller.signal),
           getFieldRegistry(),
-          getInstrumentTaxonomyTree(),
         ])
 
         if (cancelled) {
@@ -1024,7 +1029,6 @@ export default function WatchlistsPage() {
         setFieldRegistry(fieldRegistryData.fields)
         setColumnFieldKeys(fieldRegistryData.column_field_keys)
         setFilterFieldKeys(fieldRegistryData.filter_field_keys)
-        setInstrumentTaxonomy(taxonomyData)
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Failed to load watchlists.')
@@ -1040,7 +1044,20 @@ export default function WatchlistsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    // Filter choices and group ordering can arrive after the saved view's rows.
+    // They do not block the directory, field registry or table request.
+    getInstrumentTaxonomyTree().then((taxonomy) => {
+      if (!cancelled) setInstrumentTaxonomy(taxonomy)
+    }).catch((reason) => {
+      if (!cancelled) setTaxonomyError(reason instanceof Error ? reason.message : 'Failed to load classification options.')
+    })
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -1069,6 +1086,7 @@ export default function WatchlistsPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setWatchlistDetail(null)
     setWatchlistDetailOwnerId('')
     setScreenerResult(null)
@@ -1078,19 +1096,22 @@ export default function WatchlistsPage() {
     setModalError(null)
     setConfirmError(null)
     setPendingDeleteItems(null)
+    setFilterMenuOpen(false)
 
     async function loadWatchlistDetail() {
       setError(null)
 
       try {
-        const detail = await getWatchlistDetail(watchlistId)
+        const detail = await getWatchlistDetail(watchlistId, controller.signal)
         if (cancelled) {
           return
         }
 
-        setWatchlistDetail(detail)
-        setWatchlistDetailOwnerId(watchlistId)
         startTransition(() => {
+          // Publish the detail and its saved criteria together; otherwise the
+          // row effect briefly runs with the previous list's/default columns.
+          setWatchlistDetail(detail)
+          setWatchlistDetailOwnerId(watchlistId)
           const requestedViewId = watchlistSearchParams.get('view') || ''
           const nextViewId =
             detail.views.some((view) => view.view_id === requestedViewId)
@@ -1147,6 +1168,7 @@ export default function WatchlistsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [watchlistId])
 
@@ -1233,12 +1255,14 @@ export default function WatchlistsPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     const payload = baseScreenerPayload
 
     async function loadRows() {
       setScreenerLoading(true)
+      setError(null)
       try {
-        const result = await loadCompleteScreenerResult(payload)
+        const result = await loadCompleteScreenerResult(payload, controller.signal)
 
         if (!cancelled) {
           setScreenerResult(result)
@@ -1263,6 +1287,7 @@ export default function WatchlistsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [reloadToken, screenerCriteriaKey, watchlistDetailOwnerId, watchlistId])
 
@@ -1603,34 +1628,31 @@ export default function WatchlistsPage() {
     if (!detailIsCurrent || !activeView) {
       return
     }
-    setWatchlistSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current)
-        next.set('view', activeView.view_id)
-        if (watchlistSearch) {
-          next.set('q', watchlistSearch)
-        } else {
-          next.delete('q')
-        }
-        if (workingGroupBy !== baseGroupBy) {
-          next.set('group', workingGroupBy)
-        } else {
-          next.delete('group')
-        }
-        if (serializeFilterState(workingFilters) !== serializeFilterState(baseFilters)) {
-          next.set('filters', JSON.stringify(workingFilters))
-        } else {
-          next.delete('filters')
-        }
-        if (JSON.stringify(sortRules) !== JSON.stringify(baseSort)) {
-          next.set('sort', JSON.stringify(sortRules))
-        } else {
-          next.delete('sort')
-        }
-        return next.toString() === current.toString() ? current : next
-      },
-      { replace: true },
-    )
+    const next = new URLSearchParams(watchlistSearchParams)
+    next.set('view', activeView.view_id)
+    if (watchlistSearch) {
+      next.set('q', watchlistSearch)
+    } else {
+      next.delete('q')
+    }
+    if (workingGroupBy !== baseGroupBy) {
+      next.set('group', workingGroupBy)
+    } else {
+      next.delete('group')
+    }
+    if (serializeFilterState(workingFilters) !== serializeFilterState(baseFilters)) {
+      next.set('filters', JSON.stringify(workingFilters))
+    } else {
+      next.delete('filters')
+    }
+    if (JSON.stringify(sortRules) !== JSON.stringify(baseSort)) {
+      next.set('sort', JSON.stringify(sortRules))
+    } else {
+      next.delete('sort')
+    }
+    if (next.toString() !== watchlistSearchKey) {
+      setWatchlistSearchParams(next, { replace: true })
+    }
   }, [
     activeView,
     baseFilters,
@@ -1638,6 +1660,7 @@ export default function WatchlistsPage() {
     baseSort,
     detailIsCurrent,
     setWatchlistSearchParams,
+    watchlistSearchKey,
     sortRules,
     watchlistSearch,
     workingFilters,
@@ -1789,18 +1812,18 @@ export default function WatchlistsPage() {
     setSelectedFilterField(filterableFields[0]?.field_key || '')
   }, [filterableFields, selectedFilterField])
 
-  const filterFieldKeySignature = useMemo(
-    () => filterableFields.map((field) => field.field_key).join('|'),
-    [filterableFields],
-  )
-
   useEffect(() => {
-    if (!watchlistId || !fieldRegistry.length) {
+    if (!filterMenuOpen || loading || !detailIsCurrent || !fieldRegistry.length) {
       setFilterOptionRows([])
+      setFilterOptionsLoading(false)
+      setFilterOptionsError(null)
       return
     }
 
     let cancelled = false
+    const controller = new AbortController()
+    setFilterOptionsLoading(true)
+    setFilterOptionsError(null)
     loadAllScreenerRows({
       watchlist_id: watchlistId,
       selected_fields: Array.from(
@@ -1813,22 +1836,27 @@ export default function WatchlistsPage() {
       advanced_filters: null,
       sort: [],
       group_by: 'none',
-    })
+    }, controller.signal)
       .then((result) => {
         if (!cancelled) {
           setFilterOptionRows(result)
         }
       })
-      .catch(() => {
+      .catch((reason) => {
         if (!cancelled) {
           setFilterOptionRows([])
+          setFilterOptionsError(reason instanceof Error ? reason.message : 'Failed to load filter options.')
         }
+      })
+      .finally(() => {
+        if (!cancelled) setFilterOptionsLoading(false)
       })
 
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [watchlistId, fieldRegistry.length, filterFieldKeySignature, reloadToken, optionFilterFields])
+  }, [filterMenuOpen, loading, detailIsCurrent, watchlistId, fieldRegistry.length, reloadToken, optionFilterFields])
 
   const filterOptionsByField = useMemo(() => {
     const options = new Map<string, FilterOption[]>()
@@ -2558,6 +2586,7 @@ export default function WatchlistsPage() {
 
   return (
     <>
+      {!error && (!rowsAreCurrent || screenerLoading) ? <LoadingOverlay /> : null}
       {watchlistSearchParams.get('assistant') === '1' && <ResearchPage watchlistId={watchlistId} onClose={() => {
         const next = new URLSearchParams(watchlistSearchParams)
         next.delete('assistant'); next.delete('topic'); next.delete('instruments'); next.delete('question')
@@ -2927,7 +2956,11 @@ export default function WatchlistsPage() {
                               </button>
                             </div>
 
-                            {selectedFilterFieldRecord.field_key === TAXONOMY_FILTER_FIELD_KEY ? (
+                            {filterOptionsLoading || filterOptionsError ? (
+                              <div className="watchlists-filter-empty" role={filterOptionsError ? 'alert' : 'status'}>
+                                {filterOptionsError || (zh ? '正在加载筛选选项…' : 'Loading filter options…')}
+                              </div>
+                            ) : selectedFilterFieldRecord.field_key === TAXONOMY_FILTER_FIELD_KEY ? (
                               <div className="watchlists-taxonomy-filter-list">
                                 <button
                                   type="button"
@@ -2952,7 +2985,9 @@ export default function WatchlistsPage() {
                                   ))
                                 ) : (
                                   <div className="watchlists-filter-empty">
-                                    {zh ? '当前列表暂无已分类标的。' : 'No classified instruments in this watchlist.'}
+                                    {!instrumentTaxonomy
+                                      ? taxonomyError || (zh ? '正在加载分类选项…' : 'Loading classification options…')
+                                      : zh ? '当前列表暂无已分类标的。' : 'No classified instruments in this watchlist.'}
                                   </div>
                                 )}
                               </div>
@@ -3372,14 +3407,7 @@ export default function WatchlistsPage() {
                     </React.Fragment>
                   )
                 })
-              ) : screenerLoading || !screenerResult ? (
-                <tr>
-                  <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="watchlists-table-loading">
-                    <span className="watchlists-table-loading-bar" />
-                    <span>Loading</span>
-                  </td>
-                </tr>
-              ) : (
+              ) : screenerLoading || !screenerResult ? null : (
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="empty-state">
                     {watchlistSearchQuery

@@ -20,6 +20,7 @@ Watchlist 只直接读取 `instrument_data`，不直接修改 canonical identity
 关键运行约束：
 
 - 系统名单为 `全部标的 / Index / All 公募 / All 私募`；全部标的自动收录有效登记且有 Watchlist 工作面的资产，自定义名单只组织成员；打开或切回列表页面时先同步成员及数量，再更新行数据，保留当前筛选和视图；
+- 首屏并行读取目录、字段和保存视图；分类选项不阻塞主表，筛选值在打开菜单时按需加载。主要页面加载使用居中悬浮提示；切换名单时取消旧请求，迟到结果不覆盖当前页面；
 - 每个 instrument 使用自己的 calculation-series as-of，名单不伪造共同计算日；
 - 混合资产名单只暴露对全部当前类型都有定义的字段；
 - Group By 只组织视图，不隐式修改 taxonomy 或研究事实；
@@ -52,7 +53,7 @@ DeepSeek Harness 实际可用时，Watchlist API 在标的所在市场交易日�
 
 分析复用仓库外 `portfolio-copilot.env` 的 `DEEPSEEK_API_KEY`，结合留存标的资料、共享资讯库及必要的定向公开检索形成结论。网页更新时间、搜索估计日期和上传时间不代替首发时间；只有日期时保留日期，未知时不臆造具体时刻。搜索/读取失败放入覆盖缺口；文本包按渠道报告实际覆盖，不承诺完整新闻或社媒覆盖。
 
-研究、事件与风险 DSH 使用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`（默认 `deepseek-v4-pro`）；独立事实核证保持 Pro，公开检索辅助保持 Flash，原有推理设置不变。启动器先加载 [共享模型接口](../../infra/config/deepseek_harness.patch.yml)，再加载各任务的受限工具配置；使用 Harness 自带的 OpenAI 兼容接口，保留网关流式增量中的工具身份。`DEEPSEEK_BASE_URL` 同时传入 DSH、核证和研究工具，默认 `https://api.deepseek.com`；该值是追加 `/chat/completions` 前的命名空间，标准兼容网关通常需包含 `/v1`。检索默认使用同一地址去掉末尾 `/v1` 后的 `/anthropic/v1/messages`，可用 `DEEPSEEK_SEARCH_URL` 明确指定完整检索接口。接口只返回客户端 `tool_use` 或普通文本时，不作为已执行检索或无新增证据，记录真实覆盖失败；不自动切回其他服务发送凭据。
+研究、事件、风险、独立事实核证及公开检索统一使用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`（默认 `deepseek-v4.1-flash`），原有推理设置与独立核证步骤保留。启动器先加载 [共享模型接口](../../infra/config/deepseek_harness.patch.yml)，再加载各任务的受限工具配置；使用 Harness 自带的 OpenAI 兼容接口，保留网关流式增量中的工具身份。`DEEPSEEK_BASE_URL` 同时传入 DSH、核证和研究工具，默认 `https://gateway.hzxxf.cn/v1`；该值是追加 `/chat/completions` 前的命名空间，标准兼容网关通常需包含 `/v1`。检索默认向同一 API 命名空间追加 `/messages`，可用 `DEEPSEEK_SEARCH_URL` 明确指定完整检索接口。接口只返回客户端 `tool_use` 或普通文本时，不作为已执行检索或无新增证据，记录真实覆盖失败；不自动切回其他服务发送凭据。
 
 运行环境的可用性检查与启动脚本使用相同的 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE`，并读取当前发布目录内已安装的 DSH 与 PATH 中的 Node。部署时先以服务用户执行 `infra/harness/install.sh`，按冻结的依赖锁安装；每次研究直接运行 `infra/harness/run.sh`，不临时解析或下载软件包。生产环境须显式配置 Watchlist 自身的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL`，以及 Portfolio、Regime 的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_PORTFOLIO_API_URL`、`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_REGIME_API_URL`。`data/research` 的方法、专属研究框架与历史案例，以及 [共同研究原则](backend/config/research_core.md)均为运行所需源文件。两个 DSH 入口加载同一份核心原则，任务提示只区分自动检查和交互。
 

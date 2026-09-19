@@ -197,12 +197,12 @@ def test_release_registry_failure_rolls_back_all_system_lists(client, monkeypatc
         session.commit()
         before = _snapshot(session, [Watchlist, WatchlistItem, WatchlistRowReadModel, InstrumentDetail])
     if failure == "registry":
-        original = watchlists.list_shared_instruments
+        original = watchlists.list_shared_instrument_identities
         def fail(**kwargs):
             if kwargs.get("instrument_type") == "index":
                 raise SharedInstrumentRegistryError("Injected registry failure")
             return original(**kwargs)
-        monkeypatch.setattr(watchlists, "list_shared_instruments", fail)
+        monkeypatch.setattr(watchlists, "list_shared_instrument_identities", fail)
     else:
         original = watchlists._materialize_watchlist_rows
         def fail(session, **kwargs):

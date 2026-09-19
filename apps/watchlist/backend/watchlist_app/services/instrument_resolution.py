@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from watchlist_app.db.models.instruments import InstrumentDetail
+from watchlist_app.db.models.watchlists import InstrumentTaxonomyAssignment, InstrumentTaxonomyNode
+from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.shared_instrument_registry import get_shared_instrument
@@ -48,44 +52,82 @@ def local_detail_view_type(instrument_type: str) -> str | None:
     return normalized if normalized in LOCAL_DETAIL_INSTRUMENT_TYPES else None
 
 
-def sync_local_instrument(
-    session: Session,
-    shared_record: dict[str, object],
-):
+def _default_taxonomy_assignment(shared_record: dict[str, object]) -> tuple[str, str] | None:
     instrument_type = str(shared_record.get("instrument_type") or "other").strip().lower()
-    detail_view_type = local_detail_view_type(instrument_type)
-    if detail_view_type is None:
-        return None
-    local_instrument = instrument_repository.upsert_from_shared_instrument(
-        session,
-        shared_instrument=shared_record,
-        detail_view_type=detail_view_type,
-    )
-    node_id = None
-    source_record_id = None
     if instrument_type == "equity":
         exchange_code = str(shared_record.get("exchange_code") or "").strip().upper()
         node_id = EQUITY_MARKET_DEFAULT_TAXONOMY_NODES.get(exchange_code)
         if node_id is None:
             raise ValueError(f"Unsupported Registry equity exchange_code: {exchange_code or 'missing'}")
-        source_record_id = f"registry_market:{exchange_code}"
-    elif instrument_type == "crypto":
-        node_id = "crypto-native"
-        source_record_id = "registry_type:crypto"
-    if node_id is not None:
-        if taxonomy_repository.get_node(session, node_id=node_id) is None:
-            raise ValueError(f"Watchlist {instrument_type} taxonomy node is missing: {node_id}")
-        if taxonomy_repository.get_assignment(
+        return node_id, f"registry_market:{exchange_code}"
+    if instrument_type == "crypto":
+        return "crypto-native", "registry_type:crypto"
+    return None
+
+
+def sync_local_instruments(
+    session: Session,
+    shared_records: list[dict[str, object]],
+) -> list[InstrumentDetail]:
+    """Reconcile current identities in one batch, writing only actual changes."""
+    supported = [
+        record for record in shared_records
+        if local_detail_view_type(str(record.get("instrument_type") or "")) is not None
+    ]
+    if not supported:
+        return []
+    instrument_ids = [str(record["instrument_id"]) for record in supported]
+    # Keep strong references throughout the batch: Session.get in the canonical
+    # upsert then reuses the identity map instead of issuing one SELECT per row.
+    local_records = list(session.scalars(select(InstrumentDetail).where(
+        InstrumentDetail.instrument_id.in_(instrument_ids),
+    )))
+    defaults = {
+        str(record["instrument_id"]): assignment
+        for record in supported
+        if (assignment := _default_taxonomy_assignment(record)) is not None
+    }
+    assigned_ids: set[str] = set()
+    default_node_ids: set[str] = set()
+    if defaults:
+        assigned_ids = set(session.scalars(select(InstrumentTaxonomyAssignment.instrument_id).where(
+            InstrumentTaxonomyAssignment.instrument_id.in_(defaults),
+            InstrumentTaxonomyAssignment.taxonomy_code == INSTRUMENT_TAXONOMY_CODE,
+        )))
+        default_node_ids = set(session.scalars(select(InstrumentTaxonomyNode.node_id).where(
+            InstrumentTaxonomyNode.node_id.in_({value[0] for value in defaults.values()}),
+        )))
+    synchronized: list[InstrumentDetail] = []
+    for shared_record in supported:
+        instrument_id = str(shared_record["instrument_id"])
+        instrument_type = str(shared_record["instrument_type"]).strip().lower()
+        default = defaults.get(instrument_id)
+        if default is not None and default[0] not in default_node_ids:
+            raise ValueError(f"Watchlist {instrument_type} taxonomy node is missing: {default[0]}")
+        local_instrument = instrument_repository.upsert_from_shared_instrument(
             session,
-            instrument_id=local_instrument.instrument_id,
-        ) is None:
+            shared_instrument=shared_record,
+            detail_view_type=instrument_type,
+        )
+        if default is not None and instrument_id not in assigned_ids:
             taxonomy_repository.upsert_assignment(
                 session,
-                instrument_id=local_instrument.instrument_id,
-                node_id=node_id,
-                source_record_id=source_record_id,
+                instrument_id=instrument_id,
+                node_id=default[0],
+                source_record_id=default[1],
             )
-    return local_instrument
+            assigned_ids.add(instrument_id)
+        synchronized.append(local_instrument)
+    del local_records
+    return synchronized
+
+
+def sync_local_instrument(
+    session: Session,
+    shared_record: dict[str, object],
+):
+    synchronized = sync_local_instruments(session, [shared_record])
+    return synchronized[0] if synchronized else None
 
 
 def _primary_identifier(shared_record: dict[str, object] | None) -> str | None:

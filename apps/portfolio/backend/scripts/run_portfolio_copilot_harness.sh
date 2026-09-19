@@ -23,13 +23,7 @@ investment_studio_load_env_file \
   DEEPSEEK_ \
   INVESTMENT_STUDIO_PORTFOLIO_COPILOT_
 : "${DEEPSEEK_API_KEY:?portfolio-copilot.env must set DEEPSEEK_API_KEY}"
-export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4-pro}"
-case "$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME" in
-  deepseek-v4-pro|deepseek-v4-flash)
-    echo "当前DeepSeek通道未配置可用的图片识别模型，截图分析未执行；请配置支持图片的模型后重试。" >&2
-    exit 78
-    ;;
-esac
+export INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME="${INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME:-deepseek-v4.1-flash}"
 
 mkdir -p "$copilot_dsh_home"
 chmod 700 "$copilot_dsh_home"

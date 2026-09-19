@@ -4798,7 +4798,7 @@ class TransactionCaptureAnalysisCreateRequest(BaseModel):
         max_length=120,
         description=(
             "Required for assistant submissions; use the exact active model name, "
-            "for example deepseek-v4-flash-vision-exp."
+            "for example deepseek-v4.1-flash."
         ),
     )
     harness_session_id: str | None = Field(default=None, max_length=255)

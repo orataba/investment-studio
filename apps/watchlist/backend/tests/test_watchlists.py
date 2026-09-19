@@ -4163,23 +4163,23 @@ def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
     assert {row["instrument_id"] for row in screener_payload["rows"]} == PUBLIC_FUND_IDS
 
 
-def test_list_watchlists_syncs_each_system_list_by_instrument_type(
+def test_list_watchlists_syncs_system_lists_from_one_identity_snapshot(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    original_list_shared_instruments = watchlists_route.list_shared_instruments
+    original_list_shared_identities = watchlists_route.list_shared_instrument_identities
     requested_types: list[str] = []
 
-    def track_list_shared_instruments(**kwargs):
-        requested_types.append(str(kwargs["instrument_type"]))
-        return original_list_shared_instruments(**kwargs)
+    def track_list_shared_identities(**kwargs):
+        requested_types.append(str(kwargs.get("instrument_type")))
+        return original_list_shared_identities(**kwargs)
 
     monkeypatch.setattr(
         watchlists_route,
-        "list_shared_instruments",
-        track_list_shared_instruments,
+        "list_shared_instrument_identities",
+        track_list_shared_identities,
     )
 
     response = client.get("/api/watchlists")
@@ -4188,7 +4188,7 @@ def test_list_watchlists_syncs_each_system_list_by_instrument_type(
     assert {
         item["watchlist_id"]: item["item_count"] for item in response.json()
     }["all-public-funds"] == len(PUBLIC_FUND_IDS)
-    assert requested_types == ["None", "index", "public_fund", "private_fund"]
+    assert requested_types == ["None"]
 
 
 def test_system_watchlist_detail_syncs_only_its_instrument_type(
@@ -4201,17 +4201,17 @@ def test_system_watchlist_detail_syncs_only_its_instrument_type(
 
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    original_list_shared_instruments = watchlists_route.list_shared_instruments
+    original_list_shared_identities = watchlists_route.list_shared_instrument_identities
     requested_types: list[str] = []
 
-    def track_list_shared_instruments(**kwargs):
-        requested_types.append(str(kwargs["instrument_type"]))
-        return original_list_shared_instruments(**kwargs)
+    def track_list_shared_identities(**kwargs):
+        requested_types.append(str(kwargs.get("instrument_type")))
+        return original_list_shared_identities(**kwargs)
 
     monkeypatch.setattr(
         watchlists_route,
-        "list_shared_instruments",
-        track_list_shared_instruments,
+        "list_shared_instrument_identities",
+        track_list_shared_identities,
     )
 
     response = client.get("/api/watchlists/all-public-funds")

@@ -109,6 +109,8 @@ Harness 只负责模型循环和受限 MCP 工具调用；数据库事实、计�
 DSH 和传递依赖在版本部署时按 `infra/harness/pnpm-lock.yaml` 安装；三个应用共用
 `infra/harness/run.sh`，请求执行不经过包管理器，也不依赖 npm 注册表可用性。
 
+各应用 Agent、独立核证与简报校稿共用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`，不按任务阶段切换 Pro/Flash。模型与默认网关由共享配置及启动器确定；`DEEPSEEK_BASE_URL` 是 OpenAI 兼容 API 命名空间。部署使用网关中绑定 `ygyg-vip55` 分组的 key，分组由服务商侧配置，不通过自造请求头或模型名前缀传递。凭据仅保存在仓库外 `portfolio-copilot.env`。
+
 | 入口 | 所有者与输入 | 允许产生的结果 |
 | --- | --- | --- |
 | 页面研究助手 | Watchlist；页面标的、观察列表或组合必须与对话关联一致 | 对话草稿及引用，不发布研究事件或交易 |

@@ -25,11 +25,13 @@ def page_transport(monkeypatch, html, *, headers=None, status=200):
     monkeypatch.setattr(web, "_exchange", exchange)
 
 
-@pytest.mark.parametrize("base,endpoint", [(None, "https://api.deepseek.com/anthropic/v1/messages"),
-    ("https://provider.example/v1/", "https://provider.example/anthropic/v1/messages"),
-    ("https://provider.example", "https://provider.example/anthropic/v1/messages")])
-def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monkeypatch, public_dns, base, endpoint):
+@pytest.mark.parametrize("base,endpoint", [(None, "https://gateway.hzxxf.cn/v1/messages"),
+    ("https://provider.example/v1/", "https://provider.example/v1/messages"),
+    ("https://provider.example", "https://provider.example/messages")])
+@pytest.mark.parametrize("configured_model", [None, "test-configured-model"])
+def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monkeypatch, public_dns, base, endpoint, configured_model):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME", configured_model or "")
     monkeypatch.delenv("DEEPSEEK_SEARCH_URL", raising=False)
     if base is None:
         monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
@@ -68,7 +70,7 @@ def test_search_uses_native_blocks_citation_join_and_explicit_output_limit(monke
     assert request["headers"]["x-api-key"] == "fixture-secret"
     assert request["headers"]["authorization"] == "Bearer fixture-secret"
     assert request["headers"]["anthropic-version"] == "2023-06-01"
-    assert json.loads(request["body"])["model"] == "deepseek-v4-flash"
+    assert json.loads(request["body"])["model"] == (configured_model or "deepseek-v4.1-flash")
     assert json.loads(request["body"])["tools"] == [
         {"type": "web_search_20250305", "name": "web_search", "max_uses": 2},
     ]
@@ -100,7 +102,7 @@ def test_configured_search_endpoint_tool_call_is_not_executed_search_evidence(mo
     with pytest.raises(web.SectorWebError, match="did not execute native web search"):
         web.search_web("news")
     assert len(requests) == 1 and requests[0][0] == "https://provider.example/v1/messages"
-    assert json.loads(requests[0][1]["body"])["model"] == "deepseek-v4-flash"
+    assert json.loads(requests[0][1]["body"])["model"] == "deepseek-v4.1-flash"
 
 
 def test_original_publication_is_distinct_from_modification_and_http_dates(monkeypatch, public_dns):

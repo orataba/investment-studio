@@ -1,18 +1,138 @@
 from copy import deepcopy
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from investment_studio_instrument_core.db_models import Instrument
 from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail, WatchlistItem
+from watchlist_app.db.models.read_models import WatchlistRowReadModel
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskReviewRule
-from watchlist_app.db.models.watchlists import Watchlist, WatchlistUserSettings, WatchlistView, WatchlistViewColumn
+from watchlist_app.db.models.watchlists import InstrumentTaxonomyAssignmentHistory, Watchlist, WatchlistUserSettings, WatchlistView, WatchlistViewColumn
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository, SYSTEM_WATCHLIST_SPECS
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.shared_instrument_registry import get_shared_instrument
 
 from .conftest import TEST_SHARED_INSTRUMENTS, canonical_quote_policy, seed_shared_instrument
+
+
+def test_unchanged_directory_reads_do_not_scale_queries_with_members_or_read_prices(client: TestClient):
+    from watchlist_app.db.session import get_engine
+
+    assert client.get("/api/watchlists").status_code == 200
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, *_args):
+        statements.append(statement.lower())
+
+    def read_directory():
+        statements.clear()
+        event.listen(get_engine(), "before_cursor_execute", capture)
+        try:
+            response = client.get("/api/watchlists")
+        finally:
+            event.remove(get_engine(), "before_cursor_execute", capture)
+        assert response.status_code == 200
+        assert not any(statement.lstrip().startswith(("insert ", "update ", "delete ")) for statement in statements)
+        assert not any(
+            table in statement
+            for statement in statements
+            for table in ("instrument_market_data", "corporate_action_event", "fund_nav_event")
+        )
+        return len(statements), response.json()
+
+    small_count, small = read_directory()
+    for position in range(24):
+        seed_shared_instrument({
+            "instrument_id": f"directory-scale-{position}",
+            "instrument_name": f"Directory Scale {position}",
+            "instrument_type": "equity", "currency": "USD", "exchange_code": "XNAS",
+            "quote_selection_policy": canonical_quote_policy("equity"),
+            "identifiers": [{"identifier_type": "ticker", "identifier_value": f"DS{position}", "is_primary": True}],
+            "market_data": [], "lifecycle_state": {"status": "active"},
+        })
+    assert client.get("/api/watchlists").status_code == 200
+    large_count, large = read_directory()
+    assert large_count <= small_count + 2
+    assert large[0]["item_count"] == small[0]["item_count"] + 24
+
+
+def test_directory_reconciles_identity_edits_and_missing_rows_without_membership_changes(client: TestClient):
+    assert client.get("/api/watchlists").status_code == 200
+    instrument_id = "fund-us-agg"
+    with get_session_factory()() as session:
+        instrument = session.get(Instrument, instrument_id)
+        instrument.instrument_name = "Updated Registry Name"
+        instrument.exchange_code = "ARCX"
+        instrument.identifiers[0].identifier_value = "UPDATED"
+        row = session.scalar(select(WatchlistRowReadModel).where(
+            WatchlistRowReadModel.watchlist_id == "all-instruments",
+            WatchlistRowReadModel.instrument_id == instrument_id,
+        ))
+        session.delete(row)
+        session.commit()
+    assert client.get("/api/watchlists/all-instruments").status_code == 200
+    with get_session_factory()() as session:
+        instrument = session.get(InstrumentDetail, instrument_id)
+        assert instrument.instrument_name == "Updated Registry Name"
+        assert instrument.primary_identifier_value == "UPDATED"
+        assert instrument.metadata_json == {"exchange_code": "ARCX"}
+        row = session.scalar(select(WatchlistRowReadModel).where(
+            WatchlistRowReadModel.watchlist_id == "all-instruments",
+            WatchlistRowReadModel.instrument_id == instrument_id,
+        ))
+        assert row is not None
+        assert row.instrument_name == "Updated Registry Name"
+
+
+def test_directory_type_change_moves_system_membership_and_preserves_current_identity(client: TestClient):
+    before = client.get("/api/watchlists").json()
+    counts = {item["watchlist_id"]: item["item_count"] for item in before}
+    with get_session_factory()() as session:
+        instrument = session.get(Instrument, "savf63")
+        instrument.instrument_type = "private_fund"
+        session.commit()
+    response = client.get("/api/watchlists")
+    assert response.status_code == 200
+    updated = {item["watchlist_id"]: item["item_count"] for item in response.json()}
+    assert updated["all-instruments"] == counts["all-instruments"]
+    assert updated["all-public-funds"] == counts["all-public-funds"] - 1
+    assert updated["all-private-funds"] == counts["all-private-funds"] + 1
+    with get_session_factory()() as session:
+        instrument = session.get(InstrumentDetail, "savf63")
+        assert (instrument.instrument_type, instrument.detail_view_type) == ("private_fund", "private_fund")
+
+
+def test_directory_default_classification_preserves_manual_assignment_on_exchange_change(client: TestClient):
+    instrument_id = "directory-classification"
+    seed_shared_instrument({
+        "instrument_id": instrument_id, "instrument_name": "Directory Classification",
+        "instrument_type": "equity", "currency": "USD", "exchange_code": "XNAS",
+        "quote_selection_policy": canonical_quote_policy("equity"),
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "DCLASS", "is_primary": True}],
+        "market_data": [], "lifecycle_state": {"status": "active"},
+    })
+    assert client.get("/api/watchlists/all-instruments").status_code == 200
+    repository = SQLAlchemyTaxonomyRepository()
+    with get_session_factory()() as session:
+        assignment = repository.get_assignment(session, instrument_id=instrument_id)
+        assert assignment.node_id == "equity-us-unclassified"
+        repository.upsert_assignment(session, instrument_id=instrument_id,
+            node_id="equity-hk-information-technology", source_record_id="pm-classification")
+        session.get(Instrument, instrument_id).exchange_code = "XHKG"
+        session.commit()
+        history = list(session.scalars(select(InstrumentTaxonomyAssignmentHistory.history_id).where(
+            InstrumentTaxonomyAssignmentHistory.instrument_id == instrument_id,
+        )))
+    assert client.get("/api/watchlists").status_code == 200
+    with get_session_factory()() as session:
+        assignment = repository.get_assignment(session, instrument_id=instrument_id)
+        assert (assignment.node_id, assignment.source_record_id) == ("equity-hk-information-technology", "pm-classification")
+        assert list(session.scalars(select(InstrumentTaxonomyAssignmentHistory.history_id).where(
+            InstrumentTaxonomyAssignmentHistory.instrument_id == instrument_id,
+        ))) == history
+        assert session.get(InstrumentDetail, instrument_id).metadata_json == {"exchange_code": "XHKG"}
 
 
 def _rows(client, watchlist_id, *, view_id="overview"):

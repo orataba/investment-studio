@@ -53,11 +53,12 @@ from watchlist_app.services.instrument_resolution import (
     local_detail_view_type,
     resolve_watchlist_instrument,
     sync_local_instrument,
+    sync_local_instruments,
 )
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
-    list_shared_instruments,
+    list_shared_instrument_identities,
 )
 from watchlist_app.services.watchlist_query_contract import (
     WatchlistQueryContractError,
@@ -421,9 +422,14 @@ def _materialize_watchlist_rows(
     *,
     watchlist_id: str,
     instrument_ids: list[str],
+    shared_identities: dict[str, dict[str, object]] | None = None,
 ) -> None:
     for requested_instrument_id in instrument_ids:
-        instrument = resolve_watchlist_instrument(session, instrument_id=requested_instrument_id)
+        instrument = (
+            shared_identities[requested_instrument_id]
+            if shared_identities is not None
+            else resolve_watchlist_instrument(session, instrument_id=requested_instrument_id)
+        )
         canonical_instrument_id = (
             str(instrument.get("canonical_instrument_id") or requested_instrument_id).strip()
             if isinstance(instrument, dict)
@@ -547,15 +553,16 @@ def _sync_system_watchlist(
     spec: SystemWatchlistSpec,
     existing_record: Watchlist | None = None,
     raise_on_registry_error: bool = False,
+    shared_identities: list[dict[str, object]] | None = None,
 ) -> Watchlist:
     record = watchlist_repository.ensure_system_watchlist(
         session, spec, existing_record=existing_record,
     )
 
     try:
-        shared_instruments = list_shared_instruments(
-            instrument_type=spec.instrument_type,
-            limit=None,
+        shared_instruments = (
+            shared_identities if shared_identities is not None
+            else list_shared_instrument_identities(instrument_type=spec.instrument_type)
         )
     except SharedInstrumentRegistryError:
         if raise_on_registry_error:
@@ -564,17 +571,10 @@ def _sync_system_watchlist(
 
     try:
         with session.begin_nested():
-            active_instrument_ids: list[str] = []
-            for shared_instrument in shared_instruments:
-                detail_instrument_id = _ensure_local_instrument_detail(
-                    session,
-                    shared_instrument,
-                )
-                if (
-                    detail_instrument_id
-                    and detail_instrument_id not in active_instrument_ids
-                ):
-                    active_instrument_ids.append(detail_instrument_id)
+            active_instrument_ids = [
+                instrument.instrument_id
+                for instrument in sync_local_instruments(session, shared_instruments)
+            ]
 
             refreshed_record = (
                 watchlist_repository.get(session, spec.watchlist_id)
@@ -610,8 +610,8 @@ def _sync_system_watchlist(
                 added_by="system",
             )
             existing_rows = {
-                row.instrument_id
-                for row in read_model_repository.list_watchlist_rows(
+                instrument_id
+                for instrument_id, _ in read_model_repository.list_watchlist_row_identities(
                     session,
                     spec.watchlist_id,
                 )
@@ -627,6 +627,7 @@ def _sync_system_watchlist(
                 session,
                 watchlist_id=spec.watchlist_id,
                 instrument_ids=materialize_instrument_ids,
+                shared_identities={str(item["instrument_id"]): item for item in shared_instruments},
             )
     except SharedInstrumentRegistryError:
         # Roll back the savepoint as one unit. In particular, never persist a
@@ -643,16 +644,33 @@ def _sync_system_watchlist(
     return refreshed_record
 
 
-@router.get("")
-def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str, object]]:
-    records = list(watchlist_repository.list(session))
-    by_id = {record.watchlist_id: record for record in records}
+def _sync_system_watchlists(session: Session) -> None:
+    records = {record.watchlist_id: record for record in watchlist_repository.list(session)}
+    try:
+        # All system lists describe the same current registry. One identity-only
+        # snapshot keeps their memberships consistent without loading any prices.
+        shared_identities = list_shared_instrument_identities()
+    except SharedInstrumentRegistryError:
+        for spec in SYSTEM_WATCHLIST_SPECS:
+            watchlist_repository.ensure_system_watchlist(
+                session, spec, existing_record=records.get(spec.watchlist_id),
+            )
+        return
     for spec in SYSTEM_WATCHLIST_SPECS:
         _sync_system_watchlist(
             session,
             spec=spec,
-            existing_record=by_id.get(spec.watchlist_id),
+            existing_record=records.get(spec.watchlist_id),
+            shared_identities=[
+                item for item in shared_identities
+                if spec.instrument_type is None or item["instrument_type"] == spec.instrument_type
+            ],
         )
+
+
+@router.get("")
+def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str, object]]:
+    _sync_system_watchlists(session)
     session.commit()
     records = list(watchlist_repository.list(session))
     return [present_watchlist(item) for item in _personal_order(session, records)]
@@ -698,8 +716,7 @@ def reorder_watchlist_records(
     payload: WatchlistReorderRequest,
     session: Session = Depends(get_db_session),
 ) -> list[dict[str, object]]:
-    for spec in SYSTEM_WATCHLIST_SPECS:
-        _sync_system_watchlist(session, spec=spec)
+    _sync_system_watchlists(session)
     ordered_watchlist_ids = [
         *(spec.watchlist_id for spec in SYSTEM_WATCHLIST_SPECS),
         *[
@@ -788,11 +805,10 @@ def get_watchlist(
         session.commit()
     record = _require_watchlist(session, watchlist_id)
     fields = field_registry_repository.list_fields(session)
-    watchlist_rows = read_model_repository.list_watchlist_rows(session, watchlist_id)
     active_instrument_types = {
-        str(row.instrument_type or "").strip().lower()
-        for row in watchlist_rows
-        if str(row.instrument_type or "").strip()
+        str(instrument_type).strip().lower()
+        for _, instrument_type in read_model_repository.list_watchlist_row_identities(session, watchlist_id)
+        if str(instrument_type or "").strip()
     }
     views = _personal_views(session, watchlist_id)
     summary = present_watchlist(record)

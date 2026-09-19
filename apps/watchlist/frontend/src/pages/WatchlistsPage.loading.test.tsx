@@ -198,20 +198,19 @@ describe('WatchlistsPage loading', () => {
       result: apiMocks.runScreenerQuery.mock.results[index].value,
     }))
     const mainQuery = initialQueries.filter(({ payload }) => payload.view_id === 'overview').slice(-1)[0]!
-    const filterOptionsQuery = initialQueries.filter(({ payload }) => payload.view_id == null).slice(-1)[0]!
+    expect(initialQueries.every(({ payload }) => payload.view_id === 'overview')).toBe(true)
     const savedCriteria = mainQuery.payload
     const initialQueryCount = apiMocks.runScreenerQuery.mock.calls.length
     const listRecords = await apiMocks.getWatchlists.mock.results[0].value
     let finishSync!: (records: unknown) => void
     apiMocks.getWatchlists.mockReturnValueOnce(new Promise((resolve) => { finishSync = resolve }))
     const refreshedRows = await mainQuery.result
-    const filterOptionsResult = await filterOptionsQuery.result
     apiMocks.runScreenerQuery.mockImplementation(async (payload) => payload.view_id === 'overview'
       ? {
         ...refreshedRows, total_rows: 2,
         rows: [...refreshedRows.rows, { instrument_id: 'fund-2', instrument_name: 'New Fund 2' }],
       }
-      : filterOptionsResult)
+      : refreshedRows)
     fireEvent(window, new Event('focus'))
     fireEvent(document, new Event('visibilitychange'))
     expect(apiMocks.getWatchlists).toHaveBeenCalledTimes(2)
@@ -221,8 +220,7 @@ describe('WatchlistsPage loading', () => {
     await act(async () => { finishSync(listRecords.map((record: object) => ({ ...record, item_count: 2 }))) })
     await waitFor(() => expect(screen.getByText('New Fund 2')).toBeTruthy())
     const refreshedQueries = apiMocks.runScreenerQuery.mock.calls.slice(initialQueryCount)
-    expect(refreshedQueries.filter(([payload]) => payload.view_id === 'overview')).toEqual([[savedCriteria]])
-    expect(refreshedQueries.filter(([payload]) => payload.view_id == null)).toEqual([[filterOptionsQuery.payload]])
+    expect(refreshedQueries.map(([payload]) => payload)).toEqual([savedCriteria])
     expect(apiMocks.getWatchlistDetail).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('dialog', { name: 'Choose columns' })).toBe(columnsDialog)
     expect(columnSearch.value).toBe('unfinished edit')
@@ -351,6 +349,7 @@ describe('WatchlistsPage loading', () => {
     expect(screen.queryByText('Equity')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Group By/ }))
     expect(screen.getByRole('button', { name: 'None' })).toBeTruthy()
+    await waitFor(() => expect(screen.queryByText('Loading filter options…')).toBeNull())
     expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Currency' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Investment Status' })).toBeTruthy()
@@ -433,7 +432,7 @@ describe('WatchlistsPage loading', () => {
     await waitFor(() => expect(apiMocks.runScreenerQuery).toHaveBeenCalledWith(expect.objectContaining({
       selected_fields: expect.arrayContaining(['attr.coverage_status']),
       sort: [], filters: {},
-    })))
+    }), expect.any(AbortSignal)))
     await waitFor(() => expect(apiMocks.updateWatchlistView).toHaveBeenCalledWith(
       'shared-catalog', 'overview', expect.objectContaining({
         columns: [expect.objectContaining({ field_key: 'instrument_name' }), expect.objectContaining({ field_key: 'attr.coverage_status' })],
@@ -470,6 +469,7 @@ describe('WatchlistsPage loading', () => {
     expect((within(dialog).getByLabelText('Investment Status') as HTMLInputElement).checked).toBe(true)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
+    await waitFor(() => expect(screen.queryByText('Loading filter options…')).toBeNull())
     expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Investment Status' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Instrument Type' })).toBeTruthy()
@@ -489,7 +489,7 @@ describe('WatchlistsPage loading', () => {
         selected_fields: expect.arrayContaining(['attr.coverage_status']),
         filters: { instrument_type: ['equity'] },
         sort: [],
-      })))
+      }), expect.any(AbortSignal)))
       fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
       dialog = screen.getByRole('dialog', { name: 'Choose columns' })
       expect((within(dialog).getByLabelText('Investment Status') as HTMLInputElement).checked).toBe(true)

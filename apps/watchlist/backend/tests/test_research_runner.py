@@ -71,6 +71,7 @@ def test_every_harness_explicitly_delegates_the_single_run_credential():
         assert "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN" in patch
         assert "DEEPSEEK_BASE_URL: !!js process.env.DEEPSEEK_BASE_URL" in patch
         assert "DEEPSEEK_SEARCH_URL: !!js process.env.DEEPSEEK_SEARCH_URL" in patch
+        assert "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME" in patch
 
 
 def test_availability_uses_the_same_explicit_runtime_paths_as_the_launcher(monkeypatch, tmp_path):

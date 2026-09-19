@@ -6,13 +6,13 @@
 
 后端 `briefing_app.main:app`，本地 API 8010，前端 5175；云端 API 8110，网页 3103。数据库独立 `briefing` schema，通过统一迁移入口维护。后端配置使用外置 `briefing.env` 与 `market.env`，DeepSeek 沿用外置 `portfolio-copilot.env`。凭据不写入仓库、报告或 MCP。
 
-模型接口复用 [共享 DeepSeek 配置](../../infra/config/deepseek_harness.patch.yml)，通过 Harness 自带的 OpenAI 兼容接口读取 `DEEPSEEK_BASE_URL`。该地址是 API 命名空间，例如以 `/v1` 结尾；写作使用 Flash，独立校稿使用 Pro，均保留高推理设置。
+模型接口复用 [共享 DeepSeek 配置](../../infra/config/deepseek_harness.patch.yml)，通过 Harness 自带的 OpenAI 兼容接口读取 `DEEPSEEK_BASE_URL`。该地址是 API 命名空间，默认 `https://gateway.hzxxf.cn/v1`；写作与独立校稿统一使用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`（默认 `deepseek-v4.1-flash`），均保留高推理设置。
 
 日报窗口是截止时刻前 24 小时；周报重新检索本地周一至截止时刻整周的文本版本。发布时间、源站观察时间、本机接收时间分别检索去重，源站观察不代表事件发生。仅在本期接收到的历史资料单独计数，作为可搜索的补录背景；上下文直接提供按频道分组的完整本期标题索引，模型选择相关正文核实，并按需查找历史资料。提供完整索引不代表所有正文均已阅读。全文、来源节选和正文缺失分别展示数量，不能把节选当成完整文章。报告仅保存文本版本引用和元数据，正文从共享文本库按绑定版本读取。数值小表保存为本次快照，逐资产展示实际收盘日期；数字由程序计算，正文数值引用必须与原始资料或数据字段一致。
 
 本地默认 `INVESTMENT_STUDIO_BRIEFING_EDITION_ROLE=preview`，可手动生成预览。云端正式发布设为 `publisher`，通过 `infra/systemd/install_briefing_timers.sh` 配置日报 08:30、周六 09:00（Asia/Shanghai）；`BRIEFING_DAILY_ON_CALENDAR` 和 `BRIEFING_WEEKLY_ON_CALENDAR` 可由部署按数据包到达时间调整。计划任务会等待报告成功或失败，触发时间不代表数据齐备，覆盖缺口始终随版本保存和展示。
 
-历史版本、失败记录与之前成功报告均可查看。服务商返回 `model_not_found` 或无可用模型通道时，页面保留明确的配置错误；不会自动换模型或发布未校稿内容。模型只能使用当前报告的来源索引、绑定版本正文阅读和结构化草稿提交工具。首轮由 DeepSeek Flash 完成草稿，在独立的 DeepSeek Pro 会话中逐条重读所引原文，校正事实归属、条件、时间和金融含义；两轮正常退出、校稿已提交且通过引用校验才形成已完成版本。校稿不更换资料窗口或新增选题。
+历史版本、失败记录与之前成功报告均可查看。服务商返回 `model_not_found` 或无可用模型通道时，页面保留明确的配置错误；不会自动换模型或发布未校稿内容。模型只能使用当前报告的来源索引、绑定版本正文阅读和结构化草稿提交工具。首轮完成草稿后，在同模型的独立校稿会话中逐条重读所引原文，校正事实归属、条件、时间和金融含义；两轮正常退出、校稿已提交且通过引用校验才形成已完成版本。校稿不更换资料窗口或新增选题。
 
 报告版本号与同日重复生成的合并均限定在所属团队；不同团队可独立拥有同类型、同日期的第一个版本。公开页面只投影已完成的正式版本，保留原文与生成操作仍按团队身份授权。
 

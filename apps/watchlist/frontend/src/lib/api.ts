@@ -1184,8 +1184,8 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
   }
 }
 
-export function getWatchlists() {
-  return fetchJson<WatchlistRecord[]>('/api/watchlists')
+export function getWatchlists(signal?: AbortSignal) {
+  return fetchJson<WatchlistRecord[]>('/api/watchlists', { signal })
 }
 
 export function getMonitoringDashboard() {
@@ -1251,8 +1251,8 @@ export function reorderWatchlists(watchlistIds: string[]) {
   })
 }
 
-export function getWatchlistDetail(watchlistId: string) {
-  return fetchJson<WatchlistDetail>(`/api/watchlists/${watchlistId}`)
+export function getWatchlistDetail(watchlistId: string, signal?: AbortSignal) {
+  return fetchJson<WatchlistDetail>(`/api/watchlists/${watchlistId}`, { signal })
 }
 
 export function resolveInstrumentDetail(instrumentId: string) {
@@ -1517,10 +1517,11 @@ export function updateInstrumentSettings(
   })
 }
 
-export function runScreenerQuery(payload: Record<string, unknown>) {
+export function runScreenerQuery(payload: Record<string, unknown>, signal?: AbortSignal) {
   return fetchJson<ScreenerResponse>('/api/screener/query', {
     method: 'POST',
     body: JSON.stringify(payload),
+    signal,
   })
 }
 

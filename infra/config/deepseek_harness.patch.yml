@@ -9,7 +9,7 @@
       studio-deepseek:
         apiKeyEnv: DEEPSEEK_API_KEY
         api: openai-completions
-        baseURL: !!js process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
+        baseURL: !!js process.env.DEEPSEEK_BASE_URL || 'https://gateway.hzxxf.cn/v1'
         reasoning: high
         defaultContextWindow: 1000000
         defaultMaxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' ? 65536 : 32768"
@@ -19,9 +19,7 @@
           requiresReasoningContentOnAssistantMessages: true
           maxTokensField: max_tokens
         models:
-          - id: deepseek-v4-pro
-            reasoningEfforts:
-              high: high
-          - id: deepseek-v4-flash
+          - id: deepseek-v4.1-flash
+            input: [text, image]
             reasoningEfforts:
               high: high

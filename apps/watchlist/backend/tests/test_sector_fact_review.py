@@ -233,11 +233,13 @@ def test_model_failure_is_propagated_after_preserving_original_draft(monkeypatch
     assert retained_run[-1][1] == {"operation": "review", "review": {"draft": draft()}}
 
 
-@pytest.mark.parametrize("base,endpoint", [(None, "https://api.deepseek.com/chat/completions"),
+@pytest.mark.parametrize("base,endpoint", [(None, "https://gateway.hzxxf.cn/v1/chat/completions"),
     ("https://provider.example/v1/", "https://provider.example/v1/chat/completions"),
     ("https://provider.example", "https://provider.example/chat/completions")])
-def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base, endpoint):
+@pytest.mark.parametrize("configured_model", [None, "test-configured-model"])
+def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base, endpoint, configured_model):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME", configured_model or "")
     if base is None:
         monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     else:
@@ -255,7 +257,7 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base
     assert review._call_reviewer({"run_id": "test-run", "sources": [], "draft_reviews": []}) == checked()
     payload = json.loads(requests[0][1]["body"])
     assert requests[0][1]["timeout"] == 300
-    assert payload["model"] == "deepseek-v4-pro" and payload["max_tokens"] == 16000
+    assert payload["model"] == (configured_model or "deepseek-v4.1-flash") and payload["max_tokens"] == 16000
     assert payload["thinking"] == {"type": "enabled"} and payload["reasoning_effort"] == "high"
     assert requests[0][0] == endpoint
     assert payload["response_format"] == {"type": "json_object"}

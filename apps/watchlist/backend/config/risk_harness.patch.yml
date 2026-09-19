@@ -3,7 +3,7 @@
 - id: agent-default-model
   config:
     provider: studio-deepseek
-    model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4-pro'
+    model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4.1-flash'
 
 - id: system-prompt
   config:
@@ -221,8 +221,9 @@
           INVESTMENT_STUDIO_RESEARCH_API_BASE_URL: !!js process.env.INVESTMENT_STUDIO_RESEARCH_API_BASE_URL
           INVESTMENT_STUDIO_RESEARCH_RUN_ID: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_ID
           INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN: !!js process.env.INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN
+          INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4.1-flash'
           DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
-          DEEPSEEK_BASE_URL: !!js process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
+          DEEPSEEK_BASE_URL: !!js process.env.DEEPSEEK_BASE_URL || 'https://gateway.hzxxf.cn/v1'
           DEEPSEEK_SEARCH_URL: !!js process.env.DEEPSEEK_SEARCH_URL || ''
         toolCallTimeoutMs: 60000
         failOnStartupError: true

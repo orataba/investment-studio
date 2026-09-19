@@ -343,7 +343,7 @@ def _api_request(run_id: str, suffix: str, payload: dict | None = None) -> dict:
 
 
 def _call_reviewer(packet: dict) -> dict:
-    from watchlist_app.services.deepseek_config import deepseek_endpoint
+    from watchlist_app.services.deepseek_config import deepseek_endpoint, deepseek_model
     key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not key:
         raise ValueError("DEEPSEEK_API_KEY is not configured for the sector fact review")
@@ -351,7 +351,7 @@ def _call_reviewer(packet: dict) -> dict:
         "authorization": f"Bearer {key}", "content-type": "application/json",
         "accept": "application/json", "user-agent": "InvestmentStudio-SectorFactReview/1.0",
     }, body=json.dumps({
-        "model": "deepseek-v4-pro", "max_tokens": 32000 if any(r.get("research") for r in packet["draft_reviews"]) else 16000,
+        "model": deepseek_model(), "max_tokens": 32000 if any(r.get("research") for r in packet["draft_reviews"]) else 16000,
         "thinking": {"type": "enabled"}, "reasoning_effort": "high",
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": _INSTRUCTIONS},

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import WatchlistEntryPage from './WatchlistEntryPage'
@@ -11,7 +11,28 @@ vi.mock('../lib/api', async (original) => ({
   ...(await original<typeof import('../lib/api')>()),
   getWatchlists: mocks.getWatchlists,
 }))
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.clearAllMocks() })
+
+it('shows the shared floating loader while the directory loads, without title status text', async () => {
+  let resolve!: (lists: WatchlistRecord[]) => void
+  mocks.getWatchlists.mockReturnValue(new Promise<WatchlistRecord[]>((done) => { resolve = done }))
+  render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><WatchlistEntryPage /></MemoryRouter></LanguageProvider>)
+  const status = screen.getByRole('status')
+  expect(status.classList.contains('watchlist-loading-overlay')).toBe(true)
+  expect(within(screen.getByRole('heading', { name: 'All Watchlists' }).parentElement!).queryByText('Loading')).toBeNull()
+  await act(async () => resolve([]))
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(screen.getByText('0 Watchlists · 0 Securities')).toBeTruthy()
+})
+
+it('aborts a directory load when leaving the entry page', () => {
+  mocks.getWatchlists.mockReturnValue(new Promise(() => {}))
+  const { unmount } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><WatchlistEntryPage /></MemoryRouter></LanguageProvider>)
+  const signal = mocks.getWatchlists.mock.calls[0][0] as AbortSignal
+  expect(signal.aborted).toBe(false)
+  unmount()
+  expect(signal.aborted).toBe(true)
+})
 
 it('counts the full instrument universe once when system and custom lists overlap', async () => {
   const lists: WatchlistRecord[] = [
