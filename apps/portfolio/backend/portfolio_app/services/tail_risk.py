@@ -98,6 +98,20 @@ def _daily_periods(points, *, detail, start_date, end_date):
                      "rejected_period_count": rejected, "calendar_basis": calendar_basis}, session_pairs
 
 
+def _required_fx_instrument_ids(currency, base_currency, *, direct):
+    """Match the direct/inverse/USD-pivot route without reading observations."""
+    if currency == base_currency:
+        return set()
+    pair = (currency, base_currency)
+    instrument_id = direct.get(pair) or direct.get(pair[::-1])
+    if instrument_id:
+        return {instrument_id}
+    if "USD" in pair:
+        return set()
+    return (_required_fx_instrument_ids(currency, "USD", direct=direct)
+            | _required_fx_instrument_ids("USD", base_currency, direct=direct))
+
+
 def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
     """Exact observed FX levels; direct, inverse, or the existing USD pivot."""
     pair = (currency, base_currency)
@@ -176,6 +190,9 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
     details = instrument_details or {}
     direct = fx_direct_instrument_map(fx_payload or {})
     rows, modeled, issues = [], [], []
+    # All rows share the same dated scenario window and base currency. Resolve
+    # each foreign currency's observed FX intervals once within this calculation.
+    fx_periods_by_currency = {}
     for index, holding in enumerate(workspace.get("rows") or []):
         core = holding.get("instrument_core") or {}
         iid = core.get("instrument_id")
@@ -219,12 +236,15 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
             if not local:
                 continue
         if currency != base_currency:
-            rates, source_ids, fx_detail = _fx_rate_series(currency, base_currency, direct=direct, details=details, as_of_date=as_of_date)
-            row["fx_instrument_ids"] = source_ids
-            ordered = sorted(rates)
-            fx_points = [{"start_date": left, "date": right, "value": rates[right] / rates[left] - 1}
-                         for left, right in zip(ordered, ordered[1:])]
-            fx_returns, fx_metadata, fx_expected = _daily_periods(fx_points, detail=fx_detail, start_date=start_date, end_date=as_of_date)
+            if currency not in fx_periods_by_currency:
+                rates, source_ids, fx_detail = _fx_rate_series(currency, base_currency, direct=direct, details=details, as_of_date=as_of_date)
+                ordered = sorted(rates)
+                fx_points = [{"start_date": left, "date": right, "value": rates[right] / rates[left] - 1}
+                             for left, right in zip(ordered, ordered[1:])]
+                fx_returns, fx_metadata, fx_expected = _daily_periods(fx_points, detail=fx_detail, start_date=start_date, end_date=as_of_date)
+                fx_periods_by_currency[currency] = (source_ids, fx_returns, fx_metadata, fx_expected)
+            source_ids, fx_returns, fx_metadata, fx_expected = fx_periods_by_currency[currency]
+            row["fx_instrument_ids"] = list(source_ids)
             row["fx_rejected_period_count"] = fx_metadata["rejected_period_count"]
             row["unmatched_fx_period_count"] = len(local.keys() - fx_returns.keys()) if local is not None else 0
             if not fx_returns:
@@ -352,15 +372,20 @@ def read_portfolio_tail_risk(portfolio_id: str, *, as_of_date: date | None = Non
     if as_of_date is not None and _date(workspace["as_of_date"]) != as_of_date:
         raise ValueError("Tail-risk workspace date differs from the requested date.")
     ids = {(row.get("instrument_core") or {}).get("instrument_id") for row in workspace.get("rows") or []}
-    base = workspace.get("base_currency")
-    has_fx = any((row.get("instrument_core") or {}).get("currency") not in {None, base}
-                 for row in workspace.get("rows") or [])
+    base = str(workspace.get("base_currency") or "").upper()
+    currencies = {str((row.get("instrument_core") or {}).get("currency") or "").upper()
+                  for row in workspace.get("rows") or []}
+    has_fx = bool(currencies - {"", base})
     fx_payload = get_shared_fx_rates() if has_fx else {}
     # Security return intervals already belong to this dated workspace. Only
     # their delivery frequency/calendar is needed here; FX needs full observed
     # quote history to align each scenario's actual start and end boundaries.
     details = get_registry_instrument_metadata([iid for iid in ids if iid])
-    fx_ids = set(fx_direct_instrument_map(fx_payload).values())
+    direct = fx_direct_instrument_map(fx_payload)
+    fx_ids = set().union(*(
+        _required_fx_instrument_ids(currency, base, direct=direct)
+        for currency in currencies if currency
+    ))
     if fx_ids:
         details.update(get_registry_instrument_details(sorted(fx_ids)))
     return project_portfolio_tail_risk(workspace, confidence=confidence, lookback_days=lookback_days,

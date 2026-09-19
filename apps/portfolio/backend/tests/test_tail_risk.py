@@ -211,15 +211,22 @@ def test_reader_reuses_workspace_and_does_not_read_future_or_other_portfolio(mon
 
 
 @pytest.mark.parametrize("missing_fx_day", [None, 20])
-def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypatch, missing_fx_day):
+@pytest.mark.parametrize("lowercase_currencies", [False, True])
+def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypatch, missing_fx_day, lowercase_currencies):
     from portfolio_app.services import instrument_registry
 
     fx_details, fx_payload = fx_inputs(missing_day=missing_fx_day)
+    fx_payload["rates"].append({"source_kind": "direct", "base_currency": "USD",
+                               "quote_currency": "EUR", "instrument_id": "fx-usd-eur"})
     metadata = {"a": {"exchange_code": "TEST", "source_settings": {"expected_frequency": "daily"}},
                 "weekly": {"source_settings": {"expected_frequency": "weekly"}}}
     complete_details = {**fx_details, **deepcopy(metadata)}
     complete_details["a"]["market_data"] = [{"unused_security_history": True}]
     source = workspace([holding(value=900, currency="USD"), holding("weekly", value=100)])
+    if lowercase_currencies:
+        source["base_currency"] = source["base_currency"].lower()
+        for row in source["rows"]:
+            row["instrument_core"]["currency"] = row["instrument_core"]["currency"].lower()
     verified_calendar_days(monkeypatch)
     metadata_reads, history_reads = [], []
 
@@ -241,6 +248,42 @@ def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypat
     assert history_reads == [{"fx-usd-cny"}]
     assert actual["observation_count"] == (40 if missing_fx_day is None else 38)
     assert actual["rows"][1]["reason"] == "non_daily_source"
+
+
+@pytest.mark.parametrize("currency,base,expected", [
+    ("USD", "CNY", {"fx-usd-cny"}),
+    ("CNY", "USD", {"fx-usd-cny"}),
+    ("EUR", "CNY", {"fx-usd-eur", "fx-usd-cny"}),
+    ("CNY", "CNY", set()),
+    ("GBP", "USD", set()),
+])
+def test_fx_history_selection_matches_direct_inverse_and_pivot_routes(currency, base, expected):
+    direct = {("USD", "CNY"): "fx-usd-cny", ("USD", "EUR"): "fx-usd-eur",
+              ("USD", "JPY"): "fx-usd-jpy"}
+    assert service._required_fx_instrument_ids(currency, base, direct=direct) == expected
+    direct[("EUR", "CNY")] = "direct-eur-cny"
+    assert service._required_fx_instrument_ids("EUR", "CNY", direct=direct) == {"direct-eur-cny"}
+
+
+def test_rows_share_one_fx_history_resolution_without_filling_missing_boundaries(monkeypatch):
+    details, fx = fx_inputs(missing_day=20)
+    original = service.resolve_quote_series
+    resolved = []
+
+    def resolve(detail, **kwargs):
+        resolved.append(detail["instrument_id"])
+        return original(detail, **kwargs)
+
+    monkeypatch.setattr(service, "resolve_quote_series", resolve)
+    result = service.project_portfolio_tail_risk(workspace([
+        holding("stock-a", 400, currency="USD"), holding("stock-b", 400, currency="USD"),
+        holding("cash", 200, currency="USD", holding_category="cash_and_settlement"),
+    ]), instrument_details=details, fx_payload=fx)
+    assert resolved == ["fx-usd-cny"]
+    assert result["observation_count"] == 38
+    assert all(row["observation_count"] == 38 for row in result["rows"])
+    result["rows"][0]["fx_instrument_ids"].clear()
+    assert result["rows"][1]["fx_instrument_ids"] == ["fx-usd-cny"]
 
 
 def test_single_source_discloses_requested_window_actual_scenarios_and_unavailable_tail():

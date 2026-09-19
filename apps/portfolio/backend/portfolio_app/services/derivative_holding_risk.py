@@ -4,6 +4,7 @@ from datetime import date
 
 from portfolio_app.services.execution_quotes import build_execution_quote_from_detail
 from portfolio_app.services.instrument_registry import get_registry_instrument_details
+from portfolio_app.services.valuation_quotes import load_market_quote_projections
 
 
 def _number(value: object) -> float | None:
@@ -57,18 +58,22 @@ def _quote_by_instrument(
     *,
     as_of_date: date,
 ) -> tuple[dict[str, dict[str, object] | None], dict[str, dict[str, object]]]:
-    details = get_registry_instrument_details(instrument_ids) if instrument_ids else {}
-    quotes: dict[str, dict[str, object]] = {}
-    for instrument_id in instrument_ids:
-        detail = details.get(instrument_id)
-        if not isinstance(detail, dict):
-            continue
-        quotes[instrument_id] = build_execution_quote_from_detail(
-            detail,
-            instrument_id=instrument_id,
-            as_of_date=as_of_date,
-        )
-    return details, quotes
+    projections = load_market_quote_projections(
+        instrument_ids, as_of_date=as_of_date,
+        detail_loader=get_registry_instrument_details,
+        projector=_underlying_quote_projection,
+    )
+    return (
+        {instrument_id: item["detail"] for instrument_id, item in projections.items()},
+        {instrument_id: item["quote"] for instrument_id, item in projections.items()},
+    )
+
+
+def _underlying_quote_projection(detail, *, instrument_id: str, as_of_date: date):
+    return {
+        "detail": {"instrument_name": detail.get("instrument_name"), "currency": detail.get("currency")},
+        "quote": build_execution_quote_from_detail(detail, instrument_id=instrument_id, as_of_date=as_of_date),
+    }
 
 
 def _fcn_lifecycle_by_contract(

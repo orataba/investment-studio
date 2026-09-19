@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
+from copy import deepcopy
 from datetime import date
 from threading import Event
 from types import SimpleNamespace
@@ -85,34 +86,83 @@ def test_full_and_compact_holdings_share_complete_analytics_but_refresh_live_sta
         rows[0]["derivative_observations"] = transactions
 
     monkeypatch.setattr(workspace, "enrich_derivative_holding_risk", derivative_overlay)
-    points = [{"date": "2026-09-05", "value": 0.01}]
+    points = [{"date": f"2026-09-{index + 1:02}", "value": index / 100} for index in range(30)]
+    analytics = {"portfolio_id": "p", "risk_summary": {"weights": [1.0]}, "rows": [{
+        "instrument_core": {"instrument_id": "asset", "identifiers": [{"value": "ASSET"}]},
+        **{field: points for field in workspace._HOLDINGS_RETURN_SERIES_FIELD_NAMES},
+        **{field: points for field in workspace._HOLDINGS_CHART_FIELD_NAMES},
+    }]}
 
     def build(_portfolio, **kwargs):
         builds.append(kwargs["include_details"])
-        return {"portfolio_id": "p", "rows": [{
-            "instrument_core": {"instrument_id": "asset"},
-            "instrument_return_series_all": points,
-            "price_chart_6m": points,
-            "price_chart_1y": points,
-        }]}
+        return analytics
 
     monkeypatch.setattr(workspace, "_build_holdings_analytics_workspace", build)
+    expected_compact = workspace._public_holdings_workspace_response(
+        deepcopy(analytics), include_details=False, transactions=[], as_of_date=as_of,
+    )
     compact = workspace.holdings_workspace("p")
+    assert compact == expected_compact
     assert compact["detail_level"] == "compact"
     assert "instrument_return_series_all" not in compact["rows"][0]
     assert compact["rows"][0]["price_chart_1y"] == []
+    assert len(compact["rows"][0]["price_chart_6m"]) == workspace._COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT
+    compact["rows"][0]["price_chart_6m"][0]["value"] = -999
+    compact["rows"][0]["instrument_core"]["identifiers"].clear()
+    compact["risk_summary"]["weights"].clear()
 
     overlays.append("new task")
     live_transactions.append({"observation": "new"})
+    expected_full = workspace._public_holdings_workspace_response(
+        deepcopy(analytics), include_details=True, transactions=list(live_transactions), as_of_date=as_of,
+    )
     full = workspace.holdings_workspace("p", include_details=True)
+    assert full == expected_full
     assert builds == [True]
+    assert len(source_cache._cache) == 1
     assert full["detail_level"] == "full"
     assert full["rows"][0]["instrument_return_series_all"] == points
     assert full["rows"][0]["price_chart_1y"] == points
     assert full["quality_warnings"] == ["new task"]
     assert full["rows"][0]["derivative_observations"] == live_transactions
+    assert full["rows"][0]["instrument_core"]["identifiers"] == [{"value": "ASSET"}]
+    assert full["risk_summary"]["weights"] == [1.0]
+    expected_live_compact = workspace._public_holdings_workspace_response(
+        deepcopy(analytics), include_details=False, transactions=list(live_transactions), as_of_date=as_of,
+    )
+    assert workspace.holdings_workspace("p") == expected_live_compact
     full["rows"][0]["instrument_return_series_all"].clear()
     assert workspace.holdings_workspace("p", include_details=True)["rows"][0]["instrument_return_series_all"] == points
+    assert "quality_warnings" not in analytics
+    assert "detail_level" not in analytics
+    assert "derivative_observations" not in analytics["rows"][0]
+
+
+def test_compact_projection_does_not_copy_discarded_histories(cache_context):
+    from portfolio_app.api.routes import workspace
+
+    class History(list):
+        def __deepcopy__(self, memo):
+            pytest.fail("compact response copied a full history before discarding it")
+
+    history = History({"date": f"point-{index}", "value": index} for index in range(2000))
+    analytics = {"portfolio_id": "p", "rows": [{
+        "instrument_core": {"instrument_id": "asset"},
+        **{field: history for field in workspace._HOLDINGS_RETURN_SERIES_FIELD_NAMES},
+        **{field: history for field in workspace._HOLDINGS_CHART_FIELD_NAMES},
+    }]}
+    response = workspace_cache.get_cached_holdings_analytics_workspace(
+        "p", as_of_date=date(2026, 9, 6), risk_policy={}, analytics_policy_version=1,
+        builder=lambda: analytics, response_projection=workspace._compact_holdings_workspace_projection,
+    )
+    sparkline = response["rows"][0]["price_chart_6m"]
+    assert len(sparkline) == workspace._COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT
+    assert sparkline[0] == history[0] and sparkline[-1] == history[-1]
+    sparkline[0]["value"] = -1
+    assert history[0]["value"] == 0
+    assert next(iter(source_cache._cache.values())).value is analytics
+    assert analytics["rows"][0]["instrument_return_series_all"] is history
+    assert len(analytics["rows"][0]["price_chart_1y"]) == 2000
 
 
 @pytest.mark.parametrize("change", ["generation", "unavailable", "factory", "initially_unavailable"])

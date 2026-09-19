@@ -76,6 +76,7 @@ def get_cached_holdings_analytics_workspace(
     risk_policy: dict[str, object],
     analytics_policy_version: int,
     builder: Callable[[], T],
+    response_projection: Callable[[T], T] | None = None,
 ) -> T:
     value = _get_cached_portfolio_value(
         portfolio_id,
@@ -87,9 +88,9 @@ def get_cached_holdings_analytics_workspace(
         ),
         builder=builder,
     )
-    # The caller adds live quality/task information and public response fields.
-    # Those request-specific edits must not become part of the cached workspace.
-    return deepcopy(value)
+    # A projection must leave the cached value untouched. Copy only its retained
+    # fields before the caller adds live quality/task information to the result.
+    return deepcopy(response_projection(value) if response_projection else value)
 
 
 def get_cached_portfolio_risk_basis(

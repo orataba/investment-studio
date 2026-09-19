@@ -598,6 +598,16 @@ def _compact_holdings_workspace(workspace: dict[str, object]) -> dict[str, objec
     return workspace
 
 
+def _compact_holdings_workspace_projection(workspace: dict[str, object]) -> dict[str, object]:
+    # Compaction replaces/removes only top-level and row fields. Isolate those
+    # containers first, then let the cache boundary deep-copy the retained data.
+    projected = dict(workspace)
+    rows = workspace.get("rows")
+    if isinstance(rows, list):
+        projected["rows"] = [dict(row) if isinstance(row, dict) else row for row in rows]
+    return _compact_holdings_workspace(projected)
+
+
 def _parse_iso_date(value: object) -> date | None:
     if isinstance(value, date):
         return value
@@ -991,13 +1001,14 @@ def holdings_workspace(
         )
 
     # Keep the complete calculation once for Holdings, Risk and tail-risk.
-    # Presentation compaction happens on the isolated response copy below.
+    # Trim compact-only responses before copying histories they will not return.
     response = get_cached_holdings_analytics_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
         risk_policy=risk_policy or {},
         analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
         builder=build_analytics_workspace,
+        response_projection=None if include_details else _compact_holdings_workspace_projection,
     )
     # Operational tasks and derivative observations can change independently
     # of the accounting snapshot. Refresh them outside the analytics cache.

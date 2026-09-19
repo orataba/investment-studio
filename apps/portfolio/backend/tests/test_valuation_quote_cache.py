@@ -7,7 +7,7 @@ from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import select
 
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import ledger, portfolio_store, source_cache, valuation_quotes
+from portfolio_app.services import derivative_holding_risk, ledger, portfolio_store, source_cache, valuation_quotes
 
 
 AS_OF = date(2026, 9, 8)
@@ -121,6 +121,58 @@ def test_missing_or_invalid_official_series_keeps_original_initial_purchase_boun
                    "quantity": 10, "gross_amount": 990, "currency": "USD"}
     quotes["details"]["a"]["market_data"][0]["value"] = "not-a-number"
     assert read(transactions=[transaction]) == {}
+
+
+def test_execution_quote_reuse_preserves_policy_and_keeps_lifecycle_events_live(quotes, monkeypatch):
+    from .test_derivative_holding_risk import _fcn_holding, _fcn_underlying
+
+    quotes["details"]["a"]["quote_selection_policy"]["trading"] = ["last"]
+    quotes["details"]["a"]["market_data"].append({
+        **quotes["details"]["a"]["market_data"][0], "quote_basis": "last", "value": "105",
+    })
+    monkeypatch.setattr(derivative_holding_risk, "get_registry_instrument_details", ledger.get_registry_instrument_details)
+    underlying = _fcn_underlying("a", deliverable=True)
+    rows = [_fcn_holding(underlying)]
+    derivative_holding_risk.enrich_derivative_holding_risk(rows, transactions=[], as_of_date=AS_OF)
+    assert rows[0]["fcn_risk"]["lifecycle_status"] == "open"
+    details, execution = derivative_holding_risk._quote_by_instrument(["a"], as_of_date=AS_OF)
+    assert execution["a"]["value"] == 105
+    assert execution["a"]["selection_role"] == "trading"
+    execution["a"]["value"] = -1
+    details["a"]["currency"] = "invalid"
+    derivative_holding_risk.enrich_derivative_holding_risk(rows, transactions=[{
+        "derivative_contract_id": "fcn-1", "trade_date": AS_OF.isoformat(),
+        "lifecycle_event_type": "fcn_knock_out",
+    }], as_of_date=AS_OF)
+    assert rows[0]["fcn_risk"]["lifecycle_status"] == "knocked_out"
+    assert quotes["reads"] == 1
+    assert derivative_holding_risk._quote_by_instrument(["a"], as_of_date=AS_OF)[1]["a"]["value"] == 105
+    # Valuation and execution are different quote contracts, even on one date.
+    assert read()["a"]["value"] == 100
+    assert quotes["reads"] == 2
+
+
+def test_underlying_display_name_change_invalidates_without_a_market_data_write(client, monkeypatch):
+    monkeypatch.setattr(source_cache, "_cache", OrderedDict())
+    monkeypatch.setattr(source_cache, "_cache_total_size_bytes", 0)
+    with get_session_factory()() as session:
+        instrument_id = session.scalar(select(Instrument.instrument_id).order_by(Instrument.instrument_id).limit(1))
+    reads = []
+
+    def load(ids):
+        reads.append(tuple(ids))
+        with get_session_factory()() as session:
+            name = session.get(Instrument, instrument_id).instrument_name
+        return {instrument_id: {**detail(instrument_id), "instrument_name": name}}
+
+    monkeypatch.setattr(derivative_holding_risk, "get_registry_instrument_details", load)
+    derivative_holding_risk._quote_by_instrument([instrument_id], as_of_date=AS_OF)
+    with get_session_factory()() as session:
+        session.get(Instrument, instrument_id).instrument_name = "Renamed underlying"
+        session.commit()
+    details, _ = derivative_holding_risk._quote_by_instrument([instrument_id], as_of_date=AS_OF)
+    assert details[instrument_id]["instrument_name"] == "Renamed underlying"
+    assert len(reads) == 2
 
 
 @pytest.mark.parametrize("watermark", ["market_data_updated_at", "calculation_inputs_updated_at"])

@@ -616,12 +616,13 @@ def _latest_point_on_or_before(
     points: list[dict[str, object]],
     target_date: date,
 ) -> dict[str, object] | None:
-    latest: dict[str, object] | None = None
-    for point in points:
+    # Preserve the last matching observation without walking every older point
+    # for each current or recent trend boundary.
+    for point in reversed(points):
         point_date = point.get("date")
         if isinstance(point_date, date) and point_date <= target_date:
-            latest = point
-    return latest
+            return point
+    return None
 
 
 def _first_point_on_or_after(
