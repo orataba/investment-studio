@@ -787,6 +787,15 @@ describe('Transactions rendered page contract', () => {
 
   it('lets a user edit an AI draft and confirm it in one action', async () => {
     const user = userEvent.setup()
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{
+      instrument_type: 'equity', symbol: 'PDD', catalog_provider: 'fmp', catalog_symbol: 'PDD',
+      name: 'PDD Holdings', exchange_code: 'XNAS', exchange_label: 'NASDAQ', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null,
+    }], catalog_errors: {} })
+    apiMocks.materializePortfolioSecurity.mockResolvedValue({ ...materializedEquityInstrument,
+      instrument_id: 'pdd', instrument_name: 'PDD Holdings',
+      identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: 'PDD', is_primary: true }],
+    })
     const usdFcnAccount = {
       ...fcnAccount,
       account_id: 'fcn-usd-1',
@@ -929,6 +938,7 @@ describe('Transactions rendered page contract', () => {
           terms: {
             ...transactionImport.records[0].derivative_contract.terms,
             notional: '650000',
+            underlyings: [{ ...transactionImport.records[0].derivative_contract.terms.underlyings[0], instrument_id: 'pdd' }],
           },
         },
       }],
@@ -993,6 +1003,14 @@ describe('Transactions rendered page contract', () => {
     const review = within(detail).getByRole('region', { name: 'Transaction draft' })
     const confirmAndRecord = within(review).getByRole('button', { name: 'Confirm & record' })
     expect(confirmAndRecord).toBeEnabled()
+
+    const underlyingInput = within(review).getByRole('searchbox', { name: 'Record 1 underlying 1 instrument' })
+    fireEvent.change(underlyingInput, { target: { value: 'PDD' } })
+    const underlyingResult = await within(review).findByRole('button', { name: /PDD.*NASDAQ/ })
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+    await user.click(underlyingResult)
+    await waitFor(() => expect(underlyingInput).toHaveValue('PDD · PDD Holdings'))
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
 
     const notionalInput = within(review).getByLabelText('Record 1 FCN notional')
     const priceInput = within(review).getByLabelText('Record 1 price')
@@ -1688,6 +1706,54 @@ describe('Transactions rendered page contract', () => {
     fireEvent.change(search, { target: { value: 'GETF' } })
     await act(async () => finish(etfInstrument))
     expect(search).toHaveValue('GETF')
+  })
+
+  it.each([['FCN', 'Underlying 1'], ['Option', 'Underlying Security']])(
+    'registers an external %s underlying only after selection without creating a transaction', async (kind, label) => {
+      const candidate = { instrument_type: 'equity', symbol: 'PDD', catalog_provider: 'fmp', catalog_symbol: 'PDD',
+        name: 'PDD Holdings', exchange_code: 'XNAS', exchange_label: 'NASDAQ', market: 'US',
+        currency: 'USD', currency_verified: true, existing_instrument_id: null }
+      const registered = { ...materializedEquityInstrument, instrument_id: 'pdd', instrument_name: 'PDD Holdings',
+        identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: 'PDD', is_primary: true }] }
+      apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [candidate], catalog_errors: {} })
+      apiMocks.materializePortfolioSecurity.mockResolvedValue(registered)
+      const user = userEvent.setup()
+      renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+      await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+      const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+      await user.click(within(dialog).getByRole('button', { name: new RegExp(`^${kind}`) }))
+      const search = within(dialog).getByRole('searchbox', { name: label })
+      fireEvent.change(search, { target: { value: 'PDD' } })
+      const result = await within(dialog).findByRole('button', { name: /PDD.*NASDAQ/ })
+      expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+      await user.click(result)
+      await waitFor(() => expect(search).toHaveValue('PDD · PDD Holdings'))
+      expect(apiMocks.materializePortfolioSecurity).toHaveBeenCalledTimes(1)
+      expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([1, 2])('keeps a pending FCN selection attached to row %s when the first row is removed', async (pendingRow) => {
+    const candidate = { instrument_type: 'equity', symbol: 'PDD', catalog_provider: 'fmp', catalog_symbol: 'PDD',
+      name: 'PDD Holdings', exchange_code: 'XNAS', exchange_label: 'NASDAQ', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null }
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [candidate], catalog_errors: {} })
+    let finish!: (record: typeof materializedEquityInstrument) => void
+    apiMocks.materializePortfolioSecurity.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByRole('button', { name: /^FCN/ }))
+    await user.click(within(dialog).getByRole('button', { name: 'Add Underlying' }))
+    fireEvent.change(within(dialog).getByRole('searchbox', { name: `Underlying ${pendingRow}` }), { target: { value: 'PDD' } })
+    await user.click(await within(dialog).findByRole('button', { name: /PDD.*NASDAQ/ }))
+    await user.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0])
+    await act(async () => { finish({ ...materializedEquityInstrument, instrument_id: 'pdd', instrument_name: 'PDD Holdings',
+      identifiers: [{ identifier_type: 'exchange_ticker', identifier_value: 'PDD', is_primary: true }] }) })
+    expect(within(dialog).getByRole('searchbox', { name: 'Underlying 1' })).toHaveValue(pendingRow === 1 ? '' : 'PDD · PDD Holdings')
+    expect(within(dialog).queryByRole('searchbox', { name: 'Underlying 2' })).not.toBeInTheDocument()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {

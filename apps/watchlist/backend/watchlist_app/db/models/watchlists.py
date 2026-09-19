@@ -28,6 +28,8 @@ class Watchlist(TimestampMixin, Base):
     description: Mapped[str | None]
     owner_type: Mapped[str] = mapped_column(nullable=False)
     owner_id: Mapped[str] = mapped_column(nullable=False)
+    created_by_user_id: Mapped[str | None]
+    created_by_display_name: Mapped[str | None]
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

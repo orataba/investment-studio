@@ -143,6 +143,27 @@ application schemas. Local `sync` follows the entire authenticated directory ind
 and imports every missing archive, preserving completed receipts if a later
 transfer fails. Exact repeated imports are idempotent.
 
+Raw-response paths contain the SHA-256 of the uncompressed response body. New
+captures use zero gzip mtime and the platform-neutral OS header byte. When an
+existing raw gzip has a different envelope, import still verifies the incoming
+compressed object against the bundle manifest, then requires both decoded bodies
+to match the path's body hash. It keeps the existing bytes and permissions. This
+exception applies only to canonical `numeric/raw/<provider>/<sha-prefix>/<sha>.gz`
+paths; other immutable objects retain exact size/hash matching. Invalid gzip or a
+different body remains a conflict. Historical captures need no rewrite or re-export.
+
+After correcting a delivery failure, rerun the existing scheduled entrypoint to
+resume missing packages and refresh the application projections:
+
+```sh
+ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio" \
+  PYTHON_BIN="$PWD/.venv/bin/python" bash infra/scripts/run_market_pipeline.sh sync
+```
+
+Run this from the repository root with that installation's external configuration.
+Check the numeric catch-up result, application projection results and current data
+audit; do not delete delivery receipts or immutable objects to force recovery.
+
 MI publishes `mi-text-<sha256>.zip` plus its checksum receipt. Text catch-up lists
 only those completed archives, reuses the text importer and retains a receipt per
 successful archive. Temporary exports are excluded. SSH host checking is strict;

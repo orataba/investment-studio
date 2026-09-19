@@ -7,7 +7,7 @@ import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 import CalculationStatus from '../components/CalculationStatus'
 import FundDistributionTasksPanel from '../components/FundDistributionTasksPanel'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
-import RegistryInstrumentPicker, { instrumentSearchLabel, primaryIdentifier } from '../components/RegistryInstrumentPicker'
+import SecurityInstrumentPicker, { instrumentSearchLabel, primaryIdentifier } from '../components/SecurityInstrumentPicker'
 import {
   createPortfolioInternalTransfer,
   commitPortfolioTransactionImport,
@@ -2065,6 +2065,10 @@ export default function TransactionsPage() {
     transactionPriceContract?.price_unit,
   ])
 
+  function rememberRegisteredInstrument(instrument: SharedInstrumentRecord) {
+    setInstruments((current) => [...current.filter((item) => item.instrument_id !== instrument.instrument_id), instrument])
+  }
+
   function commitSelectedInstrument(instrument: SharedInstrumentRecord) {
     setPricingAnchor(
       isFundInstrumentType(instrument.instrument_type) && usesPrice(form.transaction_type)
@@ -2118,7 +2122,7 @@ export default function TransactionsPage() {
     try {
       const instrument = await materializePortfolioSecurity(portfolioId, catalogRequest)
       if (generation !== securitySelectionGeneration.current) return
-      setInstruments((current) => [...current.filter((item) => item.instrument_id !== instrument.instrument_id), instrument])
+      rememberRegisteredInstrument(instrument)
       if (!isSelectableInstrument(form.transaction_type, instrument, selectedAccount,
         selectedAccount?.currency, form.transfer_object_type)) {
         setFormError('The security is not compatible with the selected account currency or transaction type.')
@@ -5270,7 +5274,7 @@ export default function TransactionsPage() {
                                     <span>AI suggestions can be changed directly</span>
                                   </div>
 
-                                  <div className="transaction-capture-review-records">
+                                  <div className="transaction-capture-review-records" key={`${captureReviewDraft.batchId}:${captureReviewDraft.sourceRevision}`}>
                                     {captureReviewDraft.transactionImport.records.map((record, recordIndex) => {
                                       const recordNumber = recordIndex + 1
                                       const eligibleHoldingAccounts = accounts.filter(
@@ -5896,46 +5900,37 @@ export default function TransactionsPage() {
                                                 </label>
                                               </div>
                                               {fcnContract.terms.underlyings.map((underlying, underlyingIndex) => (
-                                                <div className="transaction-capture-review-underlying" key={`${underlying.instrument_id}-${underlyingIndex}`}>
+                                                <div className="transaction-capture-review-underlying" key={underlyingIndex}>
                                                   <strong>Underlying {underlyingIndex + 1}</strong>
                                                   <div className="transaction-capture-review-grid">
-                                                    <label>
-                                                      <span>Instrument</span>
-                                                      <input
-                                                        list={`capture-review-fcn-${recordNumber}-${underlyingIndex + 1}`}
-                                                        aria-label={`Record ${recordNumber} underlying ${underlyingIndex + 1} instrument`}
-                                                        value={underlying.instrument_id}
-                                                        onChange={(event) => updateTransactionCaptureReviewRecord(
-                                                          recordIndex,
-                                                          (current) => {
-                                                            if (current.derivative_contract?.contract_type !== 'fcn') return current
-                                                            return {
-                                                              ...current,
-                                                              derivative_contract: {
-                                                                ...current.derivative_contract,
-                                                                terms: {
-                                                                  ...current.derivative_contract.terms,
-                                                                  underlyings: current.derivative_contract.terms.underlyings.map(
-                                                                    (item, index) => index === underlyingIndex
-                                                                      ? { ...item, instrument_id: event.target.value }
-                                                                      : item,
-                                                                  ),
-                                                                },
+                                                    <SecurityInstrumentPicker
+                                                      portfolioId={portfolioId}
+                                                      onInstrumentRegistered={rememberRegisteredInstrument}
+                                                      label="Instrument"
+                                                      ariaLabel={`Record ${recordNumber} underlying ${underlyingIndex + 1} instrument`}
+                                                      value={underlying.instrument_id}
+                                                      instruments={instruments}
+                                                      onSelect={(instrumentId) => updateTransactionCaptureReviewRecord(
+                                                        recordIndex,
+                                                        (current) => {
+                                                          if (current.derivative_contract?.contract_type !== 'fcn') return current
+                                                          return {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                underlyings: current.derivative_contract.terms.underlyings.map(
+                                                                  (item, index) => index === underlyingIndex
+                                                                    ? { ...item, instrument_id: instrumentId }
+                                                                    : item,
+                                                                ),
                                                               },
-                                                            }
-                                                          },
-                                                        )}
-                                                      />
-                                                      <datalist id={`capture-review-fcn-${recordNumber}-${underlyingIndex + 1}`}>
-                                                        {instruments.map((instrument) => (
-                                                          <option
-                                                            key={instrument.instrument_id}
-                                                            value={instrument.instrument_id}
-                                                            label={instrumentSearchLabel(instrument)}
-                                                          />
-                                                        ))}
-                                                      </datalist>
-                                                    </label>
+                                                            },
+                                                          }
+                                                        },
+                                                      )}
+                                                    />
                                                     {[
                                                       ['initial_reference_price', 'Initial reference price'],
                                                       ['strike_level_pct', 'Strike level (%)'],
@@ -6073,38 +6068,29 @@ export default function TransactionsPage() {
                                                     )}
                                                   />
                                                 </label>
-                                                <label>
-                                                  <span>Underlying</span>
-                                                  <input
-                                                    list={`capture-review-option-${recordNumber}`}
-                                                    aria-label={`Record ${recordNumber} option underlying`}
-                                                    value={optionContractDraft.terms.underlying_instrument_id}
-                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
-                                                      recordIndex,
-                                                      (current) => current.derivative_contract?.contract_type === 'option'
-                                                        ? {
-                                                            ...current,
-                                                            derivative_contract: {
-                                                              ...current.derivative_contract,
-                                                              terms: {
-                                                                ...current.derivative_contract.terms,
-                                                                underlying_instrument_id: event.target.value,
-                                                              },
+                                                <SecurityInstrumentPicker
+                                                  portfolioId={portfolioId}
+                                                  onInstrumentRegistered={rememberRegisteredInstrument}
+                                                  label="Underlying"
+                                                  ariaLabel={`Record ${recordNumber} option underlying`}
+                                                  value={optionContractDraft.terms.underlying_instrument_id}
+                                                  instruments={instruments}
+                                                  onSelect={(instrumentId) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => current.derivative_contract?.contract_type === 'option'
+                                                      ? {
+                                                          ...current,
+                                                          derivative_contract: {
+                                                            ...current.derivative_contract,
+                                                            terms: {
+                                                              ...current.derivative_contract.terms,
+                                                              underlying_instrument_id: instrumentId,
                                                             },
-                                                          }
-                                                        : current,
-                                                    )}
-                                                  />
-                                                  <datalist id={`capture-review-option-${recordNumber}`}>
-                                                    {instruments.map((instrument) => (
-                                                      <option
-                                                        key={instrument.instrument_id}
-                                                        value={instrument.instrument_id}
-                                                        label={instrumentSearchLabel(instrument)}
-                                                      />
-                                                    ))}
-                                                  </datalist>
-                                                </label>
+                                                          },
+                                                        }
+                                                      : current,
+                                                  )}
+                                                />
                                                 <label>
                                                   <span>Call / put</span>
                                                   <select
@@ -6816,7 +6802,9 @@ export default function TransactionsPage() {
                   <DerivativeSettlementFields draft={derivativeDraft} setDraft={setDerivativeDraft} />
                   {derivativeDraft.contract_type === 'option' ? (
                     <>
-                      <RegistryInstrumentPicker
+                      <SecurityInstrumentPicker
+                        portfolioId={portfolioId}
+                        onInstrumentRegistered={rememberRegisteredInstrument}
                         label="Underlying Security"
                         value={derivativeDraft.option_underlying_instrument_id}
                         instruments={instruments}
@@ -6971,17 +6959,19 @@ export default function TransactionsPage() {
                           </button>
                         </div>
                         {derivativeDraft.fcn_underlyings.map((underlying, index) => (
-                          <div className="transaction-fcn-underlying-row" key={index}>
+                          <div className="transaction-fcn-underlying-row" key={underlying.row_id}>
                             <div className="transaction-fcn-security-field">
-                              <RegistryInstrumentPicker
+                              <SecurityInstrumentPicker
+                                portfolioId={portfolioId}
+                                onInstrumentRegistered={rememberRegisteredInstrument}
                                 label={`Underlying ${index + 1}`}
                                 value={underlying.instrument_id}
                                 instruments={instruments}
                                 onSelect={(instrumentId) =>
                                   setDerivativeDraft((current) => ({
                                     ...current,
-                                    fcn_underlyings: current.fcn_underlyings.map((item, itemIndex) =>
-                                      itemIndex === index
+                                    fcn_underlyings: current.fcn_underlyings.map((item) =>
+                                      item.row_id === underlying.row_id
                                         ? { ...item, instrument_id: instrumentId }
                                         : item,
                                     ),

@@ -20,10 +20,13 @@ it('counts the full instrument universe once when system and custom lists overla
   ].map(([id, count], index) => ({
     watchlist_id: String(id), name: String(id), description: null, item_count: Number(count),
     owner_type: index < 4 ? 'system' : 'team', owner_id: 'watchlist',
+    created_by_user_id: index === 4 ? 'alice' : null, created_by_display_name: index === 4 ? 'Alice' : null,
     is_default: index < 4, is_shared: true, default_view_id: null,
   }))
   mocks.getWatchlists.mockResolvedValue(lists)
   render(<LanguageProvider enableDomTranslation={false}><MemoryRouter><WatchlistEntryPage /></MemoryRouter></LanguageProvider>)
   expect(await screen.findByText('7 Watchlists · 244 Securities')).toBeTruthy()
   expect(screen.queryByText('7 Watchlists · 343 Securities')).toBeNull()
+  expect(screen.getByText(/Created by Alice|创建人 Alice/)).toBeTruthy()
+  expect(screen.getAllByText(/Creator not recorded|创建人未记录/)).toHaveLength(2)
 })

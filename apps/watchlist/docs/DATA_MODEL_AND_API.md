@@ -69,6 +69,7 @@ shared instruments / local evidence / holdings ingest
 - `move` / `copy` 现在会严格校验 source membership
 - 自定义列表支持重命名，名称去除首尾空白后为 1–200 个字符；重命名不改变稳定 ID、成员、视图、设置和研究。系统名单由登记目录维护，不能手动重命名。
 - 名单名称由团队可写账号维护；显示顺序和视图为个人设置。视图写入先锁定所属列表，系统视图首次保存为个人覆盖时同样校验当前可见视图的名称冲突；并发首次保存只建立一份个人覆盖。
+- 管理员和协作成员创建的列表归团队共享，所有成员包括只读成员均可见。`created_by_user_id`、`created_by_display_name` 由创建或复制请求的已认证账号写入；显示名保留创建时的归属，重命名不改变创建人，客户端不能提交或修改这两个字段。历史列表无作者证据时两字段均为 null，系统列表不冒认个人作者。
 - custom view id 会做 path-safe slug 化
 - 复制 watchlist 时会按相同规则规范化源 custom view id
 
@@ -238,6 +239,10 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `POST /api/watchlists/{watchlist_id}/views`
 - `PUT /api/watchlists/{watchlist_id}/views/{view_id}`
 
+创建请求只接受 `name`、`description`；列表摘要、详情以及创建/复制结果均返回创建人字段。复制的创建人为执行复制的成员，源列表的作者不继承。创建、复制、改名和增删成员均要求团队写权限；列表排序和个人显示视图允许只读成员维护。
+
+证券添加使用 `GET /api/securities/search`（查询参数 `q`、`limit`）查询数据维护端的市场目录，不触发登记；部分目录不可用时返回 `catalog_errors`。`POST /api/securities/materialize` 只接受 `instrument_type`（equity/etf）、`catalog_provider`（当前 fmp）及 `catalog_symbol`，要求非只读的直接用户身份，禁止研究服务或委托凭证调用。共享数据维护命令负责登记与行情刷新，返回 canonical instrument 供已有 `/items` 接口添加；Watchlist 不另建证券注册实现。登记超时或下游确认失败明确提示可能已登记，可重新搜索确认。
+
 ### 6.3 Instruments
 
 - `GET /api/instruments`
@@ -268,7 +273,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 注意：
 
-- Watchlist 不提供 instrument 创建、canonical NAV 写入或行情刷新接口；这些操作通过 `investment-studio data` CLI 维护
+- Watchlist 不直接写入 instrument identity、canonical NAV 或行情。添加入口经共享证券桥接调用 `investment-studio data` 登记外部目录证券；canonical 数据维护仍归数据层负责。
 
 也就是说，watchlist detail 里 canonical quote/NAV history 是只读视图；派生 payload 需要保留实际 `metric_family / quote_basis / role`，避免场内 ETF 或指数的 `close` 被误标成 NAV。
 
@@ -345,7 +350,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 - 详情页 canonical 路由已经收口到 `/instruments/:instrumentId`
 - `watchlist` 来源只作为 query context 透传；canonical 详情路径不依赖来源名单
-- 添加弹窗只选择已登记的共享资产；供应商目录搜索、新资产登记及数据维护通过后台 CLI 执行
+- 添加弹窗同时呈现已登记共享资产与市场目录结果；只有明确点击添加才按需登记，成功后用 canonical ID 加入当前列表。未核实币种不显示为已确认币种；目录错误和登记失败保留原因。
 
 ## 8. 开发时的默认判断
 

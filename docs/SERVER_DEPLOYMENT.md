@@ -335,6 +335,14 @@ Before accepting an upgrade, the installer checks HTTP readiness for all eight
 API and web endpoints; a running process alone is insufficient. `HEALTH_ATTEMPTS`
 defaults to 60, with bounded requests and a one-second pause between attempts.
 
+Keep external business writes paused until a migration workflow with automatic
+database rollback has accepted the upgrade. Stop scheduled triggers before
+checking their workers, including independent Regime source services and any
+remaining source containers. Once APIs or schedules may have accepted new writes,
+do not replay the pre-upgrade dump automatically: recover the code in place when
+the migration is backward compatible, or keep maintenance in effect and repair
+forward. Restore the previously active schedules only after acceptance.
+
 Migration, unit publication, daemon reload, enablement, restart, or readiness
 gate failure restores the database, old unit files, prior enablement, and exact
 prior active set in that order. The refresh timer is restored only after the API

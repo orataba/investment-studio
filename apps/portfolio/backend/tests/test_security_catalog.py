@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from portfolio_app.api.routes import transactions
-from portfolio_app.services import security_catalog
+from investment_studio_instrument_core import security_catalog
 from tests.conftest import REGISTRY_INSTRUMENTS
 
 

@@ -85,6 +85,40 @@ def test_anonymous_and_forged_identity_headers_never_resolve(accounts):
     assert response.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:5173"
 
 
+def test_watchlists_are_shared_and_creator_is_authenticated_and_preserved(accounts):
+    client, _, _ = accounts
+    as_user(client, "alice")
+    response = client.post("/api/watchlists", json={"name": "团队观察"})
+    assert response.status_code == 200, response.text
+    record = response.json()
+    path = f"/api/watchlists/{record['watchlist_id']}"
+    assert record["owner_type"] == "team" and record["is_shared"] is True
+    assert record["created_by_user_id"] == "alice"
+    assert record["created_by_display_name"] == "经理甲"
+    assert client.post("/api/watchlists", json={"name": "伪造", "created_by_user_id": "bob"}).status_code == 422
+    as_user(client, "bob")
+    assert any(item["watchlist_id"] == record["watchlist_id"] for item in client.get("/api/watchlists").json())
+    renamed = client.patch(path, json={"name": "共同观察"}).json()
+    assert renamed["created_by_user_id"] == "alice"
+    assert renamed["created_by_display_name"] == "经理甲"
+    copied = client.post(path + "/copy").json()
+    assert copied["is_shared"] is True
+    assert copied["created_by_user_id"] == "bob"
+    assert copied["created_by_display_name"] == "经理乙"
+    system_copy = client.post("/api/watchlists/all-instruments/copy").json()
+    assert system_copy["owner_type"] == "team" and system_copy["is_shared"] is True
+    assert system_copy["created_by_user_id"] == "bob"
+    as_user(client, "reader")
+    visible_ids = {item["watchlist_id"] for item in client.get("/api/watchlists").json()}
+    assert {record["watchlist_id"], copied["watchlist_id"], system_copy["watchlist_id"]} <= visible_ids
+    assert client.get(path).json()["created_by_display_name"] == "经理甲"
+    assert client.post("/api/watchlists", json={"name": "不能创建"}).status_code == 403
+    assert client.post(path + "/copy").status_code == 403
+    assert client.patch(path, json={"name": "不能改名"}).status_code == 403
+    assert client.post(path + "/items", json={"instrument_ids": ["fund-us-agg"]}).status_code == 403
+    assert client.delete(path).status_code == 403
+
+
 def test_team_theme_and_pm_views_are_shared_but_authorship_is_immutable(accounts):
     client, _, _ = accounts
     as_user(client, "alice")

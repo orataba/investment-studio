@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class WatchlistCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: str | None = None
 

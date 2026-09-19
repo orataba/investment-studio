@@ -15,6 +15,7 @@ import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 import { useWatchlistForegroundRefresh } from '../lib/useWatchlistForegroundRefresh'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
+import WatchlistCreator from '../components/WatchlistCreator'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 function isSystemWatchlist(watchlist: WatchlistRecord) {
@@ -366,7 +367,9 @@ export default function WatchlistEntryPage() {
                 <div className="watchlist-entry-card-title-stack">
                   <strong translate={systemWatchlist ? undefined : "no"} className="watchlist-entry-name">{watchlist.name}</strong>
                   <span className="watchlist-entry-meta">
-                    {systemWatchlist ? 'System List' : 'Watchlist'}
+                    {systemWatchlist ? (zh ? '系统列表' : 'System List') : <>
+                      {zh ? '共享列表' : 'Shared list'} · <WatchlistCreator watchlist={watchlist} zh={zh} />
+                    </>}
                   </span>
                 </div>
                 <div className="watchlist-entry-card-metrics">

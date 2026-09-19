@@ -13,6 +13,7 @@ import {
   type InstrumentTaxonomyTreeResponse,
   type ScreenerResponse,
   type SharedInstrumentRecord,
+  type SecuritySearchResult,
   type WatchlistDetail,
   type WatchlistRecord,
   type WatchlistView,
@@ -26,6 +27,7 @@ import {
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
+  materializeSecurity,
   resolveSharedInstrumentsFile,
   updateWatchlistView,
   runScreenerQuery,
@@ -44,6 +46,7 @@ import {
 } from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
+import WatchlistCreator, { watchlistCreatorLabel } from '../components/WatchlistCreator'
 import ResearchPage from './ResearchPage'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
@@ -830,6 +833,9 @@ export default function WatchlistsPage() {
   const [isExporting, setIsExporting] = useState(false)
   const [instrumentSearch, setInstrumentSearch] = useState('')
   const [sharedInstrumentResults, setSharedInstrumentResults] = useState<SharedInstrumentRecord[]>([])
+  const [catalogResults, setCatalogResults] = useState<SecuritySearchResult[]>([])
+  const [catalogErrors, setCatalogErrors] = useState<string[]>([])
+  const [selectedCatalogSecurity, setSelectedCatalogSecurity] = useState<SecuritySearchResult | null>(null)
   const [selectedInstrumentId, setSelectedInstrumentId] = useState('')
   const [isSearchingInstruments, setIsSearchingInstruments] = useState(false)
   const [isAdding, setIsAdding] = useState(false)
@@ -1170,14 +1176,19 @@ export default function WatchlistsPage() {
     let cancelled = false
     setIsSearchingInstruments(true)
     setModalError(null)
+    setSelectedInstrumentId('')
+    setSelectedCatalogSecurity(null)
+    setCatalogErrors([])
 
     const timeoutId = window.setTimeout(() => {
       searchWatchlistInstrumentCandidates(instrumentSearch, 12)
-        .then(({ results }) => {
+        .then(({ results, catalogResults: catalog, catalogErrors: warnings }) => {
           if (cancelled) {
             return
           }
           setSharedInstrumentResults(results)
+          setCatalogResults(catalog)
+          setCatalogErrors(warnings)
           setSelectedInstrumentId((current) => {
             if (current && results.some((item) => item.instrument_id === current)) {
               return current
@@ -1193,6 +1204,7 @@ export default function WatchlistsPage() {
                 : 'Failed to load registered assets.',
             )
             setSharedInstrumentResults([])
+            setCatalogResults([])
             setSelectedInstrumentId('')
           }
         })
@@ -2601,6 +2613,7 @@ export default function WatchlistsPage() {
             />
             {selectorMenuOpen && activeWatchlist ? (
               <div className="watchlist-menu" role="group" aria-label={zh ? '列表设置菜单' : 'Watchlist settings menu'}>
+                <div className="watchlist-menu-meta"><WatchlistCreator watchlist={activeWatchlist} zh={zh} /></div>
                 <button type="button" onClick={openColumns}>{zh ? '列设置' : 'Column settings'}</button>
                 <button
                   type="button"
@@ -2657,6 +2670,7 @@ export default function WatchlistsPage() {
               <div className="watchlist-switcher-chip watchlist-switcher-chip-active" key={watchlist.watchlist_id}>
                 <Link
                   className="watchlist-switcher-chip-label watchlist-switcher-chip-label-active"
+                  title={watchlistCreatorLabel(watchlist, zh)}
                   translate={watchlist.owner_type === 'system' ? undefined : 'no'}
                   to={buildWatchlistPath(watchlist.watchlist_id)}
                 >
@@ -2668,6 +2682,7 @@ export default function WatchlistsPage() {
                 type="button"
                 key={watchlist.watchlist_id}
                 className="watchlist-switcher-chip watchlist-switcher-chip-inactive"
+                title={watchlistCreatorLabel(watchlist, zh)}
                 translate={watchlist.owner_type === 'system' ? undefined : 'no'}
                 onClick={() => navigate(buildWatchlistPath(watchlist.watchlist_id))}
               >
@@ -2718,6 +2733,9 @@ export default function WatchlistsPage() {
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])
                   setSelectedInstrumentId('')
+                  setCatalogResults([])
+                  setCatalogErrors([])
+                  setSelectedCatalogSecurity(null)
                   setModalError(null)
                   setModalKind('add')
                   setFilterMenuOpen(false)
@@ -3922,7 +3940,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Add</div>
-                <div className="section-heading">Registered Assets</div>
+                <div className="section-heading">{zh ? '搜索并添加证券' : 'Find and add securities'}</div>
               </div>
               <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
                 Close
@@ -3936,53 +3954,85 @@ export default function WatchlistsPage() {
                 <input
                   className="form-input"
                   value={instrumentSearch}
+                  disabled={isAdding || isBatchAdding}
                   onChange={(event) => setInstrumentSearch(event.target.value)}
                   placeholder="Ticker, ISIN, or instrument name"
                 />
               </label>
               <p className="watchlists-registry-note">
-                Select an existing asset to add to this watchlist. New assets and market-data sources are maintained
-                through the backend CLI. Classification and research remain in Watchlist.
+                {zh
+                  ? '搜索已登记标的或市场证券目录。未登记的股票和 ETF 会在点击添加后登记并拉取行情。'
+                  : 'Search registered assets and the securities directory. New stocks and ETFs are registered and their prices refreshed when you add them.'}
               </p>
+              {catalogErrors.length > 0 && <div className="watchlists-registry-warning" role="status">
+                {zh ? '证券目录查询不完整；仍可添加下方已找到的标的。' : 'Directory search is incomplete; the results below remain available.'}
+                {catalogErrors.map((warning) => <div key={warning}>{warning}</div>)}
+              </div>}
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
                   <span className="ticker-pill">{primarySharedIdentifier(selectedSharedInstrument)}</span>
                   <span className="watchlists-registry-name" translate="no">{selectedSharedInstrument.instrument_name}</span>
                   <span className="watchlists-registry-secondary">
-                    {selectedSharedInstrument.currency} · {formatLabel(selectedSharedInstrument.instrument_type)}
+                    {selectedSharedInstrument.currency} · {instrumentTypeLabel(selectedSharedInstrument.instrument_type)}
                   </span>
                 </div>
               ) : null}
+              {selectedCatalogSecurity && <div className="watchlists-registry-selected">
+                <span className="ticker-pill">{selectedCatalogSecurity.symbol}</span>
+                <span className="watchlists-registry-name" translate="no">{selectedCatalogSecurity.name}</span>
+                <span className="watchlists-registry-secondary">
+                  {selectedCatalogSecurity.exchange_label} · {selectedCatalogSecurity.currency_verified && selectedCatalogSecurity.currency ? selectedCatalogSecurity.currency : (zh ? '币种待核实' : 'Currency to be verified')}
+                </span>
+              </div>}
               <div className="watchlists-registry-list">
                 {isSearchingInstruments ? (
-                  <div className="loading-state">Searching registered assets…</div>
+                  <div className="loading-state">{zh ? '正在搜索证券…' : 'Searching securities…'}</div>
                 ) : null}
                 {!isSearchingInstruments
                   ? sharedInstrumentResults.map((instrument) => (
                       <button
                         type="button"
                         key={instrument.instrument_id}
+                        disabled={isAdding || isBatchAdding}
                         className={`watchlists-registry-row ${
                           selectedInstrumentId === instrument.instrument_id ? 'watchlists-registry-row-active' : ''
                         }`}
-                        onClick={() => setSelectedInstrumentId(instrument.instrument_id)}
+                        onClick={() => { setSelectedInstrumentId(instrument.instrument_id); setSelectedCatalogSecurity(null) }}
                       >
                         <div className="watchlists-registry-row-main">
                           <span>{primarySharedIdentifier(instrument)}</span>
                           <span className="watchlists-registry-secondary" translate="no">{instrument.instrument_name}</span>
                         </div>
                         <div className="watchlists-registry-meta">
-                          <span>{formatLabel(instrument.instrument_type)}</span>
+                          <span>{instrumentTypeLabel(instrument.instrument_type)}</span>
                           <span>{instrument.coverage_state || 'registered'}</span>
                         </div>
                       </button>
                     ))
                   : null}
-                {!isSearchingInstruments && !sharedInstrumentResults.length ? (
+                {!isSearchingInstruments && catalogResults.map((security) => (
+                  <button
+                    type="button"
+                    key={`${security.instrument_type}:${security.catalog_symbol}`}
+                    disabled={isAdding || isBatchAdding}
+                    className={`watchlists-registry-row ${selectedCatalogSecurity === security ? 'watchlists-registry-row-active' : ''}`}
+                    onClick={() => { setSelectedInstrumentId(''); setSelectedCatalogSecurity(security) }}
+                  >
+                    <div className="watchlists-registry-row-main">
+                      <span>{security.symbol} · {security.exchange_label}</span>
+                      <span className="watchlists-registry-secondary" translate="no">{security.name}</span>
+                    </div>
+                    <div className="watchlists-registry-meta">
+                      <span>{instrumentTypeLabel(security.instrument_type)} · {security.currency_verified && security.currency ? security.currency : (zh ? '币种待核实' : 'Currency to be verified')}</span>
+                      <span>{security.existing_instrument_id ? (zh ? '已登记' : 'Registered') : (zh ? '市场目录 · 添加时登记' : 'Directory · Register on add')}</span>
+                    </div>
+                  </button>
+                ))}
+                {!isSearchingInstruments && !sharedInstrumentResults.length && !catalogResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `No registered asset matched "${instrumentSearch.trim()}".`
-                      : 'No registered assets are available. Add assets through backend maintenance.'}
+                      ? (zh ? `未找到与“${instrumentSearch.trim()}”匹配的证券。` : `No securities matched "${instrumentSearch.trim()}".`)
+                      : (zh ? '输入证券代码或名称搜索市场目录。' : 'Enter a ticker or name to search the securities directory.')}
                   </div>
                 ) : null}
               </div>
@@ -3998,7 +4048,7 @@ export default function WatchlistsPage() {
               />
               <button
                 type="button"
-                disabled={isBatchAdding}
+                disabled={isBatchAdding || isAdding}
                 title="Add identifiers from CSV, TSV, text, or Excel"
                 onClick={() => batchFileInputRef.current?.click()}
               >
@@ -4007,21 +4057,32 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isAdding || !detailIsCurrent || !selectedInstrumentId}
+                disabled={isAdding || isBatchAdding || isSearchingInstruments || !detailIsCurrent || (!selectedInstrumentId && !selectedCatalogSecurity)}
                 onClick={async () => {
                   const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
-                  if (!sourceWatchlistId || !selectedSharedInstrument) {
+                  if (!sourceWatchlistId || (!selectedSharedInstrument && !selectedCatalogSecurity)) {
                     return
                   }
                   setIsAdding(true)
                   setModalError(null)
                   try {
-                    const registryInstrument = selectedSharedInstrument
+                    const registryInstrument = selectedSharedInstrument || await materializeSecurity(selectedCatalogSecurity!)
+                    // Registration is durable even if membership fails. Retain the
+                    // resolved asset so retrying never requires another registration.
+                    if (selectedCatalogSecurity) {
+                      setSharedInstrumentResults((items) => [registryInstrument, ...items])
+                      setSelectedInstrumentId(registryInstrument.instrument_id)
+                      setSelectedCatalogSecurity(null)
+                      setCatalogResults((items) => items.filter((item) => item !== selectedCatalogSecurity))
+                    }
                     const instrumentId = registryInstrument.instrument_id
                     const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId])
                     await refreshWatchlistDetail(undefined, sourceWatchlistId)
+                    setWatchlists(await getWatchlists())
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])
+                    setCatalogResults([])
+                    setCatalogErrors([])
                     setSelectedInstrumentId('')
                     setModalKind(null)
                     if (addResult.accepted_count === 0) {
@@ -4037,7 +4098,10 @@ export default function WatchlistsPage() {
                   }
                 }}
               >
-                {isAdding ? 'Adding...' : 'Add To Watchlist'}
+                {isAdding
+                  ? (selectedCatalogSecurity ? (zh ? '正在登记并添加…' : 'Registering and adding…') : 'Adding...')
+                  : (selectedCatalogSecurity && !selectedCatalogSecurity.existing_instrument_id
+                    ? (zh ? '登记并添加' : 'Register and add') : 'Add To Watchlist')}
               </button>
             </div>
           </div>

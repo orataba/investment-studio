@@ -33,6 +33,8 @@ def present_watchlist(record: Watchlist) -> dict[str, object]:
         "item_count": len(record.items),
         "owner_type": record.owner_type,
         "owner_id": record.owner_id,
+        "created_by_user_id": record.created_by_user_id,
+        "created_by_display_name": record.created_by_display_name,
         "is_default": record.is_default,
         "is_shared": record.is_shared,
         "default_view_id": _local_view_id(default_view) if default_view else None,

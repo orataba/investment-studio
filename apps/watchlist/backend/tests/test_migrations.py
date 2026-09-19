@@ -49,6 +49,26 @@ def test_watchlist_migration_snapshots_do_not_import_runtime_modules() -> None:
         _assert_no_runtime_imports(snapshot_path)
 
 
+def test_creator_migration_preserves_unknown_legacy_creator(tmp_path, monkeypatch):
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'creator-migration.db'}"
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
+    from watchlist_app.core.settings import get_settings
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    command.upgrade(config, "20260908_0057")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO watchlist (watchlist_id, name, owner_type, owner_id, is_default, is_shared, sort_order, created_at, updated_at) VALUES ('legacy', 'Old shared list', 'team', 'default', 0, 1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        row = connection.execute(text("SELECT created_by_user_id, created_by_display_name FROM watchlist WHERE watchlist_id='legacy'")).one()
+        assert row == (None, None)
+    engine.dispose()
+    get_settings.cache_clear()
+
+
 def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-migrations.db'}"
     monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", database_url)

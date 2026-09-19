@@ -53,6 +53,28 @@ describe('FCN risk translations', () => {
   })
 })
 
+it('translates FCN and option account prerequisites and all call/put opening and closing actions', async () => {
+  const copy = [
+    ['No FCN holding account', '暂无 FCN 持仓账户'],
+    ['No Option holding account', '暂无期权持仓账户'],
+    ['Enable FCN on a holding account with a same-currency settlement account.', '请先设置 FCN 持仓账户，并关联同币种结算账户。'],
+    ['Enable Option on a holding account with a same-currency settlement account.', '请先设置期权持仓账户，并关联同币种结算账户。'],
+    ['Buy to Open Call', '买入开仓看涨期权'],
+    ['Sell to Open Call', '卖出开仓看涨期权'],
+    ['Sell to Close Call', '卖出平仓看涨期权'],
+    ['Buy to Close Call', '买入平仓看涨期权'],
+    ['Buy to Open Put', '买入开仓看跌期权'],
+    ['Sell to Open Put', '卖出开仓看跌期权'],
+    ['Sell to Close Put', '卖出平仓看跌期权'],
+    ['Buy to Close Put', '买入平仓看跌期权'],
+  ]
+  render(<LanguageProvider><LanguageSelector />{copy.map(([en]) => <span key={en}>{en}</span>)}</LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => { for (const [, zh] of copy) expect(screen.getByText(zh)).toBeTruthy() })
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => { for (const [en] of copy) expect(screen.getByText(en)).toBeTruthy() })
+})
+
 it('translates singular, plural and filtered transaction activity counts', async () => {
   window.localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh-Hans')
   render(<LanguageProvider><span>1 activity</span><span>2 activities</span><span>1 matching activity</span><span>12 matching activities</span></LanguageProvider>)

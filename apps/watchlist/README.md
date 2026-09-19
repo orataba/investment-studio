@@ -6,6 +6,7 @@ Watchlist 承载观察池、单资产研究、监控和本地物化 read model�
 
 - `Watchlists`：名单、view、筛选、排序、分组和导出；
 - 自定义观察列表可在入口菜单或列表设置中重命名，保留原 ID、成员和视图；
+- 管理员与协作成员可创建共享列表，所有成员均可见，只读成员不能修改；列表卡片和设置显示创建人，旧列表未记录的创建人保持未知；
 - `Instrument Detail`：按资产类型进入基金、ETF、股票、指数或加密资产现货工作面；
 - 投资观点：PM 的投资判断、逐条研究笔记和修订历史；
 - 研究追踪：专属研究员的资料档案、持续底稿、当前结论、重要风险机会与后续进展；
@@ -14,7 +15,7 @@ Watchlist 承载观察池、单资产研究、监控和本地物化 read model�
 - `Monitoring`：来源新鲜度、字段缺失、重算状态和复核到期；
 - `Recalculation`：从 Instrument Data canonical facts 构建 Watchlist-local snapshots 和 rows。
 
-Watchlist 只读取 `instrument_data`，不修改 canonical identity、quote/NAV/FX 或 corporate actions。资产新增、行情导入、修订和刷新通过 `investment-studio data` CLI 维护。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入共享资产数据或 Portfolio。
+Watchlist 只直接读取 `instrument_data`，不直接修改 canonical identity、quote/NAV/FX 或 corporate actions。列表添加同时搜索已登记资产和市场证券目录；用户明确添加未登记股票或 ETF 时，经共享证券桥接调用 `investment-studio data` 的登记与行情刷新命令，再加入列表。搜索不登记资产，目录缺失或失败保留提示，批量文件添加仍只匹配已登记标的。其余行情导入、修订和刷新由同一数据维护入口负责。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入共享资产数据或 Portfolio。
 
 关键运行约束：
 

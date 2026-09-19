@@ -381,6 +381,7 @@ describe('WatchlistsPage loading', () => {
     const record = {
       watchlist_id: 'shared-catalog', name: 'Shared Catalog', description: null,
       item_count: instrumentTypes.length, owner_type: 'team', owner_id: 'investment-team',
+      created_by_user_id: null, created_by_display_name: null,
       is_default: false, is_shared: false, default_view_id: 'overview',
     }
     const detail: WatchlistDetail = {
@@ -568,6 +569,7 @@ describe('WatchlistsPage loading', () => {
       nodes: [],
     })
     let detail: WatchlistDetail = {
+      created_by_user_id: null, created_by_display_name: null,
       watchlist_id: 'coverage',
       name: 'Coverage',
       description: null,

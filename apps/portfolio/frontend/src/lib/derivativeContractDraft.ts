@@ -4,6 +4,7 @@ import type {
 } from './api'
 
 export type FcnUnderlyingDraft = {
+  row_id: string
   instrument_id: string
   initial_reference_price: string
   strike_level_pct: string
@@ -50,8 +51,11 @@ function localTodayIso() {
   return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
 }
 
+let nextUnderlyingRowId = 0
+
 export function buildInitialFcnUnderlyingDraft(): FcnUnderlyingDraft {
   return {
+    row_id: `underlying-${++nextUnderlyingRowId}`,
     instrument_id: '',
     initial_reference_price: '',
     strike_level_pct: '',
@@ -138,6 +142,7 @@ export function derivativeContractDraftFromRecord(
     draft.fcn_settlement_type = contract.terms.settlement_type || ''
     draft.fcn_payoff_description = contract.terms.payoff_description || ''
     draft.fcn_underlyings = contract.terms.underlyings.map((underlying) => ({
+      row_id: buildInitialFcnUnderlyingDraft().row_id,
       instrument_id: underlying.instrument_id,
       initial_reference_price:
         underlying.initial_reference_price == null

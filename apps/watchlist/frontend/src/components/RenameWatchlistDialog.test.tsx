@@ -16,6 +16,7 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 const watchlist: WatchlistRecord = { watchlist_id: 'stable-id', name: 'Risk', description: null,
+  created_by_user_id: null, created_by_display_name: null,
   item_count: 3, owner_type: 'team', owner_id: 'default', is_default: false, is_shared: true, default_view_id: 'overview' }
 
 it('saves the trimmed name against the existing ID and reports the saved record', async () => {

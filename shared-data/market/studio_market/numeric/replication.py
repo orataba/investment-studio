@@ -1,11 +1,14 @@
 """One numeric bundle protocol for the two Studio installations."""
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
+import re
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime,timezone
 from pathlib import Path,PurePosixPath
 
@@ -24,11 +27,15 @@ FORMAT="investment-studio-numeric-bundle"
 VERSION=1
 
 
-def digest(path):
+def _stream_digest(stream):
     result=hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while chunk:=stream.read(1024*1024):result.update(chunk)
+    while chunk:=stream.read(1024*1024):result.update(chunk)
     return result.hexdigest()
+
+
+def digest(path):
+    with Path(path).open("rb") as stream:
+        return _stream_digest(stream)
 
 
 def relative_path(value):
@@ -36,6 +43,28 @@ def relative_path(value):
     if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0]!="numeric":
         raise ValueError("Bundle contains a path outside numeric storage")
     return Path(*path.parts)
+
+
+def _existing_object_matches(path, item, archive):
+    if path.stat().st_size == item["bytes"] and digest(path) == item["sha256"]:
+        return True
+    # Only raw responses use the decoded body as their path identity. Historical
+    # gzip writers on Linux/macOS can encode the same body differently. Parquet
+    # and every other immutable object still require exact bytes.
+    match = re.fullmatch(r"numeric/raw/[^/]+/([0-9a-f]{2})/([0-9a-f]{64})\.gz", item["path"])
+    if match is None or match[1] != match[2][:2]:
+        return False
+    with archive.open(item["path"]) as incoming:
+        if _stream_digest(incoming) != item["sha256"]:
+            raise ValueError("Numeric bundle object integrity mismatch")
+    try:
+        with gzip.open(path, "rb") as existing:
+            if _stream_digest(existing) != match[2]:
+                return False
+        with archive.open(item["path"]) as incoming, gzip.GzipFile(fileobj=incoming, mode="rb") as decoded:
+            return _stream_digest(decoded) == match[2]
+    except (gzip.BadGzipFile, EOFError, zlib.error):
+        return False
 
 
 def export_bundle(settings: MarketSettings, output: str|Path, *, batch_ids: list[str]|None=None,since: str|datetime|None=None,names: list[str]|None=None)->dict:
@@ -115,7 +144,7 @@ def _import_bundle(store,source):
             if archive.getinfo(relative).file_size!=item["bytes"]:raise ValueError("Numeric bundle object size mismatch")
             path.parent.mkdir(parents=True,exist_ok=True)
             if path.exists():
-                if path.stat().st_size!=item["bytes"] or digest(path)!=item["sha256"]:
+                if not _existing_object_matches(path, item, archive):
                     raise ValueError("Numeric bundle conflicts with an existing immutable object")
                 continue
             descriptor, temporary_name = tempfile.mkstemp(prefix=".receiving-", dir=path.parent)
@@ -136,7 +165,7 @@ def _import_bundle(store,source):
                 try:
                     os.link(temporary, path)
                 except FileExistsError:
-                    if path.stat().st_size != item["bytes"] or digest(path) != item["sha256"]:
+                    if not _existing_object_matches(path, item, archive):
                         raise ValueError("Numeric bundle conflicts with an existing immutable object")
             finally:
                 temporary.unlink(missing_ok=True)

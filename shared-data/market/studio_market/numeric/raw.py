@@ -18,7 +18,11 @@ def archive_response(settings: MarketSettings, provider: str, body: bytes) -> tu
         descriptor, temporary = tempfile.mkstemp(prefix=".capture-", dir=target.parent)
         try:
             with os.fdopen(descriptor,"wb") as output:
-                output.write(gzip.compress(body,compresslevel=6,mtime=0))
+                compressed = bytearray(gzip.compress(body,compresslevel=6,mtime=0))
+                # Python's mtime=0 fast path can inherit zlib's host OS byte.
+                # Raw identity is the response body, so keep this header portable.
+                compressed[9] = 255
+                output.write(compressed)
                 output.flush()
                 # mkstemp's 0600 masks inherited named-reader ACL entries.
                 # Enable their read bit only on this new public object.

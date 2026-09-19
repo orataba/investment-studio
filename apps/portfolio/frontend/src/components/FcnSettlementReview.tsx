@@ -3,7 +3,7 @@ import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { getPortfolioTransactions } from '../lib/api'
 import type { PortfolioTransactionRecord, PortfolioAccountRecord, PortfolioAssetDelivery, PortfolioFeeCategory, PortfolioFcnContractTerms, PortfolioSettlementCashflow, SharedInstrumentRecord } from '../lib/api'
 import { formatCurrency, formatLabel, formatQuantity } from '../lib/format'
-import RegistryInstrumentPicker, { primaryIdentifier } from './RegistryInstrumentPicker'
+import SecurityInstrumentPicker, { primaryIdentifier } from './SecurityInstrumentPicker'
 
 export type FcnSettlementFields = {
   asset_deliveries?: PortfolioAssetDelivery[]
@@ -74,7 +74,7 @@ export function FcnSettlementReview({ record, accounts, instruments, currency = 
               const account = accounts.find(item => item.account_id === event.target.value)
               updateDelivery(index, { account_id: event.target.value, currency: account?.currency ?? '', ...(account?.currency !== leg.currency ? { fx_rate_to_contract: account?.currency === currency ? 1 : '', settlement_cash_account_id: null } : {}) })
             }}><option value="">{label('Select account', '选择账户')}</option>{accounts.filter(account => account.account_category === 'security').map(account => <option key={account.account_id} value={account.account_id}>{account.account_name} · {account.currency}</option>)}</select></label>
-            <RegistryInstrumentPicker label={label(`Delivery ${index + 1} security`, `交付 ${index + 1} 证券`)} value={leg.instrument_id} instruments={instruments.filter(item => ['equity', 'etf'].includes(item.instrument_type))} onSelect={instrument_id => updateDelivery(index, { instrument_id })} />
+            <SecurityInstrumentPicker label={label(`Delivery ${index + 1} security`, `交付 ${index + 1} 证券`)} value={leg.instrument_id} instruments={instruments.filter(item => ['equity', 'etf'].includes(item.instrument_type))} onSelect={instrument_id => updateDelivery(index, { instrument_id })} />
           </> : <strong>{accountLabel(leg.account_id)} · {instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : leg.instrument_id}</strong>}
           <label><span>{label('Delivered shares', '实际收到股数')}</span><input type="number" min="0" step="any" value={leg.quantity} readOnly={!onChange} onChange={event => updateDelivery(index, { quantity: event.target.value })} /></label>
           <label><span>{label('Total confirmed fair value', '证券总公允确认价值')} ({leg.currency || '—'})</span><input type="number" min="0" step="any" value={leg.fair_value} readOnly={!onChange} onChange={event => updateDelivery(index, { fair_value: event.target.value })} /></label>

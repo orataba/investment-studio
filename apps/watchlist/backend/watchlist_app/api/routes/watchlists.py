@@ -671,6 +671,9 @@ def create_watchlist_record(
         description=payload.description,
         default_view_id=default_view_id,
     )
+    actor = current_principal()
+    record.created_by_user_id = actor.user_id
+    record.created_by_display_name = actor.display_name
     session.commit()
     return present_watchlist(
         watchlist_repository.get(session, record.watchlist_id) or record
@@ -733,6 +736,9 @@ def copy_watchlist_record(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Watchlist not found")
+    actor = current_principal()
+    record.created_by_user_id = actor.user_id
+    record.created_by_display_name = actor.display_name
     if _is_system_watchlist(watchlist_id):
         record.owner_type = "team"
         record.owner_id = "default"

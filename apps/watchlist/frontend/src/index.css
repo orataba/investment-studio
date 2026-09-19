@@ -1837,6 +1837,20 @@ th {
   line-height: 1.5;
 }
 
+.watchlist-menu-meta {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.watchlists-registry-warning {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
 .watchlists-move-summary,
 .watchlists-move-note {
   padding: 10px 0;

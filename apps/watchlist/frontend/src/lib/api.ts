@@ -6,6 +6,8 @@ export type WatchlistRecord = {
   item_count: number
   owner_type: string
   owner_id: string
+  created_by_user_id: string | null
+  created_by_display_name: string | null
   is_default: boolean
   is_shared: boolean
   default_view_id: string | null
@@ -85,6 +87,41 @@ export type SharedInstrumentRecord = {
   }>
   coverage_state?: string
   exchange_code?: string | null
+}
+
+export type SecuritySearchResult = {
+  instrument_type: 'equity' | 'etf'
+  symbol: string
+  catalog_provider: 'fmp'
+  catalog_symbol: string
+  name: string
+  exchange_code: string
+  exchange_label: string
+  market: string
+  currency: string
+  currency_verified: boolean
+  existing_instrument_id: string | null
+}
+
+export type SecuritySearchResponse = {
+  results: SecuritySearchResult[]
+  catalog_errors: Partial<Record<'equity' | 'etf', string>>
+}
+
+export function searchSecurities(query: string, limit = 12) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  return fetchJson<SecuritySearchResponse>(`/api/securities/search?${params}`)
+}
+
+export function materializeSecurity(security: SecuritySearchResult) {
+  return fetchJson<SharedInstrumentRecord>('/api/securities/materialize', {
+    method: 'POST',
+    body: JSON.stringify({
+      instrument_type: security.instrument_type,
+      catalog_provider: security.catalog_provider,
+      catalog_symbol: security.catalog_symbol,
+    }),
+  })
 }
 
 export type GroupByOption = {

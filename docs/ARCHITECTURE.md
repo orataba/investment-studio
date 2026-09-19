@@ -157,6 +157,7 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - typed market data / FX
 - quote selection policy
 - shared store helper / db models
+- 股票／ETF 目录搜索与显式登记的 CLI 桥接；Watchlist 和 Portfolio 复用同一数据维护入口，应用不直接取得供应商凭据或另写登记逻辑
 
 ### `packages/ui`
 

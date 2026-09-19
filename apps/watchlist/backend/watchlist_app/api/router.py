@@ -11,6 +11,7 @@ from watchlist_app.api.routes import (
     recalc,
     research,
     screener,
+    securities,
     taxonomies,
     watchlists,
 )
@@ -20,6 +21,7 @@ api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(watchlists.router, prefix="/watchlists", tags=["watchlists"])
 api_router.include_router(instruments.router, prefix="/instruments", tags=["instruments"])
+api_router.include_router(securities.router, prefix="/securities", tags=["securities"])
 api_router.include_router(funds.router, prefix="/instruments", tags=["instruments"])
 api_router.include_router(research.router, prefix="/instruments", tags=["research"])
 api_router.include_router(attributes.router, prefix="/instrument-attributes", tags=["instrument-attributes"])
