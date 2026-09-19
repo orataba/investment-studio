@@ -40,6 +40,11 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'printf "%s\n" "$*" >> "$SYSTEMCTL_CALLS"' \
+  '# This environment-only fixture starts without installed or running units.' \
+  'case "${2:-}" in' \
+  '  is-active) exit 3 ;;' \
+  '  is-enabled) printf "%s\n" not-found; exit 4 ;;' \
+  'esac' \
   'exit 0' \
   > "$MOCK_BIN/systemctl"
 chmod +x "$MOCK_BIN/systemctl"
