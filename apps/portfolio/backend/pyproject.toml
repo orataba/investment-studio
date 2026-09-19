@@ -8,6 +8,7 @@ version = "1.2.0"
 description = "Investment Studio Portfolio backend"
 requires-python = ">=3.12"
 dependencies = [
+  "investment-studio-runtime>=1.2.0",
   "alembic>=1.16,<2.0",
   "exchange-calendars>=4.13,<5.0",
   "fastapi>=0.115,<1.0",
@@ -42,3 +43,6 @@ markers = [
   "migration_base_revision(revision): initializes the isolated test database at an explicit pre-head migration revision",
   "postgresql_integration: exercises PostgreSQL-only schema and constraint behavior",
 ]
+
+[tool.uv.sources]
+investment-studio-runtime = { path = "../../../packages/runtime" }

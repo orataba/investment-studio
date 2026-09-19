@@ -7,7 +7,7 @@ name = "investment-studio-briefing-backend"
 version = "1.2.0"
 description = "Investment Studio market briefings"
 requires-python = ">=3.12"
-dependencies = ["alembic>=1.16,<2", "fastapi>=0.115,<1", "mcp>=2,<3", "pydantic-settings>=2.10,<3", "psycopg[binary]>=3.2,<4", "sqlalchemy>=2,<3", "uvicorn[standard]>=0.34,<1"]
+dependencies = ["investment-studio-runtime>=1.2.0", "alembic>=1.16,<2", "fastapi>=0.115,<1", "mcp>=2,<3", "pydantic-settings>=2.10,<3", "psycopg[binary]>=3.2,<4", "sqlalchemy>=2,<3", "uvicorn[standard]>=0.34,<1"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "httpx2>=2.5,<3"]
@@ -22,3 +22,6 @@ include = ["briefing_app*"]
 testpaths = ["tests"]
 addopts = "-ra"
 markers = ["postgresql_integration: isolated PostgreSQL migration contracts"]
+
+[tool.uv.sources]
+investment-studio-runtime = { path = "../../../packages/runtime" }

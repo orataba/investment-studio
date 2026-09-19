@@ -8,6 +8,7 @@ version = "1.2.0"
 description = "Investment Studio Watchlist backend"
 requires-python = ">=3.12"
 dependencies = [
+  "investment-studio-runtime>=1.2.0",
   "mcp>=2.0,<3.0",
   "pypdf>=5,<7",
   "alembic>=1.16,<2.0",
@@ -36,3 +37,6 @@ testpaths = ["tests"]
 markers = [
   "postgresql_integration: exercises PostgreSQL-only schema and constraint behavior",
 ]
+
+[tool.uv.sources]
+investment-studio-runtime = { path = "../../../packages/runtime" }

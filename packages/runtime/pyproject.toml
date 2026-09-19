@@ -7,7 +7,7 @@ name = "investment-studio-runtime"
 version = "1.2.0"
 description = "Request and operation diagnostics shared by Studio services"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["sqlalchemy>=2.0,<3.0", "starlette>=0.40,<2.0"]
 
 [tool.setuptools.packages.find]
 include = ["studio_runtime*"]

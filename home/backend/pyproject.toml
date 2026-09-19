@@ -8,6 +8,7 @@ version = "1.2.0"
 description = "Investment Studio login and navigation homepage"
 requires-python = ">=3.12"
 dependencies = [
+  "investment-studio-runtime>=1.2.0",
   "investment-studio-identity>=0.1.0",
   "fastapi>=0.115,<1.0",
   "pydantic-settings>=2.10,<3.0",
@@ -27,6 +28,7 @@ test = ["pytest>=8.0,<10.0", "httpx2>=2.5,<3.0"]
 include = ["home_api*"]
 
 [tool.uv.sources]
+investment-studio-runtime = { path = "../../packages/runtime" }
 investment-studio-identity = { path = "../../packages/identity" }
 
 [tool.pytest.ini_options]
