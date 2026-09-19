@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from copy import deepcopy
-from dataclasses import dataclass
 from datetime import date
 import json
-from threading import RLock
 from typing import TypeVar
+
+from portfolio_app.services.source_cache import get_source_value
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
@@ -20,24 +19,6 @@ from portfolio_app.services.daily_snapshots import (
 
 
 T = TypeVar("T")
-
-# Entries are bounded by LRU/bytes and validated against live source generation
-# on every access. Elapsed time alone cannot invalidate unchanged financial facts.
-WORKSPACE_CACHE_MAX_ENTRIES = 64
-WORKSPACE_CACHE_MAX_VALUE_BYTES = 2 * 1024 * 1024
-WORKSPACE_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
-
-
-@dataclass
-class _CacheEntry:
-    value: object
-    approx_size_bytes: int
-
-
-_cache: OrderedDict[tuple[Hashable, ...], _CacheEntry] = OrderedDict()
-_cache_lock = RLock()
-_cache_total_size_bytes = 0
-
 
 def _date_key(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
@@ -63,46 +44,6 @@ def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, ...] | None:
         )
 
 
-def _read_cache(cache_key: tuple[Hashable, ...]) -> object | None:
-    global _cache_total_size_bytes
-    with _cache_lock:
-        entry = _cache.get(cache_key)
-        if entry is None:
-            return None
-        _cache.move_to_end(cache_key)
-        return entry.value
-
-
-def _write_cache(cache_key: tuple[Hashable, ...], value: object) -> None:
-    global _cache_total_size_bytes
-    approx_size_bytes = len(
-        json.dumps(
-            value,
-            default=str,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
-    if approx_size_bytes > WORKSPACE_CACHE_MAX_VALUE_BYTES:
-        return
-    with _cache_lock:
-        previous = _cache.pop(cache_key, None)
-        if previous is not None:
-            _cache_total_size_bytes -= previous.approx_size_bytes
-        _cache[cache_key] = _CacheEntry(
-            value=value,
-            approx_size_bytes=approx_size_bytes,
-        )
-        _cache_total_size_bytes += approx_size_bytes
-        _cache.move_to_end(cache_key)
-        while (
-            len(_cache) > WORKSPACE_CACHE_MAX_ENTRIES
-            or _cache_total_size_bytes > WORKSPACE_CACHE_MAX_TOTAL_BYTES
-        ):
-            _, evicted = _cache.popitem(last=False)
-            _cache_total_size_bytes -= evicted.approx_size_bytes
-
-
 def _cache_key(
     portfolio_id: str,
     surface: str,
@@ -119,25 +60,13 @@ def _get_cached_portfolio_value(
     args: tuple[Hashable, ...] = (),
     builder: Callable[[], T],
 ) -> T:
-    fingerprint = _snapshot_fingerprint(portfolio_id)
-    cache_key = None
-    if fingerprint is not None:
-        cache_key = _cache_key(portfolio_id, surface, args, fingerprint)
-        cached_value = _read_cache(cache_key)
-        if cached_value is not None:
-            return cached_value  # type: ignore[return-value]
+    def source_key():
+        fingerprint = _snapshot_fingerprint(portfolio_id)
+        if fingerprint is None:
+            return None
+        return _cache_key(portfolio_id, surface, args, fingerprint)
 
-    value = builder()
-    refreshed_fingerprint = _snapshot_fingerprint(portfolio_id)
-    if (
-        cache_key is not None
-        and refreshed_fingerprint is not None
-        and cache_key == _cache_key(portfolio_id, surface, args, refreshed_fingerprint)
-    ):
-        # A builder may span a source update or refresh. Never label a result
-        # from the earlier generation with the newly published generation.
-        _write_cache(cache_key, value)
-    return value
+    return get_source_value(source_key=source_key, builder=builder)
 
 
 def get_cached_holdings_analytics_workspace(
@@ -174,6 +103,32 @@ def get_cached_portfolio_risk_basis(
             portfolio_id,
             surface="portfolio_risk_basis",
             args=(_date_key(as_of_date),),
+            builder=builder,
+        )
+    )
+
+
+def get_cached_research_analysis(
+    portfolio_id: str,
+    *,
+    planning_state_fingerprint: str | None,
+    as_of_date: date | None,
+    lookback_days: int,
+    comparator_taxonomy_node_id: str | None,
+    builder: Callable[[], T],
+) -> T:
+    if planning_state_fingerprint is None:
+        return builder()
+    return deepcopy(
+        _get_cached_portfolio_value(
+            portfolio_id,
+            surface="research_analysis",
+            args=(
+                planning_state_fingerprint,
+                _date_key(as_of_date),
+                lookback_days,
+                comparator_taxonomy_node_id,
+            ),
             builder=builder,
         )
     )

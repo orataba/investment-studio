@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -58,6 +58,21 @@ describe('Overview rendered page contract', () => {
     })
     apiMocks.getPortfolioPerformance.mockResolvedValue(performanceFixture())
     apiMocks.getPortfolioInstruments.mockResolvedValue({ instruments: [] })
+  })
+
+  it('loads holdings and performance without waiting for classification and reports its failure locally', async () => {
+    let rejectTaxonomy!: (error: Error) => void
+    apiMocks.getPortfolioTaxonomyCatalog.mockReturnValue(new Promise((_resolve, reject) => { rejectTaxonomy = reject }))
+    renderPortfolioPage(<OverviewPage />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
+    await waitFor(() => expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith(
+      '3', { end_date: '2026-07-15' }, expect.any(AbortSignal),
+    ))
+    expect(screen.getByText('Top Holdings')).toBeInTheDocument()
+    await act(async () => { rejectTaxonomy(new Error('Classification is unavailable')) })
+    expect(screen.getByText('Classification is unavailable')).toBeInTheDocument()
+    expect(screen.getByText('Top Holdings')).toBeInTheDocument()
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1)
   })
 
   it('includes a funded-segment start when it is exactly the rolling return boundary', () => {
@@ -151,7 +166,7 @@ describe('Overview rendered page contract', () => {
 
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', {
       end_date: '2026-07-15',
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('moves the operational return explanation beside its metric heading', async () => {

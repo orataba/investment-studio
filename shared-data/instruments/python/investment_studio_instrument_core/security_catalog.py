@@ -1,7 +1,7 @@
-"""Narrow bridge to the data owner's securities commands.
+"""Public catalog reads plus the explicit data-owner registration bridge.
 
-The child command loads its own data environment; Consumers do not own the
-catalog database, provider credentials, or security registration implementation.
+Search uses the caller's canonical database session. Registration alone starts
+an owner command with its own credentials and write configuration.
 """
 from __future__ import annotations
 
@@ -57,27 +57,23 @@ class SecurityCatalogError(RuntimeError):
         self.status_code = status_code
 
 
-def _run_command(arguments: list[str], *, payload: dict | None = None) -> dict:
+def _run_command(arguments: list[str], *, payload: dict) -> dict:
     command = Path(__file__).resolve().parents[4] / "bin" / "investment-studio"
     try:
         result = subprocess.run(
             [str(command), "data", "securities", *arguments],
-            input=json.dumps(payload) if payload is not None else None,
+            input=json.dumps(payload),
             # Runtime loaders preserve caller values. Do not let an app's
             # service identity/configuration override the data owner's env file.
             env={key: value for key, value in os.environ.items()
                  if not key.startswith("INVESTMENT_STUDIO_")},
             capture_output=True,
             text=True,
-            timeout=120 if payload is not None else 30,
+            timeout=120,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
-        detail = (
-            "证券登记响应超时，登记可能已完成；请重新搜索确认。"
-            if payload is not None else "证券目录查询超时，请重试。"
-        )
-        raise SecurityCatalogError(detail, 504) from error
+        raise SecurityCatalogError("证券登记响应超时，登记可能已完成；请重新搜索确认。", 504) from error
     except OSError as error:
         raise SecurityCatalogError("无法启动证券目录维护入口。") from error
     try:
@@ -96,10 +92,11 @@ def _run_command(arguments: list[str], *, payload: dict | None = None) -> dict:
     return decoded
 
 
-def search_catalog(query: str, limit: int) -> SecuritySearchResponse:
-    result = _run_command(["search", "--limit", str(limit), "--", query])
+def search_catalog(query: str, limit: int, *, session_factory) -> SecuritySearchResponse:
+    from investment_studio_instrument_core.security_directory import search_directory
     try:
-        return SecuritySearchResponse.model_validate(result)
+        results, errors = search_directory(session_factory, query, limit)
+        return SecuritySearchResponse.model_validate({"results": results, "catalog_errors": errors})
     except ValueError as error:
         raise SecurityCatalogError("证券目录返回的数据格式无效。") from error
 

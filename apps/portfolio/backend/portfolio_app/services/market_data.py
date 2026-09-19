@@ -125,6 +125,7 @@ def initial_purchase_valuation_point(
     market_point: dict[str, object] | None,
     as_of_date: date,
     candidate_bases: Iterable[str],
+    series_unavailable_reason: str | None = None,
 ) -> dict[str, object] | None:
     if market_point is not None and not market_point.get("stale"):
         return market_point
@@ -138,10 +139,12 @@ def initial_purchase_valuation_point(
         return market_point
     # Missing observations permit the transaction basis; malformed or
     # ambiguous official series must retain their explicit failure.
-    if market_point is None and resolve_quote_series(
-        detail, candidate_bases=candidate_bases, end_date=as_of_date,
-    ).unavailable_reason != "quote_series_unavailable":
-        return None
+    if market_point is None:
+        unavailable_reason = series_unavailable_reason or resolve_quote_series(
+            detail, candidate_bases=candidate_bases, end_date=as_of_date,
+        ).unavailable_reason
+        if unavailable_reason != "quote_series_unavailable":
+            return None
     # Physical option stock legs are persisted as buys at strike. Only their
     # explicit delivery links distinguish them from ordinary cash purchases.
     # Consult those links only when a transaction valuation would be used.

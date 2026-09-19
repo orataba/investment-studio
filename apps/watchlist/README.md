@@ -15,7 +15,7 @@ Watchlist 承载观察池、单资产研究、监控和本地物化 read model�
 - `Monitoring`：来源新鲜度、字段缺失、重算状态和复核到期；
 - `Recalculation`：从 Instrument Data canonical facts 构建 Watchlist-local snapshots 和 rows。
 
-Watchlist 只直接读取 `instrument_data`，不直接修改 canonical identity、quote/NAV/FX 或 corporate actions。列表添加并行查询已登记资产和市场证券目录；已登记资产通过一次身份查询跨全部支持类型检索，不逐类型请求完整行情档案；用户明确添加未登记股票或 ETF 时，经共享证券桥接调用 `investment-studio data` 的登记与行情刷新命令，再加入列表。搜索不登记资产，目录缺失或失败保留提示，批量文件添加仍只匹配已登记标的。其余行情导入、修订和刷新由同一数据维护入口负责。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入共享资产数据或 Portfolio。
+Watchlist 直接读取 `instrument_data` 共享事实和 `data_ingestion` 的公开证券目录，不直接修改 canonical identity、quote/NAV/FX 或 corporate actions。列表添加并行查询已登记资产和市场证券目录；已登记资产通过一次身份查询跨全部支持类型检索，不逐类型请求完整行情档案；用户明确添加未登记股票或 ETF 时，经共享证券桥接调用 `investment-studio data` 的登记与行情刷新命令，再加入列表。搜索不登记资产，目录缺失或失败保留提示，批量文件添加仍只匹配已登记标的。其余行情导入、修订和刷新由同一数据维护入口负责。Watchlist taxonomy、研究事实、名单和 read model 只写入 `watchlist` schema，不进入共享资产数据或 Portfolio。
 
 关键运行约束：
 

@@ -2805,7 +2805,7 @@ export default function PortfolioHomePage() {
     const observer = new ResizeObserver(updateWidth)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [])
+  }, [workspace !== null])
 
   const securityRows = useMemo(
     () => (workspace?.rows ?? []).filter((row) => row.holding_category === 'securities'),
@@ -3697,12 +3697,13 @@ export default function PortfolioHomePage() {
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
 
     getHoldingsWorkspace(portfolioId, {
       as_of_date: requestedAsOfDate || undefined,
       ...(holdingsNeedsDetails ? { include_details: true } : {}),
-    })
+    }, controller.signal)
       .then((response) => {
         if (cancelled) {
           return
@@ -3730,6 +3731,7 @@ export default function PortfolioHomePage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [holdingsNeedsDetails, portfolioId, requestedAsOfDate, riskPolicyRevision])
 
@@ -3740,8 +3742,9 @@ export default function PortfolioHomePage() {
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     setTaxonomyError(null)
-    getPortfolioTaxonomyCatalog(portfolioId)
+    getPortfolioTaxonomyCatalog(portfolioId, {}, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setTaxonomyCatalog(response)
@@ -3757,6 +3760,7 @@ export default function PortfolioHomePage() {
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId, riskPolicyRevision])
 

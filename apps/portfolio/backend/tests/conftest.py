@@ -324,10 +324,6 @@ def _run_alembic_upgrade(database_url: str, revision: str = "head") -> None:
     command.upgrade(config, revision)
 
 
-def _get_registry_instrument(instrument_id: str):
-    return deepcopy(next((item for item in REGISTRY_INSTRUMENTS if item["instrument_id"] == instrument_id), None))
-
-
 def _get_registry_instrument_detail(instrument_id: str):
     return deepcopy(next((item for item in REGISTRY_INSTRUMENT_DETAILS if item["instrument_id"] == instrument_id), None))
 
@@ -521,7 +517,6 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     from portfolio_app.services import daily_snapshot_worker
     monkeypatch.setattr(daily_snapshot_worker, "service_principal", lambda audience: Principal(None, "Test Valuation", "default", kind="service", service_id="test-valuation", scopes=["portfolio:maintain"]))
 
-    monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))

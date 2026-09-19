@@ -186,3 +186,22 @@ def test_accounts_workspace_loads_reinvestment_before_its_recorded_trade_date(cl
     asset_account = next(item for item in response.json()['accounts'] if item['account']['account_id'] == 'a')
     assert asset_account['pending_settlement'] == 100
     assert asset_account['account_value_base'] == 1000
+
+
+@pytest.mark.parametrize("base_currency", ["USD", "CNY"])
+def test_transaction_cash_fx_reads_market_only_when_conversion_is_needed(monkeypatch, base_currency):
+    facts = [fact(1, "opening_balance", "2026-01-01", 100, account="cash"),
+             fact(2, "withdrawal", "2026-01-02", 100, account="cash")]
+    postings = ledger.derive_ledger_postings("audit", facts, corporate_actions=[])
+    reads = []
+    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: reads.append(True) or {"rates": []})
+    # A rejected/absent FX series must remain unavailable; it cannot become par.
+    impacts = ledger.build_transaction_cash_fx_impacts(
+        transaction_ids={"txn-0002"}, postings=postings,
+        as_of_date=date(2026, 1, 2), base_currency=base_currency,
+    )
+    assert len(reads) == (0 if base_currency == "USD" else 1)
+    if base_currency == "USD":
+        assert impacts == []
+    else:
+        assert impacts[0]["realized_cash_fx_pnl_base"] is None

@@ -14,15 +14,16 @@ export function useSecurityCatalog(portfolioId: string | undefined, query: strin
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     setState(null)
     const timer = window.setTimeout(() => {
-      searchPortfolioSecurities(portfolioId, normalized).then((response) => {
+      searchPortfolioSecurities(portfolioId, normalized, controller.signal).then((response) => {
         if (!cancelled) setState({ key, response })
       }).catch((error: unknown) => {
         if (!cancelled) setState({ key, error: error instanceof Error ? error.message : 'Security catalog search failed.' })
       })
     }, 250)
-    return () => { cancelled = true; window.clearTimeout(timer) }
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer) }
   }, [portfolioId, normalized, enabled, key])
   const active = enabled && normalized && state?.key === key ? state : null
   return {

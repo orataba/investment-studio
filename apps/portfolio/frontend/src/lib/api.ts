@@ -1112,9 +1112,9 @@ export type SecurityCatalogResponse = {
   catalog_errors: Partial<Record<'equity' | 'etf', string>>
 }
 
-export function searchPortfolioSecurities(portfolioId: string, query: string) {
+export function searchPortfolioSecurities(portfolioId: string, query: string, signal?: AbortSignal) {
   return fetchJson<SecurityCatalogResponse>(API_BASE_URL,
-    `/api/portfolios/${encodeURIComponent(portfolioId)}/securities/search${buildQuery({ q: query, limit: '25' })}`)
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/securities/search${buildQuery({ q: query, limit: '25' })}`, { signal })
 }
 
 export function materializePortfolioSecurity(portfolioId: string, security: Pick<SecurityCatalogResult, 'instrument_type' | 'catalog_provider' | 'catalog_symbol'>) {
@@ -3104,6 +3104,9 @@ const GET_REQUEST_TIMEOUT_MS = 120_000
 type CachedGetRequest = {
   expiresAt: number
   promise: Promise<unknown>
+  controller: AbortController
+  consumers: number
+  pending: boolean
 }
 
 const getRequestCache = new Map<string, CachedGetRequest>()
@@ -3122,6 +3125,49 @@ function trimGetRequestCache() {
   }
 }
 
+// Several visible surfaces can share a financial GET. Leaving one surface must
+// stop its wait without aborting another consumer of the same pending result.
+function consumeGet<T>(entry: CachedGetRequest, cacheKey: string | null, signal?: AbortSignal | null): Promise<T> {
+  entry.consumers += 1
+  if (!signal) {
+    entry.promise.then(() => { entry.consumers -= 1 }, () => { entry.consumers -= 1 })
+    return entry.promise as Promise<T>
+  }
+  return new Promise<T>((resolve, reject) => {
+    let active = true
+    const release = () => {
+      if (!active) return false
+      active = false
+      entry.consumers -= 1
+      signal.removeEventListener('abort', abort)
+      return true
+    }
+    const abort = () => {
+      if (!release()) return
+      if (entry.pending && !entry.consumers) {
+        if (cacheKey && getRequestCache.get(cacheKey) === entry) getRequestCache.delete(cacheKey)
+        entry.controller.abort()
+      }
+      reject(signal.reason ?? new DOMException('Request cancelled', 'AbortError'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    entry.promise.then(
+      (value) => { if (release()) resolve(value as T) },
+      (error) => { if (release()) reject(error) },
+    )
+    if (signal.aborted) abort()
+  })
+}
+
+function waitForCalculation(delay: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason) }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, delay)
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+  })
+}
+
 function fetchJson<T>(
   baseUrl: string,
   path: string,
@@ -3129,6 +3175,7 @@ function fetchJson<T>(
   cacheInvalidation: 'all' | 'resource' = 'all',
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
+  if (init?.signal?.aborted) return Promise.reject(init.signal.reason)
   const cacheKey = method === 'GET' && !path.endsWith('/access') && !path.endsWith('/session') && !path.endsWith('/access-recovery') ? `${baseUrl}${path}` : null
   const now = Date.now()
 
@@ -3137,7 +3184,7 @@ function fetchJson<T>(
     if (cached && cached.expiresAt > now) {
       getRequestCache.delete(cacheKey)
       getRequestCache.set(cacheKey, cached)
-      return cached.promise as Promise<T>
+      return consumeGet<T>(cached, cacheKey, init?.signal)
     }
     if (cached) {
       getRequestCache.delete(cacheKey)
@@ -3145,8 +3192,8 @@ function fetchJson<T>(
   }
 
   const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
+  const controller = method === 'GET' ? new AbortController() : null
   const request = (async () => {
-    const controller = method === 'GET' ? new AbortController() : null
     const timeoutId = controller ? setTimeout(() => controller.abort(), GET_REQUEST_TIMEOUT_MS) : null
     const deadline = now + GET_REQUEST_TIMEOUT_MS
     let calculationPending = false
@@ -3188,10 +3235,10 @@ function fetchJson<T>(
             throw new Error(message)
           }
           calculationPending = true
-          await new Promise((resolve) => setTimeout(
-            resolve,
+          await waitForCalculation(
             Math.min(retryAfterMs, Math.max(0, deadline - Date.now())),
-          ))
+            controller!.signal,
+          )
           continue
         }
         throw new Error(message)
@@ -3208,26 +3255,29 @@ function fetchJson<T>(
     }
   })()
 
-  if (cacheKey) {
-    getRequestCache.set(cacheKey, {
+  if (controller) {
+    const entry: CachedGetRequest = {
       // A pending calculation is one shared request, even past the result TTL.
       expiresAt: Number.POSITIVE_INFINITY,
       promise: request,
-    })
-    trimGetRequestCache()
+      controller, consumers: 0, pending: true,
+    }
+    if (cacheKey) {
+      getRequestCache.set(cacheKey, entry)
+      trimGetRequestCache()
+    }
     request.then(
       () => {
-        const cached = getRequestCache.get(cacheKey)
-        if (cached?.promise === request) cached.expiresAt = Date.now() + GET_CACHE_TTL_MS
+        entry.pending = false
+        entry.expiresAt = Date.now() + GET_CACHE_TTL_MS
       },
       () => {
-        if (getRequestCache.get(cacheKey)?.promise === request) getRequestCache.delete(cacheKey)
+        entry.pending = false
+        if (cacheKey && getRequestCache.get(cacheKey) === entry) getRequestCache.delete(cacheKey)
       },
     )
-    return request
+    return consumeGet<T>(entry, cacheKey, init?.signal)
   }
-
-  if (method === 'GET') return request
 
   return request.then((value) => {
     if (cacheInvalidation === 'resource') {
@@ -3254,23 +3304,25 @@ export function getWorkspaceSummary() {
   return fetchJson<PortfolioWorkspaceSummary>(API_BASE_URL, '/api/workspace/summary')
 }
 
-export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
+export function getWorkspaceSummaryForPortfolio(portfolioId: string, signal?: AbortSignal) {
   return fetchJson<PortfolioWorkspaceSummary>(
     API_BASE_URL,
     `/api/workspace/summary?portfolio_id=${encodeURIComponent(portfolioId)}`,
+    { signal },
   )
 }
 
 export function getHoldingsWorkspace(
   portfolioId?: string,
   filters: HoldingsWorkspaceFilters = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
     include_details: filters.include_details ? 'true' : undefined,
   })
-  return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
+  return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`, { signal })
 }
 
 export function getPortfolioPositionHoldingProjection(
@@ -3378,8 +3430,8 @@ export function savePortfolioTableViewStore<TStore>(
   )
 }
 
-export function getPortfolioAccounts(portfolioId: string) {
-  return fetchJson<PortfolioAccountsResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/accounts`)
+export function getPortfolioAccounts(portfolioId: string, signal?: AbortSignal) {
+  return fetchJson<PortfolioAccountsResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/accounts`, { signal })
 }
 
 export function createPortfolioAccount(portfolioId: string, payload: PortfolioAccountCreatePayload) {
@@ -3404,22 +3456,25 @@ export function updatePortfolioAccount(
   )
 }
 
-export function getPortfolioAccountsWorkspace(portfolioId: string, accountId?: string) {
+export function getPortfolioAccountsWorkspace(portfolioId: string, accountId?: string, signal?: AbortSignal) {
   const query = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
   return fetchJson<PortfolioAccountsWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/accounts/workspace${query}`,
+    { signal },
   )
 }
 
 export function getPortfolioTransactionsWorkspace(
   portfolioId: string,
   filters: PortfolioTransactionFilters & { transaction_id?: string } = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery(filters)
   return fetchJson<PortfolioTransactionWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/workspace${query}`,
+    { signal },
   )
 }
 
@@ -3433,11 +3488,13 @@ export function getPortfolioTransactionPositionPreview(
     trade_time?: string
     exclude_transaction_id?: string
   },
+  signal?: AbortSignal,
 ) {
   const query = buildQuery(filters)
   return fetchJson<PortfolioTransactionPositionPreviewResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/position-preview${query}`,
+    { signal },
   )
 }
 
@@ -3459,10 +3516,11 @@ export function getPortfolioPositionLots(
   )
 }
 
-export function getPortfolioFxRates(portfolioId: string) {
+export function getPortfolioFxRates(portfolioId: string, signal?: AbortSignal) {
   return fetchJson<PortfolioSharedFxRatesResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/fx-rates`,
+    { signal },
   )
 }
 
@@ -3485,11 +3543,13 @@ export function getPortfolioTransactionExecutionQuote(
   portfolioId: string,
   instrumentId: string,
   asOfDate: string,
+  signal?: AbortSignal,
 ) {
   const query = buildQuery({ instrument_id: instrumentId, as_of_date: asOfDate })
   return fetchJson<PortfolioTransactionExecutionQuoteResponse>(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/execution-quote${query}`,
+    { signal },
   )
 }
 
@@ -3501,6 +3561,7 @@ export function getPortfolioInstrumentPriceChart(
     range?: PortfolioInstrumentChartRangeKey
     price_level?: boolean
   } = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery({
     as_of_date: filters.as_of_date,
@@ -3510,6 +3571,7 @@ export function getPortfolioInstrumentPriceChart(
   return fetchJson<PortfolioInstrumentPriceChartResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/instruments/${instrumentId}/price-chart${query}`,
+    { signal },
   )
 }
 
@@ -3536,9 +3598,9 @@ export function createPortfolioOptionOutcome(
   )
 }
 
-export function getPortfolioPerformance(portfolioId: string, filters: PortfolioPerformanceFilters = {}) {
+export function getPortfolioPerformance(portfolioId: string, filters: PortfolioPerformanceFilters = {}, signal?: AbortSignal) {
   const query = buildQuery(filters)
-  return fetchJson<PortfolioPerformanceResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/performance${query}`)
+  return fetchJson<PortfolioPerformanceResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/performance${query}`, { signal })
 }
 
 export function getPortfolioPerformanceCalculation(
@@ -3591,12 +3653,13 @@ export function getPortfolioTaxonomyCatalog(
     include_market_profile?: boolean
     as_of_date?: string
   } = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery({
     include_market_profile: filters.include_market_profile ? 'true' : undefined,
     as_of_date: filters.as_of_date,
   })
-  return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`)
+  return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`, { signal })
 }
 
 export function updatePortfolioDefaultPlanningTaxonomy(
@@ -4168,8 +4231,8 @@ export function createPortfolioInternalTransfer(
   )
 }
 
-export function getPortfolioInstruments(portfolioId: string) {
-  return fetchJson<RawPortfolioSharedInstrumentsResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/instruments`).then(
+export function getPortfolioInstruments(portfolioId: string, signal?: AbortSignal) {
+  return fetchJson<RawPortfolioSharedInstrumentsResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/instruments`, { signal }).then(
     (response) => ({
       portfolio_id: response.portfolio_id,
       instruments: response.instruments.map((instrument) => ({
@@ -4182,10 +4245,11 @@ export function getPortfolioInstruments(portfolioId: string) {
   )
 }
 
-export function getPortfolioDerivativeContracts(portfolioId: string) {
+export function getPortfolioDerivativeContracts(portfolioId: string, signal?: AbortSignal) {
   return fetchJson<PortfolioDerivativeContractsResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/derivative-contracts`,
+    { signal },
   )
 }
 

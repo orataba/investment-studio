@@ -90,7 +90,7 @@ export default function SecurityInstrumentPicker({
         key,
         symbol: existing ? primaryIdentifier(existing) : candidate.symbol,
         name: existing?.instrument_name ?? candidate.name,
-        detail: existing?.currency ?? `${candidate.exchange_label} · ${candidate.currency_verified ? candidate.currency : text('Currency to be verified', '币种待核实')}`,
+        detail: existing?.currency ?? `${candidate.exchange_label} · ${candidate.currency}${candidate.currency_verified ? '' : text(' (Currency to be verified)', '（币种待核实）')}`,
         instrument: existing ?? null, catalog: existing ? null : candidate,
       })
     }

@@ -2,6 +2,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from studio_identity import current_principal
+from studio_runtime import operation
+from watchlist_app.db.session import get_session_factory
 
 from investment_studio_instrument_core.security_catalog import (
     SecurityCatalogError, SecurityMaterializeRequest, SecuritySearchResponse,
@@ -27,7 +29,8 @@ def search_securities(q: str = Query(min_length=1, max_length=200), limit: int =
     if not q.strip():
         raise HTTPException(422, "请输入证券代码或名称")
     try:
-        return search_catalog(q.strip(), limit)
+        with operation("security_catalog_search"):
+            return search_catalog(q.strip(), limit, session_factory=get_session_factory())
     except SecurityCatalogError as error:
         raise HTTPException(error.status_code, str(error)) from error
 

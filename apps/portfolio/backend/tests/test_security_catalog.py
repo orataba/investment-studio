@@ -20,25 +20,25 @@ RESULT = {
 
 
 def test_search_is_read_only_and_preserves_catalog_errors(raw_client, monkeypatch):
+    from investment_studio_instrument_core import security_directory
+    from portfolio_app.db.session import get_session_factory
     calls = []
-    monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN", "portfolio-only-test-token")
-    monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE", "/private/portfolio-test-token")
-    def run(args, **kwargs):
-        calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args, 0, json.dumps({"results": [RESULT], "catalog_errors": {"equity": "Catalog empty"}}), "")
-    monkeypatch.setattr(security_catalog.subprocess, "run", run)
+    def read(factory, query, limit):
+        assert factory is get_session_factory()
+        calls.append((query, limit))
+        return [RESULT], {"equity": "Catalog empty"}
+    monkeypatch.setattr(security_directory, "search_directory", read)
+    monkeypatch.setattr(security_catalog.subprocess, "run", lambda *args, **kwargs: pytest.fail("search started owner process"))
     response = raw_client.get(BASE + "/search", params={"q": " SHV ", "limit": 25})
     assert response.status_code == 200
     assert response.json()["results"][0]["existing_instrument_id"] is None
     assert response.json()["catalog_errors"] == {"equity": "Catalog empty"}
-    assert calls[0][0][1:] == ["data", "securities", "search", "--limit", "25", "--", "SHV"]
-    assert calls[0][1]["input"] is None
-    assert not any(key.startswith("INVESTMENT_STUDIO_") for key in calls[0][1]["env"])
-    assert "PATH" in calls[0][1]["env"]
+    assert calls == [("SHV", 25)]
 
 
 def test_materialize_uses_data_owner_and_returns_instrument_option(raw_client, monkeypatch):
     calls = []
+    monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN", "portfolio-only-test-token")
     def run(args, **kwargs):
         calls.append((args, kwargs))
         return subprocess.CompletedProcess(args, 0, json.dumps(REGISTRY_INSTRUMENTS[1]), "")
@@ -49,6 +49,7 @@ def test_materialize_uses_data_owner_and_returns_instrument_option(raw_client, m
     assert "source_settings" not in response.json()
     assert calls[0][0][1:] == ["data", "securities", "add", "--input", "-", "--apply"]
     assert json.loads(calls[0][1]["input"]) == {**PAYLOAD, "refresh_eod": True}
+    assert not any(key.startswith("INVESTMENT_STUDIO_") for key in calls[0][1]["env"])
 
 
 @pytest.mark.parametrize("role,status", [("viewer", 403), ("editor", 200)])

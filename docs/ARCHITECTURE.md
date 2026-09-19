@@ -53,9 +53,11 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 不是：
 
-- `data_ingestion` schema 作为共享事实源或跨 app 数据 API
+- 将 `data_ingestion` 的私有采集状态、原始附件和解析证据作为跨 app 数据 API
 - `watchlist` / `portfolio` 通过 app-to-app HTTP 取得 canonical 行情或复用账本、绩效计算
 - 一个 app 的 detail page 直接充当另一个 app 的上下文页
+
+公开证券 listing catalog 由数据域维护，通过 `investment_studio_instrument_core.security_directory` 的限定字段只读接口供搜索使用。消费者不依赖私有采集状态表，也不直接写目录或访问供应商。
 
 ## Runtime Boundaries
 
@@ -160,7 +162,7 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - typed market data / FX
 - quote selection policy
 - shared store helper / db models
-- 股票／ETF 目录搜索与显式登记的 CLI 桥接；Watchlist 和 Portfolio 复用同一数据维护入口，应用不直接取得供应商凭据或另写登记逻辑
+- 股票／ETF 目录搜索通过共享 core 只读查询 canonical 数据库公开 catalog，命中的登记身份一次批量匹配；显式登记仍走数据维护 CLI，Watchlist 和 Portfolio 不取得供应商凭据或另写登记逻辑
 
 ### `packages/runtime`
 

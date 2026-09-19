@@ -601,7 +601,7 @@ describe('Risk rendered page contract', () => {
 
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
       include_details: true,
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('uses the scoped backend cash disclosure instead of deriving it from account liquidity', async () => {
@@ -837,7 +837,7 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
     await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {
       include_market_profile: true, as_of_date: '2026-07-15',
-    }))
+    }, expect.any(AbortSignal)))
   })
 
   it('keeps actual-path loading errors isolated from current-holdings rolling estimates', async () => {

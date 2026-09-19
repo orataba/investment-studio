@@ -24,6 +24,16 @@ def get_registry_instrument(instrument_id: str) -> dict[str, object] | None:
         raise InstrumentRegistryError("Failed to query shared instrument registry.") from error
 
 
+def get_registry_instrument_metadata(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    """Load current registry identity/settings without market or event histories."""
+    try:
+        return shared_store.get_instrument_metadata(get_session_factory(), instrument_ids)
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise InstrumentRegistryError("Failed to query shared instrument metadata.") from error
+
+
 def get_registry_instrument_detail(instrument_id: str) -> dict[str, object] | None:
     # Valuation and analytics need market observations, not the fund NAV audit
     # ledger. Keep single-instrument reads on the same contract as batch reads.

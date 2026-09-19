@@ -15,7 +15,17 @@ import { instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const accessState = vi.hoisted(() => ({ can_edit: true }))
+const ledgerRenderCount = vi.hoisted(() => ({ value: 0 }))
 vi.mock('./components/PortfolioAccessProvider', () => ({ usePortfolioAccess: () => accessState }))
+vi.mock('../../../../packages/ui/src/HorizontalTableScroll', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../../packages/ui/src/HorizontalTableScroll')>()
+  const { Profiler } = await import('react')
+  return { default: (props: React.ComponentProps<typeof original.default>) => (
+    <Profiler id="table" onRender={() => {
+      if (props.className?.includes('transaction-table-shell')) ledgerRenderCount.value += 1
+    }}><original.default {...props} /></Profiler>
+  ) }
+})
 
 const apiMocks = vi.hoisted(() => ({
   commitPortfolioTransactionImport: vi.fn(),
@@ -1421,7 +1431,7 @@ describe('Transactions rendered page contract', () => {
     })
     await user.click(screen.getByRole('button', { name: 'Switch portfolio' }))
     await waitFor(() => {
-      expect(apiMocks.getPortfolioAccounts).toHaveBeenCalledWith('4')
+      expect(apiMocks.getPortfolioAccounts).toHaveBeenCalledWith('4', expect.any(AbortSignal))
     })
 
     await act(async () => {
@@ -1442,6 +1452,23 @@ describe('Transactions rendered page contract', () => {
       screen.queryByRole('alertdialog', { name: 'Review Transaction File' }),
     ).not.toBeInTheDocument()
     expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps ledger rendering and unused FX references out of transaction draft keystrokes', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioFxRates.mockReturnValue(new Promise(() => undefined))
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions?transaction_id=txn-1', '/portfolios/:portfolioId/transactions')
+    const launcher = await screen.findByRole('button', { name: 'Record Transaction' })
+    await waitFor(() => expect(launcher).toBeEnabled())
+    await user.click(launcher)
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(within(dialog).getByText('Additional details'))
+    const count = ledgerRenderCount.value
+    expect(count).toBeGreaterThan(0)
+    await user.type(within(dialog).getByRole('textbox', { name: 'Note' }), 'Reviewed trade details')
+    expect(ledgerRenderCount.value).toBe(count)
+    expect(apiMocks.getPortfolioFxRates).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
   it('enforces buy instrument eligibility and keeps transaction/accounting inspectors rendered', async () => {
@@ -1471,7 +1498,9 @@ describe('Transactions rendered page contract', () => {
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     fireEvent.change(securitySearch, { target: { value: 'FUND1' } })
-    expect(await within(dialog).findByText('No matching security for this account.')).toBeInTheDocument()
+    const incompatibleFund = await within(dialog).findByRole('button', { name: /FUND1.*CNY/ })
+    expect(incompatibleFund).toBeDisabled()
+    expect(incompatibleFund).toHaveTextContent('Current account: USD. Select a CNY securities account.')
 
     fireEvent.change(securitySearch, { target: { value: 'GETF' } })
     expect(
@@ -1577,7 +1606,7 @@ describe('Transactions rendered page contract', () => {
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: symbol } })
     const result = await within(dialog).findByRole('button', { name: new RegExp(`${symbol}.*USD`) })
-    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', symbol)
+    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', symbol, expect.any(AbortSignal))
     expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
     await user.click(result)
     await waitFor(() => expect(within(dialog).getByRole('searchbox', { name: 'Security' })).toHaveValue(`${symbol} · ${symbol} ETF`))
@@ -1601,7 +1630,7 @@ describe('Transactions rendered page contract', () => {
     expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
   })
 
-  it('hides catalog candidates with a verified currency that differs from the selected USD account', async () => {
+  it('explains verified currency mismatches without allowing selection or registration', async () => {
     apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{
       instrument_type: 'etf', symbol: 'HKETF', catalog_provider: 'fmp', catalog_symbol: 'HKETF.HK',
       name: 'Hong Kong ETF', exchange_code: 'XHKG', exchange_label: 'Hong Kong Exchange',
@@ -1614,10 +1643,44 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByRole('combobox', { name: 'Holding Account' })).toHaveValue(securitiesAccount.account_id)
     fireEvent.change(within(dialog).getByRole('searchbox', { name: 'Security' }), { target: { value: 'HKETF' } })
 
-    expect(await within(dialog).findByText('No matching security for this account.')).toBeInTheDocument()
-    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', 'HKETF')
-    expect(within(dialog).queryByRole('button', { name: /HKETF.*Hong Kong ETF/ })).not.toBeInTheDocument()
+    const incompatible = await within(dialog).findByRole('button', { name: /HKETF.*Hong Kong ETF.*HKD/ })
+    expect(incompatible).toBeDisabled()
+    expect(incompatible).toHaveTextContent('Current account: USD. Select a HKD securities account.')
+    await user.click(incompatible)
+    fireEvent.keyDown(within(dialog).getByRole('searchbox', { name: 'Security' }), { key: 'Enter' })
+    expect(apiMocks.searchPortfolioSecurities).toHaveBeenCalledWith('3', 'HKETF', expect.any(AbortSignal))
+    expect(within(dialog).queryByText('No matching security for this account.')).not.toBeInTheDocument()
     expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+  })
+
+  it('keeps exact GOOGL visible for a CNY account and enables it only after selecting a USD account', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [fundSecuritiesAccount, fundCashAccount, securitiesAccount, cashAccount] })
+    apiMocks.searchPortfolioSecurities.mockResolvedValue({ results: [{
+      instrument_type: 'equity', symbol: 'GOOGL', catalog_provider: 'fmp', catalog_symbol: 'GOOGL',
+      name: 'Alphabet Inc.', exchange_code: 'XNAS', exchange_label: 'NASDAQ', market: 'US',
+      currency: 'USD', currency_verified: true, existing_instrument_id: null,
+    }, {
+      instrument_type: 'equity', symbol: 'GOOGL.SW', catalog_provider: 'fmp', catalog_symbol: 'GOOGL.SW',
+      name: 'Alphabet Inc.', exchange_code: 'XSWX', exchange_label: 'SIX Swiss Exchange', market: 'EU',
+      currency: 'CHF', currency_verified: false, existing_instrument_id: null,
+    }], catalog_errors: {} })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const account = within(dialog).getByRole('combobox', { name: 'Holding Account' })
+    await user.selectOptions(account, fundSecuritiesAccount.account_id)
+    const search = within(dialog).getByRole('searchbox', { name: 'Security' })
+    fireEvent.change(search, { target: { value: 'GOOGL' } })
+    const exact = await within(dialog).findByRole('button', { name: /GOOGL.*Alphabet Inc\..*NASDAQ.*USD/ })
+    expect(exact).toBeDisabled()
+    expect(exact).toHaveTextContent('Current account: CNY. Select a USD securities account.')
+    expect(within(dialog).getByRole('button', { name: /GOOGL\.SW.*CHF.*Currency to be verified/ })).toBeEnabled()
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(apiMocks.materializePortfolioSecurity).not.toHaveBeenCalled()
+    await user.selectOptions(account, securitiesAccount.account_id)
+    expect(await within(dialog).findByRole('button', { name: /GOOGL.*Alphabet Inc\..*NASDAQ.*USD/ })).toBeEnabled()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
   it('shows an unverified catalog currency but rejects selection when registration confirms a non-USD currency', async () => {

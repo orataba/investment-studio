@@ -1,6 +1,6 @@
 import { LanguageSelector, useLanguage } from '../../../../../packages/ui/src/i18n'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
-import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
@@ -29,12 +29,14 @@ import { preloadPortfolioSection } from '../lib/preload'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import OptionOutcomePrompt from './OptionOutcomePrompt'
-import PortfolioRiskDrawer from './PortfolioRiskDrawer'
-import PortfolioAssistantDrawer from './PortfolioAssistantDrawer'
+import CalculationStatus from './CalculationStatus'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import PortfolioMembersSettings from './PortfolioMembersSettings'
 import { usePortfolioCapabilities } from './PortfolioCapabilitiesProvider'
+
+const PortfolioRiskDrawer = lazy(() => import('./PortfolioRiskDrawer'))
+const PortfolioAssistantDrawer = lazy(() => import('./PortfolioAssistantDrawer'))
 
 type WorkspaceTab = {
   label: string
@@ -132,6 +134,7 @@ export default function PortfolioWorkspaceLayout({
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
 
     if (!portfolioId) {
       setSummary(null)
@@ -139,13 +142,14 @@ export default function PortfolioWorkspaceLayout({
       setSummaryError('Portfolio id is required.')
       return () => {
         cancelled = true
+        controller.abort()
       }
     }
 
     setSummary(null)
     setSummaryLoading(true)
     setSummaryError(null)
-    getWorkspaceSummaryForPortfolio(portfolioId)
+    getWorkspaceSummaryForPortfolio(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setSummary(response)
@@ -166,6 +170,7 @@ export default function PortfolioWorkspaceLayout({
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId, summaryRevision])
 
@@ -618,8 +623,10 @@ export default function PortfolioWorkspaceLayout({
               />
             </div>
           </div>
-          {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
-          {assistantParams && resolvedPortfolioId ? <PortfolioAssistantDrawer key={`assistant:${resolvedPortfolioId}:${assistantParams.toString()}`} initialParams={assistantParams} onClose={() => setAssistantParams(null)} /> : null}
+          <Suspense fallback={<CalculationStatus />}>
+            {riskDrawerOpen && resolvedPortfolioId ? <PortfolioRiskDrawer key={`risk:${resolvedPortfolioId}`} portfolioId={resolvedPortfolioId} onClose={() => setRiskDrawerOpen(false)} onAskAssistant={openAssistant} /> : null}
+            {assistantParams && resolvedPortfolioId ? <PortfolioAssistantDrawer key={`assistant:${resolvedPortfolioId}:${assistantParams.toString()}`} initialParams={assistantParams} onClose={() => setAssistantParams(null)} /> : null}
+          </Suspense>
           {riskSettingsOpen ? (
             <div
               className="portfolio-settings-modal-backdrop"

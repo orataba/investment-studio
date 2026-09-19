@@ -811,6 +811,8 @@ export default function OverviewPage() {
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [taxonomyLoading, setTaxonomyLoading] = useState(true)
+  const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
@@ -841,20 +843,19 @@ export default function OverviewPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setWorkspaceLoading(true)
 
     Promise.all([
-      getWorkspaceSummaryForPortfolio(portfolioId),
-      getHoldingsWorkspace(portfolioId),
-      getPortfolioTaxonomyCatalog(portfolioId),
+      getWorkspaceSummaryForPortfolio(portfolioId, controller.signal),
+      getHoldingsWorkspace(portfolioId, {}, controller.signal),
     ])
-      .then(([summaryResponse, holdingsResponse, taxonomyResponse]) => {
+      .then(([summaryResponse, holdingsResponse]) => {
         if (cancelled) {
           return
         }
         setSummary(summaryResponse)
         setHoldingsWorkspace(holdingsResponse)
-        setTaxonomyCatalog(taxonomyResponse)
         setWorkspaceError(null)
       })
       .catch((requestError) => {
@@ -862,7 +863,6 @@ export default function OverviewPage() {
           setWorkspaceError(requestError instanceof Error ? requestError.message : 'Failed to load portfolio overview.')
           setSummary(null)
           setHoldingsWorkspace(null)
-          setTaxonomyCatalog(null)
         }
       })
       .finally(() => {
@@ -873,7 +873,24 @@ export default function OverviewPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
+  }, [portfolioId])
+
+  useEffect(() => {
+    setTaxonomyCatalog(null)
+    setTaxonomyError(null)
+    if (!portfolioId) { setTaxonomyLoading(false); return }
+    let cancelled = false
+    const controller = new AbortController()
+    setTaxonomyLoading(true)
+    getPortfolioTaxonomyCatalog(portfolioId, {}, controller.signal)
+      .then((response) => { if (!cancelled) setTaxonomyCatalog(response) })
+      .catch((error) => {
+        if (!cancelled) setTaxonomyError(error instanceof Error ? error.message : 'Classification unavailable.')
+      })
+      .finally(() => { if (!cancelled) setTaxonomyLoading(false) })
+    return () => { cancelled = true; controller.abort() }
   }, [portfolioId])
 
   useEffect(() => {
@@ -886,9 +903,10 @@ export default function OverviewPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setPerformanceLoading(true)
 
-    getPortfolioPerformance(portfolioId, { end_date: asOfDate })
+    getPortfolioPerformance(portfolioId, { end_date: asOfDate }, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setPerformanceWorkspace(response)
@@ -909,6 +927,7 @@ export default function OverviewPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
@@ -919,7 +938,8 @@ export default function OverviewPage() {
     }
 
     let cancelled = false
-    getPortfolioInstruments(portfolioId)
+    const controller = new AbortController()
+    getPortfolioInstruments(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)
@@ -933,6 +953,7 @@ export default function OverviewPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -946,13 +967,14 @@ export default function OverviewPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setBenchmarkLoading(true)
     setBenchmarkError(null)
 
     getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: asOfDate,
       range: 'all',
-    })
+    }, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkChart(response)
@@ -972,6 +994,7 @@ export default function OverviewPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [benchmarkInstrumentId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
@@ -1800,7 +1823,9 @@ export default function OverviewPage() {
                   <div className="portfolio-detail-toolbar portfolio-section-toolbar">
                     <div className="panel-title">Strategy Sleeves</div>
                   </div>
-                  {sleeveRibbonSegments ? (
+                  {taxonomyLoading ? <CalculationStatus /> : taxonomyError ? (
+                    <div className="error-state">{taxonomyError}</div>
+                  ) : sleeveRibbonSegments ? (
                     <StrategySleeveDonut
                       segments={sleeveRibbonSegments}
                       unassigned={unassignedSleeve}

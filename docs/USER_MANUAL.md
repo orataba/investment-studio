@@ -74,7 +74,7 @@ Watchlist 添加资产、Portfolio 交易录入以及 FCN／期权挂钩标的�
 
 ## 4. 后台数据维护
 
-共享资产注册、数据接入、邮件解析、NAV 文件导入、人工修正和状态检查由后台 CLI 执行，没有数据管理网页或专用公开域名。Watchlist 添加资产和 Portfolio 交易／挂钩标的录入可由有编辑权限的用户触发股票/ETF 目录搜索及按需注册，复用相同的 CLI 维护入口。现有定时任务继续自动运行。维护人员参见 [Investment Studio CLI](../shared-data/README.md)。
+共享资产注册、数据接入、邮件解析、NAV 文件导入、人工修正和状态检查由后台 CLI 执行，没有数据管理网页或专用公开域名。Watchlist 添加资产和 Portfolio 交易／挂钩标的录入可由有编辑权限的用户触发股票/ETF 目录搜索及按需注册；搜索直接读取当前目录，注册复用相同的 CLI 维护入口。现有定时任务继续自动运行。维护人员参见 [Investment Studio CLI](../shared-data/README.md)。
 
 ## 5. Watchlist 使用
 

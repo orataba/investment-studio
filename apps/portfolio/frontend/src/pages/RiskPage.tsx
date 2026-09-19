@@ -1786,6 +1786,7 @@ export default function RiskPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setWorkspaceLoading(true)
     setWorkspaceError(null)
     setWorkspaceSupportError(null)
@@ -1793,7 +1794,7 @@ export default function RiskPage() {
     setAccountsWorkspace(null)
     setTaxonomyCatalog(null)
 
-    getHoldingsWorkspace(portfolioId, { include_details: true })
+    getHoldingsWorkspace(portfolioId, { include_details: true }, controller.signal)
       .then((holdingsResponse) => {
         if (cancelled) {
           return
@@ -1815,7 +1816,7 @@ export default function RiskPage() {
         }
       })
 
-    getPortfolioAccountsWorkspace(portfolioId)
+    getPortfolioAccountsWorkspace(portfolioId, undefined, controller.signal)
       .then((response) => { if (!cancelled) setAccountsWorkspace(response) })
       .catch((error) => {
         if (!cancelled) setWorkspaceSupportError((current) => [current, error instanceof Error ? error.message : 'Failed to load accounts workspace.'].filter(Boolean).join(' '))
@@ -1823,6 +1824,7 @@ export default function RiskPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId, riskPolicyRevision])
 
@@ -1833,7 +1835,8 @@ export default function RiskPage() {
     }
 
     let cancelled = false
-    getPortfolioInstruments(portfolioId)
+    const controller = new AbortController()
+    getPortfolioInstruments(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)
@@ -1847,6 +1850,7 @@ export default function RiskPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -1859,6 +1863,7 @@ export default function RiskPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setBenchmarkChart(null)
     setBenchmarkLoading(true)
     setBenchmarkError(null)
@@ -1866,7 +1871,7 @@ export default function RiskPage() {
     getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: riskWindowEndDate,
       range: 'all',
-    })
+    }, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkChart(response)
@@ -1886,18 +1891,20 @@ export default function RiskPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [benchmarkInstrumentId, portfolioId, riskWindowEndDate])
 
   useEffect(() => {
     if (!portfolioId || !riskWindowEndDate) { setTaxonomyCatalog(null); return }
     let cancelled = false
-    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate })
+    const controller = new AbortController()
+    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate }, controller.signal)
       .then((response) => { if (!cancelled) setTaxonomyCatalog(response) })
       .catch((error) => {
         if (!cancelled) setWorkspaceSupportError((current) => [current, error instanceof Error ? error.message : 'Failed to load taxonomy catalog.'].filter(Boolean).join(' '))
       })
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [portfolioId, riskWindowEndDate, riskPolicyRevision])
 
   useEffect(() => {
@@ -1905,12 +1912,13 @@ export default function RiskPage() {
     setRealizedError(null)
     if (!portfolioId || !riskWindowEndDate) { setRealizedLoading(false); return }
     let cancelled = false
+    const controller = new AbortController()
     setRealizedLoading(true)
-    getPortfolioPerformance(portfolioId, { end_date: riskWindowEndDate })
+    getPortfolioPerformance(portfolioId, { end_date: riskWindowEndDate }, controller.signal)
       .then((response) => { if (!cancelled) setRealizedPerformance(response) })
       .catch((error) => { if (!cancelled) setRealizedError(error instanceof Error ? error.message : 'Failed to load actual portfolio returns.') })
       .finally(() => { if (!cancelled) setRealizedLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [portfolioId, riskWindowEndDate, riskPolicyRevision])
 
   const planningTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.planning_enabled) ?? []

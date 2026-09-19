@@ -198,7 +198,8 @@ def test_unknown_excluded_value_is_not_reported_as_zero_unmodeled_exposure():
 def test_reader_reuses_workspace_and_does_not_read_future_or_other_portfolio(monkeypatch):
     from portfolio_app.services import instrument_registry
     loaded = []
-    monkeypatch.setattr(instrument_registry, "get_registry_instrument_details", lambda ids: loaded.extend(ids) or {})
+    monkeypatch.setattr(instrument_registry, "get_registry_instrument_metadata", lambda ids: loaded.extend(ids) or {})
+    monkeypatch.setattr(instrument_registry, "get_registry_instrument_details", lambda _ids: pytest.fail("base-currency securities reuse workspace returns"))
     source = workspace([holding()])
     result = service.read_portfolio_tail_risk("p", as_of_date=AS_OF, workspace=source)
     assert result["as_of_date"] == AS_OF.isoformat()
@@ -207,6 +208,39 @@ def test_reader_reuses_workspace_and_does_not_read_future_or_other_portfolio(mon
         service.read_portfolio_tail_risk("other", workspace=source)
     with pytest.raises(ValueError, match="date differs"):
         service.read_portfolio_tail_risk("p", as_of_date=AS_OF - timedelta(days=1), workspace=source)
+
+
+@pytest.mark.parametrize("missing_fx_day", [None, 20])
+def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypatch, missing_fx_day):
+    from portfolio_app.services import instrument_registry
+
+    fx_details, fx_payload = fx_inputs(missing_day=missing_fx_day)
+    metadata = {"a": {"exchange_code": "TEST", "source_settings": {"expected_frequency": "daily"}},
+                "weekly": {"source_settings": {"expected_frequency": "weekly"}}}
+    complete_details = {**fx_details, **deepcopy(metadata)}
+    complete_details["a"]["market_data"] = [{"unused_security_history": True}]
+    source = workspace([holding(value=900, currency="USD"), holding("weekly", value=100)])
+    verified_calendar_days(monkeypatch)
+    metadata_reads, history_reads = [], []
+
+    def read_metadata(ids):
+        metadata_reads.append(set(ids))
+        return deepcopy(metadata)
+
+    def read_history(ids):
+        history_reads.append(set(ids))
+        return deepcopy(fx_details)
+
+    monkeypatch.setattr(instrument_registry, "get_registry_instrument_metadata", read_metadata)
+    monkeypatch.setattr(instrument_registry, "get_registry_instrument_details", read_history)
+    monkeypatch.setattr(instrument_registry, "get_shared_fx_rates", lambda: fx_payload)
+    expected = service.project_portfolio_tail_risk(source, instrument_details=complete_details, fx_payload=fx_payload)
+    actual = service.read_portfolio_tail_risk("p", as_of_date=AS_OF, workspace=source)
+    assert actual == expected
+    assert metadata_reads == [{"a", "weekly"}]
+    assert history_reads == [{"fx-usd-cny"}]
+    assert actual["observation_count"] == (40 if missing_fx_day is None else 38)
+    assert actual["rows"][1]["reason"] == "non_daily_source"
 
 
 def test_single_source_discloses_requested_window_actual_scenarios_and_unavailable_tail():

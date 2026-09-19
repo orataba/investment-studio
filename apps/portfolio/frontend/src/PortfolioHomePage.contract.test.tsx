@@ -819,7 +819,7 @@ describe('Holdings rendered page contract', () => {
       expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
         as_of_date: undefined,
         include_details: true,
-      })
+      }, expect.any(AbortSignal))
     })
     await waitFor(() => {
       expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
@@ -1006,7 +1006,7 @@ describe('Holdings rendered page contract', () => {
 
     expect(screen.getByRole('table', { name: 'Security holdings' })).toBe(originalTable)
     expect(screen.getByText('As Of Date').parentElement).toHaveTextContent('2026-07-15')
-    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14' })
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14' }, expect.any(AbortSignal))
     expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
 
     await act(async () => refreshedHoldings.resolve(holdingsWorkspaceFixture({ as_of_date: '2026-07-14' })))
@@ -1533,7 +1533,7 @@ describe('Holdings rendered page contract', () => {
       expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
         as_of_date: undefined,
         include_details: true,
-      })
+      }, expect.any(AbortSignal))
     })
   })
 
@@ -1558,16 +1558,16 @@ describe('Holdings rendered page contract', () => {
 
     fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-14' } })
     await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(3))
-    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14', include_details: true })
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-14', include_details: true }, expect.any(AbortSignal))
     await selectView('Return & Risk', 'Default')
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(3)
     fireEvent.change(screen.getByLabelText('As Of Date'), { target: { value: '2026-07-13' } })
     await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(4))
-    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-13' })
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('3', { as_of_date: '2026-07-13' }, expect.any(AbortSignal))
 
     await user.click(screen.getByRole('button', { name: 'Switch portfolio' }))
     await waitFor(() => expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(5))
-    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('4', { as_of_date: undefined })
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenLastCalledWith('4', { as_of_date: undefined }, expect.any(AbortSignal))
   })
 
   it('shares aligned risk inputs across subtotal cells, column edits, and sorting', async () => {

@@ -3,17 +3,13 @@ from __future__ import annotations
 from typing import Literal
 
 from studio_data.services.equities import (
-    EquityCatalogEmptyError,
     materialize_equity,
     refresh_equity_eod,
-    search_equities,
     sync_equity_catalog,
 )
 from studio_data.services.etfs import (
-    EtfCatalogEmptyError,
     materialize_etf,
     refresh_etf_eod,
-    search_etfs,
     sync_etf_catalog,
 )
 from studio_data.services.fmp.client import FmpClient
@@ -23,43 +19,14 @@ from studio_data.services.instrument_store import get_instrument
 MaterializableSecurityType = Literal["equity", "etf"]
 
 
-def _search_rank(item: dict[str, object], query: str) -> tuple[object, ...]:
-    normalized = query.casefold()
-    symbol = str(item.get("symbol") or "").casefold()
-    catalog_symbol = str(item.get("catalog_symbol") or "").casefold()
-    name = str(item.get("name") or "").casefold()
-    return (
-        0 if normalized in {symbol, catalog_symbol} else 1,
-        0 if symbol.startswith(normalized) or catalog_symbol.startswith(normalized) else 1,
-        0 if normalized in name else 1,
-        name,
-        str(item.get("instrument_type") or ""),
-        symbol,
-    )
-
-
 def search_securities(
     query: str,
     *,
     limit: int = 10,
 ) -> tuple[list[dict[str, object]], dict[MaterializableSecurityType, str]]:
-    normalized_query = query.strip()
-    if not normalized_query:
-        raise ValueError("Security search query must not be blank.")
-    bounded_limit = max(1, min(limit, 25))
-    results: list[dict[str, object]] = []
-    errors: dict[MaterializableSecurityType, str] = {}
-    try:
-        results.extend(search_equities(normalized_query, limit=bounded_limit))
-    except EquityCatalogEmptyError as error:
-        errors["equity"] = str(error)
-    try:
-        results.extend(search_etfs(normalized_query, limit=bounded_limit))
-    except EtfCatalogEmptyError as error:
-        errors["etf"] = str(error)
-    return sorted(results, key=lambda item: _search_rank(item, normalized_query))[
-        :bounded_limit
-    ], errors
+    from investment_studio_instrument_core.security_directory import search_directory
+    from studio_data.db.session import get_session_factory
+    return search_directory(get_session_factory(), query, limit)
 
 
 def materialize_security(

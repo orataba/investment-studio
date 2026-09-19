@@ -9522,6 +9522,12 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
+.transaction-picker-constraint {
+  display: block;
+  max-width: 260px;
+  white-space: normal;
+}
+
 .transaction-instrument-empty {
   padding: 12px;
   color: var(--portfolio-muted);

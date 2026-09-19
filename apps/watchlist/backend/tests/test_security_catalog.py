@@ -31,7 +31,8 @@ def test_directory_search_is_available_to_readers_without_registering(accounts, 
     client, _, _ = accounts
     as_user(client, "reader")
     calls = []
-    def search(query, limit):
+    def search(query, limit, *, session_factory):
+        assert session_factory is securities.get_session_factory()
         calls.append((query, limit))
         return SecuritySearchResponse(results=[RESULT], catalog_errors={"equity": "Catalog unavailable"})
     monkeypatch.setattr(securities, "search_catalog", search)

@@ -461,16 +461,22 @@ def convert_amount_on(
     direct_fx_instruments: FxInstrumentMap,
     instrument_detail_cache: InstrumentDetailCache,
     instrument_detail_loader: InstrumentDetailLoader,
+    resolution_cache: FxRateResolutionCache | None = None,
 ) -> tuple[float | None, bool]:
     if amount is None:
         return None, False
-    resolved_fx = resolve_fx_rate_on(
+    arguments = dict(
         as_of_date=as_of_date,
         base_currency=from_currency,
         quote_currency=to_currency,
         direct_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
         instrument_detail_loader=instrument_detail_loader,
+    )
+    resolved_fx = (
+        resolve_fx_rate_on(**arguments)
+        if resolution_cache is None
+        else resolve_fx_rate_on_cached(**arguments, resolution_cache=resolution_cache)
     )
     if resolved_fx is None:
         return None, False

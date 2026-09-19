@@ -340,7 +340,11 @@ def read_portfolio_tail_risk(portfolio_id: str, *, as_of_date: date | None = Non
                             confidence=DEFAULT_CONFIDENCE, lookback_days=DEFAULT_LOOKBACK_DAYS,
                             workspace=None):
     from portfolio_app.api.routes.workspace import holdings_workspace
-    from portfolio_app.services.instrument_registry import get_registry_instrument_details, get_shared_fx_rates
+    from portfolio_app.services.instrument_registry import (
+        get_registry_instrument_details,
+        get_registry_instrument_metadata,
+        get_shared_fx_rates,
+    )
     if workspace is None:
         workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
     if workspace.get("portfolio_id") != portfolio_id:
@@ -352,7 +356,12 @@ def read_portfolio_tail_risk(portfolio_id: str, *, as_of_date: date | None = Non
     has_fx = any((row.get("instrument_core") or {}).get("currency") not in {None, base}
                  for row in workspace.get("rows") or [])
     fx_payload = get_shared_fx_rates() if has_fx else {}
-    ids.update(fx_direct_instrument_map(fx_payload).values())
-    details = get_registry_instrument_details([iid for iid in ids if iid])
+    # Security return intervals already belong to this dated workspace. Only
+    # their delivery frequency/calendar is needed here; FX needs full observed
+    # quote history to align each scenario's actual start and end boundaries.
+    details = get_registry_instrument_metadata([iid for iid in ids if iid])
+    fx_ids = set(fx_direct_instrument_map(fx_payload).values())
+    if fx_ids:
+        details.update(get_registry_instrument_details(sorted(fx_ids)))
     return project_portfolio_tail_risk(workspace, confidence=confidence, lookback_days=lookback_days,
                                        instrument_details=details, fx_payload=fx_payload)

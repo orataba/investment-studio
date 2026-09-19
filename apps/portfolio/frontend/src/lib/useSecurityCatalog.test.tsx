@@ -45,7 +45,7 @@ describe('useSecurityCatalog', () => {
     expect(result.current.loading).toBe(true)
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(searchPortfolioSecurities).toHaveBeenCalledExactlyOnceWith('portfolio-1', 'SHV')
+    expect(searchPortfolioSecurities).toHaveBeenCalledExactlyOnceWith('portfolio-1', 'SHV', expect.any(AbortSignal))
     expect(result.current.results).toEqual(catalog('SHV').results)
     expect(result.current.loading).toBe(false)
   })
@@ -60,7 +60,9 @@ describe('useSecurityCatalog', () => {
       { initialProps: { query: 'SHV' } },
     )
     await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    const oldSignal = vi.mocked(searchPortfolioSecurities).mock.calls[0][2]!
     rerender({ query: 'STIP' })
+    expect(oldSignal.aborted).toBe(true)
     expect(result.current.results).toEqual([])
     await act(async () => { await vi.advanceTimersByTimeAsync(250) })
     await act(async () => { newRequest.resolve(catalog('STIP')) })
@@ -77,7 +79,9 @@ describe('useSecurityCatalog', () => {
       { initialProps: { enabled: true } },
     )
     await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    const signal = vi.mocked(searchPortfolioSecurities).mock.calls[0][2]!
     rerender({ enabled: false })
+    expect(signal.aborted).toBe(true)
     await act(async () => { request.resolve(catalog('DBA')) })
 
     expect(result.current).toEqual({ results: [], loading: false, error: null })

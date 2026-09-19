@@ -47,7 +47,7 @@ bin/investment-studio data status data
 bin/investment-studio data status email --limit 100
 ```
 
-CLI 只加载实际选中的命令；命令分组帮助不初始化各个数据工作流。证券搜索只读取当前本地目录与登记身份，不加载行情采集、交易日历或净值导入依赖，不使用结果缓存掩盖目录更新。证券登记和行情刷新按需加载各自的数据写入依赖；应用仍通过同一受控 CLI 调用，不跨应用直接查询供应商目录。
+CLI 只加载实际选中的命令；命令分组帮助不初始化各个数据工作流。证券搜索只读取当前本地目录与登记身份，不加载行情采集、交易日历或净值导入依赖，不使用结果缓存掩盖目录更新。证券登记和行情刷新按需加载各自的数据写入依赖；Portfolio、Watchlist 与合并搜索 CLI 共用 instrument core 的只读目录查询，通过当前 canonical 数据库连接读取 `data_ingestion` 公开 catalog 及 `instrument_data` 身份，并批量匹配命中的标识。应用搜索不再启动 CLI 子进程；登记与刷新仍通过数据维护 CLI 执行。
 
 需要 JSON 输入的操作使用 `--input /absolute/request.json`，也可 `--input -` 从标准输入读取。所有单项写命令都需 `--apply` 才执行；不加时只校验输入结构，不保证业务条件满足。股票/ETF 通过已同步的 FMP 目录建档。FMP screener 目录请求显式包含全部股份类别（`includeAllShareClasses=true`），保留 GOOG/GOOGL 等同发行人的独立上市证券；不能把发行人去重结果当作完整证券目录。Watchlist 添加、Portfolio 直接交易、FCN/Option 底层证券和 FCN 实物交付选择复用这套 CLI 入口，并仅在用户明确选中或确认添加证券后按需建档；不新增独立的数据 HTTP 服务。注册和既有盘后更新会为 FMP 股票/ETF 补齐缺失行情；单标的补采复用共享数值采集器及其原始/复权数据合同，不改全市场采集角色或发行配置：
 

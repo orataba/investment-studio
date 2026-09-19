@@ -22,6 +22,7 @@ from portfolio_app.services.instrument_registry import (
     list_registry_instruments,
 )
 from portfolio_app.services import valuation_fx
+from portfolio_app.services.valuation_quotes import load_valuation_quotes
 from portfolio_app.services.holdings_market_profile import resolve_position_valuation
 from portfolio_app.services.market_data import is_usable_market_data_point
 from portfolio_app.services.market_data import (
@@ -293,31 +294,44 @@ def _resolve_pricing_quote_map(
             for item in list_registry_instruments()
             if str(item.get("instrument_id") or "")
         }
-        missing_instrument_ids = (
-            target_instrument_ids
-            if instrument_detail_cache is None
-            else target_instrument_ids - instrument_detail_cache.keys()
-        )
+        if instrument_detail_cache is None:
+            quotes = load_valuation_quotes(
+                target_instrument_ids,
+                as_of_date=as_of_date or date.max,
+                detail_loader=get_registry_instrument_details,
+            )
+            valuation_details = {instrument_id: item["detail"] for instrument_id, item in quotes.items()}
+            if transactions is not None:
+                bind_initial_purchase_valuations(
+                    transactions, valuation_details, instrument_detail_loader=valuation_details.get,
+                )
+            pricing_map = {}
+            for instrument_id, item in quotes.items():
+                if not item["eligible"]:
+                    continue
+                detail = valuation_details[instrument_id]
+                point = initial_purchase_valuation_point(
+                    detail, market_point=item["point"], as_of_date=as_of_date or date.max,
+                    candidate_bases=quote_policy_bases(detail, "valuation"),
+                    series_unavailable_reason=item["unavailable_reason"],
+                )
+                if point is not None:
+                    pricing_map[instrument_id] = point
+            return pricing_map
+        missing_instrument_ids = target_instrument_ids - instrument_detail_cache.keys()
         loaded_details = (
             get_registry_instrument_details(missing_instrument_ids)
             if missing_instrument_ids
             else {}
         )
-        if instrument_detail_cache is not None:
-            # A bulk miss must not suppress a caller's authoritative fallback
-            # loader (performance/reporting layers may provide one).  Positive
-            # details are safe to share across the request; unresolved ids stay
-            # eligible for fallback resolution.
-            instrument_detail_cache.update(
-                {
-                    instrument_id: detail
-                    for instrument_id, detail in loaded_details.items()
-                    if isinstance(detail, dict)
-                }
-            )
-            instrument_details = instrument_detail_cache
-        else:
-            instrument_details = loaded_details
+        # A bulk miss must not suppress a caller's authoritative fallback
+        # loader (performance/reporting layers may provide one). Positive
+        # details can be shared; unresolved ids remain eligible for fallback.
+        instrument_detail_cache.update({
+            instrument_id: detail for instrument_id, detail in loaded_details.items()
+            if isinstance(detail, dict)
+        })
+        instrument_details = instrument_detail_cache
         if transactions is not None:
             bind_initial_purchase_valuations(
                 transactions, instrument_details,
@@ -1075,6 +1089,7 @@ def settled_monetary_balances_from_postings(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
+    fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
 ) -> list[dict[str, object]]:
     """Replay settled cash with account/currency historical base basis."""
 
@@ -1104,6 +1119,7 @@ def settled_monetary_balances_from_postings(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
+            resolution_cache=fx_resolution_cache,
         )
         historical_basis = (
             _safe_float(state.get("historical_cost_basis_base"))
@@ -1161,27 +1177,36 @@ def build_transaction_cash_fx_impacts(
 ) -> list[dict[str, object]]:
     """Return realized cash FX for selected settled monetary postings."""
 
-    resolved_direct_instruments = (
-        direct_fx_instruments
-        if direct_fx_instruments is not None
-        else valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
-    )
     resolved_instrument_cache = (
-        instrument_detail_cache
-        if instrument_detail_cache is not None
-        else {}
+        instrument_detail_cache if instrument_detail_cache is not None else {}
     )
-    resolved_fx_rate_on = resolve_fx_rate_on or partial(
+    underlying_resolver = resolve_fx_rate_on or partial(
         valuation_fx.resolve_fx_rate_on,
         instrument_detail_loader=get_registry_instrument_detail,
     )
+    resolved_direct_instruments = direct_fx_instruments
+
+    def resolve_cash_fx(**kwargs):
+        nonlocal resolved_direct_instruments
+        # Same-currency cash needs no market FX data. Defer the existing full
+        # validation until the replay actually needs a foreign-currency rate.
+        if resolved_direct_instruments is None and (
+            valuation_fx.required_currency(kwargs["base_currency"], field_name="FX base currency")
+            != valuation_fx.required_currency(kwargs["quote_currency"], field_name="FX quote currency")
+        ):
+            resolved_direct_instruments = valuation_fx.fx_direct_instrument_map(
+                get_shared_fx_rates()
+            )
+        kwargs["direct_instruments"] = resolved_direct_instruments or {}
+        return underlying_resolver(**kwargs)
+
     _states, impacts = _replay_settled_monetary_postings(
         postings=postings,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_instruments=resolved_direct_instruments,
+        direct_fx_instruments=direct_fx_instruments or {},
         instrument_detail_cache=resolved_instrument_cache,
-        resolve_fx_rate_on=resolved_fx_rate_on,
+        resolve_fx_rate_on=resolve_cash_fx,
         impact_transaction_ids=transaction_ids,
     )
     return impacts
@@ -1195,6 +1220,7 @@ def pending_monetary_balances_from_postings(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
+    fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
 ) -> list[dict[str, object]]:
     """Build active receivable, payable, and position-recognition balances."""
 
@@ -1322,6 +1348,7 @@ def pending_monetary_balances_from_postings(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
+            resolution_cache=fx_resolution_cache,
         )
         if converted_amount is None:
             bucket["amount_base_complete"] = False
@@ -1424,6 +1451,7 @@ def build_monetary_subledger(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
+    fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     common = {
         "postings": postings,
@@ -1432,6 +1460,7 @@ def build_monetary_subledger(
         "direct_fx_instruments": direct_fx_instruments,
         "instrument_detail_cache": instrument_detail_cache,
         "resolve_fx_rate_on": resolve_fx_rate_on,
+        "fx_resolution_cache": fx_resolution_cache,
     }
     return {
         "settled_balances": settled_monetary_balances_from_postings(**common),
@@ -4887,9 +4916,22 @@ def build_account_workspace(
         as_of_date=as_of_date,
     )
     if direct_fx_instruments is None:
-        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
+        currencies = {str(row.get("currency") or "").strip().upper()
+                      for row in [*accounts, *boundary_transactions, *postings]}
+        direct_fx_instruments = (
+            valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
+            if currencies - {"", base_currency.strip().upper()}
+            else {}
+        )
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
+    )
+
+    fx_resolution_cache: valuation_fx.FxRateResolutionCache = {}
+    resolve_account_fx = partial(
+        valuation_fx.resolve_fx_rate_on_cached,
+        instrument_detail_loader=get_registry_instrument_detail,
+        resolution_cache=fx_resolution_cache,
     )
 
     def convert_to_base(amount: float | None, *, from_currency: str) -> float | None:
@@ -4902,6 +4944,7 @@ def build_account_workspace(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=resolved_instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
+            resolution_cache=fx_resolution_cache,
         )
         return converted_amount
 
@@ -4914,6 +4957,8 @@ def build_account_workspace(
         linked_transaction_ids[account_id].add(str(posting.get("transaction_id") or ""))
 
     monetary_subledger = build_monetary_subledger(
+        resolve_fx_rate_on=resolve_account_fx,
+        fx_resolution_cache=fx_resolution_cache,
         postings=postings,
         as_of_date=as_of_date,
         base_currency=base_currency,
@@ -4974,7 +5019,7 @@ def build_account_workspace(
         as_of_date=as_of_date,
         corporate_actions=corporate_actions,
         pricing_map=pricing_map,
-        instrument_detail_cache=resolved_instrument_detail_cache,
+        instrument_detail_cache=(resolved_instrument_detail_cache if instrument_detail_cache is not None else None),
     )
     positions_by_account_reference: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:

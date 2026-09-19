@@ -67,7 +67,10 @@ from portfolio_app.services.portfolio_store import (
 )
 from portfolio_app.services.research_eligibility import derive_research_lifecycle
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
-from portfolio_app.services.workspace_cache import get_cached_materialized_performance_report
+from portfolio_app.services.workspace_cache import (
+    get_cached_materialized_performance_report,
+    get_cached_research_analysis,
+)
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
@@ -1860,23 +1863,41 @@ def get_research_workbench(
         )
 
     risk_lookback_days = int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    context = _build_research_context(
+    research_as_of_date = date.fromisoformat(str(settings_payload["as_of_date"]))
+    planning_taxonomy_id = str(settings_payload.get("planning_taxonomy_id") or "").strip() or None
+    comparator_taxonomy_node_id = str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None
+
+    def build_analysis() -> dict[str, object]:
+        instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+        with operation("research_context"):
+            context = _build_research_context(
+                portfolio_id,
+                planning_taxonomy_id=planning_taxonomy_id,
+                as_of_date=research_as_of_date,
+                target_configuration=configuration,
+                lookback_days=risk_lookback_days,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            frequency = build_research_calculation_frequency_profile(
+                portfolio_id,
+                planning_taxonomy_id=planning_taxonomy_id,
+                comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+                as_of_date=research_as_of_date,
+                target_configuration=configuration,
+                lookback_days=risk_lookback_days,
+                _instrument_detail_cache=instrument_detail_cache,
+            )
+        return {"context": context, "calculation_frequency": frequency}
+
+    # Saved runs, settings and permissions remain live. Only the derived
+    # financial context is reused for the same current targets and sources.
+    analysis = get_cached_research_analysis(
         portfolio_id,
-        planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
-        as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        target_configuration=configuration,
+        planning_state_fingerprint=current_planning_state_fingerprint,
+        as_of_date=research_as_of_date,
         lookback_days=risk_lookback_days,
-        instrument_detail_cache=instrument_detail_cache,
-    )
-    calculation_frequency_profile = build_research_calculation_frequency_profile(
-        portfolio_id,
-        planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
-        comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
-        as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        target_configuration=configuration,
-        lookback_days=risk_lookback_days,
-        _instrument_detail_cache=instrument_detail_cache,
+        comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+        builder=build_analysis,
     )
 
     return {
@@ -1892,10 +1913,10 @@ def get_research_workbench(
             as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
             target_configuration=configuration,
         ),
-        "calculation_frequency": calculation_frequency_profile,
+        "calculation_frequency": analysis["calculation_frequency"],
         "settings": settings_payload,
         "risk_policy": production_risk_model,
-        "current_context": context,
+        "current_context": analysis["context"],
         "instrument_universe": list_portfolio_instrument_universe(portfolio_id),
         "detail_level": (
             "selected_run"

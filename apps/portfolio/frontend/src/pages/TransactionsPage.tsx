@@ -1,7 +1,7 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useSecurityCatalog } from '../lib/useSecurityCatalog'
 import { usePortfolioAccess } from '../components/PortfolioAccessProvider'
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
@@ -1084,6 +1084,8 @@ export default function TransactionsPage() {
   const [instruments, setInstruments] = useState<SharedInstrumentRecord[]>([])
   const [derivativeContracts, setDerivativeContracts] = useState<PortfolioDerivativeContractRecord[]>([])
   const [fxRates, setFxRates] = useState<PortfolioSharedFxRateRecord[]>([])
+  const [fxReferenceLoading, setFxReferenceLoading] = useState(false)
+  const [fxReferenceError, setFxReferenceError] = useState<string | null>(null)
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionWorkspaceResponse | null>(null)
   const [optionDeliveryLinks, setOptionDeliveryLinks] = useState<PortfolioOptionDeliveryLink[]>([])
   const [workspaceRequestedTransactionId, setWorkspaceRequestedTransactionId] = useState<string | null>(null)
@@ -1199,9 +1201,9 @@ export default function TransactionsPage() {
   }
   const selectedTransactionId = searchParams.get('transaction_id') ?? ''
 
-  function patchSearchParams(
+  const patchSearchParams = useCallback((
     patch: Record<string, string | null | undefined>,
-  ) {
+  ) => {
     const next = new URLSearchParams(searchParams)
     for (const [key, value] of Object.entries(patch)) {
       if (value == null || value === '') {
@@ -1210,8 +1212,8 @@ export default function TransactionsPage() {
         next.set(key, value)
       }
     }
-    setSearchParams(next, { replace: true })
-  }
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     transactionCaptureDraftFilesRef.current = captureDraftFiles
@@ -1225,6 +1227,7 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     setPendingDeleteTransaction(null)
     setDeleteError(null)
     setDeletingTransaction(false)
@@ -1242,6 +1245,7 @@ export default function TransactionsPage() {
       setMetaLoading(false)
       return () => {
         cancelled = true
+        controller.abort()
       }
     }
 
@@ -1255,12 +1259,11 @@ export default function TransactionsPage() {
     setMetadataError(null)
 
     Promise.all([
-      getPortfolioAccounts(portfolioId),
-      getPortfolioInstruments(portfolioId),
-      getPortfolioDerivativeContracts(portfolioId),
-      getPortfolioFxRates(portfolioId),
+      getPortfolioAccounts(portfolioId, controller.signal),
+      getPortfolioInstruments(portfolioId, controller.signal),
+      getPortfolioDerivativeContracts(portfolioId, controller.signal),
     ])
-      .then(([accountsResponse, instrumentsResponse, derivativeResponse, fxRatesResponse]) => {
+      .then(([accountsResponse, instrumentsResponse, derivativeResponse]) => {
         if (cancelled) {
           return
         }
@@ -1268,7 +1271,6 @@ export default function TransactionsPage() {
         setAccounts(accountsResponse.accounts)
         setInstruments(instrumentsResponse.instruments)
         setDerivativeContracts(derivativeResponse.derivative_contracts)
-        setFxRates(fxRatesResponse.rates)
         setForm(buildInitialFormState(accountsResponse.accounts))
         setMetadataError(null)
       })
@@ -1285,6 +1287,7 @@ export default function TransactionsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -1392,6 +1395,7 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
 
     if (!portfolioId) {
       setTransactionsWorkspace(null)
@@ -1401,6 +1405,7 @@ export default function TransactionsPage() {
       setLoadingTransactions(false)
       return () => {
         cancelled = true
+        controller.abort()
       }
     }
 
@@ -1411,7 +1416,7 @@ export default function TransactionsPage() {
       getPortfolioTransactionsWorkspace(portfolioId, {
         ...filters,
         transaction_id: selectedTransactionId || undefined,
-      }),
+      }, controller.signal),
       getPortfolioOptionDeliveryLinks(portfolioId),
     ])
       .then(([response, deliveryLinksResponse]) => {
@@ -1435,6 +1440,7 @@ export default function TransactionsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [
     portfolioId,
@@ -1479,6 +1485,24 @@ export default function TransactionsPage() {
     counterpartyAccounts[0] ??
     null
   const isFxConversion = isFxConversionTransaction(form.transaction_type)
+  useEffect(() => {
+    if (!portfolioId || !drawerOpen || !isFxConversion) {
+      setFxReferenceLoading(false)
+      setFxReferenceError(null)
+      return
+    }
+    let cancelled = false
+    const controller = new AbortController()
+    setFxReferenceLoading(true)
+    setFxReferenceError(null)
+    getPortfolioFxRates(portfolioId, controller.signal)
+      .then((response) => { if (!cancelled) setFxRates(response.rates) })
+      .catch((error) => {
+        if (!cancelled) setFxReferenceError(error instanceof Error ? error.message : 'FX reference unavailable.')
+      })
+      .finally(() => { if (!cancelled) setFxReferenceLoading(false) })
+    return () => { cancelled = true; controller.abort() }
+  }, [portfolioId, drawerOpen, isFxConversion])
   const shouldRequireAsset = form.asset_domain !== 'cash'
   const shouldAllowRegistryInstrument = form.asset_domain === 'security'
   const shouldAllowDerivativeContract = form.asset_domain === 'derivative'
@@ -1658,7 +1682,7 @@ export default function TransactionsPage() {
           form.transaction_type,
           instrument,
           selectedAccount,
-          selectedAccount?.currency,
+          null,
           form.transfer_object_type,
         ),
       )
@@ -1687,10 +1711,19 @@ export default function TransactionsPage() {
     selectedAccount,
     selectedAccount?.currency,
   ])
+  function accountCurrencyMismatch(currency: string, verified = true) {
+    const accountCurrency = selectedAccount?.currency
+    if (!verified || !accountCurrency || currency.toUpperCase() === accountCurrency.toUpperCase()) return null
+    return fcnLabel(
+      `Current account: ${accountCurrency}. Select a ${currency} securities account.`,
+      `当前账户为 ${accountCurrency}，请切换至 ${currency} 证券账户。`,
+    )
+  }
   const securityOptions = [
     ...filteredInstrumentOptions.map((instrument) => ({
       key: instrument.instrument_id, symbol: primaryIdentifier(instrument),
       name: instrument.instrument_name, currency: instrument.currency,
+      disabledReason: accountCurrencyMismatch(instrument.currency),
       instrument, catalogResult: null as SecurityCatalogResult | null,
     })),
     ...catalog.results.flatMap((item) => {
@@ -1698,12 +1731,13 @@ export default function TransactionsPage() {
       if (existing && filteredInstrumentOptions.some((instrument) => instrument.instrument_id === existing.instrument_id)) return []
       const eligible = existing ?? item
       if (!isSelectableInstrument(form.transaction_type, eligible, selectedAccount,
-        existing || item.currency_verified ? selectedAccount?.currency : null, form.transfer_object_type)) return []
+        null, form.transfer_object_type)) return []
       return [{
         key: existing?.instrument_id ?? `${item.instrument_type}:${item.catalog_provider}:${item.catalog_symbol}`,
         symbol: existing ? primaryIdentifier(existing) : item.symbol,
         name: existing?.instrument_name ?? item.name,
-        currency: existing?.currency ?? `${item.exchange_label} · ${item.currency_verified ? item.currency : fcnLabel('Currency to be verified', '币种待核实')}`,
+        currency: existing?.currency ?? `${item.exchange_label} · ${item.currency}${item.currency_verified ? '' : fcnLabel(' (Currency to be verified)', '（币种待核实）')}`,
+        disabledReason: accountCurrencyMismatch(eligible.currency, Boolean(existing) || item.currency_verified),
         instrument: existing ?? null, catalogResult: existing ? null : item,
       }]
     }),
@@ -1806,13 +1840,14 @@ export default function TransactionsPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     const instrumentId = selectedInstrument.instrument_id
     const tradeDate = form.trade_date
     const quoteKey = `${instrumentId}:${tradeDate}`
     setHistoricalQuoteLoading(true)
     setHistoricalQuoteError(null)
 
-    getPortfolioTransactionExecutionQuote(portfolioId, instrumentId, tradeDate)
+    getPortfolioTransactionExecutionQuote(portfolioId, instrumentId, tradeDate, controller.signal)
       .then((response) => {
         if (cancelled) {
           return
@@ -1924,6 +1959,7 @@ export default function TransactionsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [
     drawerOpen,
@@ -1956,6 +1992,7 @@ export default function TransactionsPage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     const positionReferenceId = selectedPositionReferenceId
     const positionKind =
       form.asset_domain === 'derivative' ? 'derivative_contract' : 'instrument'
@@ -1971,7 +2008,7 @@ export default function TransactionsPage() {
       as_of_date: tradeDate,
       trade_time: form.trade_time || undefined,
       exclude_transaction_id: editingTransactionId || undefined,
-    })
+    }, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setPositionPreview(response)
@@ -2048,6 +2085,7 @@ export default function TransactionsPage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [
     drawerOpen,
@@ -2097,7 +2135,7 @@ export default function TransactionsPage() {
   }
 
   async function selectSecurityOption(option: typeof securityOptions[number]) {
-    if (materializingSecurityRef.current) return
+    if (materializingSecurityRef.current || option.disabledReason) return
     setFormError(null)
     const registered = option.instrument
     const providerSymbol = registered?.identifiers.find((identifier) =>
@@ -3912,24 +3950,24 @@ export default function TransactionsPage() {
   const relatedPositionLots = transactionsWorkspace?.related_position_lots ?? []
   const relatedOptionObligations = transactionsWorkspace?.related_option_obligations ?? []
   const selectedTransactionChangeLog = transactionsWorkspace?.change_log ?? []
-  const visibleTransactions = transactionsWorkspace?.transactions ?? []
-  const visibleTransactionById = new Map(
+  const visibleTransactions = useMemo(() => transactionsWorkspace?.transactions ?? [], [transactionsWorkspace?.transactions])
+  const visibleTransactionById = useMemo(() => new Map(
     visibleTransactions.map((transaction) => [transaction.transaction_id, transaction]),
-  )
-  const optionDeliveryLinkByTransactionId = new Map(
+  ), [visibleTransactions])
+  const optionDeliveryLinkByTransactionId = useMemo(() => new Map(
     optionDeliveryLinks.flatMap((link) => [
       [link.option_transaction_id, link] as const,
       [link.stock_transaction_id, link] as const,
     ]),
-  )
-  const displayedTransactions = visibleTransactions.filter((transaction) => {
+  ), [optionDeliveryLinks])
+  const displayedTransactions = useMemo(() => visibleTransactions.filter((transaction) => {
     const deliveryLink = optionDeliveryLinkByTransactionId.get(transaction.transaction_id)
     return !(
       deliveryLink &&
       deliveryLink.stock_transaction_id === transaction.transaction_id &&
       visibleTransactionById.has(deliveryLink.option_transaction_id)
     )
-  })
+  }), [visibleTransactions, optionDeliveryLinkByTransactionId, visibleTransactionById])
   const selectedOptionDeliveryLink = selectedTransaction
     ? optionDeliveryLinkByTransactionId.get(selectedTransaction.transaction_id) ?? null
     : null
@@ -4100,6 +4138,211 @@ export default function TransactionsPage() {
       ) : null}
     </label>
   )
+
+  const ledgerPanel = useMemo(() => (
+            <section className={`transaction-ledger-panel ${loadingTransactions ? 'transaction-ledger-panel-refreshing' : ''}`}>
+              <HorizontalTableScroll className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
+                <table className="transactions-table transaction-ledger-table">
+                  <thead>
+                    <tr>
+                      <th>Trade</th>
+                      <th>Activity</th>
+                      <th>Account / Settlement</th>
+                      <th>Quantity / Unit Price</th>
+                      <th>Gross / Net Cash</th>
+                      <th>Recognition</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedTransactions.map((transaction) => {
+                      const timeMeta = tradeTimeLabel(
+                        transaction.trade_time,
+                        transaction.trade_timezone,
+                        transaction.trade_time_is_estimated,
+                      )
+                      const deliveryLink = optionDeliveryLinkByTransactionId.get(
+                        transaction.transaction_id,
+                      )
+                      const linkedStockTransaction =
+                        deliveryLink?.option_transaction_id === transaction.transaction_id
+                          ? visibleTransactionById.get(deliveryLink.stock_transaction_id) ?? null
+                          : null
+                      const cashTransaction = linkedStockTransaction ?? transaction
+                      const isSelected =
+                        transaction.transaction_id === selectedTransactionId ||
+                        linkedStockTransaction?.transaction_id === selectedTransactionId
+                      return (
+                        <tr
+                          key={transaction.transaction_id}
+                          className={isSelected ? 'transaction-row-active' : ''}
+                          tabIndex={0}
+                          aria-selected={isSelected}
+                          onClick={() => patchSearchParams({ transaction_id: transaction.transaction_id })}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              patchSearchParams({ transaction_id: transaction.transaction_id })
+                            }
+                          }}
+                        >
+                          <td>
+                            <div className="holding-name-stack">
+                              <strong>{transaction.trade_date}</strong>
+                              <span className="holding-secondary">
+                                {timeMeta.primary} · {timeMeta.secondary}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="holding-name-cell transaction-activity-cell">
+                            <div className="holding-name-stack">
+                              <span>
+                                <span className="transaction-type-pill">
+                                  {transactionActivityLabel(
+                                    transaction.transaction_type,
+                                    transaction.asset_subtype,
+                                    transaction.option_action,
+                                    transaction.lifecycle_event_type,
+                                  )}
+                                </span>
+                              </span>
+                              <span className="holding-secondary">
+                                {transaction.asset_domain === 'cash'
+                                  ? 'Cash & Operations'
+                                  : transaction.asset_domain === 'derivative'
+                                    ? formatLabel(transaction.asset_subtype || 'derivative')
+                                    : `Security · ${formatLabel(transaction.asset_subtype || 'other')}`}
+                              </span>
+                              {transaction.instrument_ref ? (
+                                <>
+                                  <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
+                                  <span className="holding-secondary" translate="no">{transaction.instrument_ref.instrument_name}</span>
+                                </>
+                              ) : transaction.derivative_contract ? (
+                                <>
+                                  <strong translate="no">{transaction.derivative_contract.contract_name}</strong>
+                                  <span className="holding-secondary">
+                                    {transaction.derivative_contract.derivative_contract_id}
+                                  </span>
+                                </>
+                              ) : isFxConversionTransaction(transaction.transaction_type) ? (
+                                <span className="holding-secondary">
+                                  {transaction.currency} → {accountCurrencyById[transaction.counterparty_account_id || ''] || '—'}
+                                </span>
+                              ) : (
+                                <span className="holding-secondary">{formatLabel(transaction.flow_scope)} cash</span>
+                              )}
+                              {(transaction.asset_deliveries ?? []).map((leg, index) => <span key={index} className="holding-secondary" translate="no">
+                                {fcnLabel('FCN delivery', 'FCN 接票')} · {instruments.find(item => item.instrument_id === leg.instrument_id)?.instrument_name ?? leg.instrument_id} · {formatQuantity(Number(leg.quantity))} · {accountNameById[leg.account_id] ?? leg.account_id}
+                              </span>)}
+                              {deliveryLink?.option_transaction_id === transaction.transaction_id ? (
+                                <span className="holding-secondary">
+                                  Stock delivery · {formatLabel(linkedStockTransaction?.transaction_type ?? 'stock')} ·{' '}
+                                  {linkedStockTransaction?.instrument_ref
+                                    ? primaryIdentifier(linkedStockTransaction.instrument_ref)
+                                    : deliveryLink.underlying_instrument_id}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="transaction-account-cell">
+                            <div className="holding-name-stack">
+                              <Link
+                                className="table-inline-link"
+                                to={transactionAccountHref(portfolioId, transaction.account.account_id)}
+                                onClick={stopTransactionRowSelection}
+                               translate="no">
+                                {transaction.account.account_name}
+                              </Link>
+                              <span className="holding-secondary">
+                                {transaction.counterparty_account_id
+                                  ? `Counterparty ${accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}`
+                                  : transaction.settlement_cash_account
+                                    ? `Settle via ${transaction.settlement_cash_account.account_name}`
+                                    : formatLabel(transaction.account.account_category)}
+                              </span>
+                              {linkedStockTransaction ? (
+                                <span className="holding-secondary">
+                                  Delivery via {linkedStockTransaction.account.account_name}
+                                  {linkedStockTransaction.settlement_cash_account
+                                    ? ` / ${linkedStockTransaction.settlement_cash_account.account_name}`
+                                    : ''}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="transaction-number-cell">
+                            <div className="holding-name-stack">
+                              <span>{transaction.quantity == null ? '—' : formatQuantity(transaction.quantity)}</span>
+                              <span className="holding-secondary">
+                                {transaction.price != null ? formatUnitPrice(transaction.price, transaction.currency) : 'No unit price'}
+                              </span>
+                              {linkedStockTransaction ? (
+                                <span className="holding-secondary">
+                                  Delivery {formatQuantity(linkedStockTransaction.quantity ?? 0)} @{' '}
+                                  {linkedStockTransaction.price == null
+                                    ? '—'
+                                    : formatUnitPrice(
+                                        linkedStockTransaction.price,
+                                        linkedStockTransaction.currency,
+                                      )}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="transaction-number-cell">
+                            <div className="holding-name-stack">
+                              <span>
+                                {formatCurrency(
+                                  cashTransaction.gross_amount,
+                                  cashTransaction.currency,
+                                )}
+                              </span>
+                              <span className={cashTransaction.net_cash_effect != null && cashTransaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
+                                Net{' '}
+                                {formatSignedCurrency(
+                                  cashTransaction.net_cash_effect,
+                                  cashTransaction.currency,
+                                )}
+                              </span>
+                              {cashTransaction.fees || cashTransaction.taxes ? (
+                                <span className="holding-secondary">
+                                  Fee / tax{' '}
+                                  {formatCurrency(
+                                    cashTransaction.fees + cashTransaction.taxes,
+                                    cashTransaction.currency,
+                                  )}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="holding-name-stack">
+                              <span>Settle {cashTransaction.settlement_date}</span>
+                              <span className="holding-secondary">
+                                {cashTransaction.position_effective_date
+                                  ? `Position EOD ${cashTransaction.position_effective_date}`
+                                  : `Economic ${cashTransaction.economic_date}`}
+                              </span>
+                              <span className="holding-secondary transaction-id-caption">
+                                {transaction.transaction_id}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {!displayedTransactions.length ? (
+                      <tr>
+                        <td colSpan={6} className="empty-state-cell">No transactions match these filters.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </HorizontalTableScroll>
+            </section>
+  ), [loadingTransactions, displayedTransactions, optionDeliveryLinkByTransactionId,
+    visibleTransactionById, selectedTransactionId, patchSearchParams, accountCurrencyById,
+    instruments, accountNameById, language])
 
   return (
     <PortfolioWorkspaceLayout
@@ -4403,206 +4646,7 @@ export default function TransactionsPage() {
 
         {!ledgerError && transactionsWorkspace ? (
           <div className="transaction-workbench-grid">
-            <section className={`transaction-ledger-panel ${loadingTransactions ? 'transaction-ledger-panel-refreshing' : ''}`}>
-              <HorizontalTableScroll className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
-                <table className="transactions-table transaction-ledger-table">
-                  <thead>
-                    <tr>
-                      <th>Trade</th>
-                      <th>Activity</th>
-                      <th>Account / Settlement</th>
-                      <th>Quantity / Unit Price</th>
-                      <th>Gross / Net Cash</th>
-                      <th>Recognition</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedTransactions.map((transaction) => {
-                      const timeMeta = tradeTimeLabel(
-                        transaction.trade_time,
-                        transaction.trade_timezone,
-                        transaction.trade_time_is_estimated,
-                      )
-                      const deliveryLink = optionDeliveryLinkByTransactionId.get(
-                        transaction.transaction_id,
-                      )
-                      const linkedStockTransaction =
-                        deliveryLink?.option_transaction_id === transaction.transaction_id
-                          ? visibleTransactionById.get(deliveryLink.stock_transaction_id) ?? null
-                          : null
-                      const cashTransaction = linkedStockTransaction ?? transaction
-                      const isSelected =
-                        transaction.transaction_id === selectedTransactionId ||
-                        linkedStockTransaction?.transaction_id === selectedTransactionId
-                      return (
-                        <tr
-                          key={transaction.transaction_id}
-                          className={isSelected ? 'transaction-row-active' : ''}
-                          tabIndex={0}
-                          aria-selected={isSelected}
-                          onClick={() => patchSearchParams({ transaction_id: transaction.transaction_id })}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
-                              patchSearchParams({ transaction_id: transaction.transaction_id })
-                            }
-                          }}
-                        >
-                          <td>
-                            <div className="holding-name-stack">
-                              <strong>{transaction.trade_date}</strong>
-                              <span className="holding-secondary">
-                                {timeMeta.primary} · {timeMeta.secondary}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="holding-name-cell transaction-activity-cell">
-                            <div className="holding-name-stack">
-                              <span>
-                                <span className="transaction-type-pill">
-                                  {transactionActivityLabel(
-                                    transaction.transaction_type,
-                                    transaction.asset_subtype,
-                                    transaction.option_action,
-                                    transaction.lifecycle_event_type,
-                                  )}
-                                </span>
-                              </span>
-                              <span className="holding-secondary">
-                                {transaction.asset_domain === 'cash'
-                                  ? 'Cash & Operations'
-                                  : transaction.asset_domain === 'derivative'
-                                    ? formatLabel(transaction.asset_subtype || 'derivative')
-                                    : `Security · ${formatLabel(transaction.asset_subtype || 'other')}`}
-                              </span>
-                              {transaction.instrument_ref ? (
-                                <>
-                                  <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
-                                  <span className="holding-secondary" translate="no">{transaction.instrument_ref.instrument_name}</span>
-                                </>
-                              ) : transaction.derivative_contract ? (
-                                <>
-                                  <strong translate="no">{transaction.derivative_contract.contract_name}</strong>
-                                  <span className="holding-secondary">
-                                    {transaction.derivative_contract.derivative_contract_id}
-                                  </span>
-                                </>
-                              ) : isFxConversionTransaction(transaction.transaction_type) ? (
-                                <span className="holding-secondary">
-                                  {transaction.currency} → {accountCurrencyById[transaction.counterparty_account_id || ''] || '—'}
-                                </span>
-                              ) : (
-                                <span className="holding-secondary">{formatLabel(transaction.flow_scope)} cash</span>
-                              )}
-                              {(transaction.asset_deliveries ?? []).map((leg, index) => <span key={index} className="holding-secondary" translate="no">
-                                {fcnLabel('FCN delivery', 'FCN 接票')} · {instruments.find(item => item.instrument_id === leg.instrument_id)?.instrument_name ?? leg.instrument_id} · {formatQuantity(Number(leg.quantity))} · {accountNameById[leg.account_id] ?? leg.account_id}
-                              </span>)}
-                              {deliveryLink?.option_transaction_id === transaction.transaction_id ? (
-                                <span className="holding-secondary">
-                                  Stock delivery · {formatLabel(linkedStockTransaction?.transaction_type ?? 'stock')} ·{' '}
-                                  {linkedStockTransaction?.instrument_ref
-                                    ? primaryIdentifier(linkedStockTransaction.instrument_ref)
-                                    : deliveryLink.underlying_instrument_id}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="transaction-account-cell">
-                            <div className="holding-name-stack">
-                              <Link
-                                className="table-inline-link"
-                                to={transactionAccountHref(portfolioId, transaction.account.account_id)}
-                                onClick={stopTransactionRowSelection}
-                               translate="no">
-                                {transaction.account.account_name}
-                              </Link>
-                              <span className="holding-secondary">
-                                {transaction.counterparty_account_id
-                                  ? `Counterparty ${accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}`
-                                  : transaction.settlement_cash_account
-                                    ? `Settle via ${transaction.settlement_cash_account.account_name}`
-                                    : formatLabel(transaction.account.account_category)}
-                              </span>
-                              {linkedStockTransaction ? (
-                                <span className="holding-secondary">
-                                  Delivery via {linkedStockTransaction.account.account_name}
-                                  {linkedStockTransaction.settlement_cash_account
-                                    ? ` / ${linkedStockTransaction.settlement_cash_account.account_name}`
-                                    : ''}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="transaction-number-cell">
-                            <div className="holding-name-stack">
-                              <span>{transaction.quantity == null ? '—' : formatQuantity(transaction.quantity)}</span>
-                              <span className="holding-secondary">
-                                {transaction.price != null ? formatUnitPrice(transaction.price, transaction.currency) : 'No unit price'}
-                              </span>
-                              {linkedStockTransaction ? (
-                                <span className="holding-secondary">
-                                  Delivery {formatQuantity(linkedStockTransaction.quantity ?? 0)} @{' '}
-                                  {linkedStockTransaction.price == null
-                                    ? '—'
-                                    : formatUnitPrice(
-                                        linkedStockTransaction.price,
-                                        linkedStockTransaction.currency,
-                                      )}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="transaction-number-cell">
-                            <div className="holding-name-stack">
-                              <span>
-                                {formatCurrency(
-                                  cashTransaction.gross_amount,
-                                  cashTransaction.currency,
-                                )}
-                              </span>
-                              <span className={cashTransaction.net_cash_effect != null && cashTransaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
-                                Net{' '}
-                                {formatSignedCurrency(
-                                  cashTransaction.net_cash_effect,
-                                  cashTransaction.currency,
-                                )}
-                              </span>
-                              {cashTransaction.fees || cashTransaction.taxes ? (
-                                <span className="holding-secondary">
-                                  Fee / tax{' '}
-                                  {formatCurrency(
-                                    cashTransaction.fees + cashTransaction.taxes,
-                                    cashTransaction.currency,
-                                  )}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="holding-name-stack">
-                              <span>Settle {cashTransaction.settlement_date}</span>
-                              <span className="holding-secondary">
-                                {cashTransaction.position_effective_date
-                                  ? `Position EOD ${cashTransaction.position_effective_date}`
-                                  : `Economic ${cashTransaction.economic_date}`}
-                              </span>
-                              <span className="holding-secondary transaction-id-caption">
-                                {transaction.transaction_id}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                    {!displayedTransactions.length ? (
-                      <tr>
-                        <td colSpan={6} className="empty-state-cell">No transactions match these filters.</td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </HorizontalTableScroll>
-            </section>
+            {ledgerPanel}
 
             <aside className="transaction-inspector" aria-label="Selected transaction details">
               {selectedTransaction ? (
@@ -6648,8 +6692,8 @@ export default function TransactionsPage() {
                             <button
                               type="button"
                               key={option.key}
-                              title={`${option.symbol} · ${option.name} · ${option.currency}`}
-                              disabled={materializingSecurity}
+                              title={`${option.symbol} · ${option.name} · ${option.currency}${option.disabledReason ? ` · ${option.disabledReason}` : ''}`}
+                              disabled={materializingSecurity || Boolean(option.disabledReason)}
                               className="transaction-instrument-result"
                               onClick={() => void selectSecurityOption(option)}
                             >
@@ -6659,6 +6703,7 @@ export default function TransactionsPage() {
                               </div>
                               <span className="transaction-picker-meta">
                                 {option.currency}
+                                {option.disabledReason ? <span className="transaction-picker-constraint">{option.disabledReason}</span> : null}
                               </span>
                             </button>
                           ))}
@@ -7725,6 +7770,8 @@ export default function TransactionsPage() {
                 </div>
               ) : null}
 
+              {isFxConversion && fxReferenceLoading ? <div role="status">Loading FX reference…</div> : null}
+              {isFxConversion && fxReferenceError ? <div className="error-state">{fxReferenceError}</div> : null}
               {isFxConversion && sharedFxRate ? (
                 <div className="portfolio-detail-meta">
                   Shared spot reference: {sharedFxRate.base_currency}/{sharedFxRate.quote_currency}{' '}

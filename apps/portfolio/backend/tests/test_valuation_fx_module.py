@@ -83,6 +83,24 @@ def test_fx_rate_resolution_cache_reuses_one_boundary_lookup(monkeypatch) -> Non
     assert calls == 1
 
 
+def test_amount_conversions_share_only_same_dated_currency_resolution(monkeypatch):
+    calls = []
+
+    def resolve(**kwargs):
+        calls.append((kwargs["as_of_date"], kwargs["base_currency"], kwargs["quote_currency"]))
+        return {"rate": 7.1, "stale": True}
+
+    monkeypatch.setattr(valuation_fx, "resolve_fx_rate_on", resolve)
+    kwargs = {"as_of_date": date(2026, 9, 8), "from_currency": "USD", "to_currency": "CNY",
+              "direct_fx_instruments": {}, "instrument_detail_cache": {},
+              "instrument_detail_loader": lambda _: None, "resolution_cache": {}}
+    assert valuation_fx.convert_amount_on(10, **kwargs) == (71, True)
+    assert valuation_fx.convert_amount_on(20, **kwargs) == (142, True)
+    valuation_fx.convert_amount_on(20, **{**kwargs, "as_of_date": date(2026, 9, 7)})
+    valuation_fx.convert_amount_on(20, **{**kwargs, "from_currency": "HKD"})
+    assert len(calls) == 3
+
+
 @pytest.mark.parametrize("preloaded", [False, True])
 def test_direct_fx_boundaries_reuse_local_details_without_mutating_source(monkeypatch, preloaded):
     source = _fx_detail("fx-usd-hkd", "HKD", [("2026-08-03", 7.8), ("2026-08-04", 7.9)])

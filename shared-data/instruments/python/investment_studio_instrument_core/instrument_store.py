@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import case, delete, func, or_, select, text
+from sqlalchemy import and_, case, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -1497,51 +1497,38 @@ def _latest_market_data_for_instruments(
     if not instrument_ids:
         return {}
 
-    ranked = (
-        select(
-            InstrumentMarketData.instrument_id.label("instrument_id"),
-            InstrumentMarketData.metric_family.label("metric_family"),
-            InstrumentMarketData.quote_basis.label("quote_basis"),
-            InstrumentMarketData.as_of_date.label("as_of_date"),
-            InstrumentMarketData.value.label("value"),
-            InstrumentMarketData.currency.label("currency"),
-            InstrumentMarketData.price_unit.label("price_unit"),
-            InstrumentMarketData.price_scale.label("price_scale"),
-            InstrumentMarketData.provider.label("provider"),
-            InstrumentMarketData.status.label("status"),
-            InstrumentMarketData.nav_lineage_kind.label("nav_lineage_kind"),
-            InstrumentMarketData.nav_derivation_method_version.label(
-                "nav_derivation_method_version"
-            ),
-            InstrumentMarketData.nav_derivation_anchor_date.label(
-                "nav_derivation_anchor_date"
-            ),
-            InstrumentMarketData.nav_lineage_evidence_json.label(
-                "nav_lineage_evidence_json"
-            ),
-            func.row_number()
-            .over(
-                partition_by=(
-                    InstrumentMarketData.instrument_id,
-                    InstrumentMarketData.metric_family,
-                    InstrumentMarketData.quote_basis,
-                    InstrumentMarketData.currency,
-                    InstrumentMarketData.price_unit,
-                    InstrumentMarketData.price_scale,
-                ),
-                order_by=(
-                    InstrumentMarketData.as_of_date.desc(),
-                    InstrumentMarketData.instrument_market_data_id.desc(),
-                ),
-            )
-            .label("row_number"),
-        )
-        .where(InstrumentMarketData.instrument_id.in_(instrument_ids))
-        .subquery()
+    # Aggregate the narrow series key before fetching values/lineage. Ranking
+    # every historical payload forces a wide sort for a directory-sized read.
+    series_columns = (
+        InstrumentMarketData.instrument_id,
+        InstrumentMarketData.metric_family,
+        InstrumentMarketData.quote_basis,
+        InstrumentMarketData.currency,
+        InstrumentMarketData.price_unit,
+        InstrumentMarketData.price_scale,
     )
-    rows = session.execute(
-        select(ranked).where(ranked.c.row_number == 1)
-    ).mappings()
+    latest_dates = select(
+        *series_columns,
+        func.max(InstrumentMarketData.as_of_date).label("as_of_date"),
+    ).where(InstrumentMarketData.instrument_id.in_(instrument_ids)).group_by(
+        *series_columns,
+    ).subquery()
+    # The persisted unique key includes instrument/family/basis/currency/date,
+    # so each latest series date identifies exactly one row (no arbitrary tie).
+    rows = session.execute(select(
+        *series_columns,
+        InstrumentMarketData.as_of_date,
+        InstrumentMarketData.value,
+        InstrumentMarketData.provider,
+        InstrumentMarketData.status,
+        InstrumentMarketData.nav_lineage_kind,
+        InstrumentMarketData.nav_derivation_method_version,
+        InstrumentMarketData.nav_derivation_anchor_date,
+        InstrumentMarketData.nav_lineage_evidence_json,
+    ).join(latest_dates, and_(
+        *(column == latest_dates.c[column.key] for column in series_columns),
+        InstrumentMarketData.as_of_date == latest_dates.c.as_of_date,
+    ))).mappings()
     result: dict[str, list[dict[str, object]]] = {instrument_id: [] for instrument_id in instrument_ids}
     for row in rows:
         result[str(row["instrument_id"])].append(
@@ -1978,6 +1965,36 @@ def get_instrument_event_details(
         instrument_id: details_by_id.get(instrument_id)
         for instrument_id in normalized_ids
     }
+
+
+def _serialize_metadata(item: Instrument) -> dict[str, object]:
+    """Registry identity/configuration only; absence of quotes is not coverage."""
+    metadata = _serialize_record(_instrument_to_store_dict(
+        item, market_data=[], include_fund_nav_ledger=False,
+        include_corporate_actions=False,
+    ))
+    for field in ("latest_market_data", "coverage_state", "corporate_actions"):
+        metadata.pop(field)
+    return metadata
+
+
+def get_instrument_metadata(
+    session_factory: SessionFactory,
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    """Read identities/settings without querying quotes, histories or event ledgers."""
+    normalized_ids = list(dict.fromkeys(
+        str(value).strip() for value in instrument_ids if str(value or "").strip()
+    ))
+    if not normalized_ids:
+        return {}
+    with session_factory() as session:
+        targets = session.scalars(select(Instrument).options(
+            selectinload(Instrument.identifiers),
+            selectinload(Instrument.broker_identifiers),
+        ).where(Instrument.instrument_id.in_(normalized_ids))).all()
+        records = {target.instrument_id: _serialize_metadata(target) for target in targets}
+    return {instrument_id: records.get(instrument_id) for instrument_id in normalized_ids}
 
 
 def get_instrument_summaries(

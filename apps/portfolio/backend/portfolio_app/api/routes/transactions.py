@@ -20,6 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from sqlalchemy.exc import IntegrityError
+from studio_runtime import operation
 
 from portfolio_app.api.assemblers import (
     serialize_transactions,
@@ -87,7 +88,7 @@ from portfolio_app.services.ledger import (
 )
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
-    get_registry_instrument,
+    get_registry_instrument_metadata,
     list_registry_instruments,
 )
 from portfolio_app.services.security_catalog import (
@@ -211,7 +212,7 @@ def _idempotency_replay_or_error(
 
 def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
     try:
-        instrument = get_registry_instrument(instrument_id)
+        instrument = get_registry_instrument_metadata([instrument_id]).get(instrument_id)
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -1868,7 +1869,8 @@ def search_portfolio_securities(
     if not q.strip():
         raise HTTPException(status_code=422, detail="请输入证券代码或名称")
     try:
-        return search_catalog(q.strip(), limit)
+        with operation("security_catalog_search"):
+            return search_catalog(q.strip(), limit)
     except SecurityCatalogError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
@@ -1894,7 +1896,8 @@ def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListRespons
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        instruments = list_registry_instruments()
+        with operation("transaction_instrument_directory"):
+            instruments = list_registry_instruments()
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -2362,19 +2365,25 @@ def get_transaction_workspace(
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
-    accounts = list_accounts(portfolio_id)
-    account_lookup = {item["account_id"]: item for item in accounts}
-    all_transactions = list_transactions(portfolio_id)
-    filtered_records = list_transactions(
-        portfolio_id,
-        account_id=account_id,
-        asset_domain=asset_domain,
-        asset_subtype=asset_subtype,
-        transaction_type=transaction_type,
-        position_reference_id=position_reference_id,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    with operation("transaction_workspace_read"):
+        accounts = list_accounts(portfolio_id)
+        account_lookup = {item["account_id"]: item for item in accounts}
+        all_transactions = list_transactions(portfolio_id)
+        filtered_records = all_transactions
+        if any(value is not None for value in (
+            account_id, asset_domain, asset_subtype, transaction_type,
+            position_reference_id, start_date, end_date,
+        )):
+            filtered_records = list_transactions(
+                portfolio_id,
+                account_id=account_id,
+                asset_domain=asset_domain,
+                asset_subtype=asset_subtype,
+                transaction_type=transaction_type,
+                position_reference_id=position_reference_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
     delivery_links = list_option_delivery_links(portfolio_id)
     delivery_link_by_transaction_id = {
         transaction_id: link
@@ -2484,12 +2493,13 @@ def get_transaction_workspace(
         if selected_delivery_link is not None
         else {selected_transaction_id or ""}
     )
-    all_ledger_postings = list_ledger_postings(
-        portfolio_id,
-        all_transactions,
-        account_cost_methods=account_cost_methods,
-        account_currency_map=account_currency_map,
-    )
+    with operation("transaction_workspace_ledger"):
+        all_ledger_postings = list_ledger_postings(
+            portfolio_id,
+            all_transactions,
+            account_cost_methods=account_cost_methods,
+            account_currency_map=account_currency_map,
+        )
     ledger_postings_raw = (
         [
             posting
@@ -2575,20 +2585,21 @@ def get_transaction_workspace(
         related_position_lots_raw,
         base_currency=str(portfolio["base_currency"]),
     )
-    cash_fx_impacts = (
-        build_transaction_cash_fx_impacts(
-            transaction_ids={
-                transaction_id
-                for transaction_id in selected_ledger_transaction_ids
-                if transaction_id
-            },
-            postings=all_ledger_postings,
-            as_of_date=date.today(),
-            base_currency=str(portfolio["base_currency"]),
+    with operation("transaction_workspace_cash_fx"):
+        cash_fx_impacts = (
+            build_transaction_cash_fx_impacts(
+                transaction_ids={
+                    transaction_id
+                    for transaction_id in selected_ledger_transaction_ids
+                    if transaction_id
+                },
+                postings=all_ledger_postings,
+                as_of_date=date.today(),
+                base_currency=str(portfolio["base_currency"]),
+            )
+            if selected_transaction_id
+            else []
         )
-        if selected_transaction_id
-        else []
-    )
 
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,

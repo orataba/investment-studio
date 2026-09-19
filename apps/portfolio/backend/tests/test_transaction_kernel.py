@@ -272,7 +272,7 @@ def test_crypto_research_assets_do_not_enter_portfolio_transaction_choices(clien
     ids = {item["instrument_core"]["instrument_id"] for item in response.json()["instruments"]}
     assert "btcusd" not in ids
     assert "fund-us-agg" in ids
-    monkeypatch.setattr(transactions, "get_registry_instrument", lambda _: {"instrument_id": "btcusd", "instrument_type": "crypto"})
+    monkeypatch.setattr(transactions, "get_registry_instrument_metadata", lambda _: {"btcusd": {"instrument_id": "btcusd", "instrument_type": "crypto"}})
     with pytest.raises(HTTPException, match="Portfolio transactions are not supported") as error:
         transactions._load_instrument_ref("btcusd")
     assert error.value.status_code == 400

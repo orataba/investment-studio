@@ -982,25 +982,22 @@ def holdings_workspace(
     def build_analytics_workspace() -> dict[str, object]:
         # Read inputs after the cache captures its source generation. Otherwise
         # a worker could publish a newer generation before this builder starts.
-        workspace = _build_holdings_analytics_workspace(
+        return _build_holdings_analytics_workspace(
             _require_portfolio(resolved_portfolio_id),
             resolved_as_of_date=resolved_as_of_date,
             transactions=list_transactions(resolved_portfolio_id),
             risk_policy=risk_policy or {},
-            include_details=include_details,
+            include_details=True,
         )
-        return workspace if include_details else _compact_holdings_workspace(workspace)
 
-    response = (
-        build_analytics_workspace()
-        if include_details
-        else get_cached_holdings_analytics_workspace(
-            resolved_portfolio_id,
-            as_of_date=resolved_as_of_date,
-            risk_policy=risk_policy or {},
-            analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
-            builder=build_analytics_workspace,
-        )
+    # Keep the complete calculation once for Holdings, Risk and tail-risk.
+    # Presentation compaction happens on the isolated response copy below.
+    response = get_cached_holdings_analytics_workspace(
+        resolved_portfolio_id,
+        as_of_date=resolved_as_of_date,
+        risk_policy=risk_policy or {},
+        analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
+        builder=build_analytics_workspace,
     )
     # Operational tasks and derivative observations can change independently
     # of the accounting snapshot. Refresh them outside the analytics cache.

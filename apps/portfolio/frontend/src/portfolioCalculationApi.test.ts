@@ -35,6 +35,43 @@ describe('background portfolio calculation requests', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('releases a cancelled consumer without cancelling another visible consumer', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(pendingResponse('2'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ portfolio_id: '3' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = getPortfolioPerformance('3', {}, firstController.signal)
+    const second = getPortfolioPerformance('3', {}, secondController.signal)
+    const rejected = expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(1)
+    firstController.abort()
+    await rejected
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(second).resolves.toEqual({ portfolio_id: '3' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops pending retries when the last consumer leaves and allows a new request', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(pendingResponse('10'))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const request = getPortfolioPerformance('3', {}, controller.signal)
+    const rejected = expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(1)
+    controller.abort()
+    await rejected
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+    await expect(getPortfolioPerformance('3')).resolves.toEqual({})
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('shares the pending request beyond the result TTL and starts that TTL on completion', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(pendingResponse('70'))
