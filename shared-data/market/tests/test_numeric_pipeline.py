@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,55 @@ def make_store(tmp_path,name):
     store=NumericStore(MarketSettings(f"sqlite:///{tmp_path/(name+'.db')}",tmp_path/name))
     store.create_schema_for_testing()
     return store
+
+
+def test_public_collection_targets_do_not_require_business_registration(tmp_path, monkeypatch):
+    closed = []
+    statements = []
+    def execute(query):
+        statements.append(str(query))
+        return SimpleNamespace(mappings=lambda: [dict(symbol='SPY', instrument_type='etf')])
+    store = SimpleNamespace(engine=SimpleNamespace(connect=lambda: nullcontext(SimpleNamespace(execute=execute))),
+                            close=lambda: closed.append(True))
+    monkeypatch.setattr(pipeline, 'NumericStore', lambda settings: store)
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS',
+                      json.dumps({' spy ': 'etf', '600900.SS': 'equity', 'APLE': 'equity'}))
+    targets = pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path))
+    assert targets == [dict(symbol='600900.SS', instrument_type='equity'),
+                       dict(symbol='APLE', instrument_type='equity'), dict(symbol='SPY', instrument_type='etf')]
+    assert len(statements) == 1 and statements[0].startswith('SELECT DISTINCT')
+    assert closed == [True]
+
+    # Both scheduled acquisition paths consume the combined identities; each
+    # market-close run still only requests its own symbols.
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ROLE', 'collector')
+    acquired = []
+    monkeypatch.setattr(pipeline, 'collect', lambda settings, **kwargs: acquired.append(kwargs) or {'status': 'ready'})
+    monkeypatch.setattr(pipeline, 'publish_pending', lambda settings: {'status': 'ready'})
+    result = pipeline.run(MarketSettings('sqlite://', tmp_path), 'registered-prices', market='cn')
+    assert result['status'] == 'ready'
+    assert acquired[0]['symbols'] == ['600900.SS']
+
+
+@pytest.mark.parametrize('configured', ['broken', '[]', '{"": "equity"}',
+                                      '{"SPY": "crypto"}', '{"SPY": {"weight": 0.5}}'])
+def test_invalid_public_targets_fail_before_collection(tmp_path, monkeypatch, configured):
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS', configured)
+    monkeypatch.setattr(pipeline, 'NumericStore', lambda settings: pytest.fail('invalid configuration must not open storage'))
+    with pytest.raises(ValueError, match='INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS'):
+        pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path))
+
+
+def test_public_targets_default_to_registry_and_reject_type_conflicts(tmp_path, monkeypatch):
+    registry = [dict(symbol='SPY', instrument_type='etf')]
+    store = SimpleNamespace(engine=SimpleNamespace(connect=lambda: nullcontext(SimpleNamespace(
+        execute=lambda query: SimpleNamespace(mappings=lambda: registry)))), close=lambda: None)
+    monkeypatch.setattr(pipeline, 'NumericStore', lambda settings: store)
+    monkeypatch.delenv('INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS', raising=False)
+    assert pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path)) == registry
+    monkeypatch.setenv('INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS', '{"SPY": "equity"}')
+    with pytest.raises(ValueError, match='Conflicting public collection instrument types for SPY'):
+        pipeline.registered_instruments(MarketSettings('sqlite://', tmp_path))
 
 
 def test_public_macro_response_is_archived_and_published_without_json_payload(tmp_path):

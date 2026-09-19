@@ -16,7 +16,22 @@ from .numeric.store import NumericStore,serializable
 
 
 def registered_instruments(settings):
-    """Read identities only; private positions and NAV never enter shared bundles."""
+    """Combine public collection requests with this installation's registry.
+
+    Other installations can request public coverage without creating business
+    instruments, lists or positions on the collector.
+    """
+    option = 'INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS'
+    try:
+        additional = json.loads(os.environ.get(option, '{}'))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'{option} must be a JSON object of FMP symbol to instrument type') from exc
+    if not isinstance(additional, dict) or any(
+        not isinstance(symbol, str) or not symbol.strip()
+        or kind not in ('equity', 'etf', 'public_fund', 'index')
+        for symbol, kind in additional.items()
+    ):
+        raise ValueError(f'{option} requires nonempty FMP symbols and equity/etf/public_fund/index types')
     store=NumericStore(settings)
     sql="""SELECT DISTINCT i.instrument_type, substring(k.identifier_value from 5) AS symbol
       FROM instrument_data.instrument i JOIN instrument_data.instrument_identifier k USING(instrument_id)
@@ -24,8 +39,16 @@ def registered_instruments(settings):
       AND i.instrument_type IN ('equity','etf','public_fund','index')
       ORDER BY symbol"""
     try:
-        with store.engine.connect() as conn:return [dict(row) for row in conn.execute(text(sql)).mappings()]
+        with store.engine.connect() as conn:
+            registered = [dict(row) for row in conn.execute(text(sql)).mappings()]
     finally:store.close()
+    targets = {}
+    for row in registered + [{'symbol': symbol, 'instrument_type': kind} for symbol, kind in additional.items()]:
+        symbol, kind = row['symbol'].strip().upper(), row['instrument_type']
+        if symbol in targets and targets[symbol] != kind:
+            raise ValueError(f'Conflicting public collection instrument types for {symbol}')
+        targets[symbol] = kind
+    return [{'symbol': symbol, 'instrument_type': kind} for symbol, kind in sorted(targets.items())]
 
 
 def next_eod_date(settings,end):

@@ -39,6 +39,17 @@ The replica additionally configures `NUMERIC_HOST` and
 These names also use the full prefix. Hosts are existing trusted SSH aliases;
 remote directories must be explicit absolute paths. No host is inferred.
 
+The collector can additionally cover public securities used only by another
+installation. Set `INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS` in its external
+`market.env` to a JSON object mapping FMP symbols to `equity`, `etf`,
+`public_fund`, or `index`, for example `'{"APLE":"equity","600900.SS":"equity"}'`.
+These targets join the collector's registered identities for daily reference
+supplements and market-close prices; matching identities are deduplicated and
+conflicting types fail explicitly. Maintain this public coverage list when an
+independent installation needs symbols outside the collector's registry. It does
+not register business instruments or copy lists, research, holdings, or users.
+Local reference projections continue to read delivered facts without provider calls.
+
 ## History and numerical meaning
 
 Every published row has an immutable `numeric:<batch_id>:<row_index>` source ID.

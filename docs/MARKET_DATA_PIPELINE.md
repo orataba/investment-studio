@@ -72,6 +72,10 @@ Regime 的指数、汇率、现货和加密资产原始报价同样按日期隔�
 - `portfolio-copilot.env`：现有 DeepSeek 凭据；不会传给公共数据包，也不会把数据库凭据交给 Harness。
 
 云端负责公开数值采集；本地只复制。各端私有账本与材料分别维护，不同步整套业务数据库。
+两端登记范围可以不同。仅在本地使用的公开证券，可在云端 `market.env` 的
+`INVESTMENT_STUDIO_MARKET_ADDITIONAL_INSTRUMENTS` 中维护 FMP 代码到资产类型的 JSON 映射
+（如 `'{"APLE":"equity","600900.SS":"equity"}'`）。它只扩展每日参考资料与分市场收盘行情的
+公共采集范围，不在云端创建业务标的、列表或研究记录；新增本地独有证券时应同步维护此采集配置。
 本地 Regime 使用 `studio_market_regime_reader` 读取共享数值，只获 `market_data`
 schema 的 `USAGE` 和表的 `SELECT`。云端采集进程使用独立的 `studio_market_regime_writer`，
 只获数值库现有五张事实／发行表所需的读写权限；两个账号均无私有账本或 schema DDL 权限。
