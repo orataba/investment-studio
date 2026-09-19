@@ -4,9 +4,10 @@ import { FcnSettlementReview } from './FcnSettlementReview'
 
 type DeliveryFields = Pick<PortfolioTransactionCreatePayload, 'asset_deliveries' | 'settlement_cashflows' | 'option_delivery' | 'lot_selections'> & Partial<Pick<PortfolioTransactionCreatePayload, 'currency' | 'trade_date' | 'position_effective_date' | 'settlement_date' | 'settlement_cash_account_id' | 'derivative_contract_id'>> & { gross_amount?: string | number | null }
 
-export function TransactionDeliveryReview({ record, accounts, instruments = [], contracts = [], portfolioId, canAddAssetDelivery = false, canSettleFcn = false, canSelectLots = false, requireOptionDelivery = false, onChange }: {
+export function TransactionDeliveryReview({ record, accounts, instruments = [], contracts = [], portfolioId, canAddAssetDelivery = false, canSettleFcn = false, canSelectLots = false, requireOptionDelivery = false, onChange, onInstrumentRegistered }: {
   record: DeliveryFields
   portfolioId?: string
+  onInstrumentRegistered?: (instrument: SharedInstrumentRecord) => void
   contracts?: PortfolioDerivativeContractRecord[]
   accounts: PortfolioAccountRecord[]
   instruments?: SharedInstrumentRecord[]
@@ -24,7 +25,7 @@ export function TransactionDeliveryReview({ record, accounts, instruments = [], 
     {(canAddAssetDelivery || canSettleFcn || record.asset_deliveries?.length || record.settlement_cashflows?.length) ? <FcnSettlementReview
       allowAssetDelivery={canAddAssetDelivery}
       record={record} accounts={accounts} instruments={instruments} currency={record.currency}
-      portfolioId={portfolioId} contractId={record.derivative_contract_id}
+      portfolioId={portfolioId} onInstrumentRegistered={onInstrumentRegistered} contractId={record.derivative_contract_id}
       terms={fcnContract?.contract_type === 'fcn' ? fcnContract.terms : undefined}
       economicDate={record.position_effective_date || record.trade_date} settlementDate={record.settlement_date ?? undefined}
       residualCash={record.gross_amount ?? undefined} residualAccountId={record.settlement_cash_account_id}

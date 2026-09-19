@@ -130,7 +130,7 @@ def test_password_change_and_reset_link_have_one_winner(postgres_identity, first
     engine = data["engine"]
     operations = {
         "password": lambda: call_route(engine, lambda db: auth.password(
-            auth.PasswordRequest(current_password=PASSWORD, password=CHANGED_PASSWORD),
+            auth.PasswordRequest(password=CHANGED_PASSWORD),
             request(data["owner_session"]), Response(), db,
         )),
         "activate": lambda: call_route(engine, lambda db: auth.activate(
@@ -178,7 +178,7 @@ def test_admin_operation_rechecks_permission_after_waiting_for_team_change(postg
     ))
     if operation == "invite":
         action = lambda: call_route(engine, lambda db: auth.invite(
-            auth.InviteRequest(username="unwanted-admin", display_name="Unwanted", role="admin"),
+            auth.InviteRequest(display_name="Unwanted", role="admin"),
             request(data["admin_session"]), db,
         ))
     else:
@@ -189,7 +189,7 @@ def test_admin_operation_rechecks_permission_after_waiting_for_team_change(postg
         200, 401 if change.get("active") is False else 403,
     )
     with Session(engine) as db:
-        assert db.scalar(select(User).where(User.username == "unwanted-admin")) is None
+        assert db.scalar(select(User).where(User.display_name == "Unwanted")) is None
         assert db.scalar(select(OneTimeToken).where(OneTimeToken.user_id == data["member_id"])) is None
 
 
@@ -233,3 +233,34 @@ def test_operator_recovery_invalidates_an_overlapping_reset_link(postgres_identi
     with Session(engine) as db:
         assert verify_password(CHANGED_PASSWORD, db.get(User, data["owner_id"]).password_hash)
         assert all(row.consumed_at for row in db.scalars(select(OneTimeToken)))
+
+
+def test_two_invitees_cannot_claim_the_same_username(postgres_identity):
+    from threading import Barrier
+    data = postgres_identity
+    engine = data['engine']
+    with Session(engine) as db:
+        invitees = [User(display_name=f'Invitee {index}') for index in range(2)]
+        db.add_all(invitees)
+        db.flush()
+        for user in invitees:
+            db.add(Membership(team_id='default', user_id=user.id, role='member'))
+        tokens = [identity.one_time_token(db, user.id, 'activate') for user in invitees]
+        ids = [user.id for user in invitees]
+        db.commit()
+    ready = Barrier(2)
+    def activate(index):
+        ready.wait(timeout=10)
+        return call_route(engine, lambda db: auth.activate(
+            auth.ActivateRequest(token=tokens[index], username='shared-name', password=PASSWORD), request(), db,
+        ))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(activate, range(2)))
+    assert sorted(outcomes) == [204, 409]
+    loser = outcomes.index(409)
+    with Session(engine) as db:
+        assert db.get(User, ids[loser]).password_hash is None
+        assert db.scalar(select(OneTimeToken).where(OneTimeToken.user_id == ids[loser])).consumed_at is None
+    assert call_route(engine, lambda db: auth.activate(
+        auth.ActivateRequest(token=tokens[loser], username='another-name', password=PASSWORD), request(), db,
+    )) == 204

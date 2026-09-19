@@ -21,7 +21,6 @@ if [[ -n "$MARKET_SCOPE" ]]; then
     market:hk) DEFAULT_ON_CALENDAR="*-*-* *:30 Asia/Shanghai" ;;
     market:us) DEFAULT_ON_CALENDAR="*-*-* *:30 America/New_York" ;;
     reference:cn-hk) DEFAULT_ON_CALENDAR="*-*-* 08:00 Asia/Shanghai" ;;
-    reference:us) DEFAULT_ON_CALENDAR="*-*-* 08:00 America/New_York" ;;
     *) echo "Unsupported scheduled channel/market scope: $CHANNEL/$MARKET_SCOPE" >&2; exit 64 ;;
   esac
   if [[ "$CHANNEL" == "reference" ]]; then
@@ -36,6 +35,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.local/state/investment-studio}"
 LOG_DIR="${LOG_DIR:-$STATE_DIR/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/$REFRESH_NAME.log}"
 LOCK_FILE="${LOCK_FILE:-$STATE_DIR/market-data-refresh.lock}"
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-900}"
 SUMMARY_FILE="${SUMMARY_FILE:-$STATE_DIR/$REFRESH_NAME-summary.json}"
 UPDATED_BY="${UPDATED_BY:-scheduler}"
 RETRY_FAILED_ATTEMPTS="${RETRY_FAILED_ATTEMPTS:-2}"
@@ -48,6 +48,11 @@ START_LIMIT_INTERVAL_SEC="${START_LIMIT_INTERVAL_SEC:-3h}"
 START_LIMIT_BURST="${START_LIMIT_BURST:-3}"
 PERSISTENT="${PERSISTENT:-false}"
 START_TIMERS="${START_TIMERS:-true}"
+
+if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "LOCK_WAIT_SECONDS must be a non-negative integer." >&2
+  exit 64
+fi
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "PYTHON_BIN is not executable: $PYTHON_BIN" >&2
@@ -165,6 +170,7 @@ escaped_log_file="$(printf '%q' "$LOG_FILE")"
 escaped_channel="$(printf '%q' "$CHANNEL")"
 escaped_updated_by="$(printf '%q' "$UPDATED_BY")"
 escaped_retry_failed_attempts="$(printf '%q' "$RETRY_FAILED_ATTEMPTS")"
+escaped_lock_wait_seconds="$(printf '%q' "$LOCK_WAIT_SECONDS")"
 escaped_lock_file="$(printf '%q' "$LOCK_FILE")"
 escaped_summary_file="$(printf '%q' "$SUMMARY_FILE")"
 market_scope_arg=""
@@ -213,7 +219,7 @@ TimeoutStartSec=$TIMEOUT_START_SEC
 Restart=$restart_policy
 RestartSec=$RESTART_SEC
 $schedule_condition
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel$market_scope_arg --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && INVESTMENT_STUDIO_DATA_DATABASE_SCHEMA=instrument_data INVESTMENT_STUDIO_DATA_OPERATIONS_DATABASE_SCHEMA=data_ingestion PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel$market_scope_arg --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --lock-wait-seconds $escaped_lock_wait_seconds --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF

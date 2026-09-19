@@ -15,12 +15,33 @@ from studio_market.numeric import delivery
 from studio_market import pipeline
 from studio_market.numeric.collect import Collector,closed_symbol_date,failure_summary
 from studio_market.numeric.providers.http_client import PublicResponse
+from studio_market.numeric.providers.fmp import FmpResponse
 
 
 def make_store(tmp_path,name):
     store=NumericStore(MarketSettings(f"sqlite:///{tmp_path/(name+'.db')}",tmp_path/name))
     store.create_schema_for_testing()
     return store
+
+
+def test_public_directory_retains_distinct_share_classes(tmp_path):
+    store = make_store(tmp_path, 'share-classes')
+    calls = []
+
+    def get_json(endpoint, params=None):
+        calls.append((endpoint, params))
+        rows = []
+        if endpoint == 'company-screener' and params['exchange'] == 'NASDAQ':
+            rows = [{'symbol': 'GOOG', 'companyName': 'Alphabet', 'exchangeShortName': 'NASDAQ'}]
+            if params.get('includeAllShareClasses') == 'true':
+                rows.append({'symbol': 'GOOGL', 'companyName': 'Alphabet', 'exchangeShortName': 'NASDAQ'})
+        return FmpResponse(endpoint, params or {}, datetime(2026, 9, 19, tzinfo=timezone.utc), json.dumps(rows).encode(), rows)
+
+    collector = Collector(store.settings, store=store, client=SimpleNamespace(get_json=get_json))
+    collector.reference(date(2026, 9, 1), date(2026, 9, 18), None)
+    assert {row['symbol'] for row in store.latest('security_directory')['rows']} == {'GOOG', 'GOOGL'}
+    assert all(params['includeAllShareClasses'] == 'true' for endpoint, params in calls if endpoint == 'company-screener')
+    store.close()
 
 
 def test_public_collection_targets_do_not_require_business_registration(tmp_path, monkeypatch):

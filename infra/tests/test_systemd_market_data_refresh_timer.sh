@@ -93,6 +93,7 @@ test -f "$SERVICE_FILE"
 test -f "$TIMER_FILE"
 grep -Fq 'OnCalendar=*-*-* 21:00 Asia/Shanghai' "$TIMER_FILE"
 grep -Fq -- '--lock-file' "$SERVICE_FILE"
+grep -Fq -- '--lock-wait-seconds 900' "$SERVICE_FILE"
 grep -Fq -- 'market-data-refresh.lock' "$SERVICE_FILE"
 grep -Fq -- '--summary-file' "$SERVICE_FILE"
 grep -Fq -- 'market-data-refresh-summary.json' "$SERVICE_FILE"
@@ -116,8 +117,7 @@ for schedule in \
   'market|cn|15:30 Asia/Shanghai' \
   'market|hk|*:30 Asia/Shanghai' \
   'market|us|*:30 America/New_York' \
-  'reference|cn-hk|08:00 Asia/Shanghai' \
-  'reference|us|08:00 America/New_York'; do
+  'reference|cn-hk|08:00 Asia/Shanghai'; do
   IFS='|' read -r channel market_scope expected_time <<< "$schedule"
   HOME="$TEST_ROOT/home" \
   XDG_CONFIG_HOME="$TEST_ROOT/config" \

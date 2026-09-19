@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from urllib.error import URLError
+import urllib3
 import pytest
 import studio_identity as identity
 
@@ -42,7 +42,7 @@ def test_cookie_mutations_require_trusted_origin(monkeypatch):
 
 def test_unavailable_identity_never_creates_local_user(monkeypatch):
     monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_URL", "http://127.0.0.1:8002/api/auth")
-    monkeypatch.setattr(identity, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(URLError("down")))
+    monkeypatch.setattr(identity._http, "request", lambda *args, **kwargs: (_ for _ in ()).throw(urllib3.exceptions.HTTPError("down")))
     with pytest.raises(identity.IdentityError) as caught:
         identity.resolve_token("present", "watchlist")
     assert caught.value.status_code == 503
@@ -115,3 +115,46 @@ def test_cloud_never_accepts_missing_credentials_or_a_local_owner_response(monke
     with pytest.raises(identity.IdentityError) as caught:
         identity.resolve_token(identity.LOCAL_OWNER_CREDENTIAL, "watchlist")
     assert caught.value.status_code == 403
+
+
+def test_connection_pool_reuses_transport_but_rechecks_identity(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import json
+    from threading import Thread
+
+    calls = []
+    state = {'role': 'member', 'revoked': False}
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            calls.append((self.client_address, self.headers['Authorization']))
+            body = json.dumps({'detail': '会话已撤销'} if state['revoked'] else
+                              identity.Principal('u', 'User', 'default', team_role=state['role']).to_dict()).encode()
+            self.send_response(401 if state['revoked'] else 200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    pool = urllib3.PoolManager()
+    monkeypatch.setattr(identity, '_http', pool)
+    monkeypatch.setenv('INVESTMENT_STUDIO_AUTH_URL', f'http://127.0.0.1:{server.server_port}/api/auth')
+    try:
+        assert identity.resolve_token('first', 'watchlist').team_role == 'member'
+        state['role'] = 'reader'
+        assert identity.resolve_token('second', 'watchlist').team_role == 'reader'
+        state['revoked'] = True
+        with pytest.raises(identity.IdentityError) as caught:
+            identity.resolve_token('second', 'watchlist')
+        assert caught.value.status_code == 401
+        assert len({address for address, _ in calls}) == 1
+        assert [credential for _, credential in calls] == ['Bearer first', 'Bearer second', 'Bearer second']
+    finally:
+        pool.clear()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

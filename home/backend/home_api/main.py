@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 from home_api.api.router import api_router
 from home_api.api.routes.apps import list_apps
 from home_api.core.settings import get_settings
+from home_api.services.browser_origins import trusted_browser_origins
 
 settings = get_settings()
 
@@ -16,10 +17,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=trusted_browser_origins(settings),
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Server-Timing"],
 )
 
 @app.middleware("http")
@@ -54,3 +56,8 @@ def watchlist_page() -> RedirectResponse:
 @app.get("/portfolio")
 def portfolio_page() -> RedirectResponse:
     return workspace_redirect("portfolio")
+
+
+from studio_runtime import install_diagnostics
+
+install_diagnostics(app, "home")

@@ -35,7 +35,7 @@ class Report(Base):
 
 @lru_cache
 def get_engine():
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(get_settings().database_url, pool_pre_ping=True)
     if engine.dialect.name == "postgresql":
         @event.listens_for(engine, "connect")
         def set_schema(connection, _record):

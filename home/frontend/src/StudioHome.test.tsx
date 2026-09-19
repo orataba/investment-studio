@@ -97,15 +97,15 @@ describe('StudioHome', () => {
   })
 
   it.each([
-    { language: 'en', title: 'Set your account password', loginCode: 'Authentication code (if enabled)', accountTitle: 'Account and team' },
-    { language: 'zh-Hans', title: '设置账号密码', loginCode: '二步验证码（已启用时填写）', accountTitle: '账号与团队' },
-  ])('renders identity pages in $language and waits for the account before showing signed-out UI', ({ language, title, loginCode, accountTitle }) => {
+    { language: 'en', title: 'Set your account password', accountTitle: 'Account and team' },
+    { language: 'zh-Hans', title: '设置账号密码', accountTitle: '账号与团队' },
+  ])('renders identity pages in $language and waits for the account before showing signed-out UI', ({ language, title, accountTitle }) => {
     vi.stubGlobal('window', { location: { hostname: '127.0.0.1', protocol: 'http:', search: `?lang=${language}`, hash: '#token=example' } })
     const page = (child: React.ReactNode) => renderToStaticMarkup(<LanguageProvider messages={homeMessages}>{child}</LanguageProvider>)
     const activate = page(<ActivatePage />)
     expect(activate).toContain(title)
     expect(activate).toContain('class="language-switcher"')
-    expect(page(<LoginPage />)).toContain(loginCode)
+    expect(page(<LoginPage />)).not.toContain('name="otp"')
     const account = page(<AccountPage />)
     expect(account).toContain(accountTitle)
     expect(account).toContain('aria-busy="true"')

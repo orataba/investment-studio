@@ -29,9 +29,11 @@ from portfolio_app.api.contracts import (
     TaxonomyNodeRecord,
     TaxonomyRecord,
     TaxonomyUpdateRequest,
+    TaxonomyTargetConfigurationRequest,
 )
 from portfolio_app.services.analytics_scope import (
     analytics_policy_version,
+    taxonomy_catalog_as_of,
     list_analytics_taxonomy_selections,
     list_analytics_scope_policies,
     replace_analytics_scope_policy,
@@ -50,6 +52,7 @@ from portfolio_app.services.portfolio_store import (
     create_taxonomy_assignment,
     create_taxonomy_node,
     create_target_set,
+    save_taxonomy_target_configuration,
     delete_portfolio_instrument_universe_record,
     delete_taxonomy,
     delete_taxonomy_assignment,
@@ -71,6 +74,7 @@ from portfolio_app.services.portfolio_store import (
     update_target_set,
     upsert_portfolio_instrument_universe_record,
 )
+from portfolio_app.services.valuation_clock import planning_reference_date
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 
 
@@ -152,10 +156,19 @@ def get_portfolio_taxonomies(
     portfolio_id: str,
     include_market_profile: bool = False,
     as_of_date: date | None = None,
+    current_planning: bool = False,
+    planning_as_of_date: date | None = None,
 ) -> TaxonomyCatalogResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    dated_catalog = None
+    if current_planning or planning_as_of_date is not None:
+        reference_date = planning_as_of_date or planning_reference_date(
+            as_of_date or date.fromisoformat(str(portfolio.get("as_of_date") or date.today())[:10]),
+        )
+        dated_catalog = taxonomy_catalog_as_of(portfolio_id, reference_date)
 
     universe_records = list_portfolio_instrument_universe(portfolio_id)
     risk_basis_profile = None
@@ -179,13 +192,14 @@ def get_portfolio_taxonomies(
 
     return TaxonomyCatalogResponse(
         portfolio_id=portfolio_id,
-        default_planning_taxonomy_id=portfolio.get("default_planning_taxonomy_id"),
+        planning_as_of_date=dated_catalog["planning_as_of_date"] if dated_catalog is not None else None,
+        default_planning_taxonomy_id=(dated_catalog if dated_catalog is not None else portfolio).get("default_planning_taxonomy_id"),
         risk_basis=risk_basis_profile,
-        taxonomies=[TaxonomyRecord.model_validate(item) for item in list_taxonomies(portfolio_id)],
-        taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in list_taxonomy_nodes(portfolio_id)],
+        taxonomies=[TaxonomyRecord.model_validate(item) for item in (dated_catalog["taxonomies"] if dated_catalog is not None else list_taxonomies(portfolio_id))],
+        taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in (dated_catalog["taxonomy_nodes"] if dated_catalog is not None else list_taxonomy_nodes(portfolio_id))],
         taxonomy_assignments=[
             TaxonomyAssignmentRecord.model_validate(item)
-            for item in list_taxonomy_assignments(portfolio_id)
+            for item in (dated_catalog["taxonomy_assignments"] if dated_catalog is not None else list_taxonomy_assignments(portfolio_id))
         ],
         analytics_scope_policy_version=analytics_policy_version(portfolio_id),
         analytics_scope_policies=[
@@ -200,14 +214,13 @@ def get_portfolio_taxonomies(
             PortfolioInstrumentUniverseRecord.model_validate(item)
             for item in universe_records
         ],
-        target_sets=[TargetSetRecord.model_validate(item) for item in list_target_sets(portfolio_id)],
-        target_set_lines=[TargetSetLineRecord.model_validate(item) for item in list_target_set_lines(portfolio_id)],
+        target_sets=[TargetSetRecord.model_validate(item) for item in (dated_catalog["target_sets"] if dated_catalog is not None else list_target_sets(portfolio_id))],
+        target_set_lines=[TargetSetLineRecord.model_validate(item) for item in (dated_catalog["target_set_lines"] if dated_catalog is not None else list_target_set_lines(portfolio_id))],
         target_set_integrity_issues=[
             TargetSetIntegrityIssueRecord.model_validate(item)
-            for item in list_target_set_integrity_issues(portfolio_id)
+            for item in ([] if dated_catalog is not None else list_target_set_integrity_issues(portfolio_id))
         ],
     )
-
 
 @router.put("/{portfolio_id}/taxonomies/default-planning", response_model=DefaultPlanningTaxonomyResponse)
 def update_default_planning_taxonomy(
@@ -605,3 +618,16 @@ def replace_portfolio_analytics_scope_policy(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return AnalyticsScopePolicyRecord.model_validate(record)
+
+
+@router.put("/{portfolio_id}/taxonomies/{taxonomy_id}/target-configuration", response_model=TaxonomyRecord)
+def save_portfolio_taxonomy_target_configuration(
+    portfolio_id: str, taxonomy_id: str, payload: TaxonomyTargetConfigurationRequest,
+) -> TaxonomyRecord:
+    try:
+        result = save_taxonomy_target_configuration(portfolio_id, taxonomy_id,
+            effective_from=payload.effective_from, node_defaults=payload.node_defaults,
+            target_sets=[item.model_dump() for item in payload.target_sets])
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return TaxonomyRecord.model_validate(result)

@@ -77,7 +77,7 @@ app.add_middleware(
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "X-Request-ID", "Server-Timing"],
 )
 
 app.include_router(api_router, prefix="/api")
@@ -167,3 +167,8 @@ def stock_intersection_page() -> RedirectResponse:
 @app.get("/risk")
 def risk_page() -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
+
+
+from studio_runtime import install_diagnostics
+
+install_diagnostics(app, "portfolio")

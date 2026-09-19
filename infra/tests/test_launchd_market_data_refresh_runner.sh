@@ -102,6 +102,7 @@ assert arguments[arguments.index("--channel") + 1] == "settlement"
 assert arguments[arguments.index("--updated-by") + 1] == "launchd-scheduler"
 assert arguments[arguments.index("--retry-failed-attempts") + 1] == "2"
 assert arguments[arguments.index("--lock-file") + 1] == os.environ["LOCK_PATH"]
+assert arguments[arguments.index("--lock-wait-seconds") + 1] == "900"
 assert Path(arguments[arguments.index("--summary-file") + 1]) == (
     Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "market-data-refresh-summary.json"
 )
@@ -170,16 +171,16 @@ if [[ ! -e "$CAPTURE_PATH" || ! -e "$AUDIT_CAPTURE_PATH" ]]; then
   exit 1
 fi
 
-# The US schedule must move with New York DST and not run on adjacent ticks.
-for scheduled_now in 2026-01-05T21:00:00+08:00 2026-07-22T20:00:00+08:00; do
+# The remaining pre-open reference acquisition runs only inside its Shanghai window.
+for scheduled_now in 2026-01-05T08:00:00+08:00 2026-07-22T08:00:00+08:00; do
   rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
   INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
     INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=reference \
-    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=us \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=cn-hk \
     INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=8 \
     INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=0 \
     INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
-    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=America/New_York \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=Asia/Shanghai \
     INVESTMENT_STUDIO_LOCAL_REFRESH_NOW="$scheduled_now" \
     "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
     "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
@@ -192,22 +193,22 @@ from pathlib import Path
 
 arguments = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text())["argv"]
 assert arguments[arguments.index("--channel") + 1] == "reference"
-assert arguments[arguments.index("--market-scope") + 1] == "us"
-assert arguments[arguments.index("--summary-file") + 1].endswith("us-reference-data-refresh-summary.json")
-state = json.loads((Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "us-reference-data-refresh-run-state.json").read_text())
+assert arguments[arguments.index("--market-scope") + 1] == "cn-hk"
+assert arguments[arguments.index("--summary-file") + 1].endswith("cn-hk-reference-data-refresh-summary.json")
+state = json.loads((Path(os.environ["INVESTMENT_STUDIO_STATE_DIR"]) / "cn-hk-reference-data-refresh-run-state.json").read_text())
 assert state["status"] == "succeeded"
 assert state["audit_exit_code"] is None
 PY_REFERENCE
 done
-for skipped_now in 2026-07-22T19:30:00+08:00 2026-07-22T20:30:00+08:00; do
+for skipped_now in 2026-07-22T07:30:00+08:00 2026-07-22T08:30:00+08:00; do
   rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
   INVESTMENT_STUDIO_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
     INVESTMENT_STUDIO_LOCAL_REFRESH_CHANNEL=reference \
-    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=us \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_MARKET_SCOPE=cn-hk \
     INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR=8 \
     INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE=0 \
     INVESTMENT_STUDIO_LOCAL_REFRESH_RUN_KIND=primary \
-    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=America/New_York \
+    INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE=Asia/Shanghai \
     INVESTMENT_STUDIO_LOCAL_REFRESH_NOW="$skipped_now" \
     "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
     "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"

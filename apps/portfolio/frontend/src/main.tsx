@@ -1,3 +1,4 @@
+import { installBrowserDiagnostics } from '../../../../packages/ui/src/diagnostics'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
@@ -14,6 +15,8 @@ import './app-theme.css'
 const routerBasename = import.meta.env.BASE_URL === '/'
   ? undefined
   : import.meta.env.BASE_URL.replace(/\/$/, '')
+
+installBrowserDiagnostics('portfolio', import.meta.env.VITE_HOME_URL)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

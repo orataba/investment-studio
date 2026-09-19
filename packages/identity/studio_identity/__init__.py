@@ -12,9 +12,8 @@ import json
 import os
 from pathlib import Path
 from typing import Literal
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+import urllib3
 
 
 class IdentityError(Exception):
@@ -45,6 +44,9 @@ class Principal:
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes
 
+
+# Shared connections, never shared credentials or cached authorization results.
+_http = urllib3.PoolManager(num_pools=4, maxsize=16, retries=False, timeout=urllib3.Timeout(connect=3, read=10))
 
 _active: ContextVar[Principal | None] = ContextVar("studio_principal", default=None)
 LOCAL_OWNER_CREDENTIAL = "studio-local-owner"
@@ -152,22 +154,24 @@ def _call(path: str, credential: str, payload=None, *, service_token=None):
         headers["X-Studio-Service-Token"] = service_token
     if payload is not None:
         headers["Content-Type"] = "application/json"
-    request = Request(_auth_url() + path, headers=headers,
-                      data=json.dumps(payload).encode() if payload is not None else None)
     try:
-        with urlopen(request, timeout=10) as response:
-            body = response.read()
-            return json.loads(body) if body else {}
-    except HTTPError as error:
-        detail = "账号权限校验失败"
-        try:
-            value = json.load(error).get("detail")
-            if isinstance(value, str):
-                detail = value
-        except (ValueError, TypeError, AttributeError, OSError):
-            pass
-        raise IdentityError(error.code if error.code in {401, 403, 404, 409, 422, 503} else 503, detail) from error
-    except (URLError, OSError, ValueError) as error:
+        response = _http.request(
+            "POST" if payload is not None else "GET", _auth_url() + path,
+            headers=headers, body=json.dumps(payload).encode() if payload is not None else None,
+            redirect=False, retries=False,
+        )
+        body = response.data
+        if response.status >= 300:
+            detail = "账号权限校验失败"
+            try:
+                value = json.loads(body).get("detail")
+                if isinstance(value, str):
+                    detail = value
+            except (ValueError, TypeError, AttributeError):
+                pass
+            raise IdentityError(response.status if response.status in {401, 403, 404, 409, 422, 503} else 503, detail)
+        return json.loads(body) if body else {}
+    except (urllib3.exceptions.HTTPError, OSError, ValueError) as error:
         raise IdentityError(503, "统一账号服务暂时不可用") from error
 
 

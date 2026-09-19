@@ -4,9 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-import pyotp
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,11 +23,8 @@ PASSWORD = "test-password-long"
 def identity(monkeypatch, tmp_path: Path):
     from home_api.api.routes import auth
     from home_api.services import identity as identity_service
-    key = tmp_path / "totp-key"
-    key.write_bytes(Fernet.generate_key())
-    key.chmod(0o600)
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'identity.db'}", frontend_url="https://testserver",
-                        cors_origins=["https://testserver"], auth_totp_key_file=key)
+                        cors_origins=["https://testserver"])
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
     monkeypatch.setattr(identity_service, "get_settings", lambda: settings)
     initialize_schema(settings.database_url)
@@ -98,12 +93,12 @@ def test_browser_origin_and_forged_identity_are_rejected(identity):
 def test_invite_activation_single_use_and_admin_boundaries(identity):
     owner = client_as()
     member = client_as("member")
-    payload = {"username": "new-manager", "display_name": "新经理", "role": "member"}
+    payload = {"display_name": "新经理", "role": "member"}
     assert member.post("/api/auth/members", json=payload).status_code == 403
     result = owner.post("/api/auth/members", json=payload)
     assert result.status_code == 201
     token = urlsplit(result.json()["activation_url"]).fragment.removeprefix("token=")
-    activation = {"token": token, "password": PASSWORD}
+    activation = {"token": token, "username": "new-manager", "password": PASSWORD}
     assert owner.post("/api/auth/activate", json=activation).status_code == 204
     assert owner.post("/api/auth/activate", json=activation).status_code == 400
     newcomer = client_as("new-manager")
@@ -183,32 +178,10 @@ def test_profile_preserves_id_and_roles_are_resolved_live(identity):
     assert introspect(member, token).json()["team_role"] == "reader"
 
 
-def test_totp_enrollment_encryption_replay_and_login(identity):
-    _, engine, ids = identity
-    client = client_as()
-    token = credential(client)
-    setup = client.post("/api/auth/mfa/setup", json={"password": PASSWORD})
-    assert setup.status_code == 200
-    secret = setup.json()["secret"]
-    otp = pyotp.TOTP(secret).now()
-    assert client.post("/api/auth/mfa/confirm", json={"password": PASSWORD, "otp": otp}).status_code == 204
-    assert introspect(client, token).status_code == 401
-    with Session(engine) as db:
-        user = db.get(User, ids["owner"])
-        assert secret not in user.totp_secret
-    assert client.post("/api/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 401
-    assert client.post("/api/auth/login", json={"username": "owner", "password": PASSWORD, "otp": otp}).status_code == 401
-    with Session(engine) as db:
-        # Move the used counter back to simulate the next authenticator interval.
-        db.get(User, ids["owner"]).totp_last_step -= 1
-        db.commit()
-    assert client.post("/api/auth/login", json={"username": "owner", "password": PASSWORD, "otp": otp}).status_code == 200
-
-
 def test_password_change_revokes_all_devices(identity):
     client = client_as("member")
     second = client_as("member")
-    assert client.post("/api/auth/password", json={"current_password": PASSWORD, "password": "a-new-long-password"}).status_code == 204
+    assert client.post("/api/auth/password", json={"password": "a-new-long-password"}).status_code == 204
     assert second.get("/api/auth/session").status_code == 401
 
 
@@ -239,16 +212,6 @@ def test_owner_transfer_is_explicit_and_audited(identity):
     assert member.get("/api/auth/session").json()["is_team_owner"]
     assert not owner.get("/api/auth/session").json()["is_team_owner"]
     assert member.patch(f"/api/auth/members/{ids['member']}", json={"role": "reader"}).status_code == 409
-
-
-def test_admin_mfa_enforcement_keeps_enrollment_available(identity):
-    settings, _, _ = identity
-    settings.auth_require_admin_totp = True
-    owner = client_as()
-    assert owner.get("/api/auth/session").json()["mfa_required"]
-    assert introspect(owner, credential(owner)).status_code == 403
-    assert owner.post("/api/auth/members", json={"username": "blocked", "display_name": "blocked"}).status_code == 403
-    assert owner.post("/api/auth/mfa/setup", json={"password": PASSWORD}).status_code == 200
 
 
 def test_login_attempts_are_bounded(identity):
@@ -285,12 +248,11 @@ def test_local_owner_is_real_explicit_and_keeps_task_scope(identity):
     from studio_identity import LOCAL_OWNER_CREDENTIAL
     settings, engine, ids = identity
     client = local_client(settings)
-    settings.auth_require_admin_totp = True
     response = client.get("/api/auth/session")
     assert response.status_code == 200, response.text
     account = response.json()
     assert account["local_unrestricted"] and account["user_id"] == ids["owner"]
-    assert account["is_team_owner"] and account["team_role"] == "admin" and not account["mfa_required"]
+    assert account["is_team_owner"] and account["team_role"] == "admin"
     assert "set-cookie" not in response.headers
     assert client.get("/api/auth/members").status_code == 200
     grant = client.post("/api/auth/delegations", json={"audience": "watchlist", "resource_scope": {"kind": "run", "id": "local-run"}},
@@ -350,7 +312,7 @@ def test_password_change_invalidates_outstanding_reset_link(identity):
     token = reset.json()['activation_url'].split('#token=', 1)[1]
     member = client_as('member')
     assert member.post('/api/auth/password', json={
-        'current_password': PASSWORD, 'password': 'replacement-password-long',
+        'password': 'replacement-password-long',
     }).status_code == 204
     assert owner.post('/api/auth/activate', json={'token': token, 'password': PASSWORD}).status_code == 400
 
@@ -363,3 +325,65 @@ def test_disable_then_restore_does_not_revive_reset_link(identity):
     for active in (False, True):
         assert owner.patch(f'/api/auth/members/{member_id}', json={'active': active}).status_code == 200
     assert owner.post('/api/auth/activate', json={'token': token, 'password': PASSWORD}).status_code == 400
+
+
+def test_invitee_selects_username_and_reset_shows_account(identity):
+    owner = client_as()
+    invited = owner.post('/api/auth/members', json={'display_name': '受邀人', 'role': 'reader'})
+    assert invited.status_code == 201
+    token = urlsplit(invited.json()['activation_url']).fragment.removeprefix('token=')
+    anonymous = TestClient(app, base_url='https://testserver', headers={'Origin': 'https://testserver'})
+    info = anonymous.post('/api/auth/activation-info', json={'token': token})
+    assert info.status_code == 200
+    assert info.json() == {'username': None, 'display_name': '受邀人', 'choose_username': True, 'purpose': 'activate'}
+    assert info.headers['Cache-Control'] == 'no-store'
+    assert anonymous.post('/api/auth/activate', json={'token': token, 'password': 'eight888'}).status_code == 422
+    assert anonymous.post('/api/auth/activate', json={'token': token, 'username': 'OWNER', 'password': 'eight888'}).status_code == 409
+    assert anonymous.post('/api/auth/activation-info', json={'token': token}).status_code == 200
+    assert anonymous.post('/api/auth/activate', json={'token': token, 'username': 'Chosen-Name', 'password': 'eight888'}).status_code == 204
+    assert anonymous.post('/api/auth/activation-info', json={'token': token}).status_code == 400
+    assert anonymous.post('/api/auth/login', json={'username': 'CHOSEN-NAME', 'password': 'eight888'}).status_code == 200
+    assert anonymous.get('/api/auth/session').json()['user_id'] == invited.json()['user_id']
+    reset = owner.post(f"/api/auth/members/{invited.json()['user_id']}/reset")
+    reset_token = urlsplit(reset.json()['activation_url']).fragment.removeprefix('token=')
+    reset_info = anonymous.post('/api/auth/activation-info', json={'token': reset_token}).json()
+    assert reset_info['username'] == 'chosen-name' and not reset_info['choose_username']
+    assert anonymous.post('/api/auth/activate', json={'token': reset_token, 'username': 'different-name', 'password': 'reset888'}).status_code == 422
+    assert anonymous.post('/api/auth/activate', json={'token': reset_token, 'password': 'reset888'}).status_code == 204
+    assert anonymous.post('/api/auth/login', json={'username': 'chosen-name', 'password': 'reset888'}).status_code == 200
+
+
+def test_username_changes_preserve_identity_and_collision_is_atomic(identity):
+    member = client_as('member')
+    token = credential(member)
+    assert member.patch('/api/auth/profile', json={'username': 'OWNER', 'display_name': 'Should not persist'}).status_code == 409
+    assert member.get('/api/auth/session').json()['display_name'] == '经理乙'
+    changed = member.patch('/api/auth/profile', json={'username': 'New-Member', 'display_name': '经理乙新名'})
+    assert changed.status_code == 200
+    assert changed.json()['user_id'] == identity[2]['member']
+    assert changed.json()['username'] == 'new-member'
+    assert introspect(member, token).json()['username'] == 'new-member'
+    assert member.post('/api/auth/login', json={'username': 'member', 'password': PASSWORD}).status_code == 401
+    assert member.post('/api/auth/login', json={'username': 'new-member', 'password': PASSWORD}).status_code == 200
+
+
+def test_password_update_uses_current_session_and_eight_character_minimum(identity):
+    client = client_as('member')
+    token = credential(client)
+    assert client.post('/api/auth/password', json={'password': 'short77'}).status_code == 422
+    assert client.post('/api/auth/password', json={'password': 'eight888'}, headers={'Origin': 'https://attacker.example'}).status_code == 403
+    assert client.post('/api/auth/password', json={'password': 'eight888'}).status_code == 204
+    assert introspect(client, token).status_code == 401
+    assert client.post('/api/auth/password', json={'password': 'again888'}).status_code == 401
+    assert client.post('/api/auth/login', json={'username': 'member', 'password': 'eight888'}).status_code == 200
+
+
+def test_regenerated_pending_invitation_still_allows_username_choice(identity):
+    owner = client_as()
+    invited = owner.post('/api/auth/members', json={'display_name': 'Pending'}).json()
+    regenerated = owner.post(f"/api/auth/members/{invited['user_id']}/reset").json()
+    old_token = urlsplit(invited['activation_url']).fragment.removeprefix('token=')
+    token = urlsplit(regenerated['activation_url']).fragment.removeprefix('token=')
+    assert owner.post('/api/auth/activation-info', json={'token': old_token}).status_code == 400
+    assert owner.post('/api/auth/activation-info', json={'token': token}).json()['choose_username']
+    assert owner.post('/api/auth/activate', json={'token': token, 'username': 'pending-person', 'password': 'eight888'}).status_code == 204

@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from studio_runtime import operation
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import defer
 from investment_studio_instrument_core.db_models import Instrument
@@ -18,6 +19,7 @@ from investment_studio_instrument_core.db_models import Instrument
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     AccountRecordModel,
+    AnalyticsScopePolicyRecordModel,
     DerivativeContractRecordModel,
     PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
@@ -35,7 +37,11 @@ from portfolio_app.services.daily_snapshots import (
 )
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
-from portfolio_app.services.analytics_scope import analytics_policy_version, taxonomy_configuration_as_of_in_session
+from portfolio_app.services.analytics_scope import (
+    analytics_policy_version,
+    taxonomy_configuration_as_of,
+    taxonomy_configuration_as_of_in_session,
+)
 from portfolio_app.services.research_solver import (
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -54,15 +60,15 @@ from portfolio_app.services.research_solver import (
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_portfolio_instrument_universe,
-    list_target_sets,
     list_taxonomies,
-    list_taxonomy_assignments,
+    list_target_sets,
     list_taxonomy_nodes,
     list_accounts,
     list_transactions,
 )
 from portfolio_app.services.research_eligibility import derive_research_lifecycle
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
+from portfolio_app.services.valuation_clock import planning_reference_date
 from portfolio_app.services.workspace_cache import get_cached_materialized_performance_report
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
@@ -70,7 +76,7 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
-RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 3
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 4
 logger = logging.getLogger(__name__)
 DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
     {
@@ -608,12 +614,22 @@ def _canonical_reliability_value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _planning_as_of_date(as_of_mode: str, valuation_date: date) -> date:
+    """Current planning decisions use today's policy with the latest valued holdings.
+
+    A pinned analysis and historical simulation retain their dated policy. The
+    valuation clock never advances merely because the planning policy changed.
+    """
+    return planning_reference_date(valuation_date, pinned=as_of_mode == RESEARCH_AS_OF_MODE_PINNED)
+
+
 def _planning_state_fingerprint(
     session,
     *,
     portfolio_id: str,
     planning_taxonomy_id: str | None,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
 ) -> str | None:
     taxonomy_id = str(planning_taxonomy_id or "").strip()
     if not taxonomy_id:
@@ -623,7 +639,7 @@ def _planning_state_fingerprint(
         session,
         portfolio_id,
         taxonomy_id,
-        as_of_date,
+        planning_as_of_date or as_of_date,
     )
     if taxonomy_configuration is None:
         return None
@@ -646,6 +662,19 @@ def _planning_state_fingerprint(
         "as_of_date": as_of_date.isoformat(),
         "taxonomy_configuration": taxonomy_configuration,
         "analytics_policy_version": analytics_policy_version(portfolio_id, session=session),
+        # A scheduled policy can become effective without another database write
+        # or a newer market close. Track the actual planning-date policy set.
+        "effective_analytics_policies": [tuple(row) for row in session.execute(select(
+            AnalyticsScopePolicyRecordModel.analytics_scope_policy_id,
+            AnalyticsScopePolicyRecordModel.policy_version,
+        ).where(
+            AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id,
+            AnalyticsScopePolicyRecordModel.taxonomy_id == taxonomy_id,
+            AnalyticsScopePolicyRecordModel.superseded_by_policy_id.is_(None),
+            AnalyticsScopePolicyRecordModel.effective_from <= (planning_as_of_date or as_of_date),
+            or_(AnalyticsScopePolicyRecordModel.effective_to.is_(None),
+                AnalyticsScopePolicyRecordModel.effective_to >= (planning_as_of_date or as_of_date)),
+        ).order_by(AnalyticsScopePolicyRecordModel.analytics_scope_policy_id))],
         # Dates alone do not detect an amended/deleted historical transaction.
         # Reuse canonical row versions and shared source watermarks; a refresh
         # request itself is not evidence that any financial input changed.
@@ -905,13 +934,14 @@ def _build_planning_group_snapshot(
     if not planning_taxonomy_id:
         return []
 
+    configuration = taxonomy_configuration_as_of(portfolio_id, planning_taxonomy_id, as_of_date) or {}
     node_name_by_id = {
         str(item.get("taxonomy_node_id") or ""): str(item.get("node_name") or "")
-        for item in list_taxonomy_nodes(portfolio_id)
+        for item in configuration.get("taxonomy_nodes", [])
         if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
     }
     assignment_by_instrument: dict[str, dict[str, object]] = {}
-    for item in list_taxonomy_assignments(portfolio_id):
+    for item in configuration.get("taxonomy_assignments", []):
         if str(item.get("taxonomy_id") or "") != planning_taxonomy_id:
             continue
         if str(item.get("status") or "") != "active":
@@ -1075,9 +1105,10 @@ def _build_planning_target_summary(
             "scoped_target_set_count": 0,
         }
 
+    configuration = taxonomy_configuration_as_of(portfolio_id, planning_taxonomy_id, as_of_date) or {}
     configured_target_sets = [
         item
-        for item in list_target_sets(portfolio_id, taxonomy_id=planning_taxonomy_id)
+        for item in configuration.get("target_sets", [])
         if str(item.get("status") or "") == "active"
     ]
     return {
@@ -1098,6 +1129,7 @@ def _build_research_context(
     *,
     planning_taxonomy_id: str | None,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
     lookback_days: int,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
@@ -1154,12 +1186,12 @@ def _build_research_context(
         account_rows=list(account_workspace.get("accounts") or []),
         portfolio_id=portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
-        as_of_date=as_of_date,
+        as_of_date=planning_as_of_date or as_of_date,
     )
     planning_target_summary = _build_planning_target_summary(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
-        as_of_date=as_of_date,
+        as_of_date=planning_as_of_date or as_of_date,
     )
     quality_warnings: list[str] = []
     unassigned_group = next(
@@ -1216,6 +1248,7 @@ def _build_research_context(
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
         "base_currency": str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
         "as_of_date": as_of_date.isoformat(),
+        "planning_as_of_date": (planning_as_of_date or as_of_date).isoformat(),
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
         "nav": resolved_nav_base,
@@ -1570,8 +1603,9 @@ def _build_current_target_detail(
     return {
         "headline": headline,
         "coverage_note": (
-            "This run resolves current target weights from current holdings, the selected planning taxonomy, "
-            "active TAA, the covariance lookback, and the configured capital overlay."
+            f"Valuation and market observations through {context.get('as_of_date')}; "
+            f"planning policy effective on {context.get('planning_as_of_date') or context.get('as_of_date')}. "
+            "Current target weights use these separate clocks; historical simulation uses each decision date's policy."
         ),
         "signals": signals,
         "findings": findings,
@@ -1654,6 +1688,8 @@ def _write_artifacts(
                 f"# Research Run `{research_run_id}`",
                 "",
                 detail.get("headline") or "",
+                "",
+                detail.get("coverage_note") or "",
                 "",
                 "## Signals",
                 *[
@@ -1763,12 +1799,17 @@ def get_research_workbench(
             scope_name_map,
             default_as_of_date=latest_portfolio_as_of_date,
         )
+        planning_date = _planning_as_of_date(
+            str(settings_payload["as_of_mode"]),
+            _date_value(settings_payload.get("as_of_date")) or latest_portfolio_as_of_date,
+        )
         production_risk_model = get_portfolio_risk_policy(portfolio_id) or {}
         current_planning_state_fingerprint = _planning_state_fingerprint(
             session,
             portfolio_id=portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
             as_of_date=_date_value(settings_payload.get("as_of_date")) or latest_portfolio_as_of_date,
+            planning_as_of_date=planning_date,
         )
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
@@ -1827,6 +1868,7 @@ def get_research_workbench(
         portfolio_id,
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
+        planning_as_of_date=planning_date,
         lookback_days=risk_lookback_days,
         instrument_detail_cache=instrument_detail_cache,
     )
@@ -1835,6 +1877,7 @@ def get_research_workbench(
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
+        planning_as_of_date=planning_date,
         lookback_days=risk_lookback_days,
         _instrument_detail_cache=instrument_detail_cache,
     )
@@ -1850,6 +1893,7 @@ def get_research_workbench(
             portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
             as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
+            planning_as_of_date=planning_date,
         ),
         "calculation_frequency": calculation_frequency_profile,
         "settings": settings_payload,
@@ -2114,8 +2158,9 @@ def run_portfolio_research(
             settings_row,
             default_as_of_date=latest_portfolio_as_of_date,
         )
+        planning_date = _planning_as_of_date(_research_as_of_mode(settings_row), effective_as_of_date)
         effective_configuration = taxonomy_configuration_as_of_in_session(
-            session, portfolio_id, settings_row.planning_taxonomy_id, effective_as_of_date,
+            session, portfolio_id, settings_row.planning_taxonomy_id, planning_date,
         ) if settings_row.planning_taxonomy_id else None
         if not any(item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))
                    for item in (effective_configuration or {}).get("target_sets", [])):
@@ -2138,6 +2183,7 @@ def run_portfolio_research(
             portfolio_id=portfolio_id,
             planning_taxonomy_id=settings_row.planning_taxonomy_id,
             as_of_date=effective_as_of_date,
+            planning_as_of_date=planning_date,
         )
         if planning_state_fingerprint is None:
             raise ValueError("The selected planning taxonomy state is unavailable.")
@@ -2161,6 +2207,7 @@ def run_portfolio_research(
                 "planning_taxonomy_id": settings_row.planning_taxonomy_id,
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
+                "planning_as_of_date": planning_date.isoformat(),
                 "as_of_mode": _research_as_of_mode(settings_row),
                 "lookback_days": risk_lookback_days,
                 "calculation_frequency": risk_calculation_frequency,
@@ -2212,70 +2259,75 @@ def run_portfolio_research(
                 portfolio_id,
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip() or None,
                 as_of_date=effective_as_of_date,
+                planning_as_of_date=planning_date,
                 lookback_days=risk_lookback_days,
                 instrument_detail_cache=instrument_detail_cache,
             )
             planning_taxonomy_name = taxonomy_name_map.get(str(settings_row.planning_taxonomy_id or "").strip() or "")
-            solution = solve_current_target_weights(
-                portfolio_id,
-                planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
-                comparator_taxonomy_node_id=resolved_scope_node_id,
-                as_of_date=effective_as_of_date,
-                lookback_days=risk_lookback_days,
-                calculation_frequency=risk_calculation_frequency,
-                missing_return_policy=risk_missing_return_policy,
-                target_dimension=settings_row.target_dimension or "scope_default",
-                capital_mode=research_capital_mode,
-                gross_exposure=_safe_float(settings_row.gross_exposure),
-                target_volatility=_safe_float(settings_row.target_volatility),
-                max_gross_exposure=research_max_gross_exposure,
-                frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
-                top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
-                risk_model_config=deepcopy(production_risk_model or {}),
-                _instrument_detail_cache=instrument_detail_cache,
-            )
-            backtest_payload = build_current_target_backtest(
-                portfolio_id,
-                planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
-                comparator_taxonomy_node_id=resolved_scope_node_id,
-                as_of_date=effective_as_of_date,
-                lookback_days=risk_lookback_days,
-                calculation_frequency=risk_calculation_frequency,
-                missing_return_policy=risk_missing_return_policy,
-                target_dimension=settings_row.target_dimension or "scope_default",
-                capital_mode=research_capital_mode,
-                gross_exposure=_safe_float(settings_row.gross_exposure),
-                target_volatility=_safe_float(settings_row.target_volatility),
-                max_gross_exposure=research_max_gross_exposure,
-                frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
-                top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
-                risk_model_config=deepcopy(production_risk_model or {}),
-                rebalance_frequency=str(settings_row.backtest_rebalance_frequency or "1m"),
-                benchmark_instrument_id=str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
-                cash_yield_annual=float(settings_row.backtest_cash_yield_annual),
-                commission_bps=float(settings_row.backtest_commission_bps),
-                tax_bps=float(settings_row.backtest_tax_bps),
-                slippage_bps=float(settings_row.backtest_slippage_bps),
-                implementation_delay_days=int(
-                    settings_row.backtest_implementation_delay_days
-                ),
-                robustness_scenarios=deepcopy(
-                    settings_row.backtest_robustness_scenarios_json or []
-                ),
-                walk_forward_training_months=int(
-                    settings_row.backtest_walk_forward_training_months
-                ),
-                walk_forward_test_months=int(
-                    settings_row.backtest_walk_forward_test_months
-                ),
-                _instrument_detail_cache=instrument_detail_cache,
-            )
+            with operation("portfolio_research_solve", portfolio_id=portfolio_id, run_id=run_id):
+                solution = solve_current_target_weights(
+                    portfolio_id,
+                    planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
+                    comparator_taxonomy_node_id=resolved_scope_node_id,
+                    as_of_date=effective_as_of_date,
+                    planning_as_of_date=planning_date,
+                    lookback_days=risk_lookback_days,
+                    calculation_frequency=risk_calculation_frequency,
+                    missing_return_policy=risk_missing_return_policy,
+                    target_dimension=settings_row.target_dimension or "scope_default",
+                    capital_mode=research_capital_mode,
+                    gross_exposure=_safe_float(settings_row.gross_exposure),
+                    target_volatility=_safe_float(settings_row.target_volatility),
+                    max_gross_exposure=research_max_gross_exposure,
+                    frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                    top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
+                    risk_model_config=deepcopy(production_risk_model or {}),
+                    _instrument_detail_cache=instrument_detail_cache,
+                )
+            with operation("portfolio_research_backtest", portfolio_id=portfolio_id, run_id=run_id):
+                backtest_payload = build_current_target_backtest(
+                    portfolio_id,
+                    planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
+                    comparator_taxonomy_node_id=resolved_scope_node_id,
+                    as_of_date=effective_as_of_date,
+                    lookback_days=risk_lookback_days,
+                    calculation_frequency=risk_calculation_frequency,
+                    missing_return_policy=risk_missing_return_policy,
+                    target_dimension=settings_row.target_dimension or "scope_default",
+                    capital_mode=research_capital_mode,
+                    gross_exposure=_safe_float(settings_row.gross_exposure),
+                    target_volatility=_safe_float(settings_row.target_volatility),
+                    max_gross_exposure=research_max_gross_exposure,
+                    frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                    top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
+                    risk_model_config=deepcopy(production_risk_model or {}),
+                    rebalance_frequency=str(settings_row.backtest_rebalance_frequency or "1m"),
+                    benchmark_instrument_id=str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
+                    cash_yield_annual=float(settings_row.backtest_cash_yield_annual),
+                    commission_bps=float(settings_row.backtest_commission_bps),
+                    tax_bps=float(settings_row.backtest_tax_bps),
+                    slippage_bps=float(settings_row.backtest_slippage_bps),
+                    implementation_delay_days=int(
+                        settings_row.backtest_implementation_delay_days
+                    ),
+                    robustness_scenarios=deepcopy(
+                        settings_row.backtest_robustness_scenarios_json or []
+                    ),
+                    walk_forward_training_months=int(
+                        settings_row.backtest_walk_forward_training_months
+                    ),
+                    walk_forward_test_months=int(
+                        settings_row.backtest_walk_forward_test_months
+                    ),
+                    _instrument_detail_cache=instrument_detail_cache,
+                )
             solution.update(backtest_payload)
             with session_factory() as verification_session:
                 latest_fingerprint = _planning_state_fingerprint(
                     verification_session, portfolio_id=portfolio_id,
                     planning_taxonomy_id=run_row.planning_taxonomy_id,
                     as_of_date=effective_as_of_date,
+                    planning_as_of_date=planning_date,
                 )
             if latest_fingerprint != planning_state_fingerprint:
                 raise ValueError("Research inputs changed during calculation; rerun with the current inputs.")

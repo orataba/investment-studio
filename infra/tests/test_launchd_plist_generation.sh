@@ -50,7 +50,6 @@ expected_services = {
     "hk-market-data-refresh",
     "us-market-data-refresh",
     "cn-hk-reference-data-refresh",
-    "us-reference-data-refresh",
 }
 generated_services = {
     path.name.removeprefix("test.investment-studio.").removesuffix(".plist")
@@ -114,7 +113,6 @@ for scope, channel, hour, minute in (
     ("hk", "market", 16, 30),
     ("us", "market", 16, 30),
     ("cn-hk", "reference", 8, 0),
-    ("us", "reference", 8, 0),
 ):
     name = f"{scope}-{channel}-data-refresh"
     with (plist_root / f"test.investment-studio.{name}.plist").open("rb") as source:

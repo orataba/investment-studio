@@ -98,8 +98,8 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 - 直接读写 `portfolio`
 - 直接读取 `instrument_data`
-- 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
-- 在本地维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
+- 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；本地与云端分别持有各自业务数据
+- 在所属应用的 schema 内维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Instrument Data 市场资产
 - 风险面板经 Watchlist API 读取和更新跟进记录及范围内风控研判；研判读取 Portfolio 实际持仓，市值敞口不等于风险贡献。组合风险、风险预算和研究求解仍由 Portfolio 独立计算；该连接失败不影响账本和绩效计算
 
 ### DeepSeek Harness
@@ -158,6 +158,10 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - quote selection policy
 - shared store helper / db models
 - 股票／ETF 目录搜索与显式登记的 CLI 桥接；Watchlist 和 Portfolio 复用同一数据维护入口，应用不直接取得供应商凭据或另写登记逻辑
+
+### `packages/runtime`
+
+四个 Studio API 复用无业务数据的请求与操作诊断：请求关联号、数据库耗时、后台计算耗时及脱敏错误定位。该包不读取身份库或业务事实，也不持有缓存、授权和数据重算职责。浏览器经 Home 的已认证诊断入口提交数值耗时与代码位置；详细运行规则见 [Server Deployment](SERVER_DEPLOYMENT.md)。
 
 ### `packages/ui`
 

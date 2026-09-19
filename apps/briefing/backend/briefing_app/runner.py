@@ -1,6 +1,7 @@
 """Application-owned headless DeepSeek run; only its bound report tools are exposed."""
 from datetime import datetime, UTC
 import logging
+from studio_runtime import operation
 import os
 from pathlib import Path
 import re
@@ -62,6 +63,8 @@ def _run_harness(report_id: str, mode: str, token: str) -> dict:
                                          report_id, mode, process.returncode, "\n".join(diagnostic.splitlines()[-20:])[-4000:])
         if "dsh: QUOTA: Insufficient Balance" in errors:
             raise ValueError("DeepSeek 账户余额不足，本轮报告未完成。")
+        if "model_not_found" in errors or "no available channel for model" in errors.lower():
+            raise ValueError("DeepSeek 服务商当前没有可用的模型通道，请检查服务商的模型和通道配置；本轮报告未发布。")
         raise ValueError(f"DeepSeek {label}未正常结束，本轮报告未发布。")
     with get_session_factory()() as session:
         report = session.get(Report, report_id)
@@ -75,7 +78,8 @@ def _run_harness(report_id: str, mode: str, token: str) -> dict:
 def run_report(report_id: str, token: str, issuer: Principal):
     tokens = [token]
     try:
-        _execute_report(report_id, token, issuer, tokens)
+        with operation("briefing_generation", report_id=report_id):
+            _execute_report(report_id, token, issuer, tokens)
     finally:
         for issued_token in dict.fromkeys(reversed(tokens)):
             try:

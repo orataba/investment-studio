@@ -27,6 +27,7 @@ fi
 SUMMARY_FILE="$STATE_DIR/$REFRESH_NAME-summary.json"
 RUN_STATE_FILE="$STATE_DIR/$REFRESH_NAME-run-state.json"
 RETRY_FAILED_ATTEMPTS="${INVESTMENT_STUDIO_LOCAL_REFRESH_RETRY_FAILED_ATTEMPTS:-2}"
+LOCK_WAIT_SECONDS="${INVESTMENT_STUDIO_LOCAL_REFRESH_LOCK_WAIT_SECONDS:-900}"
 FAIL_ON_ITEM_FAILURE="${INVESTMENT_STUDIO_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE:-true}"
 PRIMARY_HOUR="${INVESTMENT_STUDIO_LOCAL_REFRESH_HOUR:-21}"
 PRIMARY_MINUTE="${INVESTMENT_STUDIO_LOCAL_REFRESH_MINUTE:-0}"
@@ -76,6 +77,10 @@ case "$CHANNEL" in
     exit 64
     ;;
 esac
+if [[ ! "$LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "Refresh lock wait must be a non-negative integer." >&2
+  exit 64
+fi
 if [[ ! "$RETRY_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
   echo "Refresh retry count must be a non-negative integer: $RETRY_FAILED_ATTEMPTS" >&2
   exit 64
@@ -269,6 +274,7 @@ refresh_arguments=(
   --updated-by launchd-scheduler
   --retry-failed-attempts "$RETRY_FAILED_ATTEMPTS"
   --lock-file "$LOCK_FILE"
+  --lock-wait-seconds "$LOCK_WAIT_SECONDS"
   --summary-file "$SUMMARY_FILE"
   --require-downstream-success
   --json

@@ -10,6 +10,7 @@ import gzip
 import hashlib
 
 import json
+from http.client import IncompleteRead
 
 import re
 
@@ -405,9 +406,11 @@ class GTJAFuturesClient:
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             response_body = exc.read(MAX_RESPONSE_BYTES + 1)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, IncompleteRead) as exc:
+            reason = getattr(exc, "reason", exc)
             raise CnFuturesError(
-                f"GTJA transport failed before a response was received: {type(exc).__name__}"
+                f"GTJA transport failed before a complete response was received: "
+                f"{type(exc).__name__} ({type(reason).__name__})"
             ) from None
         if len(response_body) > MAX_RESPONSE_BYTES:
             raise CnFuturesError("GTJA response exceeded 64 MB")

@@ -1,9 +1,15 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider, LANGUAGE_STORAGE_KEY } from '../../../../../packages/ui/src/i18n'
+import { materializePortfolioSecurity, searchPortfolioSecurities } from '../lib/api'
+import { TransactionDeliveryReview } from './TransactionDeliveryReview'
 import type { PortfolioAccountRecord, PortfolioAssetDelivery, PortfolioFcnContractTerms } from '../lib/api'
 import { instrumentFixture } from '../test/portfolioFixtures'
 import { FcnSettlementReview } from './FcnSettlementReview'
+
+vi.mock('../lib/api', async original => ({ ...(await original<typeof import('../lib/api')>()),
+  searchPortfolioSecurities: vi.fn(), materializePortfolioSecurity: vi.fn(),
+}))
 
 const accounts = [
   { account_id: 'stock-hkd', account_name: 'HK securities', account_category: 'security', currency: 'HKD' },
@@ -53,4 +59,25 @@ it('renders the FCN settlement explanation in Chinese with named securities and 
   expect(screen.getByLabelText('股票费用扣款日')).toHaveValue('2026-09-04')
   expect(screen.getByText(/价值汇率只将确认价值折算到合约币种，不产生现金换汇/)).toBeVisible()
   expect(screen.queryByText('Settlement cashflows')).not.toBeInTheDocument()
+})
+
+
+it.each(['manual', 'capture'])('registers an unregistered FCN delivery security in the %s review', async mode => {
+  const onChange = vi.fn()
+  const onInstrumentRegistered = vi.fn()
+  const candidate = { instrument_type: 'equity' as const, symbol: '0700.HK', name: 'Tencent',
+    catalog_provider: 'fmp' as const, catalog_symbol: '0700.HK', exchange_code: 'XHKG',
+    exchange_label: 'Hong Kong Exchange', market: 'HK', currency: 'HKD', currency_verified: true, existing_instrument_id: null }
+  const registered = { ...stock, instrument_id: 'tencent', instrument_name: 'Tencent' }
+  vi.mocked(searchPortfolioSecurities).mockResolvedValue({ results: [candidate], catalog_errors: {} })
+  vi.mocked(materializePortfolioSecurity).mockResolvedValue(registered)
+  const props = { record: { asset_deliveries: [{ ...delivery, instrument_id: '' }] }, accounts, instruments: [stock],
+    portfolioId: 'portfolio-1', onChange, onInstrumentRegistered }
+  render(<LanguageProvider enableDomTranslation={false}>{mode === 'manual'
+    ? <FcnSettlementReview {...props} />
+    : <TransactionDeliveryReview {...props} canAddAssetDelivery />}</LanguageProvider>)
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: '0700' } })
+  fireEvent.click(await screen.findByRole('button', { name: /0700.HK.*Hong Kong Exchange/ }))
+  await waitFor(() => expect(onChange).toHaveBeenCalledWith({ asset_deliveries: [{ ...delivery, instrument_id: 'tencent' }] }))
+  expect(onInstrumentRegistered).toHaveBeenCalledWith(registered)
 })

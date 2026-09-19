@@ -309,7 +309,12 @@ def _market_instrument_ids(scope: str, now: datetime, *, channel: str) -> list[s
     if channel == "reference":
         types.add("public_fund")
     return [str(item["instrument_id"]) for item in list_instruments(include_inactive=False)
-            if item["instrument_type"] in types and market_scope_for_calendar(
+            if item["instrument_type"] in types
+            # FMP references are projected by the public collector / arrival
+            # pipeline. Pre-open jobs only acquire the remaining direct source.
+            and (channel != "reference" or item.get("source_settings", {}).get("source_api_profile")
+                 in {"tushare", "tushare_pro", "tushare-pro"})
+            and market_scope_for_calendar(
                 item.get("source_settings", {}).get("market_calendar") or item.get("exchange_code")
             ) in active_scopes]
 

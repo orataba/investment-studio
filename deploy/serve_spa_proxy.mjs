@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createReadStream, statSync } from 'node:fs'
 import { createServer, request as httpRequest } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { URL } from 'node:url'
 
@@ -30,11 +31,33 @@ const contentTypes = new Map([
   ['.woff2', 'font/woff2'],
 ])
 
-function sendFile(response, filePath) {
+function sendFile(request, response, filePath) {
   const type = contentTypes.get(extname(filePath).toLowerCase()) || 'application/octet-stream'
+  const metadata = statSync(filePath, { throwIfNoEntry: false })
+  if (!metadata) {
+    response.writeHead(404)
+    response.end('File unavailable')
+    return
+  }
+  // Vite filenames identify immutable content. HTML must always revalidate.
+  const immutable = filePath.startsWith(join(distRoot, 'assets') + sep)
+  const etag = `W/"${metadata.size.toString(16)}-${Math.trunc(metadata.mtimeMs).toString(16)}"`
+  const headers = { 'Content-Type': type, ETag: etag,
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' }
+  if (request.headers['if-none-match'] === etag) {
+    response.writeHead(304, headers)
+    response.end()
+    return
+  }
+  headers['Content-Length'] = metadata.size
+  if (request.method === 'HEAD') {
+    response.writeHead(200, headers)
+    response.end()
+    return
+  }
   const stream = createReadStream(filePath)
   stream.on('open', () => {
-    response.writeHead(200, { 'Content-Type': type })
+    response.writeHead(200, headers)
     stream.pipe(response)
   })
   stream.on('error', () => {
@@ -112,7 +135,18 @@ function proxyApi(clientRequest, clientResponse) {
 }
 
 createServer((request, response) => {
-  if (request.url?.startsWith('/api')) {
+  const started = performance.now()
+  const suppliedId = request.headers['x-request-id']
+  const requestId = typeof suppliedId === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(suppliedId) ? suppliedId : randomUUID()
+  request.headers['x-request-id'] = requestId
+  response.setHeader('X-Request-ID', requestId)
+  response.on('close', () => {
+    console.log(JSON.stringify({ timestamp: new Date().toISOString(), event: 'web_request',
+      request_id: requestId, method: request.method, path: (request.url || '/').split('?')[0],
+      status: response.statusCode, duration_ms: Math.round((performance.now() - started) * 100) / 100,
+      completed: response.writableFinished }))
+  })
+  if (request.url === '/api' || request.url?.startsWith('/api/') || request.url?.startsWith('/api?')) {
     proxyApi(request, response)
     return
   }
@@ -134,7 +168,7 @@ createServer((request, response) => {
     response.end('File unavailable')
     return
   }
-  sendFile(response, staticPath)
+  sendFile(request, response, staticPath)
 }).listen(port, host, () => {
   console.log(`Serving ${distRoot} on http://${host}:${port}, proxying /api to ${apiTarget.href}`)
 })

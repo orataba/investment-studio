@@ -696,7 +696,18 @@ def test_market_scope_uses_exchange_dates_and_does_not_treat_private_nav_as_list
     now = datetime(2026, 9, 7, 13, tzinfo=UTC)
     assert scheduled_refresh._market_instrument_ids("us", now, channel="market") == []
     assert scheduled_refresh._market_instrument_ids("cn-hk", now, channel="market") == ["cn-stock", "hk-stock"]
-    assert scheduled_refresh._market_instrument_ids("us", datetime(2026, 9, 8, 13, tzinfo=UTC), channel="reference") == ["xlk"]
+    assert scheduled_refresh._market_instrument_ids("us", datetime(2026, 9, 8, 13, tzinfo=UTC), channel="reference") == []
+
+
+def test_preopen_reference_only_acquires_direct_tushare_sources(monkeypatch):
+    from datetime import UTC, datetime
+    rows = [{"instrument_id": iid, "instrument_type": "equity", "source_settings": {
+        "market_calendar": "XSHG", "source_api_profile": profile}}
+        for iid, profile in [("fmp-stock", "fmp"), ("direct-stock", "tushare"), ("manual-stock", "manual")]]
+    monkeypatch.setattr(scheduled_refresh, "list_instruments", lambda **kwargs: rows)
+    now = datetime(2026, 9, 8, 0, tzinfo=UTC)
+    assert scheduled_refresh._market_instrument_ids("cn-hk", now, channel="reference") == ["direct-stock"]
+    assert scheduled_refresh._market_instrument_ids("cn", now, channel="market") == ["fmp-stock", "direct-stock", "manual-stock"]
 
 
 def test_empty_market_scope_never_falls_back_to_global_refresh(monkeypatch, tmp_path):

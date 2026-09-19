@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
@@ -164,6 +165,31 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
             "existing_instrument_id": None,
         }
     ]
+
+
+def test_fmp_screener_includes_distinct_share_classes_in_local_search(
+    isolated_equity_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FmpClient(settings=SimpleNamespace(
+        fmp_api_url="https://example.test", fmp_timeout_seconds=30,
+        resolved_fmp_api_key=lambda: "test-key",
+    ))
+    fixture = FakeFmpClient()
+
+    def get_rows(path, *, params):
+        assert path == "company-screener"
+        rows = fixture.active_equities(str(params["exchange"]))
+        if params["exchange"] == "NASDAQ":
+            rows.append({**rows[0], "symbol": "GOOG", "companyName": "Alphabet Inc."})
+            if params.get("includeAllShareClasses") == "true":
+                rows.append({**rows[0], "symbol": "GOOGL", "companyName": "Alphabet Inc."})
+        return rows
+
+    monkeypatch.setattr(client, "_get_list", get_rows)
+    sync_equity_catalog(client=client)
+    assert [row["symbol"] for row in search_equities("GOOGL")] == ["GOOGL"]
+    assert {row["symbol"] for row in search_equities("Alphabet")} == {"GOOG", "GOOGL"}
 
 
 def test_catalog_sync_fetch_failure_preserves_previous_snapshot(

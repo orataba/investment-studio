@@ -1,6 +1,6 @@
 # macOS 本地后台服务
 
-项目提供八个用户级 `launchd` 常驻服务，在登录后自动启动四个 API 与四个前端；另有六个一次性数据任务，分别处理各市场盘后行情、盘前研究资料和晚间净值结算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
+项目提供八个用户级 `launchd` 常驻服务，在登录后自动启动四个 API 与四个前端；另有五个一次性数据任务，分别处理各市场盘后行情、Tushare 盘前资料和晚间净值结算。公共数据同步另行安装。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -35,11 +35,11 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 history 和进程参数暴露凭据。
 
 安装器会停止并等待旧服务退出，创建并校验 `identity / instrument_data / instrument_registry / data_ingestion / platform / portfolio / watchlist / market_data / market_text / briefing`
-项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移；资料刷新后按共享登记目录同步四个系统 Watchlist 的成员及行物化，保留用户名单、视图和研究，再刷新失效的 Portfolio 快照并执行只读审计。同步失败同样触发回滚，不依赖浏览器访问补齐目录。随后重建四个前端，以原子文件替换更新各 plist 并启动 `launchd`
+项目 schema 的迁移前 custom-format 备份，初始化身份表并执行业务迁移；刷新本次发布所需的股票/ETF 搜索目录后，按共享登记目录同步四个系统 Watchlist 的成员及行物化，保留用户名单、视图和研究，再刷新失效的 Portfolio 快照并执行只读审计。安装不全量重采已登记证券的行情；行情和参考事实由公共数据同步及既有定时维护流程更新。目录或物化失败同样触发回滚，不依赖浏览器访问补齐目录。随后重建四个前端，以原子文件替换更新各 plist 并启动 `launchd`
 服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
 和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
 校验后的迁移前备份默认保留在
-`~/Library/Application Support/investment-studio/backups/`。晚间结算任务在加载后按已有运行状态判断是否补跑；市场行情和资料任务只注册日历计划，不在加载时额外执行。首次上线前先完成资料采集，再启动研究服务。所有批次共用现有非阻塞文件锁。
+`~/Library/Application Support/investment-studio/backups/`。晚间结算任务在加载后按已有运行状态判断是否补跑；市场行情和资料任务只注册日历计划，不在加载时额外执行。首次上线前先完成资料采集，再启动研究服务。所有批次共用独占写锁，定时刷新在下述有界窗口内等待已有批次完成。
 
 晚间结算时间可以在安装时覆盖，例如：
 
@@ -58,19 +58,17 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 | `hk-market-data-refresh` | `market / hk` | 港股实际收盘后 30 分钟 |
 | `us-market-data-refresh` | `market / us` | 美股实际收盘后 30 分钟 |
 | `cn-hk-reference-data-refresh` | `reference / cn-hk` | 上海 08:00 |
-| `us-reference-data-refresh` | `reference / us` | 纽约 08:00 |
 | `market-data-refresh` | `settlement` | 上海 21:00；失败时 23:00 补跑 |
 
 市场任务按标的配置的交易日历选择资产并跳过休市市场。盘后行情使用标的已配置的数据来源；
-盘前资料任务读取共享数值库并更新登记资产投影；同市场 08:30 的研究优先读取共享原文及事件包，并按需要补充检索。
+盘前资料任务仅采集 Tushare 参考资料；FMP 登记资产投影由公共数据到达流水线统一更新并保存失败状态；同市场 08:30 的研究优先读取共享原文及事件包，并按需要补充检索。
 Watchlist 不依赖外部 DuckDB。港股和美股盘后任务在每小时 `:30` 检查实际交易日历，
 仅在当天真实收盘后 30 分钟起的半小时内执行，覆盖半日市及休市日；两端共用
 `infra/scripts/market_close_schedule.py`，不维护另一份冬夏令时或提前收盘日期表。
 
-`launchd` 日历不支持独立时区，美股盘前资料任务在每小时 `:00`、`:30` 轻量检查纽约时间，
-只在当地 08:00 起的半小时内执行实际刷新；使用 IANA `America/New_York` 自动处理夏令时。
-其他时段直接退出，不修改上一次刷新结果。Mac 在日历时间睡眠时，`launchd` 会在唤醒后
-合并触发；盘后港股/美股和美股盘前任务唤醒时若已错过目标半小时窗口，则等待下一个交易日，必要时显式补采。
+Mac 在日历时间睡眠时，`launchd` 会在唤醒后合并触发；盘后港股/美股任务若已错过目标半小时窗口，则等待下一个交易日，必要时显式补采。
+安装器会停止并删除旧 `us-reference-data-refresh` plist，安装失败时恢复旧定义和运行状态。
+定时刷新共用独占写锁，默认最多等待 900 秒；runner 可通过进程环境变量 `INVESTMENT_STUDIO_LOCAL_REFRESH_LOCK_WAIT_SECONDS` 覆盖。等待写入日志，超时明确返回 75，不启动并行写入或伪报成功。
 注销或关机期间用户级任务不运行，锁屏不影响调度。
 
 晚间 `settlement` 更新 FMP 目录、Tushare 基金净值、邮件净值、FX 和私募基金投影，
@@ -122,7 +120,7 @@ PostgreSQL 备份还需要配套公开数据目录，详见 [Market Data Pipelin
 
 ## 状态、日志与卸载
 
-本地 Watchlist 研究工具默认回调 `8000`，并读取 Portfolio `8001` 与 Regime `3011` 的只读证据；Portfolio 标的风险默认连接 Watchlist `8000`。覆盖地址时使用各应用 `.env.example` 列出的命名空间配置。Watchlist 的本地 `watchlist.env` 可选，但开发命令直接启动 API 时仍需显式提供数据库 URL；常驻服务由安装器提供。个人 Portfolio Research 由外部 `portfolio.env` 的 `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED` 控制。
+本地 Watchlist 研究工具默认回调 `8000`，并读取 Portfolio `8001` 与 Regime `3011` 的只读证据；Portfolio 标的风险默认连接 Watchlist `8000`。覆盖地址时使用各应用 `.env.example` 列出的命名空间配置。Watchlist 的本地 `watchlist.env` 可选，但开发命令直接启动 API 时仍需显式提供数据库 URL；常驻服务由安装器提供。Portfolio Research 在本地与云端默认启用并沿用逐组合权限；外部 `portfolio.env` 的 `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=false` 可显式关闭。升级时需清理此前为禁用入口而设置的旧值。
 
 行情/结算任务摘要的 `status=succeeded` 只表示数据刷新阶段成功；最终结果还包括只读审计。应同时查看对应 `*-run-state.json` 的 `status`、`refresh_exit_code` 和 `audit_exit_code`，以及 launchd 最近退出码。升级迁移后必须同步当前源码再执行审计，不能手工把失败记录改成成功。
 
@@ -136,6 +134,8 @@ infra/launchd/uninstall_local_services.sh
 100 MiB 的 `.log` 文件，仅保留末尾 10 MiB；阈值可分别通过
 `INVESTMENT_STUDIO_LOCAL_LOG_MAX_BYTES` 与 `INVESTMENT_STUDIO_LOCAL_LOG_RETAIN_BYTES`
 覆盖。卸载只移除服务，不删除数据库、研究输出、上传文档或日志。
+
+四个 API 的日志包含结构化 `http_request` 与后台操作开始/结束记录，可按请求编号关联总耗时、SQL 耗时和失败代码位置；浏览器耗时及代码异常记录写入 `home-api` 日志。记录不包含表单、响应正文、密码或研究内容。排查某次操作时先按发生时间和请求编号筛选，再检查对应计算或采集任务；字段合同见 [请求与任务诊断](SERVER_DEPLOYMENT.md#request-and-job-diagnostics)。本机没有 Nginx 时不产生该文档中的 Nginx 访问日志。
 
 晚间结算对应文件如下；其余任务将 `market-data-refresh` 替换为上表任务后缀：
 
@@ -155,7 +155,7 @@ launchctl kickstart "gui/$UID/com.orataba.investment-studio.market-data-refresh"
 执行。单资产 CLI 修正属于另一条显式数据写入操作；运行全量定时批次时不要同时修改同一资产。
 
 执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
-加载的八个 API/前端 job、六个行情/结算定时 job 及公共数据同步 job，完成安全备份和数据库恢复/迁移后再加载。
+加载的八个 API/前端 job、五个行情/结算定时 job（以及尚未退役的旧资料任务）及公共数据同步 job，完成安全备份和数据库恢复/迁移后再加载。
 晚间任务按 `RunAtLoad` 判断补跑，市场行情/资料任务重新注册日历计划。恢复失败会先自动回滚
 数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
 继续写入。incoming dump 必须具有通过校验的 SHA-256 文件，不能跳过；停服后若

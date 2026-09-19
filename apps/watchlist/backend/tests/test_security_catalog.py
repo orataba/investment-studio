@@ -13,6 +13,20 @@ RESULT = {**PAYLOAD, "symbol": "SHV", "name": "iShares Short Treasury Bond ETF",
           "exchange_code": "XNAS", "exchange_label": "NASDAQ", "market": "US", "currency": "USD"}
 
 
+def test_identity_search_uses_the_lightweight_supported_registry_scope(accounts, monkeypatch):
+    from watchlist_app.services import shared_instrument_registry
+    from watchlist_app.services.instrument_resolution import LOCAL_DETAIL_INSTRUMENT_TYPES
+    client, _, _ = accounts
+    as_user(client, "reader")
+    calls = []
+    monkeypatch.setattr(shared_instrument_registry.shared_store, "search_instrument_identities",
+                        lambda factory, **kwargs: calls.append(kwargs) or [{"instrument_id": "GOOGL"}])
+    response = client.get("/api/instruments/search", params={"q": "GOOGL", "limit": 12})
+    assert response.status_code == 200, response.text
+    assert response.json() == [{"instrument_id": "GOOGL"}]
+    assert calls == [{"search": "GOOGL", "limit": 12, "instrument_types": LOCAL_DETAIL_INSTRUMENT_TYPES}]
+
+
 def test_directory_search_is_available_to_readers_without_registering(accounts, monkeypatch):
     client, _, _ = accounts
     as_user(client, "reader")

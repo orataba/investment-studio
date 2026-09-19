@@ -12,10 +12,11 @@ export type FcnSettlementFields = {
 
 const feeCategories: PortfolioFeeCategory[] = ['unknown', 'transaction_cost', 'management_fee', 'custody_fee', 'administration_fee', 'performance_fee', 'financing_interest', 'borrow_fee', 'payment_in_lieu', 'other']
 
-export function FcnSettlementReview({ record, accounts, instruments, currency = '', terms, economicDate, settlementDate, residualCash, residualAccountId, portfolioId, contractId, excludedTransactionId, allowAssetDelivery = true, onChange }: {
+export function FcnSettlementReview({ record, accounts, instruments, currency = '', terms, economicDate, settlementDate, residualCash, residualAccountId, portfolioId, contractId, excludedTransactionId, allowAssetDelivery = true, onChange, onInstrumentRegistered }: {
   record: FcnSettlementFields
   allowAssetDelivery?: boolean
   portfolioId?: string
+  onInstrumentRegistered?: (instrument: SharedInstrumentRecord) => void
   contractId?: string | null
   excludedTransactionId?: string | null
   accounts: PortfolioAccountRecord[]
@@ -74,7 +75,7 @@ export function FcnSettlementReview({ record, accounts, instruments, currency = 
               const account = accounts.find(item => item.account_id === event.target.value)
               updateDelivery(index, { account_id: event.target.value, currency: account?.currency ?? '', ...(account?.currency !== leg.currency ? { fx_rate_to_contract: account?.currency === currency ? 1 : '', settlement_cash_account_id: null } : {}) })
             }}><option value="">{label('Select account', '选择账户')}</option>{accounts.filter(account => account.account_category === 'security').map(account => <option key={account.account_id} value={account.account_id}>{account.account_name} · {account.currency}</option>)}</select></label>
-            <SecurityInstrumentPicker label={label(`Delivery ${index + 1} security`, `交付 ${index + 1} 证券`)} value={leg.instrument_id} instruments={instruments.filter(item => ['equity', 'etf'].includes(item.instrument_type))} onSelect={instrument_id => updateDelivery(index, { instrument_id })} />
+            <SecurityInstrumentPicker portfolioId={portfolioId} onInstrumentRegistered={onInstrumentRegistered} label={label(`Delivery ${index + 1} security`, `交付 ${index + 1} 证券`)} value={leg.instrument_id} instruments={instruments.filter(item => ['equity', 'etf'].includes(item.instrument_type))} onSelect={instrument_id => updateDelivery(index, { instrument_id })} />
           </> : <strong>{accountLabel(leg.account_id)} · {instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : leg.instrument_id}</strong>}
           <label><span>{label('Delivered shares', '实际收到股数')}</span><input type="number" min="0" step="any" value={leg.quantity} readOnly={!onChange} onChange={event => updateDelivery(index, { quantity: event.target.value })} /></label>
           <label><span>{label('Total confirmed fair value', '证券总公允确认价值')} ({leg.currency || '—'})</span><input type="number" min="0" step="any" value={leg.fair_value} readOnly={!onChange} onChange={event => updateDelivery(index, { fair_value: event.target.value })} /></label>

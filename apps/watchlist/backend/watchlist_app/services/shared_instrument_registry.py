@@ -79,6 +79,18 @@ def list_shared_instruments(
         raise _registry_error("Failed to query shared instrument registry.") from error
 
 
+def search_shared_instrument_identities(*, search: str, limit: int) -> list[dict[str, object]]:
+    from watchlist_app.services.instrument_resolution import LOCAL_DETAIL_INSTRUMENT_TYPES
+
+    try:
+        return shared_store.search_instrument_identities(
+            get_session_factory(), search=search,
+            instrument_types=LOCAL_DETAIL_INSTRUMENT_TYPES, limit=limit,
+        )
+    except Exception as error:
+        raise _registry_error("Failed to search shared instrument registry.") from error
+
+
 def list_shared_active_instrument_ids(
     *,
     instrument_types: set[str] | frozenset[str] | None = None,

@@ -23,11 +23,15 @@ def audit(db: Session, action: str, actor: str | None = None, target: str | None
 
 
 def user_principal(db: Session, user_id: str) -> dict:
-    user = db.get(User, user_id)
-    membership = db.scalar(select(Membership).where(Membership.user_id == user_id))
-    if not user or not user.active or not membership:
+    row = db.execute(
+        select(User, Membership, Team)
+        .join(Membership, Membership.user_id == User.id)
+        .join(Team, Team.id == Membership.team_id)
+        .where(User.id == user_id, User.active.is_(True))
+    ).one_or_none()
+    if row is None:
         raise HTTPException(401, "账号或团队成员资格无效。")
-    team = db.get(Team, membership.team_id)
+    user, membership, team = row
     return {"kind": "user", "user_id": user.id, "username": user.username, "display_name": user.display_name,
             "team_id": team.id, "team_name": team.name, "team_role": membership.role,
             "is_team_owner": team.owner_user_id == user.id, "scopes": []}

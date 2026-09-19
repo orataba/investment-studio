@@ -7,9 +7,9 @@ from portfolio_app.core.settings import Settings, get_settings
 from portfolio_app.services.daily_snapshot_worker import run_daily_snapshot_recalculation_worker_once
 
 
-def test_research_requires_explicit_enablement(monkeypatch):
+def test_research_is_available_by_default(monkeypatch):
     monkeypatch.delenv("INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED")
-    assert Settings().research_enabled is False
+    assert Settings().research_enabled is True
 
 
 @pytest.mark.parametrize("enabled", [False, True])

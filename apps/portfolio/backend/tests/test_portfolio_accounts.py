@@ -344,3 +344,24 @@ def test_local_scoped_delegations_cannot_escape_or_write_ledger(secured, monkeyp
             assert local_client.put(f'/api/portfolios/{a}/members/bob', headers=headers(token), json={'role': 'manager'}).status_code == 403
             assert local_client.post('/api/portfolios/snapshots/daily/recalculations', headers=headers(token), json={'refresh_all': True}).status_code == 403
             assert local_client.post('/api/portfolios/snapshots/daily/recalculations', headers=headers(token), json={'portfolio_ids': [a]}).status_code == 403
+
+
+def test_session_bootstrap_returns_current_user_capabilities_and_matching_acl(secured):
+    client, people, a, b = secured
+    response = client.get('/api/portfolios/session', params={'portfolio_id': a}, headers=headers('bob'))
+    assert response.status_code == 200
+    body = response.json()
+    assert body['user_id'] == body['access']['user_id'] == 'bob'
+    assert body['session_id'] == 'bob-session'
+    assert body['access']['portfolio_id'] == a
+    assert body['access']['role'] == 'viewer'
+    assert isinstance(body['capabilities']['research_enabled'], bool)
+    assert response.headers['Cache-Control'] == 'private, no-store'
+    assert client.get('/api/portfolios/session', headers=headers('bob')).json()['access'] is None
+    assert client.get('/api/portfolios/session', params={'portfolio_id': b}, headers=headers('alice')).status_code == 404
+    assert client.get('/api/portfolios/session', params={'portfolio_id': a}, headers=headers('maintenance')).status_code == 403
+    from dataclasses import replace
+    people['task'] = replace(people['bob'], resource_scope={'kind': 'portfolio', 'id': a})
+    assert client.get('/api/portfolios/session', params={'portfolio_id': a}, headers=headers('task')).status_code == 403
+    client.delete(f'/api/portfolios/{a}/members/bob', headers=headers('alice'))
+    assert client.get('/api/portfolios/session', params={'portfolio_id': a}, headers=headers('bob')).status_code == 404

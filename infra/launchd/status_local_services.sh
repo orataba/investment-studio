@@ -21,7 +21,7 @@ for service in home-api watchlist-api portfolio-api briefing-api home-web watchl
 done
 
 for refresh_service in market-data-refresh cn-market-data-refresh hk-market-data-refresh \
-  us-market-data-refresh cn-hk-reference-data-refresh us-reference-data-refresh market-sync; do
+  us-market-data-refresh cn-hk-reference-data-refresh market-sync; do
 refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
 refresh_schedule=unavailable

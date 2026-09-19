@@ -1866,6 +1866,7 @@ class TargetSetIntegrityIssueRecord(BaseModel):
 
 class TaxonomyCatalogResponse(BaseModel):
     portfolio_id: str
+    planning_as_of_date: date | None = None
     default_planning_taxonomy_id: str | None = None
     risk_basis: dict[str, object] | None = None
     taxonomies: list[TaxonomyRecord]
@@ -2179,6 +2180,7 @@ class ResearchCurrentContextRecord(BaseModel):
     portfolio_name: str
     base_currency: str
     as_of_date: date
+    planning_as_of_date: date | None = None
     lookback_start: date
     lookback_end: date
     nav: float | None = None
@@ -2842,6 +2844,38 @@ class TargetSetLineInput(BaseModel):
             self.taxonomy_node_id = self.target_member_id
         else:
             self.taxonomy_node_id = None
+        return self
+
+
+class TaxonomyTargetSetConfigurationInput(BaseModel):
+    target_set_id: str | None = None
+    comparator_taxonomy_node_id: str | None = None
+    target_set_type: TargetSetType
+    name: str = Field(min_length=1)
+    weight_enabled: bool = False
+    risk_budget_enabled: bool = False
+    status: Literal["active", "inactive"] = "active"
+    notes: str | None = None
+    lines: list[TargetSetLineInput] = Field(default_factory=list)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_required_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
+class TaxonomyTargetConfigurationRequest(BaseModel):
+    effective_from: date
+    node_defaults: dict[str, DefaultTargetDimension] = Field(default_factory=dict)
+    target_sets: list[TaxonomyTargetSetConfigurationInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_distinct_scopes(self) -> "TaxonomyTargetConfigurationRequest":
+        scopes = [(item.comparator_taxonomy_node_id, item.target_set_type) for item in self.target_sets]
+        if len(scopes) != len(set(scopes)):
+            raise ValueError("A target scope can only be saved once per request.")
+        if not self.node_defaults and not self.target_sets:
+            raise ValueError("No target configuration changes were provided.")
         return self
 
 

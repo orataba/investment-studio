@@ -67,11 +67,11 @@ prepare_case() {
   printf '%s\n' \
     'from __future__ import annotations' \
     'import os' \
-    'import sys' \
     'from pathlib import Path' \
     'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
-    '    handle.write("market-refresh:" + " ".join(sys.argv[1:]) + "\n")' \
-    > "$project_root/shared-data/scripts/refresh_market_data_scheduled.py"
+    '    handle.write("catalog-refresh\n")' \
+    'raise SystemExit(1 if os.environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
+    > "$project_root/shared-data/scripts/refresh_release_catalogs.py"
   printf '%s\n' \
     'from __future__ import annotations' \
     'import os' \
@@ -306,6 +306,27 @@ if grep -q '^credential-in-argv$' "$EVENT_LOG"; then
   exit 1
 fi
 
+CATALOG_REFRESH_CASE="$TEST_ROOT/catalog-refresh-failure"
+prepare_case "$CATALOG_REFRESH_CASE"
+export EVENT_LOG="$CATALOG_REFRESH_CASE/events"
+if CATALOG_REFRESH_FAIL=true FAIL_ROLLBACK=false run_installer "$CATALOG_REFRESH_CASE" \
+  > "$CATALOG_REFRESH_CASE/output" 2>&1; then
+  echo "Installer accepted a failed catalog refresh." >&2
+  exit 1
+fi
+grep -q '^backup$' "$EVENT_LOG"
+grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^catalog-refresh$' "$EVENT_LOG"
+if grep -q '^watchlist-refresh$\|^snapshot-refresh$\|^audit$' "$EVENT_LOG"; then
+  echo "Installer continued after a failed catalog refresh." >&2
+  exit 1
+fi
+grep -q '^restore$' "$EVENT_LOG"
+restore_line="$(grep -n '^restore$' "$EVENT_LOG" | cut -d: -f1)"
+restart_line="$(grep -n 'launchctl:bootstrap .*test.investment-studio.home-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
+[[ "$restore_line" -lt "$restart_line" ]]
+assert_old_plists_restored "$CATALOG_REFRESH_CASE"
+
 WATCHLIST_REFRESH_CASE="$TEST_ROOT/watchlist-refresh-failure"
 prepare_case "$WATCHLIST_REFRESH_CASE"
 export EVENT_LOG="$WATCHLIST_REFRESH_CASE/events"
@@ -316,7 +337,7 @@ if WATCHLIST_REFRESH_FAIL=true FAIL_ROLLBACK=false run_installer "$WATCHLIST_REF
 fi
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
-grep -q '^market-refresh:' "$EVENT_LOG"
+grep -q '^catalog-refresh$' "$EVENT_LOG"
 grep -q '^watchlist-refresh$' "$EVENT_LOG"
 if grep -q '^snapshot-refresh$\|^audit$' "$EVENT_LOG"; then
   echo "Installer continued after a failed Watchlist reconciliation." >&2
@@ -339,7 +360,7 @@ set -e
 [[ $snapshot_refresh_status -ne 0 ]]
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
-grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
+grep -q '^catalog-refresh$' "$EVENT_LOG"
 grep -q '^watchlist-refresh$' "$EVENT_LOG"
 grep -q '^snapshot-refresh$' "$EVENT_LOG"
 if grep -q '^audit$' "$EVENT_LOG"; then
@@ -359,14 +380,14 @@ rollback_status=$?
 set -e
 [[ $rollback_status -eq 70 ]]
 grep -q '^migrate$' "$EVENT_LOG"
-grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
+grep -q '^catalog-refresh$' "$EVENT_LOG"
 grep -q '^audit$' "$EVENT_LOG"
 grep -q '^health$' "$EVENT_LOG"
 previous_line=0
-for stage in backup migrate market-refresh watchlist-refresh snapshot-refresh audit health; do
+for stage in backup migrate catalog-refresh watchlist-refresh snapshot-refresh audit health; do
   stage_line="$(grep -n "^$stage\(:\|$\)" "$EVENT_LOG" | head -n 1 | cut -d: -f1)"
   if [[ -z "$stage_line" || "$stage_line" -le "$previous_line" ]]; then
-    echo "Installer did not execute backup, migration, market refresh, Watchlist reconciliation, snapshot refresh, audit and health checks in order." >&2
+    echo "Installer did not execute backup, migration, catalog refresh, Watchlist reconciliation, snapshot refresh, audit and health checks in order." >&2
     exit 1
   fi
   previous_line="$stage_line"

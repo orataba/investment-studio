@@ -1,6 +1,7 @@
 """Run the existing pinned Harness with research-only tools and a bound input snapshot."""
 import json
 import logging
+from studio_runtime import operation
 import os
 from pathlib import Path
 import shutil
@@ -57,7 +58,8 @@ def run_analysis(run_id: str, token: str | None = None, issuer=None):
                     tokens.append(execution_token)
                     identities.enter_context(principal_context(resolve_token(execution_token, "watchlist")))
 
-            _run_analysis(run_id, execution_authorization=execution_authorization)
+            with operation("watchlist_research", run_id=run_id):
+                _run_analysis(run_id, execution_authorization=execution_authorization)
     except (IdentityError, HTTPException) as error:
         _fail_authorization(run_id, error)
     except Exception as error:

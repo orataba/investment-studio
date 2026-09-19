@@ -12,3 +12,8 @@ def portfolio_valuation_today(valuation_timezone: str | None) -> date:
         valuation_timezone or settings.default_trade_timezone
     ).strip()
     return datetime.now(ZoneInfo(timezone_name)).date()
+
+
+def planning_reference_date(valuation_date: date, *, pinned: bool = False) -> date:
+    """Keep current planning separate from the last complete market valuation."""
+    return valuation_date if pinned else max(valuation_date, portfolio_valuation_today(None))

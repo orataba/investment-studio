@@ -29,7 +29,8 @@ def test_investments_start_schedules_data_without_forcing_refresh(monkeypatch):
     command = execute.call_args.args[0]
     assert 'investment-studio-market-data-refresh.timer' in command
     assert 'investment-studio-market-data-refresh.service' not in command
-    assert 'investment-studio-us-reference-data-refresh.timer' in command
+    assert 'investment-studio-us-reference-data-refresh.timer' not in command
+    assert 'investment-studio-cn-hk-reference-data-refresh.timer' in command
     assert 'investment-studio-us-reference-data-refresh.service' not in command
     assert 'investment-studio-home-api.service' not in command
 

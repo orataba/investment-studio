@@ -10,7 +10,6 @@ import {
   createPortfolioTaxonomy,
   createPortfolioTaxonomyAssignment,
   createPortfolioTaxonomyNode,
-  createPortfolioTargetSet,
   deletePortfolioInstrumentUniverseRecord,
   deletePortfolioTaxonomy,
   deletePortfolioTaxonomyNode,
@@ -23,7 +22,7 @@ import {
   updatePortfolioTaxonomy,
   updatePortfolioTaxonomyAssignment,
   updatePortfolioTaxonomyNode,
-  updatePortfolioTargetSet,
+  savePortfolioTaxonomyTargetConfiguration,
   type InstrumentCore,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
@@ -694,6 +693,7 @@ export default function TaxonomiesPage() {
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
   const { portfolioId = '' } = useParams()
   const currentPortfolioIdRef = useRef(portfolioId)
+  const workspaceRequestRef = useRef(0)
   const [searchParams, setSearchParams] = useSearchParams()
   const [catalog, setCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
@@ -774,12 +774,13 @@ export default function TaxonomiesPage() {
       return
     }
 
+    const requestId = ++workspaceRequestRef.current
     let cancelled = false
     setLoading(true)
 
     fetchWorkspace(portfolioId)
       .then((result) => {
-        if (cancelled) {
+        if (cancelled || requestId !== workspaceRequestRef.current) {
           return
         }
         setCatalog(result.catalog)
@@ -790,7 +791,7 @@ export default function TaxonomiesPage() {
         setSupplementalNotice(result.supplementalNotice)
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && requestId === workspaceRequestRef.current) {
           setLoading(false)
         }
       })
@@ -813,10 +814,11 @@ export default function TaxonomiesPage() {
       return
     }
     const requestedPortfolioId = portfolioId
+    const requestId = ++workspaceRequestRef.current
     setRefreshing(true)
     try {
       const result = await fetchWorkspace(requestedPortfolioId)
-      if (currentPortfolioIdRef.current !== requestedPortfolioId) {
+      if (currentPortfolioIdRef.current !== requestedPortfolioId || requestId !== workspaceRequestRef.current) {
         return
       }
       setCatalog(result.catalog)
@@ -826,7 +828,7 @@ export default function TaxonomiesPage() {
       setWorkspaceError(result.workspaceError)
       setSupplementalNotice(result.supplementalNotice)
     } finally {
-      if (currentPortfolioIdRef.current === requestedPortfolioId) {
+      if (currentPortfolioIdRef.current === requestedPortfolioId && requestId === workspaceRequestRef.current) {
         setRefreshing(false)
       }
     }
@@ -2251,50 +2253,18 @@ export default function TaxonomiesPage() {
     setActionError(null)
     setNotice(null)
     try {
-      if (
-        changedTargetScopes.some(({ draft }) => draft.weight_enabled || draft.risk_budget_enabled) &&
-        (!selectedTaxonomy.planning_enabled || selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL)
-      ) {
-        await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
-          effective_from: effectiveDate,
-          planning_enabled: true,
-          budgeting_level: PLANNING_BUDGETING_LEVEL,
-        })
-      }
-
-      for (const node of changedDefaultTargetNodes) {
-        const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id]
-        if (!draftValue) {
-          continue
-        }
-        await updatePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, node.taxonomy_node_id, {
-          effective_from: effectiveDate,
-          default_target_dimension: draftValue,
-        })
-      }
-
-      for (const { kind, draft, members, comparatorNodeId, existingTargetSet } of changedTargetScopes) {
-        if (!draft.weight_enabled && !draft.risk_budget_enabled) {
-          if (existingTargetSet) await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, {
-            effective_from: effectiveDate, status: 'inactive',
-          })
-          continue
-        }
-        const payload = buildTargetSetPayload(draft, members)
-        if (existingTargetSet) {
-          await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, {
-            effective_from: effectiveDate,
-            ...payload,
-          })
-        } else {
-          await createPortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, {
-            effective_from: effectiveDate,
-            comparator_taxonomy_node_id: comparatorNodeId,
-            target_set_type: kind,
-            ...payload,
-          })
-        }
-      }
+      await savePortfolioTaxonomyTargetConfiguration(portfolioId, selectedTaxonomy.taxonomy_id, {
+        effective_from: effectiveDate,
+        node_defaults: Object.fromEntries(changedDefaultTargetNodes.map((node) => [
+          node.taxonomy_node_id, defaultTargetDraftsByNodeId[node.taxonomy_node_id],
+        ])),
+        target_sets: changedTargetScopes.map(({ kind, draft, members, comparatorNodeId, existingTargetSet }) => ({
+          ...buildTargetSetPayload(draft, members),
+          target_set_id: existingTargetSet?.target_set_id ?? null,
+          comparator_taxonomy_node_id: comparatorNodeId,
+          target_set_type: kind,
+        })),
+      })
 
       const savedParts = [
         changedDefaultTargetNodes.length ? `default targets (${changedDefaultTargetNodes.length})` : '',

@@ -2,20 +2,19 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
 
-from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-import pyotp
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from studio_identity import IdentityError, LOCAL_OWNER_CREDENTIAL, validate_local_request
 
 from home_api.core.settings import get_settings
 from home_api.db.models import Delegation, Membership, OneTimeToken, ServiceCredential, Team, User, now
 from home_api.db.session import get_db
-from home_api.services.auth import hash_password, new_token, read_private_text, token_hash, verify_password
+from home_api.services.auth import hash_password, new_token, token_hash, verify_password
+from home_api.services.browser_origins import trusted_browser_origins
 from home_api.services.identity import AUDIENCES, audit, lock_user, new_session, one_time_token, resolve_token, revoke_one_time_tokens, revoke_sessions, user_principal, utc
 
 router = APIRouter()
@@ -29,21 +28,20 @@ class Input(BaseModel):
 class LoginRequest(Input):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
-    otp: str | None = Field(default=None, max_length=10)
 
 
 class PasswordRequest(Input):
-    current_password: str = Field(min_length=1, max_length=256)
-    password: str = Field(min_length=12, max_length=256)
-    otp: str | None = Field(default=None, max_length=10)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class ConfirmRequest(Input):
     password: str = Field(min_length=1, max_length=256)
-    otp: str | None = Field(default=None, max_length=10)
 
 
-class ProfileRequest(Input):
+Username = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.@+-]+$")]
+
+
+class DisplayNameRequest(Input):
     display_name: str = Field(min_length=1, max_length=200)
 
     @field_validator("display_name")
@@ -54,8 +52,11 @@ class ProfileRequest(Input):
         return value.strip()
 
 
-class InviteRequest(ProfileRequest):
-    username: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.@+-]+$")
+class ProfileRequest(DisplayNameRequest):
+    username: Username | None = None
+
+
+class InviteRequest(DisplayNameRequest):
     role: Literal["admin", "member", "reader"] = "member"
 
 
@@ -64,9 +65,13 @@ class MemberPatch(Input):
     active: bool | None = None
 
 
-class ActivateRequest(Input):
+class ActivationInfoRequest(Input):
     token: str = Field(min_length=1, max_length=256)
-    password: str = Field(min_length=12, max_length=256)
+
+
+class ActivateRequest(ActivationInfoRequest):
+    username: Username | None = None
+    password: str = Field(min_length=8, max_length=256)
 
 
 class IntrospectRequest(Input):
@@ -127,11 +132,7 @@ def check_origin(request: Request) -> None:
     if bearer(request):
         return
     settings = get_settings()
-    origins = {value.rstrip("/") for value in settings.cors_origins}
-    for value in [settings.frontend_url, *settings.app_urls.values()]:
-        url = urlsplit(value)
-        if url.scheme and url.netloc:
-            origins.add(f"{url.scheme}://{url.netloc}")
+    origins = set(trusted_browser_origins(settings))
     if request.headers.get("origin", "").rstrip("/") not in origins:
         raise HTTPException(403, "写入请求来源无效。请从工作台页面操作。")
 
@@ -149,53 +150,28 @@ def current(db: Session, request: Request, admin: bool = False) -> dict:
         principal, _, _ = resolve_request_identity(db, request, "home")
     if admin and principal["team_role"] != "admin":
         raise HTTPException(403, "需要团队管理员权限。")
-    if admin:
-        enforce_mfa(db, principal)
     return principal
 
 
-def enforce_mfa(db: Session, principal: dict) -> None:
-    if (not principal.get("local_unrestricted") and get_settings().auth_require_admin_totp
-            and principal["kind"] == "user" and principal["team_role"] == "admin"):
-        if not db.get(User, principal["user_id"]).totp_secret:
-            raise HTTPException(403, "管理员需先在账号设置启用二步验证。")
-
-
-def cipher() -> Fernet:
-    try:
-        return Fernet(read_private_text(get_settings().auth_totp_key_file, "TOTP encryption key").encode())
-    except (ValueError, OSError) as error:
-        raise HTTPException(503, "二步验证尚未配置。") from error
-
-
-def consume_otp(user: User, otp: str | None, secret: str | None = None) -> bool:
-    encrypted = secret or user.totp_secret
-    if not encrypted:
-        return True
-    totp = pyotp.TOTP(cipher().decrypt(encrypted.encode()).decode())
-    step = int(now().timestamp()) // totp.interval
-    # A TOTP code is accepted once, including during sensitive account changes.
-    for candidate in (step, step - 1, step + 1):
-        if user.totp_last_step is not None and candidate <= user.totp_last_step:
-            continue
-        if totp.verify(otp or "", for_time=candidate * totp.interval):
-            user.totp_last_step = candidate
-            return True
-    return False
-
-
-def confirm_user(db: Session, principal: dict, password: str, otp: str | None) -> User:
+def confirm_user(db: Session, principal: dict, password: str) -> User:
     user = lock_user(db, principal["user_id"])
-    if not user or not user.active or not verify_password(password, user.password_hash) or not consume_otp(user, otp):
-        raise HTTPException(401, "密码或验证码不正确。")
+    if not user or not user.active or not verify_password(password, user.password_hash):
+        raise HTTPException(401, "密码不正确。")
     return user
 
 
-def session_body(db: Session, principal: dict) -> dict:
-    user = db.get(User, principal["user_id"])
-    return {"authenticated": True, **principal, "mfa_enabled": bool(user.totp_secret),
-            "mfa_required": bool(not principal.get("local_unrestricted") and get_settings().auth_require_admin_totp
-                                 and principal["team_role"] == "admin" and not user.totp_secret)}
+def session_body(principal: dict) -> dict:
+    return {"authenticated": True, **principal}
+
+
+def set_username(db: Session, user: User, username: str) -> None:
+    # The unique constraint is authoritative, including concurrent activations.
+    user.username = username.casefold()
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(409, "该用户名已存在，请换一个用户名。") from error
 
 
 def set_cookie(response: Response, token: str) -> None:
@@ -216,7 +192,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Db) -
     user = db.scalar(select(User).where(User.username == payload.username.strip().casefold()).with_for_update())
     if user and user.locked_until and utc(user.locked_until) > now():
         raise HTTPException(429, "登录尝试过多，请稍后重试。")
-    if not user or not user.active or not verify_password(payload.password, user.password_hash) or not consume_otp(user, payload.otp):
+    if not user or not user.active or not verify_password(payload.password, user.password_hash):
         if user:
             user.failed_logins += 1
             if user.failed_logins >= 5:
@@ -224,7 +200,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Db) -
                 user.failed_logins = 0
             audit(db, "login_failed", target=user.id)
             db.commit()
-        raise HTTPException(401, "用户名、密码或二步验证码不正确。")
+        raise HTTPException(401, "用户名或密码不正确。")
     principal = user_principal(db, user.id)
     user.failed_logins = 0
     user.locked_until = None
@@ -232,12 +208,12 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Db) -
     audit(db, "login", user.id, user.id)
     db.commit()
     set_cookie(response, token)
-    return session_body(db, principal)
+    return session_body(principal)
 
 
 @router.get("/session")
 def session(request: Request, db: Db) -> dict:
-    return session_body(db, current(db, request))
+    return session_body(current(db, request))
 
 
 @router.get("/check", status_code=204)
@@ -278,17 +254,25 @@ def logout_all(request: Request, response: Response, db: Db) -> Response:
 def profile(payload: ProfileRequest, request: Request, db: Db) -> dict:
     check_origin(request)
     principal = current(db, request)
-    db.get(User, principal["user_id"]).display_name = payload.display_name
+    user = lock_user(db, principal["user_id"])
+    db.expire_all()
+    current(db, request)
+    user.display_name = payload.display_name
+    if payload.username is not None:
+        set_username(db, user, payload.username)
     audit(db, "profile_changed", principal["user_id"], principal["user_id"])
     db.commit()
-    return session_body(db, current(db, request))
+    return session_body(current(db, request))
 
 
 @router.post("/password", status_code=204)
 def password(payload: PasswordRequest, request: Request, response: Response, db: Db) -> Response:
     check_origin(request)
     principal = current(db, request)
-    user = confirm_user(db, principal, payload.current_password, payload.otp)
+    user = lock_user(db, principal["user_id"])
+    # Waiting behind a reset/change must not authorize using a revoked session.
+    db.expire_all()
+    current(db, request)
     user.password_hash = hash_password(payload.password)
     revoke_sessions(db, user.id)
     revoke_one_time_tokens(db, user.id)
@@ -319,10 +303,7 @@ def activation_result(token: str) -> dict:
 def invite(payload: InviteRequest, request: Request, db: Db) -> dict:
     check_origin(request)
     principal = current(db, request, admin=True)
-    username = payload.username.casefold()
-    if db.scalar(select(User).where(User.username == username)):
-        raise HTTPException(409, "该用户名已存在。")
-    user = User(username=username, display_name=payload.display_name)
+    user = User(display_name=payload.display_name)
     db.add(user)
     db.flush()
     db.add(Membership(team_id=principal["team_id"], user_id=user.id, role=payload.role))
@@ -371,28 +352,48 @@ def reset_member(user_id: str, request: Request, db: Db) -> dict:
     if db.get(Team, principal["team_id"]).owner_user_id == user.id and principal["user_id"] != user.id:
         raise HTTPException(403, "其他管理员不能重置团队拥有者的密码。")
     revoke_sessions(db, user.id)
-    token = one_time_token(db, user.id, "reset")
+    token = one_time_token(db, user.id, "reset" if user.password_hash else "activate")
     audit(db, "password_reset_requested", principal["user_id"], user.id)
     db.commit()
     return activation_result(token)
 
 
-@router.post("/activate", status_code=204)
-def activate(payload: ActivateRequest, request: Request, db: Db) -> Response:
-    check_origin(request)
-    digest = token_hash(payload.token)
+def activation_record(db: Session, token: str, *, lock: bool = False) -> tuple[User, OneTimeToken]:
+    digest = token_hash(token)
     user_id = db.scalar(select(OneTimeToken.user_id).where(OneTimeToken.token_hash == digest))
     if not user_id:
         raise HTTPException(400, "链接已失效，请联系管理员重新生成。")
-    # Locate the account without locking the token. Every credential mutation
-    # locks the user first, then rechecks the token after any concurrent change.
-    user = lock_user(db, user_id)
-    record = db.scalar(select(OneTimeToken).where(OneTimeToken.token_hash == digest).with_for_update()
-                       .execution_options(populate_existing=True))
+    user = lock_user(db, user_id) if lock else db.get(User, user_id)
+    query = select(OneTimeToken).where(OneTimeToken.token_hash == digest)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    record = db.scalar(query)
     if not record or record.consumed_at or utc(record.expires_at) <= now():
         raise HTTPException(400, "链接已失效，请联系管理员重新生成。")
     if not user or not user.active:
         raise HTTPException(400, "账号已停用。")
+    return user, record
+
+
+@router.post("/activation-info")
+def activation_info(payload: ActivationInfoRequest, request: Request, db: Db) -> dict:
+    check_origin(request)
+    user, record = activation_record(db, payload.token)
+    return {"username": user.username, "display_name": user.display_name,
+            "choose_username": not user.password_hash, "purpose": record.purpose}
+
+
+@router.post("/activate", status_code=204)
+def activate(payload: ActivateRequest, request: Request, db: Db) -> Response:
+    check_origin(request)
+    # All credential changes lock the account before checking one-time tokens.
+    user, record = activation_record(db, payload.token, lock=True)
+    if not user.password_hash:
+        if payload.username is None:
+            raise HTTPException(422, "请设置你的登录用户名。")
+        set_username(db, user, payload.username)
+    elif payload.username is not None and payload.username.casefold() != user.username:
+        raise HTTPException(422, "密码重置不能修改用户名，请登录后在个人资料中修改。")
     user.password_hash = hash_password(payload.password)
     user.failed_logins = 0
     user.locked_until = None
@@ -412,7 +413,7 @@ def transfer(payload: TransferRequest, request: Request, db: Db) -> dict:
     user, member = team_member(db, principal, payload.user_id)
     if db.get(Team, principal["team_id"]).owner_user_id != principal["user_id"]:
         raise HTTPException(409, "团队拥有者已变更，请刷新页面后重新操作。")
-    confirm_user(db, principal, payload.password, payload.otp)
+    confirm_user(db, principal, payload.password)
     if not user.active or not user.password_hash:
         raise HTTPException(409, "接任者必须是已启用的团队成员。")
     member.role = "admin"
@@ -422,57 +423,11 @@ def transfer(payload: TransferRequest, request: Request, db: Db) -> dict:
     return {"owner_user_id": user.id}
 
 
-@router.post("/mfa/setup")
-def setup_mfa(payload: ConfirmRequest, request: Request, db: Db) -> dict:
-    check_origin(request)
-    principal = current(db, request)
-    user = confirm_user(db, principal, payload.password, payload.otp)
-    if user.totp_secret:
-        raise HTTPException(409, "二步验证已启用。")
-    secret = pyotp.random_base32()
-    user.totp_pending_secret = cipher().encrypt(secret.encode()).decode()
-    db.commit()
-    return {"secret": secret, "provisioning_uri": pyotp.TOTP(secret).provisioning_uri(name=user.username, issuer_name="Investment Studio")}
-
-
-@router.post("/mfa/confirm", status_code=204)
-def confirm_mfa(payload: ConfirmRequest, request: Request, db: Db) -> Response:
-    check_origin(request)
-    principal = current(db, request)
-    user = lock_user(db, principal["user_id"])
-    if not user or not user.active or not verify_password(payload.password, user.password_hash) or not user.totp_pending_secret or not consume_otp(user, payload.otp, user.totp_pending_secret):
-        raise HTTPException(400, "密码或二步验证码不正确。")
-    user.totp_secret = user.totp_pending_secret
-    user.totp_pending_secret = None
-    revoke_sessions(db, user.id)
-    audit(db, "mfa_enabled", user.id, user.id)
-    db.commit()
-    return Response(status_code=204)
-
-
-@router.post("/mfa/remove", status_code=204)
-def remove_mfa(payload: ConfirmRequest, request: Request, db: Db) -> Response:
-    check_origin(request)
-    principal = current(db, request)
-    if get_settings().auth_require_admin_totp and principal["team_role"] == "admin":
-        raise HTTPException(409, "此部署要求管理员保留二步验证。")
-    user = confirm_user(db, principal, payload.password, payload.otp)
-    user.totp_secret = None
-    user.totp_pending_secret = None
-    user.totp_last_step = None
-    revoke_sessions(db, user.id)
-    audit(db, "mfa_removed", user.id, user.id)
-    db.commit()
-    return Response(status_code=204)
-
-
 @router.post("/introspect")
 def introspect(payload: IntrospectRequest, request: Request, db: Db) -> dict:
     if payload.audience not in AUDIENCES:
         raise HTTPException(400, "未知应用。")
     principal, _, _ = resolve_request_identity(db, request, payload.audience, bearer_only=True)
-    if payload.audience not in {"home", "identity"}:
-        enforce_mfa(db, principal)
     return principal
 
 
@@ -481,7 +436,6 @@ def delegate(payload: DelegationRequest, request: Request, db: Db) -> dict:
     if payload.audience not in AUDIENCES:
         raise HTTPException(400, "未知应用。")
     principal, parent_kind, parent = resolve_request_identity(db, request, bearer_only=True)
-    enforce_mfa(db, principal)
     service_token = request.headers.get("x-studio-service-token")
     service_delegate = False
     if service_token:

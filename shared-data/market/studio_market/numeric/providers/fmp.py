@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from http.client import IncompleteRead
 import random
 import time
 import urllib.error
@@ -240,11 +241,11 @@ class FmpClient:
                 body = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             raise FmpHttpError(int(exc.code)) from None
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            reason = str(getattr(exc, "reason", exc)).strip()
+        except (urllib.error.URLError, TimeoutError, OSError, IncompleteRead) as exc:
+            reason = getattr(exc, "reason", exc)
             raise FmpTransportError(
                 "FMP standard HTTPS transport failed: "
-                f"{type(exc).__name__}: {reason or 'unknown reason'}"
+                f"{type(exc).__name__} ({type(reason).__name__})"
             ) from None
         if status < 200 or status >= 300:
             raise FmpHttpError(status)

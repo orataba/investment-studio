@@ -1288,6 +1288,11 @@ export function getInstrumentPriceBars(
   )
 }
 
+export function searchSharedInstruments(query: string, limit = 12) {
+  const params = new URLSearchParams({ q: query.trim(), limit: String(limit) })
+  return fetchJson<SharedInstrumentRecord[]>(`/api/instruments/search?${params}`)
+}
+
 export function getSharedInstruments(options?: {
   search?: string
   instrument_type?: string

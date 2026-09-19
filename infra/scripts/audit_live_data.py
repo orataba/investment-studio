@@ -30,7 +30,7 @@ from investment_studio_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "identity": "20260908_0001",
+    "identity": "20260919_0002",
     "instrument_data": "20260908_0035",
     "data_ingestion": "20260904_0009",
     "portfolio": "20260908_0063",

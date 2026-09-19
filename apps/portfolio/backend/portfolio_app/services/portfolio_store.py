@@ -5,6 +5,7 @@ from studio_identity import current_principal, IdentityError
 import hashlib
 import json
 import re
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -17,7 +18,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Integer, String, and_, cast, delete, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 from investment_studio_instrument_core import SUPPORTED_FX_CURRENCIES
 from investment_studio_instrument_core.db_models import InstrumentMarketData
 
@@ -2684,6 +2685,16 @@ def get_taxonomy(portfolio_id: str, taxonomy_id: str) -> dict[str, object] | Non
         return _serialize_taxonomy_row(record)
 
 
+@contextmanager
+def _taxonomy_write_session(portfolio_id: str):
+    """Serialize configuration edits before reading facts or capturing a revision."""
+    with get_session_factory()() as session:
+        session.scalar(select(PortfolioRecordModel).where(
+            PortfolioRecordModel.portfolio_id == portfolio_id,
+        ).with_for_update())
+        yield session
+
+
 def create_taxonomy(
     portfolio_id: str,
     *,
@@ -2698,8 +2709,7 @@ def create_taxonomy(
     status: str,
     source_template_ref: str | None,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         record = TaxonomyRecordModel(
             taxonomy_id=_next_taxonomy_id(session, name),
             portfolio_id=portfolio_id,
@@ -2741,6 +2751,7 @@ def update_taxonomy(
     taxonomy_id: str,
     *,
     effective_from: date,
+    _session: Session | None = None,
     name: str | None = UNSET,
     taxonomy_type: str | None = UNSET,
     purpose: str | None = UNSET,
@@ -2749,8 +2760,7 @@ def update_taxonomy(
     root_default_target_dimension: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio is None:
             raise ValueError("Portfolio not found.")
@@ -2796,18 +2806,19 @@ def update_taxonomy(
                 research_settings.comparator_taxonomy_node_id = None
 
         session.flush()
-        _record_taxonomy_configuration_revision_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
-        )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=effective_from,
-            session=session,
-        )
-        session.commit()
+        if _session is None:
+            _record_taxonomy_configuration_revision_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=taxonomy_id,
+                effective_from=effective_from,
+            )
+            _mark_daily_snapshots_stale(
+                portfolio_id,
+                dirty_from=effective_from,
+                session=session,
+            )
+            session.commit()
         return _serialize_taxonomy_row(record)
 
 
@@ -2849,8 +2860,7 @@ def create_taxonomy_node(
     default_target_dimension: str,
     status: str,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -2905,6 +2915,7 @@ def update_taxonomy_node(
     taxonomy_node_id: str,
     *,
     effective_from: date,
+    _session: Session | None = None,
     node_name: str | None = UNSET,
     node_code: str | None = UNSET,
     parent_taxonomy_node_id: str | None = UNSET,
@@ -2912,8 +2923,7 @@ def update_taxonomy_node(
     default_target_dimension: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -2993,18 +3003,19 @@ def update_taxonomy_node(
             _refresh_parent_terminal_state(session, resolved_parent_id)
 
         session.flush()
-        _record_taxonomy_configuration_revision_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
-        )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=effective_from,
-            session=session,
-        )
-        session.commit()
+        if _session is None:
+            _record_taxonomy_configuration_revision_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=taxonomy_id,
+                effective_from=effective_from,
+            )
+            _mark_daily_snapshots_stale(
+                portfolio_id,
+                dirty_from=effective_from,
+                session=session,
+            )
+            session.commit()
         return _serialize_taxonomy_node_row(record)
 
 
@@ -3388,8 +3399,7 @@ def create_taxonomy_assignment(
     taxonomy_node_id: str,
     status: str,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3461,8 +3471,7 @@ def update_taxonomy_assignment(
     taxonomy_node_id: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3532,6 +3541,7 @@ def create_target_set(
     portfolio_id: str,
     *,
     effective_from: date,
+    _session: Session | None = None,
     taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     target_set_type: str,
@@ -3542,8 +3552,7 @@ def create_target_set(
     notes: str | None,
     lines: list[dict[str, object]],
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3603,18 +3612,19 @@ def create_target_set(
             )
 
         session.flush()
-        _record_taxonomy_configuration_revision_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
-        )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=effective_from,
-            session=session,
-        )
-        session.commit()
+        if _session is None:
+            _record_taxonomy_configuration_revision_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=taxonomy_id,
+                effective_from=effective_from,
+            )
+            _mark_daily_snapshots_stale(
+                portfolio_id,
+                dirty_from=effective_from,
+                session=session,
+            )
+            session.commit()
         return _serialize_target_set_row(record)
 
 
@@ -3624,6 +3634,7 @@ def update_target_set(
     target_set_id: str,
     *,
     effective_from: date,
+    _session: Session | None = None,
     name: str | None = UNSET,
     weight_enabled: bool | None = UNSET,
     risk_budget_enabled: bool | None = UNSET,
@@ -3631,8 +3642,7 @@ def update_target_set(
     notes: str | None = UNSET,
     lines: list[dict[str, object]] | None = UNSET,
 ) -> dict[str, object]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3725,19 +3735,72 @@ def update_target_set(
                 )
 
         session.flush()
-        _record_taxonomy_configuration_revision_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=taxonomy_id,
-            effective_from=effective_from,
-        )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=effective_from,
-            session=session,
-        )
-        session.commit()
+        if _session is None:
+            _record_taxonomy_configuration_revision_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=taxonomy_id,
+                effective_from=effective_from,
+            )
+            _mark_daily_snapshots_stale(
+                portfolio_id,
+                dirty_from=effective_from,
+                session=session,
+            )
+            session.commit()
         return _serialize_target_set_row(record)
+
+
+def save_taxonomy_target_configuration(
+    portfolio_id: str,
+    taxonomy_id: str,
+    *,
+    effective_from: date,
+    node_defaults: dict[str, str],
+    target_sets: list[dict[str, object]],
+) -> dict[str, object]:
+    """Save the complete user action as one revision and one calculation request."""
+    with _taxonomy_write_session(portfolio_id) as session:
+        taxonomy = session.get(TaxonomyRecordModel, taxonomy_id)
+        if taxonomy is None or taxonomy.portfolio_id != portfolio_id:
+            raise ValueError("Taxonomy not found.")
+        if any(item.get("weight_enabled") or item.get("risk_budget_enabled") for item in target_sets):
+            update_taxonomy(portfolio_id, taxonomy_id, effective_from=effective_from,
+                planning_enabled=True, budgeting_level="weight_and_risk_budget", _session=session)
+        for node_id, dimension in node_defaults.items():
+            update_taxonomy_node(portfolio_id, taxonomy_id, node_id,
+                effective_from=effective_from, default_target_dimension=dimension, _session=session)
+        for item in target_sets:
+            target_set_id = item.get("target_set_id")
+            enabled = bool(item.get("weight_enabled") or item.get("risk_budget_enabled"))
+            if not enabled:
+                if target_set_id:
+                    update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
+                        effective_from=effective_from, status="inactive", _session=session)
+                continue
+            values = {key: item[key] for key in (
+                "name", "weight_enabled", "risk_budget_enabled", "status", "notes", "lines",
+            )}
+            if target_set_id:
+                existing = session.get(TargetSetRecordModel, str(target_set_id))
+                if existing is None or existing.taxonomy_id != taxonomy_id:
+                    raise ValueError("Target set not found.")
+                if (existing.comparator_taxonomy_node_id != item.get("comparator_taxonomy_node_id")
+                        or existing.target_set_type != item["target_set_type"]):
+                    raise ValueError("Target set scope changed; reload the taxonomy before saving.")
+                update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
+                    effective_from=effective_from, _session=session, **values)
+            else:
+                create_target_set(portfolio_id, taxonomy_id=taxonomy_id,
+                    effective_from=effective_from,
+                    comparator_taxonomy_node_id=item.get("comparator_taxonomy_node_id"),
+                    target_set_type=str(item["target_set_type"]), _session=session, **values)
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(session,
+            portfolio_id=portfolio_id, taxonomy_id=taxonomy_id, effective_from=effective_from)
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=effective_from, session=session)
+        session.commit()
+        return _serialize_taxonomy_row(taxonomy)
 
 
 def delete_target_set(
@@ -3747,8 +3810,7 @@ def delete_target_set(
     *,
     effective_from: date,
 ) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3789,8 +3851,7 @@ def delete_taxonomy(
     *,
     effective_from: date,
 ) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio is None:
             return False
@@ -3850,8 +3911,7 @@ def delete_taxonomy_node(
     *,
     effective_from: date,
 ) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -3953,8 +4013,7 @@ def delete_taxonomy_assignment(
     *,
     effective_from: date,
 ) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -4001,8 +4060,7 @@ def set_default_planning_taxonomy(
     *,
     effective_from: date,
 ) -> dict[str, object] | None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(portfolio_id) as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio is None:
             return None

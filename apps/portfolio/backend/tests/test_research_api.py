@@ -1587,8 +1587,9 @@ def test_research_assumptions_do_not_truncate_volatility_cap_or_backtest_caveats
 
 
 def test_planning_group_snapshot_does_not_count_system_cash_as_unassigned(monkeypatch):
-    monkeypatch.setattr(research_service, "list_taxonomy_nodes", lambda _portfolio_id: [])
-    monkeypatch.setattr(research_service, "list_taxonomy_assignments", lambda _portfolio_id: [])
+    monkeypatch.setattr(research_service, "taxonomy_configuration_as_of", lambda *_args: {
+        "taxonomy_nodes": [], "taxonomy_assignments": [],
+    })
 
     groups = research_service._build_planning_group_snapshot(
         [
@@ -3307,7 +3308,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     with session_factory() as session:
         stored_run = session.get(ResearchRunRecordModel, run_payload["research_run_id"])
         assert stored_run is not None
-        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 3
+        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 4
         assert stored_run.request_payload_json["planning_state_fingerprint"].startswith("sha256:")
 
 

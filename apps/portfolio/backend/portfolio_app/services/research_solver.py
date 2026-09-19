@@ -4183,6 +4183,7 @@ def _build_taxonomy_state(
     *,
     planning_taxonomy_id: str,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
     frozen_taxonomy_node_ids: list[str] | None = None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
@@ -4199,7 +4200,7 @@ def _build_taxonomy_state(
     configuration = taxonomy_configuration_as_of(
         portfolio_id,
         planning_taxonomy_id,
-        as_of_date,
+        planning_as_of_date or as_of_date,
     )
     if configuration is None:
         raise ValueError(
@@ -4352,7 +4353,7 @@ def _build_taxonomy_state(
         instrument_analytics_scopes=resolve_instrument_analytics_scopes(
             portfolio_id,
             taxonomy_id=planning_taxonomy_id,
-            as_of_date=as_of_date,
+            as_of_date=planning_as_of_date or as_of_date,
             instrument_ids=[
                 str(item.get("target_entity_id") or "")
                 for item in assignments
@@ -4367,6 +4368,7 @@ def build_research_scope_options(
     *,
     planning_taxonomy_id: str | None,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
     if not planning_taxonomy_id:
         return []
@@ -4374,6 +4376,7 @@ def build_research_scope_options(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        planning_as_of_date=planning_as_of_date,
         require_planning_enabled=False,
     )
     options: list[dict[str, object]] = [
@@ -4412,6 +4415,7 @@ def build_research_calculation_frequency_profile(
     planning_taxonomy_id: str | None,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
     lookback_days: int,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
@@ -4422,6 +4426,7 @@ def build_research_calculation_frequency_profile(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        planning_as_of_date=planning_as_of_date,
         instrument_detail_cache=_instrument_detail_cache,
         direct_fx_instruments=_direct_fx_instruments,
         require_planning_enabled=False,
@@ -6950,6 +6955,7 @@ def solve_current_target_weights(
     planning_taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
+    planning_as_of_date: date | None = None,
     lookback_days: int,
     calculation_frequency: str = "daily",
     target_dimension: str,
@@ -6979,6 +6985,7 @@ def solve_current_target_weights(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        planning_as_of_date=planning_as_of_date,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         instrument_detail_cache=_instrument_detail_cache,
@@ -7059,6 +7066,7 @@ def solve_current_target_weights(
         "portfolio_id": portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
         "planning_taxonomy_name": state.taxonomy_name,
+        "planning_as_of_date": (planning_as_of_date or as_of_date).isoformat(),
         "taxonomy_configuration_version": state.configuration_version,
         "taxonomy_configuration_effective_from": (
             state.configuration_effective_from.isoformat()

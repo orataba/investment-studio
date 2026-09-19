@@ -85,6 +85,8 @@ class FmpClient:
                 "isEtf": "true" if is_etf else "false",
                 "isFund": "false",
                 "isActivelyTrading": "true",
+                # FMP otherwise collapses share classes (e.g. GOOGL into GOOG).
+                "includeAllShareClasses": "true",
                 "limit": 10000,
             },
         )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-studio-home"
-version = "1.1.0"
+version = "1.2.0"
 description = "Investment Studio login and navigation homepage"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,8 +15,6 @@ dependencies = [
   "sqlalchemy>=2.0,<3.0",
   "alembic>=1.16,<2.0",
   "psycopg[binary]>=3.2,<4.0",
-  "pyotp>=2.9,<3.0",
-  "cryptography>=44,<51",
 ]
 
 [project.scripts]

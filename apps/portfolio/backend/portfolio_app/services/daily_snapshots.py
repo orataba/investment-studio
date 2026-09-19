@@ -8,8 +8,8 @@ from threading import Lock
 from uuid import uuid4
 
 from investment_studio_instrument_core.db_models import Instrument
-from sqlalchemy import and_, case, delete, func, or_, select, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy import and_, case, delete, event, func, or_, select, update
+from sqlalchemy.orm import Session, selectinload
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -721,6 +721,8 @@ def _mark_portfolio_daily_snapshots_stale_in_session(
     )
     session.flush()
     session.expire(state)
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    session.info.setdefault(_PENDING_WORKER_WAKE_TRANSACTIONS, set()).add(transaction)
     return {
         "portfolio_id": portfolio_id,
         "status": "accepted",
@@ -728,6 +730,37 @@ def _mark_portfolio_daily_snapshots_stale_in_session(
         "refresh_request_id": state.refresh_request_id,
         "dirty_from": state.dirty_from,
     }
+
+
+_PENDING_WORKER_WAKE_TRANSACTIONS = "portfolio_pending_worker_wake_transactions"
+
+
+@event.listens_for(Session, "after_commit")
+def _wake_worker_after_fact_commit(session: Session) -> None:
+    # Savepoint commits are not visible to the worker's independent connection.
+    if session.in_nested_transaction():
+        return
+    if session.info.pop(_PENDING_WORKER_WAKE_TRANSACTIONS, None):
+        _wake_daily_snapshot_worker()
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _discard_rolled_back_worker_wakes(session: Session, previous_transaction) -> None:
+    pending = session.info.get(_PENDING_WORKER_WAKE_TRANSACTIONS)
+    if not pending:
+        return
+    if previous_transaction.parent is None:
+        session.info.pop(_PENDING_WORKER_WAKE_TRANSACTIONS, None)
+        return
+    for transaction in tuple(pending):
+        ancestor = transaction
+        while ancestor is not None:
+            if ancestor is previous_transaction:
+                pending.discard(transaction)
+                break
+            ancestor = ancestor.parent
+    if not pending:
+        session.info.pop(_PENDING_WORKER_WAKE_TRANSACTIONS, None)
 
 
 def mark_portfolio_daily_snapshots_stale(
@@ -788,8 +821,6 @@ def enqueue_selected_portfolio_daily_snapshot_recalculations(
             if result is not None:
                 accepted.append(result)
         session.commit()
-    if accepted:
-        _wake_daily_snapshot_worker()
     return accepted
 
 
@@ -1554,14 +1585,16 @@ def portfolio_financial_read_generation(portfolio_id: str):
         if generation is not None:
             return generation
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status not in {"stale", "running"}:
+        already_queued = state is not None and state.daily_snapshot_status in {"stale", "running"}
+        if not already_queued:
             _mark_portfolio_daily_snapshots_stale_in_session(
                 session, portfolio_id, dirty_from=None,
             )
             state = session.get(PortfolioCalculationStateModel, portfolio_id)
         status = str(state.daily_snapshot_status)
         session.commit()
-    _wake_daily_snapshot_worker()
+    if already_queued:
+        _wake_daily_snapshot_worker()
     raise PortfolioCalculationPending(portfolio_id, status=status)
 
 

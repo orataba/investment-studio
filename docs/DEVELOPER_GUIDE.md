@@ -57,6 +57,7 @@ Watchlist (`watchlist`)          Portfolio (`portfolio`)
 | 公共数值、PIT、文本原文版本与数据包目录 | `shared-data/market` → `market_data` / `market_text` + 不可变文件 | 其他项目数据库或各 App 私有表 |
 | 日报周报及绑定的证据版本 | Briefing → `briefing` | 采集服务器 |
 | 已经跨 app 稳定复用的 UI 基础能力 | `packages/ui` | 为单一页面预先建立通用框架 |
+| 无业务数据的请求、SQL 与后台操作诊断 | `packages/runtime` | 业务缓存、授权决策或重算调度 |
 
 FCN 和 Option 是 Portfolio-local 不可变合约，不是共享市场资产。只有 underlying 或 deliverable
 证券引用 Instrument Data。直接债券当前不进入 Instrument Data、Watchlist 或 Portfolio 交易主链路。
@@ -81,6 +82,7 @@ shared-data/market/            公共数值、PIT、文本与数据包
 apps/regime/                  独立 Git 子模块、自有模型与运行；安装 Studio market 包读取公共数据
 shared-data/instruments/       共享资产合同、模型、store helper 与 Alembic 迁移
 packages/ui/                   小而稳定的跨 app UI 基础能力
+packages/runtime/              API 与后台任务的结构化耗时、请求关联及脱敏错误定位
 infra/launchd/                 macOS 托管服务和每日刷新
 infra/systemd/                 Linux 用户级 systemd 部署
 infra/scripts/                 统一迁移、审计和质量门
@@ -99,6 +101,7 @@ docs/                          当前仓库级合同与手册
 | 修改交易 | Portfolio command/store/ledger | Preview/Commit、日期与金额合同、lots/obligations、cash posting、snapshot invalidation、导入导出、审计日志 |
 | 修改 Portfolio 计算 | Portfolio calculation service | `01_CALCULATION_SPEC.md`、Holdings 字典、coverage/unavailable 语义、`calculation_version` 和重建路径 |
 | 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | effective date、PIT 输入、target 完整性、Risk/Risk Budget eligibility、历史模拟披露 |
+| 修改身份或运行诊断 | `packages/identity`、`home`、`packages/runtime`、`packages/ui` | 当前会话与资源权限、停用/撤权、请求关联、耗时边界、敏感信息不入日志 |
 | 修改数据库结构 | 对应 Alembic chain | 单库八 schema 依赖顺序、升级数据、恢复路径、migration-head 和 PostgreSQL integration tests |
 | 修改部署脚本 | `infra/launchd` 或 `infra/systemd` | 停写、备份、迁移、回滚、原服务集合恢复、loopback 网络边界、shell tests |
 

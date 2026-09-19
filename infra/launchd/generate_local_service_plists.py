@@ -155,7 +155,6 @@ def main() -> int:
         ("hk", "market", 16, 30, "Asia/Shanghai"),
         ("us", "market", 16, 30, "America/New_York"),
         ("cn-hk", "reference", 8, 0, "Asia/Shanghai"),
-        ("us", "reference", 8, 0, "America/New_York"),
     ):
         service = f"{market_scope}-{channel}-data-refresh"
         label = f"{args.label_prefix}.{service}"
@@ -171,10 +170,8 @@ def main() -> int:
         if channel == "market" and market_scope in {"hk", "us"}:
             calendar = {"Minute": 30}
         if timezone == "America/New_York":
-            # launchd calendars follow the Mac timezone. The runner resolves New
-            # York time at each half-hour tick, including US daylight saving time.
-            if channel == "reference":
-                calendar = [{"Minute": 0}, {"Minute": 30}]
+            # launchd follows the Mac timezone; the hourly close check resolves
+            # New York time, including US daylight saving time.
             environment["INVESTMENT_STUDIO_LOCAL_REFRESH_TIMEZONE"] = timezone
         payload = {
             **refresh_payload,

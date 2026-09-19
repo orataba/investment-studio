@@ -11,7 +11,7 @@ This project runs eight user-systemd services in production:
 - `investment-studio-briefing-api.service`
 - `investment-studio-briefing-web.service`
 
-Six data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` and `us-reference-data-refresh` for pre-open research inputs.
+Five data schedules are installed separately. Each uses an `investment-studio-<name>.service` and `.timer` pair: `market-data-refresh` for nightly settlement; `cn-market-data-refresh`, `hk-market-data-refresh`, and `us-market-data-refresh` for closing prices; `cn-hk-reference-data-refresh` for pre-open Tushare reference acquisition. FMP references are projected by the public collection or arrival pipeline.
 
 ## Deployment ownership
 
@@ -141,6 +141,58 @@ The installer binds both API and web services to `127.0.0.1` by default. Set
 `API_HOST` or `WEB_HOST` explicitly only when a reverse proxy or network policy
 requires another bind address.
 
+## Upgrading an existing release
+
+Use a new immutable release directory; do not install dependencies or rebuild
+bundles inside the live `current` target. Complete these steps in order:
+
+1. Stage the reviewed commit and its pinned submodule, locked Python environment,
+   frozen Harness and four production frontend bundles. Retain the previous
+   manifest's hashed assets as described above. Stage the Regime static UI
+   separately and verify its API compatibility; preserve the independently
+   installed Regime software paths and environment when that application is not
+   part of this upgrade.
+2. Save the current symlink target, external configuration, unit definitions,
+   enablement and exact active service/timer sets in a private release recovery
+   directory. Record Regime's actual paths from its external runtime and scheduler
+   configuration: they may refer to an older Studio release than `current`.
+   Retain every still-referenced release, including its virtual environment.
+3. Put external writes into maintenance. Stop scheduled triggers first, then
+   their workers and the eight Studio app services. Include public-market and
+   Briefing jobs, the retired US reference job, independent Regime timers/source
+   workers, and any source containers. Verify they are inactive; the Studio app
+   installer does not control the independent Regime installation. Preserve public
+   objects with the database backup scope described below.
+4. As the Studio service user, run the new release's `install_app_services.sh`
+   with its immutable `PROJECT_ROOT`, its `PYTHON_BIN`, the existing external
+   `ENV_ROOT`, and the user systemd bus available. Keep `RUN_MIGRATIONS=true` and
+   `START_SERVICES=true`. This performs the checked schema backup, migrations,
+   catalog refresh, Watchlist reconciliation, stale snapshot rebuild, integrity
+   audit and eight-endpoint readiness gate. Because schedules were stopped before
+   invocation, the installer leaves them stopped during acceptance. It removes
+   the retired US reference definitions; do not restore that timer on success.
+5. While maintenance remains active, regenerate the five supported data schedules
+   and the Briefing schedules with `START_TIMERS=false`; regenerate the collector
+   definitions with `install_market_pipeline.py` (which never starts them).
+   Point every generated command at the new immutable release. Atomically replace
+   `current`, validate the Nginx configuration, and reload if it changed. Check
+   loopback health, authenticated resource permissions, enabled Research, catalog
+   discovery, diagnostic records, compressed/cacheable assets and a previous
+   manifest's lazy chunk through the actual ingress.
+6. Accept the release before reopening writes and restoring the previously active
+   schedules, excluding retired units. A persistent market timer can immediately
+   catch up when reactivated; inspect the resulting job state. Keep previously
+   inactive independent Regime services inactive unless their repair or startup
+   is part of the authorized release. Inspect remaining failures separately from
+   application readiness; an unavailable provider channel is not repaired by
+   resetting a failed unit.
+
+Before the installer accepts the upgrade, its failure handler restores its own
+database/unit changes. The outer release procedure must also restore any changed
+symlink, Nginx configuration, external configuration and separately generated
+schedule files from its snapshot. After new writes have been accepted, follow the
+forward-repair rule below instead of automatically restoring the old database.
+
 ## Shared public data and Briefing
 
 Initialize the project-owned public data directory and migrate the `market_data`, `market_text` and `briefing` schemas before switching readers. Import the numerical bootstrap through the bundle importer; never copy local Portfolio or Watchlist databases to the cloud. Remove imported temporary archives before creating a full outbound archive to avoid three full copies.
@@ -165,20 +217,16 @@ Do not rerun the standalone seed installer for this integrated software upgrade.
 
 Back up public Parquet/original objects together with PostgreSQL metadata; a schema dump alone cannot restore shared market data. See [Market Data Pipeline](MARKET_DATA_PIPELINE.md).
 
-## Personal Portfolio Research
+## Portfolio Research
 
-Local and cloud Portfolio use the same code and frontend bundle. Set
-`INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=true` in the personal local
-`portfolio.env`, and `INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=false` in the
-server's external `portfolio.env`. Research is disabled when the key is omitted.
-Restart the Portfolio API after changing this setting. The frontend reads
-`/api/capabilities` at startup to control navigation and direct page access;
-disabled deployments do not register Research API routes, including saved runs
-and artifact access. Existing research data is retained.
-
-Keep this external environment file across releases. Do not replace it with
-the repository template during an update. No separate branch, build flag, or
-cloud-specific source edit is needed.
+Portfolio Research is enabled by default on local and cloud deployments. Keep
+`INVESTMENT_STUDIO_PORTFOLIO_RESEARCH_ENABLED=true` in the server's external
+`portfolio.env`; older releases explicitly set this to false, so deployment must
+update that existing value. The frontend reads capabilities and current portfolio
+access together from `/api/portfolios/session?portfolio_id=...` to expose the
+workspace. Research uses the same portfolio permissions as other portfolio APIs;
+enabling it does not grant users access to additional portfolios. An operator may
+explicitly set false to disable the routes and UI while retaining saved runs.
 
 ## Cross-app research and instrument risk
 
@@ -198,8 +246,7 @@ INVESTMENT_STUDIO_PORTFOLIO_WATCHLIST_API_URL=http://127.0.0.1:8100/api
 The first URL lets the restricted Watchlist Harness call its own research tools.
 The next two provide read-only evidence from Portfolio and Regime. The Portfolio
 risk panel reads and updates Watchlist-owned instrument risk records; it does not
-create a second risk ledger. These connections do not enable personal Portfolio
-Research on the shared server. Restart both APIs after updating their files and
+create a second risk ledger. These connections are independent of the Portfolio Research capability. Restart both APIs after updating their files and
 check `/api/research/connections` on Watchlist and `/api/instrument-risk` on
 Portfolio through the authenticated ingress.
 
@@ -291,7 +338,7 @@ The server's Certbot 5.8 environment is at
 with `renew --dry-run --run-deploy-hooks --no-random-sleep-on-renew --cert-name yunguyungu.com` before
 treating the timer as healthy.
 
-Keep runtime configuration, service tokens and TOTP encryption keys owned by the
+Keep runtime configuration and service tokens owned by the
 service user with mode `0600`. Password hashes are held in `identity`; any private
 bootstrap hash file is initialization input, not a continuing login dependency.
 Nginx protects private pages while the application APIs enforce their own account
@@ -327,8 +374,7 @@ research; a registry or materialization error fails the install and rolls back.
 The integrity gate runs only after these release maintenance steps, without
 depending on a browser visit to synchronize the directories. The backup covers `identity`, `instrument_data`,
 `instrument_registry`, `data_ingestion`, `platform`, `portfolio`, `watchlist`,
-`market_data`, `market_text` and `briefing`; preserve external TOTP encryption keys
-and service credentials separately. Migration order is dependency-aware so
+`market_data`, `market_text` and `briefing`; preserve external service credentials separately. Migration order is dependency-aware so
 Data Ingestion raw-evidence storage exists before destructive shared NAV cleanup.
 
 Before accepting an upgrade, the installer checks HTTP readiness for all eight
@@ -412,16 +458,18 @@ of `warning` may still allow market-data refresh and ordinary operational pages,
 but Risk and Risk Budget must be labelled unavailable until the analytics scope
 warnings are cleared.
 
-Install all six data schedules as the service user, using the same installer:
+Install all five data schedules as the service user, using the same installer:
 
 ```bash
-for schedule in settlement: market:cn market:hk market:us reference:cn-hk reference:us; do
+for schedule in settlement: market:cn market:hk market:us reference:cn-hk; do
   CHANNEL="${schedule%%:*}" MARKET_SCOPE="${schedule#*:}" \
     PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/shared-data" PYTHON_BIN="$PWD/.venv/bin/python" \
     ENV_ROOT="$HOME/.config/orataba/secrets/investment-studio" \
     infra/systemd/install_market_data_refresh_timer.sh
 done
 ```
+
+The app installer retires the former `us-reference-data-refresh` service/timer: it snapshots their files, enablement and active state with the release, stops and disables them, and removes their definitions on success. A failed install restores them with the other prior units. Do not reinstall this obsolete timer.
 
 During a coordinated release, set `START_TIMERS=false` for this installer and
 the Briefing timer installer. Regenerate definitions while writers are paused,
@@ -434,7 +482,6 @@ Shared market pipeline definition generation never starts its timers.
 | `market / hk` | Actual Hong Kong session close + 30 minutes |
 | `market / us` | Actual US session close + 30 minutes |
 | `reference / cn-hk` | 08:00 Asia/Shanghai |
-| `reference / us` | 08:00 America/New_York |
 | `settlement` | 21:00 Asia/Shanghai |
 
 IANA timezones handle US daylight saving time. The shared runner selects instruments by their configured
@@ -443,15 +490,16 @@ market calendars and skips closed markets. Hong Kong and US post-close timers ch
 window beginning 30 minutes after the actual session close, including half-days. A calendar error fails
 the service; an ordinary off-schedule tick leaves the previous refresh summary unchanged.
 
-Pre-open batches collect project-owned reference snapshots and sector ETF research inputs; the
-matching market's research starts at 08:30 and collects current news and event evidence. Collect the initial references before
+The pre-open reference batch only acquires Tushare reference inputs. FMP reference snapshots are
+projected after successful public collection or replica arrival, with failures retained in pipeline status.
+The matching market's research starts at 08:30 and collects current news and event evidence. Collect the initial references before
 activating research on a new release. Watchlist reads these snapshots without an external DuckDB source.
 Nightly settlement covers the FMP catalogue, Tushare fund NAVs, email NAVs, FX and private-fund projections,
 without repeating equity closing-price or reference collection.
 
-All batches retain the shared non-blocking `fcntl` lock. Each schedule has its own log and atomic summary
+All batches retain the shared exclusive `fcntl` lock. Scheduled refreshes wait up to `LOCK_WAIT_SECONDS` (default 900 seconds) for the current writer; waiting is logged and expiry remains an explicit exit 75. This bounded wait covers overlap between source acquisition and settlement without running simultaneous writers. Each schedule has its own log and atomic summary
 under `~/.local/state/investment-studio`. Item and downstream failures fail the service. Settlement retains
-its existing bounded systemd restart policy; the five market schedules do not add restarts. App installation,
+its existing bounded systemd restart policy; the four market/source schedules do not add restarts. App installation,
 database restore and the service-group controls include every data service/timer in their stop/restore sets.
 
 ## Ports
@@ -480,3 +528,44 @@ research routes using real account sessions and a separate member without a gran
 keep credentials in private client storage, outside commands and logs.
 
 多账号启用、历史作者认领、组合管理者指派和服务凭证配置见 [多账号体系](MULTI_ACCOUNT_SYSTEM.md)。云端启用前必须先迁移身份库并配置真实账号、会话与后台服务身份；本文不表示实际启用验收已经完成。
+
+## Request and job diagnostics
+
+Four Studio APIs emit structured `http_request` JSON records to their service
+journals: request ID, route template, status, total duration, response bytes,
+SQL count/time and identity/authorization spans. `X-Request-ID` correlates API,
+web proxy and Nginx records; `Server-Timing` exposes time to response headers
+and SQL time in browser developer tools. Full response duration also includes
+streaming/background completion and can differ from the header timing.
+
+Authenticated browsers send bounded `browser_event` batches to Home with page
+load/request durations, HTTP status, original request ID and JavaScript exception
+name/code location. No form contents, response bodies, exception messages,
+query strings, URL fragments, cookies or credentials enter these diagnostic
+records. Logged-out/offline pages do not persist client diagnostics. Failed
+telemetry is discarded and never retried. Successful writes remain independently
+recorded in the existing identity/portfolio audit tables.
+
+Portfolio recalculation, Watchlist recalculation/research, Portfolio Research
+and Briefing generation emit start/finish operations with IDs and durations.
+Errors include their class and source frames without exception payloads. Read
+Home's journal for browser events and the relevant API journal for its request:
+
+```bash
+journalctl --user -u investment-studio-home-api --since '30 minutes ago' -o cat
+journalctl --user -u investment-studio-portfolio-api --since '30 minutes ago' -o cat
+```
+
+Nginx writes `/var/log/nginx/studio-access.log` as JSON, including upstream and
+full request time, response size and request ID. Existing `/var/log/nginx/*.log`
+rotation applies. JavaScript/CSS/JSON are compressed; Vite's hashed `/assets/`
+files are immutable and do not require a session check. HTML revalidates and
+protected pages still authenticate; every private API checks current access.
+The web proxy also supports conditional requests and HEAD without transferring
+file bodies. Verify compression and cache headers on actual deployed assets.
+
+Portfolio analytics reuse unchanged source generations under a bounded LRU and
+memory budget. Every read checks source freshness, and writes/recalculations
+change the generation; a wall-clock minute no longer forces the same expensive
+calculation again. Live task warnings and derivative observations remain outside
+that cache.

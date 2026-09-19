@@ -1,20 +1,43 @@
-import { Suspense, lazy } from 'react'
-import { Navigate, Route, Routes } from 'react-router'
+import { Suspense, lazy, useEffect } from 'react'
+import { Navigate, Route, Routes, matchPath, useLocation } from 'react-router'
+import PortfolioBootstrapProvider from './components/PortfolioBootstrapProvider'
 import CalculationStatus from './components/CalculationStatus'
 import PortfolioSessionProvider from './components/PortfolioSessionProvider'
 import PortfolioAccessProvider from './components/PortfolioAccessProvider'
 import PortfolioCapabilitiesProvider, { usePortfolioCapabilities } from './components/PortfolioCapabilitiesProvider'
 
-const AccountsPage = lazy(() => import('./pages/AccountsPage'))
-const OverviewPage = lazy(() => import('./pages/OverviewPage'))
-const PortfolioHomePage = lazy(() => import('./pages/PortfolioHomePage'))
-const PortfolioHoldingDetailPage = lazy(() => import('./pages/PortfolioHoldingDetailPage'))
-const PortfoliosPage = lazy(() => import('./pages/PortfoliosPage'))
-const PerformancePage = lazy(() => import('./pages/PerformancePage'))
-const ResearchPage = lazy(() => import('./pages/ResearchPage'))
-const RiskPage = lazy(() => import('./pages/RiskPage'))
-const TaxonomiesPage = lazy(() => import('./pages/TaxonomiesPage'))
-const TransactionsPage = lazy(() => import('./pages/TransactionsPage'))
+const pages = {
+  accounts: () => import('./pages/AccountsPage'),
+  overview: () => import('./pages/OverviewPage'),
+  holdings: () => import('./pages/PortfolioHomePage'),
+  holdingDetail: () => import('./pages/PortfolioHoldingDetailPage'),
+  portfolios: () => import('./pages/PortfoliosPage'),
+  performance: () => import('./pages/PerformancePage'),
+  research: () => import('./pages/ResearchPage'),
+  risk: () => import('./pages/RiskPage'),
+  taxonomies: () => import('./pages/TaxonomiesPage'),
+  transactions: () => import('./pages/TransactionsPage'),
+}
+const AccountsPage = lazy(pages.accounts)
+const OverviewPage = lazy(pages.overview)
+const PortfolioHomePage = lazy(pages.holdings)
+const PortfolioHoldingDetailPage = lazy(pages.holdingDetail)
+const PortfoliosPage = lazy(pages.portfolios)
+const PerformancePage = lazy(pages.performance)
+const ResearchPage = lazy(pages.research)
+const RiskPage = lazy(pages.risk)
+const TaxonomiesPage = lazy(pages.taxonomies)
+const TransactionsPage = lazy(pages.transactions)
+
+function pageForPath(path: string): { portfolioId: string | null; load: () => Promise<unknown> } {
+  const match = matchPath('/portfolios/:portfolioId/*', path)
+  if (!match) return { portfolioId: null, load: pages.portfolios }
+  const section = match.params['*'] || 'overview'
+  if (matchPath('/portfolios/:portfolioId/holdings/:holdingId', path)) return { portfolioId: match.params.portfolioId!, load: pages.holdingDetail }
+  const name = section === 'snapshot' ? 'overview' : section
+  if (!Object.prototype.hasOwnProperty.call(pages, name) || name === 'portfolios' || name === 'holdingDetail') return { portfolioId: null, load: pages.portfolios }
+  return { portfolioId: match.params.portfolioId!, load: pages[name as keyof typeof pages] }
+}
 
 function PageFallback() {
   return <CalculationStatus />
@@ -28,10 +51,17 @@ function ResearchRoute() {
 }
 
 export default function App() {
+  const { pathname } = useLocation()
+  const { portfolioId, load } = pageForPath(pathname)
+  useEffect(() => {
+    // Download only this route while account/ACL bootstrap is in flight.
+    // Rendering still waits for authority; lazy() surfaces a module load error.
+    void load().catch(() => undefined)
+  }, [load])
   return (
     <div className="app-shell">
       <main className="page-shell page-shell-terminal">
-        <PortfolioSessionProvider><PortfolioCapabilitiesProvider>
+        <PortfolioBootstrapProvider portfolioId={portfolioId}><PortfolioSessionProvider><PortfolioCapabilitiesProvider>
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/" element={<Navigate replace to="/portfolios" />} />
@@ -61,7 +91,7 @@ export default function App() {
               <Route path="*" element={<Navigate replace to="/portfolios" />} />
             </Routes>
           </Suspense>
-        </PortfolioCapabilitiesProvider></PortfolioSessionProvider>
+        </PortfolioCapabilitiesProvider></PortfolioSessionProvider></PortfolioBootstrapProvider>
       </main>
     </div>
   )

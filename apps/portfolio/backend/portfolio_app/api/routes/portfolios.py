@@ -64,9 +64,18 @@ class PortfolioSettingsUpdateRequest(BaseModel):
 
 
 @router.get("/session")
-def current_session():
+def current_session(portfolio_id: str | None = None):
+    from portfolio_app.core.settings import get_settings
     principal = actor()
-    return {"user_id": principal.user_id, "display_name": principal.display_name, "session_id": principal.session_id, "can_create": principal.local_unrestricted or (principal.kind == "user" and principal.team_role != "reader"), "can_write_team_research": principal.local_unrestricted or (principal.kind == "user" and principal.team_role in {"admin", "member"}), "is_team_owner": principal.is_team_owner, "local_unrestricted": principal.local_unrestricted}
+    # Startup data must describe one current user, never a model/service grant.
+    if principal.kind != "user" or principal.resource_scope:
+        raise HTTPException(403, "工作台会话仅供本人账号使用")
+    access = require_access(portfolio_id, principal=principal) if portfolio_id else None
+    return {"user_id": principal.user_id, "display_name": principal.display_name, "session_id": principal.session_id,
+            "can_create": principal.local_unrestricted or principal.team_role != "reader",
+            "can_write_team_research": principal.local_unrestricted or principal.team_role in {"admin", "member"},
+            "is_team_owner": principal.is_team_owner, "local_unrestricted": principal.local_unrestricted,
+            "capabilities": {"research_enabled": get_settings().research_enabled}, "access": access}
 
 
 @router.get("")

@@ -40,7 +40,6 @@ export default function LoginPage() {
   const { language } = useLanguage()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [otp, setOtp] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [local, setLocal] = useState(false)
@@ -61,16 +60,15 @@ export default function LoginPage() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, otp: otp || undefined }),
+        body: JSON.stringify({ username, password }),
       })
       if (!response.ok) {
         setError(response.status === 401
-          ? t("The username, password or authentication code is incorrect.")
+          ? t("The username or password is incorrect.")
           : 'Sign-in is temporarily unavailable. Please try again later.')
         return
       }
-      const account = await response.json()
-      window.location.assign(withLanguage(account.mfa_required ? '/account' : destinationAfterLogin(), language))
+      window.location.assign(withLanguage(destinationAfterLogin(), language))
     } catch {
       setError('Unable to connect. Check your connection and try again.')
     } finally {
@@ -113,7 +111,6 @@ export default function LoginPage() {
               required
             />
           </label>
-          <label><span>{t("Authentication code (if enabled)")}</span><input name="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={event => setOtp(event.target.value)} /></label>
           {error ? <p className="login-error" role="alert">{error}</p> : null}
           <button disabled={submitting} type="submit">
             {submitting ? 'Signing in…' : 'Enter Investment Studio'}

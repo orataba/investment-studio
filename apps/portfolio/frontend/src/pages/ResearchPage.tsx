@@ -1797,6 +1797,7 @@ export default function ResearchPage() {
                   <QualityWarningsNotice warnings={workbench.current_context.quality_warnings} />
                   <span>{planningTaxonomyName}</span>
                   <span>{asOfMode === 'dynamic' ? `Latest · ${workbench.as_of_date}` : `Pinned · ${asOfDate || '-'}`}</span>
+                  {workbench.current_context.planning_as_of_date ? <span>{zh ? '规划日期' : 'Planning'} · {workbench.current_context.planning_as_of_date}</span> : null}
                   <span>{capitalModeLabel}</span>
                   <span>{rebalanceLabel} rebalance</span>
                 </div>

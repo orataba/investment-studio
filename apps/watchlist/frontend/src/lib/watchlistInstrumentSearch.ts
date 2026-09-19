@@ -1,18 +1,9 @@
 import {
-  getSharedInstruments,
+  searchSharedInstruments,
   searchSecurities,
   type SecuritySearchResult,
   type SharedInstrumentRecord,
 } from './api'
-
-const REGISTRY_SEARCH_TYPES = [
-  'public_fund',
-  'private_fund',
-  'etf',
-  'equity',
-  'index',
-  'crypto',
-] as const
 
 export type WatchlistInstrumentSearchResult = {
   results: SharedInstrumentRecord[]
@@ -33,20 +24,12 @@ export async function searchWatchlistInstrumentCandidates(
         errors: [error instanceof Error ? error.message : 'Security directory is unavailable.'],
       }))
     : Promise.resolve({ results: [], errors: [] })
-  const [registryGroups, catalog] = await Promise.all([
-    Promise.all(
-      REGISTRY_SEARCH_TYPES.map((instrumentType) =>
-        getSharedInstruments({
-          search: query,
-          instrument_type: instrumentType,
-          limit,
-        }),
-      ),
-    ),
+  const [registry, catalog] = await Promise.all([
+    searchSharedInstruments(query, limit),
     catalogRequest,
   ])
   const seenInstrumentIds = new Set<string>()
-  const results = registryGroups.flat().filter((item) => {
+  const results = registry.filter((item) => {
     if (seenInstrumentIds.has(item.instrument_id)) {
       return false
     }

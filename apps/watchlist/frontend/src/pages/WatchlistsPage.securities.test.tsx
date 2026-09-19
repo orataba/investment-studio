@@ -8,7 +8,7 @@ import type { SecuritySearchResult, WatchlistDetail } from '../lib/api'
 
 const mocks = vi.hoisted(() => ({
   getWatchlists: vi.fn(), getWatchlistDetail: vi.fn(), getFieldRegistry: vi.fn(),
-  getInstrumentTaxonomyTree: vi.fn(), runScreenerQuery: vi.fn(), getSharedInstruments: vi.fn(),
+  getInstrumentTaxonomyTree: vi.fn(), runScreenerQuery: vi.fn(), searchSharedInstruments: vi.fn(),
   searchSecurities: vi.fn(), materializeSecurity: vi.fn(), addWatchlistItems: vi.fn(),
   canWrite: vi.fn(),
 }))
@@ -42,7 +42,7 @@ beforeEach(() => {
   mocks.getFieldRegistry.mockResolvedValue({ fields: [], column_field_keys: ['instrument_name'], filter_field_keys: [] })
   mocks.getInstrumentTaxonomyTree.mockResolvedValue({ nodes: [], instrument_types: [] })
   mocks.runScreenerQuery.mockResolvedValue({ rows: [], groups: [], total_rows: 0, sparklines: {}, snapshot_metadata: {} })
-  mocks.getSharedInstruments.mockResolvedValue([])
+  mocks.searchSharedInstruments.mockResolvedValue([])
   mocks.searchSecurities.mockResolvedValue({ results: [catalog], catalog_errors: {} })
   mocks.materializeSecurity.mockResolvedValue(registered)
   mocks.addWatchlistItems.mockResolvedValue({ accepted_count: 1 })

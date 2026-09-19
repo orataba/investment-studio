@@ -1292,6 +1292,7 @@ export type PortfolioInstrumentUniverseRecord = {
 
 export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
+  planning_as_of_date?: string | null
   default_planning_taxonomy_id?: string | null
   risk_basis?: {
     window_start_date?: string
@@ -1516,6 +1517,7 @@ export type PortfolioResearchCurrentContextRecord = {
   portfolio_name: string
   base_currency: string
   as_of_date: string
+  planning_as_of_date?: string
   lookback_start: string
   lookback_end: string
   nav?: number | null
@@ -2028,8 +2030,8 @@ export type PortfolioTargetSetLinePayload = {
   notes?: string | null
 }
 
-export type PortfolioTargetSetCreatePayload = {
-  effective_from: string
+export type PortfolioTargetSetConfigurationPayload = {
+  target_set_id?: string | null
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
@@ -2040,15 +2042,6 @@ export type PortfolioTargetSetCreatePayload = {
   lines: PortfolioTargetSetLinePayload[]
 }
 
-export type PortfolioTargetSetUpdatePayload = {
-  effective_from: string
-  name?: string | null
-  weight_enabled?: boolean
-  risk_budget_enabled?: boolean
-  status?: string | null
-  notes?: string | null
-  lines?: PortfolioTargetSetLinePayload[]
-}
 
 export type PortfolioAnalyticsScopePolicyUpsertPayload = {
   risk_eligible: boolean
@@ -3269,10 +3262,6 @@ function buildQuery(filters: Record<string, string | undefined>) {
   return queryString ? `?${queryString}` : ''
 }
 
-export function getPortfolioCapabilities() {
-  return fetchJson<PortfolioCapabilities>(API_BASE_URL, '/api/capabilities')
-}
-
 export function getWorkspaceSummary() {
   return fetchJson<PortfolioWorkspaceSummary>(API_BASE_URL, '/api/workspace/summary')
 }
@@ -3613,11 +3602,15 @@ export function getPortfolioTaxonomyCatalog(
   filters: {
     include_market_profile?: boolean
     as_of_date?: string
+    current_planning?: boolean
+    planning_as_of_date?: string
   } = {},
 ) {
   const query = buildQuery({
     include_market_profile: filters.include_market_profile ? 'true' : undefined,
     as_of_date: filters.as_of_date,
+    current_planning: filters.current_planning ? 'true' : undefined,
+    planning_as_of_date: filters.planning_as_of_date,
   })
   return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`)
 }
@@ -3871,36 +3864,23 @@ export function deletePortfolioTaxonomyAssignment(
   )
 }
 
-export function createPortfolioTargetSet(
+export function savePortfolioTaxonomyTargetConfiguration(
   portfolioId: string,
   taxonomyId: string,
-  payload: PortfolioTargetSetCreatePayload,
+  payload: {
+    effective_from: string
+    node_defaults: Record<string, 'weight' | 'risk_budget'>
+    target_sets: PortfolioTargetSetConfigurationPayload[]
+  },
 ) {
-  return fetchJson<PortfolioTargetSetRecord>(
+  return fetchJson<PortfolioTaxonomyRecord>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets`,
-    {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    },
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-configuration`,
+    { method: 'PUT', body: JSON.stringify(payload) },
   )
 }
 
-export function updatePortfolioTargetSet(
-  portfolioId: string,
-  taxonomyId: string,
-  targetSetId: string,
-  payload: PortfolioTargetSetUpdatePayload,
-) {
-  return fetchJson<PortfolioTargetSetRecord>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    },
-  )
-}
+
 
 export function deletePortfolioTargetSet(
   portfolioId: string,
@@ -4272,14 +4252,12 @@ export function getPortfolioFcnLifecycles(portfolioId: string, positionReference
   return fetchJson<import('./fcnLifecycleApi').FcnLifecyclesResponse>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/positions/${encodeURIComponent(positionReferenceId)}/fcn-lifecycles${buildQuery({ as_of_date: asOfDate })}`)
 }
 
-export function getPortfolioAccess(portfolioId: string) { return fetchJson<PortfolioAccess>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/access`) }
 export function getPortfolioMembers(portfolioId: string) { return fetchJson<{ members: PortfolioMember[] }>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members`) }
 export function getPortfolioMemberCandidates(portfolioId: string) { return fetchJson<{ members: Array<{ user_id: string; display_name: string }> }>(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/member-candidates`) }
 export function setPortfolioMember(portfolioId: string, userId: string, role: PortfolioRole) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify({ role }) }) }
 export function removePortfolioMember(portfolioId: string, userId: string) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/members/${encodeURIComponent(userId)}`, { method: 'DELETE' }) }
 
 export type PortfolioSession = { user_id: string; display_name: string; session_id: string; can_create: boolean; can_write_team_research: boolean; is_team_owner: boolean; local_unrestricted?: boolean }
-export function getPortfolioSession() { return fetchJson<PortfolioSession>(API_BASE_URL, '/api/portfolios/session') }
 
 export function getPortfolioAccessRecovery() { return fetchJson<{ portfolios: Array<{ portfolio_id: string; portfolio_name: string; has_active_manager: boolean }>; members: Array<{ user_id: string; display_name: string }> }>(API_BASE_URL, '/api/portfolios/access-recovery') }
 export function recoverPortfolioAccess(portfolioId: string, userId: string, reason: string) { return fetchJson(API_BASE_URL, `/api/portfolios/${encodeURIComponent(portfolioId)}/recover-access`, { method: 'POST', body: JSON.stringify({ user_id: userId, reason }) }) }

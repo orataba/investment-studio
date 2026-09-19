@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Investment Studio Home"
-    app_version: str = "1.1.0"
+    app_version: str = "1.2.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5172"
     cors_origins: Annotated[list[str], NoDecode] = [
@@ -18,8 +18,6 @@ class Settings(BaseSettings):
     app_urls: dict[str, str] = {}
     database_url: str = ""
     auth_mode: Literal["account", "local"] = "account"
-    auth_totp_key_file: Path | None = None
-    auth_require_admin_totp: bool = False
     auth_cookie_secure: bool = True
     auth_cookie_name: str = "__Secure-yungu_session"
     auth_cookie_domain: str | None = None

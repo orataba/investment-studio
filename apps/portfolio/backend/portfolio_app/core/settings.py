@@ -9,14 +9,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Investment Studio Portfolio API"
-    app_version: str = "1.1.0"
+    app_version: str = "1.2.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5174"
     database_url: str
     alembic_database_url: str | None = None
     database_schema: str | None = "portfolio"
     watchlist_api_url: str = "http://127.0.0.1:8000/api"
-    research_enabled: bool = False
+    research_enabled: bool = True
     research_outputs_root: Path = Path.home() / ".local/share/investment-studio/portfolio-research-outputs"
     sql_echo: bool = False
     default_trade_timezone: str = "Asia/Shanghai"

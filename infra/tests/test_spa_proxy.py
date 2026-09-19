@@ -47,12 +47,13 @@ def proxy(tmp_path):
         "--port", str(port), "--api-target", f"http://127.0.0.1:{backend.server_port}",
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    def request(path, headers=None):
+    def request(path, headers=None, *, method="GET", include_headers=False):
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         try:
-            connection.request("GET", path, headers=headers or {})
+            connection.request(method, path, headers=headers or {})
             response = connection.getresponse()
-            return response.status, response.read()
+            result = response.status, response.read()
+            return (*result, dict(response.getheaders())) if include_headers else result
         finally:
             connection.close()
 
@@ -111,3 +112,21 @@ def test_proxy_ends_an_interrupted_upstream_response(proxy):
     with pytest.raises((http.client.IncompleteRead, http.client.RemoteDisconnected)):
         request('/api/interrupted')
     assert request('/') == (200, b'workspace')
+
+
+def test_static_cache_and_request_correlation(proxy):
+    request, dist, _ = proxy
+    (dist / 'assets').mkdir()
+    (dist / 'assets/app-hashed.js').write_text('javascript')
+    status, body, headers = request('/assets/app-hashed.js', include_headers=True)
+    assert status == 200 and body == b'javascript'
+    assert headers['Cache-Control'] == 'public, max-age=31536000, immutable'
+    assert headers['X-Request-ID']
+    assert request('/assets/app-hashed.js', {'If-None-Match': headers['ETag']}) == (304, b'')
+    assert request('/assets/app-hashed.js', method='HEAD') == (200, b'')
+    _, _, html_headers = request('/', include_headers=True)
+    assert html_headers['Cache-Control'] == 'no-cache'
+    _, data, api_headers = request('/api/health', {'X-Request-ID': 'browser-request-123'}, include_headers=True)
+    assert api_headers['X-Request-ID'] == 'browser-request-123'
+    assert json.loads(data)['x-request-id'] == 'browser-request-123'
+    assert request('/apiary') == (200, b'workspace')

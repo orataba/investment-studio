@@ -27,7 +27,7 @@ async def lifespan(_app):
 
 def create_app(settings=None):
     settings = settings or get_settings()
-    app = FastAPI(title="Investment Studio Briefing", version="1.1.0", lifespan=lifespan)
+    app = FastAPI(title="Investment Studio Briefing", version="1.2.0", lifespan=lifespan)
     @app.exception_handler(IdentityError)
     async def identity_error(_request, error):
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers={"Cache-Control": "no-store"})
@@ -191,6 +191,8 @@ def create_app(settings=None):
         return {"status": "accepted", "mode": mode,
                 "message": "校稿已保存；正常结束后由应用发布。" if mode == "review" else "首稿已保存；应用将启动独立校稿。"}
 
+    from studio_runtime import install_diagnostics
+    install_diagnostics(app, "briefing")
     return app
 
 

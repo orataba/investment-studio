@@ -1,6 +1,7 @@
+import { getPortfolioBootstrap } from './lib/bootstrap'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { clearPortfolioApiCache, getPortfolioAccess, getPortfolioAccessRecovery, getPortfolioPerformance, getPortfolioSession, updatePortfolioSettings } from './lib/api'
+import { clearPortfolioApiCache, getPortfolioAccessRecovery, getPortfolioPerformance, updatePortfolioSettings } from './lib/api'
 
 function pendingResponse(retryAfter = '1') {
   return new Response(JSON.stringify({
@@ -60,19 +61,19 @@ describe('background portfolio calculation requests', () => {
     const report = getPortfolioPerformance('3')
     await report
     for (let check = 0; check < 2; check += 1) {
-      await Promise.all([getPortfolioSession(), getPortfolioAccess('3'), getPortfolioAccessRecovery()])
+      await Promise.all([getPortfolioBootstrap('3'), getPortfolioAccessRecovery()])
       expect(getPortfolioPerformance('3')).toBe(report)
     }
-    for (const path of ['/session', '/3/access', '/access-recovery']) {
+    for (const path of ['/session?portfolio_id=3', '/access-recovery']) {
       expect(fetchMock.mock.calls.filter(([url]) => url.endsWith(path))).toHaveLength(2)
     }
-    expect(fetchMock).toHaveBeenCalledTimes(7)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
 
     await updatePortfolioSettings('3', { base_currency: 'CNY' })
     const refreshed = getPortfolioPerformance('3')
     expect(refreshed).not.toBe(report)
     await refreshed
-    expect(fetchMock).toHaveBeenCalledTimes(9)
+    expect(fetchMock).toHaveBeenCalledTimes(7)
   })
 
   it('surfaces a stored calculation failure without retrying it', async () => {

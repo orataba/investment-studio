@@ -15,7 +15,8 @@ from .raw import archive_response
 from .store import NumericStore
 from .price_revisions import history_start, pending_revisions
 from .providers import analyst, directory, etf, events, financials, indexes, macro, market_series, profiles, ratings, treasury, us_market
-from .providers.fmp import FmpClient, FmpHttpError, FmpResponseError
+from .providers.fmp import FmpClient, FmpHttpError, FmpResponseError, FmpTransportError
+from .providers.cn_futures import CnFuturesError
 from .providers.http_client import get_public_bytes,PublicHttpError
 
 UTC=timezone.utc
@@ -30,7 +31,7 @@ def failure_summary(exc):
     status=getattr(exc,'status',None) or getattr(exc,'code',None) or getattr(getattr(exc,'response',None),'status_code',None)
     result={'error_type':kind,'error':kind}
     if isinstance(status,int):result.update(http_status=status,error=f'{kind}: HTTP {status}')
-    if isinstance(exc,(FmpResponseError,PublicHttpError)):result['error']=str(exc)
+    if isinstance(exc,(FmpResponseError,FmpTransportError,PublicHttpError,CnFuturesError)):result['error']=str(exc)
     frames = traceback.extract_tb(exc.__traceback__)
     if frames:
         frame = frames[-1]
@@ -106,7 +107,7 @@ class Collector:
         for exchange in ("NASDAQ","NYSE","AMEX","CBOE"):
             seen=set()
             for page in range(100):
-                response=self.fmp.get_json("company-screener",{"exchange":exchange,"limit":10000,"page":page})
+                response=self.fmp.get_json("company-screener",{"exchange":exchange,"includeAllShareClasses":"true","limit":10000,"page":page})
                 clock,ref=self.archive(response)
                 if clock["raw_sha256"] in seen:raise ValueError("Security directory repeated a page")
                 seen.add(clock["raw_sha256"])

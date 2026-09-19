@@ -24,7 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   createPortfolioTaxonomy: vi.fn(),
   createPortfolioTaxonomyAssignment: vi.fn(),
   createPortfolioTaxonomyNode: vi.fn(),
-  createPortfolioTargetSet: vi.fn(),
+  savePortfolioTaxonomyTargetConfiguration: vi.fn(),
   deletePortfolioInstrumentUniverseRecord: vi.fn(),
   deletePortfolioTaxonomy: vi.fn(),
   deletePortfolioTaxonomyNode: vi.fn(),
@@ -33,7 +33,6 @@ const apiMocks = vi.hoisted(() => ({
   updatePortfolioTaxonomy: vi.fn(),
   updatePortfolioTaxonomyAssignment: vi.fn(),
   updatePortfolioTaxonomyNode: vi.fn(),
-  updatePortfolioTargetSet: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
@@ -219,7 +218,7 @@ describe('Taxonomies rendered page contract', () => {
     })
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
     apiMocks.updatePortfolioTaxonomy.mockResolvedValue({})
-    apiMocks.updatePortfolioTargetSet.mockResolvedValue({})
+    apiMocks.savePortfolioTaxonomyTargetConfiguration.mockResolvedValue({})
   })
 
   it('lets readers browse taxonomies while blocking assignment shortcuts and shared changes', async () => {
@@ -278,9 +277,11 @@ describe('Taxonomies rendered page contract', () => {
       await user.type(screen.getByRole('spinbutton', { name: `SAA target weight for ${name}` }), value)
     }
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledTimes(1))
-    expect(apiMocks.updatePortfolioTaxonomy).toHaveBeenCalledWith('3', 'taxonomy-1', expect.objectContaining({ planning_enabled: true }))
-    expect(apiMocks.createPortfolioTargetSet.mock.calls[0][2]).toMatchObject({ weight_enabled: true, risk_budget_enabled: false })
+    await waitFor(() => expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).toMatchObject({
+      target_sets: [expect.objectContaining({ weight_enabled: true, risk_budget_enabled: false })],
+    })
+    expect(apiMocks.updatePortfolioTaxonomy).not.toHaveBeenCalled()
     expect(apiMocks.updatePortfolioDefaultPlanningTaxonomy).not.toHaveBeenCalled()
   })
 
@@ -291,8 +292,10 @@ describe('Taxonomies rendered page contract', () => {
     await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
     await user.click(screen.getByRole('checkbox', { name: 'SAA risk contribution targets' }))
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledTimes(1))
-    expect(apiMocks.updatePortfolioTargetSet.mock.calls[0]).toEqual(['3', 'taxonomy-1', 'saa-root', expect.objectContaining({ status: 'inactive' })])
+    await waitFor(() => expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).toMatchObject({
+      target_sets: [expect.objectContaining({ target_set_id: 'saa-root', weight_enabled: false, risk_budget_enabled: false })],
+    })
   })
 
   it('saves target changes from multiple scopes together', async () => {
@@ -305,11 +308,14 @@ describe('Taxonomies rendered page contract', () => {
     await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
     await user.type(screen.getByRole('spinbutton', { name: /SAA target weight for .*Alpha Fund/ }), '100')
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledTimes(1))
-    expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledWith('3', 'taxonomy-1', 'saa-root',
-      expect.objectContaining({ status: 'inactive' }))
-    expect(apiMocks.createPortfolioTargetSet).toHaveBeenCalledWith('3', 'taxonomy-1',
-      expect.objectContaining({ comparator_taxonomy_node_id: 'risk-assets', weight_enabled: true }))
+    await waitFor(() => expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]).toMatchObject({
+      target_sets: expect.arrayContaining([
+        expect.objectContaining({ target_set_id: 'saa-root', weight_enabled: false, risk_budget_enabled: false }),
+        expect.objectContaining({ target_set_id: null, comparator_taxonomy_node_id: 'risk-assets', weight_enabled: true }),
+      ]),
+    })
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2].target_sets).toHaveLength(2)
   })
 
   it('shows FCN-only underlyings for classification without creating a direct holding or observed candidate', async () => {
@@ -534,15 +540,15 @@ describe('Taxonomies rendered page contract', () => {
       'Target weight total must be 100% within the selected scope.',
     )
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-    expect(apiMocks.updatePortfolioTargetSet).not.toHaveBeenCalled()
+    expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).not.toHaveBeenCalled()
 
     await user.clear(saaCashWeight)
     await user.type(saaCashWeight, '21')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledTimes(1))
-    const payload = apiMocks.updatePortfolioTargetSet.mock.calls[0][3]
+    await waitFor(() => expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
+    const payload = apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2].target_sets[0]
     expect(payload.lines).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

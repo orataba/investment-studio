@@ -1,3 +1,4 @@
+import { installBrowserDiagnostics } from '../../../packages/ui/src/diagnostics'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { LanguageProvider } from '../../../packages/ui/src/i18n'
@@ -8,6 +9,8 @@ import './index.css'
 import '../../../packages/ui/src/language.css'
 import '../../../packages/ui/src/studio-theme.css'
 import './app-theme.css'
+
+installBrowserDiagnostics('home', import.meta.env.VITE_HOME_URL)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

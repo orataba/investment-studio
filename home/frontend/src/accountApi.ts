@@ -6,13 +6,11 @@ export type Account = {
   team_name: string
   team_role: TeamRole
   is_team_owner: boolean
-  mfa_enabled: boolean
-  mfa_required: boolean
   local_unrestricted?: boolean
 }
 export type Member = {
   user_id: string
-  username: string
+  username: string | null
   display_name: string
   role: TeamRole
   active: boolean

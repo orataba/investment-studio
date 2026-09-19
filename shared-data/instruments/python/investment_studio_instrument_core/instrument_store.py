@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import case, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -1564,6 +1564,55 @@ def _latest_market_data_for_instruments(
             }
         )
     return result
+
+
+def search_instrument_identities(
+    session_factory: SessionFactory,
+    *,
+    search: str,
+    instrument_types: Iterable[str],
+    limit: int,
+) -> list[dict[str, object]]:
+    """Search active identities without loading market data or event histories."""
+    types = {value.strip().lower() for value in instrument_types if value.strip()}
+    if not types:
+        return []
+    query = search.strip().lower()
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    with session_factory() as session:
+        statement = select(Instrument).options(selectinload(Instrument.identifiers)).where(
+            func.coalesce(Instrument.lifecycle_state_json["status"].as_string(), "active") != "archived",
+            func.lower(Instrument.instrument_type).in_(types),
+        )
+        if query:
+            pattern = f"%{escaped}%"
+            statement = statement.where(or_(
+                func.lower(Instrument.instrument_id).like(pattern, escape="\\"),
+                func.lower(Instrument.instrument_name).like(pattern, escape="\\"),
+                Instrument.identifiers.any(
+                    func.lower(InstrumentIdentifier.identifier_value).like(pattern, escape="\\"),
+                ),
+            )).order_by(case(
+                (Instrument.identifiers.any(func.lower(InstrumentIdentifier.identifier_value) == query), 0),
+                (func.lower(Instrument.instrument_id) == query, 0),
+                (Instrument.identifiers.any(func.lower(InstrumentIdentifier.identifier_value).like(f"{escaped}%", escape="\\")), 1),
+                else_=2,
+            ))
+        records = session.scalars(statement.order_by(
+            Instrument.instrument_name, Instrument.instrument_id,
+        ).limit(limit)).all()
+        return [{
+            "instrument_id": item.instrument_id,
+            "instrument_name": item.instrument_name,
+            "instrument_type": item.instrument_type,
+            "currency": item.currency,
+            "exchange_code": item.exchange_code,
+            "identifiers": [{
+                "identifier_type": identifier.identifier_type,
+                "identifier_value": identifier.identifier_value,
+                "is_primary": identifier.is_primary,
+            } for identifier in item.identifiers],
+        } for item in records]
 
 
 def list_instruments(

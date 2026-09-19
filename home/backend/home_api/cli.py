@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 
-from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -63,17 +62,10 @@ def main() -> None:
     service_parser.add_argument("--token-file", required=True, help="New private file; token is never printed")
     revoke_parser = subparsers.add_parser("revoke-service")
     revoke_parser.add_argument("--credential-id", required=True)
-    mfa_key = subparsers.add_parser("create-mfa-key")
-    mfa_key.add_argument("--output", required=True)
     recovery = subparsers.add_parser("recover-user", help="Local operator recovery revokes all sessions; use only after verifying the user's identity")
     recovery.add_argument("--user-id", required=True)
-    recovery.add_argument("--reset-mfa", action="store_true")
     recovery.add_argument("--reset-password", action="store_true")
     args = parser.parse_args()
-    if args.command == "create-mfa-key":
-        write_secret(args.output, Fernet.generate_key().decode())
-        print("MFA encryption key written to the requested private file.")
-        return
     database_url = get_settings().database_url
     if args.command == "migrate":
         initialize_schema(database_url)
@@ -84,8 +76,8 @@ def main() -> None:
             if args.password_hash_file:
                 encoded = read_private_text(Path(args.password_hash_file), "Existing password hash")
             else:
-                password = getpass.getpass("New owner password (at least 12 characters): ")
-                if len(password) < 12 or password != getpass.getpass("Confirm password: "):
+                password = getpass.getpass("New owner password (at least 8 characters): ")
+                if len(password) < 8 or password != getpass.getpass("Confirm password: "):
                     raise SystemExit("Password too short or confirmation differs.")
                 encoded = hash_password(password)
             print(json.dumps(bootstrap(db, username=args.username, display_name=args.display_name, team_name=args.team_name, password_hash=encoded), ensure_ascii=False))
@@ -111,12 +103,12 @@ def main() -> None:
             audit(db, "service_revoked", target=credential.id)
             db.commit()
         elif args.command == "recover-user":
-            if not db.get(User, args.user_id) or not (args.reset_mfa or args.reset_password):
+            if not db.get(User, args.user_id) or not args.reset_password:
                 raise SystemExit("Specify an existing user and an explicit recovery action.")
             encoded_password = None
             if args.reset_password:
-                password = getpass.getpass("New password (at least 12 characters): ")
-                if len(password) < 12 or password != getpass.getpass("Confirm password: "):
+                password = getpass.getpass("New password (at least 8 characters): ")
+                if len(password) < 8 or password != getpass.getpass("Confirm password: "):
                     raise SystemExit("Password too short or confirmation differs.")
                 encoded_password = hash_password(password)
             # Complete operator input before taking the account lock.
@@ -125,13 +117,11 @@ def main() -> None:
                 raise SystemExit("Unknown user ID.")
             if encoded_password is not None:
                 user.password_hash = encoded_password
-            if args.reset_mfa:
-                user.totp_secret = user.totp_pending_secret = user.totp_last_step = None
             user.failed_logins = 0
             user.locked_until = None
             revoke_sessions(db, user.id)
             revoke_one_time_tokens(db, user.id)
-            audit(db, "operator_account_recovery", target=user.id, reset_mfa=args.reset_mfa, reset_password=args.reset_password)
+            audit(db, "operator_account_recovery", target=user.id, reset_password=args.reset_password)
             db.commit()
             print("Recovery completed and existing sessions revoked. Account status was preserved.")
 

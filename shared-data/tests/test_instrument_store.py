@@ -1080,6 +1080,38 @@ def test_list_instruments_filters_in_sql_semantics_and_returns_latest_points(
     ]
 
 
+def test_identity_search_is_ranked_scoped_and_does_not_load_market_history(isolated_store: Path) -> None:
+    from studio_data.db.session import get_session_factory
+
+    create_instrument(
+        instrument_name="AAA Alphabet Comparison Fund", instrument_type="public_fund", currency="USD",
+        identifiers=[{"identifier_type": "ticker", "identifier_value": "GOOGL-FUND", "is_primary": True}],
+    )
+    equity = create_instrument(
+        instrument_name="Alphabet Inc.", instrument_type="equity", currency="USD", exchange_code="XNAS",
+        identifiers=[{"identifier_type": "exchange_ticker", "identifier_value": "GOOGL", "is_primary": True}],
+    )
+    factory = get_session_factory()
+    engine = factory.kw["bind"]
+    statements = []
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        rows = shared_store.search_instrument_identities(factory, search=" googl ", instrument_types={"public_fund", "equity"}, limit=1)
+        assert [row["instrument_id"] for row in rows] == [equity["instrument_id"]]
+        assert rows[0]["identifiers"][0]["identifier_value"] == "GOOGL"
+        assert "market_data" not in rows[0]
+        assert len(statements) == 2  # identities + identifiers; no time series or actions
+        statements.clear()
+        assert shared_store.search_instrument_identities(factory, search="%", instrument_types={"equity"}, limit=12) == []
+        assert shared_store.search_instrument_identities(factory, search="GOOGL", instrument_types={"crypto"}, limit=12) == []
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    archive_instrument(instrument_id=equity["instrument_id"], updated_by="pytest")
+    assert shared_store.search_instrument_identities(factory, search="GOOGL", instrument_types={"equity"}, limit=12) == []
+
+
 def test_market_data_upsert_rejects_noncanonical_currency(
     isolated_store: Path,
 ) -> None:

@@ -223,6 +223,12 @@ def replace_analytics_scope_policy(
 ) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        # All planning writers acquire the portfolio before policy/version rows.
+        # Besides serializing same-scope edits, this avoids reversing the order
+        # used by taxonomy revisions and their calculation invalidation.
+        session.scalar(select(PortfolioRecordModel).where(
+            PortfolioRecordModel.portfolio_id == portfolio_id,
+        ).with_for_update())
         taxonomy = session.scalar(
             select(TaxonomyRecordModel).where(
                 TaxonomyRecordModel.portfolio_id == portfolio_id,
@@ -546,6 +552,32 @@ def taxonomy_configuration_as_of_in_session(
         record.taxonomy_configuration_revision_id
     )
     return payload
+
+
+def taxonomy_catalog_as_of(portfolio_id: str, as_of_date: date) -> dict[str, object]:
+    """Read complete effective configurations, never a mixture of live target rows."""
+    with get_session_factory()() as session:
+        revisions = session.scalars(select(TaxonomyConfigurationRevisionModel).where(
+            TaxonomyConfigurationRevisionModel.portfolio_id == portfolio_id,
+            TaxonomyConfigurationRevisionModel.superseded_by_revision_id.is_(None),
+            TaxonomyConfigurationRevisionModel.effective_from <= as_of_date,
+            or_(TaxonomyConfigurationRevisionModel.effective_to.is_(None),
+                TaxonomyConfigurationRevisionModel.effective_to >= as_of_date),
+        ).order_by(TaxonomyConfigurationRevisionModel.configuration_version)).all()
+        result = {key: [] for key in (
+            "taxonomies", "taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines",
+        )}
+        for revision in revisions:
+            configuration = revision.configuration_json
+            if configuration.get("taxonomy", {}).get("status") != "active":
+                continue
+            result["taxonomies"].append(deepcopy(configuration["taxonomy"]))
+            for key in ("taxonomy_nodes", "taxonomy_assignments", "target_sets", "target_set_lines"):
+                result[key].extend(deepcopy(configuration.get(key, [])))
+        selection = analytics_taxonomy_selection_as_of_in_session(
+            session, portfolio_id=portfolio_id, as_of_date=as_of_date)
+        return {**result, "default_planning_taxonomy_id": selection.taxonomy_id if selection else None,
+                "planning_as_of_date": as_of_date.isoformat()}
 
 
 def taxonomy_configuration_as_of(

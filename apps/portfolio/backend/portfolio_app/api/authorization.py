@@ -3,6 +3,7 @@ from fastapi import HTTPException, Request
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from studio_identity import IdentityError, principal_context, resolve_request
+from studio_runtime import operation
 
 from portfolio_app.services.portfolio_access import require_access
 from portfolio_app.core.settings import get_settings
@@ -11,7 +12,8 @@ from portfolio_app.core.settings import get_settings
 async def authenticated_principal(request: Request):
     """Dedicated dependency seam: tests may replace identity, never production ACLs."""
     try:
-        return await run_in_threadpool(resolve_request, request, audience="portfolio", allowed_origins=get_settings().cors_origins)
+        with operation("identity"):
+            return await run_in_threadpool(resolve_request, request, audience="portfolio", allowed_origins=get_settings().cors_origins)
     except IdentityError as error:
         raise HTTPException(error.status_code, error.detail) from error
 
@@ -58,7 +60,10 @@ async def authorize(request: Request, principal) -> None:
     # not let a model turn that delegation into a ledger or permission writer.
     if scope.get("kind") == "portfolio" and method not in {"GET", "HEAD"}:
         raise HTTPException(403, "组合研究任务只能读取绑定组合")
-    if path == "/api/portfolios/session" and not scope:
+    if path == "/api/portfolios/session":
+        if principal.kind != "user" or scope:
+            raise HTTPException(403, "工作台会话仅供本人账号使用")
+        # The session bootstrap reads the optional portfolio ACL with this same actor.
         return
     if path == "/api/portfolios/snapshots/daily/recalculations":
         if scope:
@@ -74,7 +79,7 @@ async def authorize(request: Request, principal) -> None:
         if payload.get("refresh_all") or payload.get("instrument_ids") or not ids:
             raise HTTPException(403, "全量重算仅供估值维护服务使用；请选择具体组合")
         for selected in ids:
-            require_access(str(selected), "editor", principal)
+            await run_in_threadpool(require_access, str(selected), "editor", principal)
         return
     if path in {"/api/portfolios", "/api/portfolios/reorder"}:
         if scope and scope.get("kind") != "portfolio":
@@ -94,8 +99,8 @@ async def authorize(request: Request, principal) -> None:
         read_operation = method in {"GET", "HEAD"} or "/table-views/" in path or path.endswith(("/preload", "/transaction-imports/preview")) or path == "/api/instrument-risk/review/runs"
         manager_operation = "/members" in path or path.endswith("/member-candidates") or path.endswith("/access-audit") or path.endswith("/copy") or (method == "DELETE" and path == f"/api/portfolios/{portfolio_id}")
         required = "manager" if manager_operation else "viewer" if read_operation else "editor"
-        require_access(str(portfolio_id), required, principal)
-        _capture_scope(request, principal, str(portfolio_id))
+        await run_in_threadpool(require_access, str(portfolio_id), required, principal)
+        await run_in_threadpool(_capture_scope, request, principal, str(portfolio_id))
         return
     if path.startswith("/api/workspace"):
         raise HTTPException(422, "请选择一个有权访问的组合")
@@ -113,7 +118,8 @@ from fastapi import Depends
 
 async def portfolio_request_context(request: Request, principal=Depends(authenticated_principal)):
     with principal_context(principal):
-        await authorize(request, principal)
+        with operation("authorization"):
+            await authorize(request, principal)
         if getattr(request.state, "check_financial_generation", False):
             from portfolio_app.services.daily_snapshots import portfolio_financial_read_generation
             portfolio_id = request.path_params.get("portfolio_id") or request.query_params.get("portfolio_id")
@@ -124,6 +130,8 @@ async def portfolio_request_context(request: Request, principal=Depends(authenti
             if portfolio_id:
                 from portfolio_app.db.session import get_session_factory
                 from portfolio_app.services.portfolio_access import record_access_event
-                with get_session_factory()() as session:
-                    record_access_event(session, str(portfolio_id), "api_operation", {"method": request.method, "path": request.url.path}, principal)
-                    session.commit()
+                def record_operation():
+                    with get_session_factory()() as session:
+                        record_access_event(session, str(portfolio_id), "api_operation", {"method": request.method, "path": request.url.path}, principal)
+                        session.commit()
+                await run_in_threadpool(record_operation)

@@ -25,6 +25,7 @@ services=(
   hk-market-data-refresh
   us-market-data-refresh
   cn-hk-reference-data-refresh
+  # Retired job remains stoppable/restorable while upgrading an older install.
   us-reference-data-refresh
   market-sync
 )

@@ -14,13 +14,11 @@ def cache_context(monkeypatch):
     context = {
         "fingerprint": (None, "generation-1", "2026-01-01", "2026-09-06"),
         "factory": object(),
-        "now": 0.0,
     }
     monkeypatch.setattr(workspace_cache, "_cache", OrderedDict())
     monkeypatch.setattr(workspace_cache, "_cache_total_size_bytes", 0)
     monkeypatch.setattr(workspace_cache, "_snapshot_fingerprint", lambda _portfolio_id: context["fingerprint"])
     monkeypatch.setattr(workspace_cache, "get_session_factory", lambda: context["factory"])
-    monkeypatch.setattr(workspace_cache, "monotonic", lambda: context["now"])
     return context
 
 
@@ -100,12 +98,11 @@ def test_cache_is_scoped_to_session_factory(cache_context):
     assert first != second
 
 
-def test_cached_risk_basis_retains_existing_ttl_and_value_size_budget(cache_context, monkeypatch):
+def test_cached_risk_basis_reuses_unchanged_generation_with_value_size_budget(cache_context, monkeypatch):
     workspace_cache.get_cached_portfolio_risk_basis("p", as_of_date=None, builder=lambda: {"old": True})
-    cache_context["now"] = workspace_cache.WORKSPACE_CACHE_TTL_SECONDS + 1
     assert workspace_cache.get_cached_portfolio_risk_basis(
-        "p", as_of_date=None, builder=lambda: {"new": True}
-    ) == {"new": True}
+        "p", as_of_date=None, builder=lambda: pytest.fail("unchanged source must reuse computed values")
+    ) == {"old": True}
     monkeypatch.setattr(workspace_cache, "WORKSPACE_CACHE_MAX_VALUE_BYTES", 10)
     workspace_cache.get_cached_portfolio_risk_basis("large", as_of_date=None, builder=lambda: {"payload": "large"})
     assert workspace_cache.get_cached_portfolio_risk_basis(

@@ -97,8 +97,10 @@ def test_failed_research_publish_rolls_back_pruning_and_preserves_previous_repor
         return original_commit(session)
 
     monkeypatch.setattr(Session, "commit", fail_publish)
+    # Validate the domain transaction directly: HTTP diagnostics intentionally
+    # redact unexpected database exception details at the request boundary.
     with pytest.raises(IntegrityError):
-        client.post(f"/api/portfolios/{PORTFOLIO_ID}/research/runs", json={})
+        research.run_portfolio_research(PORTFOLIO_ID)
     assert interrupted
     with get_session_factory()() as session:
         rows = list(session.scalars(select(ResearchRunRecordModel)))

@@ -838,7 +838,7 @@ describe('Risk rendered page contract', () => {
   it('loads taxonomy market history at the holdings cutoff, not the wall-clock date', async () => {
     renderRiskPage()
     await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {
-      include_market_profile: true, as_of_date: '2026-07-15',
+      include_market_profile: true, as_of_date: '2026-07-15', current_planning: true,
     }))
   })
 

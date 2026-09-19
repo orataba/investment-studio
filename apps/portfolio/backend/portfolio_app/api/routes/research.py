@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from studio_runtime import operation
 
 from portfolio_app.api.contracts import (
     PortfolioInstrumentUniverseRecord,
@@ -163,10 +164,11 @@ def create_portfolio_research_run(
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     try:
-        run = run_portfolio_research(
-            portfolio_id,
-            requested_by=payload.requested_by,
-        )
+        with operation("portfolio_research", portfolio_id=portfolio_id):
+            run = run_portfolio_research(
+                portfolio_id,
+                requested_by=payload.requested_by,
+            )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except InstrumentRegistryError as error:

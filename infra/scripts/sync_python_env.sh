@@ -35,6 +35,7 @@ fi
   "$PROJECT_ROOT/requirements/python.lock"
 
 for package_root in \
+  "$PROJECT_ROOT/packages/runtime" \
   "$PROJECT_ROOT/packages/identity" \
   "$PROJECT_ROOT/shared-data/instruments/python" \
   "$PROJECT_ROOT/shared-data/market" \

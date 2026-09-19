@@ -22,16 +22,13 @@ class Base(DeclarativeBase):
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    username: Mapped[str] = mapped_column(String(128), unique=True)
+    username: Mapped[str | None] = mapped_column(String(128), unique=True)
     display_name: Mapped[str] = mapped_column(String(200))
     password_hash: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    totp_secret: Mapped[str | None] = mapped_column(Text)
-    totp_pending_secret: Mapped[str | None] = mapped_column(Text)
-    totp_last_step: Mapped[int | None] = mapped_column(Integer)
 
 
 class Team(Base):

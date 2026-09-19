@@ -17,6 +17,7 @@ from watchlist_app.services.shared_instrument_registry import (
     get_shared_reference_data,
     list_shared_instruments,
     resolve_shared_instrument,
+    search_shared_instrument_identities,
 )
 
 
@@ -41,6 +42,17 @@ def list_instrument_records(
 ) -> list[dict[str, object]]:
     try:
         return list_shared_instruments(search=search, instrument_type=instrument_type, limit=limit)
+    except SharedInstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.get("/search")
+def search_instrument_records(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=12, ge=1, le=100),
+) -> list[dict[str, object]]:
+    try:
+        return search_shared_instrument_identities(search=q, limit=limit)
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

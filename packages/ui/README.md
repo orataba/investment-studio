@@ -32,6 +32,9 @@
 - `requestIdentity` / `serialTaskQueue`
   防止过期请求覆盖当前状态，并串行化需要按次序完成的前端任务。
 
+- `diagnostics`
+  四个前端共用的浏览器加载、请求和错误定位记录，经 Home 已认证入口写入服务日志；不上传表单、URL查询、响应或异常消息。
+
 当前边界：
 
 - 前端视觉基线记录在 [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)。

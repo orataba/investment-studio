@@ -1214,7 +1214,7 @@ Risk Health 的 Top-3 / HHI 继续对 eligible sleeve 的直接证券绝对权�
 
 ## 9. Weight Drift 口径
 
-Risk 目标偏移、集中度以及其他分组视图分别选择自定义 taxonomy，普通切换不更改默认生产分析分类。目标集沿用独立的 `weight_enabled` / `risk_budget_enabled`；未启用风险贡献目标就不显示该目标差，没有有效权重目标时只展示实际权重。Research 可以选择分类，但运行时必须有截至日有效目标；历史结果保留运行时分类，切换后须重新运行才会得到新分类结果。
+Risk 目标偏移、集中度以及其他分组视图分别选择自定义 taxonomy，普通切换不更改默认生产分析分类。目标集沿用独立的 `weight_enabled` / `risk_budget_enabled`；未启用风险贡献目标就不显示该目标差，没有有效权重目标时只展示实际权重。Research 可以选择分类，但运行时必须有规划日期已生效的有效目标；历史结果保留运行时分类，切换后须重新运行才会得到新分类结果。
 
 ### 9.1 单项 weight drift
 
@@ -1432,7 +1432,15 @@ Instrument-scope planning taxonomy 的根 scope 固定包含两个不可分类�
 
 ### 10.7 Research target solve
 
-Research current target solve 使用 planning taxonomy 的层级 scope 做递归求解：
+Research current target solve 使用 planning taxonomy 的层级 scope 做递归求解。
+
+当前规划使用两条独立时钟：`as_of_date` 是市场/持仓的真实估值截止日，`planning_as_of_date` 是分类、assignment、TargetSet 和求解资格政策的生效日期。Dynamic Research 的规划日期取团队配置时区（`default_trade_timezone`）的今天，至少不早于估值日；因此周末、跨市场或等待净值期间，当日保存的目标可以立即进入下一次求解，而不会伪造当日行情。Pinned Research 的两日期相同。上下文、scope options、目标摘要、输入指纹和当前求解必须读取同一规划日期的 configuration revision；不能一部分读 live 表，另一部分读估值日旧目标。结果及报告披露两日期。历史模拟仍只消费每个决策日当时生效的配置，不把当前目标倒灌历史。
+
+Taxonomy 页面的一次目标保存使用 `PUT /api/portfolios/{portfolio_id}/taxonomies/{taxonomy_id}/target-configuration`，同时提交节点默认维度及所有修改过的 SAA/TAA scope。后端在组合行锁内完成校验和写入，只在全部成功后发布一份 configuration revision 并标记一次 daily snapshot generation 失效；失败全部回滚。所有事实失效通知在最外层事务提交后立即唤醒后台 worker，同一事务多次标记仅唤醒一次；savepoint 提交不提前通知，其回滚不撤销外层已登记的有效失效通知。目标变更使旧 Research 结果变为 stale，Research 运算仍由用户显式启动。独立的分类/节点/assignment 写入也在读取状态前取得同一组合锁，避免并发写入产生缺少其他已提交修改的 revision。Analytics scope policy 的替换遵循相同锁序：先组合，再 policy/revision 和版本行，防止与分类保存并发时死锁。
+
+Risk 的 Current Drift 明确请求当前规划 revision（taxonomy API 的 `current_planning=true`），同时保持市场 profile 的 `as_of_date`；显式 `planning_as_of_date` 可读取指定日期配置。编辑页面默认返回最新保存的配置，包括已安排的未来配置。默认 risk-context 使用当前规划日期，带明确历史 `as_of_date` 的 risk-context 保持当日配置；来源同时提供规划日期及估值日期。未来生效配置不能提前进入当前分析。
+
+递归求解规则：
 
 - 从最末端 sleeve 开始求解，再把每个子 sleeve 的目标权重和收益序列上卷到父 scope；
 - `scope_default` 只解析当前 scope 自己的 `default_target_dimension`，不得因为目标集缺失而静默切到另一个维度；

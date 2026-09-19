@@ -89,6 +89,7 @@ run_backend() {
   selected="$(selected_apps "${1:-all}")"
   if [[ "${1:-all}" == "all" || "${1:-all}" == "home" ]]; then
     "$PYTHON_BIN" -m pytest "$PROJECT_ROOT/packages/identity/tests" -q
+    "$PYTHON_BIN" -m pytest "$PROJECT_ROOT/packages/runtime/tests" -q
   fi
   while IFS= read -r app_name; do
     echo "Running $app_name backend tests without PostgreSQL integration cases."

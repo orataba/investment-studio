@@ -3,6 +3,7 @@ from __future__ import annotations
 from threading import Event, Thread
 import logging
 import time
+from studio_runtime import operation
 
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_session_factory
@@ -76,11 +77,12 @@ def process_next_recalc_job() -> bool:
             )
             heartbeat_thread.start()
         try:
-            canonical_recalc_service.execute_claimed_job(
-                session,
-                record=record,
-                commit=True,
-            )
+            with operation("watchlist_recalculation", job_id=job_id):
+                canonical_recalc_service.execute_claimed_job(
+                    session,
+                    record=record,
+                    commit=True,
+                )
         except Exception:
             logger.exception("Queued recalc job failed: %s", job_id)
         finally:

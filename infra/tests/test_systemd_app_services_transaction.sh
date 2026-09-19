@@ -204,7 +204,9 @@ ORIGINAL_ACTIVE_UNITS=(
   investment-studio-market-daily.timer
   investment-studio-briefing-daily.timer
 )
+RETIRED_UNITS=(investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service)
 ORIGINAL_ENABLED_UNITS=(
+  investment-studio-us-reference-data-refresh.timer
   investment-studio-home-api.service
   investment-studio-watchlist-api.service
 )
@@ -216,7 +218,7 @@ prepare_case() {
   : > "$case_root/events"
   printf '%s\n' "${ORIGINAL_ACTIVE_UNITS[@]}" > "$case_root/active"
   printf '%s\n' "${ORIGINAL_ENABLED_UNITS[@]}" > "$case_root/enabled"
-  for unit in "${MANAGED_UNITS[@]}"; do
+  for unit in "${MANAGED_UNITS[@]}" "${RETIRED_UNITS[@]}"; do
     if [[ "$unit" == "investment-studio-watchlist-web.service" ]]; then
       continue
     fi
@@ -252,7 +254,7 @@ assert_original_state_restored() {
   diff -u \
     <(printf '%s\n' "${ORIGINAL_ENABLED_UNITS[@]}" | sort) \
     <(sort "$case_root/enabled")
-  for unit in "${MANAGED_UNITS[@]}"; do
+  for unit in "${MANAGED_UNITS[@]}" "${RETIRED_UNITS[@]}"; do
     if [[ "$unit" == "investment-studio-watchlist-web.service" ]]; then
       test ! -e "$case_root/config/systemd/user/$unit"
     else
@@ -265,11 +267,14 @@ SUCCESS_CASE="$TEST_ROOT/success"
 prepare_case "$SUCCESS_CASE"
 run_case "$SUCCESS_CASE" > "$SUCCESS_CASE/output" 2>&1
 diff -u \
-  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-us-reference-data-refresh.timer investment-studio-us-reference-data-refresh.service investment-studio-market-sync.timer investment-studio-market-sync.service investment-studio-market-daily.timer investment-studio-briefing-daily.timer | sort) \
+  <(printf '%s\n' "${MANAGED_UNITS[@]}" investment-studio-market-data-refresh.timer investment-studio-market-sync.timer investment-studio-market-sync.service investment-studio-market-daily.timer investment-studio-briefing-daily.timer | sort) \
   <(sort "$SUCCESS_CASE/active")
 diff -u \
   <(printf '%s\n' "${MANAGED_UNITS[@]}" | sort) \
   <(sort "$SUCCESS_CASE/enabled")
+for unit in "${RETIRED_UNITS[@]}"; do
+  test ! -e "$SUCCESS_CASE/config/systemd/user/$unit"
+done
 for unit in "${MANAGED_UNITS[@]}"; do
   test -s "$SUCCESS_CASE/config/systemd/user/$unit"
   if grep -Fq 'previous-unit:' "$SUCCESS_CASE/config/systemd/user/$unit"; then

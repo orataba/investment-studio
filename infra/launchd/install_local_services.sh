@@ -29,7 +29,7 @@ MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SNAPSHOT_REFRESH_RUNNER="$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
 WATCHLIST_REFRESH_RUNNER="$PROJECT_ROOT/apps/watchlist/backend/scripts/refresh_release_watchlists.py"
-MARKET_DATA_REFRESH_RUNNER="$PROJECT_ROOT/shared-data/scripts/refresh_market_data_scheduled.py"
+CATALOG_REFRESH_RUNNER="$PROJECT_ROOT/shared-data/scripts/refresh_release_catalogs.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
@@ -48,9 +48,12 @@ services=(
   hk-market-data-refresh
   us-market-data-refresh
   cn-hk-reference-data-refresh
-  us-reference-data-refresh
   market-sync
 )
+
+# Preserve a retired job only in the install rollback snapshot.
+retired_services=(us-reference-data-refresh)
+previous_services=("${services[@]}" "${retired_services[@]}")
 
 for executable in "$PYTHON_BIN" "$NODE_BIN"; do
   if [[ -z "$executable" || ! -x "$executable" ]]; then
@@ -71,7 +74,7 @@ for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL" "$LOG_COMPACTO
 done
 for required_file in \
   "$AUDIT_RUNNER" \
-  "$MARKET_DATA_REFRESH_RUNNER" \
+  "$CATALOG_REFRESH_RUNNER" \
   "$SNAPSHOT_REFRESH_RUNNER" \
   "$WATCHLIST_REFRESH_RUNNER" \
   "$SCRIPT_DIR/generate_local_service_plists.py" \
@@ -173,7 +176,7 @@ definitions_touched="false"
 
 snapshot_existing_plists() {
   local service label plist
-  for service in "${services[@]}"; do
+  for service in "${previous_services[@]}"; do
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
     if [[ -f "$plist" ]]; then
@@ -186,7 +189,7 @@ snapshot_existing_plists() {
 restore_plist_snapshot() {
   local service label plist
   local failed="false"
-  for service in "${services[@]}"; do
+  for service in "${previous_services[@]}"; do
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
     if grep -Fxq "$service" "$PLIST_MANIFEST"; then
@@ -204,7 +207,7 @@ restore_plist_snapshot() {
 
 stop_all_managed_services() {
   local service
-  for service in "${services[@]}"; do
+  for service in "${previous_services[@]}"; do
     launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
   done
 }
@@ -305,12 +308,9 @@ PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
 data_env_file="$(investment_studio_runtime_env_file data "$ENV_ROOT")"
 investment_studio_load_env_file "$data_env_file" INVESTMENT_STUDIO_DATA_ INVESTMENT_STUDIO_INSTRUMENT_DATA_ INVESTMENT_STUDIO_AUTH_
 investment_studio_load_env_file "$ENV_ROOT/market.env" INVESTMENT_STUDIO_MARKET_
-PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
-  "$PYTHON_BIN" "$MARKET_DATA_REFRESH_RUNNER" \
-    --channel fmp \
-    --updated-by launchd-install \
-    --no-downstream-refresh \
-    --fail-on-item-failure
+echo "Refreshing release-required FMP security catalogs."
+PYTHONPATH="$PROJECT_ROOT/shared-data:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON_BIN" "$CATALOG_REFRESH_RUNNER"
 PYTHONPATH="$PROJECT_ROOT/apps/watchlist/backend:$PROJECT_ROOT/packages/identity:$PROJECT_ROOT/shared-data/instruments/python:$PROJECT_ROOT/shared-data/market${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$WATCHLIST_REFRESH_RUNNER" --recover-interrupted
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/shared-data/instruments/python${PYTHONPATH:+:$PYTHONPATH}" \
@@ -351,6 +351,10 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL="$DATABASE_URL" \
   --scheduler launchd --role replica --project-root "$PROJECT_ROOT" \
   --env-root "$ENV_ROOT" --python "$PYTHON_BIN" \
   --output-dir "$LAUNCH_AGENTS_DIR" --label-prefix "$LABEL_PREFIX"
+
+for service in "${retired_services[@]}"; do
+  rm -f "$LAUNCH_AGENTS_DIR/$LABEL_PREFIX.$service.plist"
+done
 
 domain="gui/$UID"
 for service in "${services[@]}"; do

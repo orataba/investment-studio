@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import date
 import json
 from threading import RLock
-from time import monotonic
 from typing import TypeVar
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel
@@ -22,7 +21,8 @@ from portfolio_app.services.daily_snapshots import (
 
 T = TypeVar("T")
 
-WORKSPACE_CACHE_TTL_SECONDS = 60.0
+# Entries are bounded by LRU/bytes and validated against live source generation
+# on every access. Elapsed time alone cannot invalidate unchanged financial facts.
 WORKSPACE_CACHE_MAX_ENTRIES = 64
 WORKSPACE_CACHE_MAX_VALUE_BYTES = 2 * 1024 * 1024
 WORKSPACE_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
@@ -30,7 +30,6 @@ WORKSPACE_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 @dataclass
 class _CacheEntry:
-    expires_at: float
     value: object
     approx_size_bytes: int
 
@@ -66,14 +65,9 @@ def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, ...] | None:
 
 def _read_cache(cache_key: tuple[Hashable, ...]) -> object | None:
     global _cache_total_size_bytes
-    now = monotonic()
     with _cache_lock:
         entry = _cache.get(cache_key)
         if entry is None:
-            return None
-        if entry.expires_at <= now:
-            _cache.pop(cache_key, None)
-            _cache_total_size_bytes -= entry.approx_size_bytes
             return None
         _cache.move_to_end(cache_key)
         return entry.value
@@ -91,13 +85,11 @@ def _write_cache(cache_key: tuple[Hashable, ...], value: object) -> None:
     )
     if approx_size_bytes > WORKSPACE_CACHE_MAX_VALUE_BYTES:
         return
-    expires_at = monotonic() + WORKSPACE_CACHE_TTL_SECONDS
     with _cache_lock:
         previous = _cache.pop(cache_key, None)
         if previous is not None:
             _cache_total_size_bytes -= previous.approx_size_bytes
         _cache[cache_key] = _CacheEntry(
-            expires_at=expires_at,
             value=value,
             approx_size_bytes=approx_size_bytes,
         )

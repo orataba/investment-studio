@@ -1085,6 +1085,9 @@ def _build_holdings_analytics_workspace(
                 ),
                 as_of_date=resolved_as_of_date,
                 instrument_detail_cache=instrument_details,
+                # Only lot opening dates feed these charts. Snapshot values
+                # already own valuation; do not price all formerly held assets.
+                resolve_pricing=False,
             )
             response = _enrich_holdings_workspace_market_data(
                 materialized_workspace,

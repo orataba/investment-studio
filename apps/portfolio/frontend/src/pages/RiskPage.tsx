@@ -1896,7 +1896,7 @@ export default function RiskPage() {
   useEffect(() => {
     if (!portfolioId || !riskWindowEndDate) { setTaxonomyCatalog(null); return }
     let cancelled = false
-    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate })
+    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate, current_planning: true })
       .then((response) => { if (!cancelled) setTaxonomyCatalog(response) })
       .catch((error) => {
         if (!cancelled) setWorkspaceSupportError((current) => [current, error instanceof Error ? error.message : 'Failed to load taxonomy catalog.'].filter(Boolean).join(' '))
@@ -2917,7 +2917,8 @@ export default function RiskPage() {
                       className="portfolio-detail-meta"
                       title={`${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`}
                     >
-                      {targetTaxonomy.name}; {holdingsWorkspace.as_of_date}
+                      {targetTaxonomy.name}; {zh ? '估值' : 'Valuation'} {holdingsWorkspace.as_of_date}
+                      {taxonomyCatalog?.planning_as_of_date ? ` · ${zh ? '规划' : 'Planning'} ${taxonomyCatalog.planning_as_of_date}` : ''}
                     </div>
                     {riskGapSummary ? <div className="portfolio-detail-meta" title="Sum of absolute eligible-sleeve risk budget gaps.">
                       {zh ? '风险预算偏移合计' : 'Eligible Risk Budget Gap'} · <span>{riskGapSummary}</span>

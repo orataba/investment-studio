@@ -6296,7 +6296,7 @@ export default function TransactionsPage() {
                                             </label>
                                           </div>
                                           <TransactionDeliveryReview
-                                            portfolioId={portfolioId} contracts={derivativeContracts}
+                                            portfolioId={portfolioId} onInstrumentRegistered={rememberRegisteredInstrument} contracts={derivativeContracts}
                                             record={record}
                                             accounts={accounts}
                                             instruments={instruments}
@@ -7512,7 +7512,7 @@ export default function TransactionsPage() {
                 <FcnSettlementReview
                   record={{ asset_deliveries: activeAssetDeliveries, settlement_cashflows: form.settlement_cashflows }} accounts={accounts} instruments={instruments} currency={resolvedTransactionCurrency}
                   allowAssetDelivery={canDeliverFcn}
-                  portfolioId={portfolioId} contractId={selectedDerivativeContract?.derivative_contract_id} excludedTransactionId={editingTransactionId}
+                  portfolioId={portfolioId} onInstrumentRegistered={rememberRegisteredInstrument} contractId={selectedDerivativeContract?.derivative_contract_id} excludedTransactionId={editingTransactionId}
                   terms={selectedDerivativeContract?.contract_type === 'fcn' ? selectedDerivativeContract.terms : undefined}
                   economicDate={form.position_effective_date || form.trade_date} settlementDate={form.settlement_date}
                   residualCash={form.gross_amount} residualAccountId={form.settlement_cash_account_id}

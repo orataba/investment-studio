@@ -388,6 +388,10 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
     monkeypatch.setattr(workspace_routes, "get_registry_instrument_details", recording_bulk_loader)
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", fail_single_chart_load)
     monkeypatch.setattr(ledger, "get_registry_instrument_details", fail_duplicate_ledger_load)
+    def fail_chart_only_pricing(*_args, **_kwargs):
+        raise AssertionError("chart opening dates must not load or resolve valuation quotes")
+
+    monkeypatch.setattr(ledger, "_resolve_pricing_quote_map", fail_chart_only_pricing)
     monkeypatch.setattr(
         workspace_routes,
         "_holdings_workspace_has_market_profile",

@@ -1,11 +1,10 @@
 """Exercise the shared HTTP client against the actual Home account API."""
 from datetime import timedelta
-from io import BytesIO
 import json
 from pathlib import Path
 import sys
-from urllib.error import HTTPError
 from urllib.parse import urlsplit
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,13 +39,10 @@ def test_real_protocol_regrant_keeps_actor_and_parent_revocation(monkeypatch, tm
     monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_URL", "https://testserver/api/auth")
     monkeypatch.setenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN", "backend-private")
     monkeypatch.delenv("INVESTMENT_STUDIO_AUTH_SERVICE_TOKEN_FILE", raising=False)
-    def transport(request, **kwargs):
-        response = client.request(request.get_method(), urlsplit(request.full_url).path,
-                                  headers=dict(request.header_items()), content=request.data)
-        if response.status_code >= 400:
-            raise HTTPError(request.full_url, response.status_code, response.text, {}, BytesIO(response.content))
-        return BytesIO(response.content)
-    monkeypatch.setattr(identity, "urlopen", transport)
+    def transport(method, url, *, headers, body, **kwargs):
+        response = client.request(method, urlsplit(url).path, headers=headers, content=body)
+        return SimpleNamespace(status=response.status_code, data=response.content)
+    monkeypatch.setattr(identity._http, "request", transport)
     try:
         assert client.post("/api/auth/login", json={"username": "pm", "password": "long-test-password"}).status_code == 200
         principal = identity.resolve_token(client.cookies.get(settings.auth_cookie_name), "watchlist")

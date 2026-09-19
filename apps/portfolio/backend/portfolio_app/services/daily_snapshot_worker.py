@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from threading import Event, Lock, Thread
 from studio_identity import IdentityError, service_principal, principal_context
+from studio_runtime import operation
 
 from portfolio_app.services.daily_snapshots import (
     _next_daily_snapshot_recalculation_candidate,
@@ -167,15 +168,16 @@ def _run_daily_snapshot_recalculation_worker_once(
         )
     if portfolio_id is None:
         return False, reconciliation_after_portfolio_id
-    _run_portfolio_daily_snapshot_recalculation_synchronously(
-        portfolio_id,
-        claim_observer=(
-            (lambda request_id: claim_observer(portfolio_id, request_id))
-            if claim_observer is not None
-            else None
-        ),
-        stop_requested=stop_requested,
-    )
+    with operation("portfolio_recalculation", portfolio_id=portfolio_id):
+        _run_portfolio_daily_snapshot_recalculation_synchronously(
+            portfolio_id,
+            claim_observer=(
+                (lambda request_id: claim_observer(portfolio_id, request_id))
+                if claim_observer is not None
+                else None
+            ),
+            stop_requested=stop_requested,
+        )
     return True, reconciliation_after_portfolio_id
 
 

@@ -25,7 +25,7 @@ shared-data/instruments/
 
 Watchlist 和 Portfolio 读取共享事实，但在各自 schema 内生成自己的业务派生结果。`instrument_data` schema 必须位于当前仓库 migration head；运行时不探测或修补旧物理 schema，升级由根目录统一迁移入口负责，见 [Migrations](./MIGRATIONS.md)。
 
-`security_catalog` 复用市场目录查询与按需登记的请求合同，并桥接到数据维护端的 `investment-studio data securities` 命令。Portfolio 与 Watchlist 在各自 API 校验用户写权限和明确选择后调用，不持有另一套登记逻辑；搜索只读，登记与行情刷新仍由数据层负责。
+`security_catalog` 复用市场目录查询与按需登记的请求合同，并桥接到数据维护端的 `investment-studio data securities` 命令。Portfolio 与 Watchlist 在各自 API 校验用户写权限和明确选择后调用，不持有另一套登记逻辑；搜索只读，登记与行情刷新仍由数据层负责。 已登记资产的选择器可使用 `search_instrument_identities`，在 SQL 中限制有效生命周期和调用方支持的类型，优先精确代码匹配，只读取身份及 identifier，不加载行情、公司行动或基金净值账本。
 
 ## 验证
 
