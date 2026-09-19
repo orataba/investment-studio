@@ -101,7 +101,7 @@ FCN、长期权和期权卖方义务当前采用明确的 event-accounting bound
 - 当前没有逐日 sleeve cash subledger，ordinary-sleeve TWR 明确 unavailable；从 total operational return 中过滤 derivative rows 不是可接受的 performance scope 计算。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：显式区间按 `start_date` EOD 市值重置期初持仓，只重放 `(start_date, end_date]` 内交易，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
-Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 优先使用区间期末 assignment；期末已清仓且期末不再有 active assignment 的 instrument，使用其区间内有效 assignment 承接历史 P&L，避免把 closed-position attribution 误列为 Unassigned。
+Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 按当前 assignment 重述整个历史区间，并保留 cash 独立组；已清仓 instrument 的历史 P&L 也按当前归属分组，没有当前 active assignment 时列为 Unassigned，不回退读取旧分类。
 
 逐日贡献的算术和在 Calculation 中明确命名为 `Arithmetic Return Contribution`，与几何区间 TWR 的差额单列 `TWR Linking Difference`；它不是额外经济损益。表格导出保留该对平关系，并披露有效期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法和百分比单位。
 
