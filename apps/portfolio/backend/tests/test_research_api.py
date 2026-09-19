@@ -371,7 +371,8 @@ def test_single_risky_member_with_cash_does_not_bypass_incomplete_enabled_target
         )
 
 
-def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monkeypatch):
+@pytest.mark.parametrize('unassigned_values', [[100.0], [100.0, -100.0], [0.0]])
+def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monkeypatch, unassigned_values):
     state = TaxonomyResearchState(
         portfolio_id="portfolio-unassigned-test",
         planning_taxonomy_id="taxonomy-test",
@@ -410,9 +411,10 @@ def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monke
         lambda *_args, **_kwargs: {
             "positions": [
                 {
-                    "instrument_id": "instrument-unassigned",
-                    "market_value_base": 100.0,
+                    "instrument_id": f"instrument-unassigned-{index}",
+                    "market_value_base": value,
                 }
+                for index, value in enumerate(unassigned_values)
             ]
         },
     )

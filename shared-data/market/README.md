@@ -80,6 +80,13 @@ dividend-adjusted response. The adjustment factor is adjusted close divided by
 that dataset's close. Report price returns use split-adjusted closes, exclude
 dividend total return, and disclose each symbol's actual source dates.
 
+Regime reads each completed price acquisition from its fixed set of immutable
+batch IDs, resolving revisions with the store's latest-observed-per-fact policy
+inside the requested symbol and date range. A dividend-triggered history rebuild
+therefore replaces overlapping observations without duplicating dates or mixing
+in concurrent captures. Selected rows retain their original source IDs, capture
+clocks and raw-response references; earlier versions remain available to PIT queries.
+
 ## Maintenance
 
 Run through `bin/investment-studio market`. Examples:

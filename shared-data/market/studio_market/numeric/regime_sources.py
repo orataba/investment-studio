@@ -96,10 +96,10 @@ class RegimeSources:
             self.collector._client.close()
         self.store.close()
 
-    def _rows(self, name, *, symbols=None, start=None, end=None, batch_id=None):
+    def _rows(self, name, *, symbols=None, start=None, end=None, batch_id=None, batch_ids=None):
         result, offset = [], 0
         while True:
-            page = self.store.query(name, symbols=symbols, start=start, end=end, batch_id=batch_id, limit=100000, offset=offset)
+            page = self.store.query(name, symbols=symbols, start=start, end=end, batch_id=batch_id, batch_ids=batch_ids, limit=100000, offset=offset)
             result.extend(page["rows"])
             offset += len(page["rows"])
             if offset >= page["total"]:
@@ -180,7 +180,13 @@ class RegimeSources:
                     if acquired['status'] != 'ready':
                         raise ValueError('Shared Regime price acquisition or revision is incomplete')
                     batches = self.collector.results[before:]
-                    rows = [row for batch in batches for row in self._rows("raw_eod_daily", batch_id=batch["batch_id"])]
+                    # A dividend revision can capture the same dates twice in
+                    # this call. Resolve the immutable acquisition set through
+                    # the store's observed-per-fact policy, retaining each
+                    # winning row's lineage and excluding concurrent captures.
+                    rows = self._rows("raw_eod_daily", symbols=[symbol],
+                        start=start.isoformat(), end=end.isoformat(),
+                        batch_ids=[batch["batch_id"] for batch in batches])
                 else:
                     rows = self._rows("raw_eod_daily", symbols=[symbol], start=start.isoformat(), end=end.isoformat())
                 self._prepared_eod[identity] = rows

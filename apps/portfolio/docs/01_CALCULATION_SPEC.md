@@ -1434,6 +1434,8 @@ Instrument-scope planning taxonomy 的根 scope 固定包含两个不可分类�
 
 Research current target solve 使用 planning taxonomy 的层级 scope 做递归求解。
 
+根 scope 求解前，每项仍持有的非现金证券必须在该规划日期的有效 revision 中有 active assignment 和 active node。覆盖按证券逐项检查，包括当前估值为零的持仓；未分类多空持仓的净额相抵不能绕过检查。缺失覆盖时 Research 明确不可求解，workbench 披露未分类持仓数量。部署审计使用最新完整估值持仓与当前规划 revision 核对此项，将已有保护的未就绪配置记录为 `info` 并保留数量，不把它冒充 ready 或阻止整个应用升级；缺失有效配置/analytics scope policy 及其他完整性 warning/fail 仍受原发布门禁约束。
+
 当前规划使用两条独立时钟：`as_of_date` 是市场/持仓的真实估值截止日，`planning_as_of_date` 是分类、assignment、TargetSet 和求解资格政策的生效日期。Dynamic Research 的规划日期取团队配置时区（`default_trade_timezone`）的今天，至少不早于估值日；因此周末、跨市场或等待净值期间，当日保存的目标可以立即进入下一次求解，而不会伪造当日行情。Pinned Research 的两日期相同。上下文、scope options、目标摘要、输入指纹和当前求解必须读取同一规划日期的 configuration revision；不能一部分读 live 表，另一部分读估值日旧目标。结果及报告披露两日期。历史模拟仍只消费每个决策日当时生效的配置，不把当前目标倒灌历史。
 
 Taxonomy 页面的一次目标保存使用 `PUT /api/portfolios/{portfolio_id}/taxonomies/{taxonomy_id}/target-configuration`，同时提交节点默认维度及所有修改过的 SAA/TAA scope。后端在组合行锁内完成校验和写入，只在全部成功后发布一份 configuration revision 并标记一次 daily snapshot generation 失效；失败全部回滚。所有事实失效通知在最外层事务提交后立即唤醒后台 worker，同一事务多次标记仅唤醒一次；savepoint 提交不提前通知，其回滚不撤销外层已登记的有效失效通知。目标变更使旧 Research 结果变为 stale，Research 运算仍由用户显式启动。独立的分类/节点/assignment 写入也在读取状态前取得同一组合锁，避免并发写入产生缺少其他已提交修改的 revision。Analytics scope policy 的替换遵循相同锁序：先组合，再 policy/revision 和版本行，防止与分类保存并发时死锁。

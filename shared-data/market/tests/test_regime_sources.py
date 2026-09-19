@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 import gzip
@@ -54,6 +54,72 @@ def test_etf_reads_distinct_raw_and_provider_adjusted_ohlc(source):
     assert len(calls) == 2  # Cache preserves both reads without new acquisition.
     assert {capture["batch_id"] for capture in source.provenance} == {row["batch_id"]}
     assert all(capture["raw_ref"] == row["raw_ref"] and capture["adjusted_raw_ref"] == row["adjusted_raw_ref"] for capture in source.provenance)
+
+
+def test_etf_dividend_rebuild_resolves_only_its_own_captures_and_preserves_pit(source, monkeypatch):
+    import studio_market.numeric.collect as collection
+
+    def stored(day, factor):
+        return dict(symbol="SPY", date=day, open=100, high=102, low=99, close=101,
+            adjusted_open=100*factor, adjusted_high=102*factor,
+            adjusted_low=99*factor, adjusted_close=101*factor, volume=1000)
+
+    source.store.ingest("raw_eod_daily", [[stored(date(2024, 1, 2), .6)]],
+        source="fixture", observed_at=datetime(2024, 1, 4, tzinfo=UTC))
+    monkeypatch.setattr(collection, "history_start", lambda *args: date(2024, 1, 1))
+    captures = []
+
+    class Fmp:
+        def get_json(self, endpoint, params):
+            captures.append((endpoint, params))
+            raw = endpoint.endswith("non-split-adjusted")
+            factor = 1 if raw else (.5 if params["from"] == "2024-01-02" else .4)
+            payload = [dict(symbol="SPY", date=day, adjOpen=100*factor,
+                adjHigh=102*factor, adjLow=99*factor, adjClose=101*factor, volume=1000)
+                for day in ("2024-01-01", "2024-01-02", "2024-01-03")
+                if params["from"] <= day <= params["to"]]
+            result = response(payload, endpoint, params)
+            result.received_at = datetime(2024, 2, 1, 10, tzinfo=UTC) + timedelta(seconds=len(captures))
+            return result
+        def close(self): pass
+
+    source.collector._client = Fmp()
+    acquire = source.collector.raw_eod
+
+    def acquire_with_concurrent_capture(*args):
+        result = acquire(*args)
+        # A separate collector's newer version must not change this acquisition.
+        source.store.ingest("raw_eod_daily", [[stored(date(2024, 1, 2), .1)]],
+            source="concurrent", observed_at=datetime(2024, 3, 1, tzinfo=UTC))
+        return result
+
+    monkeypatch.setattr(source.collector, "raw_eod", acquire_with_concurrent_capture)
+    params = {"symbol": "SPY", "from": "2024-01-02", "to": "2024-01-03"}
+    raw = source.fmp_payload("historical-price-eod/non-split-adjusted", params)
+    adjusted = source.fmp_payload("historical-price-eod/dividend-adjusted", params)
+
+    assert len(captures) == 4  # Initial pair, followed by the dividend rebuild pair.
+    assert len(raw) == len(adjusted) == 2
+    assert {row["date"] for row in raw} == {"2024-01-02", "2024-01-03"}
+    assert all(row["adjClose"] == 101 for row in raw)
+    assert all(row["adjClose"] == pytest.approx(40.4) for row in adjusted)
+    initial, rebuilt = source.collector.results
+    assert {capture["batch_id"] for capture in source.provenance} == {rebuilt["batch_id"]}
+    assert all(capture["raw_ref"] and capture["adjusted_raw_ref"] for capture in source.provenance)
+
+    selected = [initial["batch_id"], rebuilt["batch_id"]]
+    filters = dict(symbols=["SPY"], start=params["from"], end=params["to"], batch_ids=selected)
+    prior = source.store.query("raw_eod_daily", **filters, as_of="2024-02-01T10:00:02Z")["rows"]
+    final = source.store.query("raw_eod_daily", **filters)["rows"]
+    assert {row["batch_id"] for row in prior} == {initial["batch_id"]}
+    assert all(row["adjusted_close"] == 50.5 for row in prior)
+    assert {row["batch_id"] for row in final} == {rebuilt["batch_id"]}
+    assert all(row["source_id"].startswith(f"numeric:{rebuilt['batch_id']}:") for row in final)
+    assert source.store.query("raw_eod_daily", **filters, versions=True)["total"] == 4
+    assert source.store.query("raw_eod_daily", batch_ids=[])["total"] == 0
+    with source.store.engine.connect() as connection:
+        receipt = connection.execute(select(batches.c.details).where(batches.c.id == rebuilt["batch_id"])).scalar_one()
+    assert "SPY" in receipt["price_revision_completed"]
 
 
 def test_fx_uses_raw_shared_series_and_preserves_response(source):

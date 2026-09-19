@@ -612,6 +612,82 @@ def _count_check(
 
 
 
+def _current_unassigned_planning_holdings_query() -> str:
+    planning_timezone = _sql_text_literal(os.getenv(
+        "INVESTMENT_STUDIO_PORTFOLIO_DEFAULT_TRADE_TIMEZONE", "Asia/Shanghai",
+    ).strip())
+    return f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (snapshot.portfolio_id)
+                snapshot.portfolio_id, snapshot.as_of_date,
+                greatest(snapshot.as_of_date,
+                    (CURRENT_TIMESTAMP AT TIME ZONE {planning_timezone})::date) AS planning_as_of_date
+            FROM portfolio.portfolio_daily_snapshot snapshot
+            JOIN portfolio.portfolio_record portfolio USING (portfolio_id)
+            WHERE snapshot.valuation_coverage_state = 'complete'
+              AND snapshot.nav IS NOT NULL
+              AND NOT coalesce((snapshot.snapshot_json ->> 'stale_price_flag')::boolean, false)
+              AND NOT coalesce((snapshot.snapshot_json ->> 'stale_fx_flag')::boolean, false)
+              AND snapshot.as_of_date <= (CURRENT_TIMESTAMP AT TIME ZONE
+                  coalesce(nullif(portfolio.valuation_timezone, ''), {planning_timezone}))::date
+            ORDER BY snapshot.portfolio_id, snapshot.as_of_date DESC
+        ), current_holdings AS (
+            SELECT DISTINCT holding.portfolio_id, holding.instrument_id,
+                latest.as_of_date, latest.planning_as_of_date
+            FROM portfolio.portfolio_daily_holding_snapshot holding
+            JOIN latest ON latest.portfolio_id = holding.portfolio_id
+                       AND latest.as_of_date = holding.as_of_date
+            WHERE holding.instrument_id NOT LIKE 'cash:%'
+              AND holding.holding_kind = 'position'
+              AND holding.holding_json ->> 'valuation_basis' = 'market_quote'
+              AND holding.quantity <> 0
+        ), planning_configurations AS (
+            SELECT configuration.portfolio_id, configuration.taxonomy_id,
+                configuration.configuration_json::jsonb AS configuration_json
+            FROM portfolio.taxonomy_configuration_revision configuration
+            JOIN latest USING (portfolio_id)
+            WHERE configuration.superseded_by_revision_id IS NULL
+              AND configuration.effective_from <= latest.planning_as_of_date
+              AND (configuration.effective_to IS NULL
+                   OR configuration.effective_to >= latest.planning_as_of_date)
+              AND configuration.configuration_json -> 'taxonomy' ->> 'status' = 'active'
+              AND (configuration.configuration_json -> 'taxonomy' ->> 'planning_enabled')::boolean
+        )
+        SELECT count(*)
+        FROM current_holdings holding
+        JOIN planning_configurations configuration USING (portfolio_id)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(coalesce(
+                configuration.configuration_json -> 'taxonomy_assignments', '[]'::jsonb)) assignment
+            JOIN jsonb_array_elements(coalesce(
+                configuration.configuration_json -> 'taxonomy_nodes', '[]'::jsonb)) node
+              ON node ->> 'taxonomy_node_id' = assignment ->> 'taxonomy_node_id'
+             AND node ->> 'status' = 'active'
+            WHERE assignment ->> 'target_scope' = 'instrument'
+              AND assignment ->> 'target_entity_id' = holding.instrument_id
+              AND assignment ->> 'status' = 'active'
+        )
+    """
+
+
+def _planning_holdings_readiness_check(cursor: psycopg.Cursor[Any]) -> AuditCheck:
+    value = int(_scalar(cursor, _current_unassigned_planning_holdings_query()) or 0)
+    return AuditCheck(
+        name="current_unassigned_planning_holdings",
+        status="pass" if value == 0 else "info",
+        value=value,
+        limit="root_solve_ready_requires_zero",
+        detail=(
+            "Root Research target solve is not ready while any held security lacks an active "
+            "assignment in the effective current planning revision; the solver rejects it "
+            "and the workbench discloses the missing coverage. This is user configuration "
+            "readiness, not a failed database integrity check. Valuation and planning dates "
+            "remain independent; future revisions are excluded."
+        ),
+    )
+
+
 def _instrument_crypto_spot_contract_query() -> str:
     return """
         WITH crypto AS (
@@ -3327,10 +3403,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         )
                     """,
                     detail=(
-                        "Every portfolio that declares a default planning taxonomy needs an "
-                        "effective, explicit analytics taxonomy selection before Risk or Risk "
-                        "Budget can be declared ready; the runtime intentionally fails closed "
-                        "without one."
+                        "A portfolio declaring an analytics taxonomy needs an explicit selection "
+                        "effective on its valuation date for materialized Holdings/Risk integrity. "
+                        "This checks historical valuation inputs, not current Research readiness; "
+                        "the runtime fails closed without a selection."
                     ),
                     warning_only=True,
                 )
@@ -3403,8 +3479,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         )
                     """,
                     detail=(
-                        "An effective analytics selection needs a point-in-time taxonomy "
-                        "configuration plus effective root and unassigned scope policies."
+                        "The valuation-date analytics selection needs a point-in-time taxonomy "
+                        "configuration plus effective root and unassigned scope policies for "
+                        "materialized Holdings/Risk integrity. Current Research planning uses "
+                        "its separately disclosed planning date."
                     ),
                     warning_only=True,
                 )
@@ -3538,70 +3616,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         ),
                     )
                 )
-            assignment_date_predicate = (
-                """
-                              AND (
-                                  assignment.effective_from IS NULL
-                                  OR assignment.effective_from <= holding.as_of_date
-                              )
-                              AND (
-                                  assignment.effective_to IS NULL
-                                  OR assignment.effective_to >= holding.as_of_date
-                              )
-                """
-                if has_assignment_windows
-                else ""
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="current_unassigned_planning_holdings",
-                    query="""
-                        WITH latest AS (
-                            SELECT portfolio_id, max(as_of_date) AS as_of_date
-                            FROM portfolio.portfolio_daily_snapshot
-                            GROUP BY portfolio_id
-                        ), current_holdings AS (
-                            SELECT DISTINCT
-                                holding.portfolio_id,
-                                holding.instrument_id,
-                                latest.as_of_date
-                            FROM portfolio.portfolio_daily_holding_snapshot holding
-                            JOIN latest
-                              ON latest.portfolio_id = holding.portfolio_id
-                             AND latest.as_of_date = holding.as_of_date
-                            WHERE holding.instrument_id NOT LIKE 'cash:%'
-                              AND holding.holding_kind = 'position'
-                              AND holding.holding_json ->> 'valuation_basis'
-                                  = 'market_quote'
-                              AND holding.quantity <> 0
-                        ), planning_taxonomies AS (
-                            SELECT taxonomy_id, portfolio_id
-                            FROM portfolio.taxonomy_record
-                            WHERE planning_enabled = true AND status = 'active'
-                        )
-                        SELECT count(*)
-                        FROM current_holdings holding
-                        JOIN planning_taxonomies taxonomy USING (portfolio_id)
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM portfolio.taxonomy_assignment_record assignment
-                            WHERE assignment.taxonomy_id = taxonomy.taxonomy_id
-                              AND assignment.target_scope = 'instrument'
-                              AND assignment.target_entity_id = holding.instrument_id
-                              AND assignment.status = 'active'
-                    """
-                    + assignment_date_predicate
-                    + """
-                        )
-                    """,
-                    detail=(
-                        "Unassigned non-cash holdings must block or explicitly qualify a "
-                        "taxonomy risk-budget solve."
-                    ),
-                    warning_only=True,
-                )
-            )
+            checks.append(_planning_holdings_readiness_check(cursor))
 
             checks.append(
                 _count_check(
@@ -3879,12 +3894,14 @@ def main(argv: list[str] | None = None) -> int:
         ]
     failed = [check for check in checks if check.status == "fail"]
     warnings = [check for check in checks if check.status == "warning"]
+    informational = [check for check in checks if check.status == "info"]
     payload = {
         "status": "failed" if failed else ("warning" if warnings else "passed"),
         "database_name": database_name,
         "schema": asdict(profile),
         "failed_count": len(failed),
         "warning_count": len(warnings),
+        "informational_count": len(informational),
         "checks": [asdict(check) for check in checks],
     }
     if args.as_json:
@@ -3898,7 +3915,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(
             f"Result: {payload['status']} "
-            f"({len(checks)} checks, {len(failed)} failed, {len(warnings)} warnings)"
+            f"({len(checks)} checks, {len(failed)} failed, {len(warnings)} warnings, "
+            f"{len(informational)} informational)"
         )
 
     if failed or (args.fail_on_warning and warnings):

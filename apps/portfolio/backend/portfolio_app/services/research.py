@@ -1198,7 +1198,7 @@ def _build_research_context(
         (item for item in planning_groups if str(item.get("group_key") or "") == "unassigned"),
         None,
     )
-    if unassigned_group is not None and abs(_safe_float(unassigned_group.get("end_value_base")) or 0.0) > 1e-9:
+    if unassigned_group is not None and int(unassigned_group.get("position_count") or 0) > 0:
         quality_warnings.append(
             "Research target solve is unavailable until all securities are assigned to the selected planning taxonomy "
             f"({int(unassigned_group.get('position_count') or 0)} unassigned security holding(s))."

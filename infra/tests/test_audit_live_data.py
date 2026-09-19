@@ -634,6 +634,30 @@ def test_cli_normalizes_sqlalchemy_url_and_reports_database_name(
         assert "database_name: audit_fixture" in output
 
 
+@pytest.mark.parametrize('other_status,expected_exit', [(None, 0), ('warning', 1), ('fail', 1)])
+def test_unassigned_readiness_is_disclosed_without_bypassing_integrity_gate(
+    audit_module, monkeypatch, capsys, other_status, expected_exit,
+):
+    monkeypatch.setattr(audit_module, '_scalar', lambda _cursor, _query: 7)
+    readiness = audit_module._planning_holdings_readiness_check(object())
+    assert readiness.status == 'info'
+    assert readiness.value == 7
+    assert readiness.limit == 'root_solve_ready_requires_zero'
+    assert 'not ready' in readiness.detail
+    checks = [readiness]
+    if other_status:
+        checks.append(audit_module.AuditCheck(name='analytics_scope_incomplete_configuration',
+            status=other_status, value=1, limit=0, detail='Missing required scope policy.'))
+    profile = audit_module.SchemaProfile(family='flat-table', status='supported',
+        versions={}, reason='fixture', capabilities={})
+    monkeypatch.setattr(audit_module, 'run_audit_report', lambda _url: (profile, checks))
+    monkeypatch.setenv('INVESTMENT_STUDIO_LOCAL_DATABASE_URL', 'postgresql://localhost/readiness_fixture')
+    assert audit_module.main(['--json', '--fail-on-warning']) == expected_exit
+    report = json.loads(capsys.readouterr().out)
+    assert report['informational_count'] == 1
+    assert report['checks'][0]['value'] == 7
+
+
 def test_system_directory_audit_detects_missing_instruments_and_preserves_type_boundaries(audit_module):
     with sqlite3.connect(':memory:') as db:
         db.executescript("""

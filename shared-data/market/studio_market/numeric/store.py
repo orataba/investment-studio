@@ -259,7 +259,7 @@ class NumericStore:
                 conn.execute(delete(current).where(current.c.dataset==name,current.c.key.in_([r["key"] for r in chosen])))
                 conn.execute(insert(current),chosen)
 
-    def _paths(self, name: str, start=None, end=None, batch_id=None):
+    def _paths(self, name: str, start=None, end=None, batch_id=None, batch_ids=None):
         query = select(files.c.path).join(batches,batches.c.id==files.c.batch_id).where(batches.c.dataset==name,batches.c.status=="ready")
         if start:
             query=query.where((files.c.max_date>=str(start)) | files.c.max_date.is_(None))
@@ -267,17 +267,21 @@ class NumericStore:
             query=query.where((files.c.min_date<=str(end)) | files.c.min_date.is_(None))
         if batch_id:
             query=query.where(batches.c.id==batch_id)
+        if batch_ids is not None:
+            query=query.where(batches.c.id.in_(batch_ids))
         with self.engine.connect() as conn:
             return [str(self.settings.data_root/r[0]) for r in conn.execute(query)]
 
-    def query(self, dataset: str, *, symbols: list[str] | None = None, start: str | None = None, end: str | None = None, as_of: str | datetime | None = None, limit: int = 1000, offset: int = 0, versions: bool = False, batch_id: str | None = None, observed_at: str | datetime | None = None, _latest: bool = False) -> dict:
+    def query(self, dataset: str, *, symbols: list[str] | None = None, start: str | None = None, end: str | None = None, as_of: str | datetime | None = None, limit: int = 1000, offset: int = 0, versions: bool = False, batch_id: str | None = None, batch_ids: list[str] | None = None, observed_at: str | datetime | None = None, _latest: bool = False) -> dict:
         get_dataset(dataset)
         if limit < 1 or limit > 100000 or offset < 0:
             raise ValueError("limit must be 1..100000 and offset nonnegative")
+        if batch_id is not None and batch_ids is not None:
+            raise ValueError("Choose one batch or a batch collection, not both")
         if start: _day(start)
         if end: _day(end)
         cutoff = cutoff_instant(as_of) if as_of else None
-        paths=self._paths(dataset,start,end,batch_id)
+        paths=self._paths(dataset,start,end,batch_id,batch_ids)
         result={"dataset":dataset,"rows":[],"total":0,"limit":limit,"offset":offset,"provenance":{"as_of":serializable(cutoff),"version_policy":"all_captures" if versions else "latest_observed_per_fact","historical_use":get_dataset(dataset).historical_use}}
         if not paths:
             return result
@@ -301,7 +305,7 @@ class NumericStore:
             relation=db.from_parquet(paths,union_by_name=True)
             relation.create_view("facts")
             if not versions and dataset in ("analyst_estimates","etf_holdings"):
-                chosen=self._snapshot_rows(dataset,symbols,cutoff,limit=1,at=observed_at,batch_id=batch_id)
+                chosen=self._snapshot_rows(dataset,symbols,cutoff,limit=1,at=observed_at,batch_id=batch_id,batch_ids=batch_ids)
                 if not chosen:return result
                 db.register("chosen_snapshots",pa.Table.from_pylist([{ "chosen_scope_key":r["scope_key"],"chosen_snapshot_at":instant(r["snapshot_at"]),"chosen_batch_id":r["batch_id"]} for r in chosen]))
                 sql=sql.replace("FROM facts","FROM facts JOIN chosen_snapshots c ON facts._snapshot_key=c.scope_key AND facts.snapshot_at=c.snapshot_at AND facts.batch_id=c.batch_id").replace("SELECT * FROM facts", "SELECT facts.* FROM facts")
@@ -313,13 +317,14 @@ class NumericStore:
             result["rows"]=[serializable(dict(zip(names,row))) for row in cursor.fetchall()]
         return result
 
-    def _snapshot_rows(self,dataset,symbols,as_of,limit=2,at=None,batch_id=None):
+    def _snapshot_rows(self,dataset,symbols,as_of,limit=2,at=None,batch_id=None,batch_ids=None):
         rank=func.dense_rank().over(partition_by=snapshots.c.scope_key,order_by=snapshots.c.snapshot_at.desc()).label("capture_rank")
         statement=select(snapshots,rank).join(batches,batches.c.id==snapshots.c.batch_id).where(snapshots.c.dataset==dataset,batches.c.status=="ready")
         if symbols is not None:statement=statement.where(snapshots.c.symbol.in_(symbols))
         if as_of:statement=statement.where(snapshots.c.snapshot_at<=cutoff_instant(as_of))
         if at:statement=statement.where(snapshots.c.snapshot_at==cutoff_instant(at))
         if batch_id:statement=statement.where(snapshots.c.batch_id==batch_id)
+        if batch_ids is not None:statement=statement.where(snapshots.c.batch_id.in_(batch_ids))
         sub=statement.subquery()
         with self.engine.connect() as conn:
             return [dict(r) for r in conn.execute(select(sub).where(sub.c.capture_rank<=limit).order_by(sub.c.symbol,sub.c.snapshot_at.desc())).mappings()]

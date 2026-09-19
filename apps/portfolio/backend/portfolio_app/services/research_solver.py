@@ -4028,7 +4028,9 @@ def _current_scope_actuals(
     if abs(scope_total_value) <= 1e-9:
         scope_total_value = 0.0
 
-    if scope_node_id is None and abs(unassigned_value) > 1e-9:
+    # Coverage is required for every held security, including zero-value rows.
+    # Different long/short holdings must not bypass it by netting to zero.
+    if scope_node_id is None and unassigned_instrument_ids:
         rendered_ids = ", ".join(sorted(unassigned_instrument_ids))
         raise ValueError(
             "Research target solve requires complete planning-taxonomy coverage; "

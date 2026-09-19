@@ -62,6 +62,18 @@ def test_target_configuration_is_atomic_and_publishes_one_revision(client):
     assert next(item for item in updated['taxonomy_nodes'] if item['taxonomy_node_id'] == nodes['Risk Assets'])['default_target_dimension'] == 'risk_budget'
 
 
+def test_research_discloses_unassigned_holdings_even_when_their_values_net_to_zero(client, monkeypatch):
+    from portfolio_app.services import research
+    taxonomy_id, _ = _create_planning_taxonomy(client)
+    monkeypatch.setattr(research, '_build_planning_group_snapshot', lambda *args, **kwargs: [
+        {'group_key': 'unassigned', 'group_label': 'Unassigned', 'position_count': 2, 'end_value_base': 0.0},
+    ])
+    monkeypatch.setattr(research, 'get_cached_materialized_performance_report', lambda *args, **kwargs: None)
+    context = research._build_research_context(PORTFOLIO, planning_taxonomy_id=taxonomy_id,
+        as_of_date=date(2026, 4, 15), lookback_days=30)
+    assert any('2 unassigned security holding(s)' in warning for warning in context['quality_warnings'])
+
+
 def test_current_planning_uses_today_targets_with_yesterday_valuation_and_keeps_pinned_history(client, monkeypatch):
     monkeypatch.setattr(valuation_clock, 'portfolio_valuation_today', lambda _: date(2026, 4, 16))
     taxonomy_id, nodes = _create_planning_taxonomy(client)

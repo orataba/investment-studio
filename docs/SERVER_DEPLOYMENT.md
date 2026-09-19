@@ -215,6 +215,25 @@ health under the actual service identities, and restore the previous schedules.
 Preserve the private database, runtime generations, approved models and secrets.
 Do not rerun the standalone seed installer for this integrated software upgrade.
 
+For a focused Studio market-adapter repair, build one complete `investment-studio-market`
+wheel and deploy that same artifact to both the native Regime environment named by
+`runtime.env`/`scheduler.env` and a new source-worker image. A verified compatible
+dependency graph may be retained with an explicit `--no-deps` package replacement;
+record the before/after package versions and run the dependency check. This is a
+documented maintenance exception to the otherwise immutable native release: retain
+its old wheel and directory, and record the installed wheel/source hashes and exact
+Python path. Never copy an individual module into the installed package.
+
+Build the new source image from the verified prior image ID, preserve its user,
+entrypoint and runtime configuration, and validate imports, package-file hashes and
+dependencies in a container without network or production mounts. Then back up
+`compose.env` privately and replace only `REGIME_DATA_IMAGE`. Record the old/new
+image IDs and wheel hash together; retain the previous image and configuration for
+rollback. The Studio app installer neither updates this baked-in package nor switches
+Regime's native environment. Keep schedules paused until both consumers are verified;
+restart native readers during the coordinated acceptance step. This operation does
+not change model dependencies, approved models, database contents or data volumes.
+
 Back up public Parquet/original objects together with PostgreSQL metadata; a schema dump alone cannot restore shared market data. See [Market Data Pipeline](MARKET_DATA_PIPELINE.md).
 
 ## Portfolio Research
