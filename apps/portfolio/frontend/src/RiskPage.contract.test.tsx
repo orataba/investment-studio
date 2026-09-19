@@ -388,10 +388,36 @@ describe('Risk rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
 
+  it('preserves a historical cutoff selected before the initial date effect runs', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(twoHoldingWorkspace())
+    const historicalDate = isoDateDaysBefore(5)
+    let changed = false
+    // Select on the first interactive render, before pending mount effects can
+    // initialize the latest cutoff. Waiting for the page first misses this race.
+    const observer = new MutationObserver(() => {
+      const cutoff = screen.queryByLabelText('Matrix as of')
+      if (cutoff && !changed) {
+        changed = true
+        fireEvent.change(cutoff, { target: { value: historicalDate } })
+      }
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    try {
+      renderRiskPage()
+      await waitFor(() => expect(changed).toBe(true))
+      await waitFor(() => {
+        expect(screen.getByLabelText('Matrix as of')).toHaveValue(historicalDate)
+        const sample = within(screen.getByRole('region', { name: 'Correlation analysis' })).getByLabelText('Analysis sample')
+        expect(sample).toHaveTextContent('Observation window 2026-06-10 → 2026-07-10')
+        expect(sample).toHaveTextContent('Actual sample 2026-06-11 → 2026-07-10')
+      })
+    } finally { observer.disconnect() }
+  })
+
   it('changes the matrix observation cutoff and explains dates outside available history', async () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValue(twoHoldingWorkspace())
     renderRiskPage()
-      const cutoff = await screen.findByLabelText('Matrix as of')
+    const cutoff = await screen.findByLabelText('Matrix as of')
     const historicalDate = isoDateDaysBefore(5)
     fireEvent.change(cutoff, { target: { value: historicalDate } })
     expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).getByLabelText('Analysis sample')).toHaveTextContent(historicalDate)
@@ -860,7 +886,10 @@ describe('Risk rendered page contract', () => {
         { ...taxonomyCatalog.taxonomy_assignments[0], assignment_id: 'closed-assignment', target_entity_id: 'closed' }],
     })
     renderRiskPage()
-    await userEvent.setup().selectOptions(await screen.findByRole('combobox', { name: 'Matrix scope' }), 'risk-assets')
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    // Taxonomy choices arrive after the holdings-backed selector is mounted.
+    const classification = await within(scope).findByRole('option', { name: /Risk Assets/ })
+    await userEvent.setup().selectOptions(scope, classification)
     expect(await within(screen.getByRole('region', { name: 'Correlation analysis' })).findByRole('table')).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Correlation analysis' })).queryByRole('status')).not.toBeInTheDocument()
     expect(screen.queryByText('Closed Position')).not.toBeInTheDocument()

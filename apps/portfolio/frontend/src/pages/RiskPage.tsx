@@ -2207,16 +2207,12 @@ export default function RiskPage() {
     matrixAsOfDate || riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] || riskBasisFinalDate
 
   useEffect(() => {
-    if (!riskAsOfSelectionDates.length) {
-      if (matrixAsOfDate) {
-        setMatrixAsOfDate('')
-      }
-      return
-    }
-    if (!riskAsOfSelectionDates.includes(matrixAsOfDate)) {
-      setMatrixAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
-    }
-  }, [matrixAsOfDate, riskAsOfSelectionDates])
+    // A selection made after the first paint can precede this effect. Check the
+    // current state rather than overwriting it with the initial default date.
+    setMatrixAsOfDate((current) => riskAsOfSelectionDates.includes(current)
+      ? current
+      : riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] ?? '')
+  }, [riskAsOfSelectionDates])
 
   const selectedCorrelationMatrixResult = useMemo(
     () =>
