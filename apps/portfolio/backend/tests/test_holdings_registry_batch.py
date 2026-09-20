@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import date
 from types import SimpleNamespace
 
-from portfolio_app.api.routes import workspace as workspace_routes
+from portfolio_app.services import holdings_workspace as workspace_routes
 from portfolio_app.db.models import (
     DerivativeContractRecordModel,
     PortfolioCalculationStateModel,

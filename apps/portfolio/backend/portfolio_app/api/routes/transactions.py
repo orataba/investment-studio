@@ -138,6 +138,7 @@ from portfolio_app.services.portfolio_store import (
     get_account,
     get_derivative_contract,
     get_portfolio,
+    get_portfolio_configuration,
     get_transaction,
     get_transaction_idempotency_result,
     list_derivative_contracts,
@@ -182,6 +183,30 @@ INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
 TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_csv"
 TRANSACTION_JSON_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_json"
 OPTION_OUTCOME_IDEMPOTENCY_OPERATION = "create_option_outcome"
+
+
+@dataclass(frozen=True)
+class _TransactionCommandContext:
+    portfolio: dict[str, object]
+    accounts: dict[str, dict[str, object]]
+
+    @property
+    def cost_methods(self) -> dict[str, str]:
+        return {
+            account_id: str(account.get("cost_basis_method") or "fifo")
+            for account_id, account in self.accounts.items()
+            if account.get("account_type") == "securities_account"
+        }
+
+
+def _load_command_context(portfolio_id: str) -> _TransactionCommandContext:
+    portfolio = get_portfolio_configuration(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return _TransactionCommandContext(
+        portfolio=portfolio,
+        accounts={str(account["account_id"]): account for account in list_accounts(portfolio_id)},
+    )
 
 
 def _request_payload_for_idempotency(
@@ -872,6 +897,7 @@ def _validate_fx_conversion(
     portfolio_id: str,
     payload: TransactionCreateRequest,
     account: dict[str, object],
+    command_context: _TransactionCommandContext | None = None,
 ) -> dict[str, object]:
     if str(account.get("account_type") or "") != "deposit_account":
         raise HTTPException(status_code=400, detail="FX conversion requires deposit_account.")
@@ -880,7 +906,11 @@ def _validate_fx_conversion(
     if not counterparty_account_id:
         raise HTTPException(status_code=400, detail="FX conversion requires counterparty account.")
 
-    counterparty_account = get_account(portfolio_id, counterparty_account_id)
+    counterparty_account = (
+        command_context.accounts.get(counterparty_account_id)
+        if command_context is not None
+        else get_account(portfolio_id, counterparty_account_id)
+    )
     if counterparty_account is None:
         raise HTTPException(status_code=400, detail="FX conversion counterparty account not found.")
     if str(counterparty_account.get("account_type") or "") != "deposit_account":
@@ -980,12 +1010,12 @@ def _prepare_import_transaction_values(
     created_at: str,
     batch_derivative_contracts: dict[str, DerivativeContractCreate] | None = None,
     allow_physical_option_outcome: bool = False,
+    command_context: _TransactionCommandContext | None = None,
 ) -> dict[str, object]:
-    portfolio = get_portfolio(portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    command_context = command_context or _load_command_context(portfolio_id)
+    portfolio = command_context.portfolio
     _validate_portfolio_fact_boundary(portfolio=portfolio, payload=payload)
-    account = get_account(portfolio_id, payload.account_id)
+    account = command_context.accounts.get(payload.account_id)
     if account is None:
         raise HTTPException(status_code=400, detail="Account not found")
 
@@ -1059,6 +1089,7 @@ def _prepare_import_transaction_values(
             portfolio_id=portfolio_id,
             payload=payload,
             account=account,
+            command_context=command_context,
         )
 
     requires_settlement_cash = _requires_settlement_cash(
@@ -1074,10 +1105,7 @@ def _prepare_import_transaction_values(
                 status_code=400,
                 detail="This transaction requires settlement cash account.",
             )
-        settlement_cash_account = get_account(
-            portfolio_id,
-            settlement_cash_account_id,
-        )
+        settlement_cash_account = command_context.accounts.get(settlement_cash_account_id)
         if settlement_cash_account is None or str(
             settlement_cash_account.get("account_type") or ""
         ) != "deposit_account":
@@ -1091,10 +1119,7 @@ def _prepare_import_transaction_values(
             role_label="Settlement cash account",
         )
     elif transaction_type == "opening_balance" and settlement_cash_account_id:
-        settlement_cash_account = get_account(
-            portfolio_id,
-            settlement_cash_account_id,
-        )
+        settlement_cash_account = command_context.accounts.get(settlement_cash_account_id)
 
     if fx_conversion_target_account is not None:
         _validate_account_fact_window(
@@ -1268,16 +1293,16 @@ def _prepare_internal_transfer_values(
     transfer_group_id: str,
     expected_currency: str | None = None,
     pending_records: list[dict[str, object]] | None = None,
+    command_context: _TransactionCommandContext | None = None,
 ) -> list[dict[str, object]]:
-    portfolio = get_portfolio(portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found.")
+    command_context = command_context or _load_command_context(portfolio_id)
+    portfolio = command_context.portfolio
     _validate_portfolio_trade_date(
         portfolio=portfolio,
         trade_date=payload.trade_date,
     )
-    from_account = get_account(portfolio_id, payload.from_account_id)
-    to_account = get_account(portfolio_id, payload.to_account_id)
+    from_account = command_context.accounts.get(payload.from_account_id)
+    to_account = command_context.accounts.get(payload.to_account_id)
     if from_account is None or to_account is None:
         raise HTTPException(status_code=400, detail="Transfer accounts not found.")
     settlement_date = payload.settlement_date or payload.trade_date
@@ -1359,7 +1384,7 @@ def _prepare_internal_transfer_values(
                     "Position transfer accounts must share the same currency as the instrument."
                 ),
             )
-        account_cost_methods = _account_cost_methods(portfolio_id)
+        account_cost_methods = command_context.cost_methods
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
             portfolio_id,
             trade_date=payload.trade_date,
@@ -1516,8 +1541,7 @@ def _prepare_transaction_import_batch(
     preview_digest: str,
     input_rows: list[_TransactionBatchInputRow],
 ) -> _TransactionBatchPreview:
-    if get_portfolio(portfolio_id) is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    command_context = _load_command_context(portfolio_id)
     created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
         "+00:00",
         "Z",
@@ -1584,6 +1608,7 @@ def _prepare_transaction_import_batch(
                     transfer_group_id=transfer_group_id,
                     expected_currency=internal_transfer.currency,
                     pending_records=prepared_records,
+                    command_context=command_context,
                 )
             except (HTTPException, InstrumentRegistryError, ValueError) as error:
                 detail = (
@@ -1620,6 +1645,7 @@ def _prepare_transaction_import_batch(
                 created_at=created_at,
                 batch_derivative_contracts=batch_derivative_contracts,
                 allow_physical_option_outcome=parsed.transaction.option_delivery is not None,
+                command_context=command_context,
             )
             delivery_values = None
             if parsed.transaction.option_delivery is not None:
@@ -1692,7 +1718,7 @@ def _prepare_transaction_import_batch(
             validate_transaction_position_history(
                 portfolio_id,
                 [*existing_records, *synthetic_records],
-                account_cost_methods=_account_cost_methods(portfolio_id),
+                account_cost_methods=command_context.cost_methods,
             )
         except ValueError as error:
             batch_errors.append(str(error))
@@ -1864,7 +1890,7 @@ def search_portfolio_securities(
     q: str = Query(min_length=1, max_length=200),
     limit: int = Query(default=25, ge=1, le=25),
 ) -> SecuritySearchResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     if not q.strip():
         raise HTTPException(status_code=422, detail="请输入证券代码或名称")
@@ -1879,7 +1905,7 @@ def search_portfolio_securities(
 def materialize_portfolio_security(
     portfolio_id: str, payload: SecurityMaterializeRequest,
 ) -> InstrumentOption:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     try:
         record = materialize_catalog_security(payload)
@@ -1892,7 +1918,7 @@ def materialize_portfolio_security(
 
 @router.get("/{portfolio_id}/instruments", response_model=SharedInstrumentListResponse)
 def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
@@ -1914,7 +1940,7 @@ def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListRespons
 def list_portfolio_derivative_contracts(
     portfolio_id: str,
 ) -> DerivativeContractListResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return DerivativeContractListResponse(
         portfolio_id=portfolio_id,
@@ -1951,7 +1977,7 @@ def list_transaction_records(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
 ) -> TransactionListResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
@@ -1993,7 +2019,7 @@ def _export_transaction_records(portfolio_id: str) -> list[dict[str, object]]:
 
 @router.get("/{portfolio_id}/transactions.csv")
 def download_transaction_csv(portfolio_id: str) -> Response:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     content = render_transaction_csv(_export_transaction_records(portfolio_id))
     return Response(
@@ -2009,7 +2035,7 @@ def download_transaction_csv(portfolio_id: str) -> Response:
 
 @router.get("/{portfolio_id}/transactions/csv-template")
 def download_transaction_csv_template(portfolio_id: str) -> Response:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return Response(
         content=render_transaction_csv_template(),
@@ -2024,7 +2050,7 @@ def download_transaction_csv_template(portfolio_id: str) -> Response:
 
 @router.get("/{portfolio_id}/transactions.xlsx")
 def download_transaction_xlsx(portfolio_id: str) -> Response:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return Response(
         content=render_transaction_xlsx(_export_transaction_records(portfolio_id)),
@@ -2039,7 +2065,7 @@ def download_transaction_xlsx(portfolio_id: str) -> Response:
 
 @router.get("/{portfolio_id}/transactions/xlsx-template")
 def download_transaction_xlsx_template(portfolio_id: str) -> Response:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return Response(
         content=render_transaction_xlsx_template(),
@@ -2336,7 +2362,7 @@ def list_transaction_change_log_records(
     portfolio_id: str,
     transaction_id: str | None = None,
 ) -> TransactionChangeLogResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     changes = list_transaction_change_logs(
         portfolio_id,
@@ -2361,7 +2387,7 @@ def get_transaction_workspace(
     end_date: date | None = Query(default=None),
     transaction_id: str | None = None,
 ) -> TransactionWorkspaceResponse:
-    portfolio = get_portfolio(portfolio_id)
+    portfolio = get_portfolio_configuration(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -2650,7 +2676,7 @@ def get_transaction_position_preview(
     trade_time: str | None = None,
     exclude_transaction_id: str | None = None,
 ) -> TransactionPositionPreviewResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     if get_account(portfolio_id, account_id) is None:
@@ -2726,7 +2752,7 @@ def get_transaction_execution_quote(
     series such as adjusted_close and total_return_nav are never eligible.
     """
 
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     try:
         quote = get_execution_quote_on_or_before(
@@ -2753,7 +2779,7 @@ def get_transaction_execution_quote(
 def list_unresolved_option_actions(
     portfolio_id: str,
 ) -> UnresolvedOptionActionsResponse:
-    portfolio = get_portfolio(portfolio_id)
+    portfolio = get_portfolio_configuration(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     operational_date = portfolio_valuation_today(
@@ -2886,7 +2912,7 @@ def list_option_delivery_link_records(
     portfolio_id: str,
     underlying_instrument_id: str | None = None,
 ) -> OptionDeliveryLinkListResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return OptionDeliveryLinkListResponse(
         portfolio_id=portfolio_id,
@@ -3053,7 +3079,7 @@ def create_option_outcome(
             ),
         )
 
-    portfolio = get_portfolio(portfolio_id)
+    portfolio = get_portfolio_configuration(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     contract = get_derivative_contract(
@@ -3203,7 +3229,7 @@ def _persist_transaction_record(
                 "command so the stock delivery is created atomically."
             ),
         )
-    portfolio = get_portfolio(portfolio_id)
+    portfolio = get_portfolio_configuration(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     _validate_portfolio_fact_boundary(portfolio=portfolio, payload=payload)
@@ -3710,7 +3736,7 @@ def create_internal_transfer_records(
     payload: InternalTransferCreateRequest,
     idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1, pattern=r".*\S.*"),
 ) -> TransactionBatchResponse:
-    if get_portfolio(portfolio_id) is None:
+    if get_portfolio_configuration(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     idempotency_payload = _request_payload_for_idempotency(payload)

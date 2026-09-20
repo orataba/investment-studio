@@ -214,3 +214,54 @@ def test_release_registry_failure_rolls_back_all_system_lists(client, monkeypatc
         _release()
     with get_session_factory()() as session:
         assert _snapshot(session, [Watchlist, WatchlistItem, WatchlistRowReadModel, InstrumentDetail]) == before
+
+
+def test_release_derives_migrated_screener_without_changing_chart_generation(client):
+    assert client.get("/api/watchlists").status_code == 200
+    assert client.post("/api/recalc/instruments/sxv264/execute", json={"job_type": "all"}).status_code == 200
+    preserved_columns = [column for column in InstrumentChartReadModel.__table__.c if column.name != "screener_payload_json"]
+    with get_session_factory()() as session:
+        session.get(InstrumentChartReadModel, "sxv264").screener_payload_json = None
+        session.commit()
+        before = session.execute(select(*preserved_columns).where(InstrumentChartReadModel.instrument_id == "sxv264")).one()
+    assert _release() == 0
+    with get_session_factory()() as session:
+        after = session.execute(select(*preserved_columns).where(InstrumentChartReadModel.instrument_id == "sxv264")).one()
+        assert after == before
+        projection = session.get(InstrumentChartReadModel, "sxv264").screener_payload_json
+        assert "series" not in projection
+        assert set(projection["sparklines"]) == {"return_chart_1d", "return_chart_1w", "return_chart_1m", "return_chart_1y"}
+
+
+def test_screener_backfill_includes_archived_charts_and_rolls_back_failed_batch(client, monkeypatch):
+    assert client.get("/api/watchlists").status_code == 200
+    module = _load(Path(__file__).resolve().parents[1] / "scripts/refresh_release_watchlists.py", "release_screener_backfill")
+    for instrument_id in ("sxv264", "savf63"):
+        assert client.post(f"/api/recalc/instruments/{instrument_id}/execute", json={"job_type": "all"}).status_code == 200
+    with get_session_factory()() as session:
+        session.get(InstrumentDetail, "sxv264").is_active = False
+        for instrument_id in ("sxv264", "savf63"):
+            session.get(InstrumentChartReadModel, instrument_id).screener_payload_json = None
+        session.commit()
+        before = _snapshot(session, [InstrumentChartReadModel])
+    build = module.build_screener_chart_projection
+    calls = []
+
+    def fail_after_first(instrument_id, payload):
+        calls.append(instrument_id)
+        if len(calls) == 2:
+            raise RuntimeError("projection build failed")
+        return build(instrument_id, payload)
+
+    monkeypatch.setattr(module, "build_screener_chart_projection", fail_after_first)
+    with pytest.raises(RuntimeError, match="projection build failed"):
+        with get_session_factory()() as session, session.begin():
+            module._backfill_screener_projections(session)
+    with get_session_factory()() as session:
+        assert _snapshot(session, [InstrumentChartReadModel]) == before
+    monkeypatch.setattr(module, "build_screener_chart_projection", build)
+    with get_session_factory()() as session, session.begin():
+        assert module._backfill_screener_projections(session) == 2
+    with get_session_factory()() as session:
+        assert session.get(InstrumentChartReadModel, "sxv264").screener_payload_json is not None
+        assert session.get(InstrumentDetail, "sxv264").is_active is False

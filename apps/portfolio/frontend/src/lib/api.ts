@@ -3407,10 +3407,12 @@ export function reorderPortfolios(portfolioIds: string[]) {
 export function getPortfolioTableViewStore<TStore>(
   portfolioId: string,
   viewScope: PortfolioTableViewScope,
+  signal?: AbortSignal,
 ) {
   return fetchJson<PortfolioTableViewStoreResponse<TStore>>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/table-views/${viewScope}`,
+    { signal },
   )
 }
 
@@ -3606,22 +3608,26 @@ export function getPortfolioPerformance(portfolioId: string, filters: PortfolioP
 export function getPortfolioPerformanceCalculation(
   portfolioId: string,
   filters: PortfolioPerformanceFilters = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery(filters)
   return fetchJson<PortfolioPerformanceCalculationResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/performance/calculation${query}`,
+    { signal },
   )
 }
 
 export function getPortfolioPerformanceCalculationGroups(
   portfolioId: string,
   filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis; taxonomy_id?: string } = {},
+  signal?: AbortSignal,
 ) {
   const query = buildQuery(filters)
   return fetchJson<PortfolioPerformanceCalculationGroupsResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/performance/calculation/groups${query}`,
+    { signal },
   )
 }
 

@@ -4,7 +4,7 @@ import pytest
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import select
 
-from portfolio_app.api.routes import workspace
+from portfolio_app.services import holdings_workspace as workspace
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import performance
 

@@ -54,6 +54,7 @@ class DailySnapshotRecalculationWorker:
         self._poll_seconds = poll_seconds
         self._reconciliation_batch_size = reconciliation_batch_size
         self._reconciliation_cursor: str | None = None
+        self._workspace_cursor: str | None = None
         self._stop_requested = Event()
         self._wake_requested = Event()
         self._active_claim_guard = Lock()
@@ -121,6 +122,12 @@ class DailySnapshotRecalculationWorker:
                             stop_requested=self._stop_requested.is_set,
                         )
                     )
+                    if not processed and not self._stop_requested.is_set():
+                        from portfolio_app.services.workspace_precompute import precompute_next_portfolio_workspace
+                        processed, self._workspace_cursor = precompute_next_portfolio_workspace(
+                            after_portfolio_id=self._workspace_cursor,
+                            batch_size=self._reconciliation_batch_size,
+                        )
             except Exception:
                 # The synchronous kernel records a failed generation before
                 # re-raising.  Keep the worker alive for unrelated portfolios.

@@ -24,6 +24,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
             text(
                 "CREATE TABLE instrument_chart_read_model ("
                 "instrument_id TEXT PRIMARY KEY, source_cutoff_at DATETIME, "
+                "screener_payload_json JSON DEFAULT '{}', "
                 "materialization_version TEXT NOT NULL, "
                 "data_freshness_status TEXT NOT NULL)"
             )

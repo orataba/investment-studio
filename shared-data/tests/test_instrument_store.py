@@ -789,6 +789,94 @@ def test_calculation_details_still_reject_corrupt_historical_observations() -> N
         engine.dispose()
 
 
+def test_fresh_calculation_details_preserve_nav_lineage_and_mutation_isolation() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    source = deepcopy(TEST_SHARED_STORE)
+    source["instruments"][1]["market_data"] = [{
+        "metric_family": "nav", "quote_basis": "official_nav", "as_of_date": "2026-04-15",
+        "value": "1.2500", "currency": "USD", "price_unit": "per_unit", "price_scale": "1",
+        "provider": "test_fixture", "status": "complete",
+        "nav_lineage": {"kind": "provider_explicit", "evidence": {"observations": [{"source": "file"}]}},
+    }]
+    try:
+        shared_store.reset_store(factory, source)
+        expected = shared_store.get_instrument(factory, "fund-us-agg")
+        first = shared_store.get_instrument_details(factory, ["fund-us-agg"])["fund-us-agg"]
+        assert first == expected
+        first["market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] = "modified"
+        assert first["latest_market_data"] == expected["latest_market_data"]
+        second = shared_store.get_instrument_details(factory, ["fund-us-agg"])["fund-us-agg"]
+        assert second == expected
+        second["latest_market_data"][0]["value"] = "999"
+        assert second["market_data"] == expected["market_data"]
+        assert source["instruments"][1]["market_data"][0]["nav_lineage"]["evidence"]["observations"][0]["source"] == "file"
+    finally:
+        engine.dispose()
+
+
+def test_calculation_details_preserve_legacy_duplicate_tie_order() -> None:
+    from sqlalchemy import update
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    try:
+        shared_store.reset_store(factory, deepcopy(TEST_SHARED_STORE))
+        with engine.begin() as connection:
+            connection.execute(update(InstrumentMarketData).where(
+                InstrumentMarketData.instrument_id == "fund-us-agg",
+            ).values(currency="usd"))
+        with factory() as session:
+            session.add(InstrumentMarketData(instrument_id="fund-us-agg", metric_family="price", quote_basis="close",
+                as_of_date=date(2026, 4, 15), value="999", currency="USD", price_unit="per_unit", price_scale="1",
+                provider="legacy", status="complete"))
+            session.commit()
+        expected = shared_store.get_instrument(factory, "fund-us-agg")
+        actual = shared_store.get_instrument_details(factory, ["fund-us-agg"])["fund-us-agg"]
+        # Do not silently collapse a duplicate. Financial consumers still see
+        # both observations and apply their existing ambiguity rejection.
+        assert actual == expected
+        assert [row["value"] for row in actual["market_data"]] == ["999", "96.8200"]
+        assert actual["latest_market_data"][0]["value"] == "96.8200"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("corruption", [
+    {"status": "unknown"}, {"currency": "CHF"}, {"price_scale": "100"},
+    {"metric_family": "fx"}, {"nav_lineage_evidence_json": {"orphan": True}},
+    {"metric_family": "nav", "quote_basis": "official_nav", "nav_lineage_kind": "provider_explicit",
+     "nav_derivation_method_version": "not-permitted", "nav_lineage_evidence_json": {"source": "file"}},
+    {"metric_family": "nav", "quote_basis": "total_return_nav", "nav_lineage_kind": "provider_explicit",
+     "nav_lineage_evidence_json": {"source": "no-factor"}},
+])
+def test_calculation_detail_projection_preserves_invalid_persisted_contract_rejection(corruption) -> None:
+    from sqlalchemy import update
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    try:
+        shared_store.reset_store(factory, deepcopy(TEST_SHARED_STORE))
+        with engine.begin() as connection:
+            # Simulate a corrupt legacy row; modern database constraints reject
+            # these writes before the separately required read validation.
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints = ON")
+            connection.execute(update(InstrumentMarketData).where(
+                InstrumentMarketData.instrument_id == "fund-us-agg",
+            ).values(**corruption))
+        for load in (
+            lambda: shared_store.get_instrument(factory, "fund-us-agg"),
+            lambda: shared_store.get_instrument_details(factory, ["fund-us-agg"]),
+        ):
+            with pytest.raises(ValueError):
+                load()
+    finally:
+        engine.dispose()
+
+
 def test_runtime_rejects_missing_persisted_quote_policy_without_fallback(
     isolated_store: Path,
 ) -> None:

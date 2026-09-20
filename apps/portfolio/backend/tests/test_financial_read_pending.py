@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from investment_studio_instrument_core.db_models import Instrument
 
-from portfolio_app.api.routes import workspace
+from portfolio_app.services import holdings_workspace as workspace
 from portfolio_app.db.models import PortfolioCalculationStateModel, ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshot_worker, daily_snapshots

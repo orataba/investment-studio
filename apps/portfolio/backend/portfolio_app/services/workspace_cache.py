@@ -7,10 +7,15 @@ import json
 from typing import TypeVar
 
 from portfolio_app.services.source_cache import get_source_value
+from portfolio_app.services.workspace_read_models import (
+    PUBLISHED_SURFACES, WORKSPACE_ANALYSIS_VERSION, read_workspace_projection,
+)
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
+    PortfolioCalculationUnavailable,
+    _financial_read_generation_in_session,
     _state_requires_refresh,
     build_materialized_contribution_report,
     build_materialized_holdings_workspace,
@@ -24,24 +29,32 @@ def _date_key(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, ...] | None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
+def snapshot_projection_identity(state, portfolio) -> tuple:
+    return (
+        portfolio.portfolio_name, state.refresh_request_id, state.refreshed_at,
+        _date_key(state.refreshed_from), _date_key(state.refreshed_to),
+    )
+
+
+def _snapshot_fingerprint_in_session(session, portfolio_id: str) -> tuple | None:
+    state = session.get(PortfolioCalculationStateModel, portfolio_id)
+    if state is None or state.daily_snapshot_status not in {"current", "failed"}:
+        return None
+    if state.daily_snapshot_status == "failed":
+        try:
+            if _financial_read_generation_in_session(session, portfolio_id) is None:
+                return None
+        except PortfolioCalculationUnavailable:
             return None
-        if _state_requires_refresh(session, portfolio_id):
-            return None
-        portfolio = session.get(PortfolioRecordModel, portfolio_id)
-        if portfolio is None:
-            return None
-        return (
-            portfolio.portfolio_name,
-            state.refresh_request_id,
-            state.refreshed_at,
-            _date_key(state.refreshed_from),
-            _date_key(state.refreshed_to),
-        )
+    elif _state_requires_refresh(session, portfolio_id):
+        return None
+    portfolio = session.get(PortfolioRecordModel, portfolio_id)
+    return snapshot_projection_identity(state, portfolio) if portfolio is not None else None
+
+
+def _snapshot_fingerprint(portfolio_id: str) -> tuple | None:
+    with get_session_factory()() as session:
+        return _snapshot_fingerprint_in_session(session, portfolio_id)
 
 
 def _cache_key(
@@ -50,7 +63,7 @@ def _cache_key(
     args: tuple[Hashable, ...],
     fingerprint: tuple[str | None, ...],
 ) -> tuple[Hashable, ...]:
-    return (get_session_factory(), portfolio_id, surface, *args, *fingerprint)
+    return (get_session_factory(), WORKSPACE_ANALYSIS_VERSION, portfolio_id, surface, *args, *fingerprint)
 
 
 def _get_cached_portfolio_value(
@@ -60,13 +73,36 @@ def _get_cached_portfolio_value(
     args: tuple[Hashable, ...] = (),
     builder: Callable[[], T],
 ) -> T:
+    projection_key = None
+
     def source_key():
+        nonlocal projection_key
         fingerprint = _snapshot_fingerprint(portfolio_id)
         if fingerprint is None:
+            projection_key = None
             return None
+        projection_key = (surface, *args, *fingerprint)
         return _cache_key(portfolio_id, surface, args, fingerprint)
 
-    return get_source_value(source_key=source_key, builder=builder)
+    def read_or_build():
+        if surface in PUBLISHED_SURFACES:
+            if projection_key is not None:
+                published = read_workspace_projection(portfolio_id, surface, projection_key)
+                if published is not None:
+                    return published
+        return builder()
+
+    return get_source_value(source_key=source_key, builder=read_or_build)
+
+
+def holdings_analysis_args(
+    as_of_date: date | None, risk_policy: dict[str, object], policy_version: int,
+) -> tuple:
+    return (
+        _date_key(as_of_date),
+        json.dumps(risk_policy, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+        policy_version,
+    )
 
 
 def get_cached_holdings_analytics_workspace(
@@ -81,11 +117,7 @@ def get_cached_holdings_analytics_workspace(
     value = _get_cached_portfolio_value(
         portfolio_id,
         surface="holdings_analytics",
-        args=(
-            _date_key(as_of_date),
-            json.dumps(risk_policy, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
-            analytics_policy_version,
-        ),
+        args=holdings_analysis_args(as_of_date, risk_policy, analytics_policy_version),
         builder=builder,
     )
     # A projection must leave the cached value untouched. Copy only its retained
@@ -184,22 +216,3 @@ def get_cached_materialized_contribution_report(
         axis=axis,
         group_key=group_key,
     )
-
-
-def preload_portfolio_workspace_cache(portfolio_id: str) -> dict[str, object]:
-    warmed: list[str] = []
-    errors: list[str] = []
-
-    def warm(label: str, callback: Callable[[], object]) -> None:
-        try:
-            callback()
-            warmed.append(label)
-        except Exception as exc:  # pragma: no cover - background warmup must not fail foreground requests.
-            errors.append(f"{label}: {exc}")
-
-    warm("performance", lambda: get_cached_materialized_performance_report(portfolio_id))
-    return {
-        "portfolio_id": portfolio_id,
-        "warmed_surfaces": warmed,
-        "errors": errors,
-    }

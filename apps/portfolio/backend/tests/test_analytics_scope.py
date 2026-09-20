@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import AnalyticsScopePolicyRecordModel, PortfolioCalculationStateModel, TaxonomyConfigurationRevisionModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.api.routes import workspace as workspace_route
+from portfolio_app.services import holdings_workspace as workspace_route
 from portfolio_app.services import daily_snapshots
 from portfolio_app.services.analytics_scope import (
     ROOT_POLICY_NODE_ID, UNASSIGNED_POLICY_NODE_ID, analytics_policy_version,

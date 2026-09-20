@@ -1,6 +1,6 @@
 [project]
 name = "investment-studio-market"
-version = "1.2.2"
+version = "1.2.3"
 description = "Investment Studio shared numerical and text evidence data"
 requires-python = ">=3.12"
 dependencies = [

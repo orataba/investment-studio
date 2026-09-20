@@ -238,13 +238,13 @@ describe('Performance rendered page contract', () => {
     expect(screen.queryByText(/Ordinary Assets Sleeve TWR unavailable/)).not.toBeInTheDocument()
     expect(calculationDetails).toHaveAttribute('aria-label', expect.stringContaining('Daily risk basis'))
 
-    expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters)
-    expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters)
+    expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters, expect.any(AbortSignal))
+    expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters, expect.any(AbortSignal))
     expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
       ...windowFilters,
       axis: 'instrument',
       taxonomy_id: undefined,
-    })
+    }, expect.any(AbortSignal))
 
     expect(screen.queryByText(/publication lineage|rounding audit|internal audit|manifest/i)).not.toBeInTheDocument()
   })
@@ -427,7 +427,7 @@ describe('Performance rendered page contract', () => {
       ...windowFilters,
       axis: 'taxonomy',
       taxonomy_id: 'tax-planning',
-    })
+    }, expect.any(AbortSignal))
   })
 
   it.each(['price_return', 'unknown'] as const)('shows benchmark differences and relative statistics for a %s price series', async (returnSemantics) => {
@@ -563,7 +563,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-04-30',
         end_date: '2026-05-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
 
     await user.click(within(controls).getByRole('button', { name: 'QTD' }))
@@ -571,7 +571,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-03-31',
         end_date: '2026-05-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
 
     await user.click(within(controls).getByRole('button', { name: 'YTD' }))
@@ -579,7 +579,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenLastCalledWith('3', {
         start_date: '2025-12-31',
         end_date: '2026-05-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
 
     await user.click(within(controls).getByRole('button', { name: '1Y' }))
@@ -589,7 +589,7 @@ describe('Performance rendered page contract', () => {
         end_date: '2026-05-15',
         axis: 'instrument',
         taxonomy_id: undefined,
-      }),
+      }, expect.any(AbortSignal)),
     )
   })
 
@@ -618,7 +618,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-06-30',
         end_date: '2026-07-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
     expect(apiMocks.getPortfolioPerformanceCalculation).not.toHaveBeenCalled()
     expect(apiMocks.getPortfolioPerformanceCalculationGroups).not.toHaveBeenCalled()
@@ -646,13 +646,13 @@ describe('Performance rendered page contract', () => {
     expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', {
       start_date: '2026-06-30',
       end_date: '2026-07-15',
-    })
+    }, expect.any(AbortSignal))
     expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
       start_date: '2026-06-30',
       end_date: '2026-07-15',
       axis: 'instrument',
       taxonomy_id: undefined,
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('submits edited dates together without requesting intermediate windows', async () => {
@@ -677,7 +677,7 @@ describe('Performance rendered page contract', () => {
     await waitFor(() => expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1))
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', {
       start_date: '2026-07-01', end_date: '2026-07-14',
-    })
+    }, expect.any(AbortSignal))
   })
 
   it('keeps an invalid draft from replacing the applied period', async () => {
@@ -714,13 +714,13 @@ describe('Performance rendered page contract', () => {
 
     const sinceInceptionFilters = { end_date: '2026-05-15' }
     await waitFor(() => {
-      expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', sinceInceptionFilters)
-      expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenLastCalledWith('3', sinceInceptionFilters)
+      expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', sinceInceptionFilters, expect.any(AbortSignal))
+      expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenLastCalledWith('3', sinceInceptionFilters, expect.any(AbortSignal))
       expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenLastCalledWith('3', {
         ...sinceInceptionFilters,
         axis: 'instrument',
         taxonomy_id: undefined,
-      })
+      }, expect.any(AbortSignal))
     })
     expect(sinceInceptionButton).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByLabelText('Start Date')).toHaveValue('')
@@ -744,7 +744,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2023-02-28',
         end_date: '2024-02-29',
-      }),
+      }, expect.any(AbortSignal)),
     )
   })
 
@@ -762,7 +762,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-01-01',
         end_date: '2026-07-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
     expect(screen.getByLabelText('End Date')).toHaveValue('2026-07-15')
 
@@ -771,7 +771,7 @@ describe('Performance rendered page contract', () => {
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
         start_date: '2026-06-15',
         end_date: '2026-07-15',
-      }),
+      }, expect.any(AbortSignal)),
     )
     expect(screen.getByLabelText('Start Date')).toHaveValue('2026-06-15')
     expect(window.localStorage.getItem('investment_studio.portfolio.performance.window.v1')).toBe('{}')

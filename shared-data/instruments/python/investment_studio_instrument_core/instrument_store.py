@@ -149,18 +149,21 @@ def _serialized_nav_lineage(
     anchor_date: object,
     evidence: object,
 ) -> dict[str, object] | None:
+    raw = _persisted_nav_lineage_input(kind, method_version, anchor_date, evidence)
+    if raw is None:
+        return None
+    return NavLineage.model_validate(raw).model_dump(mode="json")
+
+
+def _persisted_nav_lineage_input(
+    kind: object, method_version: object, anchor_date: object, evidence: object,
+) -> dict[str, object] | None:
+    """Collect persisted columns for the one validation at the read boundary."""
     if kind is None:
         if any(value is not None for value in (method_version, anchor_date, evidence)):
             raise ValueError("Persisted NAV lineage is incomplete.")
         return None
-    return NavLineage.model_validate(
-        {
-            "kind": kind,
-            "method_version": method_version,
-            "anchor_date": anchor_date,
-            "evidence": deepcopy(evidence),
-        }
-    ).model_dump(mode="json")
+    return {"kind": kind, "method_version": method_version, "anchor_date": anchor_date, "evidence": evidence}
 
 
 def _nav_lineage_columns(
@@ -201,12 +204,15 @@ def _parse_utc_iso(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _next_market_data_watermark(session: Session) -> str:
-    metadata_record = session.scalar(
-        select(RegistryMetadata)
-        .where(RegistryMetadata.registry_key == "shared")
-        .with_for_update()
-    )
+def _locked_registry_metadata(session: Session) -> RegistryMetadata:
+    # Writers hold their instrument lock before allocating a registry version.
+    # Do not implicitly flush unrelated pending rows while taking this lock.
+    with session.no_autoflush:
+        metadata_record = session.scalar(
+            select(RegistryMetadata)
+            .where(RegistryMetadata.registry_key == "shared")
+            .with_for_update()
+        )
     if metadata_record is None:
         metadata_record = RegistryMetadata(
             registry_key="shared",
@@ -214,6 +220,11 @@ def _next_market_data_watermark(session: Session) -> str:
         )
         session.add(metadata_record)
         session.flush()
+    return metadata_record
+
+
+def _next_market_data_watermark(session: Session) -> str:
+    metadata_record = _locked_registry_metadata(session)
 
     candidate = _parse_utc_iso(_utcnow_iso()) or datetime.now(UTC)
     previous = _parse_utc_iso(metadata_record.market_data_updated_at)
@@ -224,9 +235,17 @@ def _next_market_data_watermark(session: Session) -> str:
     return watermark
 
 
-def _next_calculation_input_watermark(current_value: str | None) -> str:
+def _next_calculation_input_watermark(session: Session) -> str:
+    # Portfolio source generations use MAX over their relevant instruments.
+    # Per-instrument clocks cannot detect an older timestamp committed later on
+    # another asset. Serialize allocation until commit and advance the global
+    # committed maximum, including existing values after clock correction.
+    with session.no_autoflush:
+        _locked_registry_metadata(session)
+        previous = _parse_utc_iso(session.scalar(
+            select(func.max(Instrument.calculation_inputs_updated_at))
+        ))
     candidate = _parse_utc_iso(_utcnow_iso()) or datetime.now(UTC)
-    previous = _parse_utc_iso(current_value)
     if previous is not None and candidate <= previous:
         candidate = previous + timedelta(microseconds=1)
     return candidate.isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -752,7 +771,7 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
     for point_index, raw_point in enumerate(raw_points, start=1):
         if not isinstance(raw_point, dict):
             raise ValueError(f"Market-data row {point_index} must be an object.")
-        point = dict(raw_point)
+        point = raw_point
         metric_family = str(point.get("metric_family") or "").strip().lower()
         quote_basis = str(point.get("quote_basis") or "").strip().lower()
         price_unit, price_scale = parse_persisted_price_contract(
@@ -779,9 +798,11 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
             value=point.get("value"),
             status=point.get("status"),
         )
-        raw_date = str(point.get("as_of_date") or "").strip()
+        raw_date = point.get("as_of_date")
         try:
-            point_date = date.fromisoformat(raw_date)
+            # Typed database dates need no string round trip. Arbitrary store
+            # inputs still go through exactly the strict ISO date parser.
+            point_date = raw_date if type(raw_date) is date else date.fromisoformat(str(raw_date or "").strip())
         except ValueError as error:
             raise ValueError(
                 f"Market-data row {point_index} has an invalid as_of_date."
@@ -1826,7 +1847,11 @@ def get_instrument_details(
             # Calculation consumers need values, not ORM identities for every
             # historical observation. Keep the same complete history and
             # validation contract while avoiding large ORM relationship loads.
-            for row in session.execute(
+            for (
+                instrument_id, metric_family, quote_basis, as_of_date, value,
+                currency, price_unit, price_scale, provider, status,
+                lineage_kind, lineage_method, lineage_anchor, lineage_evidence,
+            ) in session.execute(
                 select(
                     InstrumentMarketData.instrument_id,
                     InstrumentMarketData.metric_family,
@@ -1844,35 +1869,32 @@ def get_instrument_details(
                     InstrumentMarketData.nav_lineage_evidence_json,
                 ).where(InstrumentMarketData.instrument_id.in_(market_data_by_id))
             ):
-                market_data_by_id[row.instrument_id].append(
+                market_data_by_id[instrument_id].append(
                     {
-                        "metric_family": row.metric_family,
-                        "quote_basis": row.quote_basis,
-                        "as_of_date": row.as_of_date.isoformat(),
-                        "value": row.value,
-                        "currency": row.currency,
-                        "price_unit": row.price_unit,
-                        "price_scale": row.price_scale,
-                        "provider": row.provider,
-                        "status": row.status,
-                        "nav_lineage": _serialized_nav_lineage(
-                            kind=row.nav_lineage_kind,
-                            method_version=row.nav_derivation_method_version,
-                            anchor_date=row.nav_derivation_anchor_date,
-                            evidence=row.nav_lineage_evidence_json,
+                        "metric_family": metric_family,
+                        "quote_basis": quote_basis,
+                        "as_of_date": as_of_date,
+                        "value": value,
+                        "currency": currency,
+                        "price_unit": price_unit,
+                        "price_scale": price_scale,
+                        "provider": provider,
+                        "status": status,
+                        "nav_lineage": _persisted_nav_lineage_input(
+                            lineage_kind, lineage_method, lineage_anchor, lineage_evidence,
                         ),
                     }
                 )
-        details_by_id = {
-            target.instrument_id: _serialize_detail_record(
-                _instrument_to_store_dict(
-                    target,
-                    market_data=market_data_by_id[target.instrument_id],
-                    include_fund_nav_ledger=include_fund_nav_ledger,
-                )
+        details_by_id = {}
+        for target in targets:
+            item = _instrument_to_store_dict(
+                target, market_data=market_data_by_id[target.instrument_id],
+                include_fund_nav_ledger=include_fund_nav_ledger,
             )
-            for target in targets
-        }
+            # Preserve the established raw tie order even for legacy spelling
+            # variants that normalize to one series identity. Normalization
+            # validates every observation and owns the resulting point/lineage.
+            details_by_id[target.instrument_id] = _serialize_detail_record(item)
     return {
         instrument_id: details_by_id.get(instrument_id)
         for instrument_id in normalized_ids
@@ -3347,15 +3369,6 @@ def create_instrument(
             "lifecycle_state": _default_lifecycle_state(),
         }
 
-        metadata_record = session.get(RegistryMetadata, "shared")
-        if metadata_record is None:
-            session.add(
-                RegistryMetadata(
-                    registry_key="shared",
-                    registry_name=DEFAULT_REGISTRY_NAME,
-                )
-            )
-
         session.add(
             Instrument(
                 instrument_id=record["instrument_id"],
@@ -3367,7 +3380,7 @@ def create_instrument(
                 source_settings_json=record["source_settings"],
                 refresh_status_json=record["refresh_status"],
                 lifecycle_state_json=record["lifecycle_state"],
-                calculation_inputs_updated_at=_utcnow_iso(),
+                calculation_inputs_updated_at=_next_calculation_input_watermark(session),
             )
         )
         for raw_identifier in identifiers:
@@ -3417,7 +3430,9 @@ def ensure_secondary_identifier(
         raise ValueError("Instrument identifier type and value must not be blank.")
 
     with session_factory() as session:
-        target = session.get(Instrument, instrument_id)
+        target = session.scalar(select(Instrument).where(
+            Instrument.instrument_id == instrument_id,
+        ).with_for_update())
         if target is None:
             return None
         existing = session.scalar(
@@ -3444,9 +3459,7 @@ def ensure_secondary_identifier(
                 is_primary=False,
             )
         )
-        target.calculation_inputs_updated_at = _next_calculation_input_watermark(
-            target.calculation_inputs_updated_at
-        )
+        target.calculation_inputs_updated_at = _next_calculation_input_watermark(session)
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
@@ -4183,7 +4196,9 @@ def upsert_source_settings(
     source_price_multiplier: object = _SOURCE_SETTING_UNSET,
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.get(Instrument, instrument_id)
+        target = session.scalar(select(Instrument).where(
+            Instrument.instrument_id == instrument_id,
+        ).with_for_update())
         if target is None:
             return None
 
@@ -4266,9 +4281,7 @@ def upsert_source_settings(
             for key in calculation_settings_before
         }
         if calculation_settings_after != calculation_settings_before:
-            target.calculation_inputs_updated_at = _next_calculation_input_watermark(
-                target.calculation_inputs_updated_at
-            )
+            target.calculation_inputs_updated_at = _next_calculation_input_watermark(session)
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
@@ -4281,7 +4294,9 @@ def upsert_quote_selection_policy(
     quote_selection_policy: dict[str, object],
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.get(Instrument, instrument_id)
+        target = session.scalar(select(Instrument).where(
+            Instrument.instrument_id == instrument_id,
+        ).with_for_update())
         if target is None:
             return None
 
@@ -4296,9 +4311,7 @@ def upsert_quote_selection_policy(
         next_policy = _normalized_quote_selection_policy(store_item)
         target.quote_selection_policy_json = next_policy
         if next_policy != previous_policy:
-            target.calculation_inputs_updated_at = _next_calculation_input_watermark(
-                target.calculation_inputs_updated_at
-            )
+            target.calculation_inputs_updated_at = _next_calculation_input_watermark(session)
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None

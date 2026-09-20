@@ -233,3 +233,84 @@ def test_period_state_preserves_lot_and_lifecycle_semantics(scenario, start, mon
         # The transferred June 1 lot is sold first; the June 2 lot retains its
         # $110 basis ($110 also happens to be the optional start boundary).
         assert actual["summary"]["unrealized_capital_gains"] == pytest.approx(400)
+
+
+@pytest.mark.parametrize("axis", ["instrument", "currency", "instrument_detail"])
+def test_request_performance_inputs_preserve_reports_and_are_not_mutated(axis):
+    portfolio_id = "investment-studio"
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
+    start, end = date(2026, 4, 8), date(2026, 4, 15)
+    expected = daily_snapshots.build_materialized_contribution_report(
+        portfolio_id, start_date=start, end_date=end, axis=axis,
+    )
+    inputs = daily_snapshots.load_materialized_performance_read(portfolio_id, end_date=end)
+    original = deepcopy(inputs)
+    actual = daily_snapshots.build_materialized_contribution_report(
+        portfolio_id, start_date=start, end_date=end, axis=axis, read_inputs=inputs,
+    )
+    period = load_period_calculation_inputs(
+        portfolio_id, start_date=start, end_date=end, read_inputs=inputs,
+    )
+    assert actual == expected
+    assert period.snapshots is inputs.snapshots
+    assert inputs == original
+    assert list(reversed(inputs.transactions)) == portfolio_store.list_transactions(portfolio_id)
+
+
+@pytest.mark.parametrize("suffix", ["calculation", "calculation/groups?axis=instrument", "calculation/groups?axis=currency"])
+def test_calculation_request_reads_public_snapshot_history_once(raw_client, suffix):
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
+    statements = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(get_engine(), "before_cursor_execute", record)
+    try:
+        response = raw_client.get(f"/api/portfolios/investment-studio/performance/{suffix}")
+    finally:
+        event.remove(get_engine(), "before_cursor_execute", record)
+    assert response.status_code == 200, response.text
+    snapshot_reads = [statement for statement in statements if statement.startswith(
+        "SELECT portfolio_daily_snapshot.snapshot_json \n"
+    ) and "LIMIT" not in statement]
+    assert len(snapshot_reads) == 1
+    assert "calculation_state_json" not in snapshot_reads[0]
+
+
+def test_request_inputs_reject_another_portfolio_or_unloaded_end_date():
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously("investment-studio")
+    end = date(2026, 4, 8)
+    inputs = daily_snapshots.load_materialized_performance_read("investment-studio", end_date=end)
+    for portfolio_id, requested_end, message in [
+        ("other", end, "different portfolio"),
+        ("investment-studio", date(2026, 4, 15), "requested end date"),
+        ("investment-studio", None, "requested end date"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            daily_snapshots.build_materialized_contribution_report(
+                portfolio_id, end_date=requested_end, read_inputs=inputs,
+            )
+        with pytest.raises(ValueError, match=message):
+            load_period_calculation_inputs(portfolio_id, end_date=requested_end, read_inputs=inputs)
+
+
+def test_performance_request_keeps_gap_before_selected_start():
+    portfolio_id = "investment-studio"
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
+    with get_session_factory()() as session:
+        row = session.scalar(select(PortfolioDailySnapshotModel).where(
+            PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
+        ).order_by(PortfolioDailySnapshotModel.as_of_date))
+        row.snapshot_json = {
+            **row.snapshot_json,
+            "valuation_coverage_state": "partial",
+            "valuation_blocked_reason": "missing_price",
+        }
+        session.commit()
+    report = daily_snapshots.build_materialized_performance_report(
+        portfolio_id, start_date=date(2026, 4, 8), end_date=date(2026, 4, 15),
+    )
+    assert report["daily_series"] == []
+    assert report["summary"]["effective_end_date"] is None
+    assert report["summary"]["as_of_clamp_reason"] == "required_market_data_missing"

@@ -9492,10 +9492,10 @@ input[type='checkbox'] {
 }
 
 .transaction-instrument-result {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 4px;
   width: 100%;
   padding: 8px 10px;
   border: none;
@@ -9516,10 +9516,16 @@ input[type='checkbox'] {
   border-bottom: none;
 }
 
+.transaction-instrument-result .holding-name-stack > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .transaction-instrument-result .transaction-picker-meta {
   display: block;
   padding-right: 0;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .transaction-picker-constraint {

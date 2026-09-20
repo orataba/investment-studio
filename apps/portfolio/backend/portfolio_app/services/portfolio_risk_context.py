@@ -253,7 +253,7 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
 
 def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = None):
     from fastapi import HTTPException
-    from portfolio_app.api.routes.workspace import holdings_workspace
+    from portfolio_app.services.holdings_workspace import holdings_workspace
     from portfolio_app.api.routes.taxonomies import get_portfolio_taxonomies
     from portfolio_app.services.daily_snapshots import PortfolioCalculationUnavailable
     workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)

@@ -41,10 +41,15 @@ def _positive_decimal(value: object) -> Decimal | None:
         return None
 
 
-def _latest_spot_point_from_instrument(
+def latest_spot_point_from_instrument(
     instrument: dict[str, object],
     market_data: object,
 ) -> dict[str, object] | None:
+    """Validate the complete direct-FX history before selecting its latest point.
+
+    Dated consumers use this same catalog-eligibility contract on observations
+    they already loaded, without querying all maintained FX pairs a second time.
+    """
     if not isinstance(market_data, list):
         return None
 
@@ -104,7 +109,7 @@ def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> d
         return None
     if instrument is None:
         return None
-    return _latest_spot_point_from_instrument(
+    return latest_spot_point_from_instrument(
         instrument,
         instrument.get("market_data", []),
     )

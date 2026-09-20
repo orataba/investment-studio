@@ -162,11 +162,27 @@ def run_screener_query(
             raise HTTPException(status_code=404, detail="Watchlist view not found")
     rows = read_model_repository.list_watchlist_rows(session, payload.watchlist_id)
     _validate_query_contract(session, payload_data, view)
-    charts = read_model_repository.list_charts(
+    requested_fields = _requested_query_fields(payload_data, view)
+    charts = read_model_repository.list_screener_charts(
         session,
         [row.instrument_id for row in rows],
     )
-    requested_fields = _requested_query_fields(payload_data, view)
+    missing_projections = [chart.instrument_id for chart in charts if chart.payload_json is None]
+    if missing_projections:
+        # An interrupted/manual upgrade must enqueue its repair before failing;
+        # exception responses do not run FastAPI's normal BackgroundTasks.
+        schedule_instrument_refreshes_if_stale(
+            targets=[{"instrument_id": instrument_id, "local_materialization_version": None}
+                     for instrument_id in missing_projections],
+            trigger_ref_type="screener_projection_missing",
+            trigger_ref_id=payload.watchlist_id,
+            raise_on_error=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Watchlist list data is being rebuilt. Please retry shortly.",
+            headers={"Retry-After": "1"},
+        )
     identity_overrides: dict[str, dict[str, object]] = {}
     if "currency" in requested_fields:
         instrument_ids = [row.instrument_id for row in rows]

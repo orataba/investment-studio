@@ -8,7 +8,7 @@ export default function usePerformanceResource<T>({
 }: {
   enabled: boolean
   resourceKey: string
-  load: () => Promise<T>
+  load: (signal: AbortSignal) => Promise<T>
   fallbackError: string
 }) {
   const [data, setData] = useState<T | null>(null)
@@ -28,13 +28,14 @@ export default function usePerformanceResource<T>({
     }
 
     let cancelled = false
+    const controller = new AbortController()
     if (resourceChanged) {
       setData(null)
     }
     setLoading(true)
     setError(null)
 
-    load()
+    load(controller.signal)
       .then((response) => {
         if (!cancelled) {
           setData(response)
@@ -54,6 +55,7 @@ export default function usePerformanceResource<T>({
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [enabled, fallbackError, load, resourceKey])
 

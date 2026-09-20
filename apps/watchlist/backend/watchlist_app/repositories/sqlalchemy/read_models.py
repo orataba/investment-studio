@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,15 @@ from watchlist_app.services.materialization_policy import UNVERSIONED_MATERIALIZ
 
 def _scoped_view_id(watchlist_id: str, local_view_id: str) -> str:
     return f"{watchlist_id}::{local_view_id}"
+
+
+@dataclass(frozen=True)
+class ScreenerChartRecord:
+    instrument_id: str
+    payload_json: dict[str, Any] | None
+    data_freshness_status: str
+    source_cutoff_at: datetime | None
+    materialization_version: str
 
 
 class SQLAlchemyReadModelRepository:
@@ -252,6 +262,33 @@ class SQLAlchemyReadModelRepository:
         stmt = select(InstrumentChartReadModel).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
         return session.scalars(stmt).all()
 
+    def list_screener_charts(
+        self,
+        session: Session,
+        instrument_ids: Sequence[str],
+    ) -> Sequence[ScreenerChartRecord]:
+        """Read the atomic list projection without transferring detail history."""
+        if not instrument_ids:
+            return []
+        model = InstrumentChartReadModel
+        statement = select(
+            model.instrument_id,
+            model.data_freshness_status,
+            model.source_cutoff_at,
+            model.materialization_version,
+            model.screener_payload_json,
+        ).where(model.instrument_id.in_(instrument_ids))
+        return [
+            ScreenerChartRecord(
+                instrument_id=row.instrument_id,
+                data_freshness_status=row.data_freshness_status,
+                source_cutoff_at=row.source_cutoff_at,
+                materialization_version=row.materialization_version,
+                payload_json=row.screener_payload_json,
+            )
+            for row in session.execute(statement)
+        ]
+
     def get_performance(
         self,
         session: Session,
@@ -287,7 +324,10 @@ class SQLAlchemyReadModelRepository:
         last_recalculated_at,
         source_cutoff_at,
         materialization_version: str,
+        screener_payload: dict[str, Any] | None = None,
     ):
+        if model_class is InstrumentChartReadModel and screener_payload is None:
+            raise ValueError("Chart and screener projections must be published together")
         record = session.get(model_class, instrument_id)
         if record is None:
             record = model_class(
@@ -299,6 +339,7 @@ class SQLAlchemyReadModelRepository:
             )
             if isinstance(record, InstrumentChartReadModel):
                 record.materialization_version = materialization_version
+                record.screener_payload_json = screener_payload
             session.add(record)
             session.flush()
             return record
@@ -308,5 +349,6 @@ class SQLAlchemyReadModelRepository:
         record.source_cutoff_at = source_cutoff_at
         if isinstance(record, InstrumentChartReadModel):
             record.materialization_version = materialization_version
+            record.screener_payload_json = screener_payload
         session.flush()
         return record

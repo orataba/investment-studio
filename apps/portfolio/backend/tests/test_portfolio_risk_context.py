@@ -86,7 +86,8 @@ def test_route_reuses_financial_read_generation_contract():
 
 def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
     from types import SimpleNamespace
-    from portfolio_app.api.routes import workspace as workspace_routes, taxonomies
+    from portfolio_app.services import holdings_workspace as workspace_routes
+    from portfolio_app.api.routes import taxonomies
     calls = []
     selected = date(2026, 3, 10)
     def read_holdings(**kwargs):

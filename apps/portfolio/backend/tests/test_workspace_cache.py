@@ -22,6 +22,7 @@ def cache_context(monkeypatch):
     monkeypatch.setattr(source_cache, "_cache_total_size_bytes", 0)
     monkeypatch.setattr(workspace_cache, "_snapshot_fingerprint", lambda _portfolio_id: context["fingerprint"])
     monkeypatch.setattr(workspace_cache, "get_session_factory", lambda: context["factory"])
+    monkeypatch.setattr(workspace_cache, "read_workspace_projection", lambda *_args: None)
     return context
 
 
@@ -67,7 +68,7 @@ def test_risk_basis_is_shared_between_consumers_without_aliasing(cache_context):
 
 
 def test_full_and_compact_holdings_share_complete_analytics_but_refresh_live_status(cache_context, monkeypatch):
-    from portfolio_app.api.routes import workspace
+    from portfolio_app.services import holdings_workspace as workspace
 
     as_of = date(2026, 9, 6)
     builds = []
@@ -139,7 +140,7 @@ def test_full_and_compact_holdings_share_complete_analytics_but_refresh_live_sta
 
 
 def test_compact_projection_does_not_copy_discarded_histories(cache_context):
-    from portfolio_app.api.routes import workspace
+    from portfolio_app.services import holdings_workspace as workspace
 
     class History(list):
         def __deepcopy__(self, memo):

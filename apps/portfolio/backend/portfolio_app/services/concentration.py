@@ -252,7 +252,7 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
 
 
 def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None = None, workspace: dict | None = None) -> dict:
-    from portfolio_app.api.routes.workspace import _resolve_holdings_request
+    from portfolio_app.services.holdings_workspace import _resolve_holdings_request
     from portfolio_app.services.analytics_scope import current_taxonomy_configuration_in_session
     from portfolio_app.services.workspace_cache import get_cached_materialized_holdings_workspace
     from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument_summaries

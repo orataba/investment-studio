@@ -10,6 +10,7 @@ from uuid import uuid4
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import and_, case, delete, event, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
+from studio_runtime import operation
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -406,8 +407,14 @@ def _incremental_snapshot_seed(
     if prior_row is None:
         return None
     prior_payload = _restore_snapshot(dict(prior_row.snapshot_json))
-    prefix_rows = session.scalars(
-        select(PortfolioDailySnapshotModel)
+    # Only the two growth paths establish historical high-water marks. The
+    # daily JSON also contains lot/contribution inputs, which are irrelevant to
+    # this seed and can be much larger than the suffix being recalculated.
+    prefix_rows = session.execute(
+        select(
+            PortfolioDailySnapshotModel.cumulative_twr,
+            PortfolioDailySnapshotModel.snapshot_json["market_risk_cumulative_return"],
+        )
         .where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
             PortfolioDailySnapshotModel.as_of_date <= prior_row.as_of_date,
@@ -417,18 +424,12 @@ def _incremental_snapshot_seed(
     prefix_growth_values = [
         1.0 + cumulative
         for row in prefix_rows
-        if (cumulative := _safe_float(row.cumulative_twr)) is not None
+        if (cumulative := _safe_float(row[0])) is not None
     ]
     prefix_market_risk_growth_values = [
         1.0 + cumulative
         for row in prefix_rows
-        if isinstance(row.snapshot_json, dict)
-        and (
-            cumulative := _safe_float(
-                row.snapshot_json.get("market_risk_cumulative_return")
-            )
-        )
-        is not None
+        if (cumulative := _safe_float(row[1])) is not None
     ]
     return {
         "seed_date": prior_row.as_of_date,
@@ -986,16 +987,17 @@ def _recalculate_portfolio_daily_snapshots_once(
                 else None
             )
 
-            snapshots = performance.build_daily_portfolio_snapshots(
-                portfolio,
-                accounts,
-                transactions,
-                start_date=calculation_start_date,
-                end_date=resolved_end_date,
-                include_materialized_rows=True,
-            )
-            if incremental_seed is not None:
-                _rebase_incremental_snapshots(snapshots, seed=incremental_seed)
+            with operation("portfolio_snapshot_kernel", portfolio_id=portfolio_id):
+                snapshots = performance.build_daily_portfolio_snapshots(
+                    portfolio,
+                    accounts,
+                    transactions,
+                    start_date=calculation_start_date,
+                    end_date=resolved_end_date,
+                    include_materialized_rows=True,
+                )
+                if incremental_seed is not None:
+                    _rebase_incremental_snapshots(snapshots, seed=incremental_seed)
             source_generation_after = _read_snapshot_source_generation(portfolio_id)
             if source_generation_after != source_generation_before:
                 session.rollback()
@@ -1024,208 +1026,209 @@ def _recalculate_portfolio_daily_snapshots_once(
                 or (_parse_date(snapshot.get("as_of_date")) or date.min) >= persist_from
             ]
 
-            contribution_delete = delete(PortfolioDailyContributionSliceModel).where(
-                PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id
-            )
-            holding_delete = delete(PortfolioDailyHoldingSnapshotModel).where(
-                PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id
-            )
-            snapshot_delete = delete(PortfolioDailySnapshotModel).where(
-                PortfolioDailySnapshotModel.portfolio_id == portfolio_id
-            )
-            if persist_from is not None:
-                contribution_delete = contribution_delete.where(
-                    PortfolioDailyContributionSliceModel.as_of_date >= persist_from
+            with operation("portfolio_snapshot_publication", portfolio_id=portfolio_id):
+                contribution_delete = delete(PortfolioDailyContributionSliceModel).where(
+                    PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id
                 )
-                holding_delete = holding_delete.where(
-                    PortfolioDailyHoldingSnapshotModel.as_of_date >= persist_from
+                holding_delete = delete(PortfolioDailyHoldingSnapshotModel).where(
+                    PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id
                 )
-                snapshot_delete = snapshot_delete.where(
-                    PortfolioDailySnapshotModel.as_of_date >= persist_from
-                )
-            session.execute(contribution_delete)
-            session.execute(holding_delete)
-            session.execute(snapshot_delete)
-            daily_snapshot_rows: list[dict[str, object]] = []
-            for snapshot in snapshots_to_persist:
-                snapshot_date = _parse_date(snapshot.get("as_of_date"))
-                if snapshot_date is None:
-                    continue
-                holding_rows = [
-                    item for item in list(snapshot.get("_holding_rows") or []) if isinstance(item, dict)
-                ]
-                contribution_slices = [
-                    item for item in list(snapshot.get("_contribution_slices") or []) if isinstance(item, dict)
-                ]
-                public_snapshot = _public_snapshot_payload(snapshot)
-                public_snapshot["calculation_version"] = DAILY_SNAPSHOT_CALCULATION_VERSION
-                public_snapshot["source_generation"] = source_generation_before.as_payload()
-                daily_snapshot_rows.append(
-                    {
-                        "portfolio_id": portfolio_id,
-                        "as_of_date": snapshot_date,
-                        "coverage_state": str(snapshot.get("coverage_state") or "unavailable"),
-                        "valuation_coverage_state": str(
-                            snapshot.get("valuation_coverage_state") or "unavailable"
-                        ),
-                        "return_coverage_state": str(
-                            snapshot.get("return_coverage_state") or "unavailable"
-                        ),
-                        "book_pnl_coverage_state": str(
-                            snapshot.get("book_pnl_coverage_state") or "unavailable"
-                        ),
-                        "attribution_coverage_state": str(
-                            snapshot.get("attribution_coverage_state") or "unavailable"
-                        ),
-                        "nav": _safe_float(snapshot.get("nav")),
-                        "beginning_nav": _safe_float(snapshot.get("beginning_nav")),
-                        "ending_nav": _safe_float(snapshot.get("ending_nav")),
-                        "daily_twr": _safe_float(snapshot.get("daily_twr")),
-                        "cumulative_twr": _safe_float(snapshot.get("cumulative_twr")),
-                        "drawdown": _safe_float(snapshot.get("drawdown")),
-                        "snapshot_json": _json_safe(public_snapshot),
-                        "calculation_state_json": _json_safe(snapshot.get("_calculation_state")),
-                        "calculated_at": calculated_at,
-                    }
-                )
-                for holding in holding_rows:
-                    account_id = str(holding.get("account_id") or "")
-                    instrument_id = (
-                        str(holding.get("instrument_id") or "") or None
-                    )
-                    derivative_contract_id = (
-                        str(holding.get("derivative_contract_id") or "")
-                        or None
-                    )
-                    position_reference_id = str(
-                        holding.get("position_reference_id")
-                        or derivative_contract_id
-                        or instrument_id
-                        or ""
-                    )
-                    if not account_id or not position_reference_id:
-                        continue
-                    holding_kind = (
-                        str(holding.get("holding_kind") or "position").strip()
-                        or "position"
-                    )
-                    session.add(
-                        PortfolioDailyHoldingSnapshotModel(
-                            portfolio_id=portfolio_id,
-                            as_of_date=snapshot_date,
-                            account_id=account_id,
-                            position_reference_id=position_reference_id,
-                            instrument_id=instrument_id,
-                            derivative_contract_id=derivative_contract_id,
-                            holding_kind=holding_kind,
-                            currency=str(holding.get("currency") or portfolio.get("base_currency") or "USD"),
-                            quantity=_safe_float(holding.get("quantity")) or 0.0,
-                            cost_basis=_safe_float(holding.get("cost_basis")),
-                            cost_basis_base=_safe_float(holding.get("cost_basis_base")),
-                            last_price=_safe_float(holding.get("last_price")),
-                            market_value=_safe_float(holding.get("market_value")),
-                            market_value_base=_safe_float(holding.get("market_value_base")),
-                            portfolio_weight=_safe_float(holding.get("portfolio_weight")),
-                            holding_json=_json_safe(holding),  # type: ignore[arg-type]
-                            calculated_at=calculated_at,
-                        )
-                    )
-                for contribution_slice in contribution_slices:
-                    axis = str(contribution_slice.get("axis") or "")
-                    group_key = str(contribution_slice.get("group_key") or "")
-                    if axis not in attribution.MATERIALIZED_CONTRIBUTION_AXES or not group_key:
-                        continue
-                    session.add(
-                        PortfolioDailyContributionSliceModel(
-                            portfolio_id=portfolio_id,
-                            as_of_date=snapshot_date,
-                            axis=axis,
-                            group_key=group_key,
-                            group_label=str(contribution_slice.get("group_label") or group_key),
-                            coverage_state=str(contribution_slice.get("coverage_state") or "unavailable"),
-                            total_pnl=_safe_float(contribution_slice.get("total_pnl")),
-                            daily_contribution=_safe_float(contribution_slice.get("daily_contribution")),
-                            slice_json=_json_safe(contribution_slice),  # type: ignore[arg-type]
-                            calculated_at=calculated_at,
-                        )
-                    )
-
-            session.add_all(
-                PortfolioDailySnapshotModel(**row)
-                for row in daily_snapshot_rows
-            )
-            session.flush()
-            latest_snapshot = snapshots[-1] if snapshots else None
-            valuation_blocked_reason = (latest_snapshot or {}).get("valuation_blocked_reason")
-            blocked_from = (
-                _parse_date(latest_snapshot.get("as_of_date"))
-                if valuation_blocked_reason and latest_snapshot else None
-            )
-            portfolio_record.as_of_date = resolved_end_date
-            if latest_snapshot is not None:
-                portfolio_record.nav = _safe_float(latest_snapshot.get("nav"))
-                # Portfolio day change is investment P&L, not the raw NAV
-                # movement.  Using absolute_change would report subscriptions
-                # and inception funding as investment gains even though the
-                # paired daily TWR is cash-flow neutral.
-                portfolio_record.day_change_value = _safe_float(latest_snapshot.get("delta"))
-                portfolio_record.day_change_pct = _safe_float(latest_snapshot.get("daily_twr"))
-                portfolio_record.securities_count = int(latest_snapshot.get("total_position_count") or 0)
-            else:
-                portfolio_record.nav = None
-                portfolio_record.day_change_value = None
-                portfolio_record.day_change_pct = None
-                portfolio_record.securities_count = 0
-
-            state = _state_for_portfolio(session, portfolio_id)
-            refreshed_from = session.scalar(
-                select(func.min(PortfolioDailySnapshotModel.as_of_date)).where(
+                snapshot_delete = delete(PortfolioDailySnapshotModel).where(
                     PortfolioDailySnapshotModel.portfolio_id == portfolio_id
                 )
-            )
-            refreshed_to = session.scalar(
-                select(func.max(PortfolioDailySnapshotModel.as_of_date)).where(
-                    PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
-                    PortfolioDailySnapshotModel.nav.is_not(None),
+                if persist_from is not None:
+                    contribution_delete = contribution_delete.where(
+                        PortfolioDailyContributionSliceModel.as_of_date >= persist_from
+                    )
+                    holding_delete = holding_delete.where(
+                        PortfolioDailyHoldingSnapshotModel.as_of_date >= persist_from
+                    )
+                    snapshot_delete = snapshot_delete.where(
+                        PortfolioDailySnapshotModel.as_of_date >= persist_from
+                    )
+                session.execute(contribution_delete)
+                session.execute(holding_delete)
+                session.execute(snapshot_delete)
+                daily_snapshot_rows: list[dict[str, object]] = []
+                for snapshot in snapshots_to_persist:
+                    snapshot_date = _parse_date(snapshot.get("as_of_date"))
+                    if snapshot_date is None:
+                        continue
+                    holding_rows = [
+                        item for item in list(snapshot.get("_holding_rows") or []) if isinstance(item, dict)
+                    ]
+                    contribution_slices = [
+                        item for item in list(snapshot.get("_contribution_slices") or []) if isinstance(item, dict)
+                    ]
+                    public_snapshot = _public_snapshot_payload(snapshot)
+                    public_snapshot["calculation_version"] = DAILY_SNAPSHOT_CALCULATION_VERSION
+                    public_snapshot["source_generation"] = source_generation_before.as_payload()
+                    daily_snapshot_rows.append(
+                        {
+                            "portfolio_id": portfolio_id,
+                            "as_of_date": snapshot_date,
+                            "coverage_state": str(snapshot.get("coverage_state") or "unavailable"),
+                            "valuation_coverage_state": str(
+                                snapshot.get("valuation_coverage_state") or "unavailable"
+                            ),
+                            "return_coverage_state": str(
+                                snapshot.get("return_coverage_state") or "unavailable"
+                            ),
+                            "book_pnl_coverage_state": str(
+                                snapshot.get("book_pnl_coverage_state") or "unavailable"
+                            ),
+                            "attribution_coverage_state": str(
+                                snapshot.get("attribution_coverage_state") or "unavailable"
+                            ),
+                            "nav": _safe_float(snapshot.get("nav")),
+                            "beginning_nav": _safe_float(snapshot.get("beginning_nav")),
+                            "ending_nav": _safe_float(snapshot.get("ending_nav")),
+                            "daily_twr": _safe_float(snapshot.get("daily_twr")),
+                            "cumulative_twr": _safe_float(snapshot.get("cumulative_twr")),
+                            "drawdown": _safe_float(snapshot.get("drawdown")),
+                            "snapshot_json": _json_safe(public_snapshot),
+                            "calculation_state_json": _json_safe(snapshot.get("_calculation_state")),
+                            "calculated_at": calculated_at,
+                        }
+                    )
+                    for holding in holding_rows:
+                        account_id = str(holding.get("account_id") or "")
+                        instrument_id = (
+                            str(holding.get("instrument_id") or "") or None
+                        )
+                        derivative_contract_id = (
+                            str(holding.get("derivative_contract_id") or "")
+                            or None
+                        )
+                        position_reference_id = str(
+                            holding.get("position_reference_id")
+                            or derivative_contract_id
+                            or instrument_id
+                            or ""
+                        )
+                        if not account_id or not position_reference_id:
+                            continue
+                        holding_kind = (
+                            str(holding.get("holding_kind") or "position").strip()
+                            or "position"
+                        )
+                        session.add(
+                            PortfolioDailyHoldingSnapshotModel(
+                                portfolio_id=portfolio_id,
+                                as_of_date=snapshot_date,
+                                account_id=account_id,
+                                position_reference_id=position_reference_id,
+                                instrument_id=instrument_id,
+                                derivative_contract_id=derivative_contract_id,
+                                holding_kind=holding_kind,
+                                currency=str(holding.get("currency") or portfolio.get("base_currency") or "USD"),
+                                quantity=_safe_float(holding.get("quantity")) or 0.0,
+                                cost_basis=_safe_float(holding.get("cost_basis")),
+                                cost_basis_base=_safe_float(holding.get("cost_basis_base")),
+                                last_price=_safe_float(holding.get("last_price")),
+                                market_value=_safe_float(holding.get("market_value")),
+                                market_value_base=_safe_float(holding.get("market_value_base")),
+                                portfolio_weight=_safe_float(holding.get("portfolio_weight")),
+                                holding_json=_json_safe(holding),  # type: ignore[arg-type]
+                                calculated_at=calculated_at,
+                            )
+                        )
+                    for contribution_slice in contribution_slices:
+                        axis = str(contribution_slice.get("axis") or "")
+                        group_key = str(contribution_slice.get("group_key") or "")
+                        if axis not in attribution.MATERIALIZED_CONTRIBUTION_AXES or not group_key:
+                            continue
+                        session.add(
+                            PortfolioDailyContributionSliceModel(
+                                portfolio_id=portfolio_id,
+                                as_of_date=snapshot_date,
+                                axis=axis,
+                                group_key=group_key,
+                                group_label=str(contribution_slice.get("group_label") or group_key),
+                                coverage_state=str(contribution_slice.get("coverage_state") or "unavailable"),
+                                total_pnl=_safe_float(contribution_slice.get("total_pnl")),
+                                daily_contribution=_safe_float(contribution_slice.get("daily_contribution")),
+                                slice_json=_json_safe(contribution_slice),  # type: ignore[arg-type]
+                                calculated_at=calculated_at,
+                            )
+                        )
+
+                session.add_all(
+                    PortfolioDailySnapshotModel(**row)
+                    for row in daily_snapshot_rows
                 )
-            )
-            snapshot_count = _snapshot_count(session, portfolio_id)
-            update_result = session.execute(
-                update(PortfolioCalculationStateModel)
-                .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
-                .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
-                .where(PortfolioCalculationStateModel.daily_snapshot_status == "running")
-                .values(
-                    daily_snapshot_status="failed" if valuation_blocked_reason else "current",
-                    dirty_from=blocked_from,
-                    refreshed_from=refreshed_from,
-                    refreshed_to=refreshed_to,
-                    refreshed_at=calculated_at,
-                    source_market_data_updated_at=source_market_data_updated_at,
-                    source_calculation_inputs_updated_at=(
-                        source_calculation_inputs_updated_at
-                    ),
-                    refresh_request_id=None,
-                    refresh_completed_at=calculated_at,
-                    error_message=valuation_blocked_reason,
+                session.flush()
+                latest_snapshot = snapshots[-1] if snapshots else None
+                valuation_blocked_reason = (latest_snapshot or {}).get("valuation_blocked_reason")
+                blocked_from = (
+                    _parse_date(latest_snapshot.get("as_of_date"))
+                    if valuation_blocked_reason and latest_snapshot else None
                 )
-            )
-            request_superseded = int(update_result.rowcount or 0) == 0
-            if request_superseded:
-                session.rollback()
-                source_generation_before_publish = _read_snapshot_source_generation(portfolio_id)
-                return (
-                    _discard_source_generation_attempt(
-                        portfolio_id,
-                        request_id=request_id,
-                        claimed_started_at=claimed_started_at,
-                        source_generation_before=source_generation_before,
-                        source_generation_after=source_generation_before_publish,
-                        reason=_SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON,
-                    ),
-                    True,
+                portfolio_record.as_of_date = resolved_end_date
+                if latest_snapshot is not None:
+                    portfolio_record.nav = _safe_float(latest_snapshot.get("nav"))
+                    # Portfolio day change is investment P&L, not the raw NAV
+                    # movement.  Using absolute_change would report subscriptions
+                    # and inception funding as investment gains even though the
+                    # paired daily TWR is cash-flow neutral.
+                    portfolio_record.day_change_value = _safe_float(latest_snapshot.get("delta"))
+                    portfolio_record.day_change_pct = _safe_float(latest_snapshot.get("daily_twr"))
+                    portfolio_record.securities_count = int(latest_snapshot.get("total_position_count") or 0)
+                else:
+                    portfolio_record.nav = None
+                    portfolio_record.day_change_value = None
+                    portfolio_record.day_change_pct = None
+                    portfolio_record.securities_count = 0
+
+                state = _state_for_portfolio(session, portfolio_id)
+                refreshed_from = session.scalar(
+                    select(func.min(PortfolioDailySnapshotModel.as_of_date)).where(
+                        PortfolioDailySnapshotModel.portfolio_id == portfolio_id
+                    )
                 )
-            session.commit()
+                refreshed_to = session.scalar(
+                    select(func.max(PortfolioDailySnapshotModel.as_of_date)).where(
+                        PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
+                        PortfolioDailySnapshotModel.nav.is_not(None),
+                    )
+                )
+                snapshot_count = _snapshot_count(session, portfolio_id)
+                update_result = session.execute(
+                    update(PortfolioCalculationStateModel)
+                    .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
+                    .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
+                    .where(PortfolioCalculationStateModel.daily_snapshot_status == "running")
+                    .values(
+                        daily_snapshot_status="failed" if valuation_blocked_reason else "current",
+                        dirty_from=blocked_from,
+                        refreshed_from=refreshed_from,
+                        refreshed_to=refreshed_to,
+                        refreshed_at=calculated_at,
+                        source_market_data_updated_at=source_market_data_updated_at,
+                        source_calculation_inputs_updated_at=(
+                            source_calculation_inputs_updated_at
+                        ),
+                        refresh_request_id=None,
+                        refresh_completed_at=calculated_at,
+                        error_message=valuation_blocked_reason,
+                    )
+                )
+                request_superseded = int(update_result.rowcount or 0) == 0
+                if request_superseded:
+                    session.rollback()
+                    source_generation_before_publish = _read_snapshot_source_generation(portfolio_id)
+                    return (
+                        _discard_source_generation_attempt(
+                            portfolio_id,
+                            request_id=request_id,
+                            claimed_started_at=claimed_started_at,
+                            source_generation_before=source_generation_before,
+                            source_generation_after=source_generation_before_publish,
+                            reason=_SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON,
+                        ),
+                        True,
+                    )
+                session.commit()
 
             return {
                 "portfolio_id": portfolio_id,
@@ -1613,7 +1616,7 @@ def list_materialized_daily_snapshots(
         ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
-        statement = select(PortfolioDailySnapshotModel).where(
+        statement = select(PortfolioDailySnapshotModel.snapshot_json).where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id
         )
         if start_date is not None:
@@ -1623,7 +1626,7 @@ def list_materialized_daily_snapshots(
         rows = session.scalars(
             statement.order_by(PortfolioDailySnapshotModel.as_of_date)
         ).all()
-        return [_restore_snapshot(dict(row.snapshot_json)) for row in rows]
+        return [_restore_snapshot(dict(payload)) for payload in rows]
 
 
 def get_materialized_daily_snapshot(portfolio_id: str, as_of_date: date) -> dict[str, object] | None:
@@ -1640,12 +1643,29 @@ def get_materialized_daily_snapshot(portfolio_id: str, as_of_date: date) -> dict
         return _restore_snapshot(dict(row.snapshot_json)) if row is not None else None
 
 
-def build_materialized_performance_report(
-    portfolio_id: str,
-    *,
-    start_date: date | None = None,
-    end_date: date | None = None,
-) -> dict[str, object] | None:
+@dataclass(frozen=True)
+class MaterializedPerformanceRead:
+    """One request's published inputs, shared across period report projections."""
+
+    portfolio_id: str
+    portfolio: dict[str, object]
+    transactions: list[dict[str, object]]
+    snapshots: list[dict[str, object]]
+    first_snapshot_date: date | None
+    last_snapshot_date: date | None
+    blocked_calculation: bool
+    through_date: date | None
+
+    def require_window(self, portfolio_id: str, end_date: date | None) -> None:
+        if self.portfolio_id != portfolio_id:
+            raise ValueError("Performance inputs belong to a different portfolio.")
+        if self.through_date is not None and (end_date is None or end_date > self.through_date):
+            raise ValueError("Performance inputs do not cover the requested end date.")
+
+
+def load_materialized_performance_read(
+    portfolio_id: str, *, end_date: date | None = None,
+) -> MaterializedPerformanceRead | None:
     session_factory = get_session_factory()
     for _attempt in range(3):
         ensure_portfolio_daily_snapshots(portfolio_id)
@@ -1659,37 +1679,54 @@ def build_materialized_performance_report(
                 return None
             if _state_requires_refresh(session, portfolio_id):
                 continue
-
-            portfolio = _serialize_portfolio_row(portfolio_record)
+            state = session.get(PortfolioCalculationStateModel, portfolio_id)
             transactions = [
                 _serialize_transaction_row(item)
                 for item in _load_transactions(session, portfolio_id)
             ]
-            snapshot_statement = select(PortfolioDailySnapshotModel).where(
+            first_date, last_date = session.execute(select(
+                func.min(PortfolioDailySnapshotModel.as_of_date),
+                func.max(PortfolioDailySnapshotModel.as_of_date),
+            ).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)).one()
+            # The complete prefix is needed to detect earlier coverage gaps.
+            # Select only the public payload, never private lot/valuation state
+            # or thousands of otherwise unused ORM instances.
+            statement = select(PortfolioDailySnapshotModel.snapshot_json).where(
                 PortfolioDailySnapshotModel.portfolio_id == portfolio_id
             )
             if end_date is not None:
-                snapshot_statement = snapshot_statement.where(
-                    PortfolioDailySnapshotModel.as_of_date <= end_date
-                )
-            snapshot_rows = session.scalars(
-                snapshot_statement.order_by(
-                    PortfolioDailySnapshotModel.as_of_date
-                )
-            ).all()
+                statement = statement.where(PortfolioDailySnapshotModel.as_of_date <= end_date)
             snapshots = [
-                _restore_snapshot(dict(row.snapshot_json))
-                for row in snapshot_rows
+                _restore_snapshot(dict(payload)) for payload in session.scalars(
+                    statement.order_by(PortfolioDailySnapshotModel.as_of_date)
+                )
             ]
-
-        return performance.build_portfolio_performance_report_from_snapshots(
-            portfolio,
-            snapshots,
-            transactions=transactions,
-            start_date=start_date,
-            end_date=end_date,
-        )
+            return MaterializedPerformanceRead(
+                portfolio_id=portfolio_id,
+                portfolio=_serialize_portfolio_row(portfolio_record),
+                transactions=transactions,
+                snapshots=snapshots,
+                first_snapshot_date=first_date,
+                last_snapshot_date=last_date,
+                blocked_calculation=bool(state and state.daily_snapshot_status == "failed"),
+                through_date=end_date,
+            )
     raise RuntimeError("Portfolio facts changed while building the performance report.")
+
+
+def build_materialized_performance_report(
+    portfolio_id: str,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, object] | None:
+    inputs = load_materialized_performance_read(portfolio_id, end_date=end_date)
+    if inputs is None:
+        return None
+    return performance.build_portfolio_performance_report_from_snapshots(
+        inputs.portfolio, inputs.snapshots, transactions=inputs.transactions,
+        start_date=start_date, end_date=end_date,
+    )
 
 
 def _sum_complete(values: list[object]) -> float | None:
@@ -2504,7 +2541,7 @@ def list_materialized_contribution_slices(
         ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
-        statement = select(PortfolioDailyContributionSliceModel).where(
+        statement = select(PortfolioDailyContributionSliceModel.slice_json).where(
             PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id,
             PortfolioDailyContributionSliceModel.axis == axis,
         )
@@ -2518,7 +2555,7 @@ def list_materialized_contribution_slices(
                 PortfolioDailyContributionSliceModel.group_key,
             )
         ).all()
-        return [_restore_dated_payload(dict(row.slice_json)) for row in rows]
+        return [_restore_dated_payload(dict(payload)) for payload in rows]
 
 
 def build_materialized_contribution_report(
@@ -2528,46 +2565,25 @@ def build_materialized_contribution_report(
     end_date: date | None = None,
     axis: str = "instrument",
     group_key: str | None = None,
+    read_inputs: MaterializedPerformanceRead | None = None,
 ) -> dict[str, object] | None:
     if axis not in attribution.MATERIALIZED_CONTRIBUTION_AXES:
         return None
-    ensure_portfolio_daily_snapshots(portfolio_id)
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or _state_requires_refresh(session, portfolio_id):
-            return None
-        portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
-        if portfolio_record is None:
-            return None
-        portfolio = _serialize_portfolio_row(portfolio_record)
-        portfolio_as_of_date = portfolio_record.as_of_date
-        blocked_calculation = state.daily_snapshot_status == "failed"
-        transaction_payloads = [
-            _serialize_transaction_row(item)
-            for item in _load_transactions(session, portfolio_id)
-        ]
-        first_transaction_date = min(
-            (
-                effective_date
-                for transaction in transaction_payloads
-                if (
-                    effective_date := transaction_performance_effective_date(
-                        transaction
-                    )
-                )
-                is not None
-            ),
-            default=None,
-        )
-        snapshot_bounds = session.execute(
-            select(
-                func.min(PortfolioDailySnapshotModel.as_of_date),
-                func.max(PortfolioDailySnapshotModel.as_of_date),
-            ).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
-        ).one()
-        first_snapshot_date = snapshot_bounds[0]
-        last_snapshot_date = snapshot_bounds[1]
+    inputs = read_inputs or load_materialized_performance_read(portfolio_id, end_date=end_date)
+    if inputs is None:
+        return None
+    inputs.require_window(portfolio_id, end_date)
+    portfolio = inputs.portfolio
+    portfolio_as_of_date = _parse_date(portfolio.get("as_of_date"))
+    blocked_calculation = inputs.blocked_calculation
+    transaction_payloads = inputs.transactions
+    first_transaction_date = min(
+        (day for transaction in transaction_payloads
+         if (day := transaction_performance_effective_date(transaction)) is not None),
+        default=None,
+    )
+    first_snapshot_date = inputs.first_snapshot_date
+    last_snapshot_date = inputs.last_snapshot_date
 
     requested_report_end_date = end_date or portfolio_as_of_date or last_snapshot_date
     start_is_close_boundary = bool(
@@ -2687,12 +2703,10 @@ def build_materialized_contribution_report(
         )
     resolved_start_date = max(requested_start_date, first_snapshot_date)
     resolved_end_date = min(requested_end_date, last_snapshot_date)
-    snapshots = list_materialized_daily_snapshots(
-        portfolio_id,
-        start_date=None,
-        end_date=resolved_end_date,
-        ensure_current=False,
-    )
+    snapshots = [
+        snapshot for snapshot in inputs.snapshots
+        if snapshot["as_of_date"] <= resolved_end_date
+    ]
     if not snapshots:
         return None
     reliable_window = return_chain.resolve_reliable_snapshot_window(

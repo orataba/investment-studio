@@ -180,6 +180,14 @@ Snapshot invalidation and refresh coordination.
 |---|
 | **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `daily_snapshot_status VARCHAR`; `dirty_from DATE?`; `refreshed_from DATE?`; `refreshed_to DATE?`; `refreshed_at VARCHAR?`; `refresh_request_id VARCHAR?`; `refresh_started_at VARCHAR?`; `refresh_completed_at VARCHAR?`; `source_market_data_updated_at VARCHAR?`; `error_message VARCHAR?` |
 
+### `portfolio.portfolio_workspace_read_model`
+
+Disposable latest-date holdings analysis and risk-frequency projections. The source key includes the implementation version, published accounting generation, valuation date and applicable analysis policy. Background publication checks the key again while holding the portfolio lock; live task and derivative-lifecycle overlays are read separately. Each portfolio/surface retains one latest projection, not an unbounded set of arbitrary date ranges.
+
+| Columns |
+|---|
+| **PK** `(portfolio_id, surface)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `source_key VARCHAR`; `payload_json JSON?`; `calculated_at VARCHAR`; `error_type VARCHAR?` |
+
 ### `portfolio.portfolio_instrument_universe_record`
 
 Derived held/observed/former-instrument universe and research approval state.

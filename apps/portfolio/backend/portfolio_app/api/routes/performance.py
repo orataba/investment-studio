@@ -66,6 +66,8 @@ from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.period_calculation_state import load_period_calculation_inputs
 from portfolio_app.services.attribution import CONTRIBUTION_AXES, CONTRIBUTION_AXIS_ERROR
 from portfolio_app.services.daily_snapshots import (
+    build_materialized_contribution_report,
+    load_materialized_performance_read,
     enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change,
     enqueue_selected_portfolio_daily_snapshot_recalculations,
     list_materialized_daily_snapshots,
@@ -292,17 +294,17 @@ def get_portfolio_period_calculation(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        materialized_snapshots = list_materialized_daily_snapshots(
-            portfolio_id,
-            start_date=None,
-            end_date=end_date,
-        )
+        read_inputs = load_materialized_performance_read(portfolio_id, end_date=end_date)
+        if read_inputs is None:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        materialized_snapshots = read_inputs.snapshots
         instrument_contribution_report = (
-            get_cached_materialized_contribution_report(
+            build_materialized_contribution_report(
                 portfolio_id,
                 start_date=start_date,
                 end_date=end_date,
                 axis="instrument",
+                read_inputs=read_inputs,
             )
         )
         if instrument_contribution_report is None:
@@ -311,12 +313,12 @@ def get_portfolio_period_calculation(
             portfolio_id,
             start_date=start_date,
             end_date=end_date,
-            prebuilt_snapshots=materialized_snapshots,
+            read_inputs=read_inputs,
         )
         report = build_period_calculation_report(
             portfolio,
             list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
+            list(reversed(read_inputs.transactions)),
             start_date=start_date,
             end_date=end_date,
             prebuilt_snapshots=materialized_snapshots,
@@ -355,29 +357,34 @@ def get_portfolio_period_calculation_groups(
         raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     accounts = list_accounts(portfolio_id)
-    transactions = list_transactions(portfolio_id)
     taxonomies = list_taxonomies(portfolio_id)
     taxonomy_nodes = list_taxonomy_nodes(portfolio_id)
     taxonomy_assignments = list_taxonomy_assignments(portfolio_id)
 
     try:
+        read_inputs = load_materialized_performance_read(portfolio_id, end_date=end_date)
+        if read_inputs is None:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        transactions = list(reversed(read_inputs.transactions))
         contribution_report = (
-            get_cached_materialized_contribution_report(
+            build_materialized_contribution_report(
                 portfolio_id,
                 start_date=start_date,
                 end_date=end_date,
                 axis=axis,
                 group_key=group_key,
+                read_inputs=read_inputs,
             )
             if axis in _MATERIALIZED_CALCULATION_GROUP_AXES
             else None
         )
         detail_contribution_report = (
-            get_cached_materialized_contribution_report(
+            build_materialized_contribution_report(
                 portfolio_id,
                 start_date=start_date,
                 end_date=end_date,
                 axis=_calculation_group_detail_axis(axis),
+                read_inputs=read_inputs,
             )
             if axis in _MATERIALIZED_CALCULATION_GROUP_AXES
             else None
@@ -386,17 +393,19 @@ def get_portfolio_period_calculation_groups(
             taxonomy_axes = _taxonomy_base_axes(taxonomy_id, taxonomies)
             if taxonomy_axes is not None:
                 base_axis, base_detail_axis = taxonomy_axes
-                base_contribution_report = get_cached_materialized_contribution_report(
+                base_contribution_report = build_materialized_contribution_report(
                     portfolio_id,
                     start_date=start_date,
                     end_date=end_date,
                     axis=base_axis,
+                    read_inputs=read_inputs,
                 )
-                base_detail_report = get_cached_materialized_contribution_report(
+                base_detail_report = build_materialized_contribution_report(
                     portfolio_id,
                     start_date=start_date,
                     end_date=end_date,
                     axis=base_detail_axis,
+                    read_inputs=read_inputs,
                 )
                 if base_contribution_report is not None:
                     contribution_report = build_taxonomy_contribution_report_from_base_report(
@@ -479,6 +488,7 @@ def get_portfolio_period_calculation_groups(
                     )
         calculation_inputs = load_period_calculation_inputs(
             portfolio_id, start_date=start_date, end_date=end_date,
+            read_inputs=read_inputs,
         )
         report = build_period_calculation_groups_report(
             portfolio,

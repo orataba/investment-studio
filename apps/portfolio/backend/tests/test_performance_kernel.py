@@ -7,7 +7,7 @@ from math import isclose, sqrt
 import pytest
 
 from portfolio_app.api.routes import performance as performance_routes
-from portfolio_app.api.routes import workspace as workspace_routes
+from portfolio_app.services import holdings_workspace as workspace_routes
 from portfolio_app.db.models import (
     PortfolioCalculationStateModel,
     PortfolioDailyContributionSliceModel,

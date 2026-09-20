@@ -1597,7 +1597,7 @@ function PerformancePage() {
     performanceWindowFilters.end_date ?? '',
   ].join(':')
   const loadPerformanceWorkspace = useCallback(
-    () => getPortfolioPerformance(portfolioId ?? '', performanceWindowFilters),
+    (signal: AbortSignal) => getPortfolioPerformance(portfolioId ?? '', performanceWindowFilters, signal),
     [performanceWindowFilters, portfolioId],
   )
   const {
@@ -1629,7 +1629,7 @@ function PerformancePage() {
     calculationWindowFilters.end_date ?? '',
   ].join(':')
   const loadCalculationWorkspace = useCallback(
-    () => getPortfolioPerformanceCalculation(portfolioId ?? '', calculationWindowFilters),
+    (signal: AbortSignal) => getPortfolioPerformanceCalculation(portfolioId ?? '', calculationWindowFilters, signal),
     [calculationWindowFilters, portfolioId],
   )
   const {
@@ -1753,10 +1753,11 @@ function PerformancePage() {
     calculationGroupsFilters.taxonomy_id ?? '',
   ].join(':')
   const loadCalculationGroupsWorkspace = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       getPortfolioPerformanceCalculationGroups(
         portfolioId ?? '',
         calculationGroupsFilters,
+        signal,
       ),
     [calculationGroupsFilters, portfolioId],
   )
@@ -1886,8 +1887,9 @@ function PerformancePage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setPortfolioSummaryReadyPortfolioId(null)
-    getWorkspaceSummaryForPortfolio(portfolioId)
+    getWorkspaceSummaryForPortfolio(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setPortfolioSummary(response)
@@ -1903,6 +1905,7 @@ function PerformancePage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -2009,6 +2012,7 @@ function PerformancePage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     const defaultStore = normalizeCalculationTableViewStore(null)
     persistedCalculationTableViewStoreRef.current = null
     setCalculationTableViewStoreReadyPortfolioId(null)
@@ -2019,7 +2023,7 @@ function PerformancePage() {
     applyCalculationTableViewState(
       resolveCalculationTableViewState(defaultStore, defaultStore.activeViewId),
     )
-    getPortfolioTableViewStore<CalculationTableViewStore>(portfolioId, 'performance_calculation')
+    getPortfolioTableViewStore<CalculationTableViewStore>(portfolioId, 'performance_calculation', controller.signal)
       .then((response) => {
         if (cancelled) {
           return
@@ -2050,6 +2054,7 @@ function PerformancePage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -2100,8 +2105,9 @@ function PerformancePage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setTaxonomyCatalogReadyPortfolioId(null)
-    getPortfolioInstruments(portfolioId)
+    getPortfolioInstruments(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkInstruments(response.instruments)
@@ -2112,7 +2118,7 @@ function PerformancePage() {
           setBenchmarkInstruments([])
         }
       })
-    getPortfolioTaxonomyCatalog(portfolioId)
+    getPortfolioTaxonomyCatalog(portfolioId, {}, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setTaxonomyCatalog(response)
@@ -2128,6 +2134,7 @@ function PerformancePage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [portfolioId])
 
@@ -2143,6 +2150,7 @@ function PerformancePage() {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setBenchmarkLoading(true)
     setBenchmarkError(null)
     setBenchmarkChart(null)
@@ -2150,7 +2158,7 @@ function PerformancePage() {
     getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: benchmarkAsOfDate,
       range: 'all',
-    })
+    }, controller.signal)
       .then((response) => {
         if (!cancelled) {
           setBenchmarkChart(response)
@@ -2170,6 +2178,7 @@ function PerformancePage() {
 
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [benchmarkAsOfDate, benchmarkInstrumentId, portfolioId, waitingForDefaultEndDate])
 

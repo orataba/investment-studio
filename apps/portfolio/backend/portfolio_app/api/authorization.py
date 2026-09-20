@@ -96,7 +96,7 @@ async def authorize(request: Request, principal) -> None:
         raise HTTPException(403, "截图上下文仅供绑定的模型任务读取")
     if portfolio_id:
         # Personal presentation settings and read-only computations remain writable by viewers.
-        read_operation = method in {"GET", "HEAD"} or "/table-views/" in path or path.endswith(("/preload", "/transaction-imports/preview")) or path == "/api/instrument-risk/review/runs"
+        read_operation = method in {"GET", "HEAD"} or "/table-views/" in path or path.endswith("/transaction-imports/preview") or path == "/api/instrument-risk/review/runs"
         manager_operation = "/members" in path or path.endswith("/member-candidates") or path.endswith("/access-audit") or path.endswith("/copy") or (method == "DELETE" and path == f"/api/portfolios/{portfolio_id}")
         required = "manager" if manager_operation else "viewer" if read_operation else "editor"
         await run_in_threadpool(require_access, str(portfolio_id), required, principal)

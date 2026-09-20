@@ -1,4 +1,4 @@
-import { fireEvent, screen, within, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -833,8 +833,59 @@ describe('Risk rendered page contract', () => {
     expect(screen.getByRole('button', { name: /Target drift risk basis:/ })).toHaveAccessibleName(expect.stringContaining('analytics exclusion rules are not applied again'))
   })
 
+
+  it('loads current taxonomy in parallel with holdings and defers unused universe history', async () => {
+    let resolveHoldings!: (value: ReturnType<typeof twoHoldingWorkspace>) => void
+    apiMocks.getHoldingsWorkspace.mockReturnValueOnce(new Promise((resolve) => { resolveHoldings = resolve }))
+    renderRiskPage()
+    await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {}, expect.any(AbortSignal)))
+    expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveHoldings(twoHoldingWorkspace()) })
+    await screen.findByRole('combobox', { name: 'Matrix scope' })
+    expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels unused universe history without replacing the current-holdings matrix with a late result', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(twoHoldingWorkspace())
+    let resolveHistory!: (value: ReturnType<typeof taxonomyCatalogWithFullUniverse>) => void
+    apiMocks.getPortfolioTaxonomyCatalog.mockImplementation((_id, filters) => filters.include_market_profile
+      ? new Promise((resolve) => { resolveHistory = resolve })
+      : Promise.resolve(taxonomyCatalog))
+    const user = userEvent.setup()
+    renderRiskPage()
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await user.selectOptions(scope, '__full_universe__')
+    expect(await screen.findByText('Loading Full Universe history')).toBeInTheDocument()
+    const signal = apiMocks.getPortfolioTaxonomyCatalog.mock.calls[apiMocks.getPortfolioTaxonomyCatalog.mock.calls.length - 1]?.[2] as AbortSignal
+    expect(signal.aborted).toBe(false)
+    await user.selectOptions(scope, '__current_holdings__')
+    expect(signal.aborted).toBe(true)
+    const matrix = screen.getByRole('region', { name: 'Correlation analysis' })
+    const currentMatrix = matrix.textContent
+    await act(async () => { resolveHistory(taxonomyCatalogWithFullUniverse()) })
+    expect(matrix.textContent).toBe(currentMatrix)
+    expect(screen.queryByText('Loading Full Universe history')).not.toBeInTheDocument()
+  })
+
+  it('keeps a universe history failure local to that matrix scope', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockImplementation((_id, filters) => filters.include_market_profile
+      ? Promise.reject(new Error('Universe history unavailable'))
+      : Promise.resolve(taxonomyCatalog))
+    const user = userEvent.setup()
+    renderRiskPage()
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await user.selectOptions(scope, '__full_universe__')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Universe history unavailable')
+    expect(screen.getByRole('region', { name: 'Risk health' })).toBeInTheDocument()
+    await user.selectOptions(scope, '__current_holdings__')
+    expect(screen.queryByText('Universe history unavailable')).not.toBeInTheDocument()
+    expect(await findCorrelationUnavailable()).toHaveTextContent('at least two members')
+  })
+
   it('loads taxonomy market history at the holdings cutoff, not the wall-clock date', async () => {
     renderRiskPage()
+    const scope = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await userEvent.selectOptions(scope, '__full_universe__')
     await waitFor(() => expect(apiMocks.getPortfolioTaxonomyCatalog).toHaveBeenCalledWith('3', {
       include_market_profile: true, as_of_date: '2026-07-15',
     }, expect.any(AbortSignal)))

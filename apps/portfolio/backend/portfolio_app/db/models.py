@@ -261,6 +261,21 @@ class PortfolioCalculationStateModel(Base):
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
 
 
+class PortfolioWorkspaceReadModel(Base):
+    """Latest published page analysis; source facts remain in their owning tables."""
+
+    __tablename__ = "portfolio_workspace_read_model"
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), primary_key=True,
+    )
+    surface: Mapped[str] = mapped_column(String, primary_key=True)
+    source_key: Mapped[str] = mapped_column(String, nullable=False)
+    payload_json: Mapped[dict[str, object] | None] = mapped_column(JSON(none_as_null=True))
+    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
+    error_type: Mapped[str | None] = mapped_column(String)
+
+
 class TransactionIdAllocatorModel(Base):
     """Database-coordinated allocator for the externally visible transaction id."""
 

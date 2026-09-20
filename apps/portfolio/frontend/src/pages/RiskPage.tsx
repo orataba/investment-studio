@@ -1,5 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useParams } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
@@ -8,6 +8,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import usePerformanceResource from '../hooks/usePerformanceResource'
 import ConcentrationPanel from '../components/ConcentrationPanel'
 import PortfolioTailRiskPanel from '../components/PortfolioTailRiskPanel'
 import InfoHint from '../components/InfoHint'
@@ -1756,7 +1757,23 @@ export default function RiskPage() {
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_CURRENT_HOLDINGS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
 
-  const riskWindowEndDate = holdingsWorkspace?.as_of_date ?? ''
+  const riskWindowEndDate = holdingsWorkspace?.portfolio_id === portfolioId ? holdingsWorkspace.as_of_date : ''
+  const matrixUsesCurrentHoldings = matrixScopeNodeId === MATRIX_SCOPE_CURRENT_HOLDINGS
+  const matrixUsesFullUniverse = matrixScopeNodeId === MATRIX_SCOPE_FULL_UNIVERSE
+  const matrixUsesTaxonomy = !matrixUsesCurrentHoldings && !matrixUsesFullUniverse
+  const loadFullUniverseCatalog = useCallback(
+    (signal: AbortSignal) => getPortfolioTaxonomyCatalog(portfolioId ?? '', {
+      include_market_profile: true, as_of_date: riskWindowEndDate,
+    }, signal),
+    [portfolioId, riskWindowEndDate, riskPolicyRevision],
+  )
+  const { data: fullUniverseCatalog, error: fullUniverseError } = usePerformanceResource({
+    enabled: Boolean(portfolioId && riskWindowEndDate && matrixUsesFullUniverse),
+    resourceKey: `${portfolioId}:${riskWindowEndDate}:${riskPolicyRevision}`,
+    load: loadFullUniverseCatalog,
+    fallbackError: 'Failed to load Full Universe history.',
+  })
+  const fullUniverseLoading = matrixUsesFullUniverse && !fullUniverseCatalog && !fullUniverseError
 
   useEffect(() => {
     saveRiskPageSettings({ rolling: rollingSettings, matrix: matrixSettings })
@@ -1896,16 +1913,16 @@ export default function RiskPage() {
   }, [benchmarkInstrumentId, portfolioId, riskWindowEndDate])
 
   useEffect(() => {
-    if (!portfolioId || !riskWindowEndDate) { setTaxonomyCatalog(null); return }
+    if (!portfolioId) { setTaxonomyCatalog(null); return }
     let cancelled = false
     const controller = new AbortController()
-    getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true, as_of_date: riskWindowEndDate }, controller.signal)
+    getPortfolioTaxonomyCatalog(portfolioId, {}, controller.signal)
       .then((response) => { if (!cancelled) setTaxonomyCatalog(response) })
       .catch((error) => {
         if (!cancelled) setWorkspaceSupportError((current) => [current, error instanceof Error ? error.message : 'Failed to load taxonomy catalog.'].filter(Boolean).join(' '))
       })
     return () => { cancelled = true; controller.abort() }
-  }, [portfolioId, riskWindowEndDate, riskPolicyRevision])
+  }, [portfolioId, riskPolicyRevision])
 
   useEffect(() => {
     setRealizedPerformance(null)
@@ -1992,24 +2009,21 @@ export default function RiskPage() {
     () => [...portfolioRiskFrequencyErrors, ...rawInstrumentReturnSeriesResult.errors],
     [portfolioRiskFrequencyErrors, rawInstrumentReturnSeriesResult.errors],
   )
-  const matrixUsesCurrentHoldings = matrixScopeNodeId === MATRIX_SCOPE_CURRENT_HOLDINGS
-  const matrixUsesFullUniverse = matrixScopeNodeId === MATRIX_SCOPE_FULL_UNIVERSE
-  const matrixUsesTaxonomy = !matrixUsesCurrentHoldings && !matrixUsesFullUniverse
   const fullUniverseRiskFrequency = useMemo(() => {
-    const frequency = taxonomyCatalog?.risk_basis?.resolved_frequency
+    const frequency = fullUniverseCatalog?.risk_basis?.resolved_frequency
     if (isCalculationFrequency(frequency)) {
       return {
         frequency,
         statusLabel:
-          taxonomyCatalog?.risk_basis?.status_label ||
+          fullUniverseCatalog?.risk_basis?.status_label ||
           `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`,
       } satisfies RiskFrequencyProfile
     }
     return portfolioRiskFrequency
   }, [
     portfolioRiskFrequency,
-    taxonomyCatalog?.risk_basis?.resolved_frequency,
-    taxonomyCatalog?.risk_basis?.status_label,
+    fullUniverseCatalog?.risk_basis?.resolved_frequency,
+    fullUniverseCatalog?.risk_basis?.status_label,
   ])
   const matrixRiskFrequency = matrixUsesFullUniverse ? fullUniverseRiskFrequency : portfolioRiskFrequency
   const currentHoldingsMatrixScope = useMemo(() => {
@@ -2031,7 +2045,7 @@ export default function RiskPage() {
   const fullUniverseMatrixScope = useMemo(
     () =>
       alignCorrelationMatrixScope(
-        buildFullUniverseMatrixScope({ holdingsWorkspace, catalog: taxonomyCatalog }),
+        buildFullUniverseMatrixScope({ holdingsWorkspace, catalog: fullUniverseCatalog }),
         fullUniverseRiskFrequency.frequency,
         riskBasisFinalDate,
       ),
@@ -2039,7 +2053,7 @@ export default function RiskPage() {
       fullUniverseRiskFrequency.frequency,
       holdingsWorkspace,
       riskBasisFinalDate,
-      taxonomyCatalog,
+      fullUniverseCatalog,
     ],
   )
   const currentBenchmarkChart = benchmarkChart?.portfolio_id === portfolioId && benchmarkChart.as_of_date === riskWindowEndDate && benchmarkChart.instrument_core.instrument_id === benchmarkInstrumentId ? benchmarkChart : null
@@ -2890,20 +2904,28 @@ export default function RiskPage() {
                   </label>
                 </div>
               </div>
-              <RiskDateTimeline
-                dates={riskAsOfSelectionDates}
-                value={effectiveMatrixAsOfDate}
-                onChange={setMatrixAsOfDate}
-                label="Matrix as of"
-              />
-              <RiskWindowDiagnostics diagnostics={selectedCorrelationMatrixResult.diagnostics} />
-              <div className="risk-correlation-stack">
-                <div className="risk-matrix-panel">
-                  {!selectedCorrelationMatrixResult.issues.length
-                    ? renderCorrelationMatrix(selectedCorrelationMatrixResult.matrix, selectedMatrixEmptyLabel)
-                    : null}
-                </div>
-              </div>
+              {fullUniverseLoading ? (
+                <CalculationStatus label={zh ? '加载全域历史' : 'Loading Full Universe history'} />
+              ) : fullUniverseError && matrixUsesFullUniverse ? (
+                <div className="inline-notice inline-notice-error" role="alert">{fullUniverseError}</div>
+              ) : (
+                <>
+                  <RiskDateTimeline
+                    dates={riskAsOfSelectionDates}
+                    value={effectiveMatrixAsOfDate}
+                    onChange={setMatrixAsOfDate}
+                    label="Matrix as of"
+                  />
+                  <RiskWindowDiagnostics diagnostics={selectedCorrelationMatrixResult.diagnostics} />
+                  <div className="risk-correlation-stack">
+                    <div className="risk-matrix-panel">
+                      {!selectedCorrelationMatrixResult.issues.length
+                        ? renderCorrelationMatrix(selectedCorrelationMatrixResult.matrix, selectedMatrixEmptyLabel)
+                        : null}
+                    </div>
+                  </div>
+                </>
+              )}
             </section>
             <PortfolioTailRiskPanel key={`tail:${portfolioId}:${holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />
             <ConcentrationPanel key={`concentration:${portfolioId}:${holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />

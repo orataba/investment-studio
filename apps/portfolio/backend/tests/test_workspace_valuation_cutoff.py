@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from portfolio_app.api.routes import workspace
+from portfolio_app.services import holdings_workspace as workspace
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store

@@ -9,7 +9,7 @@ list membership, names, views or research judgments.
 
 import argparse
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, update
 
 from watchlist_app.api.routes.watchlists import _sync_system_watchlist
 from watchlist_app.db.models.instruments import InstrumentDetail
@@ -19,6 +19,7 @@ from watchlist_app.repositories.sqlalchemy.watchlists import SYSTEM_WATCHLIST_SP
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.materialization_policy import WATCHLIST_MATERIALIZATION_VERSION
+from watchlist_app.services.read_models import build_screener_chart_projection
 
 
 def _invalidated_instrument_ids(session) -> list[str]:
@@ -39,6 +40,30 @@ def _invalidated_instrument_ids(session) -> list[str]:
         )
         .order_by(InstrumentDetail.instrument_id)
     ))
+
+
+def _backfill_screener_projections(session) -> int:
+    """Derive migrated charts locally, retaining every original source clock.
+
+    Writers are stopped for release. Include archived charts so historical list
+    reads are ready too; do not fetch prices or recalculate the stored history.
+    """
+    rebuilt = 0
+    while True:
+        rows = session.execute(select(
+            InstrumentChartReadModel.instrument_id,
+            InstrumentChartReadModel.payload_json,
+        ).where(InstrumentChartReadModel.screener_payload_json.is_(None))
+            .order_by(InstrumentChartReadModel.instrument_id).limit(100)).all()
+        if not rows:
+            break
+        for instrument_id, chart_payload in rows:
+            session.execute(update(InstrumentChartReadModel).where(
+                InstrumentChartReadModel.instrument_id == instrument_id,
+                InstrumentChartReadModel.screener_payload_json.is_(None),
+            ).values(screener_payload_json=build_screener_chart_projection(instrument_id, chart_payload)))
+            rebuilt += 1
+    return rebuilt
 
 
 def main(*, recover_interrupted: bool = False) -> int:
@@ -65,12 +90,19 @@ def main(*, recover_interrupted: bool = False) -> int:
                 trigger_ref_type="materialization_version",
                 trigger_ref_id=WATCHLIST_MATERIALIZATION_VERSION,
             )
+        projection_count = _backfill_screener_projections(session)
+        pending_projections = session.scalar(select(func.count()).select_from(InstrumentChartReadModel).where(
+            InstrumentChartReadModel.screener_payload_json.is_(None),
+        ))
+        if pending_projections:
+            raise RuntimeError(f"Watchlist release left {pending_projections} missing screener projections")
         remaining = _invalidated_instrument_ids(session)
         if remaining:
             raise RuntimeError(f"Watchlist release left invalidated read models: {remaining}")
     print(
         f"Release Watchlist reconciliation completed: {len(SYSTEM_WATCHLIST_SPECS)} system lists, "
         f"{len(instrument_ids)} read models rebuilt to {WATCHLIST_MATERIALIZATION_VERSION}, "
+        f"{projection_count} list projections derived, "
         f"{recovered_count} interrupted jobs recovered."
     )
     return 0

@@ -98,6 +98,8 @@ Regime 的物化快照、模型、运行结果归自己的 runtime；其部署�
 
 ### Portfolio
 
+账本与页面分析分别拥有可重建的读模型：核算 worker 发布日度快照后，继续准备最新可靠日期的持仓分析与风险频率，页面读取持久结果并附加实时任务和衍生品状态。HTTP 与后台共用 `services/holdings_workspace.py`，业务服务不依赖路由模块。任意 Performance 区间基于同一次读取的已发布日度输入聚合，不重放全套行情或为所有区间建立缓存。数据版本、发布锁及金融响应的出口核验共同防止混合新旧来源；持久页面结果不承担鉴权或金融事实的职责。
+
 - 直接读写 `portfolio`
 - 直接读取 `instrument_data`
 - 在所属应用的 schema 内维护 ledger、lots、performance、risk、taxonomy、target set、research；本地与云端分别持有各自业务数据
@@ -255,6 +257,8 @@ Instrument Data 的 `quote_selection_policy` 必须显式持久化五个非空 r
 2. `watchlist` 持有自己的本地镜像和 read models
 3. stale 检查发现 canonical 数据变化时，写 durable `recalc_job`
 4. 后台 worker 消费 job，刷新本地 read model 和 canonical metadata mirror
+
+列表只读取 chart 同事务生成的紧凑投影：分类元数据与四个固定区间的 sparkline，单资产详情保留完整序列。迁移 `20260920_0059` 后，发布脚本从已有 chart 补齐存量投影；缺失时进入既有重算队列，发布审计要求补齐，不在列表请求中重复读取和压缩全历史。
 
 Watchlist 的历史价格/NAV 计算只接受 Instrument Data 中符合 master currency 且 status=complete 的
 序列，并严格按持久化 `quote_selection_policy` 选取；Instrument Data 无序列或无 policy 时结果为

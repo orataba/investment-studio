@@ -359,7 +359,7 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
 def read_portfolio_tail_risk(portfolio_id: str, *, as_of_date: date | None = None,
                             confidence=DEFAULT_CONFIDENCE, lookback_days=DEFAULT_LOOKBACK_DAYS,
                             workspace=None):
-    from portfolio_app.api.routes.workspace import holdings_workspace
+    from portfolio_app.services.holdings_workspace import holdings_workspace
     from portfolio_app.services.instrument_registry import (
         get_registry_instrument_details,
         get_registry_instrument_metadata,

@@ -101,4 +101,31 @@ describe('usePerformanceResource extraction contract', () => {
     act(() => second.resolve('portfolio two'))
     await waitFor(() => expect(result.current.data).toBe('portfolio two'))
   })
+
+  it('cancels replaced, disabled and unmounted reads without accepting their late results', async () => {
+    const requests: { signal: AbortSignal; request: ReturnType<typeof deferred<string>> }[] = []
+    const load = (signal: AbortSignal) => {
+      const request = deferred<string>()
+      requests.push({ signal, request })
+      return request.promise
+    }
+    const { result, rerender, unmount } = renderHook(
+      ({ resourceKey, enabled }) => usePerformanceResource({ enabled, resourceKey, load, fallbackError: 'Failed.' }),
+      { initialProps: { resourceKey: 'first-window', enabled: true } },
+    )
+    rerender({ resourceKey: 'second-window', enabled: true })
+    expect(requests[0].signal.aborted).toBe(true)
+    expect(requests[1].signal.aborted).toBe(false)
+    await act(async () => { requests[0].request.resolve('obsolete window') })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(true)
+    rerender({ resourceKey: 'second-window', enabled: false })
+    expect(requests[1].signal.aborted).toBe(true)
+    await act(async () => { requests[1].request.reject(new DOMException('Aborted', 'AbortError')) })
+    expect(result.current.error).toBeNull()
+    rerender({ resourceKey: 'third-window', enabled: true })
+    unmount()
+    expect(requests[2].signal.aborted).toBe(true)
+  })
+
 })

@@ -1224,7 +1224,7 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
 
 
 def test_live_holdings_workspace_propagates_position_day_change(client, monkeypatch):
-    from portfolio_app.api.routes import workspace as workspace_routes
+    from portfolio_app.services import holdings_workspace as workspace_routes
 
     monkeypatch.setattr(
         workspace_routes,

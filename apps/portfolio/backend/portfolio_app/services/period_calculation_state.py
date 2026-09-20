@@ -8,11 +8,16 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
+
+
+if TYPE_CHECKING:
+    from portfolio_app.services.daily_snapshots import MaterializedPerformanceRead
 
 
 LOT_FIELDS = (
@@ -87,13 +92,20 @@ class PeriodCalculationInputs:
         return result
 
 
-def load_period_calculation_inputs(portfolio_id, *, start_date=None, end_date=None, prebuilt_snapshots=None):
+def load_period_calculation_inputs(
+    portfolio_id, *, start_date=None, end_date=None, prebuilt_snapshots=None,
+    read_inputs: MaterializedPerformanceRead | None = None,
+):
     from portfolio_app.services import daily_snapshots, return_chain
 
-    daily_snapshots.ensure_portfolio_daily_snapshots(portfolio_id)
-    snapshots = prebuilt_snapshots if prebuilt_snapshots is not None else daily_snapshots.list_materialized_daily_snapshots(
-        portfolio_id, end_date=end_date, ensure_current=False,
-    )
+    if read_inputs is not None:
+        read_inputs.require_window(portfolio_id, end_date)
+        snapshots = read_inputs.snapshots
+    else:
+        daily_snapshots.ensure_portfolio_daily_snapshots(portfolio_id)
+        snapshots = prebuilt_snapshots if prebuilt_snapshots is not None else daily_snapshots.list_materialized_daily_snapshots(
+            portfolio_id, end_date=end_date, ensure_current=False,
+        )
     window = return_chain.resolve_reliable_snapshot_window(
         snapshots, requested_start_date=start_date, requested_end_date=end_date,
         default_end_date=max((item["as_of_date"] for item in snapshots), default=None),

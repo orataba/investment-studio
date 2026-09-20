@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
@@ -494,6 +495,100 @@ def previous_quote_point(
     point = dict(earlier[-1])
     point["stale"] = False
     return QuotePointResolution(point=point)
+
+
+class QuoteSeriesLookup:
+    """Validate each clean quote series once, then use causal binary lookups.
+
+    A failed full-window validation falls back to the canonical point resolver.
+    That preserves its historical behavior around an invalid observation while
+    avoiding repeated full-series scans for the normal, fully valid case.
+    """
+
+    def __init__(self, *, end_date: date) -> None:
+        self.end_date = end_date
+        self._series: dict[
+            tuple[int, str],
+            tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None,
+        ] = {}
+
+    def _validated_series(
+        self,
+        detail: dict[str, object],
+        quote_basis: str,
+    ) -> tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None:
+        key = (id(detail), quote_basis)
+        if key not in self._series:
+            resolution = resolve_quote_series(
+                detail,
+                candidate_bases=[quote_basis],
+                end_date=self.end_date,
+            )
+            if not resolution.available:
+                self._series[key] = None
+            else:
+                points = tuple(dict(point) for point in resolution.points)
+                dates = tuple(
+                    point["as_of_date"]
+                    for point in points
+                    if isinstance(point.get("as_of_date"), date)
+                )
+                self._series[key] = (dates, points) if len(dates) == len(points) else None
+        return self._series[key]
+
+    def point(
+        self,
+        detail: dict[str, object],
+        *,
+        candidate_bases: list[str],
+        as_of_date: date,
+    ) -> dict[str, object] | None:
+        if as_of_date > self.end_date:
+            return resolve_quote_point(
+                detail, candidate_bases=candidate_bases, as_of_date=as_of_date,
+            ).point
+        for quote_basis in candidate_bases:
+            series = self._validated_series(detail, quote_basis)
+            if series is None:
+                return resolve_quote_point(
+                    detail,
+                    candidate_bases=candidate_bases,
+                    as_of_date=as_of_date,
+                ).point
+            dates, points = series
+            index = bisect_right(dates, as_of_date) - 1
+            if index < 0:
+                continue
+            point = dict(points[index])
+            point["stale"] = quote_is_stale(
+                detail, point_date=dates[index], as_of_date=as_of_date,
+            )
+            return point
+        return None
+
+    def previous(
+        self,
+        detail: dict[str, object],
+        *,
+        selected_point: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if not isinstance(selected_point, dict):
+            return None
+        quote_basis = str(selected_point.get("quote_basis") or "").strip().lower()
+        selected_date = _parse_iso_date(selected_point.get("as_of_date"))
+        if not quote_basis or selected_date is None:
+            return None
+        series = self._validated_series(detail, quote_basis)
+        if series is None:
+            return previous_quote_point(detail, selected_point=selected_point).point
+        dates, points = series
+        index = bisect_left(dates, selected_date) - 1
+        if index < 0:
+            return None
+        point = dict(points[index])
+        point["stale"] = False
+        return point
+
 
 
 def market_data_status(point: dict[str, object]) -> str:

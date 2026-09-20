@@ -7,13 +7,18 @@ runtime boundary remains explicit and testable.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from math import isfinite
 from typing import Callable, cast
 
-from investment_studio_instrument_core.fx_contract import fx_instrument_identity
+from investment_studio_instrument_core.fx_contract import (
+    FX_INSTRUMENT_IDENTITIES, fx_instrument_identity, fx_instrument_identity_for_pair,
+)
+from investment_studio_instrument_core.fx_rates import latest_spot_point_from_instrument
 
 from portfolio_app.services.market_data import (
+    QuoteSeriesLookup,
     market_data_status,
     resolve_quote_point,
     resolve_quote_series,
@@ -23,11 +28,58 @@ from portfolio_app.services.market_data import (
 InstrumentDetail = dict[str, object]
 InstrumentDetailCache = dict[str, InstrumentDetail | None]
 InstrumentDetailLoader = Callable[[str], InstrumentDetail | None]
-FxInstrumentMap = dict[tuple[str, str], str]
+FxInstrumentMap = Mapping[tuple[str, str], str]
 FxRateResolutionCache = dict[
     tuple[date, str, str],
     dict[str, object] | None,
 ]
+
+
+class HistoricalInstrumentDetails(dict[str, InstrumentDetail | None]):
+    """One calculation's observations and validated date index, never shared."""
+
+    def __init__(self, *, end_date: date):
+        super().__init__()
+        self.quote_lookup = QuoteSeriesLookup(end_date=end_date)
+
+
+class HistoricalFxInstruments(Mapping[tuple[str, str], str]):
+    """Use only actual FX paths, with the catalog's full-history eligibility.
+
+    Every detail belongs to this calculation. Pair discovery and dated quotes
+    share its observations rather than loading the global latest-rate catalog.
+    """
+
+    def __init__(self, details: InstrumentDetailCache, *, detail_loader: InstrumentDetailLoader):
+        self._details = details
+        self._detail_loader = detail_loader
+        self._instruments: dict[tuple[str, str], str | None] = {}
+
+    def __getitem__(self, key: tuple[str, str]) -> str:
+        if key not in self._instruments:
+            identity = fx_instrument_identity_for_pair(*key)
+            detail = instrument_detail_cache_get(
+                identity.instrument_id, self._details, instrument_detail_loader=self._detail_loader,
+            ) if identity is not None else None
+            self._instruments[key] = (
+                identity.instrument_id
+                if isinstance(detail, dict)
+                and latest_spot_point_from_instrument(detail, detail.get("market_data")) is not None
+                else None
+            )
+        result = self._instruments[key]
+        if result is None:
+            raise KeyError(key)
+        return result
+
+    def __iter__(self):
+        for identity in FX_INSTRUMENT_IDENTITIES:
+            pair = identity.base_currency, identity.quote_currency
+            if self.get(pair) is not None:
+                yield pair
+
+    def __len__(self) -> int:
+        return sum(1 for _pair in self)
 
 
 def _safe_float(value: object) -> float | None:
@@ -106,7 +158,7 @@ def _fx_boundary_point_cache(
 
 
 def fx_direct_instrument_map(fx_payload: dict[str, object]) -> FxInstrumentMap:
-    direct_instruments: FxInstrumentMap = {}
+    direct_instruments: dict[tuple[str, str], str] = {}
     for item in fx_payload.get("rates", []):
         if not isinstance(item, dict):
             continue
@@ -147,11 +199,18 @@ def direct_fx_point_as_of(
     cache_key = ("as_of", as_of_date)
     if cache_key in point_cache:
         return point_cache[cache_key]
-    point = resolve_quote_point(
-        detail,
-        candidate_bases=["spot"],
-        as_of_date=as_of_date,
-    ).point
+    if isinstance(instrument_detail_cache, HistoricalInstrumentDetails):
+        # The boundary cache may have made a calculation-local shallow copy.
+        # Index that stable copy, rather than rebuilding the same history under
+        # the identity of its old container at the next date.
+        detail = instrument_detail_cache[instrument_id]
+        point = instrument_detail_cache.quote_lookup.point(
+            detail, candidate_bases=["spot"], as_of_date=as_of_date,
+        )
+    else:
+        point = resolve_quote_point(
+            detail, candidate_bases=["spot"], as_of_date=as_of_date,
+        ).point
     if point is None:
         point_cache[cache_key] = None
         return None

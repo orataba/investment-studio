@@ -172,6 +172,20 @@ Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return
 
 每个 `watchlist_row_read_model.last_nav_date` 是该 instrument 的 metric as-of，不是名单共用日期。Screener 即使未选日期列也必须在每行返回 `metric_as_of_date`，并在 `snapshot_metadata` 返回行终点的 min/max、是否混合及缺失数量。Peer snapshot 只比较相同 as-of；路径风险还必须记录 Instrument Data frequency/calendar 缺点状态。
 
+`instrument_chart_read_model` 同一行保存详情历史与列表投影：
+
+| 字段 | 合同 |
+| --- | --- |
+| `payload_json` | 完整 canonical 图表历史，供详情读取；保持原 JSON 类型。 |
+| `screener_payload_json` | 紧凑列表投影：`selected_series`、`latest_values`、`date_range` 与 `sparklines`；不包含完整 `series`。SQL NULL 表示待补齐，不能视为已就绪的空结果。 |
+| `source_cutoff_at`、`data_freshness_status`、`materialization_version` 及既有计算时间字段 | 完整图表和列表投影共用的来源、版本与新鲜度依据；补齐投影不改变它们。 |
+
+canonical recalc 在同一事务内写入两个 payload。`sparklines` 固定保存现有 `return_chart_1d / return_chart_1w / return_chart_1m / return_chart_1y` 四个窗口，复用完整图表的窗口锚点、采样、精度和覆盖状态算法。当前列表列菜单仍只开放 `1M` 走势，内部四窗口不代表新增用户选项。Screener 仅读紧凑投影并按所选列取窗口，包含无走势列的请求也不读取完整历史；人工研究状态、同类比较及新鲜度判断仍沿用各自实时读取路径。
+
+迁移 `20260920_0059` 只新增可空列，不扫描重写完整图表。升级必须通过根目录统一迁移与发布流程：停止 managed writers、备份、迁移和目录刷新后，执行 `backend/scripts/refresh_release_watchlists.py`。脚本在发布事务中分批从已存图表派生所有缺失投影，包含归档资产，不调用行情提供商；失败会回滚本次补齐。补齐可重复运行，已经就绪的投影不重写。`infra/scripts/audit_live_data.py` 要求 Watchlist head 为 `20260920_0059`，且 `watchlist_screener_projection_ready` 的 NULL 数量为零，方可恢复流量和调度。此次仅改变读取投影，既有金融指标 materialization version 不因此递增。数据库回退此迁移只删除新投影列，原完整图表与来源时点保留；代码、数据库与备份按统一发布回滚流程配套处理。
+
+运行时遇到已有图表但投影为 NULL，Screener 返回 HTTP 503 和 `Retry-After: 1`，先通过既有 durable 队列提交修复任务；worker 的 source-generation 对账也将缺失投影视作待重算。不会把完整历史当作永久兼容读取路径，也不把缺失投影静默呈现成空图。
+
 ### 4.6 Recalc Jobs
 
 重算已经 durable 化，不再依赖临时线程：

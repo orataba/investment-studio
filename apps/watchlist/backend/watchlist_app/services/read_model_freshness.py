@@ -73,7 +73,7 @@ def _load_reconciliation_targets(
         chart_state_by_id = {
             instrument_id: {
                 "source_cutoff_at": source_cutoff_at,
-                "materialization_version": materialization_version,
+                "materialization_version": materialization_version if screener_ready else None,
                 "data_freshness_status": data_freshness_status,
             }
             for (
@@ -81,12 +81,14 @@ def _load_reconciliation_targets(
                 source_cutoff_at,
                 materialization_version,
                 data_freshness_status,
+                screener_ready,
             ) in session.execute(
                 select(
                     InstrumentChartReadModel.instrument_id,
                     InstrumentChartReadModel.source_cutoff_at,
                     InstrumentChartReadModel.materialization_version,
                     InstrumentChartReadModel.data_freshness_status,
+                    InstrumentChartReadModel.screener_payload_json.is_not(None),
                 ).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
             ).all()
         }

@@ -27,7 +27,10 @@ Watchlist 直接读取 `instrument_data` 共享事实和 `data_ingestion` 的公
 - 系统默认视图平铺资产，分类与研究阶段作为列；用户保存的分组视图保留；
 - canonical recalc 只消费 Instrument Data 中符合 status、currency 和 quote policy 的观测；条件不足时结果为 unavailable；
 - Instrument Data 通知用于降低延迟，不是正确性边界；durable worker 会主动对账 source generation；
+- 列表使用与完整图表同次发布的紧凑投影，预先计算现有 `1D / 1W / 1M / 1Y` 四个走势窗口；详情保留完整历史。窗口计算、收益口径和来源时点一致，列表请求不读取完整历史再裁切；当前列菜单仍只开放 `1M` 走势；
 - 收益、风险和 benchmark 只在合同规定的端点、共同样本及 return semantics 下发布，不做静默回退。
+
+Watchlist schema `20260920_0059` 新增列表图表投影。统一发布流程须先停写、备份并迁移，再执行 `backend/scripts/refresh_release_watchlists.py`，为包括归档资产在内的既有图表补齐投影；该补齐只派生已存图表，不获取行情，也不推进原来源时点。`audit_live_data.py` 的 `watchlist_screener_projection_ready` 检查通过后才可恢复服务与调度。运行时若投影缺失，列表明确返回暂不可用并持久化入队修复，worker 对账也会发现缺口；不在页面请求中现场重算。字段与升级合同见 [数据模型与 API](./docs/DATA_MODEL_AND_API.md#45-read-models)。
 
 ## 投资观点、研究追踪与研究助手
 

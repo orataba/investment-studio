@@ -19,6 +19,7 @@ from typing import cast
 from investment_studio_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import select
+from studio_runtime import operation
 
 from portfolio_app.services import (
     attribution,
@@ -59,6 +60,7 @@ from portfolio_app.services.option_obligations import (
 from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.portfolio_store import list_option_delivery_links
 from portfolio_app.services.market_data import (
+    QuoteSeriesLookup as _MarketPointLookup,
     bind_initial_purchase_valuations,
     initial_purchase_valuation_point,
     previous_quote_point,
@@ -399,94 +401,6 @@ def _resolve_portfolio_valuation_timezone(portfolio: dict[str, object]) -> str:
 def _resolve_portfolio_valuation_cutoff_policy(portfolio: dict[str, object]) -> str:
     return str(portfolio.get("valuation_cutoff_policy") or DEFAULT_VALUATION_CUTOFF_POLICY)
 
-
-class _MarketPointLookup:
-    """Validate each clean quote series once, then use causal binary lookups.
-
-    A failed full-window validation falls back to the canonical point resolver.
-    That preserves its historical behavior around an invalid observation while
-    avoiding repeated full-series scans for the normal, fully valid case.
-    """
-
-    def __init__(self, *, end_date: date) -> None:
-        self.end_date = end_date
-        self._series: dict[
-            tuple[int, str],
-            tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None,
-        ] = {}
-
-    def _validated_series(
-        self,
-        detail: dict[str, object],
-        quote_basis: str,
-    ) -> tuple[tuple[date, ...], tuple[dict[str, object], ...]] | None:
-        key = (id(detail), quote_basis)
-        if key not in self._series:
-            resolution = resolve_quote_series(
-                detail,
-                candidate_bases=[quote_basis],
-                end_date=self.end_date,
-            )
-            if not resolution.available:
-                self._series[key] = None
-            else:
-                points = tuple(dict(point) for point in resolution.points)
-                dates = tuple(
-                    point["as_of_date"]
-                    for point in points
-                    if isinstance(point.get("as_of_date"), date)
-                )
-                self._series[key] = (dates, points) if len(dates) == len(points) else None
-        return self._series[key]
-
-    def point(
-        self,
-        detail: dict[str, object],
-        *,
-        candidate_bases: list[str],
-        as_of_date: date,
-    ) -> dict[str, object] | None:
-        for quote_basis in candidate_bases:
-            series = self._validated_series(detail, quote_basis)
-            if series is None:
-                return resolve_quote_point(
-                    detail,
-                    candidate_bases=candidate_bases,
-                    as_of_date=as_of_date,
-                ).point
-            dates, points = series
-            index = bisect_right(dates, as_of_date) - 1
-            if index < 0:
-                continue
-            point = dict(points[index])
-            point["stale"] = quote_is_stale(
-                detail, point_date=dates[index], as_of_date=as_of_date,
-            )
-            return point
-        return None
-
-    def previous(
-        self,
-        detail: dict[str, object],
-        *,
-        selected_point: dict[str, object] | None,
-    ) -> dict[str, object] | None:
-        if not isinstance(selected_point, dict):
-            return None
-        quote_basis = str(selected_point.get("quote_basis") or "").strip().lower()
-        selected_date = _parse_iso_date(selected_point.get("as_of_date"))
-        if not quote_basis or selected_date is None:
-            return None
-        series = self._validated_series(detail, quote_basis)
-        if series is None:
-            return previous_quote_point(detail, selected_point=selected_point).point
-        dates, points = series
-        index = bisect_left(dates, selected_date) - 1
-        if index < 0:
-            return None
-        point = dict(points[index])
-        point["stale"] = False
-        return point
 
 
 def _select_market_point_as_of(
@@ -2289,13 +2203,15 @@ def build_daily_portfolio_snapshots(
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
 
-    fx_payload = get_shared_fx_rates()
-    direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    bind_initial_purchase_valuations(
-        sorted_transactions, instrument_detail_cache,
-        instrument_detail_loader=get_registry_instrument_detail,
+    instrument_detail_cache = valuation_fx.HistoricalInstrumentDetails(end_date=resolved_end_date)
+    direct_fx_instruments = valuation_fx.HistoricalFxInstruments(
+        instrument_detail_cache, detail_loader=get_registry_instrument_detail,
     )
+    with operation("portfolio_snapshot_initial_market_inputs", portfolio_id=portfolio_id):
+        bind_initial_purchase_valuations(
+            sorted_transactions, instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
     calculation_events_by_date: dict[date, dict[str, list[dict[str, object]]]] = {}
     calculation_option_events_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
     calculation_transactions_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
@@ -2326,7 +2242,7 @@ def build_daily_portfolio_snapshots(
             day = _parse_iso_date(day) if isinstance(day, str) else day
             if isinstance(day, date):
                 calculation_option_events_by_date[day].append(event)
-    market_point_lookup = _MarketPointLookup(end_date=resolved_end_date)
+    market_point_lookup = instrument_detail_cache.quote_lookup
     holding_fx_rate_cache: valuation_fx.FxRateResolutionCache = {}
     resolve_holding_fx_rate_on = partial(
         valuation_fx.resolve_fx_rate_on_cached,

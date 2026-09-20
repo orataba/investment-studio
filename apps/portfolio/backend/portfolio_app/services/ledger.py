@@ -34,6 +34,7 @@ from portfolio_app.services.transaction_dates import (
     transaction_performance_effective_date,
     transaction_position_effective_date,
     transaction_precedes_asset_cash_flow,
+    transaction_precedes_entitlement_bod,
     transaction_sort_key,
 )
 from portfolio_app.services.transaction_pricing import transaction_price_scale
@@ -2749,6 +2750,32 @@ def validate_transaction_position_history(
     ordered_transactions = sorted(transactions, key=transaction_sort_key)
     for transaction in ordered_transactions:
         validate_derivative_contract_event(transaction)
+    # Every ownership boundary in this validation uses the same source input.
+    # Fetch once, including physical-delivery underlyings and future explicit
+    # boundaries; individual replays still apply their own effective-date cut.
+    if corporate_actions is None:
+        latest_boundary = max(
+            [date.today()]
+            + [
+                boundary
+                for transaction in ordered_transactions
+                for boundary in (
+                    _parse_iso_date(transaction.get("trade_date")),
+                    _parse_iso_date(transaction.get("entitlement_date")),
+                    transaction_performance_effective_date(transaction),
+                )
+                if boundary is not None
+            ]
+        )
+        instrument_ids = {
+            str(transaction["instrument_id"])
+            for transaction in expand_asset_deliveries(ordered_transactions)
+            if transaction.get("instrument_id")
+        }
+        corporate_actions = (
+            list_registry_corporate_actions(instrument_ids, effective_on_or_before=latest_boundary)
+            if instrument_ids else []
+        )
     _build_position_state(
         ordered_transactions,
         account_cost_methods=account_cost_methods,
@@ -2759,6 +2786,7 @@ def validate_transaction_position_history(
     # quantity errors before a transaction can be persisted.
     derive_option_obligation_events(ordered_transactions)
 
+    entitlement_quantities: dict[date, dict[tuple[str, str], float]] = {}
     for transaction in ordered_transactions:
         transaction_type = str(transaction.get("transaction_type") or "")
         position_reference_id = _position_reference_id(transaction)
@@ -2812,6 +2840,7 @@ def validate_transaction_position_history(
                 account_id=str(transaction.get("account_id") or ""),
                 position_reference_id=position_reference_id,
                 account_cost_methods=account_cost_methods,
+                corporate_actions=corporate_actions,
                 as_of_date=transaction_performance_effective_date(transaction),
             )
             if available_quantity <= 1e-9:
@@ -2855,21 +2884,36 @@ def validate_transaction_position_history(
         transaction_id = str(transaction.get("transaction_id") or "")
         trade_date = _parse_iso_date(transaction.get("trade_date")) or date.min
         entitlement_date = _parse_iso_date(transaction.get("entitlement_date")) or trade_date
-        prior_transactions = [
-            candidate
-            for candidate in ordered_transactions
-            if str(candidate.get("transaction_id") or "") != transaction_id
-            and transaction_precedes_asset_cash_flow(candidate, transaction)
-        ]
-
-        available_quantity = estimate_position_quantity(
-            portfolio_id,
-            prior_transactions,
-            account_id=str(transaction.get("account_id") or ""),
-            position_reference_id=position_reference_id,
-            account_cost_methods=account_cost_methods,
-            corporate_actions=corporate_actions,
-            as_of_date=entitlement_date,
+        # Ordinary income shares one beginning-of-day entitlement state across
+        # all accounts/assets. Undated expenses use their actual execution
+        # moment, and a fact preceding its own entitlement must remain excluded.
+        shared_entitlement = not (
+            transaction_type in {"fee", "tax"}
+            and _parse_iso_date(transaction.get("entitlement_date")) is None
+        ) and not transaction_precedes_entitlement_bod(transaction, entitlement_date)
+        quantities = entitlement_quantities.get(entitlement_date) if shared_entitlement else None
+        prior_transactions = None
+        if quantities is None:
+            prior_transactions = [
+                candidate
+                for candidate in ordered_transactions
+                if str(candidate.get("transaction_id") or "") != transaction_id
+                and transaction_precedes_asset_cash_flow(candidate, transaction)
+            ]
+            state = _build_position_state(
+                prior_transactions,
+                account_cost_methods=account_cost_methods,
+                corporate_actions=corporate_actions,
+                as_of_date=entitlement_date,
+            )
+            quantities = {
+                key: _safe_float(bucket.get("quantity")) or 0.0
+                for key, bucket in state.items()
+            }
+            if shared_entitlement:
+                entitlement_quantities[entitlement_date] = quantities
+        available_quantity = quantities.get(
+            (str(transaction.get("account_id") or ""), position_reference_id), 0.0
         )
         derivative_contract = _derivative_contract(transaction)
         if (
@@ -2879,6 +2923,7 @@ def validate_transaction_position_history(
             == "option"
         ):
             if transaction_type in {"fee", "tax"} and not transaction.get("entitlement_date"):
+                assert prior_transactions is not None
                 available_quantity = sum(
                     _safe_float(obligation.get("remaining_quantity")) or 0.0
                     for obligation in build_option_obligations(prior_transactions, as_of_date=trade_date)

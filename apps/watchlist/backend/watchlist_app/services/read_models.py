@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
@@ -257,6 +259,12 @@ def build_sparkline_payload(
     for chart in charts or []:
         if chart.instrument_id not in requested_ids:
             continue
+        materialized = chart.payload_json.get("sparklines")
+        if isinstance(materialized, dict):
+            selected = {field: materialized[field] for field in requested_fields if field in materialized}
+            if selected:
+                payload[chart.instrument_id] = selected
+            continue
         points = _extract_sparkline_points(chart.payload_json)
         return_kind = _chart_return_kind(chart.payload_json)
         if not points or return_kind is None:
@@ -308,6 +316,19 @@ def build_sparkline_payload(
             }
         payload[chart.instrument_id] = field_payloads
     return payload
+
+
+def build_screener_chart_projection(instrument_id: str, chart_payload: dict[str, object]) -> dict[str, object]:
+    """Derive the fixed list windows once using the interactive window contract."""
+    chart = SimpleNamespace(instrument_id=instrument_id, payload_json=chart_payload)
+    return {
+        "selected_series": chart_payload.get("selected_series"),
+        "latest_values": chart_payload.get("latest_values"),
+        "date_range": chart_payload.get("date_range"),
+        "sparklines": build_sparkline_payload(
+            [chart], instrument_ids=[instrument_id], selected_fields=list(RETURN_CHART_WINDOWS),
+        ).get(instrument_id, {}),
+    }
 
 
 def build_watchlist_row_materialization(

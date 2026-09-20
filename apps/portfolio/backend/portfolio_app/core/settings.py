@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Investment Studio Portfolio API"
-    app_version: str = "1.2.2"
+    app_version: str = "1.2.3"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5174"
     database_url: str

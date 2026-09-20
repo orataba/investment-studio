@@ -100,7 +100,7 @@ docs/                          当前仓库级合同与手册
 | 修改 Watchlist 指标 | Watchlist canonical recalc/read model | `RETURN_SERIES_CONTRACT.md`、详情页和主表字段、monitoring、导出 |
 | 修改交易 | Portfolio command/store/ledger | Preview/Commit、日期与金额合同、lots/obligations、cash posting、snapshot invalidation、导入导出、审计日志 |
 | 修改 Portfolio 计算 | Portfolio calculation service | `01_CALCULATION_SPEC.md`、Holdings 字典、coverage/unavailable 语义、`calculation_version` 和重建路径 |
-| 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | effective date、PIT 输入、target 完整性、Risk/Risk Budget eligibility、历史模拟披露 |
+| 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | 当前配置版本、PIT 行情输入、target 完整性、Risk/Risk Budget eligibility、历史模拟披露 |
 | 修改身份或运行诊断 | `packages/identity`、`home`、`packages/runtime`、`packages/ui` | 当前会话与资源权限、停用/撤权、请求关联、耗时边界、敏感信息不入日志 |
 | 修改数据库结构 | 对应 Alembic chain | 单库八 schema 依赖顺序、升级数据、恢复路径、migration-head 和 PostgreSQL integration tests |
 | 修改部署脚本 | `infra/launchd` 或 `infra/systemd` | 停写、备份、迁移、回滚、原服务集合恢复、loopback 网络边界、shell tests |

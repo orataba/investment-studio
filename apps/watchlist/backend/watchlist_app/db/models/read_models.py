@@ -74,6 +74,10 @@ class InstrumentChartReadModel(PayloadReadModelMixin, Base):
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # Detail reads retain the full history; screeners explicitly select only
+    # this small projection, published with the same chart source generation.
+    screener_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True, deferred=True)
+
     materialization_version: Mapped[str] = mapped_column(
         nullable=False,
         default=UNVERSIONED_MATERIALIZATION,

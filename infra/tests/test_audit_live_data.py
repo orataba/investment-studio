@@ -53,8 +53,8 @@ def test_flat_table_profile_accepts_only_final_heads(
         "identity": "20260919_0002",
         "instrument_data": "20260908_0035",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260920_0064",
-        "watchlist": "20260914_0058",
+        "portfolio": "20260920_0065",
+        "watchlist": "20260920_0059",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }
@@ -105,7 +105,7 @@ def test_audit_heads_match_migration_sources(audit_module: ModuleType) -> None:
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 55
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 56
     assert {"numeric_publication_catalog_contract", "numeric_complete_snapshot_contract",
             "numeric_dataset_clock_contract", "market_text_version_contract",
             "briefing_frozen_source_contract"} <= set(audit_module.AUDIT_CHECK_NAMES)
@@ -116,6 +116,7 @@ def test_audit_contract_names_cover_registry_0019(
     )
     assert "fmp_equity_catalog_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "fmp_etf_catalog_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_screener_projection_ready" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_system_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_taxonomy_type_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "instrument_crypto_spot_contract" in audit_module.AUDIT_CHECK_NAMES
@@ -423,6 +424,8 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "published_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM expected_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM 'nav_with_dividend'" in index_semantics_query
+    list_projection_query = next(query for query in queries if "screener_payload_json IS NULL" in query)
+    assert "watchlist.instrument_chart_read_model" in list_projection_query
     saved_view_query = next(
         query for query in queries if "WITH RECURSIVE advanced_nodes" in query
     )

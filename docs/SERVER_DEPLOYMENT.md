@@ -386,8 +386,12 @@ the shared archive/manifest/checksum primitive, then runs
 `infra/scripts/migrate_all.sh`. After migration it refreshes the FMP stock and
 ETF search catalogs required by the current exchange contract, reconciles the four
 system Watchlists from the shared registry, and rebuilds only Portfolio snapshots
-whose calculation version or source lineage is stale, then runs the read-only
-live-data audit. Watchlist reconciliation uses the same membership and row
+whose calculation version or source lineage is stale, prepares the latest reliable
+Portfolio holdings/risk page projections, then runs the read-only live-data audit.
+Watchlist reconciliation also backfills the compact screener projections from
+stored charts. A failed projection or incomplete backfill fails readiness; do not
+bypass this preparation and leave the first browser request to rebuild it.
+Watchlist reconciliation uses the same membership and row
 materialization as normal directory reads, preserving user lists, views and
 research; a registry or materialization error fails the install and rolls back.
 The integrity gate runs only after these release maintenance steps, without

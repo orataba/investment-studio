@@ -33,8 +33,8 @@ FINAL_FLAT_TABLE_HEADS = {
     "identity": "20260919_0002",
     "instrument_data": "20260908_0035",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260920_0064",
-    "watchlist": "20260914_0058",
+    "portfolio": "20260920_0065",
+    "watchlist": "20260920_0059",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
@@ -274,6 +274,7 @@ AUDIT_CHECK_NAMES = (
     "market_data_logical_duplicates",
     "valuation_policy_total_return_basis",
     "watchlist_index_return_semantics_contract",
+    "watchlist_screener_projection_ready",
     "fund_nav_current_projection_contract",
     "held_fund_recent_total_return_coverage",
     "portfolio_nav_reconciliation",
@@ -2997,6 +2998,22 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "total return maps to nav_with_dividend, confirmed price return maps "
                         "to nav, and unknown semantics must remain unpublished so relative "
                         "metrics fail closed."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_screener_projection_ready",
+                    query="""
+                        SELECT count(*)
+                        FROM watchlist.instrument_chart_read_model
+                        WHERE screener_payload_json IS NULL
+                    """,
+                    detail=(
+                        "Every stored Watchlist chart, including archived instruments, "
+                        "must have its list projection derived before release. "
+                        "Run refresh_release_watchlists with managed writers stopped."
                     ),
                 )
             )

@@ -18,6 +18,9 @@ from portfolio_app.services.daily_snapshots import (
     _run_portfolio_daily_snapshot_recalculation_synchronously,
     _state_requires_refresh,
 )
+from portfolio_app.services.workspace_precompute import (
+    precompute_portfolio_workspace, workspace_precomputation_errors,
+)
 
 
 def _recover_interrupted_refreshes() -> int:
@@ -90,6 +93,15 @@ def main(*, recover_interrupted: bool = False) -> int:
         raise RuntimeError(
             "Release snapshot refresh left unpublished portfolios: " + ", ".join(incomplete)
         )
+
+    # Release preparation uses the same background projection publisher. This
+    # also retries a previous failed analysis without changing financial facts.
+    for portfolio_id in portfolio_ids:
+        precompute_portfolio_workspace(str(portfolio_id), force=True)
+    failed_projections = [error for portfolio_id in portfolio_ids
+                          for error in workspace_precomputation_errors(str(portfolio_id))]
+    if failed_projections:
+        raise RuntimeError(f"Release workspace preparation failed: {failed_projections}")
 
     print(
         "Release snapshot refresh completed: "

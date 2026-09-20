@@ -56,6 +56,7 @@ from watchlist_app.services.calculation_frequency import (
     build_calculation_frequency_context,
 )
 from watchlist_app.services.read_models import (
+    build_screener_chart_projection,
     build_watchlist_row_materialization,
     collapse_latest_attribute_values,
     serialize_payload,
@@ -2406,6 +2407,10 @@ class CanonicalRecalcService:
                 last_recalculated_at=now,
                 source_cutoff_at=materialized_market_source_cutoff,
                 materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
+                screener_payload=(
+                    build_screener_chart_projection(instrument_id, chart_payload)
+                    if model_class is InstrumentChartReadModel else None
+                ),
             )
 
         self._refresh_watchlist_rows(

@@ -2628,6 +2628,22 @@ def list_portfolios(*, portfolio_ids: list[str] | None = None) -> list[dict[str,
         return [_serialize_portfolio_row_with_materialized_summary(session, item) for item in portfolios]
 
 
+def get_portfolio_configuration(portfolio_id: str) -> dict[str, object] | None:
+    """Read command metadata without loading or validating derived valuations."""
+    with get_session_factory()() as session:
+        record = session.get(PortfolioRecordModel, portfolio_id)
+        if record is None:
+            return None
+        return {
+            "portfolio_id": record.portfolio_id,
+            "portfolio_name": record.portfolio_name,
+            "base_currency": record.base_currency,
+            "valuation_timezone": record.valuation_timezone,
+            "valuation_cutoff_policy": record.valuation_cutoff_policy,
+            "inception_date": record.inception_date.isoformat(),
+        }
+
+
 def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:

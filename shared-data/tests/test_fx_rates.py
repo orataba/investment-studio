@@ -258,7 +258,7 @@ def test_latest_spot_batch_preserves_full_history_and_pair_availability(
                         **{**point, "as_of_date": date.fromisoformat(point["as_of_date"])},
                     )
                 )
-            expected[instrument_id] = fx_rates._latest_spot_point_from_instrument(
+            expected[instrument_id] = fx_rates.latest_spot_point_from_instrument(
                 instrument, points
             )
         session.commit()
