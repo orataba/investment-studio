@@ -136,3 +136,81 @@ def test_actual_fx_discovery_keeps_full_history_catalog_fail_closed(fault, pair)
         as_of_date=date(2026, 8, 3), base_currency=pair[0], quote_currency=pair[1],
         direct_instruments=instruments, instrument_detail_cache=cache, instrument_detail_loader=details.get,
     ) is None
+
+
+def test_initial_purchase_batch_preserves_evidence_and_exact_read_set():
+    def transaction(instrument_id, transaction_type="buy", **values):
+        return {
+            "transaction_id": f"tx-{instrument_id}", "portfolio_id": "test",
+            "instrument_id": instrument_id, "transaction_type": transaction_type,
+            "trade_date": "2026-08-03", "position_effective_date": "2026-08-03",
+            "quantity": 2.0, "gross_amount": 20.0, "currency": "USD", **values,
+        }
+
+    facts = [
+        transaction("first"), transaction("second"), transaction("absent"),
+        transaction("existing"), transaction("opening", "opening_balance"),
+        transaction("delivery", noncash_delivery=True),
+        transaction("short", _short_source_type="short_sell"),
+        transaction("zero", quantity=0.0), transaction("mixed"),
+        transaction("mixed", "sell", transaction_id="mixed-sell"),
+        transaction("first", transaction_id="additional-initial", quantity=1.0, gross_amount=16.0),
+        transaction("first", transaction_id="later-buy", position_effective_date="2026-08-04", gross_amount=90.0),
+    ]
+    source = {key: {"instrument_id": key, "market_data": []}
+              for key in ("first", "second", "existing")}
+    original_facts, original_source = deepcopy(facts), deepcopy(source)
+    canonical = {"existing": source["existing"]}
+    market_data.bind_initial_purchase_valuations(
+        facts, canonical, instrument_detail_loader=source.get,
+    )
+    indexed = {"existing": source["existing"]}
+    calls = []
+
+    def batch(instrument_ids):
+        calls.append(instrument_ids)
+        return {key: source.get(key) for key in instrument_ids}
+
+    def unexpected_single(_instrument_id):
+        raise AssertionError("An initial purchase must reuse its batch, including absence.")
+
+    for _ in range(2):
+        market_data.bind_initial_purchase_valuations(
+            facts, indexed, instrument_detail_loader=unexpected_single,
+            instrument_details_loader=batch,
+        )
+    assert calls == [["first", "second", "absent"]]
+    assert indexed == canonical
+    assert indexed["first"]["_initial_purchase_valuation"]["value"] == 12.0
+    assert indexed["absent"] is None
+    assert source == original_source
+    assert facts == original_facts
+
+
+def test_daily_kernel_uses_one_initial_registry_batch(client, monkeypatch):
+    original = performance.get_registry_instrument_detail
+    batches = []
+
+    def batch(instrument_ids):
+        batches.append(tuple(instrument_ids))
+        return {key: original(key) for key in instrument_ids}
+
+    def unexpected_single(_instrument_id):
+        raise AssertionError("Native-currency purchased securities must already be in the batch.")
+
+    monkeypatch.setattr(performance, "get_registry_instrument_details", batch)
+    monkeypatch.setattr(performance, "get_registry_instrument_detail", unexpected_single)
+    portfolio = portfolio_store.get_portfolio("investment-studio")
+    accounts = [account for account in portfolio_store.list_accounts("investment-studio")
+                if account["currency"] == portfolio["base_currency"]]
+    account_ids = {account["account_id"] for account in accounts}
+    transactions = [tx for tx in portfolio_store.list_transactions("investment-studio")
+                    if tx["currency"] == portfolio["base_currency"] and tx["account_id"] in account_ids
+                    and tx["transaction_type"] in {"deposit", "buy"}]
+    snapshots = performance.build_daily_portfolio_snapshots(
+        portfolio, accounts, transactions, start_date=date(2026, 4, 15),
+        end_date=date(2026, 4, 15), include_materialized_rows=True,
+    )
+    assert len(batches) == 1
+    assert len(batches[0]) > 1
+    assert snapshots[0]["nav"] > 0

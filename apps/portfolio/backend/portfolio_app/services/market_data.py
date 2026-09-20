@@ -67,6 +67,9 @@ def bind_initial_purchase_valuations(
     detail_cache: dict[str, dict[str, object] | None],
     *,
     instrument_detail_loader: Callable[[str], dict[str, object] | None],
+    instrument_details_loader: Callable[
+        [list[str]], dict[str, dict[str, object] | None]
+    ] | None = None,
 ) -> None:
     """Bind portfolio transaction evidence to request-local valuation details.
 
@@ -82,6 +85,7 @@ def bind_initial_purchase_valuations(
         if not instrument_id or effective_date is None:
             continue
         entries.setdefault(instrument_id, []).append((effective_date, transaction))
+    bindings: list[tuple[str, date, list[dict[str, object]], float, float]] = []
     for instrument_id, facts in entries.items():
         first_date = min(day for day, _ in facts)
         initial_facts = [fact for day, fact in facts if day == first_date]
@@ -95,6 +99,12 @@ def bind_initial_purchase_valuations(
         gross = sum(float(fact.get("gross_amount") or 0) for fact in initial_facts)
         if quantity <= 0 or gross <= 0:
             continue
+        bindings.append((instrument_id, first_date, initial_facts, quantity, gross))
+    missing_ids = [instrument_id for instrument_id, *_ in bindings if instrument_id not in detail_cache]
+    if missing_ids and instrument_details_loader is not None:
+        loaded = instrument_details_loader(missing_ids)
+        detail_cache.update((instrument_id, loaded.get(instrument_id)) for instrument_id in missing_ids)
+    for instrument_id, first_date, initial_facts, quantity, gross in bindings:
         if instrument_id not in detail_cache:
             detail_cache[instrument_id] = instrument_detail_loader(instrument_id)
         detail = detail_cache[instrument_id]

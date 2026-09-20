@@ -523,6 +523,12 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "get_registry_instrument_details", _get_registry_instrument_details)
     monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: deepcopy(FX_PAYLOAD))
     monkeypatch.setattr(performance, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    # Both registry read shapes use the same per-test synthetic market facts;
+    # individual tests can still replace one asset's detail loader.
+    monkeypatch.setattr(performance, "get_registry_instrument_details", lambda instrument_ids: {
+        instrument_id: performance.get_registry_instrument_detail(instrument_id)
+        for instrument_id in instrument_ids
+    })
     monkeypatch.setattr(performance, "get_shared_fx_rates", lambda: deepcopy(FX_PAYLOAD))
 
     yield

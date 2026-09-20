@@ -6,7 +6,6 @@ from portfolio_app.services.short_positions import SHORT_TRANSACTION_TYPES, part
 from portfolio_app.services.period_calculation_state import PeriodCalculationInputs, boundary_lots
 from portfolio_app.services.ledger import _rounded_split_quantity
 
-from bisect import bisect_left, bisect_right
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
@@ -65,9 +64,7 @@ from portfolio_app.services.market_data import (
     initial_purchase_valuation_point,
     previous_quote_point,
     quote_policy_bases,
-    quote_is_stale,
     resolve_quote_point,
-    resolve_quote_series,
 )
 from portfolio_app.services.transaction_dates import (
     transaction_cash_activity_date,
@@ -2211,6 +2208,7 @@ def build_daily_portfolio_snapshots(
         bind_initial_purchase_valuations(
             sorted_transactions, instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
+            instrument_details_loader=get_registry_instrument_details,
         )
     calculation_events_by_date: dict[date, dict[str, list[dict[str, object]]]] = {}
     calculation_option_events_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
