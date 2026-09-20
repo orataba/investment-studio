@@ -166,6 +166,36 @@ def test_compact_projection_does_not_copy_discarded_histories(cache_context):
     assert len(analytics["rows"][0]["price_chart_1y"]) == 2000
 
 
+def test_tail_projection_copies_only_required_financial_inputs(cache_context):
+    from portfolio_app.services.tail_risk import _tail_risk_workspace_projection
+
+    class DisplayHistory(list):
+        def __deepcopy__(self, memo):
+            pytest.fail("tail-risk copied a display-only history")
+
+    points = [{"start_date": "2026-09-05", "date": "2026-09-06", "value": -.01}]
+    analytics = {"portfolio_id": "p", "as_of_date": "2026-09-06", "base_currency": "CNY",
+                 "totals": {"nav": 1000}, "rows": [
+        {"instrument_core": {"instrument_id": "asset", "currency": "CNY"},
+         "market_value_base": 1050, "instrument_return_series_all": {"points": points},
+         "price_chart_1y": DisplayHistory([1, 2]), "market_profile": DisplayHistory([3])},
+        {"derivative_contract_id": "written-option", "market_value_base": -50,
+         "holding_category": "derivatives", "derivative_contract": {"contract_name": "Option"}},
+    ]}
+    args = {"as_of_date": date(2026, 9, 6), "risk_policy": {}, "analytics_policy_version": 1,
+            "builder": lambda: analytics, "response_projection": _tail_risk_workspace_projection}
+    first = workspace_cache.get_cached_holdings_analytics_workspace("p", **args)
+    assert len(first["rows"]) == 2
+    assert first["rows"][1]["market_value_base"] == -50
+    assert first["totals"]["nav"] == 1000
+    first["rows"][0]["instrument_return_series_all"]["points"][0]["value"] = 999
+    first["totals"]["nav"] = 0
+    second = workspace_cache.get_cached_holdings_analytics_workspace("p", **args)
+    assert second["rows"][0]["instrument_return_series_all"]["points"][0]["value"] == -.01
+    assert second["totals"]["nav"] == 1000
+    assert next(iter(source_cache._cache.values())).value is analytics
+
+
 @pytest.mark.parametrize("change", ["generation", "unavailable", "factory", "initially_unavailable"])
 def test_builder_result_is_cached_only_for_unchanged_generation(cache_context, change):
     if change == "initially_unavailable":

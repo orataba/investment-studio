@@ -96,7 +96,7 @@ def reader_basis(monkeypatch):
     monkeypatch.setattr(concentration, "read_concentration_settings", lambda *_args, **_kwargs: {
         "revision": 0, "rules": [], "fcn_allocations": [],
     })
-    monkeypatch.setattr(workspace_routes, "_resolve_holdings_request", lambda *_args, **_kwargs: (
+    monkeypatch.setattr(workspace_routes, "resolve_holdings_request", lambda *_args, **_kwargs: (
         {"portfolio_id": "p", "as_of_date": cached["as_of_date"]}, date.fromisoformat(cached["as_of_date"]),
     ))
     materialized_reads = []
@@ -161,7 +161,7 @@ def test_supplied_workspace_is_reused_and_existing_underlying_names_are_preserve
                 {"instrument_id": "B", "name": "Workspace B"},
             ]}
     before = deepcopy(provided)
-    monkeypatch.setattr(workspace_routes, "_resolve_holdings_request", _unexpected)
+    monkeypatch.setattr(workspace_routes, "resolve_holdings_request", _unexpected)
     result = concentration.read_portfolio_concentration("p", workspace=provided)
     assert reader_basis.materialized_reads == []
     assert reader_basis.name_reads == []

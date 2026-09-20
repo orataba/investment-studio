@@ -194,7 +194,8 @@ def test_transaction_cash_fx_reads_market_only_when_conversion_is_needed(monkeyp
              fact(2, "withdrawal", "2026-01-02", 100, account="cash")]
     postings = ledger.derive_ledger_postings("audit", facts, corporate_actions=[])
     reads = []
-    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: reads.append(True) or {"rates": []})
+    monkeypatch.setattr(ledger, "get_shared_fx_rates", lambda: pytest.fail("Cash replay must not load the global FX catalog."))
+    monkeypatch.setattr(ledger, "get_registry_instrument_detail", lambda key: reads.append(key))
     # A rejected/absent FX series must remain unavailable; it cannot become par.
     impacts = ledger.build_transaction_cash_fx_impacts(
         transaction_ids={"txn-0002"}, postings=postings,

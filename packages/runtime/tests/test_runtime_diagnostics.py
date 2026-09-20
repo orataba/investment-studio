@@ -1,10 +1,41 @@
 import json
+import subprocess
+import sys
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from studio_runtime import install_diagnostics, operation
+
+
+def test_standalone_job_counts_successful_and_failed_sql_without_an_http_app():
+    # A fresh interpreter is essential: HTTP tests otherwise install the global
+    # SQL observers first and conceal missing CLI initialization.
+    script = '''
+from sqlalchemy import create_engine, text
+engine = create_engine("sqlite://")
+from studio_runtime import operation
+try:
+    with operation("maintenance_job"):
+        with engine.connect() as connection:
+            connection.execute(text("SELECT :secret"), {"secret": "private-value"})
+            with operation("nested_job"):
+                connection.execute(text("SELECT * FROM missing_table WHERE name=:secret"),
+                                   {"secret": "private-value"})
+except Exception:
+    pass
+'''
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    events = [json.loads(line) for line in result.stderr.splitlines()]
+    finished = {event["operation"]: event for event in events if event["event"] == "operation_finished"}
+    assert finished["maintenance_job"]["sql_count"] == 2
+    assert finished["nested_job"]["sql_count"] == 1
+    assert finished["maintenance_job"]["sql_ms"] > 0
+    assert all(event["outcome"] == "error" for event in finished.values())
+    assert len({event["request_id"] for event in events}) == 1
+    assert "private-value" not in result.stderr
+    assert "missing_table" not in result.stderr
 
 
 def test_request_timings_correlate_threaded_sql_without_recording_inputs(capsys):

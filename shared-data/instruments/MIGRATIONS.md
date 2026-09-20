@@ -14,6 +14,13 @@ infra/scripts/migrate_all.sh
 
 Instrument Data 只保存可跨组合复用的市场资产。FCN 和期权合约属于 Portfolio 本地事件会计事实；迁移会在确认没有遗留 `fcn`/`option` instrument 或 `contract_id` broker identifier 后删除旧衍生品列，不提供运行时双轨兼容。
 
+迁移 `20260920_0036` 在 `instrument_market_data` 增加
+`ix_instrument_market_data_series_latest`：依次为 instrument、metric family、quote basis、currency、
+price unit、price scale 与降序报价日期。它覆盖最新日期选择所需字段，不包含行情值或 NAV evidence；
+原有报价身份唯一约束继续保留。该迁移只创建索引，不改市场事实或来源水位，无须金融重算或数据回填。
+升级由统一安装器在停写和备份后执行；索引占用随历史点数增长，每次行情写入也会维护此索引。
+降级只删除新增索引，原有事实及唯一约束不变；应用与数据库版本仍应一起恢复。
+
 环境变量：
 
 - `INVESTMENT_STUDIO_INSTRUMENT_DATA_DATABASE_URL`

@@ -1518,8 +1518,9 @@ def _latest_market_data_for_instruments(
     if not instrument_ids:
         return {}
 
-    # Aggregate the narrow series key before fetching values/lineage. Ranking
-    # every historical payload forces a wide sort for a directory-sized read.
+    # Rank only the covering index's series keys and date, then fetch the few
+    # winning values/lineages. Materializing the winners keeps PostgreSQL from
+    # repeating the history scan in each parallel worker of the final join.
     series_columns = (
         InstrumentMarketData.instrument_id,
         InstrumentMarketData.metric_family,
@@ -1528,12 +1529,25 @@ def _latest_market_data_for_instruments(
         InstrumentMarketData.price_unit,
         InstrumentMarketData.price_scale,
     )
-    latest_dates = select(
+    ranked_dates = select(
         *series_columns,
-        func.max(InstrumentMarketData.as_of_date).label("as_of_date"),
-    ).where(InstrumentMarketData.instrument_id.in_(instrument_ids)).group_by(
-        *series_columns,
+        InstrumentMarketData.as_of_date,
+        func.row_number().over(
+            partition_by=series_columns,
+            order_by=InstrumentMarketData.as_of_date.desc(),
+        ).label("row_number"),
+    ).where(
+        InstrumentMarketData.instrument_id.in_(instrument_ids),
+        # MAX(date) ignored NULL in the previous query. Keep that behavior even
+        # for legacy data predating the persisted NOT NULL contract.
+        InstrumentMarketData.as_of_date.is_not(None),
     ).subquery()
+    latest_dates = select(
+        *(ranked_dates.c[column.key] for column in series_columns),
+        ranked_dates.c.as_of_date,
+    ).where(ranked_dates.c.row_number == 1).cte(
+        "latest_instrument_series_dates",
+    ).prefix_with("MATERIALIZED")
     # The persisted unique key includes instrument/family/basis/currency/date,
     # so each latest series date identifies exactly one row (no arbitrary tie).
     rows = session.execute(select(

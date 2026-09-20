@@ -260,6 +260,16 @@ class InstrumentBrokerIdentifier(InstrumentRegistryBase):
 class InstrumentMarketData(InstrumentRegistryBase):
     __tablename__ = "instrument_market_data"
     __table_args__ = (
+        Index(
+            "ix_instrument_market_data_series_latest",
+            "instrument_id",
+            "metric_family",
+            "quote_basis",
+            "currency",
+            "price_unit",
+            "price_scale",
+            text("as_of_date DESC"),
+        ),
         CheckConstraint(
             "(metric_family = 'price' AND quote_basis IN "
             "('last', 'close', 'adjusted_close', 'par')) OR "

@@ -816,7 +816,7 @@ def _monetary_acquisition_fx_rate(
     *,
     amount_delta: float,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
+    direct_fx_instruments: valuation_fx.FxInstrumentMap,
     instrument_detail_cache: dict[str, dict[str, object] | None],
     fx_conversion_legs: dict[str, dict[str, dict[str, object]]],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None],
@@ -876,7 +876,7 @@ def _replay_settled_monetary_postings(
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
+    direct_fx_instruments: valuation_fx.FxInstrumentMap,
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None],
     impact_transaction_ids: set[str] | None = None,
@@ -1087,7 +1087,7 @@ def settled_monetary_balances_from_postings(
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
+    direct_fx_instruments: valuation_fx.FxInstrumentMap,
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
     fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
@@ -1172,42 +1172,38 @@ def build_transaction_cash_fx_impacts(
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    direct_fx_instruments: valuation_fx.FxInstrumentMap | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
 ) -> list[dict[str, object]]:
     """Return realized cash FX for selected settled monetary postings."""
 
+    # Pair eligibility and every dated cash boundary share this request's full
+    # observations and quote index. Same-currency cash never loads FX history.
     resolved_instrument_cache = (
-        instrument_detail_cache if instrument_detail_cache is not None else {}
+        instrument_detail_cache
+        if instrument_detail_cache is not None
+        else valuation_fx.HistoricalInstrumentDetails(end_date=as_of_date)
     )
-    underlying_resolver = resolve_fx_rate_on or partial(
+    resolved_direct_instruments = (
+        direct_fx_instruments
+        if direct_fx_instruments is not None
+        else valuation_fx.HistoricalFxInstruments(
+            resolved_instrument_cache,
+            detail_loader=get_registry_instrument_detail,
+        )
+    )
+    resolved_fx_rate_on = resolve_fx_rate_on or partial(
         valuation_fx.resolve_fx_rate_on,
         instrument_detail_loader=get_registry_instrument_detail,
     )
-    resolved_direct_instruments = direct_fx_instruments
-
-    def resolve_cash_fx(**kwargs):
-        nonlocal resolved_direct_instruments
-        # Same-currency cash needs no market FX data. Defer the existing full
-        # validation until the replay actually needs a foreign-currency rate.
-        if resolved_direct_instruments is None and (
-            valuation_fx.required_currency(kwargs["base_currency"], field_name="FX base currency")
-            != valuation_fx.required_currency(kwargs["quote_currency"], field_name="FX quote currency")
-        ):
-            resolved_direct_instruments = valuation_fx.fx_direct_instrument_map(
-                get_shared_fx_rates()
-            )
-        kwargs["direct_instruments"] = resolved_direct_instruments or {}
-        return underlying_resolver(**kwargs)
-
     _states, impacts = _replay_settled_monetary_postings(
         postings=postings,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments or {},
+        direct_fx_instruments=resolved_direct_instruments,
         instrument_detail_cache=resolved_instrument_cache,
-        resolve_fx_rate_on=resolve_cash_fx,
+        resolve_fx_rate_on=resolved_fx_rate_on,
         impact_transaction_ids=transaction_ids,
     )
     return impacts
@@ -1218,7 +1214,7 @@ def pending_monetary_balances_from_postings(
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
+    direct_fx_instruments: valuation_fx.FxInstrumentMap,
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
     fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
@@ -1449,7 +1445,7 @@ def build_monetary_subledger(
     postings: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
+    direct_fx_instruments: valuation_fx.FxInstrumentMap,
     instrument_detail_cache: dict[str, dict[str, object] | None],
     resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
     fx_resolution_cache: valuation_fx.FxRateResolutionCache | None = None,
@@ -4929,7 +4925,7 @@ def build_account_workspace(
     selected_account_id: str | None = None,
     base_currency: str = "USD",
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    direct_fx_instruments: valuation_fx.FxInstrumentMap | None = None,
 ) -> dict[str, object]:
     account_lookup = {str(account["account_id"]): account for account in accounts}
     resolved_selected_account_id = selected_account_id or next(iter(account_lookup.keys()), None)
@@ -4960,17 +4956,16 @@ def build_account_workspace(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    if direct_fx_instruments is None:
-        currencies = {str(row.get("currency") or "").strip().upper()
-                      for row in [*accounts, *boundary_transactions, *postings]}
-        direct_fx_instruments = (
-            valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
-            if currencies - {"", base_currency.strip().upper()}
-            else {}
-        )
     resolved_instrument_detail_cache = (
-        instrument_detail_cache if instrument_detail_cache is not None else {}
+        instrument_detail_cache
+        if instrument_detail_cache is not None
+        else valuation_fx.HistoricalInstrumentDetails(end_date=as_of_date)
     )
+    if direct_fx_instruments is None:
+        direct_fx_instruments = valuation_fx.HistoricalFxInstruments(
+            resolved_instrument_detail_cache,
+            detail_loader=get_registry_instrument_detail,
+        )
 
     fx_resolution_cache: valuation_fx.FxRateResolutionCache = {}
     resolve_account_fx = partial(

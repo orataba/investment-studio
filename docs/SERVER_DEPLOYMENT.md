@@ -574,6 +574,11 @@ recorded in the existing identity/portfolio audit tables.
 
 Portfolio recalculation, Watchlist recalculation/research, Portfolio Research
 and Briefing generation emit start/finish operations with IDs and durations.
+Standalone release and maintenance processes observe SQL when importing the
+shared diagnostics runtime; an HTTP application is not required. Nested
+operations share a request ID, and their parent includes the child's SQL
+count/time, including failed statements. These inclusive spans must not be
+summed as independent costs.
 Errors include their class and source frames without exception payloads. Read
 Home's journal for browser events and the relevant API journal for its request:
 

@@ -27,6 +27,10 @@ Watchlist 和 Portfolio 读取共享事实，但在各自 schema 内生成自己
 
 `security_catalog` 复用市场目录查询与按需登记的请求合同，并桥接到数据维护端的 `investment-studio data securities` 命令。Portfolio 与 Watchlist 在各自 API 校验用户写权限和明确选择后调用，不持有另一套登记逻辑；搜索只读，登记与行情刷新仍由数据层负责。 已登记资产的选择器可使用 `search_instrument_identities`，在 SQL 中限制有效生命周期和调用方支持的类型，优先精确代码匹配，只读取身份及 identifier，不加载行情、公司行动或基金净值账本。
 
+需要最新报价的资产目录与批量摘要保留所有 metric family、basis、currency、unit、scale 序列。
+共享查询先通过覆盖索引按序列选择最新日期，再在同一条 SQL 中读取相应值和 NAV 来源；
+历史价格和来源 JSON 不参与排序，也不建立跨请求的目录报价缓存。
+
 ## 验证
 
 Python 合同随相关 backend 测试运行。TypeScript 合同单独检查：

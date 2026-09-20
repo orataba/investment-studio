@@ -1,4 +1,5 @@
 """Canonical holdings analysis shared by HTTP reads and background publication."""
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import date
 from typing import cast
@@ -941,7 +942,7 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
     }
 
 
-def _resolve_holdings_request(
+def resolve_holdings_request(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
 ) -> tuple[dict[str, object], date]:
@@ -964,7 +965,7 @@ def holdings_workspace(
     as_of_date: date | None = None,
     include_details: bool = False,
 ) -> dict[str, object]:
-    resolved_portfolio, resolved_as_of_date = _resolve_holdings_request(portfolio_id, as_of_date)
+    resolved_portfolio, resolved_as_of_date = resolve_holdings_request(portfolio_id, as_of_date)
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     response = read_holdings_analysis(
         resolved_portfolio_id, resolved_as_of_date, include_details=include_details,
@@ -984,6 +985,7 @@ def read_holdings_analysis(
     resolved_as_of_date: date,
     *,
     include_details: bool = True,
+    response_projection: Callable[[dict[str, object]], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Shared source-bound analysis, before live task/lifecycle overlays."""
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
@@ -1007,7 +1009,8 @@ def read_holdings_analysis(
         risk_policy=risk_policy or {},
         analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
         builder=build_analytics_workspace,
-        response_projection=None if include_details else _compact_holdings_workspace_projection,
+        response_projection=(response_projection if response_projection is not None
+                             else None if include_details else _compact_holdings_workspace_projection),
     )
 
 

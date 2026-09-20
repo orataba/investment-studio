@@ -5,12 +5,14 @@ quantile. Actual observation intervals must agree; missing prices are not filled
 """
 from __future__ import annotations
 
+from collections import ChainMap
+from collections.abc import Mapping
 from datetime import date, timedelta
 from math import ceil, floor, isfinite
 from urllib.parse import quote
 
 from portfolio_app.services.market_data import market_calendar_sessions, resolve_quote_series
-from portfolio_app.services.valuation_fx import fx_direct_instrument_map
+from portfolio_app.services.valuation_fx import HistoricalFxInstruments, fx_direct_instrument_map
 
 
 DEFAULT_CONFIDENCE = 0.95
@@ -98,20 +100,6 @@ def _daily_periods(points, *, detail, start_date, end_date):
                      "rejected_period_count": rejected, "calendar_basis": calendar_basis}, session_pairs
 
 
-def _required_fx_instrument_ids(currency, base_currency, *, direct):
-    """Match the direct/inverse/USD-pivot route without reading observations."""
-    if currency == base_currency:
-        return set()
-    pair = (currency, base_currency)
-    instrument_id = direct.get(pair) or direct.get(pair[::-1])
-    if instrument_id:
-        return {instrument_id}
-    if "USD" in pair:
-        return set()
-    return (_required_fx_instrument_ids(currency, "USD", direct=direct)
-            | _required_fx_instrument_ids("USD", base_currency, direct=direct))
-
-
 def _fx_rate_series(currency, base_currency, *, direct, details, as_of_date):
     """Exact observed FX levels; direct, inverse, or the existing USD pivot."""
     pair = (currency, base_currency)
@@ -180,15 +168,19 @@ def _history_coverage(common, expected, *, start_date, end_date):
 
 def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
                                 lookback_days=DEFAULT_LOOKBACK_DAYS,
-                                instrument_details=None, fx_payload=None):
+                                instrument_details=None, fx_payload=None,
+                                direct_fx_instruments: Mapping[tuple[str, str], str] | None = None):
     if not 0 < confidence < 1 or not 1 <= lookback_days <= 3650:
         raise ValueError("Confidence must be between zero and one; lookback must be 1–3650 days.")
     as_of_date = _date(workspace["as_of_date"])
     start_date = as_of_date - timedelta(days=lookback_days)
     nav = _number((workspace.get("totals") or {}).get("nav"))
     base_currency = str(workspace.get("base_currency") or "").upper()
-    details = instrument_details or {}
-    direct = fx_direct_instrument_map(fx_payload or {})
+    details = instrument_details if instrument_details is not None else {}
+    # A lazy FX map must not be tested for truthiness: len() discovers every
+    # pair, defeating the explicit actual-path read boundary.
+    direct = (direct_fx_instruments if direct_fx_instruments is not None
+              else fx_direct_instrument_map(fx_payload or {}))
     rows, modeled, issues = [], [], []
     # All rows share the same dated scenario window and base currency. Resolve
     # each foreign currency's observed FX intervals once within this calculation.
@@ -356,37 +348,58 @@ def project_portfolio_tail_risk(workspace, *, confidence=DEFAULT_CONFIDENCE,
     }
 
 
+def _tail_risk_workspace_projection(workspace):
+    """Keep every signed exposure and return interval, excluding display data.
+
+    This runs before the shared cache copies a response. It never changes the
+    stored holdings analysis or drops derivative rows from the NAV denominator.
+    """
+    row_fields = (
+        "position_reference_id", "derivative_contract_id", "line_id", "account_id",
+        "market_value_base", "holding_category", "holding_kind", "instrument_return_series_all",
+    )
+    rows = []
+    for holding in workspace.get("rows") or []:
+        row = {key: holding[key] for key in row_fields if key in holding}
+        core = holding.get("instrument_core") or {}
+        row["instrument_core"] = {key: core[key] for key in (
+            "instrument_id", "instrument_name", "instrument_type", "currency",
+        ) if key in core}
+        contract = holding.get("derivative_contract") or {}
+        row["derivative_contract"] = {"contract_name": contract["contract_name"]} if "contract_name" in contract else {}
+        rows.append(row)
+    return {**{key: workspace[key] for key in ("portfolio_id", "as_of_date", "base_currency", "totals") if key in workspace},
+            "rows": rows}
+
+
 def read_portfolio_tail_risk(portfolio_id: str, *, as_of_date: date | None = None,
                             confidence=DEFAULT_CONFIDENCE, lookback_days=DEFAULT_LOOKBACK_DAYS,
                             workspace=None):
-    from portfolio_app.services.holdings_workspace import holdings_workspace
+    from portfolio_app.services.holdings_workspace import read_holdings_analysis, resolve_holdings_request
     from portfolio_app.services.instrument_registry import (
         get_registry_instrument_details,
         get_registry_instrument_metadata,
-        get_shared_fx_rates,
     )
     if workspace is None:
-        workspace = holdings_workspace(portfolio_id=portfolio_id, as_of_date=as_of_date, include_details=True)
+        _portfolio, resolved_as_of_date = resolve_holdings_request(portfolio_id, as_of_date)
+        workspace = read_holdings_analysis(
+            portfolio_id, resolved_as_of_date, response_projection=_tail_risk_workspace_projection,
+        )
     if workspace.get("portfolio_id") != portfolio_id:
         raise ValueError("Tail-risk workspace belongs to another portfolio.")
     if as_of_date is not None and _date(workspace["as_of_date"]) != as_of_date:
         raise ValueError("Tail-risk workspace date differs from the requested date.")
     ids = {(row.get("instrument_core") or {}).get("instrument_id") for row in workspace.get("rows") or []}
-    base = str(workspace.get("base_currency") or "").upper()
-    currencies = {str((row.get("instrument_core") or {}).get("currency") or "").upper()
-                  for row in workspace.get("rows") or []}
-    has_fx = bool(currencies - {"", base})
-    fx_payload = get_shared_fx_rates() if has_fx else {}
     # Security return intervals already belong to this dated workspace. Only
     # their delivery frequency/calendar is needed here; FX needs full observed
     # quote history to align each scenario's actual start and end boundaries.
-    details = get_registry_instrument_metadata([iid for iid in ids if iid])
-    direct = fx_direct_instrument_map(fx_payload)
-    fx_ids = set().union(*(
-        _required_fx_instrument_ids(currency, base, direct=direct)
-        for currency in currencies if currency
-    ))
-    if fx_ids:
-        details.update(get_registry_instrument_details(sorted(fx_ids)))
+    metadata = get_registry_instrument_metadata([iid for iid in ids if iid])
+    fx_details = {}
+    direct = HistoricalFxInstruments(
+        fx_details, detail_loader=lambda iid: get_registry_instrument_details([iid]).get(iid),
+    )
+    # Thin metadata can include an FX instrument held directly. Keep it apart
+    # from full quote inputs so it cannot suppress the required history load.
+    details = ChainMap(fx_details, metadata)
     return project_portfolio_tail_risk(workspace, confidence=confidence, lookback_days=lookback_days,
-                                       instrument_details=details, fx_payload=fx_payload)
+                                       instrument_details=details, direct_fx_instruments=direct)

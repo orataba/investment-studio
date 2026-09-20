@@ -153,7 +153,6 @@ def install_diagnostics(app, service: str) -> None:
     # Uvicorn's default access formatter includes raw query strings; our
     # route-template events replace it for every configured Studio process.
     logging.getLogger("uvicorn.access").disabled = True
-    _observe_sql()
     app.add_middleware(RequestDiagnostics, service=service)
 
     async def unexpected_error(request, _error):
@@ -164,3 +163,9 @@ def install_diagnostics(app, service: str) -> None:
                             headers={"X-Request-ID": request_id, "Cache-Control": "no-store"})
 
     app.add_exception_handler(Exception, unexpected_error)
+
+
+# Operations also run in release and maintenance CLIs, without an ASGI app.
+# Module initialization installs the observers once before callers can start
+# concurrent operations; queries outside a timing context remain unmeasured.
+_observe_sql()

@@ -250,21 +250,6 @@ def test_reader_reuses_security_returns_and_loads_only_full_fx_history(monkeypat
     assert actual["rows"][1]["reason"] == "non_daily_source"
 
 
-@pytest.mark.parametrize("currency,base,expected", [
-    ("USD", "CNY", {"fx-usd-cny"}),
-    ("CNY", "USD", {"fx-usd-cny"}),
-    ("EUR", "CNY", {"fx-usd-eur", "fx-usd-cny"}),
-    ("CNY", "CNY", set()),
-    ("GBP", "USD", set()),
-])
-def test_fx_history_selection_matches_direct_inverse_and_pivot_routes(currency, base, expected):
-    direct = {("USD", "CNY"): "fx-usd-cny", ("USD", "EUR"): "fx-usd-eur",
-              ("USD", "JPY"): "fx-usd-jpy"}
-    assert service._required_fx_instrument_ids(currency, base, direct=direct) == expected
-    direct[("EUR", "CNY")] = "direct-eur-cny"
-    assert service._required_fx_instrument_ids("EUR", "CNY", direct=direct) == {"direct-eur-cny"}
-
-
 def test_rows_share_one_fx_history_resolution_without_filling_missing_boundaries(monkeypatch):
     details, fx = fx_inputs(missing_day=20)
     original = service.resolve_quote_series

@@ -82,10 +82,7 @@ def _objects(connection, schema):
     return connection.execute(sa.text(
         "SELECT c.oid, c.relname, c.relacl::text FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
-        # Reference storage was introduced after the schema rename under test;
-        # its own downgrades intentionally remove and recreate these objects.
-        "WHERE n.nspname = :schema AND c.relname NOT LIKE '%instrument_reference_snapshot%' "
-        "AND c.relname NOT LIKE '%reference_observation%' ORDER BY c.oid"
+        "WHERE n.nspname = :schema ORDER BY c.oid"
     ), {"schema": schema}).all()
 
 
@@ -164,8 +161,10 @@ def test_fresh_install_and_populated_schema_rename_preserve_data(ingestion_datab
                 "VALUES ('rename-test', '{\"cursor\":123,\"status\":\"parsed\"}')"
             )
             objects = _objects(connection, "data_ingestion")
-            asset_objects = _objects(connection, "instrument_data")
-            assert asset_objects
+            latest_quote_index_oid = connection.scalar(sa.text(
+                "SELECT to_regclass('instrument_data.ix_instrument_market_data_series_latest')::oid"
+            ))
+            assert latest_quote_index_oid is not None
             assert "instrument_registry" not in sa.inspect(connection).get_schema_names()
             foreign_key = connection.scalar(sa.text(
                 "SELECT oid FROM pg_constraint "
@@ -176,6 +175,15 @@ def test_fresh_install_and_populated_schema_rename_preserve_data(ingestion_datab
         registry_root = ROOT / "shared-data/instruments"
         registry_config = Config(str(registry_root / "alembic.ini"))
         registry_config.set_main_option("script_location", str(registry_root / "alembic"))
+        # Later migrations legitimately create/drop objects. Capture every OID
+        # at the rename's own boundary, without excluding tables or indexes.
+        command.downgrade(registry_config, "20260904_0030")
+        with engine.connect() as connection:
+            asset_objects = _objects(connection, "instrument_data")
+            assert asset_objects
+            assert connection.scalar(sa.text(
+                "SELECT to_regclass('instrument_data.ix_instrument_market_data_series_latest')"
+            )) is None
         command.downgrade(registry_config, "20260902_0029")
         with engine.connect() as connection:
             assert _objects(connection, "instrument_registry") == asset_objects
@@ -198,7 +206,18 @@ def test_fresh_install_and_populated_schema_rename_preserve_data(ingestion_datab
         with engine.connect() as connection:
             assert "data_ingestion" not in sa.inspect(connection).get_schema_names()
             assert _objects(connection, "platform") == objects
+
+        command.upgrade(registry_config, "20260904_0030")
+        with engine.connect() as connection:
+            assert _objects(connection, "instrument_data") == asset_objects
         _migrate_all()
+        with engine.connect() as connection:
+            head_asset_objects = _objects(connection, "instrument_data")
+            recreated_index_oid = connection.scalar(sa.text(
+                "SELECT to_regclass('instrument_data.ix_instrument_market_data_series_latest')::oid"
+            ))
+            assert recreated_index_oid is not None
+            assert recreated_index_oid != latest_quote_index_oid
         _migrate_all()  # Reinstall must not recreate an empty legacy schema.
         _assert_renamed_functions_and_writes(engine)
         # Match the documented CLI path, which limits autogenerate reflection to
@@ -218,7 +237,7 @@ def test_fresh_install_and_populated_schema_rename_preserve_data(ingestion_datab
         with engine.connect() as connection:
             assert "platform" not in sa.inspect(connection).get_schema_names()
             assert _objects(connection, "data_ingestion") == objects
-            assert _objects(connection, "instrument_data") == asset_objects
+            assert _objects(connection, "instrument_data") == head_asset_objects
             assert connection.scalar(sa.text(
                 "SELECT value_json FROM data_ingestion.platform_metadata WHERE metadata_key='rename-test'"
             )) == {"cursor": 123, "status": "parsed"}
