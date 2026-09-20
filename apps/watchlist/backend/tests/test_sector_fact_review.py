@@ -250,13 +250,13 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base
     def request(url, **kwargs):
         requests.append((url, kwargs))
         return 200, {}, json.dumps({"usage": {"completion_tokens": 800}, "choices": [
-            {"finish_reason": "stop", "message": {"content": json.dumps(checked())}},
+            {"finish_reason": "stop", "message": {"content": json.dumps({"reviews": []})}},
         ]}).encode()
 
     monkeypatch.setattr(review, "_request", request)
     packet = {"run_id": "test-run", "sources": [], "draft_reviews": [],
               "prior_research_updates": [{"source_id": "retained-version", "text": "原文  中的空格和日期 2026-09-19 保留"}]}
-    assert review._call_reviewer(packet) == checked()
+    assert review._call_reviewer(packet) == {"reviews": []}
     payload = json.loads(requests[0][1]["body"])
     assert requests[0][1]["timeout"] == 300
     assert payload["model"] == (configured_model or "deepseek-v4.1-flash") and payload["max_tokens"] == 65536
@@ -272,12 +272,9 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base
     assert payload["messages"][1]["content"] == json.dumps({"response_schema": schema, **packet},
                                                          ensure_ascii=False, separators=(",", ":"))
     assert "$ref" not in json.dumps(schema) and "$defs" not in schema
-    item = schema["properties"]["reviews"]["items"]
-    assert set(item["required"]) == {"instrument_id", "coverage", "decisions"}
-    assert item["properties"]["summary"]["default"] == ""
-    decision = item["properties"]["decisions"]["items"]
-    assert set(decision["required"]) == {"event_key", "decision", "reason", "event"}
-    assert decision["properties"]["decision"]["enum"] == ["keep", "remove"]
+    assert schema["properties"]["reviews"]["items"] is False
+    assert schema["properties"]["reviews"]["maxItems"] == 0
+    assert receipts[1][2]["review"] == {"protocol": "bound_draft_v1", "compact_result": {"reviews": []}}
     assert receipts[0][2]["review"]["response_metadata"]["finish_reason"] == "stop"
     assert receipts[0][2]["review"]["response_metadata"]["usage"] == {"completion_tokens": 800}
     assert "USO RSI" in payload["messages"][0]["content"] and "AI-generated rewriting" in payload["messages"][0]["content"]
@@ -287,7 +284,7 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base
     [],
     [{"finish_reason": "length", "message": {"content": '{"reviews":['}}],
     [{"finish_reason": "stop", "message": {"content": '{}'}}],
-    [{"finish_reason": "stop", "message": {"content": json.dumps(checked())}}] * 2,
+    [{"finish_reason": "stop", "message": {"content": json.dumps({"reviews": []})}}] * 2,
 ])
 def test_provider_must_return_one_complete_review_json(monkeypatch, choices):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
@@ -317,19 +314,19 @@ def _sse_chunk(delta=None, *, finish=None, usage=None, choice=True):
         "usage": usage}, ensure_ascii=False) + '\r\n\r\n').encode()
 
 
-def _stream_fixture(monkeypatch, wire, *, fail_after=None):
+def _stream_fixture(monkeypatch, wire, *, fail_after=None, read_size=None):
     from io import BytesIO
     class Response(BytesIO):
         status = 200
         def getheader(self, name, default=None):
             return "text/event-stream; charset=utf-8" if name == "Content-Type" else default
-        def readline(self, limit=-1):
+        def read1(self, limit=-1):
             if fail_after is not None and self.tell() >= fail_after:
                 raise TimeoutError("Private provider address and credential must not escape")
-            return super().readline(limit)
+            return super().read1(min(limit, read_size) if read_size is not None else limit)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
     receipts = []
-    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload: receipts.append(payload["review"]["response_metadata"]))
+    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload: receipts.append(payload["review"].get("response_metadata", {})))
     def request(url, **kwargs):
         response = Response(wire)
         return 200, {}, kwargs["response_reader"](response)
@@ -339,7 +336,7 @@ def _stream_fixture(monkeypatch, wire, *, fail_after=None):
 
 @pytest.mark.parametrize("usage_location", ["terminal_choice", "separate_chunk", "absent"])
 def test_streaming_review_keeps_reasoning_separate_and_accepts_only_complete_result(monkeypatch, usage_location):
-    answer = json.dumps(checked(), ensure_ascii=False)
+    answer = json.dumps({"reviews": []}, ensure_ascii=False)
     usage = {"prompt_tokens": 100, "completion_tokens": 80, "total_tokens": 180,
              "completion_tokens_details": {"reasoning_tokens": 60}}
     wire = b": heartbeat\r\n\r\n" + _sse_chunk({"role": "assistant", "reasoning_content": "Private thinking 仅推理"})
@@ -349,7 +346,7 @@ def test_streaming_review_keeps_reasoning_separate_and_accepts_only_complete_res
         wire += _sse_chunk(usage=usage, choice=False)
     wire += b"data: [DONE]\r\n\r\n"
     receipts = _stream_fixture(monkeypatch, wire)
-    assert review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []}) == checked()
+    assert review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []}) == {"reviews": []}
     receipt = receipts[0];transport = receipt["transport"]
     assert receipt["usage"] == (None if usage_location == "absent" else usage)
     assert receipt["finish_reason"] == "stop" and transport["done"] is True
@@ -406,11 +403,11 @@ def test_length_terminated_stream_retains_accounting_and_rejects_partial_review(
 
 
 def test_stream_multiline_json_is_one_event_but_concatenated_json_is_diagnosed_not_repaired(monkeypatch):
-    answer = json.dumps(checked())
+    answer = json.dumps({"reviews": []})
     chunk = {"id": "review-fixture", "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": "stop"}]}
     wire = b"\n".join(b"data: " + line for line in json.dumps(chunk, indent=2).encode().splitlines()) + b"\n\ndata: [DONE]\n\n"
     _stream_fixture(monkeypatch, wire)
-    assert review._call_reviewer({"sources": [], "draft_reviews": []}) == checked()
+    assert review._call_reviewer({"sources": [], "draft_reviews": []}) == {"reviews": []}
     one = _sse_chunk({"reasoning_content": "private"}).rstrip(b"\r\n")
     receipts = _stream_fixture(monkeypatch, one + b"\n" + one + b"\n\n")
     with pytest.raises(review._ReviewProtocolError):
@@ -419,6 +416,38 @@ def test_stream_multiline_json_is_one_event_but_concatenated_json_is_diagnosed_n
     assert transport["multiple_json_values"] is True and transport["event_data_lines"] == 2
     assert transport["json_error_kind"] == "Extra data" and transport["json_error_line"] == 2
     assert "private" not in json.dumps(receipts)
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+@pytest.mark.parametrize("read_size", [1, 7, 8192])
+def test_sse_framing_preserves_bom_unicode_and_crlf_split_across_reads(monkeypatch, newline, read_size):
+    proposed = draft()["reviews"][:1]
+    result = {"reviews": [{"instrument_id": "xle", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "correct", "reason": "时点需区分",
+        "value": ["原始证据的边界：价格与事件时点不同。"]}, "decisions": [
+            {"event_key": "oil-rsi", "decision": "remove", "reason": "原文归属错误"}],
+        "research": None, "themes": [], "reflection": None}]}
+    content = json.dumps(result, ensure_ascii=False)
+    wire = b"\xef\xbb\xbf" + _sse_chunk({"content": content}, finish="stop") + b"data: [DONE]\r\n\r\n"
+    wire = wire.replace(b"\r\n", newline)
+    receipts = _stream_fixture(monkeypatch, wire, read_size=read_size)
+    actual = review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": proposed})
+    assert actual["reviews"][0]["coverage"] == result["reviews"][0]["coverage"]["value"]
+    assert actual["reviews"][0]["decisions"][0]["event"] is None
+    # CR already completes the terminal empty line. When CRLF straddles reads,
+    # closing at DONE need not wait for the optional final LF from the network.
+    unread = len(wire) - receipts[0]["transport"]["bytes_received"]
+    assert unread == 0 or (newline == b"\r\n" and unread == 1)
+    assert receipts[0]["transport"]["content_chars"] == len(content)
+
+
+@pytest.mark.parametrize("field", [b"data", b"data:"])
+def test_empty_sse_data_is_not_silently_ignored(monkeypatch, field):
+    receipts = _stream_fixture(monkeypatch, field + b"\n\n")
+    with pytest.raises(review._ReviewProtocolError):
+        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
+    transport = receipts[0]["transport"]
+    assert transport["protocol_error"] == "invalid_chunk_json" and transport["event_chars"] == 0
 
 
 def test_unstructured_provider_text_is_retained_without_accepting_or_printing_it(monkeypatch, retained_run, capsys):
@@ -989,12 +1018,12 @@ def test_review_schema_limits_decisions_to_each_instruments_actual_draft_events(
     assert schema["minItems"] == schema["maxItems"] == 2
     items = {row["properties"]["instrument_id"]["const"]: row for row in schema["items"]["oneOf"]}
     assert "reflection" in items["015868-of"]["required"]
-    assert items["015868-of"]["properties"]["reflection"]["type"] == "object"
-    assert items["015868-of"]["properties"]["reflection"]["properties"]["reviewed_update_ids"]["const"] == []
+    assert {v["properties"]["decision"]["const"] for v in items["015868-of"]["properties"]["reflection"]["oneOf"]} == {"accept", "correct"}
+    assert "reviewed_update_ids" not in json.dumps(items["015868-of"]["properties"]["reflection"])
     candidates = {iid: row["properties"]["decisions"] for iid, row in items.items()}
     assert candidates["015868-of"]["minItems"] == candidates["015868-of"]["maxItems"] == 0
     assert candidates["600036-sh"]["minItems"] == candidates["600036-sh"]["maxItems"] == 2
-    assert candidates["600036-sh"]["items"]["properties"]["event_key"]["enum"] == ["funding", "earnings"]
+    assert [item["oneOf"][0]["properties"]["event_key"]["const"] for item in candidates["600036-sh"]["items"]["oneOf"]] == ["funding", "earnings"]
 
 
 def test_proposed_themes_and_reflection_are_required_inside_the_instrument_review():
@@ -1004,7 +1033,7 @@ def test_proposed_themes_and_reflection_are_required_inside_the_instrument_revie
     assert schema["additionalProperties"] is False and set(schema["properties"]) == {"reviews"}
     item = schema["properties"]["reviews"]["items"]
     assert {"reflection", "themes"}.issubset(item["required"])
-    assert item["properties"]["reflection"]["properties"]["reviewed_update_ids"]["const"] == receipt["reviewed_update_ids"]
+    assert "reviewed_update_ids" not in json.dumps(item["properties"]["reflection"])
     with pytest.raises(ValueError, match="themes"):
         review._Checks.model_validate({"reviews": [{"instrument_id": "518880-sh", "decisions": [], "coverage": []}], "themes": []})
 
@@ -1021,10 +1050,10 @@ def test_reflection_schema_only_allows_supplied_original_sources_in_scope_and_cu
     ]
     schema = review._review_schema([{"instrument_id": "xlc", "events": [], "reflection": receipt}], sources,
         cutoff=datetime.fromisoformat("2026-09-12T00:00:00+00:00"))
-    refs = schema["properties"]["reviews"]["items"]["properties"]["reflection"]["properties"]["source_ids"]
+    refs = schema["properties"]["reviews"]["items"]["properties"]["reflection"]["oneOf"][-1]["properties"]["patch"]["properties"]["source_ids"]
     assert refs["items"]["enum"] == ["public-original", "sector:run:xlc"]
     empty = review._review_schema([{"instrument_id": "xlc", "events": [], "reflection": receipt}], [sources[-1]])
-    assert empty["properties"]["reviews"]["items"]["properties"]["reflection"]["properties"]["source_ids"]["maxItems"] == 0
+    assert empty["properties"]["reviews"]["items"]["properties"]["reflection"]["oneOf"][-1]["properties"]["patch"]["properties"]["source_ids"]["maxItems"] == 0
 
 
 def test_reflection_only_review_still_rejects_new_decisions_about_prior_events():

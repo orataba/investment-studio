@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime
 import json
 import os
+import re
 import sys
 import time
 from typing import Literal
@@ -20,6 +20,7 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources, u
 from watchlist_app.services.sector_web import _MAX_RESPONSE_BYTES, _request, SectorWebError
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids, _original_source
 from watchlist_app.services.research_themes import AnalystThemeUpdate
+from watchlist_app.services.sector_review_protocol import review_receipt_schema, expand_review_receipts
 
 
 # Reasoning and final JSON share this budget. A complete independent review of
@@ -28,8 +29,8 @@ FACT_REVIEW_MAX_TOKENS = 65536
 
 
 _INSTRUCTIONS = """You are the independent final factual reviewer of an instrument research update.
-Check proposed themes as well as events and notebooks. Return themes=[] when all proposed themes are rejected;
-return each retained theme under its original theme_key, retaining only proposed fields. A theme can be an
+Check proposed themes as well as events and notebooks. Explicitly accept, reject or correct each proposed
+theme under its original theme_key; retain only proposed fields. A theme can be an
 unresolved, evidence-motivated research question; do not require its hypothesis to be proven before tracking.
 Do not invent themes, rewrite human assignments or their lifecycle, or promote an ordinary event into a theme.
 Preserve event analysis_depth, follow_up and theme_ids when supported. Important short-lived events may be brief
@@ -44,8 +45,9 @@ Keep quiet receipts focused on checks actually performed and remaining gaps; rem
 and release-outcome assertions that are not supported by cited originals. An old next_watch/calendar is only
 a plan. Even when its date is now in the past, missing ingestion does NOT prove the release occurred: retain
 "此前预定……；本轮尚未核实实际发布时间及结果" when that distinction is needed, without asserting publication.
-Review EVERY supplied reflection, including a quiet reflection-only draft. Return a corrected reflection with
-its original reviewed_update_ids unchanged; never invent a receipt or substitute another original judgment.
+Review EVERY supplied reflection, including a quiet reflection-only draft. Explicitly accept or correct it;
+its original reviewed_update_ids are bound and cannot be patched. Never reject or omit the required receipt,
+invent a receipt, or substitute another original judgment.
 Those IDs name substantive judgments to re-examine, not pages merely visited. Check each referenced original
 assessment and its assumptions against applicable retained evidence, whether new or already held. The absence
 of a new event does not validate an unsupported earlier factual, pricing or causal inference. A discovered error warrants a knowledge
@@ -57,7 +59,7 @@ Check every fact, exposure inference and conclusion in reflection.summary agains
 as the research itself. A partial holdings list cannot prove that an omitted security is absent or immaterial.
 Reflection source_ids identify its retained original evidence, including full cited instrument snapshots and
 current computed metrics. Preserve supported citations; correct or remove them only using supplied sources.
-Use ONLY source_ids allowed by that reflection's schema. tool_evidence and acquisition describe actual reads,
+Use ONLY source_ids allowed by that reflection's correction schema. tool_evidence and acquisition describe actual reads,
 scope and timing; their receipt IDs are not original evidence IDs. A snapshot displayed elsewhere in the packet
 does not authorize a source_id absent from sources. If no eligible original source is supplied, use source_ids=[].
 Acquisition receipts describe what was actually searched or fetched. No newly acquired source, no matching
@@ -143,8 +145,8 @@ Do not turn a tracking benchmark into an exact NAV identity or use a drawdown al
 that a policy shock is already priced in; retain unmeasured tracking differences and uncertainty.
 Remove unsupported clauses; remove the event entirely if no verified material increment remains.
 Keep an event only when acquired evidence supports a material fact or development for that instrument.
-For kept events, return the full corrected event, preserve event_key and action, and cite only
-source_ids present in the supplied sources. At least one fetched original must support the
+Explicitly accept a fully supported event without copying it; otherwise correct only necessary proposed
+fields. event_key and action are bound and cannot be patched. Cite only supplied source_ids. At least one fetched original must support the
 claim, except a measured risk/change may cite the supplied computed_metric evidence, or a
 consensus-estimate change may cite analyst_estimate_changes with nonempty computed changes.
 Estimate changes compare the SAME company, frequency,
@@ -159,8 +161,9 @@ FMP snapshots inform exposure and expectations, not the publication date of an e
 Use information_type=fact for a factual event/report, opinion for attributed commentary, rumor
 for an unverified circulating claim. This classification is separate from confidence; a report
 is not confirmation. Do not resolve an active event merely because no new article appeared.
-For removed events, return event=null and explain the factual reason. Do not invent replacement
-events. Rewrite each reviewed instrument's summary AND coverage to match the verified evidence.
+For removed events, return decision=remove and explain the factual reason, with no patch or event body.
+Do not invent replacement events. Explicitly accept or correct each instrument's summary AND coverage
+to match the verified evidence.
 The versioned research.investment_view is the single current analyst judgment; summary is this run's narrative,
 not a second persistent view. Keep both coherent when both are proposed. Do not silently restore a withdrawn
 view from an old summary. Review observable invalidation/next_check against the actual decision and evidence;
@@ -175,7 +178,7 @@ do not retain an incorrect XLE RSI claim in coverage after removing it from the 
 newness cannot be verified, say "未能核实" rather than asserting that every underlying fact is old.
 If no material increment remains, keep summary empty and change_kind=none; never replace a quiet
 check with a generic article. Keep removal reasons in the review audit, not PM-facing prose.
-Return a corrected coverage list, possibly empty. The application
+If coverage needs correction, return its corrected list as value, possibly empty. The application
 will append its known X-access and acquisition limitations; do not preserve erroneous draft text.
 Review supplied research working papers even when they have no new events. Check their factual
 claims, citations, current assessment and opposing evidence against the supplied original sources.
@@ -202,9 +205,9 @@ You may add explicitly returned, nonempty source_ids at research level or to an 
 when supplied originals support it. This citation exception does not permit new items or default empty lists
 that erase earlier evidence. All added source IDs must remain in the supplied evidence and instrument scope.
 Never fill schema defaults for omitted fields: empty text/lists would erase previous knowledge.
-You may omit a proposed field or return research=null when no supported knowledge update remains;
-this keeps the prior notebook. An explicit investment_view=null instead withdraws the prior view,
-and is allowed only when that withdrawal was proposed. Do not introduce new questions or forecasts.
+Use research decision=correct with omit_fields to reject a proposed top-level field, or decision=reject
+when no supported notebook change remains; this keeps the prior notebook. An explicit investment_view=null
+in the bound draft instead withdraws the prior view; never introduce a new null withdrawal. Do not introduce new questions or forecasts.
 Review research.catalysts against original schedules and releases: preserve the date/time precision,
 timezone, stable key and actual release stage. A past scheduled time is not evidence of an outcome.
 scheduled_at is a machine date, never a display label: use YYYY-MM-DD or ISO8601 with a numeric
@@ -215,7 +218,8 @@ Before release, scenarios must remain conditional and consensus must have dated 
 release, separate first values, revisions, actual-vs-consensus surprise and observed price reaction.
 Remove unsupported schedules or conclusions; do not fill them from memory. Historical outcomes
 must not be used to claim an opportunity was predictable beforehand.
-If it has no research, return research=null. Do not add a working paper to an event-only draft.
+If the draft has no research, return research=null. Otherwise its accept/reject/correct receipt is required.
+Do not add a working paper to an event-only draft.
 Do not turn normal removal reasons
 into acquisition errors. Return one complete JSON object matching the supplied response_schema.
 
@@ -237,14 +241,31 @@ knowledge means a useful internal research update; none is a completed check wit
 upgrade a draft's none/knowledge merely to publish. A quiet run needs no working paper or summary.
 
 This response is only a factual review; it cannot search or perform external actions.
-The ONLY top-level field is reviews. Put summary, coverage, decisions, research, themes and reflection INSIDE
-their corresponding instrument's reviews item, never at the top level. Follow that item's supplied schema:
-if the draft supplies a reflection, return its corrected non-null reflection even when no events remain;
-if the draft proposes themes, return its corrected themes list (possibly []). Never omit a required receipt.
-For decision=keep, event must contain event_key, action, direction (risk/opportunity/uncertain),
-title, body, next_watch, confidence (confirmed/reported/unverified), information_type
-(fact/opinion/rumor), recording_type (new/update/backfill), published_at, occurred_at, and source_ids.
-Return every reviewed instrument_id and every draft_reviews.events event_key exactly once, with no other keys.
+Return ONLY the compact receipt protocol in response_schema, not rewritten copies of accepted objects.
+Every instrument needs summary, change_kind, coverage, decisions, research, themes and reflection inside
+its reviews item. Each scalar uses {"decision":"accept"} or {"decision":"correct","reason":"specific
+reason","value":corrected_value}. Accept means you checked the entire bound original, including sources;
+it does not mean skip checking. Never accept unsupported clauses to save output.
+Every draft event_key appears exactly once as accept, remove or correct; every draft theme_key likewise
+appears exactly once as accept, reject or correct. Do not return decisions for historical events/themes.
+Object accept has only decision and its binding key (if any). Remove/reject also has reason, never patch.
+Correct has reason plus a nonempty patch of only necessary changes; unchanged fields are copied by the
+application from this exact draft. Never include the old event/full-object output format.
+Research uses whole-object accept/reject/correct. A research correct receipt requires patch and omit_fields:
+patch COMPLETELY replaces each listed top-level field of this proposal; include every proposed child change
+you retain. Omitted child fields or keyed rows explicitly reject those proposed changes and preserve the
+existing notebook, NOT the draft value. omit_fields rejects whole proposed top-level fields. Top-level fields
+not named in patch or omit_fields remain bound to the draft. A replaced keyed-item list may
+retain or remove only its original keys, with only originally supplied fields inside each retained item;
+keep original PM/forecast/update references unchanged. The only added field allowed is nonempty source_ids
+on an already proposed research object/item. Do not repeat unaffected notebook fields or source IDs.
+Reflection uses accept/correct only: keep its original reviewed_update_ids without copying or patching them.
+Use correct to mark insufficient_evidence and explain an unsupported receipt; never reject the receipt.
+If an object was absent from the draft, its receipt is null; empty event/theme collections have [] receipts.
+A correction needs a concise, specific factual reason, not another article or a repetition of the draft.
+All accepted and corrected content still undergoes the same source, cutoff, reference and publication checks.
+Return every reviewed instrument_id and every proposed event/theme key exactly once. No default acceptance.
+
 """
 
 _EXCLUSION_NOTE = "候选缺少截至检查时可核对的原文或可比较预期变动，尚未核实重大风险或机会。"
@@ -284,48 +305,9 @@ class _Checks(BaseModel):
 
 
 def _review_schema(reviewed=(), sources=(), *, cutoff=None):
-    schema = _Checks.model_json_schema()
-    def inline(value):
-        if isinstance(value, list):
-            return [inline(item) for item in value]
-        if not isinstance(value, dict):
-            return value
-        if "$ref" in value:
-            return inline(schema["$defs"][value["$ref"].removeprefix("#/$defs/")])
-        return {key: inline(item) for key, item in value.items() if key != "$defs"}
-    schema = inline(schema)
-    if reviewed:
-        reviews = schema["properties"]["reviews"]
-        candidates = []
-        for row in reviewed:
-            candidate = deepcopy(reviews["items"])
-            candidate["properties"]["instrument_id"]["const"] = row["instrument_id"]
-            if row.get("reflection") is not None:
-                candidate["required"].append("reflection")
-                reflection = next(value for value in candidate["properties"]["reflection"]["anyOf"]
-                                  if value.get("type") == "object")
-                reflection["required"].append("reviewed_update_ids")
-                reflection["properties"]["reviewed_update_ids"]["const"] = row["reflection"].get("reviewed_update_ids", [])
-                source_ids = sorted(source["source_id"] for source in sources
-                                    if _original_source(source, row["instrument_id"], cutoff))
-                if source_ids:
-                    reflection["properties"]["source_ids"]["items"]["enum"] = source_ids
-                else:
-                    reflection["properties"]["source_ids"]["maxItems"] = 0
-                candidate["properties"]["reflection"] = reflection
-            if row.get("themes"):
-                candidate["required"].append("themes")
-                candidate["properties"]["themes"] = next(value for value in candidate["properties"]["themes"]["anyOf"]
-                                                          if value.get("type") == "array")
-            decisions = candidate["properties"]["decisions"]
-            keys = [event["event_key"] for event in row["events"]]
-            decisions.update(minItems=len(keys), maxItems=len(keys))
-            if keys:
-                decisions["items"]["properties"]["event_key"]["enum"] = keys
-            candidates.append(candidate)
-        reviews.update(minItems=len(reviewed), maxItems=len(reviewed),
-                       items=candidates[0] if len(candidates) == 1 else {"oneOf": candidates})
-    return schema
+    eligible = {row["instrument_id"]: sorted(source["source_id"] for source in sources
+                if _original_source(source, row["instrument_id"], cutoff)) for row in reviewed}
+    return review_receipt_schema(reviewed, _Checks.model_json_schema(), eligible)
 
 
 class MissingResearchDraft(ValueError):
@@ -336,6 +318,32 @@ class _ReviewProtocolError(ValueError):
     def __init__(self, message: str, raw_output: str):
         super().__init__(message)
         self.raw_output = raw_output
+
+
+def _review_stream_lines(response, transport: dict, started: float):
+    """SSE accepts LF, CRLF or CR, including separators split across reads."""
+    pending, skip_lf, first_line = b"", False, True
+    separator = re.compile(b"\r\n|\r|\n")
+    while block := response.read1(8192):
+        transport["bytes_received"] += len(block)
+        if "first_byte_seconds" not in transport:
+            transport["first_byte_seconds"] = round(time.monotonic() - started, 3)
+        transport["stage"] = "streaming"
+        if skip_lf:
+            block = block.removeprefix(b"\n")
+            skip_lf = False
+        pending += block
+        while boundary := separator.search(pending):
+            line, ending = pending[:boundary.start()], boundary.group()
+            pending = pending[boundary.end():]
+            skip_lf = ending == b"\r" and not pending
+            if first_line:
+                line = line.removeprefix(b"\xef\xbb\xbf")
+                first_line = False
+            yield line
+        if len(pending) > _MAX_RESPONSE_BYTES:
+            transport["protocol_error"] = "oversize_event"
+            raise SectorWebError("Review response exceeded the evidence size limit")
 
 
 def _read_review_stream(response, transport: dict, started: float) -> bytes:
@@ -358,23 +366,16 @@ def _read_review_stream(response, transport: dict, started: float) -> bytes:
         raise _ReviewProtocolError("核证响应流不完整或格式无效，未发布研究。",
                                    json.dumps({"transport": transport}, ensure_ascii=False))
 
-    while True:
-        line = response.readline(_MAX_RESPONSE_BYTES + 1)
-        if not line:
-            invalid("missing_done")
-        transport["bytes_received"] += len(line)
-        if "first_byte_seconds" not in transport:
-            transport["first_byte_seconds"] = round(time.monotonic() - started, 3)
-        transport["stage"] = "streaming"
+    for line in _review_stream_lines(response, transport, started):
         if len(line) > _MAX_RESPONSE_BYTES:
             invalid("oversize_event")
         try:
-            line = line.decode("utf-8").rstrip("\r\n")
+            line = line.decode("utf-8")
         except UnicodeDecodeError as error:
             transport.update(utf8_error_start=error.start, utf8_error_end=error.end, utf8_error_kind=error.reason)
             invalid("invalid_utf8")
-        if line.startswith("data:"):
-            data_lines.append(line[5:].removeprefix(" "))
+        if line == "data" or line.startswith("data:"):
+            data_lines.append(line[5:].removeprefix(" ") if ":" in line else "")
             event_chars += len(data_lines[-1])
             if event_chars > _MAX_RESPONSE_BYTES:
                 invalid("oversize_event")
@@ -454,6 +455,7 @@ def _read_review_stream(response, transport: dict, started: float) -> bytes:
                 invalid("invalid_finish_reason")
             finish_reason = choice["finish_reason"]
             transport["finish_reason"] = finish_reason
+    invalid("missing_done")
 
 
 def _usage_metadata(usage: dict) -> dict:
@@ -535,10 +537,18 @@ def _call_reviewer(packet: dict) -> dict:
         if choices[0].get("finish_reason") != "stop":
             raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
         try:
-            result = json.loads(choices[0].get("message", {}).get("content", ""))
+            receipts = json.loads(choices[0].get("message", {}).get("content", ""))
+            result = expand_review_receipts(packet["draft_reviews"], receipts)
             _Checks.model_validate(result)
         except (TypeError, ValueError) as error:
-            raise _ReviewProtocolError("独立核证JSON未包含完整研判，未发布研究。", raw_output) from error
+            transport.update(protocol_error="invalid_review_receipt", receipt_error_type=type(error).__name__)
+            # Persist only safe failure classification; the normal raw-output
+            # receipt separately retains the final answer for diagnosis.
+            metadata_attempted = False
+            raise _ReviewProtocolError("核证结果未通过结构与草稿绑定校验，未发布研究。", raw_output) from error
+        if packet.get("run_id"):
+            _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
+                "protocol": "bound_draft_v1", "compact_result": receipts}})
         return result
     except Exception as error:
         transport.update(elapsed_seconds=round(time.monotonic() - started, 3), error_type=type(error).__name__)
