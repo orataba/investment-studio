@@ -46,33 +46,6 @@ def _patch_fields(original, properties, *, immutable=(), citations=False):
     return fields
 
 
-def _research_fields(original, properties):
-    fields = _patch_fields(original, properties, citations=True)
-    if isinstance(original.get("investment_view"), dict):
-        fields["investment_view"] = _object(_patch_fields(original["investment_view"],
-            _typed(properties["investment_view"], "object")["properties"], citations=True), [])
-    for field in _RESEARCH_ITEMS:
-        if field not in original:
-            continue
-        items = []
-        for row in original[field]:
-            fields_by_name = _patch_fields(row, properties[field]["items"]["properties"], citations=True)
-            for key in ("key", *_REFERENCES):
-                if key in row:
-                    fields_by_name[key] = {**fields_by_name[key], "const": row[key]}
-            # Existing required fields still apply; omitted optional fields stay
-            # omitted and never acquire schema defaults during expansion.
-            required = [key for key in properties[field]["items"].get("required", []) if key in fields_by_name]
-            items.append(_object(fields_by_name, required))
-        fields[field] = {"type": "array", "maxItems": len(items),
-                         "items": items[0] if len(items) == 1 else {"oneOf": items} if items else False}
-    for field, value in fields.items():
-        value["description"] = ("Complete replacement of this proposed top-level field. Include every proposed child change you retain; "
-            "omitted child fields or keyed rows explicitly reject those proposed changes and preserve the existing notebook. "
-            "Other top-level fields outside patch retain this draft's proposal. " + value.get("description", ""))
-    return fields
-
-
 def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_sources):
     """The sole provider protocol; canonical full objects are internal only."""
     canonical = _inline_schema(canonical_schema)["properties"]["reviews"]["items"]["properties"]
@@ -81,7 +54,7 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
     def scalar(value_schema):
         return {"oneOf": [_variant("accept"), _variant("correct", reason=reason, value=value_schema)]}
 
-    def object_receipt(original, fields, *, reject=None, research=False):
+    def object_receipt(original, fields, *, reject=None, omissions=False, immutable=(), required=()):
         if original is None:
             return {"type": "null"}
         variants = [_variant("accept")]
@@ -89,30 +62,55 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
             variants.append(_variant(reject, reason=reason))
         patch = _object(fields, [])
         properties = {"reason": reason, "patch": patch}
-        if research:
+        if omissions:
             properties["omit_fields"] = {"type": "array", "uniqueItems": True,
-                "items": {"enum": list(original)} if original else False,
-                "description": "Reject these proposed top-level changes, preserving the existing notebook; not a null withdrawal."}
+                "items": {"enum": sorted(set(original) - set(immutable) - set(required))} if set(original) - set(immutable) - set(required) else False,
+                "description": "Reject these proposed fields explicitly. Unmentioned fields retain the bound draft values; this is not a null withdrawal."}
         else:
             patch["minProperties"] = 1
-        if fields or research and original:
+        if fields or omissions and original:
             correction = _variant("correct", **properties)
-            if research:
+            if omissions:
                 correction["anyOf"] = [{"properties": {"patch": {"minProperties": 1}}},
                                        {"properties": {"omit_fields": {"minItems": 1}}}]
             variants.append(correction)
         return {"oneOf": variants}
 
-    def keyed_receipts(rows, key, properties, immutable, reject):
-        items = []
-        for row in rows:
-            item = object_receipt(row, _patch_fields(row, properties, immutable=immutable), reject=reject)
+    def keyed_receipts(rows, key, properties, immutable, reject, *, research=False, required=()):
+        items = [object_receipt(row, _patch_fields(row, properties, immutable=immutable, citations=research),
+                    reject=reject, omissions=research, immutable=immutable, required=required) for row in rows]
+        bindings = list(range(len(rows))) if key == "index" else [row[key] for row in rows]
+        # Equal field contracts can share a schema without repeating it for
+        # every fact. Different proposed field sets remain bound separately.
+        same_contract = bool(items) and all(item == items[0] for item in items[1:])
+        candidates = items[:1] if same_contract else items
+        for index, item in enumerate(candidates):
             for variant in item["oneOf"]:
-                variant["properties"][key] = {"const": row[key]}
+                variant["properties"][key] = {"enum": bindings} if same_contract else {"const": bindings[index]}
                 variant["required"].append(key)
-            items.append(item)
         return {"type": "array", "minItems": len(rows), "maxItems": len(rows),
-                "items": items[0] if len(items) == 1 else {"oneOf": items} if items else False}
+                "items": candidates[0] if len(candidates) == 1 else {"oneOf": candidates} if candidates else False}
+
+    def research_fields(original, properties):
+        fields = _patch_fields(original, properties, citations=True)
+        for field in ("investment_view", "mandate_update"):
+            if field not in original:
+                continue
+            value = original[field]
+            fields[field] = object_receipt(value, _patch_fields(value or {},
+                _typed(properties[field], "object")["properties"], citations=field == "investment_view"),
+                reject="reject", omissions=True, required=_typed(properties[field], "object").get("required", ()))
+        for field in ("facts", *_RESEARCH_ITEMS):
+            if field not in original:
+                continue
+            key = "index" if field == "facts" else "key"
+            fields[field] = keyed_receipts(original[field], key, properties[field]["items"]["properties"],
+                () if field == "facts" else ("key", *_REFERENCES), "reject", research=True,
+                required=properties[field]["items"].get("required", ()))
+            fields[field]["description"] = ("Every original record requires exactly one decision. "
+                + ("index is the zero-based position in this frozen draft, never the output order. Rejected facts are removed from the new fact list; rejecting all means an empty new fact list."
+                   if field == "facts" else "key binds the original proposed item. Reject cancels this item's proposed change, preserving an existing notebook item under that key."))
+        return fields
 
     candidates = []
     event_properties = _typed(canonical["decisions"]["items"]["properties"]["event"], "object")["properties"]
@@ -130,7 +128,7 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
             "instrument_id": {"const": row["instrument_id"]},
             **{field: scalar(canonical[field]) for field in ("summary", "change_kind", "coverage")},
             "decisions": keyed_receipts(row.get("events", []), "event_key", event_properties, ("event_key", "action"), "remove"),
-            "research": object_receipt(row.get("research"), _research_fields(row.get("research") or {}, research_properties), reject="reject", research=True),
+            "research": object_receipt(row.get("research"), research_fields(row.get("research") or {}, research_properties), reject="reject", omissions=True),
             "themes": keyed_receipts(row.get("themes", []), "theme_key", theme_properties, ("theme_key", "theme_id"), "reject"),
             "reflection": object_receipt(reflection, fields),
         }))
@@ -147,8 +145,9 @@ def _index_exact(rows, originals, key):
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError(f"Review receipts require a {key} list")
     keys = [row.get(key) for row in rows]
-    expected = [row[key] for row in originals]
-    if (any(not isinstance(value, str) for value in keys) or len(set(expected)) != len(expected)
+    expected = list(range(len(originals))) if key == "index" else [row[key] for row in originals]
+    kind = int if key == "index" else str
+    if (any(type(value) is not kind for value in keys) or len(set(expected)) != len(expected)
             or len(keys) != len(expected) or set(keys) != set(expected)):
         raise ValueError(f"Review must decide every original {key} exactly once")
     return {row[key]: row for row in rows}
@@ -160,44 +159,12 @@ def _reason(receipt):
         raise ValueError("Review corrections and rejections require a factual reason")
 
 
-def _check_research_patch(original, patch):
-    def item_fields(value, proposed):
-        if not isinstance(value, dict) or set(value) - (set(proposed) | {"source_ids"}):
-            raise ValueError("Research corrections cannot introduce unproposed fields")
-        if "source_ids" in value and "source_ids" not in proposed and not value["source_ids"]:
-            raise ValueError("Added research citations must be nonempty")
-        for key in _REFERENCES:
-            if key in value and value[key] != proposed.get(key):
-                raise ValueError("Research corrections cannot retarget original references")
-    item_fields(patch, original)
-    if "investment_view" in patch:
-        proposed, value = original.get("investment_view"), patch["investment_view"]
-        if isinstance(proposed, dict):
-            if value is None:
-                raise ValueError("Reject a proposed investment view with omit_fields, not a new null withdrawal")
-            item_fields(value, proposed)
-        elif value != proposed:
-            raise ValueError("Research corrections cannot replace a proposed withdrawal")
-    for field in _RESEARCH_ITEMS:
-        if field not in patch:
-            continue
-        originals = {row["key"]: row for row in original[field]}
-        values = patch[field]
-        if (not isinstance(values, list) or any(not isinstance(row, dict) or not isinstance(row.get("key"), str) for row in values)
-                or len({row["key"] for row in values}) != len(values)):
-            raise ValueError("Research item corrections require unique original keys")
-        for value in values:
-            if value["key"] not in originals:
-                raise ValueError("Research corrections cannot invent a keyed item")
-            item_fields(value, originals[value["key"]])
-
-
 def expand_review_receipts(reviewed, result):
     """Expand explicit decisions only; never infer acceptance from omission."""
     _exact_fields(result, ("reviews",))
     receipts = _index_exact(result["reviews"], reviewed, "instrument_id")
 
-    def expand(original, receipt, *, key=None, reject=None, immutable=(), research=False):
+    def expand(original, receipt, *, key=None, reject=None, immutable=(), research=False, omissions=False, citations=False):
         if original is None:
             if receipt is not None:
                 raise ValueError("Review cannot invent an object absent from the draft")
@@ -215,24 +182,53 @@ def expand_review_receipts(reviewed, result):
             return None
         if decision != "correct":
             raise ValueError("Invalid review receipt decision")
-        _exact_fields(receipt, (*binding, "decision", "reason", "patch", *(("omit_fields",) if research else ())))
+        _exact_fields(receipt, (*binding, "decision", "reason", "patch", *(("omit_fields",) if omissions else ())))
         _reason(receipt)
         patch = receipt["patch"]
         allowed = set(original) - set(immutable)
-        if research or "reviewed_update_ids" in immutable:
+        if citations or "reviewed_update_ids" in immutable:
             allowed.add("source_ids")
         if not isinstance(patch, dict) or set(patch) - allowed:
             raise ValueError("Review patch cannot change identity or introduce unproposed fields")
-        omitted = receipt["omit_fields"] if research else []
+        omitted = receipt["omit_fields"] if omissions else []
         if (not isinstance(omitted, list) or any(not isinstance(key, str) for key in omitted)
                 or len(set(omitted)) != len(omitted) or not set(omitted).issubset(original)
-                or set(omitted).intersection(patch)):
+                or set(omitted).intersection(patch) or set(omitted).intersection(immutable)):
             raise ValueError("Research omitted fields must be distinct proposed fields outside the patch")
         if not patch and not omitted:
             raise ValueError("Correct requires an explicit nonempty correction")
+        if citations and "source_ids" in patch and "source_ids" not in original and not patch["source_ids"]:
+            raise ValueError("Added research citations must be nonempty")
         if research:
-            _check_research_patch(original, patch)
+            patch, rejected = research_patch(original, patch)
+            omitted = [*omitted, *rejected]
         return {**{key: deepcopy(value) for key, value in original.items() if key not in omitted}, **deepcopy(patch)}
+
+    def research_patch(original, patch):
+        result, rejected = deepcopy(patch), []
+        for field in ("investment_view", "mandate_update"):
+            if field not in patch:
+                continue
+            value = expand(original[field], patch[field], reject="reject", omissions=True,
+                           citations=field == "investment_view")
+            if value is None and original[field] is not None:
+                result.pop(field)
+                rejected.append(field)
+            else:
+                result[field] = value  # A bound original null remains a proposed withdrawal.
+        for field in ("facts", *_RESEARCH_ITEMS):
+            if field not in patch:
+                continue
+            key = "index" if field == "facts" else "key"
+            receipts = _index_exact(patch[field], original[field], key)
+            retained = []
+            for index, item in enumerate(original[field]):
+                value = expand(item, receipts[index if key == "index" else item[key]], key=key, reject="reject",
+                    immutable=() if field == "facts" else ("key", *_REFERENCES), omissions=True, citations=True)
+                if value is not None:
+                    retained.append(value)
+            result[field] = retained
+        return result, rejected
 
     def scalar(original, receipt, field):
         if not isinstance(receipt, dict):
@@ -271,6 +267,6 @@ def expand_review_receipts(reviewed, result):
             **{field: scalar(original.get(field, [] if field == "coverage" else "none" if field == "change_kind" else ""), row[field], field)
                for field in ("summary", "change_kind", "coverage")},
             "decisions": decisions, "themes": kept_themes,
-            "research": expand(original.get("research"), row["research"], reject="reject", research=True),
+            "research": expand(original.get("research"), row["research"], reject="reject", research=True, omissions=True, citations=True),
             "reflection": expand(original.get("reflection"), row["reflection"], immutable=("reviewed_update_ids",))})
     return {"reviews": expanded}

@@ -123,21 +123,26 @@ def test_reflection_can_mark_insufficient_without_repeating_original_ids():
     assert result == {**rows[0]["reflection"], "status": "insufficient_evidence", "summary": "Cannot verify the relevant update"}
 
 
-def test_research_top_level_replacement_explicitly_rejects_omitted_child_changes():
+def test_investment_field_patch_preserves_other_proposals_unless_explicitly_omitted():
     from watchlist_app.services.research_notebook import retain_notebook
     rows = proposed(); receipts = accepted(rows)
     previous = retain_notebook(review.ResearchNotebook(investment_view={"direction": "Prior direction", "risk": "Prior risk"}),
         None, {"original": SOURCE}, "old", "2026-09-01T00:00:00+00:00")
-    receipts["reviews"][0]["research"] = {"decision": "correct", "reason": "Only direction is supported",
-        "patch": {"investment_view": {"direction": "Corrected direction"}}, "omit_fields": []}
+    view = {"decision": "correct", "reason": "Qualify only direction",
+            "patch": {"direction": "Corrected direction"}, "omit_fields": []}
+    receipts["reviews"][0]["research"] = {"decision": "correct", "reason": "A supported narrow correction",
+        "patch": {"investment_view": view}, "omit_fields": []}
     result = checked(rows, receipts)[0]["research"]
-    assert result == {**rows[0]["research"], "investment_view": {"direction": "Corrected direction"}}
+    assert result["investment_view"] == {"direction": "Corrected direction", "risk": "Uncertain transmission"}
+    view["omit_fields"] = ["risk"]
+    result = checked(rows, receipts)[0]["research"]
+    assert result["investment_view"] == {"direction": "Corrected direction"}
     saved = retain_notebook(review.ResearchNotebook.model_validate(result), previous, {"original": SOURCE},
         "new", "2026-09-20T00:00:00+00:00")
     assert saved["investment_view"]["direction"] == "Corrected direction"
-    assert saved["investment_view"]["risk"] == "Prior risk"  # rejected proposal was not silently accepted
-    receipts["reviews"][0]["research"]["patch"]["investment_view"]["risk"] = "Uncertain transmission"
-    assert checked(rows, receipts)[0]["research"]["investment_view"]["risk"] == "Uncertain transmission"
+    assert saved["investment_view"]["risk"] == "Prior risk"
+    receipts["reviews"][0]["research"]["patch"]["investment_view"] = {"decision": "reject", "reason": "Reject this view proposal"}
+    assert "investment_view" not in checked(rows, receipts)[0]["research"]
 
 
 def test_research_omit_reject_and_proposed_null_withdrawal_remain_distinct():
@@ -153,11 +158,11 @@ def test_research_omit_reject_and_proposed_null_withdrawal_remain_distinct():
 
 @pytest.mark.parametrize("patch", [
     {"investment_view": None}, {"fundamental_view": "unproposed"},
-    {"investment_view": {"attractiveness": "unproposed"}},
-    {"questions": [{"key": "invented", "question": "Invented"}]},
-    {"questions": [{"key": "demand", "question": "Changed", "pm_note_id": "different"}]},
-    {"questions": [{"key": "demand", "question": "Changed", "pm_note_revision": 3}]},
-    {"questions": [{"key": "demand", "question": "Same"}, {"key": "demand", "question": "Duplicate"}]},
+    {"investment_view": {"decision": "correct", "reason": "test", "patch": {"attractiveness": "unproposed"}, "omit_fields": []}},
+    {"questions": [{"key": "invented", "decision": "accept"}]},
+    {"questions": [{"key": "demand", "decision": "correct", "reason": "test", "patch": {"pm_note_id": "different"}, "omit_fields": []}]},
+    {"questions": [{"key": "demand", "decision": "correct", "reason": "test", "patch": {"pm_note_revision": 3}, "omit_fields": []}]},
+    {"questions": [{"key": "demand", "decision": "accept"}, {"key": "demand", "decision": "accept"}]},
 ])
 def test_research_patch_cannot_invent_fields_items_withdrawals_or_change_pm_binding(patch):
     rows = proposed(); receipts = accepted(rows)
@@ -169,7 +174,7 @@ def test_compact_research_citation_exception_still_uses_canonical_evidence_check
     rows = proposed(); rows[0]["research"] = {"investment_view": {"risk": "Observed risk"}}
     receipts = accepted(rows)
     receipts["reviews"][0]["research"] = {"decision": "correct", "reason": "Bind observed premise to original",
-        "patch": {"source_ids": ["original"], "investment_view": {"risk": "Observed risk", "source_ids": ["original"]}}, "omit_fields": []}
+        "patch": {"source_ids": ["original"], "investment_view": {"decision": "correct", "reason": "Bind original", "patch": {"source_ids": ["original"]}, "omit_fields": []}}, "omit_fields": []}
     assert checked(rows, receipts)[0]["research"]["source_ids"] == ["original"]
     receipts["reviews"][0]["research"]["patch"]["source_ids"] = ["invented"]
     with pytest.raises(ValueError): checked(rows, receipts)
@@ -190,8 +195,111 @@ def test_schema_inlining_keeps_business_titles_and_accepts_catalyst_title_correc
     row["decisions"][0].update(decision="correct", reason="Avoid overstatement", patch={"title": "Supported event title"})
     row["themes"][0].update(decision="correct", reason="Clarify question", patch={"title": "Supported theme title"})
     row["research"] = {"decision": "correct", "reason": "Use the original schedule name", "omit_fields": [],
-        "patch": {"catalysts": [{**rows[0]["research"]["catalysts"][0], "title": "Supported release title"}]}}
+        "patch": {"catalysts": [{"key": "release", "decision": "correct", "reason": "Original title",
+            "patch": {"title": "Supported release title"}, "omit_fields": []}]}}
     value = checked(rows, receipts)[0]
     assert value["events"][0]["title"] == "Supported event title"
     assert value["themes"][0]["title"] == "Supported theme title"
     assert value["research"]["catalysts"][0]["title"] == "Supported release title"
+
+
+def facts():
+    return [{"subject": "gold", "metric": "price", "period": day, "value": value,
+             "unit": "USD/oz", "comparison": "", "uncertainty": "", "source_ids": ["original"]}
+            for day, value in (("2026-09-01", "100"), ("2026-09-02", "101"))]
+
+
+def record_correction(patch, *, omit_fields=()):
+    return {"decision": "correct", "reason": "Specific correction", "patch": patch, "omit_fields": list(omit_fields)}
+
+
+def test_facts_and_keyed_receipts_follow_original_order_and_preserve_untouched_fields():
+    rows = proposed(); rows[0]["research"]["facts"] = facts()
+    rows[0]["research"]["questions"].append({"key": "second", "question": "Other?", "assessment": "Unknown", "next_check": "Later"})
+    receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = record_correction({
+        "facts": [{"index": 1, **record_correction({"uncertainty": "Revised"})}, {"index": 0, "decision": "accept"}],
+        "questions": [{"key": "second", "decision": "accept"}, {"key": "demand", **record_correction({"assessment": "Check interpretation"})}]})
+    value = checked(rows, receipts)[0]["research"]
+    assert value["facts"] == [facts()[0], {**facts()[1], "uncertainty": "Revised"}]
+    assert value["questions"] == [{**rows[0]["research"]["questions"][0], "assessment": "Check interpretation"}, rows[0]["research"]["questions"][1]]
+
+
+@pytest.mark.parametrize("index", [True, False, -1, 2, 0.0, "0", None])
+def test_fact_indices_must_be_exact_integers_bound_to_the_frozen_draft(index):
+    rows = proposed(); rows[0]["research"]["facts"] = facts(); receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = record_correction({"facts": [
+        {"index": index, "decision": "accept"}, {"index": 1, "decision": "accept"}]})
+    with pytest.raises(ValueError, match="exactly once"): expand_review_receipts(rows, receipts)
+
+
+@pytest.mark.parametrize("entries", [[], [{"index": 0, "decision": "accept"}],
+    [{"index": 0, "decision": "accept"}, {"index": 0, "decision": "accept"}]])
+def test_fact_receipts_cannot_omit_or_duplicate_originals(entries):
+    rows = proposed(); rows[0]["research"]["facts"] = facts(); receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = record_correction({"facts": entries})
+    with pytest.raises(ValueError, match="exactly once"): expand_review_receipts(rows, receipts)
+
+
+@pytest.mark.parametrize("omitted", ["key", "pm_note_id", "pm_note_revision"])
+def test_record_omission_cannot_remove_identity_or_pm_version(omitted):
+    rows = proposed(); receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = record_correction({"questions": [
+        {"key": "demand", **record_correction({}, omit_fields=[omitted])}]})
+    with pytest.raises(ValueError): expand_review_receipts(rows, receipts)
+
+
+def test_record_omission_is_explicit_disjoint_and_still_subject_to_canonical_required_fields():
+    rows = proposed(); rows[0]["research"]["facts"] = facts(); receipts = accepted(rows)
+    first = {"index": 0, **record_correction({"value": "Corrected"}, omit_fields=["value"])}
+    receipts["reviews"][0]["research"] = record_correction({"facts": [first, {"index": 1, "decision": "accept"}]})
+    with pytest.raises(ValueError): expand_review_receipts(rows, receipts)
+    first["patch"] = {}; first["omit_fields"] = ["metric"]
+    expanded = expand_review_receipts(rows, receipts)
+    with pytest.raises(ValueError): review._Checks.model_validate(expanded)
+
+
+def test_fact_rejection_replaces_the_observation_set_but_whole_field_omission_preserves_it():
+    from watchlist_app.services.research_notebook import retain_notebook
+    rows = proposed(); rows[0]["research"]["facts"] = facts(); receipts = accepted(rows)
+    old = retain_notebook(review.ResearchNotebook(facts=facts()), None, {"original": SOURCE}, "old", "2026-09-01T00:00:00+00:00")
+    receipts["reviews"][0]["research"] = record_correction({"facts": [
+        {"index": i, "decision": "reject", "reason": "Unsupported observation"} for i in range(2)]})
+    delta = checked(rows, receipts)[0]["research"]
+    assert delta["facts"] == []
+    saved = retain_notebook(review.ResearchNotebook.model_validate(delta), old, {"original": SOURCE}, "new", "2026-09-20T00:00:00+00:00")
+    assert saved["facts"] == []
+    receipts["reviews"][0]["research"] = record_correction({}, omit_fields=["facts"])
+    delta = checked(rows, receipts)[0]["research"]
+    assert "facts" not in delta
+    saved = retain_notebook(review.ResearchNotebook.model_validate(delta), old, {"original": SOURCE}, "new", "2026-09-20T00:00:00+00:00")
+    assert saved["facts"] == old["facts"]
+
+
+def test_keyed_item_rejection_keeps_previous_notebook_item_and_optional_omission_keeps_previous_field():
+    from watchlist_app.services.research_notebook import retain_notebook
+    rows = proposed(); receipts = accepted(rows); question = rows[0]["research"]["questions"][0]
+    old = retain_notebook(review.ResearchNotebook(questions=[{**question, "tracking_reason": "Previous reason"}]),
+        None, {"original": SOURCE}, "old", "2026-09-01T00:00:00+00:00")
+    question["tracking_reason"] = "Proposed reason"
+    receipts["reviews"][0]["research"] = record_correction({"questions": [
+        {"key": "demand", **record_correction({"assessment": "Corrected"}, omit_fields=["tracking_reason"])}]})
+    delta = checked(rows, receipts)[0]["research"]
+    saved = retain_notebook(review.ResearchNotebook.model_validate(delta), old, {"original": SOURCE}, "new", "2026-09-20T00:00:00+00:00")
+    assert saved["questions"][0]["tracking_reason"] == "Previous reason"
+    receipts["reviews"][0]["research"]["patch"]["questions"] = [{"key": "demand", "decision": "reject", "reason": "Reject proposed revision"}]
+    delta = checked(rows, receipts)[0]["research"]
+    saved = retain_notebook(review.ResearchNotebook.model_validate(delta), old, {"original": SOURCE}, "new", "2026-09-20T00:00:00+00:00")
+    assert saved["questions"] == old["questions"]
+
+
+def test_shared_record_schema_does_not_extend_the_fields_of_a_different_proposal():
+    rows = proposed()
+    rows[0]["research"]["questions"].append({"key": "second", "question": "Other?", "assessment": "Unknown", "next_check": "Later"})
+    receipts = accepted(rows)
+    receipts["reviews"][0]["research"] = record_correction({"questions": [
+        {"key": "demand", "decision": "accept"},
+        {"key": "second", **record_correction({"pm_note_id": "pm-original"})}]})
+    validator = Draft202012Validator(review._review_schema(rows, [SOURCE]))
+    assert not validator.is_valid(receipts)
+    with pytest.raises(ValueError): expand_review_receipts(rows, receipts)

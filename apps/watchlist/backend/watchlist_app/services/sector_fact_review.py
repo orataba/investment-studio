@@ -192,7 +192,7 @@ from a rejected report remains usable text, but neither its fetch nor its former
 If research.mandate_update is supplied, check its factual background against the same originals;
 separate working hypotheses from facts and preserve specific unresolved questions. It updates
 only this instrument's research assignment, never shared methods or the PM's investment views.
-Return null for an unsupported assignment update rather than inventing instrument background.
+Reject an unsupported assignment-update proposal rather than inventing instrument background.
 Historical cases can inform mechanisms, not prove current exposures or supply trading probabilities.
 Preserve historical information/public-disclosure/trading clocks and the atlas's selection limits.
 Correct research.fundamental_view, key_drivers, valuation_view and questions to match the evidence;
@@ -251,14 +251,28 @@ appears exactly once as accept, reject or correct. Do not return decisions for h
 Object accept has only decision and its binding key (if any). Remove/reject also has reason, never patch.
 Correct has reason plus a nonempty patch of only necessary changes; unchanged fields are copied by the
 application from this exact draft. Never include the old event/full-object output format.
-Research uses whole-object accept/reject/correct. A research correct receipt requires patch and omit_fields:
-patch COMPLETELY replaces each listed top-level field of this proposal; include every proposed child change
-you retain. Omitted child fields or keyed rows explicitly reject those proposed changes and preserve the
-existing notebook, NOT the draft value. omit_fields rejects whole proposed top-level fields. Top-level fields
-not named in patch or omit_fields remain bound to the draft. A replaced keyed-item list may
-retain or remove only its original keys, with only originally supplied fields inside each retained item;
-keep original PM/forecast/update references unchanged. The only added field allowed is nonempty source_ids
-on an already proposed research object/item. Do not repeat unaffected notebook fields or source IDs.
+Research uses whole-object accept/reject/correct. A research correct receipt requires patch and omit_fields.
+String fields and string lists in patch replace the corresponding proposed field. Structured objects
+(investment_view, mandate_update) instead need their own accept/reject/correct receipt. A nested correct
+contains only necessary field changes in patch and explicit omitted proposed fields in omit_fields;
+all other fields are copied from the bound draft. Reject cancels that object's proposed change, not the
+existing notebook object. An original proposed null remains null; never introduce a new null withdrawal.
+For facts, questions, catalysts, forecasts, forecast_reviews and lessons, each array included in research.patch
+must contain exactly one accept/reject/correct receipt for EVERY original record. Facts use zero-based index
+from this frozen draft, never output position; the other arrays use their original key. Receipt order does
+not change original record order. Accept copies the checked record without retyping it. Correct copies it
+then applies only necessary field changes plus explicit omit_fields. Do not repeat unchanged records,
+unchanged body text or unchanged source lists. PM/forecast/update reference fields and stable keys cannot
+be changed or omitted. The citation exception permits nonempty source_ids on an already proposed research
+object/item; it never permits a new record or unproposed analysis field.
+Rejecting a keyed record cancels its proposed change, preserving any existing notebook item under that key.
+Facts are a replacement observation set: rejecting an individual fact removes it from this proposed set;
+rejecting every fact means a new empty facts list. To reject the whole facts revision and retain the prior
+set, put facts in research.omit_fields instead. Never confuse these two operations.
+Fields absent from patch and omit_fields retain the draft's proposal. Only explicit omit_fields rejects
+proposed child fields. Investment-view and keyed-item omissions retain their prior notebook fields. Facts
+are new observation records: an omitted optional fact field does not inherit an older fact's value; its
+canonical default applies. Do not omit required record fields. Each correct receipt needs a real patch or explicit omission, never an empty no-op.
 Reflection uses accept/correct only: keep its original reviewed_update_ids without copying or patching them.
 Use correct to mark insufficient_evidence and explain an unsupported receipt; never reject the receipt.
 If an object was absent from the draft, its receipt is null; empty event/theme collections have [] receipts.

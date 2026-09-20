@@ -1023,7 +1023,7 @@ def test_review_schema_limits_decisions_to_each_instruments_actual_draft_events(
     candidates = {iid: row["properties"]["decisions"] for iid, row in items.items()}
     assert candidates["015868-of"]["minItems"] == candidates["015868-of"]["maxItems"] == 0
     assert candidates["600036-sh"]["minItems"] == candidates["600036-sh"]["maxItems"] == 2
-    assert [item["oneOf"][0]["properties"]["event_key"]["const"] for item in candidates["600036-sh"]["items"]["oneOf"]] == ["funding", "earnings"]
+    assert all(item["properties"]["event_key"]["enum"] == ["funding", "earnings"] for item in candidates["600036-sh"]["items"]["oneOf"])
 
 
 def test_proposed_themes_and_reflection_are_required_inside_the_instrument_review():
