@@ -25,6 +25,37 @@ def page_transport(monkeypatch, html, *, headers=None, status=200):
     monkeypatch.setattr(web, "_exchange", exchange)
 
 
+@pytest.mark.parametrize("reader_fails", [False, True])
+def test_stream_reader_uses_pinned_connection_and_always_closes(monkeypatch, public_dns, reader_fails):
+    from types import SimpleNamespace
+    calls = []
+    response = SimpleNamespace(status=200, getheaders=lambda: [("Content-Type", "text/event-stream")])
+    class Connection:
+        def __init__(self, host, port, timeout):
+            calls.append(("connection", host, port, timeout))
+        def request(self, method, path, **kwargs):calls.append(("request", method, path))
+        def getresponse(self):return response
+        def close(self):calls.append(("closed",))
+    monkeypatch.setattr(web.http.client, "HTTPConnection", Connection)
+    monkeypatch.setattr(web.socket, "create_connection", lambda address, **kwargs: calls.append(("pinned", address)) or "socket")
+    def wrap(sock, *, server_hostname):
+        calls.append(("tls", server_hostname));return sock
+    monkeypatch.setattr(web.ssl, "create_default_context", lambda: SimpleNamespace(wrap_socket=wrap))
+    def reader(value):
+        assert value is response
+        if reader_fails:raise TimeoutError("private transport detail")
+        return b"complete stream"
+    if reader_fails:
+        with pytest.raises(web.SectorWebError) as failure:
+            web._request("https://provider.example/v1/chat/completions", timeout=300, response_reader=reader)
+        assert isinstance(failure.value.__cause__, TimeoutError)
+    else:
+        assert web._request("https://provider.example/v1/chat/completions", timeout=300, response_reader=reader) == (
+            200, {"content-type": "text/event-stream"}, b"complete stream")
+    assert ("pinned", ("93.184.216.34", 443)) in calls and ("tls", "provider.example") in calls
+    assert calls[-1] == ("closed",)
+
+
 @pytest.mark.parametrize("base,endpoint", [(None, "https://gateway.hzxxf.cn/v1/messages"),
     ("https://provider.example/v1/", "https://provider.example/v1/messages"),
     ("https://provider.example", "https://provider.example/messages")])

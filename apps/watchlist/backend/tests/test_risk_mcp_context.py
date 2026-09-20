@@ -5,6 +5,18 @@ import asyncio
 import pytest
 
 from watchlist_app import research_mcp as mcp
+from watchlist_app.services.risk_read_projection import _risk_case_brief, project_risk_read
+
+
+def bind_context(monkeypatch, context, requests=None):
+    def request(suffix, payload=None):
+        if requests is not None:
+            requests.append(suffix)
+        if suffix == "risk-read":
+            return project_risk_read(context, **payload)
+        assert suffix == "context"
+        return context
+    monkeypatch.setattr(mcp, "request", request)
 
 
 def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(monkeypatch):
@@ -25,7 +37,7 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
         "limitations": []}
     context = {"risk_run": True, "risk_scope": {"portfolio_id": "p"}, "cutoff": "2026-09-07T00:00:00+00:00",
                "risk_inputs": snapshot, "prior_inputs": copy.deepcopy(snapshot)}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     index = mcp.read_research_context()
     assert len(index["instruments"]) == len(index["reports"]) == 12
     assert sum(page["instrument_count"] for page in index["instrument_overview_pages"]) == 12
@@ -66,7 +78,7 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
     context = {"risk_run": True, "cutoff": "2026-09-20T00:00:00Z", "risk_inputs": snapshot, "prior_inputs": prior}
     before = copy.deepcopy(context)
     requests = []
-    monkeypatch.setattr(mcp, "request", lambda suffix: requests.append(suffix) or context)
+    bind_context(monkeypatch, context, requests)
     expected = [mcp.read_risk_instrument(iid) for iid in snapshot["instrument_ids"]]
     requests.clear()
     offset, pages, observed = 0, 0, []
@@ -85,7 +97,7 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
         assert page["next_offset"] > offset
         offset = page["next_offset"]
     assert 1 < pages < len(instruments)
-    assert requests == ["context"] * pages
+    assert requests == ["risk-read"] * pages
     assert observed == expected
     assert observed[2]["previous"] != {"unchanged": True}
     assert observed[3]["previous_counts"]["research"] == 1
@@ -98,10 +110,10 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
     independent = [mcp.read_risk_instruments(offset=page["offset"]) for page in reversed(plan)]
     assert [item for page in sorted(independent, key=lambda page: page["offset"])
             for item in page["instruments"]] == expected
-    assert requests == ["context"] * pages
+    assert requests == ["risk-read"] * pages
     assert context == before
 
-    def revoked(_):
+    def revoked(_, payload=None):
         raise PermissionError("revoked")
     monkeypatch.setattr(mcp, "request", revoked)
     with pytest.raises(PermissionError, match="revoked"):
@@ -111,7 +123,7 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
 def test_batch_risk_overviews_reject_invalid_scope_offsets_and_oversized_single_item(monkeypatch):
     context = {"risk_run": True, "cutoff": "2026-09-20T00:00:00Z", "risk_inputs": {
         "instrument_ids": [], "instruments": [], "research": [], "quantitative": [], "coverage": []}}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     page = mcp.read_risk_instruments()
     assert page["instruments"] == [] and page["total"] == 0 and page["next_offset"] is None
     for offset in [-1, True, 1]:
@@ -135,7 +147,7 @@ def test_scope_plan_keeps_single_overview_that_fits_without_batch_envelope(monke
     context = {"risk_run": True, "risk_scope": {"watchlist_id": "scope"}, "cutoff": "2026-09-20T00:00:00Z",
                "risk_inputs": {"instrument_ids": [item["instrument_id"] for item in instruments],
                                "instruments": instruments, "research": [], "quantitative": [], "coverage": []}}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     byte_size = lambda payload: len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
     empty_size = byte_size(mcp.read_risk_instrument("large"))
     instruments[1]["risk"]["evidence"] = "x" * (47950 - empty_size)
@@ -206,7 +218,7 @@ def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkey
     context = {"risk_run": True, "cutoff": "2026-09-13T00:00:00+00:00",
                "risk_inputs": snapshot, "prior_inputs": previous}
     original = copy.deepcopy(context)
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
 
     overview = asyncio.run(mcp.mcp.call_tool("read_risk_instrument", {"instrument_id": "target"}))
     assert len(overview.content[0].text.encode()) <= 48000
@@ -230,7 +242,7 @@ def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkey
     case_pages = list(pages("cases"))
     assert len(case_pages) > 1
     current_cases = [case for page in case_pages for case in page["current"]["research"]]
-    assert current_cases == [mcp._risk_case_brief(case) for case in cases]
+    assert current_cases == [_risk_case_brief(case) for case in cases]
     prior_cases = [case for page in case_pages for case in
                    (page["current"] if page["previous"] == {"unchanged": True} else page["previous"])["research"]]
     assert {case["case_id"] for case in prior_cases} == {case["case_id"] for case in previous["research"]}
@@ -262,7 +274,7 @@ def test_risk_instrument_rejects_unreadable_single_record_without_truncating(mon
         "instrument_ids": ["target"], "instruments": [], "research": [
             {"case_id": "large", "instrument_id": "target", "body": "原始风险" * 20000}],
         "quantitative": [], "coverage": []}}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     with pytest.raises(ValueError, match="未截断"):
         mcp.read_risk_instrument("target", section="cases")
     with pytest.raises(ValueError, match="非负整数"):
@@ -273,7 +285,7 @@ def test_risk_instrument_rejects_unreadable_single_record_without_truncating(mon
 
 def test_conversation_is_preserved_and_cannot_read_risk_scope(monkeypatch):
     context = {"conversation": [{"body": "PM观点"}]}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     assert mcp.read_research_context()["sections"]["conversation"]["count"] == 1
     assert mcp.read_research_context(section="conversation")["data"] == [{"body": "PM观点"}]
     assert context == {"conversation": [{"body": "PM观点"}]}
@@ -293,7 +305,7 @@ def test_portfolio_tools_partition_modules_and_bound_contracts(monkeypatch):
     context = {"risk_run": True, "risk_scope": {"portfolio_id": "p"}, "cutoff": "2026-09-07",
                "risk_inputs": {"scope": {"kind": "portfolio", "id": "p"}, "instrument_ids": [], "instruments": [],
                                "research": [], "quantitative": [], "coverage": [], "portfolio": {"risk_context": modules}}}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     index = mcp.read_research_context()
     assert "risk_context" not in index["risk_inputs"]["portfolio"]
     assert len(index["derivative_holdings"]) == 12
@@ -398,7 +410,7 @@ def new_portfolio_modules():
 def test_new_risk_sections_read_every_bound_taxonomy_and_filter_sources_by_module(monkeypatch):
     context, modules = new_portfolio_modules()
     original = copy.deepcopy(context)
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     index = mcp.read_research_context()
     assert set(index["portfolio_risk_sections"]) == {"concentration", "tail_risk", "targets_by_taxonomy"}
     assert {item["taxonomy_id"] for item in index["portfolio_taxonomies"]} == {"industry", "country", "custom-risk"}
@@ -420,7 +432,7 @@ def test_new_risk_sections_read_every_bound_taxonomy_and_filter_sources_by_modul
 
 def test_registered_mcp_schema_and_actual_dispatch_accept_new_sections(monkeypatch):
     context, _ = new_portfolio_modules()
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     tools = asyncio.run(mcp.mcp.list_tools())
     tool = next(item for item in tools if item.name == "read_portfolio_risk")
     assert {"concentration", "tail_risk", "targets_by_taxonomy"}.issubset(tool.input_schema["properties"]["section"]["enum"])
@@ -432,7 +444,7 @@ def test_registered_mcp_schema_and_actual_dispatch_accept_new_sections(monkeypat
 
 def test_new_module_reads_preserve_portfolio_and_contract_scope_restrictions(monkeypatch):
     context, _ = new_portfolio_modules()
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     for section in ("concentration", "tail_risk", "targets_by_taxonomy"):
         with pytest.raises(ValueError, match="仅用于"):
             mcp.read_portfolio_risk(section, "outside-contract")
@@ -474,7 +486,7 @@ def test_concentration_pages_all_taxonomies_and_large_group_sources_within_utf8_
     modules["sources"] = [*modules["sources"], *exposure_sources]
     original = copy.deepcopy(context)
     assert len(json.dumps(modules["concentration"], ensure_ascii=False).encode()) > 50000
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     assert mcp.read_research_context()["concentration_row_count"] == 33
 
     seen_rows, seen_sources, row_page_sizes = [], {}, []
@@ -521,7 +533,7 @@ def test_concentration_pages_all_taxonomies_and_large_group_sources_within_utf8_
 
 def test_concentration_pagination_rejects_out_of_scope_or_unsupported_cursors(monkeypatch):
     context, _ = new_portfolio_modules()
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    bind_context(monkeypatch, context)
     for kwargs in ({"offset": -1}, {"offset": 4}, {"offset": 0, "source_offset": -1}, {"offset": 0, "source_offset": 1}):
         with pytest.raises(ValueError, match="集中度"):
             mcp.read_portfolio_risk("concentration", **kwargs)

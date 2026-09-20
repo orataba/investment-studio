@@ -259,7 +259,7 @@ class NumericStore:
                 conn.execute(delete(current).where(current.c.dataset==name,current.c.key.in_([r["key"] for r in chosen])))
                 conn.execute(insert(current),chosen)
 
-    def _paths(self, name: str, start=None, end=None, batch_id=None, batch_ids=None):
+    def _paths(self, name: str, start=None, end=None, batch_id=None, batch_ids=None, *, symbols=None):
         query = select(files.c.path).join(batches,batches.c.id==files.c.batch_id).where(batches.c.dataset==name,batches.c.status=="ready")
         if start:
             query=query.where((files.c.max_date>=str(start)) | files.c.max_date.is_(None))
@@ -269,6 +269,25 @@ class NumericStore:
             query=query.where(batches.c.id==batch_id)
         if batch_ids is not None:
             query=query.where(batches.c.id.in_(batch_ids))
+        if name == "financial_statements" and symbols is not None:
+            # These three Collector.financials endpoints normalize against the
+            # singleton requested symbol before publication (including original
+            # captures). Bulk/imported/unknown batches have no such guarantee.
+            # Read JSON scalars, not their text casts, so malformed metadata is
+            # retained on both PostgreSQL and SQLite rather than hiding history.
+            query = query.add_columns(batches.c.source, batches.c.details["endpoint"],
+                                      batches.c.details["parameters"]["symbol"])
+            requested = set(symbols)
+            endpoints = {"income-statement", "balance-sheet-statement", "cash-flow-statement"}
+            with self.engine.connect() as conn:
+                paths = []
+                for path, source, endpoint, symbol in conn.execute(query):
+                    scoped = (source == "fmp" and isinstance(endpoint, str) and endpoint in endpoints
+                              and isinstance(symbol, str) and bool(symbol)
+                              and symbol == symbol.strip().upper())
+                    if not scoped or symbol in requested:
+                        paths.append(str(self.settings.data_root / path))
+                return paths
         with self.engine.connect() as conn:
             return [str(self.settings.data_root/r[0]) for r in conn.execute(query)]
 
@@ -281,7 +300,7 @@ class NumericStore:
         if start: _day(start)
         if end: _day(end)
         cutoff = cutoff_instant(as_of) if as_of else None
-        paths=self._paths(dataset,start,end,batch_id,batch_ids)
+        paths=self._paths(dataset,start,end,batch_id,batch_ids,symbols=symbols)
         result={"dataset":dataset,"rows":[],"total":0,"limit":limit,"offset":offset,"provenance":{"as_of":serializable(cutoff),"version_policy":"all_captures" if versions else "latest_observed_per_fact","historical_use":get_dataset(dataset).historical_use}}
         if not paths:
             return result

@@ -52,7 +52,8 @@ def _public_destination(url: str):
     return parsed, str(ips[0]), port
 
 
-def _exchange(parsed, address: str, port: int, *, method: str, headers: dict, body: bytes | None, timeout: int = _TIMEOUT):
+def _exchange(parsed, address: str, port: int, *, method: str, headers: dict, body: bytes | None,
+              timeout: int = _TIMEOUT, response_reader=None):
     """Connect to the validated IP, preserving the original Host and TLS name."""
     connection = http.client.HTTPConnection(parsed.hostname, port, timeout=timeout)
     try:
@@ -66,9 +67,14 @@ def _exchange(parsed, address: str, port: int, *, method: str, headers: dict, bo
             path += "?" + parsed.query
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
-        payload = response.read(_MAX_RESPONSE_BYTES + 1)
-        if len(payload) > _MAX_RESPONSE_BYTES:
-            raise SectorWebError("Web response exceeded the evidence size limit")
+        if response_reader is None:
+            payload = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(payload) > _MAX_RESPONSE_BYTES:
+                raise SectorWebError("Web response exceeded the evidence size limit")
+        else:
+            # The caller consumes a bounded stream while the validated connection
+            # is open. DNS pinning, TLS identity and redirect handling stay here.
+            payload = response_reader(response)
         return response.status, {k.lower(): v for k, v in response.getheaders()}, payload
     except (OSError, http.client.HTTPException) as exc:
         raise SectorWebError("Web request failed or timed out") from exc
@@ -76,9 +82,10 @@ def _exchange(parsed, address: str, port: int, *, method: str, headers: dict, bo
         connection.close()
 
 
-def _request(url: str, *, method="GET", headers=None, body=None, timeout: int = _TIMEOUT):
+def _request(url: str, *, method="GET", headers=None, body=None, timeout: int = _TIMEOUT, response_reader=None):
     parsed, address, port = _public_destination(url)
-    return _exchange(parsed, address, port, method=method, headers=headers or {}, body=body, timeout=timeout)
+    options = {"response_reader": response_reader} if response_reader is not None else {}
+    return _exchange(parsed, address, port, method=method, headers=headers or {}, body=body, timeout=timeout, **options)
 
 
 def search_web(query: str) -> dict:

@@ -10,6 +10,7 @@ from watchlist_app.services import sector_research as service
 from watchlist_app.services.research_runner import harness_available, run_analysis
 from watchlist_app.services.sector_estimates import read_estimate_evidence
 from watchlist_app.services.research_user_commands import UserCommand
+from watchlist_app.api.research_presentation import review_status_view
 
 router = APIRouter()
 
@@ -37,7 +38,8 @@ def sector_research(instrument_id: str | None = None, watchlist_id: str | None =
     states = service.review_states(session, instrument_ids=ids)
     reviews, completed = states["latest"], states["last_completed"]
     sectors = [{"instrument_id": iid, "ticker": iid.upper(), "sector_name": service.instrument_label(session, iid),
-                "latest_review": reviews.get(iid), "last_completed_review": completed.get(iid)} for iid in ids]
+                "latest_review": review_status_view(reviews.get(iid)),
+                "last_completed_review": review_status_view(completed.get(iid))} for iid in ids]
     available = bool(ids)
     message = None if available else "当前范围没有可分析的已登记标的。"
     return {"available": available, "research_enabled": available, "sectors": sectors,

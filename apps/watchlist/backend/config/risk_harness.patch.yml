@@ -15,8 +15,10 @@
       These bound pages are independent: read the known offsets in parallel when possible;
       do not wait for each next_offset before requesting a page already listed in the index.
       Each overview preserves that instrument's current metrics, performance and report counts;
-      do not read the same overview again individually. Use read_risk_instrument for all nonempty
-      cases and research_context pages, and comparisons when needed. These packets contain full researcher reports,
+      do not read the same overview again individually. Execute EVERY instrument_detail_reads
+      entry using read_risk_instrument; these are the exact required cases/research_context pages.
+      If submission returns missing_reads, read those exact tool arguments and resubmit the COMPLETE result.
+      Read comparisons when needed. These packets contain full researcher reports,
       plus the previous snapshot (or unchanged=true). The context index is not the full evidence.
       For a portfolio, also call read_portfolio_risk for EVERY portfolio_risk_sections entry.
       Read derivatives separately for EVERY holding_id in derivative_holdings. These contracts

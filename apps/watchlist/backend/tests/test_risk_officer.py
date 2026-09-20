@@ -14,6 +14,11 @@ def portfolio_access_fixture(monkeypatch):
     monkeypatch.setattr(research_access, "require_portfolio", lambda pid: {"portfolio_id": pid, "role": "reader"})
 
 
+def risk_request(context):
+    from watchlist_app.services.risk_read_projection import project_risk_read
+    return lambda suffix, payload=None: project_risk_read(context, **payload) if suffix == "risk-read" else context
+
+
 def seed(client):
     with get_session_factory()() as session:
         session.add(Watchlist(watchlist_id="risk-list", name="范围列表", owner_type="user", owner_id="test"))
@@ -215,8 +220,8 @@ def test_new_portfolio_modules_and_sources_survive_risk_snapshot_and_validation(
     for section in ("concentration", "tail_risk", "targets_by_taxonomy"):
         assert snapshot["portfolio"]["risk_context"][section] == context[section]
     assert set(source["source_id"] for source in sources).issubset(service.evidence_sources(snapshot))
-    monkeypatch.setattr(research_mcp, "request", lambda _: {
-        "risk_run": True, "cutoff": "2026-09-08", "risk_inputs": snapshot})
+    monkeypatch.setattr(research_mcp, "request", risk_request({
+        "risk_run": True, "cutoff": "2026-09-08", "risk_inputs": snapshot}))
     assert research_mcp.read_portfolio_risk("concentration")["sources"] == [sources[0]]
     assert research_mcp.read_portfolio_risk("tail_risk")["sources"] == [sources[1]]
     target_packet = research_mcp.read_portfolio_risk("targets_by_taxonomy")
@@ -248,6 +253,15 @@ def test_post_only_accepts_scope_and_queues_existing_runner(client, monkeypatch)
     assert again.json() == response.json() and len(calls) == 1
 
 
+def read_required_pages(client, run_id):
+    from watchlist_app.services.risk_read_projection import missing_required_reads
+    with get_session_factory()() as session:
+        reads = missing_required_reads(session.get(ResearchEntry, run_id).context_json)
+    for read in reads:
+        response = client.post(f"/api/research/runs/{run_id}/risk-read", json={key: value for key, value in read.items() if key != "tool"})
+        assert response.status_code == 200, response.text
+
+
 def test_structured_submission_preserves_quotes_and_runner_uses_it_without_console_json(client, monkeypatch):
     from watchlist_app.services import research_runner
     seed(client)
@@ -260,6 +274,7 @@ def test_structured_submission_preserves_quotes_and_runner_uses_it_without_conso
     class Process:
         returncode = 0
         def communicate(self, timeout):
+            read_required_pages(client, rid)
             response = client.post(f"/api/research/runs/{rid}/risk-draft", json=payload)
             assert response.status_code == 200, response.text
             with get_session_factory()() as session:
@@ -287,6 +302,7 @@ def test_structured_submission_rejects_scope_then_accepts_correction(client):
     assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply(instrument_ids=["outside"])).status_code == 422
     with get_session_factory()() as session:
         assert "submitted_risk_review" not in session.get(ResearchEntry, rid).context_json
+    read_required_pages(client, rid)
     assert client.post(f"/api/research/runs/{rid}/risk-draft", json=reply()).status_code == 200
 
 
@@ -440,8 +456,8 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
     assert any("最近一次研究未完成" in message for message in snapshot["limitations"])
     assert {case["case_id"] for case in snapshot["research"]} == {"research"}
     assert {case["case_id"] for case in snapshot["coverage"]} == set()  # A research gap is not a newly invented risk case.
-    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True,
-        "risk_inputs": snapshot, "cutoff": "2026-09-09T00:00:00+00:00"})
+    monkeypatch.setattr(research_mcp, "request", risk_request({"risk_run": True,
+        "risk_inputs": snapshot, "cutoff": "2026-09-09T00:00:00+00:00"}))
     assert research_mcp.read_risk_instrument("risk-a")["current"]["instrument"]["research_tracking"] == tracking
 
 
@@ -541,7 +557,7 @@ def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(clien
         assert service.read_snapshot(session, instrument_id="risk-a") != snapshot
         assert pm["value"]["body"] != note.body  # The already bound evidence cannot drift.
 
-    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True, "risk_inputs": snapshot, "cutoff": instant.isoformat()})
+    monkeypatch.setattr(research_mcp, "request", risk_request({"risk_run": True, "risk_inputs": snapshot, "cutoff": instant.isoformat()}))
     overview = research_mcp.read_risk_instrument("risk-a")
     assert "records" not in overview["current"]["instrument"]["research_context"]
     packet = research_mcp.read_risk_instrument("risk-a", section="research_context")
@@ -584,7 +600,7 @@ def test_risk_pm_note_keeps_full_judgment_without_embedding_bound_original_corpu
         assert references[1]["source_run_id"] == "financial-run"
         assert "text" not in references[0] and "company" not in references[1]
         assert note.research_context["sources"] == sources  # Only the risk projection is compacted.
-    monkeypatch.setattr(research_mcp, "request", lambda _: {"risk_run": True, "risk_inputs": snapshot, "cutoff": "2026-09-13T00:00:00Z"})
+    monkeypatch.setattr(research_mcp, "request", risk_request({"risk_run": True, "risk_inputs": snapshot, "cutoff": "2026-09-13T00:00:00Z"}))
     result = asyncio.run(research_mcp.mcp.call_tool("read_risk_instrument", {"instrument_id": "risk-a", "section": "research_context"}))
     assert len(result.content[0].text.encode()) <= 48000
     assert result.structured_content["current"]["records"] == [record]

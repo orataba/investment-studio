@@ -246,7 +246,9 @@ def test_notebook_uses_completed_instrument_research_and_preserves_original_sour
     dossier = dossier_client.get(url() + "?include_history=true").json()
     assert dossier["notebook"]["run_id"] == "run-1"
     assert dossier["notebook"]["fundamental_view"] == "基本面判断1"
-    assert dossier["notebook"]["sources"] == [{"source_id": "original-1", "text": "原文"}]
+    assert dossier["notebook"]["sources"] == [{"source_id": "original-1"}]
+    with get_session_factory()() as session:
+        assert service.read_dossier(session, "xlk")["notebook"]["sources"] == [{"source_id": "original-1", "text": "原文"}]
     assert [item["run_id"] for item in dossier["notebook_history"]] == ["run-1", "run-0"]
     assert dossier["notebook_history"][1]["important_changes"] == ["变化0"]
     assert dossier_client.get(url()).json()["notebook_history"] == []

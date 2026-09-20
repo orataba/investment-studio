@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import os
 import sys
+import time
 from typing import Literal
 from urllib.parse import quote
 from urllib.error import HTTPError
@@ -16,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from watchlist_app.services.sector_research import ResearchReflection, ReviewResult, SectorEvent, usable_original, usable_computed, draft_payload, shared_market_coverage_gaps
 from watchlist_app.services.sector_estimates import retained_estimate_sources, usable_estimate_change
-from watchlist_app.services.sector_web import _request, SectorWebError
+from watchlist_app.services.sector_web import _MAX_RESPONSE_BYTES, _request, SectorWebError
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids, _original_source
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 
@@ -337,6 +338,134 @@ class _ReviewProtocolError(ValueError):
         self.raw_output = raw_output
 
 
+def _read_review_stream(response, transport: dict, started: float) -> bytes:
+    """Consume native completion SSE; reasoning is counted, never treated as JSON."""
+    transport.update(stage="awaiting_stream_data", http_status=response.status,
+                     headers_seconds=round(time.monotonic() - started, 3))
+    if not 200 <= response.status < 300:
+        body = response.read(_MAX_RESPONSE_BYTES + 1)
+        transport["bytes_received"] = len(body)
+        if len(body) > _MAX_RESPONSE_BYTES:
+            raise SectorWebError("Review response exceeded the evidence size limit")
+        return body
+    if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
+        raise _ReviewProtocolError("核证服务未返回流式响应，未发布研究。", "")
+    document, content, data_lines = {}, [], []
+    finish_reason, output_bytes, event_chars = None, 0, 0
+
+    def invalid(code):
+        transport["protocol_error"] = code
+        raise _ReviewProtocolError("核证响应流不完整或格式无效，未发布研究。",
+                                   json.dumps({"transport": transport}, ensure_ascii=False))
+
+    while True:
+        line = response.readline(_MAX_RESPONSE_BYTES + 1)
+        if not line:
+            invalid("missing_done")
+        transport["bytes_received"] += len(line)
+        if "first_byte_seconds" not in transport:
+            transport["first_byte_seconds"] = round(time.monotonic() - started, 3)
+        transport["stage"] = "streaming"
+        if len(line) > _MAX_RESPONSE_BYTES:
+            invalid("oversize_event")
+        try:
+            line = line.decode("utf-8").rstrip("\r\n")
+        except UnicodeDecodeError:
+            invalid("invalid_utf8")
+        if line.startswith("data:"):
+            data_lines.append(line[5:].removeprefix(" "))
+            event_chars += len(data_lines[-1])
+            if event_chars > _MAX_RESPONSE_BYTES:
+                invalid("oversize_event")
+            continue
+        if line or not data_lines:  # SSE comments/other fields do not contain model output.
+            continue
+        payload, data_lines, event_chars = "\n".join(data_lines), [], 0
+        if payload == "[DONE]":
+            if finish_reason is None:
+                invalid("missing_finish_reason")
+            transport.update(stage="complete", done=True, usage_missing="usage" not in document)
+            document["choices"] = [{"finish_reason": finish_reason,
+                                    "message": {"content": "".join(content)}}]
+            return json.dumps(document, ensure_ascii=False).encode()
+        transport["chunks_received"] += 1
+        try:
+            chunk = json.loads(payload)
+        except ValueError:
+            invalid("invalid_chunk_json")
+        if not isinstance(chunk, dict) or chunk.get("error"):
+            invalid("provider_stream_error")
+        for key in ("id", "model"):
+            if chunk.get(key) is not None:
+                if not isinstance(chunk[key], str) or (key in document and document[key] != chunk[key]):
+                    invalid("inconsistent_response_identity")
+                document[key] = chunk[key]
+                transport[key] = chunk[key][:160]
+        if chunk.get("usage") is not None:
+            if not isinstance(chunk["usage"], dict):
+                invalid("invalid_usage")
+            document["usage"] = _usage_metadata(chunk["usage"])
+            transport["usage"] = document["usage"]
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or len(choices) > 1:
+            invalid("invalid_choices")
+        if not choices:
+            continue  # The optional usage-only final chunk has no choice.
+        choice = choices[0]
+        if not isinstance(choice, dict) or choice.get("index") != 0:
+            invalid("invalid_choice_index")
+        delta = choice.get("delta")
+        if not isinstance(delta, dict) or delta.get("tool_calls"):
+            invalid("invalid_delta")
+        for field in ("content", "reasoning_content"):
+            value = delta.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, str) or (finish_reason is not None and value):
+                invalid("invalid_output_delta")
+            output_bytes += len(value.encode("utf-8"))
+            if output_bytes > _MAX_RESPONSE_BYTES:
+                invalid("oversize_output")
+            counter = "content_chars" if field == "content" else "reasoning_chars"
+            transport[counter] = transport.get(counter, 0) + len(value)
+            if value and "first_output_seconds" not in transport:
+                transport["first_output_seconds"] = round(time.monotonic() - started, 3)
+            if field == "content":
+                content.append(value)
+        if choice.get("finish_reason") is not None:
+            if finish_reason is not None or not isinstance(choice["finish_reason"], str):
+                invalid("invalid_finish_reason")
+            finish_reason = choice["finish_reason"]
+            transport["finish_reason"] = finish_reason
+
+
+def _usage_metadata(usage: dict) -> dict:
+    """Only numerical token accounting belongs in a diagnostic receipt."""
+    result = {key: value for key, value in usage.items() if key in {
+        "prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    } and type(value) is int and value >= 0}
+    for key in ("prompt_tokens_details", "completion_tokens_details"):
+        if isinstance(usage.get(key), dict):
+            result[key] = {name: value for name, value in usage[key].items() if name in {
+                "cached_tokens", "reasoning_tokens", "audio_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens",
+            } and type(value) is int and value >= 0}
+    return result
+
+
+def _review_metadata(packet: dict, document: dict, transport: dict):
+    if packet.get("run_id"):
+        choices = document.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        metadata = {key: value[:160] if isinstance(value, str) else None for key in ("id", "model")
+                    for value in [document.get(key, transport.get(key))]}
+        usage = document.get("usage", transport.get("usage"))
+        metadata["usage"] = _usage_metadata(usage) if isinstance(usage, dict) else None
+        _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
+            "response_metadata": {**metadata,
+                                  "finish_reason": choice.get("finish_reason", transport.get("finish_reason")),
+                                  "transport": transport}}})
+
+
 def _api_request(run_id: str, suffix: str, payload: dict | None = None) -> dict:
     base = os.environ.get("INVESTMENT_STUDIO_RESEARCH_API_BASE_URL", "http://127.0.0.1:8000/api")
     url = f"{base.rstrip('/')}/research/runs/{quote(run_id, safe='')}/{suffix}"
@@ -352,42 +481,58 @@ def _call_reviewer(packet: dict) -> dict:
     key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not key:
         raise ValueError("DEEPSEEK_API_KEY is not configured for the sector fact review")
-    status, _, payload = _request(deepseek_endpoint(), method="POST", headers={
-        "authorization": f"Bearer {key}", "content-type": "application/json",
-        "accept": "application/json", "user-agent": "InvestmentStudio-SectorFactReview/1.0",
-    }, body=json.dumps({
+    body = json.dumps({
         "model": deepseek_model(), "max_tokens": FACT_REVIEW_MAX_TOKENS,
         "thinking": {"type": "enabled"}, "reasoning_effort": "high",
+        "stream": True, "stream_options": {"include_usage": True},
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": _INSTRUCTIONS},
                      {"role": "user", "content": json.dumps({"response_schema": _review_schema(packet["draft_reviews"], packet["sources"],
                          cutoff=datetime.fromisoformat(packet["cutoff"]) if packet.get("cutoff") else None), **packet},
                          ensure_ascii=False, separators=(",", ":"))}],
-    }, ensure_ascii=False).encode(), timeout=300)
-    raw_output = payload.decode("utf-8", errors="replace")
-    if not 200 <= status < 300:
-        raise _ReviewProtocolError(f"Sector fact review failed (HTTP {status})", raw_output)
+    }, ensure_ascii=False).encode()
+    started = time.monotonic()
+    transport = {"stage": "before_response_headers", "bytes_received": 0, "chunks_received": 0, "done": False}
+    document, metadata_attempted = {}, False
     try:
-        document = json.loads(payload)
-    except ValueError as exc:
-        raise _ReviewProtocolError("Sector fact reviewer returned an invalid response", raw_output) from exc
-    choices = document.get("choices") if isinstance(document, dict) else None
-    if not isinstance(choices, list) or len(choices) != 1:
-        raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
-    if packet.get("run_id"):
-        _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
-            "response_metadata": {**{key: document.get(key) for key in ("id", "model", "usage")},
-                                  "finish_reason": choices[0].get("finish_reason")}}})
-    if choices[0].get("finish_reason") == "length":
-        raise _ReviewProtocolError("独立核证达到生成上限，未返回完整结果；草稿及证据已保留，未发布研究。", raw_output)
-    if choices[0].get("finish_reason") != "stop":
-        raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
-    try:
-        result = json.loads(choices[0].get("message", {}).get("content", ""))
-        _Checks.model_validate(result)
-    except (TypeError, ValueError) as error:
-        raise _ReviewProtocolError("独立核证JSON未包含完整研判，未发布研究。", raw_output) from error
-    return result
+        status, _, payload = _request(deepseek_endpoint(), method="POST", headers={
+            "authorization": f"Bearer {key}", "content-type": "application/json",
+            "accept": "text/event-stream", "user-agent": "InvestmentStudio-SectorFactReview/1.0",
+        }, body=body, timeout=300, response_reader=lambda response: _read_review_stream(response, transport, started))
+        raw_output = payload.decode("utf-8", errors="replace")
+        if not 200 <= status < 300:
+            raise _ReviewProtocolError(f"Sector fact review failed (HTTP {status})", raw_output)
+        try:
+            document = json.loads(payload)
+        except ValueError as exc:
+            raise _ReviewProtocolError("Sector fact reviewer returned an invalid response", raw_output) from exc
+        choices = document.get("choices") if isinstance(document, dict) else None
+        if (not isinstance(choices, list) or len(choices) != 1
+                or not isinstance(choices[0], dict)):
+            raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
+        transport["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        metadata_attempted = True
+        _review_metadata(packet, document, transport)
+        if choices[0].get("finish_reason") == "length":
+            raise _ReviewProtocolError("独立核证达到生成上限，未返回完整结果；草稿及证据已保留，未发布研究。", raw_output)
+        if choices[0].get("finish_reason") != "stop":
+            raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
+        try:
+            result = json.loads(choices[0].get("message", {}).get("content", ""))
+            _Checks.model_validate(result)
+        except (TypeError, ValueError) as error:
+            raise _ReviewProtocolError("独立核证JSON未包含完整研判，未发布研究。", raw_output) from error
+        return result
+    except Exception as error:
+        transport.update(elapsed_seconds=round(time.monotonic() - started, 3), error_type=type(error).__name__)
+        error.review_transport = transport
+        if not metadata_attempted:
+            # Failure receipts must not replace the original transport/protocol error.
+            try:
+                _review_metadata(packet, document if isinstance(document, dict) else {}, transport)
+            except Exception:
+                transport["receipt_saved"] = False
+        raise
 
 
 def _source_index(source):
@@ -722,11 +867,15 @@ def review_output(output: str) -> dict:
 
 
 def _safe_failure(error):
+    transport = getattr(error, "review_transport", None)
+    diagnostic = {"diagnostic": json.dumps({key: transport[key] for key in (
+        "stage", "bytes_received", "chunks_received", "elapsed_seconds", "finish_reason", "protocol_error", "done",
+    ) if key in transport}, ensure_ascii=False, separators=(",", ":"))} if transport else {}
     if isinstance(error, MissingResearchDraft):
         return {"type": "MissingResearchDraft",
-                "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。"}
+                "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。", **diagnostic}
     if isinstance(error, TimeoutError) or isinstance(error.__cause__, TimeoutError):
-        return {"type": "TimeoutError", "summary": "独立事实核证请求超时，原始草稿及证据已保留，未发布事件。"}
+        return {"type": "TimeoutError", "summary": "独立事实核证请求超时，原始草稿及证据已保留，未发布事件。", **diagnostic}
     if isinstance(error, SectorWebError):
         summary = "独立事实核证请求未完成，原始草稿及证据已保留，未发布事件。"
     elif isinstance(error, ValidationError):
@@ -745,7 +894,7 @@ def _safe_failure(error):
         summary = f"研究证据接口返回 HTTP {error.code}。"
     else:
         summary = "事实核证未完成，未发布事件；原始草稿及已有证据可供排查。"
-    return {"type": type(error).__name__, "summary": summary}
+    return {"type": type(error).__name__, "summary": summary, **diagnostic}
 
 
 def main():

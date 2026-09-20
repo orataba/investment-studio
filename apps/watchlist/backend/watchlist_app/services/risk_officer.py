@@ -290,9 +290,11 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
 
 def prepare_run(run_id):
     with get_session_factory()() as session:
-        run = session.get(ResearchEntry, run_id)
+        run = session.get(ResearchEntry, run_id, with_for_update=True)
         if not run or not run.context_json.get("risk_run"):
             raise ValueError("风险研判记录不存在。")
+        if run.status not in {"queued", "running"}:
+            raise ValueError("已结束的风控记录不能重新准备输入。")
         snapshot = read_snapshot(session, **run.context_json["risk_scope"])
         prior = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == run.topic_id,
             ResearchEntry.status == "completed", ResearchEntry.entry_id != run.entry_id).order_by(ResearchEntry.created_at.desc()))
@@ -300,7 +302,9 @@ def prepare_run(run_id):
         topic.instrument_ids = snapshot["instrument_ids"]
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "prepared_at": datetime.now(UTC).isoformat(),
             "prior_inputs": (prior.context_json or {}).get("risk_inputs") if prior else None,
+            "risk_delivered_pages": [],
             "catalogue": [{"instrument_id": item["instrument_id"], "name": item["name"]} for item in snapshot["instruments"]]}
+        run.context_json.pop("submitted_risk_review", None)
         session.commit()
         if not snapshot["scope_available"]:
             raise ValueError("；".join(snapshot["limitations"]))

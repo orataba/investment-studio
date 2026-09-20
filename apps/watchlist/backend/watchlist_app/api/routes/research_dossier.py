@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
 from watchlist_app.services import research_dossier as service
 from watchlist_app.services.read_models import serialize_payload
+from watchlist_app.api.research_presentation import dossier_view
 
 router = APIRouter()
 
@@ -53,7 +54,7 @@ def dossier(instrument_id: str, include_history: bool = False, source_id: str | 
         if source_id:
             from watchlist_app.services.research_notebook import dossier_source
             return dossier_source(result, source_id)
-        return result
+        return dossier_view(result)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     except LookupError as error:

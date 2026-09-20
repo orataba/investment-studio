@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Investment Studio Home"
-    app_version: str = "1.2.6"
+    app_version: str = "1.2.7"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5172"
     cors_origins: Annotated[list[str], NoDecode] = [
