@@ -789,6 +789,26 @@ def test_calculation_details_still_reject_corrupt_historical_observations() -> N
         engine.dispose()
 
 
+@pytest.mark.parametrize("corruption", [
+    {"value": "NaN"}, {"status": "unknown"}, {"currency": "CHF"},
+    {"price_scale": "100"}, {"price_unit": "rate"},
+    {"metric_family": "fx"}, {"quote_basis": "unknown"},
+    {"as_of_date": "not-a-date"}, {"nav_lineage": {"kind": "unknown"}},
+])
+def test_repeated_series_contract_does_not_hide_a_later_invalid_observation(corruption) -> None:
+    item = deepcopy(TEST_SHARED_STORE["instruments"][1])
+    valid = item["market_data"][0]
+    invalid = {**valid, "as_of_date": "2026-04-16", **corruption}
+    # Reusing a validated identity must never reuse observation eligibility.
+    # Both fresh and repeated identities must fail with the same domain error.
+    errors = []
+    for points in ([invalid], [valid, invalid]):
+        with pytest.raises(ValueError) as raised:
+            shared_store._normalized_market_data({**item, "market_data": points})
+        errors.append(str(raised.value))
+    assert errors[0].replace("row 1", "row 2") == errors[1]
+
+
 def test_fresh_calculation_details_preserve_nav_lineage_and_mutation_isolation() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     InstrumentRegistryBase.metadata.create_all(engine)

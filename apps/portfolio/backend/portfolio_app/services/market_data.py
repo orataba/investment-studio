@@ -319,13 +319,14 @@ def _price_contract(
     return next(iter(contracts), (None, None)) + (None,)
 
 
-def resolve_quote_series(
+def _resolve_quote_selection(
     detail: dict[str, object],
     *,
     candidate_bases: Iterable[str],
     end_date: date | None = None,
+    single_point: bool = False,
 ) -> QuoteSeriesResolution:
-    """Resolve exactly one complete quote-series identity.
+    """Validate one complete causal history before projecting its observations.
 
     A policy basis is a preference, not a series identity.  Portfolio therefore
     locks the selected history to metric family, basis, and currency and rejects
@@ -351,6 +352,8 @@ def resolve_quote_series(
 
     for quote_basis in normalized_bases:
         matching_raw: list[dict[str, object]] = []
+        matching_dates: list[date] = []
+        matching_values: list[float] = []
         invalid_observation = False
         for point in points:
             if not is_usable_market_data_point(point):
@@ -363,10 +366,13 @@ def resolve_quote_series(
                 continue
             if end_date is not None and point_date > end_date:
                 continue
-            if _finite_float(point.get("value")) is None:
+            value = _finite_float(point.get("value"))
+            if value is None:
                 invalid_observation = True
                 continue
             matching_raw.append(point)
+            matching_dates.append(point_date)
+            matching_values.append(value)
 
         if invalid_observation:
             return QuoteSeriesResolution(unavailable_reason="invalid_quote_observation")
@@ -389,8 +395,7 @@ def resolve_quote_series(
         if currency != expected_currency:
             return QuoteSeriesResolution(unavailable_reason="quote_currency_mismatch")
 
-        dates = [_parse_iso_date(point.get("as_of_date")) for point in matching_raw]
-        if len(dates) != len(set(dates)):
+        if len(matching_dates) != len(set(matching_dates)):
             return QuoteSeriesResolution(unavailable_reason="duplicate_quote_observation")
 
         price_unit, price_scale, contract_error = _price_contract(matching_raw)
@@ -416,16 +421,20 @@ def resolve_quote_series(
             return QuoteSeriesResolution(unavailable_reason=reason)
 
         normalized_points: list[dict[str, object]] = []
-        for raw_point in matching_raw:
-            point_date = _parse_iso_date(raw_point.get("as_of_date"))
-            value = _finite_float(raw_point.get("value"))
-            if point_date is None or value is None:
-                return QuoteSeriesResolution(unavailable_reason="invalid_quote_observation")
+        # A point still validates the entire history above, including invalid
+        # older observations and duplicate dates. Only its output allocation
+        # differs: do not build and sort every historical DTO to use the last.
+        selected_indices = (
+            [max(range(len(matching_dates)), key=matching_dates.__getitem__)]
+            if single_point else range(len(matching_raw))
+        )
+        for index in selected_indices:
+            raw_point = matching_raw[index]
             normalized_point = dict(raw_point)
             normalized_point.update(
                 {
-                    "as_of_date": point_date,
-                    "value": value,
+                    "as_of_date": matching_dates[index],
+                    "value": matching_values[index],
                     "metric_family": metric_family,
                     "quote_basis": quote_basis,
                     "currency": currency,
@@ -436,7 +445,8 @@ def resolve_quote_series(
             )
             normalized_points.append(normalized_point)
 
-        normalized_points.sort(key=lambda point: point["as_of_date"])
+        if not single_point:
+            normalized_points.sort(key=lambda point: point["as_of_date"])
         return QuoteSeriesResolution(
             points=tuple(normalized_points),
             metric_family=metric_family,
@@ -449,16 +459,29 @@ def resolve_quote_series(
     return QuoteSeriesResolution(unavailable_reason="quote_series_unavailable")
 
 
+def resolve_quote_series(
+    detail: dict[str, object],
+    *,
+    candidate_bases: Iterable[str],
+    end_date: date | None = None,
+) -> QuoteSeriesResolution:
+    """Return the complete validated series in observation-date order."""
+    return _resolve_quote_selection(
+        detail, candidate_bases=candidate_bases, end_date=end_date,
+    )
+
+
 def resolve_quote_point(
     detail: dict[str, object],
     *,
     candidate_bases: Iterable[str],
     as_of_date: date,
 ) -> QuotePointResolution:
-    series = resolve_quote_series(
+    series = _resolve_quote_selection(
         detail,
         candidate_bases=candidate_bases,
         end_date=as_of_date,
+        single_point=True,
     )
     if not series.available:
         return QuotePointResolution(unavailable_reason=series.unavailable_reason)

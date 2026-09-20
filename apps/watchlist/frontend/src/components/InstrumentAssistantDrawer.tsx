@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router'
-import ResearchPage from '../pages/ResearchPage'
+import ResearchPage from './LazyResearchPage'
 import type { ResearchReference } from '../lib/researchDossierApi'
 import { setRiskReferenceParams } from '../../../../../packages/ui/src/researchReference'
 

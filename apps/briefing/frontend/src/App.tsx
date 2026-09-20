@@ -160,11 +160,12 @@ export default function App() {
   useEffect(() => {
     function restoreLocation() {
       const route = reportLocation()
-      setKind(route.kind); setSelected(route.selected); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30); setLoading(true)
+      if (route.kind !== kind || limit !== 30) setLoading(true)
+      setKind(route.kind); setSelected(route.selected); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30)
     }
     window.addEventListener('popstate', restoreLocation)
     return () => window.removeEventListener('popstate', restoreLocation)
-  }, [])
+  }, [kind, limit])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -177,10 +178,14 @@ export default function App() {
       if (controller.signal.aborted) return
       const result = { rows: pages.flatMap(page => page.rows), total: pages[0].total }
       setRows(result.rows); setTotal(result.total); setLoading(false)
-      if (!selected && result.rows.length) choose((result.rows.find(row => row.status === 'completed') || result.rows[0]).report_id, true)
     }).catch(reason => { if (!controller.signal.aborted) { setError(String(reason.message)); setLoading(false) } })
     return () => controller.abort()
-  }, [kind, revision, limit, selected])
+  }, [kind, revision, limit])
+  useEffect(() => {
+    const candidate = rows.find(row => row.report_type === kind && row.status === 'completed')
+      || rows.find(row => row.report_type === kind)
+    if (!selected && candidate) choose(candidate.report_id, true)
+  }, [rows, selected, kind])
   useEffect(() => {
     if (!selected) { setDetail(null); setDetailLoading(false); return }
     const controller = new AbortController()

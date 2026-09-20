@@ -15,6 +15,7 @@ htmlcov/
 node_modules/
 dist/
 build/
+*.tsbuildinfo
 *.egg-info/
 *.db
 *.sqlite

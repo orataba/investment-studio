@@ -433,11 +433,35 @@ def _validated_market_data_observation(
 ) -> tuple[str, str, Decimal]:
     normalized_instrument_type = normalize_instrument_type(instrument_type)
     normalized_instrument_currency = normalize_market_data_currency(instrument_currency)
+    return _validated_observation_for_instrument(
+        instrument_id=instrument_id,
+        instrument_type=normalized_instrument_type,
+        instrument_currency=normalized_instrument_currency,
+        metric_family=metric_family,
+        quote_basis=quote_basis,
+        point_currency=point_currency,
+        value=value,
+        status=status,
+    )
+
+
+def _validated_observation_for_instrument(
+    *,
+    instrument_id: object,
+    instrument_type: str,
+    instrument_currency: str,
+    metric_family: object,
+    quote_basis: object,
+    point_currency: object,
+    value: object,
+    status: object,
+) -> tuple[str, str, Decimal]:
+    """Validate one observation against an already normalized instrument."""
     normalized_point_currency = normalize_market_data_currency(point_currency)
-    if normalized_point_currency != normalized_instrument_currency:
+    if normalized_point_currency != instrument_currency:
         raise ValueError(
             f'Market-data currency "{normalized_point_currency}" does not match '
-            f'instrument currency "{normalized_instrument_currency}".'
+            f'instrument currency "{instrument_currency}".'
         )
 
     normalized_status = str(status or "").strip().lower()
@@ -449,8 +473,8 @@ def _validated_market_data_observation(
     normalized_value = parse_positive_market_data_value(value)
     validated_fx = validate_fx_market_data_contract(
         instrument_id=instrument_id,
-        instrument_type=normalized_instrument_type,
-        instrument_currency=normalized_instrument_currency,
+        instrument_type=instrument_type,
+        instrument_currency=instrument_currency,
         metric_family=normalized_metric_family,
         quote_basis=normalized_quote_basis,
         point_currency=normalized_point_currency,
@@ -764,6 +788,11 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
         raise ValueError("Instrument id must not be blank.")
     instrument_currency = normalize_market_data_currency(item.get("currency"))
     instrument_type = normalize_instrument_type(item.get("instrument_type"))
+    # Identity and unit contracts are constant across a series. Resolve each
+    # distinct contract once per read, while still validating every observation
+    # (including unavailable rows, dates, values, currencies and NAV lineage).
+    canonical_contracts: dict[tuple[str, str], tuple[str, Decimal]] = {}
+    persisted_contracts: dict[tuple[str, str], tuple[str, Decimal]] = {}
     normalized_points: list[dict[str, object]] = []
     raw_points = item.get("market_data", [])
     if not isinstance(raw_points, list):
@@ -774,21 +803,30 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
         point = raw_point
         metric_family = str(point.get("metric_family") or "").strip().lower()
         quote_basis = str(point.get("quote_basis") or "").strip().lower()
-        price_unit, price_scale = parse_persisted_price_contract(
-            price_unit=point.get("price_unit"),
-            price_scale=point.get("price_scale"),
+        persisted_identity = (
+            str(point.get("price_unit") or "").strip().lower(),
+            str(point.get("price_scale")).strip(),
         )
-        canonical_unit, canonical_scale = canonical_price_contract(
-            instrument_type=instrument_type,
-            metric_family=metric_family,
-            quote_basis=quote_basis,
-        )
+        if persisted_identity not in persisted_contracts:
+            persisted_contracts[persisted_identity] = parse_persisted_price_contract(
+                price_unit=point.get("price_unit"),
+                price_scale=point.get("price_scale"),
+            )
+        price_unit, price_scale = persisted_contracts[persisted_identity]
+        series_identity = (metric_family, quote_basis)
+        if series_identity not in canonical_contracts:
+            canonical_contracts[series_identity] = canonical_price_contract(
+                instrument_type=instrument_type,
+                metric_family=metric_family,
+                quote_basis=quote_basis,
+            )
+        canonical_unit, canonical_scale = canonical_contracts[series_identity]
         if (price_unit, price_scale) != (canonical_unit, canonical_scale):
             raise ValueError(
                 "Persisted market-data price contract does not match its canonical "
                 f"instrument identity: {instrument_type}/{metric_family}/{quote_basis}."
             )
-        point_currency, point_status, point_value = _validated_market_data_observation(
+        point_currency, point_status, point_value = _validated_observation_for_instrument(
             instrument_id=instrument_id,
             instrument_type=instrument_type,
             instrument_currency=instrument_currency,

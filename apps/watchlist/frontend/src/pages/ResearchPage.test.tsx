@@ -97,7 +97,7 @@ it('carries the selected prediction version into shared research and reports its
   const updated = vi.fn()
   window.addEventListener(RESEARCH_UPDATED, updated)
   render(<MemoryRouter><InstrumentAssistantDrawer instrumentId="fund-a" question="这项预测有什么变化？" researchReference={reference} onClose={vi.fn()} /></MemoryRouter>)
-  const send = screen.getByRole('button', { name: '发送' })
+  const send = await screen.findByRole('button', { name: '发送' })
   await waitFor(() => expect(send.hasAttribute('disabled')).toBe(false))
   mocks.write.mockImplementation(async (path: string) => {
     if (path === '/research/topics') return topic
@@ -210,7 +210,7 @@ it('prefills the current instrument and question without sending, and filters un
   render(<MemoryRouter initialEntries={['/instruments/fund-a?instruments=fund-b&question=旧问题&tab=performance&currency=USD&benchmark=sp500&start=2026-01-01&end=2026-09-06&unrelated=value']}>
     <InstrumentAssistantDrawer instrumentId="fund-a" watchlistId="3" question="把基金 A 与基金 B 比较" onClose={vi.fn()} />
   </MemoryRouter>)
-  expect((screen.getByRole('textbox', { name: '向研究助手提问' }) as HTMLTextAreaElement).value).toBe('把基金 A 与基金 B 比较')
+  expect((await screen.findByRole('textbox', { name: '向研究助手提问' }) as HTMLTextAreaElement).value).toBe('把基金 A 与基金 B 比较')
   expect(await screen.findByText('重点标的：基金 A')).toBeTruthy()
   expect(mocks.read).toHaveBeenCalledWith('/research/topics?instrument_id=fund-a')
   expect(mocks.write).not.toHaveBeenCalled()

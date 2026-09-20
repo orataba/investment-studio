@@ -1,5 +1,5 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
-import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import React, { lazy, startTransition, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useCanWriteTeam } from '../components/AccountBoundary'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { LanguageSelector, matchesSystemLabel, useLanguage } from '../../../../../packages/ui/src/i18n'
@@ -47,9 +47,8 @@ import {
 import LoadingOverlay from '../components/LoadingOverlay'
 import RenameWatchlistDialog from '../components/RenameWatchlistDialog'
 import WatchlistCreator, { watchlistCreatorLabel } from '../components/WatchlistCreator'
-import ResearchPage from './ResearchPage'
+import ResearchPage from '../components/LazyResearchPage'
 import { setRiskReferenceParams, type ResearchAssistantReference } from '../../../../../packages/ui/src/researchReference'
-import WatchlistRiskDrawer from '../components/WatchlistRiskDrawer'
 import WorkspaceTools, { WorkspaceToolIcon } from '../../../../../packages/ui/src/WorkspaceTools'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -69,6 +68,8 @@ import {
   formatPercent,
   signedValueClass,
 } from '../lib/format'
+
+const WatchlistRiskDrawer = lazy(() => import('../components/WatchlistRiskDrawer'))
 
 type ModalKind =
   | 'add'
@@ -2593,7 +2594,7 @@ export default function WatchlistsPage() {
         setRiskReferenceParams(next)
         setWatchlistSearchParams(next)
       }} />}
-      {watchlistSearchParams.get('risk') === '1' && <WatchlistRiskDrawer
+      {watchlistSearchParams.get('risk') === '1' && <Suspense fallback={<LoadingOverlay />}><WatchlistRiskDrawer
         key={watchlistId}
         watchlistId={watchlistId}
         watchlistName={activeWatchlist?.name || '当前列表'}
@@ -2605,7 +2606,7 @@ export default function WatchlistsPage() {
         }}
         onAskAssistant={openAssistant}
         onChanged={() => setReloadToken((value) => value + 1)}
-      />}
+      /></Suspense>}
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <div className="watchlists-page">
       <div className="watchlists-pagehead">

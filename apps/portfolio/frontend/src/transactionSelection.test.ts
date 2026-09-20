@@ -3,9 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   resolveWorkspaceTransactionSelection,
   stopTransactionRowSelection,
+  transactionWorkspaceQueryKey,
 } from './lib/transactionSelection'
 
 describe('transaction workspace selection synchronization', () => {
+  it('separates portfolio, transaction, and every financial filter when identifying a loaded workspace', () => {
+    const initial = transactionWorkspaceQueryKey('p1', {}, 'txn-1')
+    expect(transactionWorkspaceQueryKey('p2', {}, 'txn-1')).not.toBe(initial)
+    expect(transactionWorkspaceQueryKey('p1', {}, 'txn-2')).not.toBe(initial)
+    for (const filters of [
+      { account_id: 'cash-1' }, { asset_domain: 'cash' as const },
+      { asset_subtype: 'option' as const }, { transaction_type: 'buy' },
+      { position_reference_id: 'instrument-1' }, { start_date: '2026-09-01' }, { end_date: '2026-09-20' },
+    ]) expect(transactionWorkspaceQueryKey('p1', filters, 'txn-1')).not.toBe(initial)
+  })
+
   it('preserves a newly clicked row while the previous workspace is still rendered', () => {
     expect(
       resolveWorkspaceTransactionSelection({

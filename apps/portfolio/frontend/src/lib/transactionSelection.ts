@@ -1,3 +1,5 @@
+import type { PortfolioTransactionFilters } from './api'
+
 export interface TransactionSelectionSyncInput {
   currentTransactionId: string
   workspaceRequestedTransactionId: string | null
@@ -32,4 +34,16 @@ export function resolveWorkspaceTransactionSelection({
     return undefined
   }
   return nextTransactionId || null
+}
+export function transactionWorkspaceQueryKey(
+  portfolioId: string,
+  filters: PortfolioTransactionFilters,
+  transactionId?: string | null,
+): string {
+  return JSON.stringify([
+    portfolioId, filters.account_id || '', filters.asset_domain || '',
+    filters.asset_subtype || '', filters.transaction_type || '',
+    filters.position_reference_id || '', filters.start_date || '', filters.end_date || '',
+    transactionId || '',
+  ])
 }

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-studio-instrument-core"
-version = "1.2.4"
+version = "1.2.5"
 description = "Shared instrument data contracts for Investment Studio"
 requires-python = ">=3.12"
 dependencies = [

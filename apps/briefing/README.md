@@ -4,6 +4,8 @@
 
 阅读页沿用原日报周报的编号条目、主题标签、相关行情与原始链接。日报每条通常约 100–160 字，周报以短句交代本周变化和讨论问题；校稿同时压缩重复内容，必要的时间、观点归属与条件优先保留。正文来源直接打开发布网站；留存原文放在“来源与覆盖范围”内按需展开。个股行情只展示正文实际关联的证券，并保留真实收盘日期和价格口径。
 
+报告列表按日报／周报类型、分页范围和刷新版本读取；选择报告只读取正文，默认选择和同类型的浏览器前进／后退不重复下载列表。
+
 后端 `briefing_app.main:app`，本地 API 8010，前端 5175；云端 API 8110，网页 3103。数据库独立 `briefing` schema，通过统一迁移入口维护。后端配置使用外置 `briefing.env` 与 `market.env`，DeepSeek 沿用外置 `portfolio-copilot.env`。凭据不写入仓库、报告或 MCP。
 
 模型接口复用 [共享 DeepSeek 配置](../../infra/config/deepseek_harness.patch.yml)，通过 Harness 自带的 OpenAI 兼容接口读取 `DEEPSEEK_BASE_URL`。该地址是 API 命名空间，默认 `https://gateway.hzxxf.cn/v1`；写作与独立校稿统一使用 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME`（默认 `deepseek-v4.1-flash`），均保留高推理设置。

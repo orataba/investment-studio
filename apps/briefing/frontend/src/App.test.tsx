@@ -18,6 +18,29 @@ beforeEach(() => { window.history.replaceState(null, '', '/?lang=zh-Hans') })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 function page(component: React.ReactNode) { return render(<LanguageProvider enableDomTranslation={false}>{component}</LanguageProvider>) }
 
+it('loads the report index once while selecting the default edition and switching editions', async () => {
+  const previous = { ...detail, report_id: 'report-previous', version: 2, title: '上一版日报' }
+  const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { harness_available: false, can_generate: false, can_read_sources: true }
+    if (url.includes('/reports?')) return { rows: [detail, previous], total: 2 }
+    return url.endsWith('/report-previous') ? previous : detail
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', { name: /2026-09-07.*版本 2/ }))
+  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-previous'))).toBe(true))
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
+  await act(async () => {
+    window.history.replaceState(null, '', '/?lang=zh-Hans&type=daily&report=report-v1')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  })
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(screen.getByRole('heading', { name: '历史期刊' }).closest('aside')?.getAttribute('aria-busy')).toBe('false')
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/reports?'))).toHaveLength(1)
+})
+
 it('shows tags, dated market moves and direct original links without opening source text', () => {
   const source = vi.fn()
   page(<ReportBody detail={detail} onSource={source} />)

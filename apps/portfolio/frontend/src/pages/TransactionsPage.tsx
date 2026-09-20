@@ -87,6 +87,7 @@ import {
 } from '../lib/transactionEligibility'
 import {
   resolveWorkspaceTransactionSelection,
+  transactionWorkspaceQueryKey,
   stopTransactionRowSelection,
 } from '../lib/transactionSelection'
 import {
@@ -1089,6 +1090,7 @@ export default function TransactionsPage() {
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionWorkspaceResponse | null>(null)
   const [optionDeliveryLinks, setOptionDeliveryLinks] = useState<PortfolioOptionDeliveryLink[]>([])
   const [workspaceRequestedTransactionId, setWorkspaceRequestedTransactionId] = useState<string | null>(null)
+  const loadedWorkspaceQueryRef = useRef<string | null>(null)
   const [metaLoading, setMetaLoading] = useState(true)
   const [loadingTransactions, setLoadingTransactions] = useState(true)
   const [metadataError, setMetadataError] = useState<string | null>(null)
@@ -1398,6 +1400,7 @@ export default function TransactionsPage() {
     const controller = new AbortController()
 
     if (!portfolioId) {
+      loadedWorkspaceQueryRef.current = null
       setTransactionsWorkspace(null)
       setOptionDeliveryLinks([])
       setWorkspaceRequestedTransactionId(null)
@@ -1409,6 +1412,14 @@ export default function TransactionsPage() {
       }
     }
 
+    // The server includes the selected transaction's complete inspector in the
+    // first workspace. Reflecting that default in the URL does not need another
+    // read. Other selections/filters still load their own complete workspace.
+    if (loadedWorkspaceQueryRef.current === transactionWorkspaceQueryKey(portfolioId, filters, selectedTransactionId)) {
+      setWorkspaceRequestedTransactionId(selectedTransactionId)
+      return
+    }
+    loadedWorkspaceQueryRef.current = null
     setLoadingTransactions(true)
     setLedgerError(null)
 
@@ -1421,6 +1432,7 @@ export default function TransactionsPage() {
     ])
       .then(([response, deliveryLinksResponse]) => {
         if (!cancelled) {
+          loadedWorkspaceQueryRef.current = transactionWorkspaceQueryKey(portfolioId, filters, response.selected_transaction_id)
           setTransactionsWorkspace(response)
           setOptionDeliveryLinks(deliveryLinksResponse.links)
           setWorkspaceRequestedTransactionId(selectedTransactionId)
@@ -2722,6 +2734,7 @@ export default function TransactionsPage() {
     selectedTransactionOverride?: string | null,
   ) {
     const targetPortfolioId = portfolioId
+    loadedWorkspaceQueryRef.current = null
     setLoadingTransactions(true)
     setLedgerError(null)
     try {
@@ -2737,6 +2750,7 @@ export default function TransactionsPage() {
         getPortfolioOptionDeliveryLinks(targetPortfolioId),
       ])
       if (currentPortfolioIdRef.current !== targetPortfolioId) return
+      loadedWorkspaceQueryRef.current = transactionWorkspaceQueryKey(targetPortfolioId, activeFilters, response.selected_transaction_id)
       setTransactionsWorkspace(response)
       setOptionDeliveryLinks(deliveryLinksResponse.links)
       setWorkspaceRequestedTransactionId(resolvedTransactionId ?? '')

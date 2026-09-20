@@ -4860,6 +4860,11 @@ def _build_boundary_holding_records(
     boundary_nav: float | None,
     option_obligations: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], float | None]:
+    market_point_lookup = (
+        instrument_detail_cache.quote_lookup
+        if isinstance(instrument_detail_cache, valuation_fx.HistoricalInstrumentDetails)
+        else None
+    )
     bind_initial_purchase_valuations(
         transactions, instrument_detail_cache,
         instrument_detail_loader=get_registry_instrument_detail,
@@ -4920,6 +4925,7 @@ def _build_boundary_holding_records(
                 detail=detail,
                 role="valuation",
                 as_of_date=as_of_date,
+                lookup=market_point_lookup,
             )
             if isinstance(detail, dict)
             else None
@@ -4928,6 +4934,7 @@ def _build_boundary_holding_records(
             _previous_market_point_for_selected_point(
                 detail=detail,
                 selected_point=price_point,
+                lookup=market_point_lookup,
             )
             if isinstance(detail, dict)
             else None
@@ -4937,6 +4944,7 @@ def _build_boundary_holding_records(
                 detail=detail,
                 role="total_return",
                 as_of_date=as_of_date,
+                lookup=market_point_lookup,
             )
             if isinstance(detail, dict)
             else None
@@ -4945,6 +4953,7 @@ def _build_boundary_holding_records(
             _previous_market_point_for_selected_point(
                 detail=detail,
                 selected_point=return_price_point,
+                lookup=market_point_lookup,
             )
             if isinstance(detail, dict)
             else None

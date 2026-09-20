@@ -10,7 +10,7 @@ from uuid import uuid4
 from investment_studio_instrument_core.db_models import Instrument
 from sqlalchemy import and_, case, delete, event, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
-from studio_runtime import operation
+from studio_runtime import emit, operation
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -70,6 +70,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-initial-purchase-transaction-valuation-v2"
     "-period-calculation-boundary-state-v2-fifo-acquisition-order"
     "-fcn-settlement-cashflow-recognition-v1"
+    "-incremental-source-prefix-v1"
 )
 
 
@@ -386,13 +387,21 @@ def _incremental_snapshot_seed(
     portfolio_id: str,
     *,
     dirty_from: date | None,
+    source_generation: _SnapshotSourceGeneration | None = None,
 ) -> dict[str, object] | None:
     """Return a reliable prefix seed for an exact dirty-suffix refresh."""
 
     if dirty_from is None:
         return None
+
+    def reject(reason: str, *, source_field: str | None = None) -> None:
+        emit(
+            "portfolio_snapshot_prefix_rejected", portfolio_id=portfolio_id,
+            reason=reason, source_field=source_field,
+        )
+
     if _latest_snapshot_calculation_version(session, portfolio_id) != DAILY_SNAPSHOT_CALCULATION_VERSION:
-        return None
+        return reject("calculation_version_mismatch")
     prior_row = session.scalar(
         select(PortfolioDailySnapshotModel)
         .where(
@@ -405,8 +414,30 @@ def _incremental_snapshot_seed(
         .limit(1)
     )
     if prior_row is None:
-        return None
+        return reject("reliable_prefix_unavailable")
     prior_payload = _restore_snapshot(dict(prior_row.snapshot_json))
+    if prior_payload.get("calculation_version") != DAILY_SNAPSHOT_CALCULATION_VERSION:
+        return reject("calculation_version_mismatch")
+    prior_generation = prior_payload.get("source_generation")
+    if not isinstance(prior_generation, dict):
+        return reject("source_generation_unavailable")
+    if source_generation is None:
+        source_generation = _snapshot_source_generation(session, portfolio_id)
+    if source_generation is None:
+        return reject("source_generation_unavailable")
+    # A transaction changes the request identity and the dirty suffix, while
+    # its published prefix can remain valid. An independently changed market,
+    # instrument configuration or analytics policy can also change that prefix.
+    # The during-build source fence alone cannot detect a change committed
+    # before this attempt (including a missed registry notification).
+    current_sources = source_generation.as_payload()
+    for field in (
+        "market_data_updated_at", "calculation_inputs_updated_at", "analytics_policy_version",
+    ):
+        if field not in prior_generation:
+            return reject("source_generation_incomplete", source_field=field)
+        if prior_generation[field] != current_sources[field]:
+            return reject("source_generation_mismatch", source_field=field)
     # Only the two growth paths establish historical high-water marks. The
     # daily JSON also contains lot/contribution inputs, which are irrelevant to
     # this seed and can be much larger than the suffix being recalculated.
@@ -977,6 +1008,7 @@ def _recalculate_portfolio_daily_snapshots_once(
                     session,
                     portfolio_id,
                     dirty_from=claimed_dirty_from,
+                    source_generation=source_generation_before,
                 )
                 if claimed_dirty_from is not None and claimed_dirty_from <= resolved_end_date
                 else None

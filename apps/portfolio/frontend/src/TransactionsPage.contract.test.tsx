@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LanguageProvider } from '../../../../packages/ui/src/i18n'
@@ -73,6 +73,19 @@ function SwitchableTransactionsPage() {
       <TransactionsPage />
     </>
   )
+}
+
+function TransactionReadNavigation() {
+  const navigate = useNavigate()
+  const { search } = useLocation()
+  return <>
+    <output data-testid="transaction-query">{search}</output>
+    <button onClick={() => navigate('/portfolios/3/transactions?transaction_id=txn-2')}>Select second transaction</button>
+    <button onClick={() => navigate('/portfolios/3/transactions?transaction_id=txn-1')}>Select first transaction</button>
+    <button onClick={() => navigate('/portfolios/3/transactions?account_id=brokerage-1')}>Filter account</button>
+    <button onClick={() => navigate('/portfolios/4/transactions')}>Open other portfolio</button>
+    <TransactionsPage />
+  </>
 }
 
 const securitiesAccount = {
@@ -513,6 +526,48 @@ describe('Transactions rendered page contract', () => {
         },
       ],
     })
+  })
+
+  it('keeps the complete default inspector without repeating its workspace read and reloads changed scope', async () => {
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    apiMocks.getPortfolioTransactionsWorkspace.mockReset().mockImplementation(async (portfolioId) => ({ ...workspace, portfolio_id: portfolioId }))
+    renderPortfolioPage(<TransactionReadNavigation />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    const inspector = await screen.findByRole('complementary', { name: 'Selected transaction details' })
+    await waitFor(() => expect(screen.getByTestId('transaction-query')).toHaveTextContent('transaction_id=txn-1'))
+    expect(within(inspector).getByText('txn-1')).toBeInTheDocument()
+    expect(within(inspector).getByRole('tab', { name: 'History 1' })).toBeInTheDocument()
+    expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledOnce()
+    expect(apiMocks.getPortfolioOptionDeliveryLinks).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Filter account' }))
+    await waitFor(() => expect(screen.getByTestId('transaction-query')).toHaveTextContent('account_id=brokerage-1&transaction_id=txn-1'))
+    expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getPortfolioTransactionsWorkspace.mock.calls[1][1]).toMatchObject({ account_id: 'brokerage-1' })
+    fireEvent.click(screen.getByRole('button', { name: 'Open other portfolio' }))
+    await waitFor(() => expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.getByTestId('transaction-query')).toHaveTextContent('transaction_id=txn-1'))
+    expect(apiMocks.getPortfolioTransactionsWorkspace.mock.calls[2][0]).toBe('4')
+    expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(3)
+  })
+
+  it('still reloads a selected transaction and ignores an aborted result after navigation', async () => {
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    let finishSecond!: (value: unknown) => void
+    apiMocks.getPortfolioTransactionsWorkspace.mockReset().mockImplementation(async (_portfolioId, filters) => {
+      if (filters.transaction_id === 'txn-2') return new Promise(resolve => { finishSecond = resolve })
+      return workspace
+    })
+    renderPortfolioPage(<TransactionReadNavigation />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await waitFor(() => expect(screen.getByTestId('transaction-query')).toHaveTextContent('transaction_id=txn-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select second transaction' }))
+    await waitFor(() => expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(2))
+    const secondSignal = apiMocks.getPortfolioTransactionsWorkspace.mock.calls[1][2] as AbortSignal
+    fireEvent.click(screen.getByRole('button', { name: 'Select first transaction' }))
+    await waitFor(() => expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(3))
+    expect(secondSignal.aborted).toBe(true)
+    await act(async () => finishSecond({ ...workspace, selected_transaction_id: 'txn-2', selected_transaction: { ...selectedTransaction, transaction_id: 'txn-2' } }))
+    expect(screen.getByTestId('transaction-query')).toHaveTextContent('transaction_id=txn-1')
+    expect(within(screen.getByRole('complementary', { name: 'Selected transaction details' })).getByText('txn-1')).toBeInTheDocument()
+    expect(apiMocks.getPortfolioTransactionsWorkspace).toHaveBeenCalledTimes(3)
   })
 
   it('keeps reader exports and filters available without import or recording actions', async () => {

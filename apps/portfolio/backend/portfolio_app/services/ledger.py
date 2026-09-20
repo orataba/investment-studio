@@ -26,7 +26,7 @@ from portfolio_app.services.valuation_quotes import load_valuation_quotes
 from portfolio_app.services.holdings_market_profile import resolve_position_valuation
 from portfolio_app.services.market_data import is_usable_market_data_point
 from portfolio_app.services.market_data import (
-    bind_initial_purchase_valuations, initial_purchase_valuation_point,
+    QuoteSeriesLookup, bind_initial_purchase_valuations, initial_purchase_valuation_point,
     quote_policy_bases, resolve_quote_point,
 )
 from portfolio_app.services.transaction_dates import (
@@ -338,6 +338,11 @@ def _resolve_pricing_quote_map(
                 transactions, instrument_details,
                 instrument_detail_loader=instrument_details.get,
             )
+        quote_lookup = (
+            instrument_detail_cache.quote_lookup
+            if isinstance(instrument_detail_cache, valuation_fx.HistoricalInstrumentDetails)
+            else None
+        )
         pricing_map: dict[str, object] = {}
         for instrument_id in target_instrument_ids:
             detail = instrument_details.get(instrument_id)
@@ -347,6 +352,7 @@ def _resolve_pricing_quote_map(
                 detail,
                 role="valuation",
                 as_of_date=as_of_date,
+                lookup=quote_lookup,
             )
             if resolved is not None:
                 pricing_map[instrument_id] = resolved
@@ -422,6 +428,7 @@ def _select_quote_point(
     *,
     role: str,
     as_of_date: date | None = None,
+    lookup: QuoteSeriesLookup | None = None,
 ) -> dict[str, object] | None:
     candidate_bases = quote_policy_bases(instrument, role)
     if role == "valuation" and any(
@@ -430,11 +437,14 @@ def _select_quote_point(
     ):
         return None
     resolved_as_of_date = as_of_date or date.max
-    point = resolve_quote_point(
-        instrument,
-        candidate_bases=candidate_bases,
-        as_of_date=resolved_as_of_date,
-    ).point
+    point = (
+        lookup.point(instrument, candidate_bases=candidate_bases, as_of_date=resolved_as_of_date)
+        if lookup is not None else resolve_quote_point(
+            instrument,
+            candidate_bases=candidate_bases,
+            as_of_date=resolved_as_of_date,
+        ).point
+    )
     return initial_purchase_valuation_point(
         instrument, market_point=point, as_of_date=resolved_as_of_date,
         candidate_bases=candidate_bases,

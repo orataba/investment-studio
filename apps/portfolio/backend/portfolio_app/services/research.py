@@ -35,7 +35,7 @@ from portfolio_app.services.daily_snapshots import (
     ensure_portfolio_daily_snapshots,
 )
 from portfolio_app.services.ledger import build_account_workspace
-from portfolio_app.services.instrument_registry import get_registry_instrument_details, get_shared_fx_rates
+from portfolio_app.services.instrument_registry import get_registry_instrument_detail, get_registry_instrument_details
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services import valuation_fx
 from portfolio_app.services.asset_deliveries import expand_asset_deliveries
@@ -1113,7 +1113,7 @@ def _build_research_context(
     target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    direct_fx_instruments: valuation_fx.FxInstrumentMap | None = None,
 ) -> dict[str, object]:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1123,13 +1123,18 @@ def _build_research_context(
     transactions = list_transactions(portfolio_id)
 
     resolved_instrument_detail_cache = (
-        instrument_detail_cache if instrument_detail_cache is not None else {}
+        instrument_detail_cache if instrument_detail_cache is not None
+        else valuation_fx.HistoricalInstrumentDetails(end_date=as_of_date)
     )
-    # Both financial views use the same request-local inputs. Preserve full FX
-    # validation and each valuation's dated selection while avoiding repeated
-    # whole-history reads and one registry query per historical security.
+    # Financial views share observations and their validated date index for
+    # this request. FX discovery checks only actual paths, with the same full
+    # history eligibility as the shared catalog. Explicit inputs remain owned
+    # by the caller, including an empty map or a plain detail dictionary.
     if direct_fx_instruments is None:
-        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(get_shared_fx_rates())
+        direct_fx_instruments = valuation_fx.HistoricalFxInstruments(
+            resolved_instrument_detail_cache,
+            detail_loader=get_registry_instrument_detail,
+        )
     missing_instrument_ids = {
         str(transaction.get("instrument_id"))
         for transaction in expand_asset_deliveries(transactions)
@@ -1868,7 +1873,9 @@ def get_research_workbench(
     comparator_taxonomy_node_id = str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None
 
     def build_analysis() -> dict[str, object]:
-        instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+        instrument_detail_cache = valuation_fx.HistoricalInstrumentDetails(
+            end_date=research_as_of_date,
+        )
         with operation("research_context"):
             context = _build_research_context(
                 portfolio_id,
