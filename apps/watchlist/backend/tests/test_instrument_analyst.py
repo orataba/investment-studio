@@ -133,7 +133,11 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
     dossier = client.get('/api/research/instruments/sxv264/dossier').json()
     assert dossier['notebook']['run_id'] == run_id
     assert dossier['notebook']['questions'][0]['status'] == 'open'
-    assert dossier['notebook']['sources'][0]['body'] == material['body']
+    assert 'body' not in dossier['notebook']['sources'][0]
+    saved_source = client.get('/api/research/instruments/sxv264/dossier', params={
+        'source_id': sid, 'version_id': dossier['notebook']['version_id']})
+    assert saved_source.status_code == 200
+    assert saved_source.json()['body'] == material['body']
     conversation = start_analysis(client, monkeypatch)
     path = f"/api/research/runs/{conversation['entry_id']}/tools"
     found = client.post(path, json={'tool': 'dossier', 'instrument_ids': ['sxv264']}).json()['result']

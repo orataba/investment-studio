@@ -405,6 +405,22 @@ def test_length_terminated_stream_retains_accounting_and_rejects_partial_review(
     assert receipts[0]["finish_reason"] == "length" and receipts[0]["transport"]["done"] is True
 
 
+def test_stream_multiline_json_is_one_event_but_concatenated_json_is_diagnosed_not_repaired(monkeypatch):
+    answer = json.dumps(checked())
+    chunk = {"id": "review-fixture", "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": "stop"}]}
+    wire = b"\n".join(b"data: " + line for line in json.dumps(chunk, indent=2).encode().splitlines()) + b"\n\ndata: [DONE]\n\n"
+    _stream_fixture(monkeypatch, wire)
+    assert review._call_reviewer({"sources": [], "draft_reviews": []}) == checked()
+    one = _sse_chunk({"reasoning_content": "private"}).rstrip(b"\r\n")
+    receipts = _stream_fixture(monkeypatch, one + b"\n" + one + b"\n\n")
+    with pytest.raises(review._ReviewProtocolError):
+        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
+    transport = receipts[0]["transport"]
+    assert transport["multiple_json_values"] is True and transport["event_data_lines"] == 2
+    assert transport["json_error_kind"] == "Extra data" and transport["json_error_line"] == 2
+    assert "private" not in json.dumps(receipts)
+
+
 def test_unstructured_provider_text_is_retained_without_accepting_or_printing_it(monkeypatch, retained_run, capsys):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
     raw_text = "Here is the review:\n```json\n" + json.dumps(checked()) + "\n```"

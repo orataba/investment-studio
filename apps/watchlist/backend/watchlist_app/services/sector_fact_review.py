@@ -370,7 +370,8 @@ def _read_review_stream(response, transport: dict, started: float) -> bytes:
             invalid("oversize_event")
         try:
             line = line.decode("utf-8").rstrip("\r\n")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as error:
+            transport.update(utf8_error_start=error.start, utf8_error_end=error.end, utf8_error_kind=error.reason)
             invalid("invalid_utf8")
         if line.startswith("data:"):
             data_lines.append(line[5:].removeprefix(" "))
@@ -380,7 +381,8 @@ def _read_review_stream(response, transport: dict, started: float) -> bytes:
             continue
         if line or not data_lines:  # SSE comments/other fields do not contain model output.
             continue
-        payload, data_lines, event_chars = "\n".join(data_lines), [], 0
+        payload, data_line_count = "\n".join(data_lines), len(data_lines)
+        data_lines, event_chars = [], 0
         if payload == "[DONE]":
             if finish_reason is None:
                 invalid("missing_finish_reason")
@@ -391,7 +393,22 @@ def _read_review_stream(response, transport: dict, started: float) -> bytes:
         transport["chunks_received"] += 1
         try:
             chunk = json.loads(payload)
-        except ValueError:
+        except json.JSONDecodeError as error:
+            transport.update(json_error_kind=error.msg, json_error_position=error.pos,
+                             json_error_line=error.lineno, json_error_column=error.colno,
+                             event_chars=len(payload), event_data_lines=data_line_count,
+                             multiple_json_values=False)
+            # Diagnose nonstandard concatenated JSON events without accepting,
+            # skipping or repairing any part of the provider's response.
+            decoder = json.JSONDecoder()
+            try:
+                _, end = decoder.raw_decode(payload.lstrip())
+                remainder = payload.lstrip()[end:].lstrip()
+                if remainder:
+                    decoder.raw_decode(remainder)
+                    transport["multiple_json_values"] = True
+            except ValueError:
+                pass
             invalid("invalid_chunk_json")
         if not isinstance(chunk, dict) or chunk.get("error"):
             invalid("provider_stream_error")
