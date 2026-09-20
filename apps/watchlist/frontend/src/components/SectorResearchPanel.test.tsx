@@ -80,7 +80,7 @@ it('keeps the last completed conclusion when the latest research update fails', 
   expect(within(conclusion).queryByText(failed.summary)).toBeNull()
   expect(conclusion.querySelector('time')?.dateTime).toBe(saved.checked_at)
   expect(within(conclusion).getByRole('status').textContent).toContain('研究更新未完成')
-  expect(screen.getByText(`本轮未完成原因：${failed.summary}`).closest('details')?.open).toBe(false)
+  expect(screen.getByText(`本轮未完成原因：${failed.summary}`).closest('details')).toBeNull()
   expect(screen.getByRole('button', { name: '更新研究' }).hasAttribute('disabled')).toBe(false)
 })
 

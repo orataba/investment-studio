@@ -109,7 +109,7 @@ def review_states(session, *, instrument_ids=None):
     if requested_ids is not None:
         # Failed/queued checks may not yet contain a review. The saved run scope,
         # rather than the result or today's topic membership, determines inclusion.
-        query = query.where(instrument_run_scope(session, sorted(requested_ids), scope=values["instrument_ids"]))
+        query = query.where(instrument_run_scope(session, sorted(requested_ids)))
     runs = research_projection_rows(session,
         query.order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
         {name: (name,) for name in values})

@@ -60,6 +60,45 @@ Regime package or its data. Include `deploy/regime-ui` alongside the four `dist`
 directories when publishing frontends, and reload Nginx after `nginx -t` when
 its configuration changes. Keep the previous UI assets for rollback.
 
+Nginx reads these files directly as its worker user, independently of the Studio
+service user. A release created under `umask 077` needs explicit traversal
+permission on its root; API health can still pass while the page returns 404 and
+assets return 403. Keep private recovery directories and external secrets at
+their restrictive permissions. Set only the public release root to `0755`, then
+check the staged pages and every referenced script/stylesheet using the actual
+Nginx worker identity (currently `www-data` on the production host):
+
+```bash
+# Run as root after extracting the complete release, before switching current.
+chmod 0755 "$release"
+python3 "$release/infra/scripts/check_regime_public.py" \
+  --release-root "$release" --nginx-user www-data
+```
+
+This read-only preflight checks both `index.html` and `audit.html`, including
+parent-directory and symlink-target access. It does not change permissions. If it
+fails, inspect the named path with `namei -l` and correct only the public path's
+missing access; never recursively make the release, environment or backups
+world-readable.
+
+After switching `current` and validating/reloading Nginx, check the public origin
+before reopening writes or restoring schedules:
+
+```bash
+python3 "$release/infra/scripts/check_regime_public.py" \
+  --url https://regime.yunguyungu.com
+```
+
+The anonymous GET check requires the actual dashboard HTML, its referenced JS/CSS
+with correct content types, and working health/market/latest-data endpoints. It
+also verifies that `/static/audit.html` redirects to `/audit` and the latter
+requires login; these expected redirects are not followed. Other redirects or
+login HTML cannot satisfy readiness. Data freshness is reported separately: a
+`degraded` result with `all_markets_fresh: false` requires investigation under the
+existing market-freshness policy, even when public delivery passes. This check
+does not execute browser JavaScript or validate every market/history chart;
+inspect the actual dashboard interaction as part of release acceptance.
+
 Before switching a Studio release, retain the preceding build's hashed assets
 in the new `dist/assets` without overwriting new files. An already-open page may
 request its previous version's lazy-loaded chunks after the switch. Use the
@@ -151,7 +190,8 @@ bundles inside the live `current` target. Complete these steps in order:
    manifest's hashed assets as described above. Stage the Regime static UI
    separately and verify its API compatibility; preserve the independently
    installed Regime software paths and environment when that application is not
-   part of this upgrade.
+   part of this upgrade. Run the staged Regime worker-access preflight above
+   before stopping services.
 2. Save the current symlink target, external configuration, unit definitions,
    enablement and exact active service/timer sets in a private release recovery
    directory. Record Regime's actual paths from its external runtime and scheduler
@@ -178,7 +218,8 @@ bundles inside the live `current` target. Complete these steps in order:
    `current`, validate the Nginx configuration, and reload if it changed. Check
    loopback health, authenticated resource permissions, enabled Research, catalog
    discovery, diagnostic records, compressed/cacheable assets and a previous
-   manifest's lazy chunk through the actual ingress.
+   manifest's lazy chunk through the actual ingress. Run the public Regime check
+   above as a required gate; its UI is served outside the eight Studio services.
 6. Accept the release before reopening writes and restoring the previously active
    schedules, excluding retired units. A persistent market timer can immediately
    catch up when reactivated; inspect the resulting job state. Keep previously
@@ -403,6 +444,9 @@ Data Ingestion raw-evidence storage exists before destructive shared NAV cleanup
 Before accepting an upgrade, the installer checks HTTP readiness for all eight
 API and web endpoints; a running process alone is insufficient. `HEALTH_ATTEMPTS`
 defaults to 60, with bounded requests and a one-second pause between attempts.
+These loopback checks cannot establish Nginx access to Regime's staged files.
+The outer release procedure must also pass the worker-access preflight before
+switching `current`, and the public Regime check afterwards, as described above.
 
 Keep external business writes paused until a migration workflow with automatic
 database rollback has accepted the upgrade. Stop scheduled triggers before

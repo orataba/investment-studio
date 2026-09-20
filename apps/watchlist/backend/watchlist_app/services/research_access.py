@@ -7,6 +7,7 @@ from sqlalchemy import select
 from studio_identity import current_principal
 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+from watchlist_app.db.research_scope import JSON_NUL_ESCAPE, research_scope_expression
 
 
 def require_team_write():
@@ -35,13 +36,13 @@ def topic_portfolio_ids(session, topic):
     return topic_portfolio_ids_by_topic(session, [topic])[topic.topic_id]
 
 
-_JSON_NUL_ESCAPE = r"(?<!\\)((?:\\\\)*)\\u0000"
+_JSON_NUL_ESCAPE = JSON_NUL_ESCAPE
 
 
 def _postgres_projection_context():
     from sqlalchemy import JSON, Text, case, cast, func
     text_value = cast(ResearchEntry.context_json, Text)
-    affected = text_value.op("~")(_JSON_NUL_ESCAPE)
+    affected = case((func.strpos(text_value, r"\u0000") > 0, text_value.op("~")(_JSON_NUL_ESCAPE)), else_=False)
     # PostgreSQL json accepts a retained NUL escape but its extraction functions
     # reject it, even in an unrelated field. Normalize only the SQL working copy;
     # research_projection_rows restores selected values from the untouched JSON.
@@ -93,16 +94,16 @@ def research_projection_rows(session, query, fields):
     return records
 
 
-def instrument_run_scope(session, instrument_id, *, scope=None):
+def instrument_run_scope(session, instrument_id):
     """Exact overlap with requested IDs, independent of mutable topic scope."""
-    from sqlalchemy import JSON, case, cast, func, literal
-    scope = ResearchEntry.context_json["instrument_ids"] if scope is None else scope
+    from sqlalchemy import Text, case, func, literal
     if session.get_bind().dialect.name == "postgresql":
-        array = case((func.json_typeof(scope) == "array", scope), else_=cast(literal("[]"), JSON))
-        elements = func.json_array_elements_text(array).table_valued("value")
-    else:
-        array = case((func.json_type(scope) == "array", scope), else_="[]")
-        elements = func.json_each(array).table_valued("value")
+        from sqlalchemy.dialects.postgresql import ARRAY
+        ids = [instrument_id] if isinstance(instrument_id, str) else list(instrument_id)
+        return research_scope_expression(ResearchEntry.context_json).overlap(literal(ids, type_=ARRAY(Text())))
+    scope = ResearchEntry.context_json["instrument_ids"]
+    array = case((func.json_type(scope) == "array", scope), else_="[]")
+    elements = func.json_each(array).table_valued("value")
     predicate = (elements.c.value == instrument_id if isinstance(instrument_id, str)
                  else elements.c.value.in_(instrument_id))
     return select(1).select_from(elements).where(predicate).correlate_except(elements).exists()

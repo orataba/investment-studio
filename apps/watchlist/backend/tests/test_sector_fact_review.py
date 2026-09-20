@@ -254,15 +254,21 @@ def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base
         ]}).encode()
 
     monkeypatch.setattr(review, "_request", request)
-    assert review._call_reviewer({"run_id": "test-run", "sources": [], "draft_reviews": []}) == checked()
+    packet = {"run_id": "test-run", "sources": [], "draft_reviews": [],
+              "prior_research_updates": [{"source_id": "retained-version", "text": "原文  中的空格和日期 2026-09-19 保留"}]}
+    assert review._call_reviewer(packet) == checked()
     payload = json.loads(requests[0][1]["body"])
     assert requests[0][1]["timeout"] == 300
-    assert payload["model"] == (configured_model or "deepseek-v4.1-flash") and payload["max_tokens"] == 16000
+    assert payload["model"] == (configured_model or "deepseek-v4.1-flash") and payload["max_tokens"] == 65536
     assert payload["thinking"] == {"type": "enabled"} and payload["reasoning_effort"] == "high"
     assert requests[0][0] == endpoint
     assert payload["response_format"] == {"type": "json_object"}
     assert "tools" not in payload
-    schema = json.loads(payload["messages"][1]["content"])["response_schema"]
+    transmitted = json.loads(payload["messages"][1]["content"])
+    schema = transmitted.pop("response_schema")
+    assert transmitted == packet
+    assert payload["messages"][1]["content"] == json.dumps({"response_schema": schema, **packet},
+                                                         ensure_ascii=False, separators=(",", ":"))
     assert "$ref" not in json.dumps(schema) and "$defs" not in schema
     item = schema["properties"]["reviews"]["items"]
     assert set(item["required"]) == {"instrument_id", "coverage", "decisions"}
@@ -286,6 +292,21 @@ def test_provider_must_return_one_complete_review_json(monkeypatch, choices):
     monkeypatch.setattr(review, "_request", lambda *a, **k: (200, {}, json.dumps({"choices": choices}).encode()))
     with pytest.raises(review._ReviewProtocolError):
         review._call_reviewer({"sources": [], "draft_reviews": []})
+
+
+def test_reasoning_budget_exhaustion_records_usage_but_never_accepts_partial_output(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    response = {"model": "deepseek-v4.1-flash", "usage": {
+        "completion_tokens": 65536, "completion_tokens_details": {"reasoning_tokens": 65536}},
+        "choices": [{"finish_reason": "length", "message": {"content": "", "reasoning_content": "private reasoning"}}]}
+    receipts = []
+    monkeypatch.setattr(review, "_request", lambda *a, **k: (200, {}, json.dumps(response).encode()))
+    monkeypatch.setattr(review, "_api_request", lambda *args: receipts.append(args))
+    with pytest.raises(review._ReviewProtocolError, match="生成上限") as error:
+        review._call_reviewer({"run_id": "limited", "sources": [], "draft_reviews": []})
+    assert "private reasoning" not in str(error.value)
+    metadata = receipts[0][2]["review"]["response_metadata"]
+    assert metadata["finish_reason"] == "length" and metadata["usage"] == response["usage"]
 
 
 def test_unstructured_provider_text_is_retained_without_accepting_or_printing_it(monkeypatch, retained_run, capsys):

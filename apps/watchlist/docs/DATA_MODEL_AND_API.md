@@ -15,6 +15,8 @@
 
 研究工作台在 `watchlist` schema 内维护 `research_topic`、`research_entry`、`risk_review_rule` 和 `risk_case`。专题关联标的或组合；entry 保存人工证据、对话、输入快照、工具证据与回答。`risk_review_rule` 保存回撤和各周期跌幅复核线及初始校准；`risk_case` 分别记录客观触发状态、人工跟进、复核日期和历史。
 
+迁移 `20260920_0060` 为 PostgreSQL `research_entry` 增加基于留存 `context_json.instrument_ids` 的 GIN 表达式索引。读取先按该次运行的原始标的范围筛选，再解析命中记录的研究字段；不能用后来可变的 `research_topic.instrument_ids` 替代历史范围。索引通过同一不可变数据库函数提取文本数组，由 PostgreSQL 随每次写入维护；它不是第二份研究事实或跨请求缓存。原始 context、来源正文、作者及权限判断保持原样。SQL 工作副本仅为处理 PostgreSQL JSON 中保留的 NUL 转义而转换，选中的原始字段仍精确还原。改变提取函数语义必须通过迁移重建依赖索引；SQLite 使用等价的既有逐行范围谓词。
+
 - `/api/research/catalogue`、`/connections` 提供登记标的与外部证据连接状态。
 - `/api/research/topics` 管理持续专题；专题下的 `/entries`、`/files`、`/analysis` 保存材料或发起助手运行。
 - `/api/research/runs/{run_id}/context`、`/tools` 只向绑定运行的受限工具提供证据；运行失败保留输入，服务重启将未完成运行标为失败。

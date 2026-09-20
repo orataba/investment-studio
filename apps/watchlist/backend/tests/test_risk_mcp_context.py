@@ -28,6 +28,8 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
     monkeypatch.setattr(mcp, "request", lambda _: context)
     index = mcp.read_research_context()
     assert len(index["instruments"]) == len(index["reports"]) == 12
+    assert sum(page["instrument_count"] for page in index["instrument_overview_pages"]) == 12
+    assert index["instrument_overview_pages"][0]["offset"] == 0
     assert index["risk_inputs"]["portfolio"] == snapshot["portfolio"]
     assert len(json.dumps(index, ensure_ascii=False, indent=2).encode()) < 50000  # Harness tool-result contract.
     for instrument in index["instruments"]:
@@ -48,6 +50,114 @@ def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(mon
     assert updated["previous"]["research"][0]["body"] == "完整风险分析及反向证据"
     with pytest.raises(ValueError, match="本次风控范围"):
         mcp.read_risk_instrument("outside")
+
+
+def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_each_page(monkeypatch):
+    instruments = [{"instrument_id": f"asset-{i}", "name": f"标的{i}",
+                    "risk": {"current_drawdown": -i, "quality_note": "完整指标说明" * 250},
+                    "performance_evidence": {"monthly_periods": [{"return_pct": -2}]},
+                    "research_context": {"records": [{"source_id": f"pm-{i}", "value": {"body": "经理判断"}}]}}
+                   for i in range(30)]
+    snapshot = {"instrument_ids": [item["instrument_id"] for item in instruments], "instruments": instruments,
+                "research": [], "quantitative": [], "coverage": []}
+    prior = copy.deepcopy(snapshot)
+    prior["instruments"][2]["risk"]["current_drawdown"] = -12
+    prior["research"] = [{"case_id": "prior-only", "instrument_id": "asset-3", "body": "前次风险"}]
+    context = {"risk_run": True, "cutoff": "2026-09-20T00:00:00Z", "risk_inputs": snapshot, "prior_inputs": prior}
+    before = copy.deepcopy(context)
+    requests = []
+    monkeypatch.setattr(mcp, "request", lambda suffix: requests.append(suffix) or context)
+    expected = [mcp.read_risk_instrument(iid) for iid in snapshot["instrument_ids"]]
+    requests.clear()
+    offset, pages, observed = 0, 0, []
+    while True:
+        result = asyncio.run(mcp.mcp.call_tool("read_risk_instruments", {"offset": offset}))
+        page = result.structured_content
+        pages += 1
+        assert len(result.content[0].text.encode()) <= 48000
+        assert json.loads(result.content[0].text) == page
+        assert page["total"] == 30
+        assert page["offset"] == offset
+        assert page["instruments"]
+        observed.extend(page["instruments"])
+        if page["next_offset"] is None:
+            break
+        assert page["next_offset"] > offset
+        offset = page["next_offset"]
+    assert 1 < pages < len(instruments)
+    assert requests == ["context"] * pages
+    assert observed == expected
+    assert observed[2]["previous"] != {"unchanged": True}
+    assert observed[3]["previous_counts"]["research"] == 1
+    assert context == before
+
+    plan = mcp._risk_overview_pages(context)
+    assert sum(page["instrument_count"] for page in plan) == len(instruments)
+    assert len(plan) == pages
+    requests.clear()
+    independent = [mcp.read_risk_instruments(offset=page["offset"]) for page in reversed(plan)]
+    assert [item for page in sorted(independent, key=lambda page: page["offset"])
+            for item in page["instruments"]] == expected
+    assert requests == ["context"] * pages
+    assert context == before
+
+    def revoked(_):
+        raise PermissionError("revoked")
+    monkeypatch.setattr(mcp, "request", revoked)
+    with pytest.raises(PermissionError, match="revoked"):
+        mcp.read_risk_instruments(offset=offset)
+
+
+def test_batch_risk_overviews_reject_invalid_scope_offsets_and_oversized_single_item(monkeypatch):
+    context = {"risk_run": True, "cutoff": "2026-09-20T00:00:00Z", "risk_inputs": {
+        "instrument_ids": [], "instruments": [], "research": [], "quantitative": [], "coverage": []}}
+    monkeypatch.setattr(mcp, "request", lambda _: context)
+    page = mcp.read_risk_instruments()
+    assert page["instruments"] == [] and page["total"] == 0 and page["next_offset"] is None
+    for offset in [-1, True, 1]:
+        with pytest.raises(ValueError, match="分页"):
+            mcp.read_risk_instruments(offset=offset)
+    context["risk_run"] = False
+    with pytest.raises(ValueError, match="仅风控"):
+        mcp.read_risk_instruments()
+    context["risk_run"] = True
+    context["risk_inputs"].update(instrument_ids=["oversized"], instruments=[{
+        "instrument_id": "oversized", "risk": {"unclipped_evidence": "完整" * 50000}}])
+    with pytest.raises(ValueError, match="未截断"):
+        mcp.read_risk_instruments()
+    assert mcp._risk_overview_pages(context) == [{"tool": "read_risk_instrument", "instrument_id": "oversized",
+                                                "section": "overview", "instrument_count": 1}]
+
+
+def test_scope_plan_keeps_single_overview_that_fits_without_batch_envelope(monkeypatch):
+    instruments = [{"instrument_id": iid, "name": iid, "risk": {"evidence": ""}}
+                   for iid in ["before", "large", "after"]]
+    context = {"risk_run": True, "risk_scope": {"watchlist_id": "scope"}, "cutoff": "2026-09-20T00:00:00Z",
+               "risk_inputs": {"instrument_ids": [item["instrument_id"] for item in instruments],
+                               "instruments": instruments, "research": [], "quantitative": [], "coverage": []}}
+    monkeypatch.setattr(mcp, "request", lambda _: context)
+    byte_size = lambda payload: len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+    empty_size = byte_size(mcp.read_risk_instrument("large"))
+    instruments[1]["risk"]["evidence"] = "x" * (47950 - empty_size)
+    standalone = mcp.read_risk_instrument("large")
+    assert byte_size(standalone) == 47950
+    with pytest.raises(ValueError, match="批量页上限"):
+        mcp.read_risk_instruments(offset=1)
+
+    index = mcp.read_research_context()
+    plan = index["instrument_overview_pages"]
+    assert plan == [
+        {"tool": "read_risk_instruments", "offset": 0, "instrument_count": 1},
+        {"tool": "read_risk_instrument", "instrument_id": "large", "section": "overview", "instrument_count": 1},
+        {"tool": "read_risk_instruments", "offset": 2, "instrument_count": 1},
+    ]
+    actual = []
+    for entry in plan:
+        if entry["tool"] == "read_risk_instrument":
+            actual.append(mcp.read_risk_instrument(entry["instrument_id"]))
+        else:
+            actual.extend(mcp.read_risk_instruments(offset=entry["offset"])["instruments"])
+    assert actual == [mcp.read_risk_instrument(item["instrument_id"]) for item in instruments]
 
 
 def test_risk_instrument_pages_real_peer_evidence_cases_and_exact_samples(monkeypatch):
@@ -207,6 +317,53 @@ def test_risk_submission_uses_structured_tool_arguments(monkeypatch):
     monkeypatch.setattr(mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"})
     assert mcp.submit_risk_review(result) == {"status": "accepted"}
     assert calls == [("risk-draft", result.model_dump(mode="json"))]
+
+
+def test_risk_submission_retry_requires_complete_result_and_never_saves_partial(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    calls = []
+    monkeypatch.setattr(mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"})
+    drafts = [
+        ({"summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": []}, {("result", "limitations")}),
+        ({"limitations": []}, {("result", "summary"), ("result", "priorities")}),
+        ({"summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": [{"title": "Issue"}], "limitations": [],
+          "unrecognized": "PRIVATE_INPUT_DO_NOT_ECHO"},
+         {("result", "priorities", 0, "analysis"), ("result", "priorities", 0, "next_watch"), ("result", "unrecognized")}),
+    ]
+    for draft, expected in drafts:
+        with pytest.raises(ToolError) as error:
+            asyncio.run(mcp.mcp.call_tool("submit_risk_review", {"result": draft}))
+        diagnostic = json.loads(str(error.value).split(": ", 1)[1])
+        assert {tuple(issue["loc"]) for issue in diagnostic["issues"]} == expected
+        assert diagnostic["required_result_fields"] == ["summary", "priorities", "limitations"]
+        assert diagnostic["required_priority_fields"] == ["title", "analysis", "next_watch"]
+        assert diagnostic["resubmit_mode"] == "complete_result"
+        assert "PRIVATE_" not in str(error.value)
+        assert calls == []
+
+    complete = {"summary": "核对当前风险与证据限制。", "priorities": [], "limitations": []}
+    accepted = asyncio.run(mcp.mcp.call_tool("submit_risk_review", {"result": complete}))
+    assert json.loads(accepted.content[0].text) == {"status": "accepted"}
+    assert calls == [("risk-draft", complete)]
+
+
+def test_risk_submission_advertises_the_same_strict_result_schema():
+    from mcp.server import MCPServer
+
+    original = MCPServer("Original schema")
+    @original.tool()
+    def original_submit(result: mcp.RiskReview) -> dict:
+        return {}
+
+    tool = next(tool for tool in asyncio.run(mcp.mcp.list_tools()) if tool.name == "submit_risk_review")
+    original_schema = asyncio.run(original.list_tools())[0].input_schema
+    # Pydantic inlines the skipped parameter instead of naming it in $defs;
+    # the required fields, bounds and nested Priority reference remain exact.
+    assert original_schema["properties"]["result"] == {"$ref": "#/$defs/RiskReview"}
+    assert tool.input_schema["properties"]["result"] == original_schema["$defs"]["RiskReview"]
+    assert tool.input_schema["$defs"]["Priority"] == original_schema["$defs"]["Priority"]
+    assert tool.input_schema["required"] == original_schema["required"]
 
 
 def new_portfolio_modules():

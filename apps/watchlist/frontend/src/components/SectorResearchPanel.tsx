@@ -172,6 +172,11 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     {(!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
     {error && <p role="alert">{error}</p>}
     {pollingPaused && <p role="status">研究仍在更新，已暂停自动刷新，可手动刷新查看进展。</p>}
+    {data.sectors.filter((sector) => sector.latest_review?.status === 'failed' && sector.latest_review.summary).map((sector) =>
+      <p key={sector.instrument_id} className="sector-research-limitation" role="status">
+        {data.sectors.length > 1 && <strong>{sector.ticker || sector.sector_name} · </strong>}
+        本轮未完成原因：{sector.latest_review!.summary}
+      </p>)}
 
     {variant !== 'status' && <section className="sector-current-conclusion" aria-label="当前研究结论">
       <h3>当前研究结论</h3>
@@ -201,7 +206,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
           <p><strong>本轮复核</strong> · <span className={sector.latest_review.reflection.status === 'insufficient_evidence' ? 'sector-research-limitation' : undefined}>{sector.latest_review.reflection.status === 'reviewed' ? '已复核既有判断' : '复核证据不足'}</span></p>
           {sector.latest_review.reflection.summary && <p translate="no">{sector.latest_review.reflection.summary}</p>}
         </div>}
-        {sector.latest_review?.status === 'failed' && sector.latest_review.summary && <p>本轮未完成原因：{sector.latest_review.summary}</p>}</div>)}
+        </div>)}
       {coverage.length > 0 && <ul className="sector-research-limitation">{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
       {[...completedRuns].map(([runId, group]) => <ResearchRunSources key={runId} {...group} expanded={expandedSourceScope === query} />)}
     </details>

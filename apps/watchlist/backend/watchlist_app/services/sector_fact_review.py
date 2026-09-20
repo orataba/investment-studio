@@ -21,6 +21,11 @@ from watchlist_app.services.research_notebook import ResearchNotebook, research_
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 
 
+# Reasoning and final JSON share this budget. A complete independent review of
+# retained originals needs room for both; the generation budget is not enough.
+FACT_REVIEW_MAX_TOKENS = 65536
+
+
 _INSTRUCTIONS = """You are the independent final factual reviewer of an instrument research update.
 Check proposed themes as well as events and notebooks. Return themes=[] when all proposed themes are rejected;
 return each retained theme under its original theme_key, retaining only proposed fields. A theme can be an
@@ -351,12 +356,13 @@ def _call_reviewer(packet: dict) -> dict:
         "authorization": f"Bearer {key}", "content-type": "application/json",
         "accept": "application/json", "user-agent": "InvestmentStudio-SectorFactReview/1.0",
     }, body=json.dumps({
-        "model": deepseek_model(), "max_tokens": 32000 if any(r.get("research") for r in packet["draft_reviews"]) else 16000,
+        "model": deepseek_model(), "max_tokens": FACT_REVIEW_MAX_TOKENS,
         "thinking": {"type": "enabled"}, "reasoning_effort": "high",
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": _INSTRUCTIONS},
                      {"role": "user", "content": json.dumps({"response_schema": _review_schema(packet["draft_reviews"], packet["sources"],
-                         cutoff=datetime.fromisoformat(packet["cutoff"]) if packet.get("cutoff") else None), **packet}, ensure_ascii=False)}],
+                         cutoff=datetime.fromisoformat(packet["cutoff"]) if packet.get("cutoff") else None), **packet},
+                         ensure_ascii=False, separators=(",", ":"))}],
     }, ensure_ascii=False).encode(), timeout=300)
     raw_output = payload.decode("utf-8", errors="replace")
     if not 200 <= status < 300:
@@ -366,12 +372,16 @@ def _call_reviewer(packet: dict) -> dict:
     except ValueError as exc:
         raise _ReviewProtocolError("Sector fact reviewer returned an invalid response", raw_output) from exc
     choices = document.get("choices") if isinstance(document, dict) else None
-    if not isinstance(choices, list) or len(choices) != 1 or choices[0].get("finish_reason") != "stop":
+    if not isinstance(choices, list) or len(choices) != 1:
         raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
     if packet.get("run_id"):
         _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
             "response_metadata": {**{key: document.get(key) for key in ("id", "model", "usage")},
-                                  "finish_reason": choices[0]["finish_reason"]}}})
+                                  "finish_reason": choices[0].get("finish_reason")}}})
+    if choices[0].get("finish_reason") == "length":
+        raise _ReviewProtocolError("独立核证达到生成上限，未返回完整结果；草稿及证据已保留，未发布研究。", raw_output)
+    if choices[0].get("finish_reason") != "stop":
+        raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
     try:
         result = json.loads(choices[0].get("message", {}).get("content", ""))
         _Checks.model_validate(result)

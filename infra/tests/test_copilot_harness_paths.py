@@ -31,13 +31,14 @@ def test_missing_installed_runtime_stops_without_resolving_packages(tmp_path):
     assert not invoked.exists()
 
 
-@pytest.mark.parametrize('app,task_mode,reviewer_fails,configured_model', [
-    ('portfolio', None, False, None), ('portfolio', None, False, 'test-vision-model'),
-    ('watchlist', None, False, None), ('watchlist', 'sector', False, 'deepseek-v4.1-flash'),
-    ('watchlist', 'risk', False, None), ('watchlist', 'sector', True, None),
-    ('briefing', None, False, None), ('briefing', 'review', False, 'test-configured-model'),
+@pytest.mark.parametrize('app,task_mode,reviewer_fails,configured_model,harness_fails', [
+    ('portfolio', None, False, None, False), ('portfolio', None, False, 'test-vision-model', False),
+    ('watchlist', None, False, None, False), ('watchlist', 'sector', False, 'deepseek-v4.1-flash', False),
+    ('watchlist', 'risk', False, None, False), ('watchlist', 'sector', True, None, False),
+    ('briefing', None, False, None, False), ('briefing', 'review', False, 'test-configured-model', False),
+    ('watchlist', None, False, None, True), ('watchlist', 'sector', False, None, True),
 ])
-def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, task_mode, reviewer_fails, configured_model):
+def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path, app, task_mode, reviewer_fails, configured_model, harness_fails):
     if app == 'portfolio':
         runner = Path('apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh')
         patch_path = Path('apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml')
@@ -90,7 +91,8 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
     node.write_text(
         f'#!{sys.executable}\n'
         'import json, os, sys\n'
-        'print(json.dumps({"env": dict(os.environ), "args": sys.argv[1:]}))\n',
+        'print(json.dumps({"env": dict(os.environ), "args": sys.argv[1:]}))\n'
+        + ('print("upstream-generation-failed", file=sys.stderr)\nraise SystemExit(17)\n' if harness_fails else ''),
         encoding='utf-8',
     )
     node.chmod(0o700)
@@ -112,6 +114,15 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         ['/bin/bash', str(project / runner), *args],
         env=env, cwd=tmp_path, check=False, capture_output=True, text=True,
     )
+    if harness_fails:
+        assert result.returncode == 17
+        assert 'upstream-generation-failed' in result.stderr
+        assert 'FACT_REVIEW_ARGS' not in result.stderr
+        assert 'SECTOR_REVIEW_ERROR' not in result.stderr
+        # Preserve the final generation output for the application; never send
+        # partial output into the reviewer or fabricate a successful answer.
+        assert json.loads(result.stdout)['args'][0] == str(project / HARNESS_ENTRY)
+        return
     if reviewer_fails:
         assert result.returncode == 78
         markers = [json.loads(line.removeprefix('SECTOR_REVIEW_ERROR ')) for line in result.stderr.splitlines()

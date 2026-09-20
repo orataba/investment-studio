@@ -212,7 +212,7 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
     records = research_projection_rows(session, query.where(ResearchEntry.kind == "analysis", ResearchTopic.visibility == "team",
         True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
         True if principal.local_unrestricted else ResearchTopic.team_id == principal.team_id,
-        instrument_run_scope(session, instrument_id, scope=payload["instrument_ids"]),
+        instrument_run_scope(session, instrument_id),
     ).order_by(ResearchEntry.created_at.desc()),
         {**{name: (name,) for name in ("instrument_ids", "sector_run", "research_run", "web_evidence", "market_text_sources", "submitted_draft")},
          "review": ("reviews", instrument_id)})

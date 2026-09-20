@@ -367,7 +367,7 @@ def _research_records(session: Session, instrument_id: str):
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
         True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
-        instrument_run_scope(session, instrument_id, scope=context["instrument_ids"]), review["research"].as_string().is_not(None),
+        instrument_run_scope(session, instrument_id), review["research"].as_string().is_not(None),
     ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
         {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction")},
          "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")})

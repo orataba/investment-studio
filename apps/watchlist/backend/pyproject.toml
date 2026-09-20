@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-studio-watchlist-backend"
-version = "1.2.5"
+version = "1.2.6"
 description = "Investment Studio Watchlist backend"
 requires-python = ">=3.12"
 dependencies = [

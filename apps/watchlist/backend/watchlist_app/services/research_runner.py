@@ -4,6 +4,7 @@ import logging
 from studio_runtime import operation
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -18,6 +19,19 @@ from watchlist_app.db.session import get_session_factory
 
 ROOT = Path(__file__).resolve().parents[5]
 SCRIPT = ROOT / "apps/watchlist/backend/scripts/run_research_harness.sh"
+
+
+def _provider_failure(errors):
+    """Retain known provider failure classes, never its response or credentials."""
+    text = (errors or "").replace('\\"', '"')
+    codes = set(re.findall(r'"code"\s*:\s*"([a-z_]+)"', text))
+    if codes.intersection({"insufficient_user_quota", "insufficient_quota"}) or any(
+        line.strip() == "dsh: QUOTA: Insufficient Balance" for line in text.splitlines()
+    ):
+        return {"type": "InsufficientBalance", "summary": "DeepSeek账户余额不足，本次分析未完成。充值后可重新更新。"}
+    if "model_not_found" in codes or "no available channel for model" in text.lower():
+        return {"type": "ModelUnavailable", "summary": "DeepSeek服务商当前没有可用的模型通道，本次分析未完成。请检查模型和通道配置。"}
+    return None
 
 
 def harness_available():
@@ -150,9 +164,10 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                     if isinstance(marker.get("diagnostic"), str):
                         runtime_error["diagnostic"] = marker["diagnostic"][:500]
                     break
-            if any(line.strip() == "dsh: QUOTA: Insufficient Balance" for line in (errors or "").splitlines()):
-                runtime_error = {"type": "InsufficientBalance", "summary": "DeepSeek账户余额不足，本次分析未完成。充值后可重新更新。", "exit_code": process.returncode}
-            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "MissingResearchDraft"} else "") + runtime_error["summary"]
+            provider_error = _provider_failure(errors)
+            if provider_error is not None:
+                runtime_error = {**provider_error, "exit_code": process.returncode}
+            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
         elif reply.strip() or risk_run:

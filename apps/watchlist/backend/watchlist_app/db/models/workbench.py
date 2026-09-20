@@ -1,7 +1,7 @@
 """Portfolio-oriented research and persistent risk follow-up."""
 from datetime import date, datetime
 from typing import Any
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Float, Text
+from sqlalchemy import JSON, DDL, Date, DateTime, ForeignKey, Float, Index, Text, event
 from sqlalchemy.orm import Mapped, mapped_column
 from watchlist_app.db.base import Base
 from watchlist_app.db.models.common import TimestampMixin
@@ -36,6 +36,16 @@ class ResearchEntry(TimestampMixin, Base):
     # The run retains the exact analytical inputs and evidence supplied to the assistant.
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(default="recorded")
+
+
+from watchlist_app.db.research_scope import (
+    RESEARCH_SCOPE_FUNCTION_DDL, RESEARCH_SCOPE_INDEX, research_scope_expression,
+)
+
+_scope_index = Index(RESEARCH_SCOPE_INDEX, research_scope_expression(ResearchEntry.context_json),
+                     postgresql_using="gin").ddl_if(dialect="postgresql")
+event.listen(_scope_index, "before_create", DDL(RESEARCH_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
+
 
 class RiskReviewRule(TimestampMixin, Base):
     __tablename__ = "risk_review_rule"

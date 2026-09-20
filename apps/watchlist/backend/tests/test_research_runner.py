@@ -149,7 +149,11 @@ def test_failed_runner_retains_only_explicit_safe_error_marker(client, monkeypat
 
 
 @pytest.mark.parametrize("sector_run", [True, False])
-def test_insufficient_balance_is_explained_without_retaining_provider_stderr(client, monkeypatch, sector_run):
+@pytest.mark.parametrize("provider_error", [
+    'dsh: QUOTA: Insufficient Balance',
+    'dsh: AUTH: 403: {"message":"private billing detail", "code":"insufficient_user_quota"}',
+])
+def test_insufficient_balance_is_explained_without_retaining_provider_stderr(client, monkeypatch, sector_run, provider_error):
     with get_session_factory()() as session:
         session.add(ResearchTopic(topic_id="quota-topic", title="研究检查"))
         session.flush()
@@ -162,7 +166,8 @@ def test_insufficient_balance_is_explained_without_retaining_provider_stderr(cli
         returncode = 1
 
         def communicate(self, timeout):
-            return "", 'private-provider-data\ndsh: QUOTA: Insufficient Balance\nSECTOR_REVIEW_ERROR {"type":"ValueError","summary":"事实核证未完成"}'
+            return "", ('private-provider-data\n' + provider_error
+                + '\nSECTOR_REVIEW_ERROR {"type":"MissingResearchDraft","summary":"研究员未提交结构化草稿"}')
 
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FailedProcess())
     runner.run_analysis("quota-test")
@@ -173,6 +178,14 @@ def test_insufficient_balance_is_explained_without_retaining_provider_stderr(cli
         assert "余额不足" in run.body
         assert "事实核证失败" not in run.body
         assert "private-provider-data" not in json.dumps(run.context_json) + run.body
+        assert "private billing detail" not in json.dumps(run.context_json) + run.body
+
+
+def test_provider_model_failure_retains_only_a_safe_class():
+    failure = runner._provider_failure('dsh: SERVER: {"code":"model_not_found","message":"private-channel"}')
+    assert failure["type"] == "ModelUnavailable"
+    assert "private-channel" not in json.dumps(failure)
+    assert runner._provider_failure("a model response merely mentions insufficient_user_quota") is None
 
 
 @pytest.mark.parametrize("publication_state", ["published", "failed", "conflict"])

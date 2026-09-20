@@ -385,7 +385,6 @@ def test_api_field_errors_exclude_raw_input_and_submission_uses_same_feedback(mc
 @pytest.mark.parametrize("entry", ["request", "submit_research", "submit_risk", "user_command"])
 def test_auth_errors_remain_http_errors_without_exposing_response_body(mcp_http, monkeypatch, status, entry):
     from watchlist_app import research_mcp
-    from types import SimpleNamespace
     error = HTTPError("http://testserver/api", status, "Permission denied", {},
                       io.BytesIO(b'{"detail":"do-not-echo-credential-details"}'))
     calls = []
@@ -395,7 +394,8 @@ def test_auth_errors_remain_http_errors_without_exposing_response_body(mcp_http,
     monkeypatch.setattr(research_mcp, "urlopen", denied)
     actions = {"request": lambda: research_mcp.request("context"),
         "submit_research": lambda: research_mcp.submit_research_review(service.ReviewResult(reviews=[])),
-        "submit_risk": lambda: research_mcp.submit_risk_review(SimpleNamespace(model_dump=lambda **kwargs: {})),
+        "submit_risk": lambda: research_mcp.submit_risk_review(
+            research_mcp.RiskReview(summary="已有证据待复核。", priorities=[], limitations=[])),
         "user_command": lambda: research_mcp._user_command({})}
     with pytest.raises(HTTPError) as caught:
         actions[entry]()
