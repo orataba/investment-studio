@@ -2703,14 +2703,17 @@ function PerformancePage() {
     return `performance-cell-number${SIGNED_CALCULATION_COLUMN_KEYS.has(column) ? ` ${signedValueClass(value)}` : ''}`
   }
 
+  function calculationTableTreeLevel(row: CalculationTableRow) {
+    if (row.kind === 'synthetic') return row.syntheticKind === 'portfolio_total' ? 'root' : undefined
+    return row.kind === 'group' && (row.row.children?.length || (calculationGroupsWorkspace?.summary.axis ?? 'instrument') !== 'instrument')
+      ? 'primary' : 'item'
+  }
+
   function renderCalculationTableCellValue(row: CalculationTableRow, column: CalculationColumnKey): ReactNode {
     if (column === 'line') {
       const label = calculationTableRowLabel(row)
-      if (row.kind === 'synthetic' && row.syntheticKind !== 'portfolio_total') return label
-      const level = row.kind === 'synthetic' ? 'root'
-        : row.kind === 'group' && (row.row.children?.length || (calculationGroupsWorkspace?.summary.axis ?? 'instrument') !== 'instrument')
-          ? 'primary' : 'item'
-      return <span className="portfolio-tree-label" data-tree-level={level}>{label}</span>
+      const level = calculationTableTreeLevel(row)
+      return level ? <span className="portfolio-tree-label" data-tree-level={level}>{label}</span> : label
     }
     const value = calculationTableMetricValue(row, column)
     switch (column) {
@@ -2769,8 +2772,9 @@ function PerformancePage() {
   }
 
   function renderCalculationTableRow(row: CalculationTableRow) {
+    const treeLevel = calculationTableTreeLevel(row)
     return (
-      <tr key={row.key} className={row.className}>
+      <tr key={row.key} className={[row.className, treeLevel ? 'portfolio-tree-row' : ''].filter(Boolean).join(' ')} data-tree-level={treeLevel}>
         {visibleCalculationColumns.map((column) => {
           const className = calculationTableCellClassName(row, column)
           return column === 'line' ? (

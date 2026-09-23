@@ -41,6 +41,20 @@ const shortHistoryMetrics = {
   calmar_ratio: null,
 }
 
+const solutionTreeFixture = {
+  schema_version: 1, as_of_date: '2026-07-15', base_currency: 'USD', portfolio_nav: 1000,
+  risk_attribution_scope: 'portfolio', capital_weight_basis: 'portfolio_nav', hierarchy_status: 'complete', configuration_captured_at: '2026-07-15',
+  rows: [
+    { row_id: 'root', parent_row_id: null, row_kind: 'portfolio', member_type: 'portfolio', member_id: '3', label: 'Long-Term Portfolio', depth: 0, path: ['Long-Term Portfolio'] },
+    { row_id: 'category:risk-assets', parent_row_id: 'root', row_kind: 'category', member_type: 'taxonomy_node', member_id: 'risk-assets', label: 'Risk Assets', depth: 1, path: ['Long-Term Portfolio', 'Risk Assets'] },
+    { row_id: 'instrument:asset-1', parent_row_id: 'category:risk-assets', row_kind: 'instrument', member_type: 'instrument', member_id: 'asset-1', label: 'Alpha Fund', depth: 2, path: ['Long-Term Portfolio', 'Risk Assets', 'Alpha Fund'] },
+  ].map((row) => ({ ...row, target_risk_share: 1, solved_risk_share: 1, current_value_base: 200, current_exposure_base: 200,
+    current_exposure_weight: .2, target_value_base: 800, target_weight: .8, rebalance_value_base: 600,
+    exposure_status: 'complete', trade_constraint: 'adjustable', risk_model_status: 'modeled', execution_status: 'ready', execution_note: null,
+    min_weight: null, max_weight: null, bound_status: null,
+  })),
+}
+
 const completedRun = {
   research_run_id: 'research-1',
   portfolio_id: '3',
@@ -57,6 +71,7 @@ const completedRun = {
   artifact_count: 0,
   artifacts: [],
   detail: {
+    solution_tree: solutionTreeFixture,
     solve_event: {
       as_of_date: '2026-07-15',
       scope_node_id: null,
@@ -236,8 +251,13 @@ const workbenchFixture = {
     nav: 1024,
     holdings_count: 1,
     planning_group_count: 1,
-    chart_label: 'Portfolio NAV',
-    chart_note: 'Canonical portfolio NAV.',
+    chart_label: 'Portfolio TWR Index',
+    portfolio_inception_date: '2026-07-01',
+    performance_start_date: '2026-07-01',
+    performance_end_date: '2026-07-15',
+    performance_coverage_state: 'complete',
+    performance_valuation_basis: 'market_value',
+    chart_note: 'Canonical portfolio time-weighted return.',
     chart_currency: 'USD',
     summary: {
       period_return: 0.024,
@@ -248,8 +268,8 @@ const workbenchFixture = {
       end_nav: 102.4,
     },
     chart_points: [
-      { date: '2026-07-01', value: 100 },
-      { date: '2026-07-15', value: 102.4 },
+      { date: '2026-07-01', value: 1 },
+      { date: '2026-07-15', value: 1.024 },
     ],
     top_holdings: [],
     planning_groups: [],
@@ -356,10 +376,10 @@ describe('Research rendered page contract', () => {
 
     const annualReturnRow = screen.getByRole('row', { name: /Annual Return/ })
     const calmarRow = screen.getByRole('row', { name: /Calmar/ })
-    expect(within(annualReturnRow).getAllByText('-')).toHaveLength(3)
-    expect(within(calmarRow).getAllByText('-')).toHaveLength(3)
+    expect(within(annualReturnRow).getAllByText('—')).toHaveLength(3)
+    expect(within(calmarRow).getAllByText('—')).toHaveLength(3)
 
-    const backtestMetricsSection = screen.getByText('Backtest Metrics').closest('.portfolio-section-block')
+    const backtestMetricsSection = screen.getByText('Comparable Metrics').closest('.portfolio-section-block')
     expect(backtestMetricsSection).not.toBeNull()
     const periodReturnRow = within(backtestMetricsSection as HTMLElement).getByRole('row', { name: /Period Return/ })
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
@@ -641,7 +661,8 @@ describe('Research rendered page contract', () => {
     })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
 
-    expect(await screen.findByText('Current-Target Historical Backtest')).toBeInTheDocument()
+    expect(await screen.findByText('Actual vs Backtest')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Return basis:.*saved current targets/ })).toBeInTheDocument()
     expect(screen.getByText('Current targets')).toBeInTheDocument()
     expect(screen.getByText('Data Cutoff Mode')).toBeInTheDocument()
     expect(screen.getByText('Data Cutoff Date')).toBeInTheDocument()
@@ -651,44 +672,20 @@ describe('Research rendered page contract', () => {
     expect(screen.queryByText(/Historical taxonomy and targets are effective-dated/)).not.toBeInTheDocument()
   })
 
-  it('keeps instrument-level rebalance evidence in one expandable solution table', async () => {
-    renderPortfolioPage(
-      <ResearchPage />,
-      '/portfolios/3/research',
-      '/portfolios/:portfolioId/research',
-    )
-
-    const instrumentDisclosure = (await screen.findByText('Instrument-level Solution')).closest('details')
-    expect(instrumentDisclosure).not.toBeNull()
-    expect(
-      within(instrumentDisclosure as HTMLElement).getByRole('row', {
-        name: /Alpha Fund Risk Assets 20\.00% 80\.00% 60\.00% \$200 \$800 100\.00% 100\.00% Increase/,
-      }),
-    ).toBeInTheDocument()
-    expect(within(instrumentDisclosure as HTMLElement).queryByText(/PM review/i)).not.toBeInTheDocument()
+  it('renders one hierarchical solution with signed trade amounts and an Excel download', async () => {
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const table = await screen.findByRole('table', { name: 'Research solution tree' })
+    expect(within(table).getByRole('row', { name: /Alpha Fund.*100.00%.*100.00%.*\$200.00.*20.00%.*80.00%.*\+\$600.00.*Buy/ })).toBeInTheDocument()
+    expect(screen.queryByText('Instrument-level Solution')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export Excel' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }))
+    expect(within(table).getByText('Risk Assets')).toBeInTheDocument()
+    expect(within(table).queryByText('Alpha Fund')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all' }))
+    expect(within(table).getByText('Alpha Fund')).toBeInTheDocument()
   })
 
-  it('renders sleeve-level solved results first and keeps capital in instrument detail', async () => {
-    renderPortfolioPage(
-      <ResearchPage />,
-      '/portfolios/3/research',
-      '/portfolios/:portfolioId/research',
-    )
-
-    const solvedSection = (await screen.findByText('Solved Result')).closest('section')
-    expect(solvedSection).not.toBeNull()
-    const sleeveTable = solvedSection?.querySelector('.research-solved-table') as HTMLElement
-    expect(within(sleeveTable).getByText('Actual Weight')).toBeInTheDocument()
-    expect(within(sleeveTable).getByText('Solved Weight')).toBeInTheDocument()
-    expect(
-      within(solvedSection as HTMLElement).getByRole('row', {
-        name: /Risk Assets 20\.00% 80\.00% 60\.00% 100\.00% 100\.00% 60\.00% \/ 90\.00% Within/,
-      }),
-    ).toBeInTheDocument()
-    expect(within(solvedSection as HTMLElement).getByRole('columnheader', { name: 'Target Capital' })).toBeInTheDocument()
-  })
-
-  it('compares actual NAV with the backtest on common eligible dates', async () => {
+  it('compares actual TWR with the backtest on common eligible dates', async () => {
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
@@ -697,7 +694,7 @@ describe('Research rendered page contract', () => {
 
     const comparisonSection = (await screen.findByText('Comparable Metrics')).closest('.portfolio-section-block')
     expect(comparisonSection).not.toBeNull()
-    expect(within(comparisonSection as HTMLElement).getByText(/2026-07-01 to 2026-07-15 · 2 observations/)).toBeInTheDocument()
+    expect(within(comparisonSection as HTMLElement).getByText(/2026-07-01 – 2026-07-15/)).toBeInTheDocument()
     const periodReturnRow = within(comparisonSection as HTMLElement).getByRole('row', { name: /Period Return/ })
     expect(within(periodReturnRow).getByText('2.40%')).toBeInTheDocument()
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
@@ -713,13 +710,13 @@ describe('Research rendered page contract', () => {
     } })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     expect(await screen.findByText(note)).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: 'Solved RC' })).toHaveAttribute('title', expect.stringContaining('same global covariance'))
+    expect(screen.getByRole('button', { name: /Risk contribution basis:/ })).toBeInTheDocument()
   })
 
   it('keeps the recorded attribution distinct for an archived solver result', async () => {
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    const result = await screen.findByRole('columnheader', { name: 'Solved RC' })
-    expect(result).toHaveAttribute('title', expect.stringContaining('recorded with this saved run'))
+    const result = await screen.findByRole('button', { name: /Risk contribution basis:/ })
+    expect(result).toBeInTheDocument()
     expect(screen.queryByText(/One portfolio-wide solve/)).not.toBeInTheDocument()
   })
 

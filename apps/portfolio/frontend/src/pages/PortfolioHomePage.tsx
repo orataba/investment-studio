@@ -2193,7 +2193,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   weight: {
     key: 'weight',
-    label: 'Weight',
+    label: 'Capital Weight',
     align: 'right',
     render: (row) => formatPercent(row.allocation),
     sortValue: (row) => row.allocation,
@@ -3222,7 +3222,7 @@ export default function PortfolioHomePage() {
         `Signed NAV Amount (${workspace.base_currency})`,
         `Historical Carrying Basis (${workspace.base_currency})`,
         `Carrying FX Translation (${workspace.base_currency})`,
-        'Portfolio Weight',
+        'Capital Weight',
         'Valuation Basis',
         'Fair Value Status',
         'Coverage',
@@ -3319,7 +3319,7 @@ export default function PortfolioHomePage() {
         `Strike Notional (${workspace.base_currency})`,
         'Portfolio Backing',
         'Current Risk',
-        'Portfolio Weight',
+        'Capital Weight',
         'Status',
         'Valuation Basis',
         'Fair Value Status',
@@ -3381,7 +3381,7 @@ export default function PortfolioHomePage() {
         `Base Value (${workspace.base_currency})`,
         `FX Cost Basis (${workspace.base_currency})`,
         `Unrealized FX P&L (${workspace.base_currency})`,
-        'Portfolio Weight',
+        'Capital Weight',
         'Settlement Date',
         'Pending Until',
         'Related Instrument',
@@ -3438,7 +3438,7 @@ export default function PortfolioHomePage() {
     const selectionInstrumentId =
       holdingReferenceId(row)
     return (
-      <tr key={row.line_id}>
+      <tr key={row.line_id} className="portfolio-tree-row" data-tree-level="item">
         {visibleColumns.map((column) => {
           const className = [
             holdingsAlignmentClass(column),
@@ -3515,7 +3515,7 @@ export default function PortfolioHomePage() {
     }
     const groupContext = { ...columnContext, riskMetrics: securityRiskMetrics?.groups.get(group.key) }
     return (
-      <tr className={`holdings-group-row holdings-${level}-row`}>
+      <tr className={`portfolio-tree-row holdings-group-row holdings-${level}-row`} data-tree-level={group.depth > 1 ? 'nested' : 'primary'}>
         {visibleColumns.map((column, index) => {
           const aggregationKind = HOLDINGS_GROUP_AGGREGATION_KIND[column.key]
           const canAggregate = aggregationKind !== 'none'

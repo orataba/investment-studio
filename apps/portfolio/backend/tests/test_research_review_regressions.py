@@ -596,6 +596,7 @@ def test_research_targets_depend_on_current_members_and_data_not_legacy_scope_me
 
 
 def test_current_policy_uses_market_history_without_target_creation_cutoff(monkeypatch):
+    monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
     state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({'a'}))
     graph_before = deepcopy((state.node_by_id, state.direct_assignments_by_node, state.target_lines_by_set_id))
     period_states = []
@@ -653,6 +654,7 @@ def test_current_policy_uses_market_history_without_target_creation_cutoff(monke
 
 
 def test_derivative_backtest_reuses_simulation_capital_with_costs_and_lifecycle_funding(monkeypatch):
+    monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
     state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({"a"}))
     state.target_lines_by_set_id["targets"][("cash_bucket", "__cash__")]["target_value"] = 0.0
     configuration = {
@@ -756,6 +758,7 @@ def test_frozen_risk_sleeve_is_part_of_the_full_risk_budget_equation():
 
 
 def test_historical_simulation_uses_converged_global_solution_under_binding_constraints(monkeypatch):
+    monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
     state = risk_budget_state(top_bounds={"a": {"min_weight": None, "max_weight": 0.1}})
     monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
     monkeypatch.setattr(solver, "capture_current_target_configuration", lambda *args, **kwargs: {

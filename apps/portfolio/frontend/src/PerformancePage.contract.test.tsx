@@ -316,6 +316,12 @@ describe('Performance rendered page contract', () => {
     expect(screen.getByText('Growth')).toHaveAttribute('data-tree-level', 'primary')
     expect(screen.getByText('Asset')).toHaveAttribute('data-tree-level', 'item')
     expect(screen.getByText('Portfolio Total')).toHaveAttribute('data-tree-level', 'root')
+    for (const [label, level] of [['Growth', 'primary'], ['Asset', 'item'], ['Portfolio Total', 'root']]) {
+      const row = screen.getByText(label).closest('tr')!
+      expect(row).toHaveClass('portfolio-tree-row')
+      expect(row).toHaveAttribute('data-tree-level', level)
+      expect(row.querySelector('.performance-cell-number')).not.toBeNull()
+    }
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
       'aria-label', expect.stringContaining('Linked contributions sum to period TWR; child contributions sum to their parent.'),
     )
@@ -326,6 +332,8 @@ describe('Performance rendered page contract', () => {
     const bridge = await screen.findByRole('row', { name: /TWR Linking Difference/ })
     expect(within(bridge).getByText('-0.12%')).toBeVisible()
     expect(within(bridge).getByText('TWR Linking Difference')).not.toHaveAttribute('data-tree-level')
+    expect(bridge).not.toHaveClass('portfolio-tree-row')
+    expect(bridge).not.toHaveAttribute('data-tree-level')
     expect(screen.getByRole('columnheader', { name: /Arithmetic Return Contribution/ })).toBeVisible()
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
       'aria-label', expect.stringContaining('Arithmetic contributions + TWR linking difference = period TWR.'),
@@ -372,6 +380,8 @@ describe('Performance rendered page contract', () => {
       '/portfolios/:portfolioId/performance')
     const row = await screen.findByRole('row', { name: /Valid group/ })
     expect(within(row).getByText('Valid group')).toHaveAttribute('data-tree-level', 'item')
+    expect(row).toHaveClass('portfolio-tree-row')
+    expect(row).toHaveAttribute('data-tree-level', 'item')
     expect(within(row).getByText('+0.75')).toBeVisible()
     expect(within(row).getByText('+25.00%')).toBeVisible()
   })

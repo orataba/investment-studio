@@ -234,6 +234,7 @@ def test_research_fingerprint_tracks_current_target_market_data_without_transact
         (None, research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         ("recursive_local_covariance", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         ("global_leaf_scalar_targets_v2", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
+        ("global_leaf_scalar_targets_v3", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         (research.RESEARCH_TARGET_SOLVER_VERSION, 5, "stale", "earlier Research input identity version"),
     ],
 )

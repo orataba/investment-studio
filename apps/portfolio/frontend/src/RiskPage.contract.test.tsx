@@ -436,6 +436,7 @@ describe('Risk rendered page contract', () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
     renderRiskPage()
     const row = (await screen.findByText('Unknown valuation')).closest('tr')!
+    expect(screen.getByRole('columnheader', { name: 'Carrying Amount' })).toBeInTheDocument()
     expect(within(row).getByText('—')).toBeInTheDocument()
     expect(row).toHaveTextContent('Price unavailable')
     expect(row).not.toHaveTextContent('$0.00')
@@ -559,6 +560,7 @@ describe('Risk rendered page contract', () => {
     expect(within(riskGap).getByText('Risk Assets')).toBeInTheDocument()
     expect(within(riskGap).getAllByText('100.00%')).toHaveLength(3)
     expect(within(riskHealth).getByText('Modeled Market Sleeve Volatility')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Modeled Capital Weight')).toBeInTheDocument()
     expect(within(riskHealth).getByText('10.00%')).toBeInTheDocument()
     expect(within(riskHealth).getByText(/61\/61 complete/)).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Current drift' })).getByText('SAA 0.00% · TAA 0.00%')).toBeInTheDocument()

@@ -7,7 +7,8 @@ import logging
 import mimetypes
 import shutil
 from copy import deepcopy
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
@@ -825,6 +826,9 @@ def _serialize_run_row(
     detail = None
     if include_detail:
         detail = deepcopy(row.detail_json or {})
+        if detail and not detail.get("solution_tree"):
+            from portfolio_app.services.research_solution_tree import build_research_solution_tree
+            detail["solution_tree"] = build_research_solution_tree(detail, row.request_payload_json or {})
         if isinstance(detail.get("top_holdings"), list):
             detail["top_holdings"] = [
                 _normalize_top_holding_snapshot(item)
@@ -1114,6 +1118,47 @@ def _build_planning_target_summary(
     }
 
 
+def _research_performance_index_points(
+    performance_report: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Project the published, cash-flow-adjusted return chain, including its anchor."""
+    if not isinstance(performance_report, dict):
+        return []
+    summary = performance_report.get("summary") or {}
+    start_date = _date_value(summary.get("start_date"))
+    points: list[dict[str, object]] = []
+    rows = sorted(
+        [row for row in performance_report.get("daily_series", []) if isinstance(row, dict)],
+        key=lambda row: _date_value(row.get("as_of_date")) or date.min,
+    )
+    for row in rows:
+        point_date = _date_value(row.get("as_of_date"))
+        if point_date is None:
+            continue
+        cumulative_twr = _safe_float(row.get("cumulative_twr"))
+        # Performance owns the continuous prefix. Never restart after a missing
+        # return or reconstruct it from account NAV, which includes cash flows.
+        if not row.get("return_chain_continuous") or cumulative_twr is None or not isfinite(cumulative_twr):
+            break
+        initial_eod_anchor = bool(not points and point_date == start_date)
+        if not row.get("return_observation_eligible") and not initial_eod_anchor:
+            continue
+        if not points and summary.get("include_start_date_return"):
+            # The previous date labels the funded day's BOD boundary, not a
+            # fabricated historical observation. Keep the first day's return.
+            points.append({
+                "date": (point_date - timedelta(days=1)).isoformat(),
+                "value": 1.0,
+                "is_start_anchor": True,
+            })
+        points.append({
+            "date": point_date.isoformat(),
+            "value": 1.0 + cumulative_twr,
+            "is_start_anchor": initial_eod_anchor and not bool(summary.get("include_start_date_return")),
+        })
+    return points
+
+
 def _build_research_context(
     portfolio_id: str,
     *,
@@ -1170,9 +1215,12 @@ def _build_research_context(
         direct_fx_instruments=direct_fx_instruments,
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
+    inception_date = _date_value(portfolio.get("inception_date"))
+    if inception_date is None:
+        raise ValueError("Portfolio requires a valid inception date for Research performance.")
     performance_report = get_cached_materialized_performance_report(
         portfolio_id,
-        start_date=lookback_start,
+        start_date=inception_date,
         end_date=as_of_date,
     )
     performance_summary = (
@@ -1217,30 +1265,13 @@ def _build_research_context(
             "Research target solve is unavailable until all securities are assigned to the selected planning taxonomy "
             f"({int(unassigned_group.get('position_count') or 0)} unassigned security holding(s))."
         )
-    daily_points = [
-        {
-            "date": point["as_of_date"].isoformat(),
-            "value": float(point["ending_nav"]),
-        }
-        for point in (
-            list(performance_report.get("daily_series") or [])
-            if isinstance(performance_report, dict)
-            else []
-        )
-        if isinstance(point, dict)
-        and isinstance(point.get("as_of_date"), date)
-        and bool(point.get("return_observation_eligible"))
-        and _safe_float(point.get("ending_nav")) is not None
-    ]
-    chart_label = "Portfolio NAV" if performance_report is not None else None
+    daily_points = _research_performance_index_points(performance_report)
+    chart_label = "Portfolio TWR Index" if performance_report is not None else None
     chart_note = (
-        "Canonical portfolio NAV from Performance; only return-observation-eligible dates are included."
+        "Canonical cash-flow-adjusted portfolio TWR index from inception. "
+        "A funded start includes a unit BOD anchor to preserve its first-day return; "
+        "the curve stops at the first return-coverage gap."
         if performance_report is not None
-        else None
-    )
-    chart_currency = (
-        str(performance_report.get("base_currency") or statement.get("base_currency") or "USD")
-        if isinstance(performance_report, dict)
         else None
     )
     if performance_report is None:
@@ -1266,12 +1297,19 @@ def _build_research_context(
         "target_snapshot_fingerprint": (configuration or {}).get("target_snapshot_fingerprint"),
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
+        "portfolio_inception_date": inception_date.isoformat(),
+        "performance_start_date": _iso_date(_date_value(performance_summary.get("start_date"))),
+        "performance_end_date": daily_points[-1]["date"] if daily_points else None,
+        "performance_coverage_state": performance_summary.get("return_coverage_state") or "unavailable",
+        "performance_valuation_basis": performance_summary.get("performance_basis"),
+        "performance_annualization_eligible": bool(performance_summary.get("annualization_eligible")),
+        "performance_annualization_unavailable_reason": performance_summary.get("annualization_unavailable_reason"),
         "nav": resolved_nav_base,
         "holdings_count": len(research_security_positions),
         "planning_group_count": len(planning_groups),
         "chart_label": chart_label,
         "chart_note": chart_note,
-        "chart_currency": chart_currency,
+        "chart_currency": None,
         "summary": {
             "period_return": _safe_float(performance_summary.get("cumulative_twr")),
             "annualized_volatility": _safe_float(performance_summary.get("annualized_volatility")),
@@ -1611,6 +1649,7 @@ def _build_current_target_detail(
         f"{scope.get('label') or 'Selected Scope'} target weights solved as of {context.get('as_of_date')} "
         f"under {planning_taxonomy_name or 'the selected planning taxonomy'}."
     )
+    from portfolio_app.services.research_solution_tree import build_research_solution_tree
     return {
         "solver_version": solution.get("solver_version"),
         "risk_attribution_scope": solution.get("risk_attribution_scope"),
@@ -1635,6 +1674,7 @@ def _build_current_target_detail(
         "member_targets": deepcopy(solution.get("member_targets") or []),
         "leaf_targets": deepcopy(solution.get("leaf_targets") or []),
         "solved_result_groups": deepcopy(solution.get("solved_result_groups") or []),
+        "solution_tree": build_research_solution_tree(solution, settings_payload, valuation=solution.get("solution_valuation")),
         "solve_event": deepcopy(solve_event),
         "scope_solve_events": deepcopy(solution.get("scope_solve_events") or []),
         "target_weight_gaps": deepcopy(solution.get("target_weight_gaps") or []),
@@ -1678,7 +1718,7 @@ def _write_artifacts(
     settings_path = run_root / "request.json"
     holdings_path = run_root / "top_holdings.csv"
     groups_path = run_root / "planning_groups.csv"
-    portfolio_nav_tape_path = run_root / "portfolio_nav_tape.csv"
+    portfolio_performance_tape_path = run_root / "portfolio_performance_tape.csv"
     target_weights_path = run_root / "target_weights.csv"
     member_targets_path = run_root / "member_targets.csv"
     leaf_targets_path = run_root / "leaf_targets.csv"
@@ -1745,7 +1785,7 @@ def _write_artifacts(
     )
     _write_csv(holdings_path, list(detail.get("top_holdings") or []))
     _write_csv(groups_path, list(detail.get("planning_groups") or []))
-    _write_csv(portfolio_nav_tape_path, list(context.get("chart_points") or []))
+    _write_csv(portfolio_performance_tape_path, list(context.get("chart_points") or []))
     _write_csv(target_weights_path, list(detail.get("target_rows") or []))
     _write_csv(member_targets_path, list(detail.get("member_targets") or []))
     _write_csv(leaf_targets_path, list(detail.get("leaf_targets") or []))
@@ -1761,7 +1801,7 @@ def _write_artifacts(
         ("request", "Run Request", settings_path),
         ("holdings", "Top Holdings CSV", holdings_path),
         ("groups", "Planning Groups CSV", groups_path),
-        ("portfolio_nav_tape", "Portfolio NAV Tape CSV", portfolio_nav_tape_path),
+        ("portfolio_performance_tape", "Portfolio TWR Index CSV", portfolio_performance_tape_path),
         ("target_weights", "Target Weights CSV", target_weights_path),
         ("member_targets", "Member Targets CSV", member_targets_path),
         ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),
@@ -2361,6 +2401,13 @@ def run_portfolio_research(
                     _state=state,
                 )
             solution.update(backtest_payload)
+            from portfolio_app.services.research_solution_tree import read_solution_exposures
+            solution_valuation = solution.setdefault("solution_valuation", {}) or {}
+            solution_valuation.update(read_solution_exposures(
+                portfolio_id, as_of_date=effective_as_of_date,
+                base_currency=str(configuration["base_currency"]), nav=_safe_float(solution_valuation.get("portfolio_nav")),
+            ))
+            solution["solution_valuation"] = solution_valuation
             with session_factory() as verification_session:
                 latest_fingerprint = _planning_state_fingerprint(
                     verification_session, portfolio_id=portfolio_id,

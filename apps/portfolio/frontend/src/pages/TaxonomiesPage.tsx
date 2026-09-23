@@ -2397,7 +2397,7 @@ export default function TaxonomiesPage() {
     const editable = targetEditMode && Boolean(entity.current_assignment) && entity.instrument_state !== 'contract'
       && Boolean(targetDraftsByScope[memberScopeKey(member)])
     return <tr key={entity.entity_id}
-      className={['taxonomy-entity-row', assignmentDragEnabled ? 'taxonomy-entity-row-draggable' : 'taxonomy-entity-row-drag-locked', selected ? 'taxonomy-entity-row-active' : ''].filter(Boolean).join(' ')}
+      className={['portfolio-tree-row', 'taxonomy-entity-row', assignmentDragEnabled ? 'taxonomy-entity-row-draggable' : 'taxonomy-entity-row-drag-locked', selected ? 'taxonomy-entity-row-active' : ''].filter(Boolean).join(' ')} data-tree-level="item"
       draggable={assignmentDragEnabled} data-assignment-drag={assignmentDragEnabled ? 'enabled' : 'disabled'}
       onDragStart={assignmentDragEnabled ? (event) => handleEntityDragStart(event, entity) : undefined}
       onDragEnd={assignmentDragEnabled ? () => setDragTargetNodeId(null) : undefined}
@@ -2411,7 +2411,7 @@ export default function TaxonomiesPage() {
       </div></td>
       <td>—</td>
       <td>{formatReportAmount(entity.market_value_base)}</td>
-      <td>{lockedCashEntity ? (entity.allocation != null ? formatPercent(entity.allocation) : '—') : renderExposure('security', entity.entity_id)}</td>
+      <td>{lockedCashEntity ? '—' : renderExposure('security', entity.entity_id)}</td>
       <td>{lockedCashEntity ? '—' : renderTargetCell('saa', member, editable)}</td>
       <td>{lockedCashEntity ? '—' : renderTargetCell('taa', member, editable)}</td>
       <td>{lockedCashEntity ? '—' : renderGlobalRiskTarget(member)}</td>
@@ -2422,7 +2422,7 @@ export default function TaxonomiesPage() {
   function renderDerivativeTreeRows(depth: number): ReactElement[] {
     if (!showSystemDerivativeNode) return []
     const collapsed = collapsedNodeIds.has(TAXONOMY_DERIVATIVES_ROW_ID)
-    const rows: ReactElement[] = [<tr key={TAXONOMY_DERIVATIVES_ROW_ID} className="taxonomy-system-derivatives-row taxonomy-category-row">
+    const rows: ReactElement[] = [<tr key={TAXONOMY_DERIVATIVES_ROW_ID} className="portfolio-tree-row taxonomy-system-derivatives-row taxonomy-category-row" data-tree-level="primary">
       <td><div className="taxonomy-node-row" style={{ paddingLeft: `${depth * 18}px` }}>
         <button type="button" className="taxonomy-tree-toggle" aria-label="Toggle derivatives" aria-expanded={!collapsed} onClick={() => toggleNodeCollapse(TAXONOMY_DERIVATIVES_ROW_ID)}>
           <span className={`taxonomy-tree-arrow ${collapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button>
@@ -2435,7 +2435,7 @@ export default function TaxonomiesPage() {
       derivativeHoldingRows.slice().sort((a, b) => derivativeHoldingLabel(a).localeCompare(derivativeHoldingLabel(b))).forEach((row) => {
         const contractId = row.derivative_contract?.derivative_contract_id
         const isFcn = row.derivative_contract?.contract_type === 'fcn' && contractId
-        rows.push(<tr key={row.line_id} className="taxonomy-entity-row taxonomy-entity-row-drag-locked">
+        rows.push(<tr key={row.line_id} className="portfolio-tree-row taxonomy-entity-row taxonomy-entity-row-drag-locked" data-tree-level="item">
           <td><div className="taxonomy-node-row" style={{ paddingLeft: `${(depth + 1) * 18}px` }}><span className="taxonomy-tree-toggle taxonomy-tree-toggle-empty" />
             <span className="taxonomy-level-label portfolio-tree-label" data-tree-level="item" title={derivativeHoldingLabel(row)}>{derivativeHoldingLabel(row)}</span></div></td>
           <td>—</td><td>{formatReportAmount(row.market_value_base)}</td>
@@ -2452,12 +2452,12 @@ export default function TaxonomiesPage() {
     const member: TargetScopeMember = { member_key: targetMemberKey('cash_bucket', CASH_TARGET_MEMBER_ID), target_member_type: 'cash_bucket',
       target_member_id: CASH_TARGET_MEMBER_ID, taxonomy_node_id: null, node: null, entity: null, label: CASH_TARGET_LABEL, system_role: 'cash' }
     const collapsed = collapsedNodeIds.has(TAXONOMY_CASH_ROW_ID)
-    const rows: ReactElement[] = [<tr key={TAXONOMY_CASH_ROW_ID} className="taxonomy-system-cash-row taxonomy-category-row">
+    const rows: ReactElement[] = [<tr key={TAXONOMY_CASH_ROW_ID} className="portfolio-tree-row taxonomy-system-cash-row taxonomy-category-row" data-tree-level="primary">
       <td><div className="taxonomy-node-row" style={{ paddingLeft: `${depth * 18}px` }}><button type="button" className="taxonomy-tree-toggle" aria-label="Toggle cash" aria-expanded={!collapsed} onClick={() => toggleNodeCollapse(TAXONOMY_CASH_ROW_ID)}>
         <span className={`taxonomy-tree-arrow ${collapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button><span className="portfolio-tree-label" data-tree-level="primary">{zh ? '现金预留' : CASH_TARGET_LABEL}</span></div></td>
       <td>NAV</td>
       <td>{formatReportAmount(cashAggregate.current_value_base)}</td>
-      <td>{cashAggregate.current_weight != null ? formatPercent(cashAggregate.current_weight) : '—'}</td>
+      <td>—</td>
       <td>{renderTargetCell('saa', member, targetEditMode)}</td><td>{renderTargetCell('taa', member, targetEditMode)}</td><td>—</td><td>—</td>
     </tr>]
     if (!collapsed) {
@@ -2477,7 +2477,7 @@ export default function TaxonomiesPage() {
       const member: TargetScopeMember = { member_key: targetMemberKey('taxonomy_node', node.taxonomy_node_id), target_member_type: 'taxonomy_node',
         target_member_id: node.taxonomy_node_id, taxonomy_node_id: node.taxonomy_node_id, node, entity: null, label: node.node_name }
       const dropEnabled = canEditPortfolio && canDropTaxonomyEntity({ targetEditMode, terminalNode: node.is_terminal, actionPending: Boolean(actionPending) })
-      return [<tr key={node.taxonomy_node_id} className={['taxonomy-category-row', selected ? 'taxonomy-node-row-active' : '', dragTargetNodeId === node.taxonomy_node_id ? 'taxonomy-drop-target-row' : ''].filter(Boolean).join(' ')}
+      return [<tr key={node.taxonomy_node_id} className={['portfolio-tree-row', 'taxonomy-category-row', selected ? 'taxonomy-node-row-active' : '', dragTargetNodeId === node.taxonomy_node_id ? 'taxonomy-drop-target-row' : ''].filter(Boolean).join(' ')} data-tree-level={depth === 1 ? 'primary' : 'nested'}
         data-assignment-drop={dropEnabled ? 'enabled' : 'disabled'}
         onContextMenu={!canEditPortfolio || targetEditMode ? undefined : (event) => handleNodeContextMenu(event, node)}
         onDragOver={dropEnabled ? (event) => handleNodeDragOver(event, node) : undefined}
@@ -2556,8 +2556,8 @@ export default function TaxonomiesPage() {
                 <button type="button" className="button-secondary taxonomy-toolbar-button" disabled={!canEditPortfolio || !selectedTaxonomy || targetEditMode || Boolean(actionPending)} onClick={() => startInstrumentAdd(selectedNode?.is_terminal ? selectedNode : null)}>{zh ? '+ 添加标的' : '+ Add instrument'}</button>
                 <div className="taxonomy-editor-actions">
                   {targetEditMode ? <>
-                    <button type="button" className="button-primary taxonomy-toolbar-button" onClick={() => void handleSaveTargetsConfiguration()} disabled={!canSaveTargetsConfiguration || Boolean(actionPending)}>{actionPending === 'targets-save' ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}</button>
                     <button type="button" className="button-secondary taxonomy-toolbar-button" disabled={Boolean(actionPending)} onClick={cancelConfigurationEdit}>{zh ? '取消' : 'Cancel'}</button>
+                    <button type="button" className="button-primary taxonomy-toolbar-button" onClick={() => void handleSaveTargetsConfiguration()} disabled={!canSaveTargetsConfiguration || Boolean(actionPending)}>{actionPending === 'targets-save' ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}</button>
                   </> : <button type="button" className="button-primary taxonomy-toolbar-button" disabled={!canEditPortfolio || !selectedTaxonomy || refreshing || concentrationSettingsLoading || Boolean(actionPending)} onClick={beginConfigurationEdit}>{zh ? '编辑' : 'Edit'}</button>}
                 </div>
               </div>
@@ -2607,7 +2607,7 @@ export default function TaxonomiesPage() {
                   ? ['敞口 / NAV 提醒上限，不是优化器硬约束。留空不设限，0 表示禁止正敞口。', '根行开关只控制本分类节点的提醒；单一证券和 FCN 限额仍有效。', `限额从 ${holdingsWorkspace?.as_of_date ?? '—'} 起生效。`]
                   : ['An exposure / NAV reminder, not a hard optimizer constraint. Blank means no limit; zero prohibits positive exposure.', 'The root switch controls taxonomy-node reminders only. Individual security and FCN limits remain active.', `Limits take effect from ${holdingsWorkspace?.as_of_date ?? '—'}.`]} /></th>
               </tr></thead><tbody>
-                <tr className={`taxonomy-root-row ${!selectedNode ? 'taxonomy-node-row-active' : ''}`} onContextMenu={canEditPortfolio && !targetEditMode && !actionPending ? (event) => { event.preventDefault(); setSelectedNodeId(null); setContextMenuState({ kind: 'taxonomy', taxonomyId: selectedTaxonomy.taxonomy_id, x: event.clientX, y: event.clientY }) } : undefined}>
+                <tr className={`portfolio-tree-row taxonomy-root-row ${!selectedNode ? 'taxonomy-node-row-active' : ''}`} data-tree-level="root" onContextMenu={canEditPortfolio && !targetEditMode && !actionPending ? (event) => { event.preventDefault(); setSelectedNodeId(null); setContextMenuState({ kind: 'taxonomy', taxonomyId: selectedTaxonomy.taxonomy_id, x: event.clientX, y: event.clientY }) } : undefined}>
                   <td className="holding-name-cell"><div className="taxonomy-node-row"><button type="button" className="taxonomy-tree-toggle" aria-label={`${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'Expand' : 'Collapse'} ${selectedTaxonomy.name}`} aria-expanded={!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID)} onClick={() => toggleNodeCollapse(TAXONOMY_ROOT_ROW_ID)}><span className={`taxonomy-tree-arrow ${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button>
                     <button type="button" className="taxonomy-node-select portfolio-tree-label" data-tree-level="root" translate="no" onClick={() => revealTargetScope(ROOT_TARGET_SCOPE_KEY)}>{selectedTaxonomy.name}</button></div></td>
                   <td>{renderAllocationBasis(null)}</td><td>{formatReportAmount(displayedBookValueBase)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
@@ -2615,7 +2615,7 @@ export default function TaxonomiesPage() {
                     <input type="checkbox" aria-label="Taxonomy concentration reminders" checked={taxonomyConcentrationEnabled} disabled={!canEditPortfolio || !targetEditMode || !concentrationSettings || Boolean(actionPending)} onChange={(event) => setTaxonomyConcentrationEnabled(event.target.checked)} />{zh ? '分类提醒' : 'Reminders'}</label></td>
                 </tr>
                 {!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? <>{renderNodeTreeRows(null, 1)}{renderDerivativeTreeRows(1)}{renderCashTreeRows(1)}
-                  <tr className="taxonomy-subsection-row"><td><div className="taxonomy-node-row" style={{ paddingLeft: '18px' }}><button type="button" className="taxonomy-tree-toggle" aria-label="Toggle unassigned" aria-expanded={!collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID)} onClick={() => toggleNodeCollapse(TAXONOMY_UNASSIGNED_ROW_ID)}><span className={`taxonomy-tree-arrow ${collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID) ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button><span className="portfolio-tree-label" data-tree-level="primary">{zh ? '未分类' : 'Unassigned'}</span></div></td>
+                  <tr className="portfolio-tree-row taxonomy-subsection-row" data-tree-level="primary"><td><div className="taxonomy-node-row" style={{ paddingLeft: '18px' }}><button type="button" className="taxonomy-tree-toggle" aria-label="Toggle unassigned" aria-expanded={!collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID)} onClick={() => toggleNodeCollapse(TAXONOMY_UNASSIGNED_ROW_ID)}><span className={`taxonomy-tree-arrow ${collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID) ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button><span className="portfolio-tree-label" data-tree-level="primary">{zh ? '未分类' : 'Unassigned'}</span></div></td>
                     <td>—</td><td>{formatReportAmount(unassignedSummary.current_value_base)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
                   {!collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID) ? coverageSummary.unassignedEntities.slice().sort((a, b) => a.label.localeCompare(b.label)).map((entity) => renderEntityTreeRow(entity, 2)) : null}
                 </> : null}

@@ -69,10 +69,18 @@ select {
   box-shadow: none;
 }
 
+.portfolio-tree-row[data-tree-level='root'],
 .portfolio-tree-label[data-tree-level='root'] { font-weight: 700; }
+.portfolio-tree-row[data-tree-level='primary'],
 .portfolio-tree-label[data-tree-level='primary'] { font-weight: 600; }
+.portfolio-tree-row[data-tree-level='nested'],
 .portfolio-tree-label[data-tree-level='nested'] { font-weight: 500; }
+.portfolio-tree-row[data-tree-level='item'],
 .portfolio-tree-label[data-tree-level='item'] { font-weight: 400; }
+
+.portfolio-tree-row[data-tree-level] :is(th, td, button, input, select, textarea, strong, b, .portfolio-tree-label) {
+  font-weight: inherit;
+}
 
 button {
   appearance: none;
@@ -7081,7 +7089,6 @@ input[type='checkbox'] {
 }
 
 .research-settings-disclosure > summary,
-.research-table-disclosure > summary,
 .research-evidence-disclosure > summary {
   display: flex;
   align-items: center;
@@ -7096,27 +7103,17 @@ input[type='checkbox'] {
 }
 
 .research-settings-disclosure > summary::-webkit-details-marker,
-.research-table-disclosure > summary::-webkit-details-marker,
 .research-evidence-disclosure > summary::-webkit-details-marker {
   display: none;
 }
 
 .research-settings-disclosure > summary span:first-child,
-.research-table-disclosure > summary span:first-child,
 .research-evidence-disclosure > summary span:first-child {
   font-weight: 600;
 }
 
-.research-settings-disclosure > summary span:last-child,
-.research-table-disclosure > summary span:last-child,
-.research-evidence-disclosure > summary span:last-child {
-  color: var(--portfolio-muted);
-  font-weight: 400;
-  text-align: right;
-}
 
 .research-settings-disclosure > summary::after,
-.research-table-disclosure > summary::after,
 .research-evidence-disclosure > summary::after {
   content: "+";
   flex: 0 0 auto;
@@ -7126,7 +7123,6 @@ input[type='checkbox'] {
 }
 
 .research-settings-disclosure[open] > summary::after,
-.research-table-disclosure[open] > summary::after,
 .research-evidence-disclosure[open] > summary::after {
   content: "−";
 }
@@ -7480,16 +7476,9 @@ input[type='checkbox'] {
   text-align: center;
 }
 
-.research-solved-table .research-result-group-row td {
-  border-top: 2px solid var(--portfolio-line-strong);
-  background: var(--portfolio-band);
-  color: var(--portfolio-ink);
-  font-weight: 500;
-}
-
 .research-result-summary {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
@@ -7527,47 +7516,12 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.research-table-disclosure {
-  border-bottom: 1px solid var(--portfolio-line-strong);
-}
-
-.research-table-disclosure > summary {
-  padding-right: 2px;
-  padding-left: 2px;
-  border-top: 1px solid var(--portfolio-line-strong);
-}
-
-.research-instrument-solution-table {
-  min-width: 1120px;
-}
-
-.research-result-member-cell {
-  padding-left: 24px !important;
-}
-
-.research-transition-cell {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.research-backtest-grid {
-  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.55fr);
-}
-
 .research-sleeve-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .research-validation-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.research-comparison-note {
-  margin: 0;
-  padding: 0 18px 16px;
-  color: var(--portfolio-muted);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .research-evidence-disclosure {
@@ -9254,18 +9208,6 @@ td b {
     grid-template-columns: 1fr;
   }
 
-  .research-backtest-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .research-result-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .research-result-summary > div:nth-child(3n) {
-    border-right: 0;
-  }
-
   .overview-sleeve-donut,
   .overview-columns-modal-body,
   .overview-columns-field-groups,
@@ -9322,18 +9264,12 @@ td b {
     display: none;
   }
 
-  .research-settings-disclosure > summary span:last-child,
-  .research-table-disclosure > summary span:last-child,
-  .research-evidence-disclosure > summary span:last-child {
-    display: none;
-  }
 
   .research-result-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .research-result-summary > div,
-  .research-result-summary > div:nth-child(3n) {
+  .research-result-summary > div {
     border-right: 1px solid var(--portfolio-line);
     border-bottom: 1px solid var(--portfolio-line);
   }
@@ -9502,7 +9438,6 @@ td b {
     width: 100%;
   }
 
-  .research-backtest-grid,
   .research-sleeve-grid,
   .research-validation-grid {
     grid-template-columns: 1fr;

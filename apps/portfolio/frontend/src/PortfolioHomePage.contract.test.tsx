@@ -405,6 +405,10 @@ describe('Holdings rendered page contract', () => {
       expect(within(cashTable).getByRole('columnheader', { name: '未实现汇兑损益 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByRole('button', { name: '现金 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByText('现金与结算小计 (CNY)')).toBeInTheDocument()
+      for (const table of [cashTable, fcnTable, optionTable]) {
+        expect(within(table).getByRole('columnheader', { name: '资金权重' })).toBeInTheDocument()
+      }
+      expect(within(screen.getByRole('table', { name: '证券持仓' })).getByText('资金权重')).toBeInTheDocument()
       for (const table of [fcnTable, optionTable]) {
         for (const name of ['带方向净值金额 (CNY)', '历史账面基础 (CNY)', '账面汇率折算 (CNY)']) {
           expect(within(table).getByRole('columnheader', { name })).toBeInTheDocument()
@@ -423,6 +427,10 @@ describe('Holdings rendered page contract', () => {
     const englishCashTable = await screen.findByRole('table', { name: 'Cash and settlement holdings' })
     expect(within(englishCashTable).getByRole('button', { name: 'Cash (CNY)' })).toBeInTheDocument()
     expect(within(englishCashTable).getByRole('columnheader', { name: 'FX Cost Basis (CNY)' })).toBeInTheDocument()
+    for (const table of [englishCashTable, screen.getByRole('table', { name: 'FCN holdings' }), screen.getByRole('table', { name: 'Option holdings' })]) {
+      expect(within(table).getByRole('columnheader', { name: 'Capital Weight' })).toBeInTheDocument()
+    }
+    expect(within(screen.getByRole('table', { name: 'Security holdings' })).getByText('Capital Weight')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
   })
 
@@ -466,6 +474,12 @@ describe('Holdings rendered page contract', () => {
       expect(title.parentElement).toHaveClass('holdings-section-title')
       expect(title.parentElement?.querySelector('.holdings-section-count')).toHaveTextContent('1')
       expect(region.querySelector('.holdings-section-heading-actions .holdings-section-count')).toBeNull()
+      const rows = Array.from(within(region).getByRole('table').querySelectorAll('tbody tr'))
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toHaveClass('portfolio-tree-row')
+      expect(rows[0]).toHaveAttribute('data-tree-level', 'item')
+      expect(rows[1]).toHaveClass('portfolio-tree-row')
+      expect(rows[1]).toHaveAttribute('data-tree-level', 'primary')
     }
     expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ })).toBeInTheDocument()
     expect(screen.queryByText(/Contract terms and carrying amounts are explicit/)).not.toBeInTheDocument()
@@ -1178,7 +1192,7 @@ describe('Holdings rendered page contract', () => {
       'Available',
       'Local Amount',
       'Base Value (USD)',
-      'Portfolio Weight',
+      'Capital Weight',
       'Settlement Date',
       'Pending Until',
       'Related Instrument',
@@ -1258,12 +1272,16 @@ describe('Holdings rendered page contract', () => {
     expect(within(securityTable).getAllByText('Current Risk Assets')).toHaveLength(1)
     expect(within(securityTable).getByText('Current Risk Assets')).toHaveAttribute('data-tree-level', 'primary')
     expect(within(securityTable).getByText('Alpha Fund')).toHaveAttribute('data-tree-level', 'item')
+    expect(within(securityTable).getByText('Current Risk Assets').closest('tr')).toHaveAttribute('data-tree-level', 'primary')
+    expect(within(securityTable).getByText('Alpha Fund').closest('tr')).toHaveAttribute('data-tree-level', 'item')
     expect(within(screen.getByRole('table', { name: 'FCN holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
     expect(within(screen.getByRole('table', { name: 'Cash and settlement holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /Group By.*Current Allocation/ }))
     await user.click(screen.getByRole('button', { name: 'Current Allocation · Leaf level' }))
     expect(within(securityTable).getByText('Current Listed Funds')).toHaveAttribute('data-tree-level', 'nested')
+    expect(within(securityTable).getByText('Current Listed Funds').closest('tr')).toHaveClass('portfolio-tree-row')
+    expect(within(securityTable).getByText('Current Listed Funds').closest('tr')).toHaveAttribute('data-tree-level', 'nested')
     expect(within(securityTable).queryByText('Current Risk Assets')).not.toBeInTheDocument()
   })
 

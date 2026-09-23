@@ -82,7 +82,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v3"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v4"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -97,6 +97,7 @@ RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
     "Every rebalance uses the same current taxonomy membership, targets and eligibility captured for this run.",
     "Every allocation uses one covariance across all modeled leaves in the selected research scope; every sleeve risk budget includes cross-sleeve covariance.",
     "Current instrument selection introduces hindsight and survivorship effects; this is a model comparison, not a reconstruction of historical decisions.",
+    "Scheduled decisions start at portfolio inception; earlier market observations are used only for the trailing risk-estimation window, not as pre-inception portfolio performance.",
     "An instrument becomes usable after its first usable market-data observation and the required trailing risk window, regardless of assignment creation date.",
     "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
     "Market observations are EOD period-end returns: holdings earn the return ending before an EOD execution, and newly executed targets start with the next observation.",
@@ -2283,6 +2284,7 @@ def _current_scope_actuals(
                 set(excluded_derivative_contract_ids)
             ),
             "derivative_total_value": derivative_total_value,
+            "portfolio_nav": _safe_float(statement.get("total_nav_base")),
         }
 
     cash_total_value = float(sum(cash_value_by_account.values()))
@@ -3921,7 +3923,7 @@ def _replay_backtest_decisions(
     cash_value = 1.0 - derivative_value
     nav_value = 1.0
     previous_event_date = anchor_date
-    points: list[dict[str, object]] = [{"date": anchor_date.isoformat(), "value": nav_value}]
+    points: list[dict[str, object]] = [{"date": anchor_date.isoformat(), "value": nav_value, "is_start_anchor": True}]
     portfolio_returns: dict[str, float] = {}
     weight_points: list[dict[str, object]] = [
         _backtest_sleeve_point(
@@ -4541,6 +4543,7 @@ def _build_walk_forward_validation(
 def _empty_point_in_time_backtest(
     *,
     rebalance_frequency: str,
+    requested_start_date: date,
     as_of_date: date,
     lookback_days: int,
     warnings: list[str],
@@ -4549,6 +4552,7 @@ def _empty_point_in_time_backtest(
 ) -> dict[str, object]:
     return {
         "rebalance_frequency": rebalance_frequency,
+        "requested_start_date": requested_start_date.isoformat(),
         "common_history_start_date": None,
         "start_date": None,
         "end_date": as_of_date.isoformat(),
@@ -4635,6 +4639,14 @@ def build_current_target_backtest(
         slippage_bps=slippage_bps,
         implementation_delay_days=implementation_delay_days,
     )
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise ValueError("Portfolio not found.")
+    inception_date = _parse_iso_date(portfolio.get("inception_date"))
+    if inception_date is None:
+        raise ValueError("Portfolio requires a valid inception date for historical simulation.")
+    if as_of_date < inception_date:
+        raise ValueError("Research date must not be earlier than portfolio inception.")
     warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
     methodology = {
         "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
@@ -4642,6 +4654,12 @@ def build_current_target_backtest(
         "name": "Current-target historical simulation",
         "point_in_time_universe": False,
         "point_in_time_taxonomy": False,
+        "simulation_start_rule": (
+            "The requested simulation begins at portfolio inception. Earlier market observations "
+            "remain available for risk estimation. Insufficient history postpones the first usable "
+            "decision, with skipped dates disclosed. A marked unit start anchor may label the "
+            "preceding EOD boundary to retain same-day execution costs; it is not historical portfolio performance."
+        ),
         "decision_rule": (
             "Each scheduled rebalance, plus each recorded derivative-capital lifecycle date, "
             "solves weights using the same captured current membership, targets and eligibility "
@@ -4711,6 +4729,7 @@ def build_current_target_backtest(
     if not historical_instrument_ids:
         empty_backtest = _empty_point_in_time_backtest(
             rebalance_frequency=frequency,
+            requested_start_date=inception_date,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
             warnings=warnings,
@@ -4772,6 +4791,7 @@ def build_current_target_backtest(
     if not sampled_nav_by_instrument or not portfolio_first_dates:
         empty_backtest = _empty_point_in_time_backtest(
             rebalance_frequency=frequency,
+            requested_start_date=inception_date,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
             warnings=warnings,
@@ -4784,9 +4804,10 @@ def build_current_target_backtest(
             "backtest_relative_metrics": None,
         }
 
-    # Current targets may be simulated over all available historical data,
-    # including observations predating their creation or later reassignment.
-    earliest_start_date = min(portfolio_first_dates)
+    # Targets are the captured current configuration, but this is a portfolio
+    # simulation from inception. Pre-inception prices remain in the series so
+    # the first decision can use its complete trailing risk window.
+    earliest_start_date = inception_date
     derivative_context = (
         _build_derivative_backtest_context(
             portfolio_id,
@@ -4994,6 +5015,7 @@ def build_current_target_backtest(
     if not decisions:
         empty_backtest = _empty_point_in_time_backtest(
             rebalance_frequency=frequency,
+            requested_start_date=inception_date,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
             warnings=warnings,
@@ -5125,6 +5147,7 @@ def build_current_target_backtest(
 
     backtest = {
         "rebalance_frequency": frequency,
+        "requested_start_date": inception_date.isoformat(),
         "common_history_start_date": min(portfolio_first_dates).isoformat(),
         "start_date": points[0]["date"] if points else None,
         "end_date": points[-1]["date"] if points else as_of_date.isoformat(),
@@ -5304,6 +5327,7 @@ def solve_current_target_weights(
         "member_targets": deepcopy(scope_result.member_target_rows),
         "leaf_targets": deepcopy(scope_result.leaf_target_rows),
         "solved_result_groups": solved_result_groups,
+        "solution_valuation": deepcopy(state.current_valuation_cache.get(f"actual-valuation::{as_of_date.isoformat()}") or {}) if include_actuals else None,
         "actual_rows": deepcopy(actual_rows),
         "resolved_target_rows": deepcopy(scope_result.resolved_target_rows),
         "solve_event": deepcopy(scope_result.solve_event),

@@ -1,0 +1,28 @@
+.research-comparison-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.research-comparison-heading .panel-title { margin: 0; }
+.research-performance-panel > .inline-notice { margin-bottom: 12px; }
+.research-performance-main { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(390px, 1fr); gap: 24px; align-items: start; }
+.research-comparison-chart-toolbar { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; min-height: 30px; }
+.research-comparison-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; }
+.research-comparison-legend span { display: inline-flex; gap: 6px; align-items: center; }
+.research-comparison-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.research-chart-toggle { display: flex; border: 1px solid var(--border-color, #d8dee7); }
+.research-chart-toggle button { border: 0; background: transparent; padding: 5px 10px; font: inherit; font-size: 12px; color: var(--text-secondary, #64748b); cursor: pointer; }
+.research-chart-toggle button[aria-pressed="true"] { color: var(--text-primary, #172033); background: var(--surface-muted, #edf1f6); }
+.research-comparison-chart svg { display: block; width: 100%; overflow: visible; margin-top: 10px; }
+.research-comparison-chart svg text { fill: var(--text-secondary, #64748b); font-size: 11px; }
+.research-comparison-gridline { stroke: var(--border-color, #e2e8f0); stroke-width: .7; }
+.research-comparison-crosshair { stroke: #94a3b8; stroke-dasharray: 3 4; stroke-width: .8; }
+.research-comparison-readout { display: flex; flex-wrap: wrap; gap: 12px; min-height: 24px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.research-comparison-readout time { color: var(--text-secondary, #64748b); }
+.research-performance-panel .research-metric-table { margin-top: 10px; font-size: 12px; }
+.research-performance-panel .research-metric-table th, .research-performance-panel .research-metric-table td { padding: 7px 8px; white-space: nowrap; }
+.research-performance-panel .research-metric-period-row td { font-size: 11px; }
+.research-monthly-section { margin-top: 24px; border-top: 1px solid var(--border-color, #e2e8f0); padding-top: 18px; }
+.research-monthly-scroll { max-height: 360px; overflow-y: auto; }
+.research-monthly-table { width: 100%; table-layout: fixed; }
+.research-monthly-table th:not(:first-child), .research-monthly-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.research-monthly-table tbody th { font-weight: 400; }
+.research-monthly-table .investment-studio-info-hint { margin-left: 7px; vertical-align: middle; }
+.research-monthly-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface, #fff); }
+@media (max-width: 1200px) { .research-performance-main { grid-template-columns: 1fr; } }

@@ -15,6 +15,20 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
+it('distinguishes capital weights from carrying amounts in both languages', async () => {
+  const labels = [
+    ['Capital Weight', '资金权重'],
+    ['Modeled Capital Weight', '建模资金权重'],
+    ['Carrying Amount', '账面金额'],
+    ['Excluded Carrying Amount', '未建模账面金额'],
+  ]
+  render(<LanguageProvider><LanguageSelector />{labels.map(([en]) => <span key={en}>{en}</span>)}</LanguageProvider>)
+  fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
+  await waitFor(() => labels.forEach(([, zh]) => expect(screen.getByText(zh)).toBeInTheDocument()))
+  fireEvent.change(screen.getByLabelText('语言'), { target: { value: 'en' } })
+  await waitFor(() => labels.forEach(([en]) => expect(screen.getByText(en)).toBeInTheDocument()))
+})
+
 it('translates risk exclusions and FX requirements while preserving security names', async () => {
   const source = 'Current risk cannot treat unmodeled market exposure PDD Holdings Inc. as zero risk. · Forward RC requires an FX total-return series for non-base monetary exposure Cash (USD) (USD versus HKD).'
   render(<LanguageProvider><LanguageSelector /><span title={source}>Daily risk basis</span></LanguageProvider>)

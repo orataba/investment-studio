@@ -425,7 +425,7 @@ Research 对所选范围内全部叶证券一次联合求解，用同一个收�
 - scope：求解整个组合还是某个 sleeve。
 - 配置依据：沿用 Taxonomies 中各父节点已保存的 Weight/Risk，不在 Research 再覆盖一遍。
 - capital mode：`unit_notional`、`fixed_gross`、`target_volatility` 或 `volatility_cap`。
-- lookback days：风险和收益窗口长度。
+- lookback days：风险估计窗口长度，不改变实际业绩和回测的成立日起点。
 - calculation frequency：固定为 daily，不需要设置。
 - missing return policy：`strict` 或 `complete_case_drop`。
 - rebalance frequency：`1W / 1M / 3M`。
@@ -433,17 +433,11 @@ Research 对所选范围内全部叶证券一次联合求解，用同一个收�
 - top sleeve bounds：顶层 sleeve 的权重约束。
 - frozen sleeves：不参与调整的 sleeve。
 
-运行结果包含：
+求解结果使用一张可逐级展开的分类树表，显示目标风险贡献、求解风险贡献、当前账面金额、敞口 / NAV、目标资金权重和调仓金额。证券账面金额为当前市值，衍生品沿用账面资本；敞口与资金权重不同。正调仓金额表示买入，负值表示卖出，分类行为净调整，现金为资金变动。选择“导出 Excel”可下载完整层级和原始数值，不受折叠状态影响。旧结果按保存时的分类和口径显示；未保存的历史敞口保持空白，不以当前数据补齐。
 
-- 当前上下文：当前持仓、scope、规划分类和风险窗口。
-- solved target weights：求解后的目标权重。
-- target weight gap：当前权重与目标权重差距。
-- hierarchy constraint diagnostics：同一全局解在各层的 Weight／Risk 目标、达成情况和偏差。
-- top sleeve bounds status：约束是否满足。
-- backtest curve：按所选频率调仓后的假设曲线。
-- drawdown、YTD、Calmar、volatility、Sharpe 等指标。
-- benchmark comparison：与 benchmark 的同期表现。
-- relative metrics：组合相对 benchmark 的收益、波动和信息比率。
+下方集中显示“真实组合与回测”：真实收益使用 Performance 的时间加权收益，剔除申购赎回影响；回测从组合成立日起尝试，成立前行情只用于风险预热。历史不足时显示实际可用起点，不补造成立以来收益。图表可切换收益指数和回撤；指标与月度对比使用共同有效收盘区间，实际、回测及可选基准的比较分母一致。指标包括区间收益、满周年年化收益、波动率、Sharpe、Sortino、Calmar、最大及当前回撤、回撤起止和修复天数；非完整月份另有提示。子分类模拟与全组合实际并非同一覆盖范围，页面会明确提示。
+
+求解诊断、约束、历史数据覆盖、成本、稳健性和滚动窗口保留在“模型与回测依据”内。保存的旧运行继续可读，但不再以第二组重复图表展示。
 
 Research 失败不会覆盖上一轮成功结果。失败后先看页面上的失败原因，再检查 Taxonomies、TargetSet、缺失收益政策、行情覆盖、benchmark 和 top sleeve bounds。不要为通过求解而随意放宽约束；约束应反映真实投资纪律。
 

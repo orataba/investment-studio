@@ -6,6 +6,8 @@ import { Link, useParams } from 'react-router'
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import InfoHint from '../components/InfoHint'
+import ResearchComparisonPanel from '../components/ResearchComparisonPanel'
+import ResearchSolutionTree from '../components/ResearchSolutionTree'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -25,17 +27,12 @@ import {
   getPortfolioResearchWorkbench,
   updatePortfolioResearchSettings,
   type PortfolioResearchBacktestBenchmarkComparisonResponse,
-  type PortfolioResearchBacktestBenchmarkRecord,
-  type PortfolioResearchBacktestMetricsRecord,
-  type PortfolioResearchBacktestPointRecord,
   type PortfolioResearchBacktestRebalanceFrequency,
   type PortfolioResearchBacktestRobustnessScenarioRecord,
-  type PortfolioResearchBacktestRelativeMetricsRecord,
   type PortfolioResearchBacktestSleevePointRecord,
   type PortfolioResearchAsOfMode,
   type PortfolioResearchCapitalMode,
   type PortfolioResearchPlanningScopeOption,
-  type PortfolioResearchRunRecord,
   type PortfolioResearchTopSleeveWeightBoundRecord,
   type PortfolioResearchWorkbenchResponse,
   type PortfolioTaxonomyNodeRecord,
@@ -43,7 +40,6 @@ import {
   type SharedInstrumentRecord,
 } from '../lib/api'
 import {
-  formatCurrency,
   formatLabel,
   formatNumber,
   formatPercent,
@@ -143,7 +139,7 @@ function formatTimestamp(value: string | null | undefined) {
   if (!value) {
     return '-'
   }
-  return value.replace('T', ' ').replace('Z', ' UTC')
+  return value.replace('T', ' ').replace(/:\d{2}(?:\.\d+)?Z$/, ' UTC')
 }
 
 function resolveStatusLabel(status: string) {
@@ -165,49 +161,6 @@ function formatMaybePercent(value: number | null | undefined, digits = 2) {
 
 function formatMaybeNumber(value: number | null | undefined, digits = 2) {
   return value == null ? '-' : formatNumber(value, digits)
-}
-
-function formatMaybeDays(value: number | null | undefined) {
-  return value == null ? '-' : `${formatNumber(value, 0)}D`
-}
-
-function formatSolvedBounds(minWeight: number | null | undefined, maxWeight: number | null | undefined) {
-  if (minWeight == null && maxWeight == null) {
-    return '-'
-  }
-  const minLabel = minWeight == null ? '-' : formatPercent(minWeight, 2)
-  const maxLabel = maxWeight == null ? '-' : formatPercent(maxWeight, 2)
-  return `${minLabel} / ${maxLabel}`
-}
-
-function formatBoundStatus(value: string | null | undefined) {
-  if (!value) {
-    return '-'
-  }
-  if (value === 'min') {
-    return 'Min'
-  }
-  if (value === 'max') {
-    return 'Max'
-  }
-  if (value === 'within') {
-    return 'Within'
-  }
-  if (value === 'violated') {
-    return 'Violated'
-  }
-  return formatLabel(value)
-}
-
-function formatResearchConstraint(
-  tradeConstraint: string | null | undefined,
-  riskModelStatus: string | null | undefined,
-  boundStatus: string | null | undefined,
-) {
-  if (tradeConstraint === 'no_trade') {
-    return riskModelStatus === 'excluded' ? 'No trade · Risk excluded' : 'No trade · Risk modeled'
-  }
-  return formatBoundStatus(boundStatus)
 }
 
 function isVolatilityCapitalMode(value: PortfolioResearchCapitalMode) {
@@ -314,184 +267,6 @@ function buildPath(points: Array<{ date: string; value?: number | null }>, args:
   return coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ')
 }
 
-function drawdownPoints(points: Array<{ date: string; value?: number | null }>) {
-  let highValue = -Infinity
-  return points
-    .filter((point) => point.value != null)
-    .map((point) => {
-      const value = point.value ?? 0
-      highValue = Math.max(highValue, value)
-      return {
-        date: point.date,
-        value: highValue > 0 ? value / highValue - 1 : 0,
-      }
-    })
-}
-
-function currentDrawdownFromPoints(points: Array<{ date: string; value?: number | null }>) {
-  const visiblePoints = points.filter((point) => point.value != null)
-  if (visiblePoints.length < 2) {
-    return null
-  }
-  let highValue = -Infinity
-  let currentValue: number | null = null
-  visiblePoints.forEach((point) => {
-    const value = point.value ?? 0
-    highValue = Math.max(highValue, value)
-    currentValue = value
-  })
-  return highValue > 0 && currentValue != null ? currentValue / highValue - 1 : null
-}
-
-function returnMapByDate(points: Array<{ date: string; value?: number | null }>) {
-  const visiblePoints = points.filter((point) => point.value != null)
-  const returns = new Map<string, number>()
-  for (let index = 1; index < visiblePoints.length; index += 1) {
-    const previousValue = visiblePoints[index - 1].value ?? 0
-    const currentValue = visiblePoints[index].value ?? 0
-    if (previousValue > 0) {
-      returns.set(visiblePoints[index].date, currentValue / previousValue - 1)
-    }
-  }
-  return returns
-}
-
-function activeCurrentDrawdown(
-  portfolioPoints: Array<{ date: string; value?: number | null }>,
-  benchmarkPoints: Array<{ date: string; value?: number | null }>,
-) {
-  const portfolioReturns = returnMapByDate(portfolioPoints)
-  const benchmarkReturns = returnMapByDate(benchmarkPoints)
-  const commonDates = [...portfolioReturns.keys()]
-    .filter((dateKey) => benchmarkReturns.has(dateKey))
-    .sort()
-  if (!commonDates.length) {
-    return null
-  }
-  let navValue = 1.0
-  let highValue = 1.0
-  let currentDrawdown = 0.0
-  commonDates.forEach((dateKey) => {
-    navValue *= 1.0 + (portfolioReturns.get(dateKey) ?? 0) - (benchmarkReturns.get(dateKey) ?? 0)
-    highValue = Math.max(highValue, navValue)
-    currentDrawdown = highValue > 0 ? navValue / highValue - 1 : 0.0
-  })
-  return currentDrawdown
-}
-
-type ResearchSeriesSummary = {
-  periodReturn: number | null
-  annualizedVolatility: number | null
-  maxDrawdown: number | null
-  currentDrawdown: number | null
-}
-
-type ResearchActualBacktestComparison = {
-  startDate: string
-  endDate: string
-  observationCount: number
-  actualPoints: PortfolioResearchBacktestPointRecord[]
-  backtestPoints: PortfolioResearchBacktestPointRecord[]
-  actual: ResearchSeriesSummary
-  backtest: ResearchSeriesSummary
-}
-
-function summarizeComparableSeries(points: PortfolioResearchBacktestPointRecord[]): ResearchSeriesSummary {
-  const visiblePoints = points.filter(
-    (point): point is PortfolioResearchBacktestPointRecord & { value: number } => (
-      point.value != null && Number.isFinite(point.value) && point.value > 0
-    ),
-  )
-  const values = visiblePoints.map((point) => point.value)
-  if (values.length < 2) {
-    return {
-      periodReturn: null,
-      annualizedVolatility: null,
-      maxDrawdown: null,
-      currentDrawdown: null,
-    }
-  }
-
-  const dailyReturns = values.slice(1).map((value, index) => value / values[index] - 1)
-  const meanReturn = dailyReturns.reduce((total, value) => total + value, 0) / dailyReturns.length
-  const variance = dailyReturns.length > 1
-    ? dailyReturns.reduce((total, value) => total + (value - meanReturn) ** 2, 0) / (dailyReturns.length - 1)
-    : null
-  const returnTimes = visiblePoints.slice(1)
-    .map((point) => new Date(`${point.date}T00:00:00Z`).getTime())
-    .filter(Number.isFinite)
-    .filter((time, index, allTimes) => index === 0 || time !== allTimes[index - 1])
-    .sort((left, right) => left - right)
-  const elapsedDays = returnTimes.length > 1
-    ? Math.round((returnTimes[returnTimes.length - 1] - returnTimes[0]) / 86_400_000)
-    : 0
-  const gaps = returnTimes.slice(1)
-    .map((time, index) => Math.round((time - returnTimes[index]) / 86_400_000))
-    .filter((gap) => gap > 0)
-    .sort((left, right) => left - right)
-  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
-  const observationSpanDays = elapsedDays + medianGap
-  const periodsPerYear = returnTimes.length > 1 && observationSpanDays > 0
-    ? (returnTimes.length / observationSpanDays) * 365.25
-    : 1
-  let highWaterMark = values[0]
-  let maxDrawdown = 0
-  values.forEach((value) => {
-    highWaterMark = Math.max(highWaterMark, value)
-    maxDrawdown = Math.min(maxDrawdown, value / highWaterMark - 1)
-  })
-
-  return {
-    periodReturn: values[values.length - 1] / values[0] - 1,
-    annualizedVolatility: variance == null ? null : Math.sqrt(Math.max(variance, 0)) * Math.sqrt(periodsPerYear),
-    maxDrawdown,
-    currentDrawdown: values[values.length - 1] / highWaterMark - 1,
-  }
-}
-
-function buildActualBacktestComparison(
-  actualPoints: PortfolioResearchBacktestPointRecord[],
-  backtestPoints: PortfolioResearchBacktestPointRecord[],
-): ResearchActualBacktestComparison | null {
-  const actualByDate = new Map(
-    actualPoints
-      .filter((point) => point.value != null && Number.isFinite(point.value) && point.value > 0)
-      .map((point) => [point.date, point.value as number]),
-  )
-  const backtestByDate = new Map(
-    backtestPoints
-      .filter((point) => point.value != null && Number.isFinite(point.value) && point.value > 0)
-      .map((point) => [point.date, point.value as number]),
-  )
-  const commonDates = [...actualByDate.keys()]
-    .filter((date) => backtestByDate.has(date))
-    .sort()
-  if (commonDates.length < 2) {
-    return null
-  }
-
-  const actualBase = actualByDate.get(commonDates[0]) ?? 1
-  const backtestBase = backtestByDate.get(commonDates[0]) ?? 1
-  const normalizedActual = commonDates.map((date) => ({
-    date,
-    value: (actualByDate.get(date) ?? actualBase) / actualBase,
-  }))
-  const normalizedBacktest = commonDates.map((date) => ({
-    date,
-    value: (backtestByDate.get(date) ?? backtestBase) / backtestBase,
-  }))
-
-  return {
-    startDate: commonDates[0],
-    endDate: commonDates[commonDates.length - 1],
-    observationCount: commonDates.length,
-    actualPoints: normalizedActual,
-    backtestPoints: normalizedBacktest,
-    actual: summarizeComparableSeries(normalizedActual),
-    backtest: summarizeComparableSeries(normalizedBacktest),
-  }
-}
-
 function dateTicks(minTime: number, maxTime: number, count = 4) {
   if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
     return []
@@ -528,100 +303,6 @@ function renderTimeAxis(args: ChartCoordinateArgs) {
         )
       })}
     </g>
-  )
-}
-
-function ResearchLineChart({
-  points,
-  benchmarkPoints = [],
-  benchmarkLabel = null,
-  actualPoints = [],
-  primaryLabel = 'Solved',
-  actualLabel = 'Actual portfolio',
-  showDrawdown = true,
-}: {
-  points: PortfolioResearchBacktestPointRecord[]
-  benchmarkPoints?: PortfolioResearchBacktestPointRecord[]
-  benchmarkLabel?: string | null
-  actualPoints?: PortfolioResearchBacktestPointRecord[]
-  primaryLabel?: string
-  actualLabel?: string
-  showDrawdown?: boolean
-}) {
-  const visiblePoints = points.filter((point) => point.value != null)
-  const visibleBenchmark = benchmarkPoints.filter((point) => point.value != null)
-  const visibleActual = actualPoints.filter((point) => point.value != null)
-  const allPoints = [...visiblePoints, ...visibleBenchmark, ...visibleActual]
-  if (visiblePoints.length < 2) {
-    return <div className="empty-state">No backtest series.</div>
-  }
-  const width = 720
-  const height = showDrawdown ? 330 : 250
-  const padding = 36
-  const left = 44
-  const right = width - 24
-  const times = allPoints.map((point) => new Date(point.date).getTime())
-  const values = allPoints.map((point) => point.value ?? 0)
-  const minTime = Math.min(...times)
-  const maxTime = Math.max(...times)
-  const minValue = Math.min(...values)
-  const maxValue = Math.max(...values)
-  const yPad = Math.max((maxValue - minValue) * 0.08, 0.01)
-  const args = {
-    minTime,
-    maxTime,
-    minValue: minValue - yPad,
-    maxValue: maxValue + yPad,
-    width,
-    height,
-    padding,
-    left,
-    right,
-    top: 24,
-    bottom: showDrawdown ? 180 : height - padding,
-  }
-  const drawdowns = drawdownPoints(visiblePoints)
-  const drawdownMin = Math.min(...drawdowns.map((point) => point.value ?? 0), -0.01)
-  const drawdownArgs = {
-    minTime,
-    maxTime,
-    minValue: drawdownMin,
-    maxValue: 0,
-    width,
-    height,
-    padding,
-    left,
-    right,
-    top: 218,
-    bottom: height - padding,
-  }
-  return (
-    <div className="research-chart">
-      <div className="research-chart-legend">
-        <span><i style={{ background: CHART_COLORS[0] }} />{primaryLabel}</span>
-        {visibleActual.length > 1 ? <span><i style={{ background: CHART_COLORS[1] }} />{actualLabel}</span> : null}
-        {visibleBenchmark.length > 1 ? <span><i style={{ background: CHART_COLORS[2] }} />{benchmarkLabel ?? 'Benchmark'}</span> : null}
-        {showDrawdown ? <span><i style={{ background: '#64748b' }} />Drawdown</span> : null}
-      </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Backtest curve">
-        <line x1={left} x2={right} y1={args.bottom} y2={args.bottom} className="research-chart-axis" />
-        <path d={buildPath(visiblePoints, args)} className="research-chart-line" style={{ stroke: CHART_COLORS[0] }} />
-        {visibleActual.length > 1 ? (
-          <path d={buildPath(visibleActual, args)} className="research-chart-line" style={{ stroke: CHART_COLORS[1] }} />
-        ) : null}
-        {visibleBenchmark.length > 1 ? (
-          <path d={buildPath(visibleBenchmark, args)} className="research-chart-line research-chart-line-muted" style={{ stroke: CHART_COLORS[2] }} />
-        ) : null}
-        {showDrawdown ? (
-          <>
-            <text x={left} y={208} className="research-chart-panel-label">Drawdown</text>
-            <line x1={left} x2={right} y1={drawdownArgs.top} y2={drawdownArgs.top} className="research-chart-axis research-chart-axis-muted" />
-            <path d={buildPath(drawdowns, drawdownArgs)} className="research-chart-line research-chart-line-drawdown" />
-            {renderTimeAxis(drawdownArgs)}
-          </>
-        ) : renderTimeAxis(args)}
-      </svg>
-    </div>
   )
 }
 
@@ -742,241 +423,6 @@ function ResearchSleeveStackedAreaChart({
         })}
       </svg>
     </div>
-  )
-}
-
-function MetricTable({
-  run,
-  benchmark,
-  relativeMetrics,
-}: {
-  run: PortfolioResearchRunRecord
-  benchmark: PortfolioResearchBacktestBenchmarkRecord | null
-  relativeMetrics: PortfolioResearchBacktestRelativeMetricsRecord | null
-}) {
-  const metrics = run.detail?.backtest?.metrics ?? null
-  const benchmarkMetrics = benchmark?.metrics ?? null
-  const relative = relativeMetrics
-  const backtestPoints = run.detail?.backtest?.points ?? []
-  const benchmarkPoints = benchmark?.points ?? []
-  const portfolioCurrentDrawdown = metrics?.current_drawdown ?? currentDrawdownFromPoints(backtestPoints)
-  const benchmarkCurrentDrawdown = benchmarkMetrics?.current_drawdown ?? currentDrawdownFromPoints(benchmarkPoints)
-  const relativeCurrentDrawdown = relative?.current_drawdown ?? activeCurrentDrawdown(backtestPoints, benchmarkPoints)
-
-  function periodLabel(record: PortfolioResearchBacktestMetricsRecord | PortfolioResearchBacktestRelativeMetricsRecord | null) {
-    return record?.start_date && record?.end_date ? `${record.start_date} to ${record.end_date}` : '-'
-  }
-
-  function metricDifference(
-    left: number | null | undefined,
-    right: number | null | undefined,
-  ) {
-    return left == null || right == null ? null : left - right
-  }
-
-  function excessReturnMetric(key: 'period_return' | 'ytd_return' | 'annualized_return') {
-    return metricDifference(metrics?.[key], benchmarkMetrics?.[key]) ?? relative?.[key] ?? (
-      key === 'period_return' ? relative?.excess_return : null
-    )
-  }
-
-  function formatMetricValue(
-    value: number | string | null | undefined,
-    kind: 'percent' | 'number' | 'days' | 'text',
-  ) {
-    if (kind === 'text') {
-      return value == null || value === '' ? '-' : String(value)
-    }
-    if (typeof value !== 'number') {
-      return '-'
-    }
-    if (kind === 'percent') {
-      return formatMaybePercent(value)
-    }
-    if (kind === 'days') {
-      return formatMaybeDays(value)
-    }
-    return formatMaybeNumber(value)
-  }
-
-  const rows: Array<{
-    label: string
-    kind: 'percent' | 'number' | 'days' | 'text'
-    portfolio: number | string | null | undefined
-    benchmark: number | string | null | undefined
-    excess: number | string | null | undefined
-  }> = [
-    {
-      label: 'Period Return',
-      kind: 'percent',
-      portfolio: metrics?.period_return,
-      benchmark: benchmarkMetrics?.period_return,
-      excess: excessReturnMetric('period_return'),
-    },
-    {
-      label: 'YTD',
-      kind: 'percent',
-      portfolio: metrics?.ytd_return,
-      benchmark: benchmarkMetrics?.ytd_return,
-      excess: excessReturnMetric('ytd_return'),
-    },
-    {
-      label: 'Annual Return',
-      kind: 'percent',
-      portfolio: metrics?.annualized_return,
-      benchmark: benchmarkMetrics?.annualized_return,
-      excess: excessReturnMetric('annualized_return'),
-    },
-    {
-      label: 'Annual Volatility',
-      kind: 'percent',
-      portfolio: metrics?.annualized_volatility,
-      benchmark: benchmarkMetrics?.annualized_volatility,
-      excess: relative?.annualized_volatility ?? relative?.tracking_error,
-    },
-    {
-      label: 'Max Drawdown',
-      kind: 'percent',
-      portfolio: metrics?.max_drawdown,
-      benchmark: benchmarkMetrics?.max_drawdown,
-      excess: relative?.max_drawdown,
-    },
-    {
-      label: 'Current DD',
-      kind: 'percent',
-      portfolio: portfolioCurrentDrawdown,
-      benchmark: benchmarkCurrentDrawdown,
-      excess: relativeCurrentDrawdown,
-    },
-    {
-      label: 'MDD Duration',
-      kind: 'days',
-      portfolio: metrics?.max_drawdown_days,
-      benchmark: benchmarkMetrics?.max_drawdown_days,
-      excess: relative?.max_drawdown_days,
-    },
-    {
-      label: 'MDD Recovery',
-      kind: 'days',
-      portfolio: metrics?.max_drawdown_recovery_days,
-      benchmark: benchmarkMetrics?.max_drawdown_recovery_days,
-      excess: relative?.max_drawdown_recovery_days,
-    },
-    {
-      label: 'Sharpe',
-      kind: 'number',
-      portfolio: metrics?.sharpe_ratio,
-      benchmark: benchmarkMetrics?.sharpe_ratio,
-      excess: relative?.sharpe_ratio ?? relative?.information_ratio,
-    },
-    {
-      label: 'Calmar',
-      kind: 'number',
-      portfolio: metrics?.calmar_ratio,
-      benchmark: benchmarkMetrics?.calmar_ratio,
-      excess: relative?.calmar_ratio,
-    },
-  ]
-
-  return (
-    <table className="performance-summary-table research-metric-table">
-      <thead>
-        <tr>
-          <th>Metric</th>
-          <th>Portfolio</th>
-          <th>Benchmark</th>
-          <th>Relative</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr className="research-metric-period-row">
-          <th>Period</th>
-          <td>{periodLabel(metrics)}</td>
-          <td>{periodLabel(benchmarkMetrics)}</td>
-          <td>{periodLabel(relative)}</td>
-        </tr>
-        {rows.map((row) => (
-          <tr key={row.label}>
-            <th>{row.label}</th>
-            <td>{formatMetricValue(row.portfolio, row.kind)}</td>
-            <td>{formatMetricValue(row.benchmark, row.kind)}</td>
-            <td>{formatMetricValue(row.excess, row.kind)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function ActualBacktestMetricTable({
-  comparison,
-}: {
-  comparison: ResearchActualBacktestComparison | null
-}) {
-  if (!comparison) {
-    return (
-      <div className="empty-state">
-        Actual performance and the backtest do not yet share two eligible observation dates.
-      </div>
-    )
-  }
-
-  const rows: Array<{
-    label: string
-    actual: number | null
-    backtest: number | null
-  }> = [
-    {
-      label: 'Period Return',
-      actual: comparison.actual.periodReturn,
-      backtest: comparison.backtest.periodReturn,
-    },
-    {
-      label: 'Annualized Volatility',
-      actual: comparison.actual.annualizedVolatility,
-      backtest: comparison.backtest.annualizedVolatility,
-    },
-    {
-      label: 'Max Drawdown',
-      actual: comparison.actual.maxDrawdown,
-      backtest: comparison.backtest.maxDrawdown,
-    },
-    {
-      label: 'Current Drawdown',
-      actual: comparison.actual.currentDrawdown,
-      backtest: comparison.backtest.currentDrawdown,
-    },
-  ]
-
-  return (
-    <table className="performance-summary-table research-metric-table research-actual-comparison-table">
-      <thead>
-        <tr>
-          <th>Metric</th>
-          <th>Actual</th>
-          <th>Backtest</th>
-          <th>Actual - Backtest</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr className="research-metric-period-row">
-          <th>Common Window</th>
-          <td colSpan={3}>
-            {comparison.startDate} to {comparison.endDate} · {comparison.observationCount} observations
-          </td>
-        </tr>
-        {rows.map((row) => (
-          <tr key={row.label}>
-            <th>{row.label}</th>
-            <td>{formatMaybePercent(row.actual)}</td>
-            <td>{formatMaybePercent(row.backtest)}</td>
-            <td>{formatMaybePercent(
-              row.actual == null || row.backtest == null ? null : row.actual - row.backtest,
-            )}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   )
 }
 
@@ -1727,7 +1173,6 @@ export default function ResearchPage() {
     }
   }
 
-  const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
   const usesCurrentTargets = backtest?.methodology?.target_configuration === 'current_snapshot'
   const pointInTimeCoverage = backtest?.point_in_time_coverage ?? null
@@ -1743,10 +1188,7 @@ export default function ResearchPage() {
     : null
   const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== planningTaxonomyId)
   const staleRun = latestRun?.status === 'completed' && (latestRun.reliability_state === 'stale' || changedTaxonomy)
-  const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3'].includes(latestRun?.detail?.solver_version ?? '')
-  const riskContributionTitle = globalSolverRun
-    ? 'Risk contributions use the same global covariance and solved asset weights as the optimizer. Each category sums its asset contributions.'
-    : 'Risk contribution recorded with this saved run. Rerun Research to use the current global solver.'
+  const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4'].includes(latestRun?.detail?.solver_version ?? '')
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
     ? latestRun?.detail?.scope_solve_events ?? []
     : latestRun?.detail?.solve_event
@@ -1756,17 +1198,9 @@ export default function ResearchPage() {
   const rebalanceGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
     (row) => Math.abs(row.gap ?? 0) > 0.0001 || row.execution_status === 'manual_review_required',
   )
-  const rebalanceGapByMember = new Map(
-    (latestRun?.detail?.target_weight_gaps ?? []).map((row) => [`${row.member_type}:${row.member_id}`, row]),
-  )
-  const solvedInstrumentRows = solvedGroups.flatMap((group) => group.rows)
   const portfolioSolveEvent = latestRun?.detail?.solve_event
     ?? [...solveEvents].reverse().find((event) => event.scope_node_id == null)
     ?? null
-  const actualBacktestComparison = buildActualBacktestComparison(
-    workbench?.current_context.chart_points ?? [],
-    backtest?.points ?? [],
-  )
   const planningTaxonomyName = workbench?.planning_taxonomy_options.find(
     (option) => option.taxonomy_id === planningTaxonomyId,
   )?.name ?? (zh ? '未选择研究分类' : 'No research taxonomy selected')
@@ -1793,12 +1227,6 @@ export default function ResearchPage() {
   const displayBenchmark = selectedBenchmarkId
     ? benchmarkComparison?.backtest_benchmark ??
       (selectedBenchmarkId === (storedBenchmark?.instrument_id ?? '') ? storedBenchmark : null)
-    : null
-  const displayRelativeMetrics = selectedBenchmarkId
-    ? benchmarkComparison?.backtest_relative_metrics ??
-      (selectedBenchmarkId === (storedBenchmark?.instrument_id ?? '')
-        ? latestRun?.detail?.backtest_relative_metrics ?? null
-        : null)
     : null
 
   return (
@@ -1840,7 +1268,6 @@ export default function ResearchPage() {
             <details className="research-settings-disclosure">
               <summary>
                 <span>Research Settings</span>
-                <span>capital, constraints, benchmark, costs and validation windows</span>
               </summary>
               <form
                 className="transaction-form taxonomy-form-compact research-run-form"
@@ -2315,12 +1742,20 @@ export default function ResearchPage() {
             </section>
           ) : (
             <>
-              <p className="portfolio-detail-meta" data-testid="research-result-taxonomy">
-                {zh ? '结果分类：' : 'Result taxonomy: '}{latestRun.planning_taxonomy_name ?? latestRun.planning_taxonomy_id}
-                {changedTaxonomy ? (zh ? ' · 当前研究分类已改变，请重新运行。' : ' · The selected research taxonomy changed. Run Research again.') : ''}
-              </p>
+              <section className="panel research-result-panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="panel-title">{staleRun ? 'Historical Solved Result' : 'Solved Result'}</div>
+                    <div className="portfolio-detail-meta" data-testid="research-result-taxonomy">
+                      {zh ? '结果分类：' : 'Result taxonomy: '}{latestRun.planning_taxonomy_name ?? latestRun.planning_taxonomy_id}
+                      {changedTaxonomy ? (zh ? ' · 当前研究分类已改变，请重新运行。' : ' · The selected research taxonomy changed. Run Research again.') : ''}
+                    </div>
+                  </div>
+                  <div className="portfolio-detail-meta">
+                    {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
+                  </div>
+                </div>
               {staleRun ? (
-                <section className="panel">
                   <div
                     className="inline-notice inline-notice-warning"
                     role="status"
@@ -2330,10 +1765,8 @@ export default function ResearchPage() {
                   >
                     <strong>Historical result — not current or execution-ready.</strong>
                   </div>
-                </section>
               ) : null}
               {nonExecutionReadySolveEvents.length ? (
-                <section className="panel">
                   <div
                     className="inline-notice inline-notice-warning"
                     role="status"
@@ -2343,22 +1776,8 @@ export default function ResearchPage() {
                   >
                     <strong>Constrained solve — not execution-ready.</strong>
                   </div>
-                </section>
               ) : null}
-              <section className="panel">
-                <div className="panel-header">
-                  <div>
-                    <div className="panel-title">{staleRun ? 'Historical Solved Result' : 'Solved Result'}</div>
-                  </div>
-                  <div className="portfolio-detail-meta">
-                    {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
-                  </div>
-                </div>
                 <div className="research-result-summary" aria-label="Solved result summary">
-                  <div>
-                    <span>Current NAV</span>
-                    <strong>{formatCurrency(workbench.current_context.nav, workbench.base_currency, 0)}</strong>
-                  </div>
                   <div>
                     <span>Solved Volatility</span>
                     <strong>{formatMaybePercent(portfolioSolveEvent?.estimated_risk_sleeve_volatility)}</strong>
@@ -2375,187 +1794,27 @@ export default function ResearchPage() {
                     <span>Material Gaps</span>
                     <strong>{rebalanceGaps.length}</strong>
                   </div>
-                  <div>
-                    <span>Backtest Return</span>
-                    <strong>{formatMaybePercent(backtest?.metrics?.period_return)}</strong>
-                  </div>
                 </div>
-                <HorizontalTableScroll className="table-shell">
-                  <table className="transactions-table research-solved-table">
-                    <thead>
-                      <tr>
-                        <th>Sleeve</th>
-                        <th>Actual Weight</th>
-                        <th>Solved Weight</th>
-                        <th>Change</th>
-                        <th>Target Risk</th>
-                        <th title={riskContributionTitle}>
-                          Solved RC
-                        </th>
-                        <th>Bounds</th>
-                        <th>Constraint</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {!solvedGroups.length ? (
-                        <TableStatusRow colSpan={8} label="No solved result was recorded for the latest run." />
-                      ) : (
-                        solvedGroups.map((group) => (
-                          <tr className="research-result-group-row" key={group.top_sleeve_id ?? group.top_sleeve_label}>
-                            <td>{group.top_sleeve_label}</td>
-                            <td>{formatMaybePercent(group.current_weight)}</td>
-                            <td>{formatMaybePercent(group.solved_weight)}</td>
-                            <td>{formatMaybePercent(
-                              group.current_weight == null || group.solved_weight == null
-                                ? null
-                                : group.solved_weight - group.current_weight,
-                            )}</td>
-                            <td>{formatMaybePercent(group.target_risk_share)}</td>
-                            <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
-                            <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
-                            <td>{formatResearchConstraint(
-                              group.trade_constraint,
-                              group.risk_model_status,
-                              group.bound_status,
-                            )}</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </HorizontalTableScroll>
-                <details className="research-table-disclosure">
-                  <summary>
-                    <span>Instrument-level Solution</span>
-                    <span>{solvedInstrumentRows.length} rows · weights, capital, risk and rebalance direction</span>
-                  </summary>
-                  <HorizontalTableScroll className="table-shell">
-                    <table className="transactions-table research-instrument-solution-table">
-                      <thead>
-                        <tr>
-                          <th>Instrument</th>
-                          <th>Sleeve</th>
-                          <th>Actual Weight</th>
-                          <th>Solved Weight</th>
-                          <th>Change</th>
-                          <th>Current MV</th>
-                          <th>Target Capital</th>
-                          <th>Target Risk</th>
-                          <th title={riskContributionTitle}>
-                            Look-through RC
-                          </th>
-                          <th>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!solvedInstrumentRows.length ? (
-                          <TableStatusRow colSpan={10} label="No instrument-level solution was recorded." />
-                        ) : solvedInstrumentRows.map((row) => {
-                          const gap = rebalanceGapByMember.get(`${row.member_type}:${row.member_id}`)
-                          return (
-                            <tr key={`${row.member_type}:${row.member_id}`}>
-                              <td>{row.label}</td>
-                              <td>{row.top_sleeve_label}</td>
-                              <td>{formatMaybePercent(row.current_weight)}</td>
-                              <td>{formatMaybePercent(row.solved_weight)}</td>
-                              <td>{formatMaybePercent(
-                                row.current_weight == null || row.solved_weight == null
-                                  ? null
-                                  : row.solved_weight - row.current_weight,
-                              )}</td>
-                              <td>{formatCurrency(row.current_value_base, workbench.base_currency, 0)}</td>
-                              <td>{formatCurrency(row.target_value_base, workbench.base_currency, 0)}</td>
-                              <td>{formatMaybePercent(row.target_risk_share)}</td>
-                              <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
-                              <td>{gap?.action ?? '-'}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </HorizontalTableScroll>
-                </details>
+                <ResearchSolutionTree run={staleRun ? { ...latestRun, reliability_state: 'stale', is_current: false } : latestRun} />
               </section>
 
-              <section className="performance-block-grid research-backtest-grid research-actual-backtest-grid">
-                <div className="portfolio-section-block research-chart-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Actual vs Backtest</div>
-                      <div className="panel-subtitle">Same eligible close dates, rebased to 1.00</div>
-                    </div>
-                    <div className="portfolio-detail-meta">
-                      {actualBacktestComparison
-                        ? `${actualBacktestComparison.startDate} to ${actualBacktestComparison.endDate}`
-                        : 'No common window'}
-                    </div>
-                  </div>
-                  {actualBacktestComparison ? (
-                    <ResearchLineChart
-                      points={actualBacktestComparison.backtestPoints}
-                      actualPoints={actualBacktestComparison.actualPoints}
-                      primaryLabel="Backtest"
-                      actualLabel="Actual portfolio"
-                      showDrawdown={false}
-                    />
-                  ) : <div className="empty-state">No comparable actual and backtest series.</div>}
-                  <p className="section-caption research-comparison-note">
-                    Actual uses the canonical portfolio NAV. FCN and option lifecycle effects may be present in actual NAV,
-                    while the backtest holds their capital at zero return and does not simulate coupons or option payoffs.
-                  </p>
-                </div>
-                <div className="portfolio-section-block research-metrics-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Comparable Metrics</div>
-                      <div className="panel-subtitle">Actual minus backtest is shown as the final column</div>
-                    </div>
-                  </div>
-                  <ActualBacktestMetricTable comparison={actualBacktestComparison} />
-                </div>
-              </section>
-
-              <section className="performance-block-grid research-backtest-grid">
-                <div className="portfolio-section-block research-chart-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">{usesCurrentTargets ? (zh ? '当前目标历史回测' : 'Current-Target Historical Backtest') : (zh ? '存档历史回测' : 'Archived Historical Backtest')}</div>
-                      <div className="panel-subtitle">
-                        {backtest?.start_date && backtest.end_date ? `${backtest.start_date} to ${backtest.end_date}` : 'No backtest window'}
-                      </div>
-                    </div>
-                  </div>
-                  <ResearchLineChart
-                    points={backtest?.points ?? []}
-                    benchmarkPoints={displayBenchmark?.points ?? []}
-                    benchmarkLabel={displayBenchmark?.label}
-                    primaryLabel="Solved policy"
-                  />
-                  {benchmarkComparisonLoading ? (
-                    <div className="research-comparison-status">Updating benchmark...</div>
-                  ) : null}
-                  {benchmarkComparisonError ? (
-                    <div className="research-comparison-status research-comparison-status-error">
-                      {benchmarkComparisonError}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="portfolio-section-block research-metrics-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Backtest Metrics</div></div>
-                  </div>
-                  <MetricTable
-                    run={latestRun}
-                    benchmark={displayBenchmark}
-                    relativeMetrics={displayRelativeMetrics}
-                  />
-                </div>
-              </section>
+              <ResearchComparisonPanel
+                context={workbench.current_context}
+                points={backtest?.points ?? []}
+                endDate={latestRun.as_of_date}
+                benchmarkPoints={displayBenchmark?.points ?? []}
+                benchmarkLabel={displayBenchmark?.label}
+                benchmarkLoading={benchmarkComparisonLoading}
+                benchmarkError={benchmarkComparisonError}
+                currentTargets={usesCurrentTargets}
+                selectedScope={latestRun.detail?.selected_scope?.taxonomy_node_id || latestRun.detail?.risk_attribution_scope === 'selected_research_scope'
+                  ? latestRun.detail?.selected_scope?.label ?? (zh ? '所选分类' : 'Selected category')
+                  : null}
+              />
 
               <details className="panel research-evidence-disclosure">
                 <summary>
                   <span>Model & Backtest Evidence</span>
-                  <span>solver diagnostics, historical data coverage, costs, robustness, rolling windows and sleeve paths</span>
                 </summary>
                 <div className="research-evidence-body">
                   <section className="portfolio-section-block">

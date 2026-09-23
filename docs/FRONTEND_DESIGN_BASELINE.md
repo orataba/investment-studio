@@ -32,8 +32,8 @@
 
 - 正文字重保持 regular。
 - 次级信息用更深的中性灰和 regular weight，不使用“灰色粗体”制造层级。
-- 普通标题最多使用 medium weight；表格内金额、比例等数值使用 regular，不随名称层级加粗。
-- Portfolio 分类树、Holdings 与 Performance 分类分组共用 `.portfolio-tree-label` 名称层级：组合根 `root` 为 700，一级分类 `primary` 为 600，子分类 `nested` 为 500，标的 `item` 为 400。三级及更深沿用 500 并通过缩进区别；Holdings 平铺的末级分组按分类实际深度取字重，不额外制造父行。
+- 普通标题最多使用 medium weight；普通表格数值使用 regular，层级表格按整行字重表达分组关系。
+- Portfolio 分类树、Holdings 与 Performance 分类分组共用 `.portfolio-tree-row` 行层级：组合根或总计 `root` 为 700，一级分类及资产类别小计 `primary` 为 600，子分类 `nested` 为 500，标的 `item` 为 400。名称、金额、比例以及行内输入框和选择器继承同一字重。三级及更深沿用 500 并通过缩进区别；Holdings 平铺的末级分组按分类实际深度取字重，不额外制造父行；Performance 的非组合总计辅助行保留原有样式。
 - 页面级标题、section title、table header 的层级通过字号、线条和位置区分。
 
 ## UI Copy
@@ -58,7 +58,8 @@
 - Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
 - Holdings 分为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四个按内容显示的直接表面；Securities、FCN、Options 独立保存视图与可见字段，Cash & Settlement 使用固定字段，只有 Securities 提供排序与 `Group By`。FCN、Options 的系统视图均以 `Default` 开始，切换系统视图时保持表格框架宽度稳定。无 rows 的表面不渲染，全部为空时只显示一个统一空态；
 - Portfolio 与 Watchlist 的表格工具统一使用 `View`、`Columns`、`Group By` 文案，以及 30px、高对比细边框、直角、透明背景的控制样式。View selector 为文字和箭头预留独立空间；Holdings instrument 数量紧邻表标题，不能混入按钮区；
-- Portfolio 原生 select 和已有自定义选择器统一为 30px、直角、1px 中性灰边框、regular 字重；表格内编辑可保留紧凑字号和宽度，继续使用相同边框、字体与键盘焦点反馈。使用原生选择器或已有菜单，不为页面另造覆盖层。
+- Portfolio 原生 select 和已有自定义选择器统一为 30px、直角、1px 中性灰边框、regular 字重；层级表格内编辑控件继承行字重，可保留紧凑字号和宽度，继续使用相同边框、字体与键盘焦点反馈。使用原生选择器或已有菜单，不为页面另造覆盖层。
+- Taxonomies 编辑操作自然右对齐：查看时仅“编辑”贴右，编辑时“取消”位于“保存”左侧，“保存”贴右；不为未显示的按钮保留空位。切换编辑状态保持工具栏高度及表格列宽、行高稳定。
 - Holdings 与 Performance 的 `Group By` 菜单直接列出当前可用分类，不在通用“分类”项之后再加第二个分类选择器。Holdings 每套分类保留“分类名 · 一级 / 末级”两种平铺分组；视图同时保存分组方式及具体分类 ID。未选择、已删除或停用的分类不得静默切到首项；失效分组回到 `None`。未选分类时身份列显示 `—`，选中分类但标的无归属时才显示 `Unassigned`。
 - Overview 承载全组合 `Asset Mix`：固定汇总 `Securities / FCN / Options / Cash & Settlement`，并以单行 `Portfolio Total` 收尾。金额和权重按资产负债表符号展示，所有分类继续使用 canonical NAV 与同一全组合 Forward RC 分母；该高层汇总不在 Holdings 重复；
 - Holdings 不再展示或导出第二套 `Portfolio Total`；页面顶部 portfolio headline 和 Overview `Asset Mix` 已分别承担总览与分类对账职责。Securities group/subtotal 的 base-currency 总未实现收益使用组内 historical-FX open cost 分母；
@@ -67,6 +68,8 @@
 - Performance 的 Latest / Reset 与 MTD / QTD / YTD / 1Y / SI 是同一期间选择器的便捷入口；summary、chart、Calculation 和 Groups 必须共享同一个 resolved window，不能各自解释日期；
 - Overview 的质量提示只在检测到真实问题时出现，并包含受影响对象/日期及可执行修复方向；不显示没有事实依据的通用 corporate-action 警告；
 - Research 列表区分 `Held / Observed / Former` 与 eligibility。Former instrument 的正目标在未经 PM approval 时必须显示人工复核状态，不能作为普通已批准建议。
+- Research 求解结果使用单一多级树表，分类与标的不拆成重复的两张表；折叠全部仍保留一级分类。金额、数字和编辑控件遵循同一整行层级字重。Excel 导出包含完整树、数值、报告币种、运行身份及口径，不受当前展开状态影响。
+- Research 只保留一组真实组合／回测／可选基准曲线、共同区间指标和月度收益；旧运行仍保留审计记录，不另堆一组“存档历史回测”图表。成立日、实际有效范围和共同比较窗口明确区分，模型说明集中到圆圈提示，实际缺口、过期和不可执行状态仍可见。
 
 ## Tabs And Content Rhythm
 

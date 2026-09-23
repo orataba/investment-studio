@@ -724,6 +724,7 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
 
 
 def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backtest(monkeypatch) -> None:
+    monkeypatch.setattr(research_solver_service, "get_portfolio", lambda _: {"inception_date": "2026-01-02"})
     active_dates = [item.date() for item in pd.bdate_range("2026-01-02", "2026-07-09")]
     late_dates = [item.date() for item in pd.bdate_range("2026-06-01", "2026-07-09")]
 
@@ -1536,12 +1537,19 @@ def test_research_workbench_returns_target_solve_defaults(client):
 
 
 def test_research_current_context_uses_canonical_portfolio_performance(client, monkeypatch):
-    monkeypatch.setattr(
-        research_service,
-        "get_cached_materialized_performance_report",
-        lambda _portfolio_id, *, start_date, end_date: {
+    requested_windows = []
+
+    def performance_report(_portfolio_id, *, start_date, end_date):
+        requested_windows.append((start_date, end_date))
+        return {
             "base_currency": "USD",
             "summary": {
+                "start_date": date(2026, 4, 13),
+                "return_coverage_state": "complete",
+                "include_start_date_return": False,
+                "performance_basis": "operational_carrying_basis",
+                "annualization_eligible": False,
+                "annualization_unavailable_reason": "operational_carrying_basis_not_annualized",
                 "cumulative_twr": 0.025,
                 "annualized_volatility": 0.12,
                 "current_drawdown": -0.01,
@@ -1553,32 +1561,51 @@ def test_research_current_context_uses_canonical_portfolio_performance(client, m
                 {
                     "as_of_date": date(2026, 4, 13),
                     "ending_nav": 210_000.0,
-                    "return_observation_eligible": True,
+                    "cumulative_twr": 0.0,
+                    "return_chain_continuous": True,
+                    "return_observation_eligible": False,
                 },
                 {
                     "as_of_date": date(2026, 4, 14),
                     "ending_nav": 212_000.0,
+                    "cumulative_twr": 0.0,
+                    "return_chain_continuous": True,
                     "return_observation_eligible": False,
                 },
                 {
                     "as_of_date": date(2026, 4, 15),
                     "ending_nav": 216_470.0,
+                    "cumulative_twr": 0.025,
+                    "return_chain_continuous": True,
                     "return_observation_eligible": True,
                 },
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        research_service,
+        "get_cached_materialized_performance_report",
+        performance_report,
     )
 
     response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert response.status_code == 200
     context = response.json()["current_context"]
 
-    assert context["chart_label"] == "Portfolio NAV"
-    assert "Canonical portfolio NAV from Performance" in context["chart_note"]
-    assert context["chart_currency"] == "USD"
+    assert requested_windows[0][0] == date(2026, 1, 2)
+    assert context["portfolio_inception_date"] == "2026-01-02"
+    assert context["performance_start_date"] == "2026-04-13"
+    assert context["performance_end_date"] == "2026-04-15"
+    assert context["performance_coverage_state"] == "complete"
+    assert context["performance_valuation_basis"] == "operational_carrying_basis"
+    assert context["performance_annualization_eligible"] is False
+    assert context["performance_annualization_unavailable_reason"] == "operational_carrying_basis_not_annualized"
+    assert context["chart_label"] == "Portfolio TWR Index"
+    assert "cash-flow-adjusted portfolio TWR index" in context["chart_note"]
+    assert context["chart_currency"] is None
     assert context["chart_points"] == [
-        {"date": "2026-04-13", "value": 210_000.0},
-        {"date": "2026-04-15", "value": 216_470.0},
+        {"date": "2026-04-13", "value": 1.0, "is_start_anchor": True},
+        {"date": "2026-04-15", "value": 1.025, "is_start_anchor": False},
     ]
     assert context["nav"] == pytest.approx(216_470.0)
     assert context["summary"] == {
@@ -2768,6 +2795,17 @@ def test_research_run_creates_current_target_weight_outputs(client):
     )
     assert len(run_payload["detail"]["solved_result_groups"]) == 1
     solved_group = run_payload["detail"]["solved_result_groups"][0]
+    solution_tree = run_payload["detail"]["solution_tree"]
+    assert solution_tree["hierarchy_status"] == "complete"
+    assert solution_tree["capital_weight_basis"] == "portfolio_nav"
+    assert solution_tree["risk_attribution_scope"] == "selected_research_scope"
+    assert solution_tree["base_currency"] == "USD"
+    assert solution_tree["portfolio_nav"] > 0
+    assert solution_tree["rows"][0]["label"] == "Risk Assets"
+    tree_leaves = [item for item in solution_tree["rows"] if item["row_kind"] == "instrument"]
+    assert {item["member_id"] for item in tree_leaves} == {"equity-us-abbv", "fund-hk-2800"}
+    assert all(item["depth"] == 2 for item in tree_leaves)
+    assert all(item["target_weight"] == pytest.approx(item["target_value_base"] / solution_tree["portfolio_nav"]) for item in tree_leaves)
     assert solved_group["top_sleeve_label"] == "Risk Assets"
     assert solved_group["current_weight"] is not None
     assert solved_group["current_value_base"] is not None
@@ -2818,11 +2856,11 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "Solver" in signal_labels
     assert "Missing Returns" in signal_labels
     assert "Estimated Volatility" in signal_labels
-    portfolio_nav_tape_artifact = next(
-        item for item in run_payload["artifacts"] if item["artifact_id"] == "portfolio_nav_tape"
+    portfolio_performance_tape_artifact = next(
+        item for item in run_payload["artifacts"] if item["artifact_id"] == "portfolio_performance_tape"
     )
-    assert portfolio_nav_tape_artifact["label"] == "Portfolio NAV Tape CSV"
-    assert portfolio_nav_tape_artifact["path"].endswith("/portfolio_nav_tape.csv")
+    assert portfolio_performance_tape_artifact["label"] == "Portfolio TWR Index CSV"
+    assert portfolio_performance_tape_artifact["path"].endswith("/portfolio_performance_tape.csv")
     assert any(item["artifact_id"] == "target_weights" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "leaf_targets" for item in run_payload["artifacts"])
     assert all(item["artifact_id"] != "backtest_curve" for item in run_payload["artifacts"])

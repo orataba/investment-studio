@@ -1429,7 +1429,13 @@ $$
 
 Research 历史模拟合同为 `Current-target historical simulation`：用本次冻结的当前完整配置回看历史。它不声称当前目标或资产选择在历史上已经已知；新 run 的 `point_in_time_universe` 与 `point_in_time_taxonomy` 均为 false，`target_configuration=current_snapshot`。市场观察仍按决策日截断；旧 run 方法与结果原样保留为存档。
 
+求解展示保存 `solution_tree`，层级来自本次冻结分类，每个叶只计入一次，父行仅汇总直接子行。证券账面金额为市值，现金含待交收货币项目，衍生品沿用 signed carrying capital；新运行的目标资金权重为目标金额 / 求解当日 statement NAV，调仓金额为目标金额减当前账面金额。不交易成员金额不变，期权负债已在 statement 的负持仓行中计入，不能再扣汇总披露额。证券敞口复用已发布账户级 gross 计算，FCN本金在衍生分支单计，不再同时分摊到证券分类，现金不计入敞口；缺失期权敞口向父层传播为未知。旧运行只读保存值与保存的配置，不能调用当前分类或行情重建历史；旧目标 schema 不按新规则重解释。未保存的 NAV／敞口保持未知，旧权重保留当时范围，缺币种时原始金额照录并说明未换算。Excel 导出完整树及其币种、日期、范围、状态和数值，不受页面折叠影响。
+
+真实组合曲线从组合 `inception_date` 请求已发布的 Performance，使用其连续可靠前缀的 `1 + cumulative_twr`，而非受申赎影响的 NAV 金额比值，也不按风险模型 lookback 裁短。`lookback_start/end` 只表示风险估计窗口；`portfolio_inception_date`、`performance_start_date/end_date` 和 `performance_coverage_state` 分别披露组合成立日、实际有效表现期间与覆盖。现金入金形成的首日 BOD-to-EOD 收益使用明确的 `is_start_anchor` 单位锚点保留；该技术锚点按 Performance 约定用前一日标记，不代表组合提前成立或生成历史收益。导入资产的 EOD anchor 不产生导入首日收益。真实/模拟比较只在共同可靠日期与同一起始边界上计算，完整真实曲线和实际比较窗口分别披露；不得跨收益链缺口、前填缺失收益或把不同期间的指标并排当作同区间比较。`performance_valuation_basis` 与年化资格直接沿用 Performance，`operational_carrying_basis` 不因换成指数而变成公允价值表现或取得年化资格。新运行导出的 Portfolio TWR Index CSV 与该曲线使用同一序列；旧运行的 NAV tape 与原方法保持存档。
+
 `PUT /api/portfolios/{portfolio_id}/research/settings` 的 core run-setup 字段使用全量 PUT 语义，调用方应提交完整 core settings；`frozen_taxonomy_node_ids` 和 `top_sleeve_weight_bounds` 省略时保留、空列表时清空。`backtest_*` control 省略时保留当前值；nullable benchmark 显式 `null` 时清空，robustness scenarios 显式 `null` 时恢复系统默认 scenarios。API 不得把省略的 backtest control 静默重置为 schema default。
+
+共同区间的收益由两条收益指数在相同收盘边界重新计算；可选基准须覆盖整个共同区间，不能缩短真实／回测窗口。年化收益遵循 calendar-anniversary Actual/Actual，满一周年才展示，末端零值保留 -100% 总损失；风险年化使用共同收益观测数 / 实际锚点到期末天数 × 365.25，Sharpe 的无风险收益与 Sortino 的最低可接受收益为 0。最大回撤时点、修复天数和缺口处理沿用 Performance 约定。月度收益从上月最后共同收盘复合，非完整首尾月单列提示；稀疏跨月路径不伪造单月结果。真实曲线可展示完整可靠历史，比较表始终明确其更窄的共同窗口。
 
 - universe 来自本次冻结的当前 active assignments 和研究资格；contract-only 标的按当前事实一次过滤。历史成员加入/退出日期不再决定模拟 universe。每个成员仍须在决策日拥有足够的真实历史数据，缺失时显式跳过或返回 unavailable；
 - 每个计划 rebalance date 以及 FCN/Option capital lifecycle date 均使用同一份当前配置快照重新求解，只读取决策日及以前的市场观察；输出快照指纹、固定配置版本、覆盖及 skipped rebalance reason。Risk Model、top sleeve bounds、资本模式及成本固定为本次 run 的设置。手工 frozen sleeve 是当前调仓禁止交易约束，只影响当前提案；历史模拟按当前目标再平衡，不把今天真实持仓当作历史模拟 book。FCN/Option 按真实 derivative ledger 日期回放 signed carrying capital。数据按 observation date 截断，尚未建模私募净值的实际公布时间与申赎可成交时间；
@@ -1438,7 +1444,7 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 - 目标权重以扣费后 NAV 为基准同时解出交易金额与费用，满仓目标不得因扣费形成隐性负现金。若 FCN/Option carrying capital 在 decision date 之后、scheduled/actual execution boundary 之前发生生命周期变化，原证券目标使用的可投资资本已经失效，该次证券再平衡必须跳过并披露原因；不得照用旧目标制造负现金，也不得静默缩放后冒充原决策。该 lifecycle date 必须基于当日可见信息触发一次同日 EOD funding solve，只调整可交易证券与 Cash，不改变被冻结的衍生品资本；若当日没有共同可执行价格，或在 `unit_notional / volatility_cap / gross <= 100%` 等未授权融资的模式下重配后 Cash 仍为负，回测必须显式失败。只有 `fixed_gross > 100%` 或带 `max_gross_exposure > 100%` 的 `target_volatility` 才可显式产生融资现金；不得由实现自行猜测借款。现金按实际日历天数和 annual cash yield 复合；commission 与 slippage 作用于 risky buys/sells，tax 只作用于 risky sells；execution record 必须披露 buy/sell/cash/derivative-leg turnover、现金和衍生品目标权重、各项成本、scheduled/actual execution date 和成本前后 NAV。
 - 固定衍生品资本记为起始 NAV 单位的金额 `D`；每次决策的资本占比为 `D / 模拟账户当日NAV`，不得除以真实组合后来走出的 NAV。执行时用 `N_after + 交易费(证券目标金额) = N_before` 联立求解：在填满可用资本的 `unit_notional` 下，证券金额为 `已求解证券相对比例 × ((1 - 现金预留比例) × N_after - D)`；`volatility_cap` 及受硬上限约束留下现金的配置至多缩减到可融资金额，不突破原求解证券总权重。`fixed_gross / target_volatility` 保留明确的 NAV 证券权重目标。所有模式都保持 `D` 不变，并在最终实施权重上复核硬上下限与融资许可；发生冲突明确不可实施，不偷偷调整被冻结资产或越过边界。execution record 的证券权重记录扣费后实际实施值。
 - Derivatives 在本模型中是独立的零收益、no-trade 固定资本代理，不是计息现金；不进入证券协方差、RC 或风险预算。当前求解冻结 as-of 实际 signed carrying capital；回测按真实 FCN/Option position-changing lifecycle date 将 carrying capital 以起始 NAV 归一化，只在该类账本事件发生时从 Cash 转入或转回，并同步执行前述 funding solve，普通计划再平衡的 derivative turnover 恒为 `0`。回测不重放 FCN 票息、敲入敲出、违约、Option payoff/行权/保证金或该代理的外汇波动。真实账务仍按实际合同和现金流处理；零建模波动不代表这些资产无经济风险，也不能把 carrying/liability 净额视为所需抵押资金。包含衍生品的执行清单必须提示人工复核条款、担保与流动性。
-- 首次目标建仓从当前成员的可用行情起点尝试，风险窗口不足则跳过并披露；之后周度按 7 天、月度按月初、`3m` 按首个完整月月初起每三个月生成决策（不是固定自然季度）。延长回测截止日不得使已存在的首次建仓消失。
+- 模拟 `requested_start_date` 固定为组合成立日，首次目标建仓从该日尝试；成立前真实行情仅用于风险窗口预热，不能变成成立前的组合收益。风险窗口不足则跳过并披露，实际 `start_date` 保留首个可用决策/执行的边界，不补造从成立日到数据可用日的回报。零延迟首日执行费用使用明确的 `is_start_anchor` 单位起始点保留，技术锚点可位于前一日，任何交易决策及执行均不得早于成立日。之后周度按 7 天、月度按月初、`3m` 按首个完整月月初起每三个月生成决策（不是固定自然季度）。延长回测截止日不得使已存在的首次建仓消失。
 - top-sleeve contribution 使用 starting-NAV unit 的累计 arithmetic linking，cash 和 execution costs 是显式 component；每个点返回 `linked_contribution`、`nav_change` 与 reconciliation residual。它不是把 sleeve 百分比收益几何相加；
 - robustness scenarios 用同一当前目标快照下的历史 decisions 在替代 cash yield、commission、tax、slippage 和 delay 假设下重放，输出 scenario metrics、相对 base period-return delta、turnover 和 total cost；
 - 滚动历史窗口使用连续 training/test calendar-month，以 test window 前最近的 EOD 为归一锚点，输出逐窗口与聚合指标。目标在全部窗口固定为当前快照，`parameter_selection=fixed_current_targets`；不在 training window 重新拟合或选择参数，不声称当前目标获得了独立样本外验证。历史不足时明确 unavailable。既有 `oos_*` 字段表示测试窗口的序列与指标，页面按历史测试窗口展示；
@@ -1446,7 +1452,7 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v3` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。
+固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v4` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
 
 每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
 

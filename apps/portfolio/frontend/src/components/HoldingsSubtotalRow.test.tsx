@@ -29,6 +29,8 @@ describe('HoldingsSubtotalRow contract', () => {
 
     const row = screen.getByText('Securities Subtotal (USD)').closest('tr')
     expect(row).not.toBeNull()
+    expect(row).toHaveClass('holdings-subtotal-row', 'portfolio-tree-row')
+    expect(row).toHaveAttribute('data-tree-level', 'primary')
     expect(within(row!).getByText('$1,000.00')).toBeInTheDocument()
     const expectedReturns = {
       instrument_return_1w: '+99.00%',

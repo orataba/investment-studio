@@ -582,7 +582,7 @@ function FixedHoldingsTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.line_id}>
+            <tr key={row.line_id} className="portfolio-tree-row" data-tree-level="item">
               {columns.map((column) => (
                 <td
                   key={column.key}
@@ -613,7 +613,7 @@ function FixedHoldingsTable({
               ))}
             </tr>
           ))}
-          <tr className="total-row holdings-section-subtotal-row">
+          <tr className="portfolio-tree-row total-row holdings-section-subtotal-row" data-tree-level="primary">
             {columns.map((column, index) => (
               <td
                 key={column.key}
@@ -854,7 +854,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Portfolio Weight',
+      label: 'Capital Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },
@@ -1086,7 +1086,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Portfolio Weight',
+      label: 'Capital Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },
@@ -1166,7 +1166,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Portfolio Weight',
+      label: 'Capital Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },

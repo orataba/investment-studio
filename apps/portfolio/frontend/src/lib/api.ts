@@ -1450,6 +1450,7 @@ export type PortfolioResearchFindingRecord = {
 export type PortfolioResearchContextPoint = {
   date: string
   value?: number | null
+  is_start_anchor?: boolean
 }
 
 export type PortfolioResearchCurrentContextSummary = {
@@ -1476,6 +1477,13 @@ export type PortfolioResearchCurrentContextRecord = {
   target_snapshot_fingerprint: string | null
   lookback_start: string
   lookback_end: string
+  portfolio_inception_date?: string | null
+  performance_start_date?: string | null
+  performance_end_date?: string | null
+  performance_coverage_state?: 'complete' | 'partial' | 'unavailable'
+  performance_valuation_basis?: 'market_value' | 'operational_carrying_basis' | null
+  performance_annualization_eligible?: boolean
+  performance_annualization_unavailable_reason?: string | null
   nav?: number | null
   holdings_count: number
   planning_group_count: number
@@ -1647,6 +1655,7 @@ export type PortfolioResearchTargetRowRecord = {
 export type PortfolioResearchBacktestPointRecord = {
   date: string
   value?: number | null
+  is_start_anchor?: boolean
 }
 
 export type PortfolioResearchBacktestSleeveValueRecord = {
@@ -1709,6 +1718,7 @@ export type PortfolioResearchBacktestMethodologyRecord = {
   target_snapshot_fingerprint?: string | null
   point_in_time_universe: boolean
   point_in_time_taxonomy: boolean
+  simulation_start_rule?: string | null
   decision_rule: string
   execution_rule: string
   cash_return_rule: string
@@ -1799,6 +1809,7 @@ export type PortfolioResearchBacktestWalkForwardRecord = {
 
 export type PortfolioResearchBacktestRecord = {
   rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
+  requested_start_date?: string | null
   common_history_start_date?: string | null
   start_date?: string | null
   end_date?: string | null
@@ -1839,6 +1850,7 @@ export type PortfolioResearchBacktestBenchmarkComparisonResponse = {
 }
 
 export type PortfolioResearchRunDetailRecord = {
+  solution_tree?: import('./researchSolutionTree').ResearchSolutionTreeData | null
   solver_version?: string | null
   risk_attribution_scope?: 'portfolio' | 'selected_research_scope' | null
   headline?: string | null

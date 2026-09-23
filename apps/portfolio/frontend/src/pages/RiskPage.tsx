@@ -2379,7 +2379,7 @@ export default function RiskPage() {
                       holdingsWorkspace.base_currency,
                     )}`}
                   >
-                    <span className="summary-card-label">Excluded Exposure</span>
+                    <span className="summary-card-label">Excluded Carrying Amount</span>
                     <strong className="summary-card-value">
                       {formatCurrency(excludedExposure, holdingsWorkspace.base_currency)}
                     </strong>
@@ -2416,7 +2416,7 @@ export default function RiskPage() {
                         <th>Excluded Holding</th>
                         <th>Category</th>
                         <th>Reason</th>
-                        <th className="performance-cell-number">Exposure</th>
+                        <th className="performance-cell-number">Carrying Amount</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2442,7 +2442,7 @@ export default function RiskPage() {
                       <thead>
                         <tr>
                           <th>Sleeve</th>
-                          <th className="performance-cell-number">Eligible Weight</th>
+                          <th className="performance-cell-number">Modeled Capital Weight</th>
                           <th className="performance-cell-number">Risk Share</th>
                           <th className="performance-cell-number">Observations</th>
                         </tr>

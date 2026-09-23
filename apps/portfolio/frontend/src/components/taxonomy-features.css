@@ -17,7 +17,7 @@
   white-space: nowrap;
 }
 .taxonomy-page-table .taxonomy-toolbar-button { justify-content: center; }
-.taxonomy-editor-actions { display: grid; grid-template-columns: repeat(2, 80px); gap: 8px; }
+.taxonomy-editor-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .taxonomy-overview-table { width: 100%; min-width: 1240px; table-layout: fixed; }
 .taxonomy-tree-scroll { scroll-padding-left: max(372px, 30%); }
 .taxonomy-overview-table .holding-name-cell { min-width: 280px; }

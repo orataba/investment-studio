@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from portfolio_app.api.concentration_contracts import ConcentrationSettingsUpdate
+from portfolio_app.api.research_solution_contracts import ResearchSolutionTreeRecord
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, time
@@ -2062,6 +2063,7 @@ class ResearchFindingRecord(BaseModel):
 class ResearchContextPoint(BaseModel):
     date: str
     value: float | None = None
+    is_start_anchor: bool = False
 
 
 class ResearchCurrentContextSummary(BaseModel):
@@ -2088,6 +2090,13 @@ class ResearchCurrentContextRecord(BaseModel):
     target_snapshot_fingerprint: str | None = None
     lookback_start: date
     lookback_end: date
+    portfolio_inception_date: date | None = None
+    performance_start_date: date | None = None
+    performance_end_date: date | None = None
+    performance_coverage_state: CoverageState = "unavailable"
+    performance_valuation_basis: Literal["market_value", "operational_carrying_basis"] | None = None
+    performance_annualization_eligible: bool = False
+    performance_annualization_unavailable_reason: str | None = None
     nav: float | None = None
     holdings_count: int = 0
     planning_group_count: int = 0
@@ -2261,6 +2270,7 @@ class ResearchTargetRowRecord(BaseModel):
 class ResearchBacktestPointRecord(BaseModel):
     date: str
     value: float | None = None
+    is_start_anchor: bool = False
 
 
 class ResearchBacktestSleeveValueRecord(BaseModel):
@@ -2323,6 +2333,7 @@ class ResearchBacktestMethodologyRecord(BaseModel):
     target_snapshot_fingerprint: str | None = None
     point_in_time_universe: bool
     point_in_time_taxonomy: bool
+    simulation_start_rule: str | None = None
     decision_rule: str
     execution_rule: str
     cash_return_rule: str
@@ -2425,6 +2436,7 @@ class ResearchBacktestWalkForwardRecord(BaseModel):
 
 class ResearchBacktestRecord(BaseModel):
     rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
+    requested_start_date: str | None = None
     common_history_start_date: str | None = None
     start_date: str | None = None
     end_date: str | None = None
@@ -2476,6 +2488,7 @@ class ResearchBacktestBenchmarkComparisonResponse(BaseModel):
 
 
 class ResearchRunDetailRecord(BaseModel):
+    solution_tree: ResearchSolutionTreeRecord | None = None
     solver_version: str | None = None
     risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
     headline: str | None = None

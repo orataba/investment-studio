@@ -24,7 +24,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - 未显式指定日期时，Holdings 使用 latest fresh complete snapshot；不能把部分资产已经更新的更晚日期当作组合 `as_of_date`。
 - 行级 `Position Value (Local)` 与带 `(Local)` 的成本、盈亏字段使用标的本币；带 `(Base)` 的字段及所有可加总金额使用组合 base currency。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
 - 普通非现金市值为 `quantity × selected valuation quote × price_scale`；再用 `as_of_date` FX 转为 base currency。FCN/长期权在没有可靠 fair value 时使用 `valuation_basis=carried_cost`，written option 使用 `valuation_basis=premium_liability` 和负的 NAV amount；两者的 `fair_value` 及 quote identity 均为空。现金市值为 settled cash amount。
-- 行级 `Weight = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
+- 行级 `Capital Weight（资金权重） = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
 - 缺少唯一且合法的 valuation quote、价格单位/scale 或必要 FX 时，依赖它的字段为不可用，不用图表点或 0 补齐。来源日历确认的休市可以沿用前一有效点并保留 source date；应更新的行情或 FX 缺失时，日度估值链在首个缺口停止。默认 Holdings 使用此前最后完整快照并披露实际日期，缺口补齐并重算前不能从后续报价重新建立连续估值链。
 - 唯一的普通持仓初始估值例外是首次买入份额确认日：无正式价格时，按当日买入总 gross / 总 quantity 对所有账户和 lots 一致估值。`valuation_basis=transaction_price`、`quote_status=transaction-price` 与来源交易 IDs 明确披露，正式 quote identity 和日涨跌留空；费用仍进入损益。后续只有已确认休市可沿用，已有持仓加仓和下一交易日缺价不适用此例外；非现金交付与期权实物交付关联的股票腿也不适用。
 
@@ -88,7 +88,7 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 | `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、组合权重、lifecycle 与估值状态。风险视图还展示 underlying spot、moneyness、intrinsic value、portfolio-level backing 与简洁 risk state。 |
 | `Cash & Settlement` | `holding_category=cash_and_settlement` | 固定字段；settled cash 与 pending monetary row 都按账户与币种分别展示本币余额、base value、FX cost basis、未实现汇兑损益和权重；pending row 另外展示结算边界与关联资产。 |
 
-每个资产表的 subtotal 只用于阅读该资产表；资产 row/subtotal 的 `Portfolio Weight` 始终是 signed base value / canonical total NAV，资产 Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
+每个资产表的 subtotal 只用于阅读该资产表；资产 row/subtotal 的 `Capital Weight（资金权重）` 始终是 signed base value / canonical total NAV，资产 Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
 
 表格行本身不承担导航。只有资产、合约或现金/结算行的名称是详情入口；其他单元格保持普通表格行为，并允许按住鼠标左右拖动横向滚动。这样查看宽表时不会因为选中字段或拖动而误入详情页。
 
@@ -161,7 +161,7 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 | `cost_basis_fx_rate` | Weighted Cost FX | `Book Cost (Base, Trade FX) / Book Cost (Local)` | 留空，不平均汇率 | `none` |
 | `net_invested` | Net Invested (Local) | 当前连续持仓周期的买入净投入减已卖回款、已实现收入与资本返还 | 留空，不跨币种加总 | `none` |
 | `break_even_price` | Break-even Price | `Net Invested (Local) / current quantity` | 留空，不平均价格 | `none` |
-| `weight` | Weight | `market_value_base / portfolio NAV`；written liability 为负权重 | 加总当前 row 权重 | `sum` |
+| `weight` | Capital Weight | `market_value_base / portfolio NAV`；written liability 为负权重 | 加总当前 row 权重 | `sum` |
 | `accounts` | Accounts | 当前持有该 instrument 的 distinct account 数 | 留空，账户集合可能重叠 | `none` |
 | `open_lots` | Open Lots | 当前开放 lot 数；moving average synthetic lot 按一个开放 lot 展示 | 加总开放 lot 数 | `sum` |
 | `unrealized_price_pnl` | Price P&L (Local) | `market value local - Book Cost (Local)` | 留空，不跨币种加总 | `none` |
@@ -204,7 +204,7 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 
 覆盖不足时整个 group 留空，不能剔除缺失成员后重新归一。该结果表示“如果当前篮子在该历史窗口一直保持当前权重”，不是实际组合 TWR。
 
-当前 Securities group scope 中只要存在非零 event-valued asset，价格/汇兑未实现盈亏、未实现收益和 instrument return 均失败关闭为 `N/A`。Operational amount 仍参与 Position Value、Weight 和 NAV 对账；Forward RC 继续使用全组合风险模型的共同分母。
+当前 Securities group scope 中只要存在非零 event-valued asset，价格/汇兑未实现盈亏、未实现收益和 instrument return 均失败关闭为 `N/A`。Operational amount 仍参与 Position Value、Capital Weight 和 NAV 对账；Forward RC 继续使用全组合风险模型的共同分母。
 
 ### 4.2 当前篮子风险
 

@@ -51,6 +51,8 @@ describe('Holdings concentration and Overview alerts', () => {
     const user = userEvent.setup()
     renderPanel()
     expect(await screen.findByRole('table', { name: 'Concentration exposures and limits' })).toHaveTextContent('10.00%')
+    expect(screen.getByRole('columnheader', { name: 'Exposure / NAV' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Current / NAV' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Portfolio limits' })).not.toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: 'Watch' })).not.toBeInTheDocument()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Concentration taxonomy' }), 'taxonomy:industry')

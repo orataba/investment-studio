@@ -35,7 +35,7 @@ export default function HoldingsSubtotalRow({
   cells: HoldingsSubtotalCell[]
 }) {
   return (
-    <tr className={className}>
+    <tr className={`portfolio-tree-row ${className}`} data-tree-level="primary">
       {cells.map((cell, index) => {
         const isCurrentHoldingsReturn = isBasketReturnColumn(cell.key)
         return (

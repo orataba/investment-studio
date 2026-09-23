@@ -92,6 +92,12 @@ describe('Taxonomies integrated tree contract', () => {
     expect(within(table).getByRole('button', { name: 'Risk Assets' })).toHaveAttribute('data-tree-level', 'primary')
     expect(within(table).getByRole('button', { name: 'Growth' })).toHaveAttribute('data-tree-level', 'nested')
     expect(within(table).getByText('ALPHA · Alpha Fund')).toHaveAttribute('data-tree-level', 'item')
+    for (const [label, level] of [['Allocation', 'root'], ['Risk Assets', 'primary'], ['Growth', 'nested'], ['ALPHA · Alpha Fund', 'item'], ['Cash', 'primary'], ['Operating Cash', 'item'], ['Unassigned', 'primary']]) {
+      const row = within(table).getByText(label).closest('tr')!
+      expect(row).toHaveClass('portfolio-tree-row')
+      expect(row).toHaveAttribute('data-tree-level', level)
+      expect(within(row).getAllByRole('cell')).toHaveLength(8)
+    }
     expect(within(table).getAllByRole('columnheader')).toHaveLength(8)
     const growth = screen.getByRole('button', { name: 'Growth' }).closest('tr')!
     expect(within(growth).getByText('Weight')).toBeInTheDocument()
@@ -100,18 +106,28 @@ describe('Taxonomies integrated tree contract', () => {
     expect(within(table).getByText('ALPHA · Alpha Fund')).toBeInTheDocument()
     expect(within(table).getByText('75.00%')).toBeInTheDocument()
     expect(within(table).getByText('66.67%')).toBeInTheDocument()
+    for (const name of ['Cash', 'Operating Cash']) {
+      const cells = within(within(table).getByText(name).closest('tr')!).getAllByRole('cell')
+      expect(cells[2]).toHaveTextContent('$200.00')
+      expect(cells[3]).toHaveTextContent(/^—$/)
+    }
+    const cashCells = within(within(table).getByText('Cash').closest('tr')!).getAllByRole('cell')
+    expect(cashCells[4]).toHaveTextContent('20.00%')
+    expect(cashCells[5]).toHaveTextContent('20.00%')
     expect(screen.queryByText(/Manage taxonomy|Planning taxonomy|Configure children of|Taxonomy default limits|Portfolio limits/)).not.toBeInTheDocument()
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
   })
 
-  it('preserves the table, column frames, rows, and toolbar action area when entering and leaving edit mode', async () => {
+  it('preserves the table and row hierarchy while keeping Edit or Save last in the natural action flow', async () => {
     const user = userEvent.setup(); renderPage(); await ready()
     const table = screen.getByRole('table') as HTMLTableElement
     const columns = Array.from(table.querySelectorAll('col'))
     const columnWidths = columns.map((column) => column.style.width)
     const rows = Array.from(table.rows)
     const cells = rows.map((row) => Array.from(row.cells))
-    const actionArea = screen.getByRole('button', { name: 'Edit' }).parentElement
+    const actionArea = screen.getByRole('button', { name: 'Edit' }).parentElement!
+    const rowLevels = rows.map((row) => row.dataset.treeLevel)
+    expect(Array.from(actionArea.children).map((child) => child.textContent)).toEqual(['Edit'])
     expect(columns).toHaveLength(8)
     expect(columnWidths.every((width) => Number.parseFloat(width) > 0)).toBe(true)
     expect(columnWidths.reduce((total, width) => total + Number.parseFloat(width), 0)).toBe(100)
@@ -125,6 +141,7 @@ describe('Taxonomies integrated tree contract', () => {
       })
       rows.forEach((row, rowIndex) => {
         expect(table.rows[rowIndex]).toBe(row)
+        expect(row.dataset.treeLevel).toBe(rowLevels[rowIndex])
         cells[rowIndex].forEach((cell, cellIndex) => expect(row.cells[cellIndex]).toBe(cell))
       })
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -134,12 +151,14 @@ describe('Taxonomies integrated tree contract', () => {
     expectStableTable()
     expect(screen.getByRole('button', { name: 'Save' }).parentElement).toBe(actionArea)
     expect(screen.getByRole('button', { name: 'Cancel' }).parentElement).toBe(actionArea)
+    expect(within(actionArea).getAllByRole('button').map((button) => button.textContent)).toEqual(['Cancel', 'Save'])
     const growthCells = cells[rows.findIndex((row) => within(row).queryByRole('button', { name: 'Growth' }))]
     expect(within(growthCells[1]).getByRole('combobox')).toHaveValue('weight')
     expect(within(growthCells[4]).getByRole('spinbutton')).toHaveValue(60)
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expectStableTable()
     expect(screen.getByRole('button', { name: 'Edit' }).parentElement).toBe(actionArea)
+    expect(Array.from(actionArea.children).map((child) => child.textContent)).toEqual(['Edit'])
     expect(growthCells[1]).toHaveTextContent('Weight')
     expect(growthCells[4]).toHaveTextContent('60.00%')
   })
@@ -153,6 +172,8 @@ describe('Taxonomies integrated tree contract', () => {
     expect(screen.getByRole('columnheader', { name: 'Value (USD)' })).toBeInTheDocument()
     for (const [name, amount] of [['ALPHA · Alpha Fund', '$800.00'], ['Alpha FCN', '$50.00'], ['Operating Cash', '$200.00']]) {
       const row = screen.getByText(name).closest('tr')!
+      expect(row).toHaveClass('portfolio-tree-row')
+      expect(row).toHaveAttribute('data-tree-level', 'item')
       const cells = within(row).getAllByRole('cell')
       expect(cells[0]).not.toHaveTextContent(/USD|HKD/)
       expect(cells[2]).toHaveTextContent(amount)

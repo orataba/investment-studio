@@ -73,7 +73,8 @@ def test_research_context_batches_details_and_reuses_actual_fx_and_quote_indexes
 
 
 def _cash_context(monkeypatch, *, cash_currency, base_currency):
-    portfolio = {'portfolio_id': 'cash', 'portfolio_name': 'Cash', 'base_currency': base_currency}
+    portfolio = {'portfolio_id': 'cash', 'portfolio_name': 'Cash', 'base_currency': base_currency,
+                 'inception_date': '2026-08-03'}
     accounts = [{'account_id': 'cash', 'account_name': 'Cash', 'account_type': 'deposit_account',
                  'currency': cash_currency}]
     transactions = [
