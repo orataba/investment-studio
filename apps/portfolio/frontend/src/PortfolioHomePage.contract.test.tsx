@@ -325,6 +325,34 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('region', { name: 'Concentration' })).not.toBeInTheDocument()
   })
 
+  it('keeps signed carrying weights distinct from concentration exposure and uses the reporting currency', async () => {
+    const user = userEvent.setup()
+    renderHoldings(holdingsWorkspaceFixture({ base_currency: 'USD',
+      rows: [holdingFixture({ instrument_core: instrumentFixture({ currency: 'HKD' }), market_value: 6240, market_value_base: 800, allocation: .8 }),
+        { ...writtenOptionHolding(), market_value_base: -100, allocation: -.1 },
+        { ...cashHolding(), market_value_base: 300, allocation: .3 }],
+      totals: { ...holdingsWorkspaceFixture().totals, nav: 1000 },
+    }))
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: 'Options Columns' }))
+    const columns = screen.getByRole('dialog', { name: 'Choose Options columns' })
+    await user.click(within(columns).getByRole('checkbox', { name: 'Current Weight' }))
+    await user.click(within(columns).getByRole('button', { name: 'Update' }))
+    for (const name of ['Security holdings', 'Option holdings', 'Cash and settlement holdings']) {
+      const table = screen.getByRole('table', { name })
+      expect(within(table).getByRole('columnheader', { name: /^Current Weight/ })).toBeInTheDocument()
+      expect(within(table).getByRole('columnheader', { name: /^Carrying Amount \(USD\)/ })).toBeInTheDocument()
+      expect(within(table).queryByRole('columnheader', { name: 'Exposure Ratio' })).not.toBeInTheDocument()
+    }
+    const options = screen.getByRole('table', { name: 'Option holdings' })
+    expect(within(options).getAllByText('-10.00%').length).toBeGreaterThan(0)
+    expect(within(options).getAllByText('-$100.00').length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: /^Carrying amount and current weight basis:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('signed carrying amount / portfolio NAV')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('option liabilities remain negative')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Reporting-currency amounts use USD')
+  })
+
   it('translates currency-qualified holdings fields while preserving user names across language changes', async () => {
     const fcn = fcnHolding()
     const option = writtenOptionHolding()
@@ -400,17 +428,17 @@ describe('Holdings rendered page contract', () => {
     const optionTable = screen.getByRole('table', { name: '期权持仓' })
     await waitFor(() => {
       expect(screen.getByText('证券小计 (CNY)')).toBeInTheDocument()
-      expect(within(cashTable).getByRole('columnheader', { name: '本位币价值 (CNY)' })).toBeInTheDocument()
+      expect(within(cashTable).getByRole('columnheader', { name: '账面金额 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByRole('columnheader', { name: '汇兑成本基础 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByRole('columnheader', { name: '未实现汇兑损益 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByRole('button', { name: '现金 (CNY)' })).toBeInTheDocument()
       expect(within(cashTable).getByText('现金与结算小计 (CNY)')).toBeInTheDocument()
       for (const table of [cashTable, fcnTable, optionTable]) {
-        expect(within(table).getByRole('columnheader', { name: '资金权重' })).toBeInTheDocument()
+        expect(within(table).getByRole('columnheader', { name: '当前权重' })).toBeInTheDocument()
       }
-      expect(within(screen.getByRole('table', { name: '证券持仓' })).getByText('资金权重')).toBeInTheDocument()
+      expect(within(screen.getByRole('table', { name: '证券持仓' })).getByText('当前权重')).toBeInTheDocument()
       for (const table of [fcnTable, optionTable]) {
-        for (const name of ['带方向净值金额 (CNY)', '历史账面基础 (CNY)', '账面汇率折算 (CNY)']) {
+        for (const name of ['账面金额 (CNY)', '历史账面基础 (CNY)', '账面汇率折算 (CNY)']) {
           expect(within(table).getByRole('columnheader', { name })).toBeInTheDocument()
         }
       }
@@ -428,9 +456,9 @@ describe('Holdings rendered page contract', () => {
     expect(within(englishCashTable).getByRole('button', { name: 'Cash (CNY)' })).toBeInTheDocument()
     expect(within(englishCashTable).getByRole('columnheader', { name: 'FX Cost Basis (CNY)' })).toBeInTheDocument()
     for (const table of [englishCashTable, screen.getByRole('table', { name: 'FCN holdings' }), screen.getByRole('table', { name: 'Option holdings' })]) {
-      expect(within(table).getByRole('columnheader', { name: 'Capital Weight' })).toBeInTheDocument()
+      expect(within(table).getByRole('columnheader', { name: 'Current Weight' })).toBeInTheDocument()
     }
-    expect(within(screen.getByRole('table', { name: 'Security holdings' })).getByText('Capital Weight')).toBeInTheDocument()
+    expect(within(screen.getByRole('table', { name: 'Security holdings' })).getByText('Current Weight')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Strike Notional (CNY)' })).toBeInTheDocument()
   })
 
@@ -1190,9 +1218,9 @@ describe('Holdings rendered page contract', () => {
     for (const label of [
       'Type',
       'Available',
-      'Local Amount',
-      'Base Value (USD)',
-      'Capital Weight',
+      'Carrying Amount (Local)',
+      'Carrying Amount (USD)',
+      'Current Weight',
       'Settlement Date',
       'Pending Until',
       'Related Instrument',

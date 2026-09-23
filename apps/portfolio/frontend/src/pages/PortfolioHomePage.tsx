@@ -20,6 +20,7 @@ import HoldingsSectionTables, {
 } from '../components/HoldingsSectionTables'
 import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
 import HoldingsOperationalStatus from '../components/HoldingsOperationalStatus'
+import InfoHint from '../components/InfoHint'
 import ConcentrationPanel from '../components/ConcentrationPanel'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -2130,14 +2131,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   market_value: {
     key: 'market_value',
-    label: 'Position Value (Local)',
+    label: 'Carrying Amount (Local)',
     align: 'right',
     render: (row) => formatCurrency(row.market_value, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value),
   },
   market_value_base: {
     key: 'market_value_base',
-    label: 'Position Value (Base)',
+    label: 'Carrying Amount (Reporting Currency)',
     align: 'right',
     render: (row, context) =>
       formatCurrency(baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value), context.workspace.base_currency),
@@ -2193,7 +2194,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   weight: {
     key: 'weight',
-    label: 'Capital Weight',
+    label: 'Current Weight',
     align: 'right',
     render: (row) => formatPercent(row.allocation),
     sortValue: (row) => row.allocation,
@@ -2777,8 +2778,11 @@ export default function PortfolioHomePage() {
     [taxonomyByInstrumentId, groupingTaxonomy, workspace],
   )
   const visibleColumns = useMemo(
-    () => normalizeHoldingsColumns(holdingsColumns).map((column) => HOLDINGS_COLUMN_DEFINITIONS[column]),
-    [holdingsColumns],
+    () => normalizeHoldingsColumns(holdingsColumns).map((column) =>
+      column === 'market_value_base' && workspace?.base_currency
+        ? { ...HOLDINGS_COLUMN_DEFINITIONS[column], label: `Carrying Amount (${workspace.base_currency})` }
+        : HOLDINGS_COLUMN_DEFINITIONS[column]),
+    [holdingsColumns, workspace?.base_currency],
   )
   const compactHoldingsColumns = useMemo(
     () =>
@@ -3219,10 +3223,10 @@ export default function PortfolioHomePage() {
         'Issuer',
         'Counterparty',
         'Remaining Basis',
-        `Signed NAV Amount (${workspace.base_currency})`,
+        `Carrying Amount (${workspace.base_currency})`,
         `Historical Carrying Basis (${workspace.base_currency})`,
         `Carrying FX Translation (${workspace.base_currency})`,
-        'Capital Weight',
+        'Current Weight',
         'Valuation Basis',
         'Fair Value Status',
         'Coverage',
@@ -3313,13 +3317,13 @@ export default function PortfolioHomePage() {
         'Underlying Equivalent',
         'Basis Type',
         'Remaining Basis',
-        `Signed NAV Amount (${workspace.base_currency})`,
+        `Carrying Amount (${workspace.base_currency})`,
         `Historical Carrying Basis (${workspace.base_currency})`,
         `Carrying FX Translation (${workspace.base_currency})`,
         `Strike Notional (${workspace.base_currency})`,
         'Portfolio Backing',
         'Current Risk',
-        'Capital Weight',
+        'Current Weight',
         'Status',
         'Valuation Basis',
         'Fair Value Status',
@@ -3377,11 +3381,11 @@ export default function PortfolioHomePage() {
         'Currency',
         'Account',
         'Available',
-        'Local Amount',
-        `Base Value (${workspace.base_currency})`,
+        'Carrying Amount (Local)',
+        `Carrying Amount (${workspace.base_currency})`,
         `FX Cost Basis (${workspace.base_currency})`,
         `Unrealized FX P&L (${workspace.base_currency})`,
-        'Capital Weight',
+        'Current Weight',
         'Settlement Date',
         'Pending Until',
         'Related Instrument',
@@ -3814,6 +3818,9 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           {!concentrationView ? <div className="holdings-filter-actions">
+            <InfoHint label={zh ? '账面金额与当前权重口径' : 'Carrying amount and current weight basis'} detail={zh
+              ? ['当前权重=带方向的账面金额/组合 NAV，不是按绝对敞口计算的集中度比例。', '证券账面金额为当前市值；FCN与期权按现有估值基础计账面金额，期权负债保留负号，不表示其风险敞口。现金与待结算保留原方向。', `报告币种金额使用 ${workspace?.base_currency ?? '—'}；本币金额使用标的或合约币种。`]
+              : ['Current weight is signed carrying amount / portfolio NAV, not a concentration ratio based on absolute exposure.', 'Securities use current market value. FCNs and options use their recorded valuation basis; option liabilities remain negative and do not describe option exposure. Cash and settlements retain their sign.', `Reporting-currency amounts use ${workspace?.base_currency ?? '—'}; local amounts use the security or contract currency.`]} />
             <QualityWarningsNotice warnings={workspace?.quality_warnings} />
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"

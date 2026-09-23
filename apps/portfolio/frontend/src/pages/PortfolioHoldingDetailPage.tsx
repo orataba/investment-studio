@@ -1022,7 +1022,7 @@ export default function PortfolioHoldingDetailPage() {
               ) : (
                 <>
                   <div>
-                    <span>Portfolio weight</span>
+                    <span>Current Weight</span>
                     <strong>{formatPercent(selectedRow?.allocation)}</strong>
                   </div>
                   <div>

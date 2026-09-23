@@ -836,7 +836,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'signed_nav_amount_base',
-      label: `Signed NAV Amount (${workspace.base_currency})`,
+      label: `Carrying Amount (${workspace.base_currency})`,
       align: 'right',
       render: (row) => formatCurrency(derivativeBaseValue(row), workspace.base_currency),
     },
@@ -854,7 +854,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Capital Weight',
+      label: 'Current Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },
@@ -1005,7 +1005,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'signed_nav_amount_base',
-      label: `Signed NAV Amount (${workspace.base_currency})`,
+      label: `Carrying Amount (${workspace.base_currency})`,
       align: 'right',
       render: (row) => formatCurrency(derivativeBaseValue(row), workspace.base_currency),
     },
@@ -1086,7 +1086,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Capital Weight',
+      label: 'Current Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },
@@ -1141,13 +1141,13 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'local_amount',
-      label: 'Local Amount',
+      label: 'Carrying Amount (Local)',
       align: 'right',
       render: (row) => formatCurrency(row.market_value, holdingCurrency(row)),
     },
     {
       key: 'base_value',
-      label: `Base Value (${workspace.base_currency})`,
+      label: `Carrying Amount (${workspace.base_currency})`,
       align: 'right',
       render: (row) => formatCurrency(signedNavAmountBase(row, workspace), workspace.base_currency),
     },
@@ -1166,7 +1166,7 @@ export default function HoldingsSectionTables({
     },
     {
       key: 'weight',
-      label: 'Capital Weight',
+      label: 'Current Weight',
       align: 'right',
       render: (row) => formatPercent(row.allocation),
     },

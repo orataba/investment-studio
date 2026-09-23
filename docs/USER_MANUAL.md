@@ -292,7 +292,7 @@ Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权�
 
 Securities 字段按 `Identity / Quote / Instrument Trend / Position / Cost / P&L / Risk` 七组管理，不把不同口径堆在一起：
 
-- Position 的市值和权重以组合基准币种为主；本币 Position Value 仍可按需查看。
+- 持仓的账面金额按组合报告币种展示，本币账面金额可按需查看；当前权重为带符号账面金额除以组合 NAV。集中度的敞口比例单独展示，不与当前权重混称。
 - Cost 同时区分本币 book cost、按当前汇率换算的 base cost、按各批次交易日汇率形成的 base cost，以及扣除已卖回款和已实现收入后的 `Net Invested / Break-even Price`。普通 dividend / coupon 不改 book cost，但会降低经济回本价；只有 `return_of_capital` 冲减 book cost。
 - P&L 把本币价格未实现、base-currency 价格未实现、base-currency 汇兑未实现和 base-currency 总未实现分开，并保证总额等于价格项加汇兑项。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
 - Instrument Trend 的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Total Return` 与 Vol / Drawdown 使用标的自身已确认的本币 total-return series，包含分红等复权、不含汇率变化，也不读取历史买卖份额或成本。

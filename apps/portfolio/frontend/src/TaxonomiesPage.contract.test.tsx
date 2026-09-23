@@ -169,7 +169,7 @@ describe('Taxonomies integrated tree contract', () => {
       holdingFixture({ line_id: 'fcn-holding', instrument_core: null, holding_category: 'derivatives', holding_kind: 'fcn', derivative_contract_id: 'fcn-1', derivative_contract: fcnContractFixture({ currency: 'HKD' }), market_value: 390, market_value_base: 50 }),
     ] }))
     renderPage(); await ready()
-    expect(screen.getByRole('columnheader', { name: 'Value (USD)' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Carrying Amount (USD)' })).toBeInTheDocument()
     for (const [name, amount] of [['ALPHA · Alpha Fund', '$800.00'], ['Alpha FCN', '$50.00'], ['Operating Cash', '$200.00']]) {
       const row = screen.getByText(name).closest('tr')!
       expect(row).toHaveClass('portfolio-tree-row')
@@ -185,7 +185,7 @@ describe('Taxonomies integrated tree contract', () => {
   it('uses the accounts reporting currency when holdings cannot be loaded', async () => {
     api.getHoldingsWorkspace.mockRejectedValue(new Error('Holdings unavailable'))
     renderPage()
-    expect(await screen.findByRole('columnheader', { name: 'Value (USD)' })).toBeInTheDocument()
+    expect(await screen.findByRole('columnheader', { name: 'Carrying Amount (USD)' })).toBeInTheDocument()
     const row = screen.getByText('Operating Cash').closest('tr')!
     expect(within(row).getAllByRole('cell')[2]).toHaveTextContent('$200.00')
     expect(screen.getByText(/Current holdings coverage unavailable/)).toBeInTheDocument()
@@ -195,11 +195,33 @@ describe('Taxonomies integrated tree contract', () => {
     api.getHoldingsWorkspace.mockRejectedValue(new Error('Holdings unavailable'))
     api.getPortfolioAccountsWorkspace.mockRejectedValue(new Error('Accounts unavailable'))
     renderPage()
-    expect(await screen.findByRole('columnheader', { name: 'Value' })).toBeInTheDocument()
-    expect(screen.queryByRole('columnheader', { name: /Value \(/ })).not.toBeInTheDocument()
+    expect(await screen.findByRole('columnheader', { name: 'Carrying Amount' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /Carrying Amount \(/ })).not.toBeInTheDocument()
     const root = within(screen.getByRole('table')).getByRole('button', { name: 'Allocation' }).closest('tr')!
     expect(within(root).getAllByRole('cell')[2]).toHaveTextContent('—')
     expect(screen.getByText(/Account coverage unavailable/)).toBeInTheDocument()
+  })
+
+  it('labels gross concentration exposure separately from carrying amount and current weight', async () => {
+    const user = userEvent.setup()
+    api.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({
+      rows: [holdingFixture({ market_value_base: 600, allocation: .5 })],
+      totals: { ...holdingsWorkspaceFixture().totals, nav: 1200 },
+    }))
+    concentrationMocks.getConcentration.mockResolvedValue({ portfolio_id: '3', as_of_date: '2026-07-15', base_currency: 'USD', nav: 1200,
+      scopes: [{ scope: 'security', taxonomy_id: null, enabled: true, rows: [{ entity_id: 'asset-1', weight: 1.25, exposure_base: 1500, limit_weight: null, status: 'unconfigured', coverage: [] }] }], fcn_contracts: [] })
+    renderPage(); await ready()
+    const table = screen.getByRole('table', { name: 'Classification and asset overview' })
+    expect(within(table).getByRole('columnheader', { name: /^Exposure Ratio/ })).toBeInTheDocument()
+    expect(within(table).queryByRole('columnheader', { name: 'Current Weight' })).not.toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: /^Target RC/ })).toBeInTheDocument()
+    const cells = within(screen.getByText('ALPHA · Alpha Fund').closest('tr')!).getAllByRole('cell')
+    expect(cells[2]).toHaveTextContent('$600.00')
+    expect(cells[3]).toHaveTextContent('125.00%')
+    await user.click(screen.getByRole('button', { name: /^Exposure basis:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('absolute market values across accounts')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Option exposure is not modeled')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('must not be read as zero')
   })
 
   it('saves basis, targets across levels, and all concentration limits in one request', async () => {

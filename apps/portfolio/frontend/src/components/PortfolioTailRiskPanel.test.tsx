@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import PortfolioTailRiskPanel from './PortfolioTailRiskPanel'
 import type { PortfolioTailRisk } from '../lib/tailRiskApi'
@@ -43,6 +43,14 @@ it('shows NAV-denominated paired losses, sample mass, and exclusions without dec
   expect(screen.getByText('500 / 25.00')).toBeInTheDocument()
   expect(screen.getByText(/Excluded assets are not zero risk/)).toBeInTheDocument()
   expect(screen.getByText('FCN / Option daily fair values are not modeled')).toBeInTheDocument()
+  expect(screen.getByText(/Modeled Gross Carrying Amount \/ NAV:/)).toHaveTextContent('60.00%')
+  expect(screen.getByText(/Unmodeled Gross Carrying Amount \/ NAV:/)).toHaveTextContent('40.00%')
+  expect(screen.getByRole('button', { name: /Gross carrying amount basis:/ })).toHaveAttribute(
+    'aria-label', expect.stringContaining('after netting each instrument, divided by portfolio NAV'),
+  )
+  fireEvent.click(screen.getByText('Sample precision and model coverage'))
+  expect(screen.getByRole('columnheader', { name: 'Current Weight' })).toBeInTheDocument()
+  expect(within(screen.getByRole('row', { name: /FCN contract/ })).getByText('40.00%')).toBeInTheDocument()
   expect(mocks.getPortfolioTailRisk).toHaveBeenCalledWith('p', { asOfDate: '2026-09-08', confidence: .95, lookbackDays: 1095 })
 })
 
@@ -70,6 +78,9 @@ it('does not display unresolved tail estimates as zero and translates the reason
   expect(screen.queryByText('0.00%')).not.toBeInTheDocument()
   expect(screen.getByText('固定票息票据与期权未纳入日公允价值模型')).toBeInTheDocument()
   expect(screen.getByText(/^固定票息票据与期权未纳入日公允价值模型。/)).toBeInTheDocument()
+  expect(screen.getByText(/建模账面总额 \/ NAV:/)).toHaveTextContent('60.00%')
+  fireEvent.click(screen.getByText('样本精度与模型覆盖明细'))
+  expect(screen.getByRole('columnheader', { name: '当前权重' })).toBeInTheDocument()
 })
 
 it('ignores a previous portfolios late response after switching portfolio', async () => {

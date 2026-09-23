@@ -1672,11 +1672,11 @@ export default function ResearchPage() {
                         <thead>
                           <tr>
                             <th>Scope</th>
-                            <th>Target</th>
+                            <th>{zh ? '配置依据' : 'Allocation Basis'}</th>
                             <th>Solver</th>
                             <th>Covariance</th>
                             <th>Observations</th>
-                            <th>Risk Gap</th>
+                            <th>{zh ? '风险预算偏差' : 'Risk Budget Gap'}</th>
                             <th>Status</th>
                           </tr>
                         </thead>
@@ -1764,15 +1764,15 @@ export default function ResearchPage() {
                             : 'N/A'}</td>
                         </tr>
                         <tr>
-                          <th>Total Turnover</th>
+                          <th>{zh ? '累计换手率' : 'Cumulative Turnover'}</th>
                           <td>{formatMaybePercent(backtest?.total_turnover)}</td>
                         </tr>
                         <tr>
-                          <th>Total Cost</th>
+                          <th>{zh ? '累计成本比例' : 'Cumulative Cost Ratio'} <InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '累计交易成本占回测期初 NAV 的比例。' : 'Cumulative trading costs divided by the simulation’s initial NAV.'} /></th>
                           <td>{formatMaybePercent(backtest?.total_cost)}</td>
                         </tr>
                         <tr>
-                          <th>Contribution Residual</th>
+                          <th>{zh ? '收益贡献对账差额' : 'Return Contribution Residual'}</th>
                           <td>{latestContributionReconciliation
                             ? formatMaybeNumber(latestContributionReconciliation.residual, 8)
                             : 'N/A'}</td>
@@ -1792,14 +1792,12 @@ export default function ResearchPage() {
                           <th>Decision</th>
                           <th>Execution</th>
                           <th>Config</th>
-                          <th>Buy</th>
-                          <th>Sell</th>
-                          <th title="Actual frozen derivative capital weight at execution; the policy rebalance does not trade this leg.">
-                            Frozen Derivative
-                          </th>
-                          <th>Cash Target</th>
-                          <th>Turnover</th>
-                          <th>Cost</th>
+                          <th>{zh ? '买入比例' : 'Buy Ratio'} <InfoHint label={zh ? '成交比例口径' : 'Trade ratio basis'} detail={zh ? '买入、卖出金额分别除以调仓前 NAV。' : 'Buy and sell amounts each divided by NAV before the rebalance.'} /></th>
+                          <th>{zh ? '卖出比例' : 'Sell Ratio'}</th>
+                          <th>{zh ? '衍生品权重' : 'Derivative Weight'} <InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={zh ? '衍生品保持原账面金额；衍生品和现金权重均以执行后、已扣费的 NAV 为分母。' : 'Derivative carrying capital is held fixed. Derivative and cash weights use NAV after execution and costs.'} /></th>
+                          <th>{zh ? '现金目标权重' : 'Target Cash Weight'}</th>
+                          <th>{zh ? '单边换手率' : 'One-way Turnover'}</th>
+                          <th>{zh ? '成本比例' : 'Cost Ratio'} <InfoHint label={zh ? '成本口径' : 'Cost basis'} detail={zh ? '本次交易成本占回测期初 NAV 的比例。' : 'This execution’s trading costs divided by the simulation’s initial NAV.'} /></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1880,17 +1878,17 @@ export default function ResearchPage() {
               <section className="performance-block-grid research-sleeve-grid">
                 <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Top-Level Sleeve Weights</div></div>
+                    <div><div className="panel-title">{zh ? '一级分类权重' : 'Top-Level Sleeve Weights'}</div></div>
                   </div>
                   <ResearchSleeveStackedAreaChart points={backtest?.top_sleeve_weight_points ?? []} />
                 </div>
                 <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Top-Level Sleeve Contribution</div></div>
+                    <div><div className="panel-title">{zh ? '一级分类收益贡献' : 'Top-Level Sleeve Return Contribution'}</div></div>
                   </div>
                   <ResearchSleeveLineChart
                     points={backtest?.top_sleeve_contribution_points ?? []}
-                    ariaLabel="Top-level sleeve contribution"
+                    ariaLabel="Top-level sleeve return contribution"
                   />
                 </div>
               </section>

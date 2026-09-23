@@ -328,6 +328,9 @@ describe('Performance rendered page contract', () => {
     await user.click(screen.getByRole('button', { name: 'Columns' }))
     const dialog = screen.getByRole('dialog', { name: 'Choose calculation columns' })
     await user.click(within(dialog).getByRole('checkbox', { name: 'Arithmetic Return Contribution' }))
+    await user.click(within(dialog).getByRole('button', { name: 'P&L' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Beginning Carrying Amount' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Ending Carrying Amount' }))
     await user.click(within(dialog).getByRole('button', { name: 'Update' }))
     const bridge = await screen.findByRole('row', { name: /TWR Linking Difference/ })
     expect(within(bridge).getByText('-0.12%')).toBeVisible()
@@ -349,6 +352,10 @@ describe('Performance rendered page contract', () => {
     expect(exportedRows).toContainEqual(['Return units', 'Decimal fractions: 0.01 = 1%'])
     expect(exportedRows).toContainEqual(['Fees and taxes', 'Recorded fees and taxes deducted'])
     const header = exportedRows.find((row: unknown[]) => row[0] === 'Line')
+    expect(header).toEqual(expect.arrayContaining([
+      'Beginning Carrying Amount', 'Ending Carrying Amount', 'Begin Weight', 'Avg Weight', 'End Weight',
+    ]))
+    expect(header).not.toContain('Current Weight')
     const linkedIndex = header.indexOf('Linked Return Contribution')
     const arithmeticIndex = header.indexOf('Arithmetic Return Contribution')
     const total = exportedRows.find((row: unknown[]) => row[0] === 'Portfolio Total')

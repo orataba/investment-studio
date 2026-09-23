@@ -2,6 +2,7 @@ import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTabl
 import { useEffect, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { getPortfolioTailRisk, type PortfolioTailRisk } from '../lib/tailRiskApi'
+import InfoHint from './InfoHint'
 import './portfolio-tail-risk.css'
 
 const messages: Record<string, [string, string]> = {
@@ -18,14 +19,14 @@ const messages: Record<string, [string, string]> = {
   unmatched_security_fx_periods_removed: ['缺少同起止日期汇率冲击的证券区间已剔除，未补零或改用不同周期。', 'Security intervals without FX shocks at identical boundaries were removed, without zero-filling or substituting another period.'],
   scenario_history_ends_before_as_of: ['最新共同情景早于持仓日期，具体截止日见下方。', 'The latest common scenario predates the holdings date; see the scenario dates below.'],
   derivative_fair_value_unmodeled: ['固定票息票据与期权未纳入日公允价值模型', 'FCN / Option daily fair values are not modeled'],
-  missing_base_value: ['缺少本位币市值', 'Missing base-currency value'],
+  missing_base_value: ['缺少本位币账面金额', 'Missing base-currency carrying amount'],
   missing_currency: ['缺少币种', 'Missing currency'],
   non_daily_source: ['非日频数据源', 'Non-daily source'],
   no_verified_daily_returns: ['没有可确认的日频收益', 'No verified daily returns'],
   invalid_return_period: ['收益区间或数值无效', 'Invalid return interval or value'],
   missing_aligned_fx_returns: ['缺少同期汇率收益', 'Missing synchronized FX returns'],
   base_currency_cash_zero_market_shock: ['本位币现金', 'Base-currency cash'],
-  zero_exposure: ['无当前敞口', 'No current exposure'],
+  zero_exposure: ['当前账面金额为零', 'Zero current carrying amount'],
 }
 
 export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
@@ -110,17 +111,21 @@ export default function PortfolioTailRiskPanel({ portfolioId, asOfDate }: {
       ? '所有占比以组合 NAV 为分母；本位币现金不产生市场价格冲击。负值表示历史情景下的收益，不代表不会亏损。'
       : 'Percentages use full portfolio NAV; base-currency cash has no market-price shock. Negative values are historical scenario gains, not a guarantee against loss.'}</p>
     {data && <>
-      <p className="portfolio-tail-risk-coverage">{zh ? '建模总敞口 / NAV' : 'Modeled gross exposure / NAV'}: {percent(data.modeled_gross_nav_fraction)}
-        {' · '}{zh ? '未建模总敞口 / NAV' : 'Unmodeled gross exposure / NAV'}: {percent(data.excluded_gross_nav_fraction)}
-        {' · NAV: '}{number(data.portfolio_nav)} {data.base_currency}</p>
+      <p className="portfolio-tail-risk-coverage">{zh ? '建模账面总额 / NAV' : 'Modeled Gross Carrying Amount / NAV'}: {percent(data.modeled_gross_nav_fraction)}
+        {' · '}{zh ? '未建模账面总额 / NAV' : 'Unmodeled Gross Carrying Amount / NAV'}: {percent(data.excluded_gross_nav_fraction)}
+        {' · NAV: '}{number(data.portfolio_nav)} {data.base_currency}{' '}
+        <InfoHint label={zh ? '账面总额口径' : 'Gross carrying amount basis'} detail={zh
+          ? '按标的净额化账面金额取绝对值后加总，再除以组合 NAV；不是账户级证券 gross、FCN 本金或期权 delta 等经济敞口。'
+          : 'Sum of absolute carrying amounts after netting each instrument, divided by portfolio NAV. This is not account-level security gross exposure, FCN principal, or option delta exposure.'} />
+      </p>
       {data.limitations.some((code) => prominentLimitations.has(code)) && <ul className="portfolio-tail-risk-limitations">{data.limitations.filter((code) => prominentLimitations.has(code)).map((code) => <li key={code}>{label(code)}</li>)}</ul>}
-      <details className="portfolio-tail-risk-details"><summary>{zh ? '样本精度与覆盖明细' : 'Sample precision and exposure coverage'}</summary>
+      <details className="portfolio-tail-risk-details"><summary>{zh ? '样本精度与模型覆盖明细' : 'Sample precision and model coverage'}</summary>
         <p>{zh
           ? '固定票息票据与期权未纳入日公允价值模型。仅重放同起止日期的证券总回报及汇率变化，未填充行情；跨市场日期一致不代表日内收盘时刻一致。各情景等概率；VaR 使用经验分位数，ES 保留边界的部分概率。不使用时间平方根缩放。'
           : 'FCN / Option daily fair values are not modeled. Only observed total-return and FX changes at identical boundaries are replayed, without filling prices; matching dates do not imply identical intraday closes. Scenarios are equally probable; VaR uses the empirical quantile and ES preserves fractional boundary probability. No square-root-of-time scaling is used.'}</p>
         <ul className="portfolio-tail-risk-limitations">{data.limitations.filter((code) => !prominentLimitations.has(code) && code !== historyWarning).map((code) => <li key={code}>{label(code)}</li>)}</ul>
         <HorizontalTableScroll className="portfolio-tail-risk-table-wrap"><table><thead><tr>
-          <th>{zh ? '持仓' : 'Holding'}</th><th>{zh ? '市值 / NAV' : 'Value / NAV'}</th><th>{zh ? '有效日频样本 / 区间' : 'Daily samples / Interval'}</th><th>{zh ? 'FX 对齐剔除' : 'FX alignment removals'}</th><th>{zh ? '覆盖' : 'Coverage'}</th>
+          <th>{zh ? '持仓' : 'Holding'}</th><th>{zh ? '当前权重' : 'Current Weight'}</th><th>{zh ? '有效日频样本 / 区间' : 'Daily samples / Interval'}</th><th>{zh ? 'FX 对齐剔除' : 'FX alignment removals'}</th><th>{zh ? '覆盖' : 'Coverage'}</th>
         </tr></thead><tbody>{data.rows.map((row, index) => <tr key={`${row.holding_id}:${index}`}>
           <td translate="no">{row.name}</td><td>{percent(row.weight)}</td><td>{row.status === 'modeled' ? <>{number(row.observation_count, 0)}<small>{row.first_scenario_start_date} → {row.last_scenario_end_date}</small></> : '—'}</td>
           <td>{number(row.unmatched_fx_period_count, 0)}{row.fx_rejected_period_count > 0 && <small>{zh ? '未验证的FX区间' : 'Unverified FX intervals'}: {number(row.fx_rejected_period_count, 0)}</small>}</td>

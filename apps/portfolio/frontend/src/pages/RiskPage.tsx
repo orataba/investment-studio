@@ -2152,6 +2152,9 @@ export default function RiskPage() {
       )} missing; latest ${forwardRiskCoverage.latest_complete_date ?? '—'}`
     : 'Coverage unavailable'
   const riskCoverage = holdingsWorkspace?.risk_coverage_summary ?? null
+  const grossCarryingAmountDetail = zh
+    ? '按标的净额化账面金额取绝对值后加总；不是账户级证券 gross、FCN 本金或期权 delta 等经济敞口。'
+    : 'Sum of absolute carrying amounts after netting each instrument. This is not account-level security gross exposure, FCN principal, or option delta exposure.'
   const excludedExposure = riskCoverage
     ? riskCoverage.excluded_carrying_value + riskCoverage.excluded_liability
     : null
@@ -2331,7 +2334,7 @@ export default function RiskPage() {
                       : 'summary-card summary-card-warning'
                   }
                 >
-                  <span className="summary-card-label">Modeled Market Sleeve Volatility</span>
+                  <span className="summary-card-label">Modeled Portfolio Volatility</span>
                   <strong className="summary-card-value">
                     {holdingsWorkspace.forward_risk?.status === 'ok' &&
                     holdingsWorkspace.forward_risk.portfolio_volatility != null
@@ -2344,11 +2347,13 @@ export default function RiskPage() {
                     </span>
                   ) : null}
                 </article>
-                <article
-                  className="summary-card"
-                  title="Eligible gross exposure divided by total disclosed exposure."
-                >
-                  <span className="summary-card-label">Model Coverage</span>
+                <article className="summary-card">
+                  <span className="summary-card-label"><span>Model Coverage</span><InfoHint
+                    label={zh ? '模型覆盖口径' : 'Model coverage basis'}
+                    detail={zh
+                      ? '建模账面总额除以建模账面总额、未建模资产与负债金额及现金与结算净额绝对值之和；不是敞口占 NAV 的比例。'
+                      : 'Modeled gross carrying amount divided by modeled gross carrying amount, unmodeled asset and liability amounts, and the absolute net cash and settlement balance. This is not Exposure Ratio.'}
+                  /></span>
                   <strong className="summary-card-value">
                     {riskCoverage?.coverage_ratio != null
                       ? formatPercent(riskCoverage.coverage_ratio)
@@ -2356,7 +2361,9 @@ export default function RiskPage() {
                   </strong>
                 </article>
                 <article className="summary-card">
-                  <span className="summary-card-label">Modeled Gross Exposure</span>
+                  <span className="summary-card-label"><span>Modeled Gross Carrying Amount</span><InfoHint
+                    label={zh ? '账面总额口径' : 'Gross carrying amount basis'} detail={grossCarryingAmountDetail}
+                  /></span>
                   <strong className="summary-card-value">
                     {riskCoverage
                       ? formatCurrency(riskCoverage.modeled_gross_exposure, holdingsWorkspace.base_currency)
@@ -2364,8 +2371,8 @@ export default function RiskPage() {
                   </strong>
                   <span className="portfolio-detail-meta">
                     {riskCoverage
-                      ? `Net ${formatCurrency(riskCoverage.modeled_net_exposure, holdingsWorkspace.base_currency)}`
-                      : 'Modeled exposure unavailable'}
+                      ? <><span>Net Carrying Amount</span> {formatCurrency(riskCoverage.modeled_net_exposure, holdingsWorkspace.base_currency)}</>
+                      : 'Modeled carrying amount unavailable'}
                   </span>
                 </article>
                 {excludedExposure != null && excludedExposure !== 0 ? (
@@ -2379,14 +2386,16 @@ export default function RiskPage() {
                       holdingsWorkspace.base_currency,
                     )}`}
                   >
-                    <span className="summary-card-label">Excluded Carrying Amount</span>
+                    <span className="summary-card-label"><span>Unmodeled Gross Carrying Amount</span><InfoHint
+                      label={zh ? '账面总额口径' : 'Gross carrying amount basis'} detail={grossCarryingAmountDetail}
+                    /></span>
                     <strong className="summary-card-value">
                       {formatCurrency(excludedExposure, holdingsWorkspace.base_currency)}
                     </strong>
                   </article>
                 ) : null}
-                <article className="summary-card" title="Disclosed exposure outside the covariance model.">
-                  <span className="summary-card-label">Cash / Unallocated</span>
+                <article className="summary-card" title="Signed carrying amount of cash and pending settlements outside the covariance model.">
+                  <span className="summary-card-label">Cash & Settlement</span>
                   <strong className="summary-card-value">
                     {riskCoverage
                       ? formatCurrency(riskCoverage.cash_unallocated_exposure, holdingsWorkspace.base_currency)
@@ -2397,7 +2406,7 @@ export default function RiskPage() {
                   className="summary-card"
                   title={
                     concentrationMetrics.hhi != null
-                      ? `Eligible-sleeve normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
+                      ? `${zh ? '模型内按账面金额绝对值归一，不以组合 NAV 为分母；HHI' : 'Normalized by absolute modeled carrying amounts, not portfolio NAV; HHI'} ${formatNumber(concentrationMetrics.hhi, 3)}`
                       : undefined
                   }
                 >
@@ -2442,8 +2451,11 @@ export default function RiskPage() {
                       <thead>
                         <tr>
                           <th>Sleeve</th>
-                          <th className="performance-cell-number">Modeled Capital Weight</th>
-                          <th className="performance-cell-number">Risk Share</th>
+                          <th className="performance-cell-number"><span>Modeled Weight</span><InfoHint
+                            label={zh ? '建模权重口径' : 'Modeled weight basis'}
+                            detail={zh ? '纳入风险模型的证券净账面金额占组合 NAV 的比例，不在建模子集内重新归一。' : 'Signed carrying amount of modeled securities divided by full portfolio NAV, without renormalizing within the modeled subset.'}
+                          /></th>
+                          <th className="performance-cell-number">Forward RC</th>
                           <th className="performance-cell-number">Observations</th>
                         </tr>
                       </thead>

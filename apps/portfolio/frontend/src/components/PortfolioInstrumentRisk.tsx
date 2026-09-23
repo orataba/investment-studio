@@ -102,11 +102,11 @@ export default function PortfolioInstrumentRisk({
               : null
           return (
             <span>
-              当前持仓市值占组合净值{' '}
+              当前权重（证券市值 / 组合净值）{' '}
               {value != null && workspace.totals.nav
                 ? percent((value / workspace.totals.nav) * 100)
                 : '不可计算'}{' '}
-              · 市值占比不代表风险贡献
+              · 权重不代表风险贡献
             </span>
           )
         }}

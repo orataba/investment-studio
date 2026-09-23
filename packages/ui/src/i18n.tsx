@@ -593,7 +593,7 @@ export function matchesSystemLabel(label: string, query: string) {
 
 const systemPatterns: LanguagePattern[] = [
   // Only known system fields accept a currency suffix; arbitrary business names do not.
-  { match: /^(Securities Subtotal|FCN Subtotal|Options Subtotal|Cash & Settlement Subtotal|Signed NAV Amount|Historical Carrying Basis|Carrying FX Translation|Strike Notional|Base Value|FX Cost Basis|Unrealized FX P&L) \(([A-Z]{3})\)$/, replace: (label, currency) => `${systemLabel(label)} (${currency})` },
+  { match: /^(Securities Subtotal|FCN Subtotal|Options Subtotal|Cash & Settlement Subtotal|Carrying Amount|Beginning Carrying Amount|Ending Carrying Amount|Signed NAV Amount|Historical Carrying Basis|Carrying FX Translation|Strike Notional|Base Value|FX Cost Basis|Unrealized FX P&L) \(([A-Z]{3})\)$/, replace: (label, currency) => `${systemLabel(label)} (${currency})` },
   { match: /^([\d,]+) (matching )?activit(?:y|ies)$/i, replace: (count, matching) => `${count} 项${matching ? '匹配' : ''}活动` },
   { match: /^Benchmark comparison is unavailable because required observations are missing: (.+)$/, replace: (dates) => `基准缺少必要日期的价格，暂时无法比较：${dates.replace('No official market calendar is available to confirm closures.', systemLabel('No official market calendar is available to confirm closures.'))}` },
   { match: /^Benchmark comparison is unavailable because (\d+) eligible portfolio return dates are missing from benchmark history$/, replace: (count) => `基准历史缺少 ${count} 个组合有效收益日期，暂时无法比较` },

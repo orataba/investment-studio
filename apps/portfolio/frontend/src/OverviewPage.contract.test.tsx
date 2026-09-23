@@ -188,6 +188,8 @@ describe('Overview rendered page contract', () => {
 
     await user.click(screen.getByRole('button', { name: 'Data Columns' }))
     const columnsDialog = screen.getByRole('dialog', { name: 'Choose top holdings columns' })
+    expect(within(columnsDialog).getByRole('checkbox', { name: 'Current Weight' })).toBeInTheDocument()
+    expect(within(columnsDialog).getByRole('checkbox', { name: 'Carrying Amount' })).toBeInTheDocument()
     await user.click(within(columnsDialog).getByRole('checkbox', { name: 'Coverage' }))
     await user.click(within(columnsDialog).getByRole('button', { name: 'Update' }))
     expect(
@@ -380,6 +382,8 @@ describe('Overview rendered page contract', () => {
     )
 
     const table = await screen.findByRole('table', { name: 'Asset mix summary' })
+    expect(within(table).getByRole('columnheader', { name: 'Current Weight' })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Carrying Amount (USD)' })).toBeInTheDocument()
     const securitiesRow = within(table).getByRole('row', { name: /Securities/ })
     expect(within(securitiesRow).getByText('$800.00')).toBeInTheDocument()
     expect(within(securitiesRow).getByText('80.00%')).toBeInTheDocument()
@@ -412,9 +416,9 @@ describe('Overview rendered page contract', () => {
     expect(within(totalRow).getByText('N/A')).toBeInTheDocument()
     expect(within(totalRow).getByText('NAV reconciled')).toBeInTheDocument()
     expect(
-      screen.getByRole('img', { name: /Asset mix by signed portfolio weight/ }),
+      screen.getByRole('img', { name: /Asset mix by current weight/ }),
     ).toHaveAccessibleName(
-      'Asset mix by signed portfolio weight: Securities 80.00%, FCN -10.00%, Options 0.00%, Cash & Settlement 30.00%',
+      'Asset mix by current weight: Securities 80.00%, FCN -10.00%, Options 0.00%, Cash & Settlement 30.00%',
     )
   })
 
@@ -557,7 +561,7 @@ describe('Overview rendered page contract', () => {
     expect(cnyRow).not.toHaveTextContent('+$50.00')
 
     const portfolioMetrics = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
-    expect(within(portfolioMetrics).getByRole('row', { name: 'Top 5 Weight —' })).toBeInTheDocument()
+    expect(within(portfolioMetrics).getByRole('row', { name: 'Top 5 Current Weight —' })).toBeInTheDocument()
     const assetMixTable = screen.getByRole('table', { name: 'Asset mix summary' })
     expect(within(assetMixTable).getByRole('row', { name: /Securities/ })).toHaveTextContent(
       '—',

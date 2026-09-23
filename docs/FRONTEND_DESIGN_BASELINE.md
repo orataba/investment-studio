@@ -53,7 +53,8 @@
 
 - 普通组合收益率、区间收益率和风险调整收益默认保留两位小数；不能因为内部计算或审计保留更多精度而把四位以上普通收益直接暴露到主页面。
 - 单位净值、价格、输入参数和 Mean Daily Return 等有独立业务语义的字段可以使用不同精度；显示精度与源事实/计算精度分开管理。
-- Weight Target / Current Drift 可以展示现金资本权重；Risk Target Gap 完全排除现金。若同一布局为上下文保留现金行，Risk Target 单元格显示 `— / N/A`，不能显示可配置的 `0.00%`。
+- 全部表格、列选择器与导出按同一指标命名：`Carrying Amount / 账面金额` 是证券市值、衍生品带符号账面金额或现金余额；金额明确本币、报告币种或具体币种。`Current Weight / 当前权重` 是带符号账面金额 / 组合 NAV，`Target Weight / 目标权重` 是目标账面金额 / 同一 NAV；期间首尾或平均值分别叫期初、期末、平均权重，不能称当前权重。`Exposure Ratio / 敞口比例` 专用于集中度的经济敞口 / NAV，提示明确账户级证券绝对市值、FCN 名义本金、未建模期权与已知下界，不与当前权重混称。Risk 的逐标的净额后绝对账面总额叫建模／未建模账面总额，模型内覆盖比也不能称 NAV 权重。
+- 分类的战略／战术目标是父层资金或风险的条件比例，继续称战略／战术目标；推导到全组合的战术风险预算统一叫目标风险贡献。当前与目标权重可以包含现金；现金不配置风险预算，风险目标单元格显示 `— / N/A`。收益贡献、风险贡献、风险预算偏差、换手率和交易成本比例分别注明自己的分母，不共用笼统的“贡献”或“偏差”。
 - Performance 主页面保留 scorecard、风险摘要、区间图和 Calculation attribution。逐日计算审计、publication lineage、rounding trace 等内部诊断不得作为主页面常驻内容；必要的口径、样本与 unavailable reason 紧邻对应标题或指标，以小型 hover/focus 提示呈现，不单独占据内容行。真实的数据错误、范围截断或覆盖缺口仍使用可见告警。
 - Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
 - Holdings 分为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四个按内容显示的直接表面；Securities、FCN、Options 独立保存视图与可见字段，Cash & Settlement 使用固定字段，只有 Securities 提供排序与 `Group By`。FCN、Options 的系统视图均以 `Default` 开始，切换系统视图时保持表格框架宽度稳定。无 rows 的表面不渲染，全部为空时只显示一个统一空态；

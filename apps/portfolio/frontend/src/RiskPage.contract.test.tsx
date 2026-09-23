@@ -333,6 +333,12 @@ describe('Risk rendered page contract', () => {
           }),
         ],
         totals: { nav: 1000, market_value: 800, day_change_pct: null, day_change_value: null, cost_basis: null, allocation: 0.8 },
+        risk_coverage_summary: {
+          model_name: 'Market risk model', total_nav: 1000,
+          modeled_net_exposure: 700, modeled_gross_exposure: 700,
+          excluded_carrying_value: 100, excluded_liability: 0,
+          cash_unallocated_exposure: 200, coverage_ratio: .7, excluded_rows: [],
+        },
       }),
     )
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)
@@ -559,12 +565,26 @@ describe('Risk rendered page contract', () => {
     expect(within(riskGap).queryByText('Derivatives')).not.toBeInTheDocument()
     expect(within(riskGap).getByText('Risk Assets')).toBeInTheDocument()
     expect(within(riskGap).getAllByText('100.00%')).toHaveLength(3)
-    expect(within(riskHealth).getByText('Modeled Market Sleeve Volatility')).toBeInTheDocument()
-    expect(within(riskHealth).getByText('Modeled Capital Weight')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Modeled Portfolio Volatility')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Modeled Weight')).toBeInTheDocument()
+    const weightHint = within(riskHealth).getByLabelText(/Modeled weight basis:/)
+    expect(weightHint).toHaveAttribute('aria-label', expect.stringContaining('full portfolio NAV, without renormalizing'))
+    expect(within(weightHint.closest('table')!).getByText('Forward RC')).toBeInTheDocument()
+    expect(within(weightHint.closest('table')!).queryByText('Risk Share')).not.toBeInTheDocument()
+    expect(within(weightHint.closest('table')!).getByText('70.00%')).toBeInTheDocument()
+    const modeledAmountCard = within(riskHealth).getByText('Modeled Gross Carrying Amount').closest('article')!
+    expect(modeledAmountCard).toHaveTextContent('$700.00')
+    expect(within(riskHealth).getByText('Unmodeled Gross Carrying Amount').closest('article')).toHaveTextContent('$100.00')
+    expect(within(modeledAmountCard).getByRole('button', { name: /Gross carrying amount basis:/ })).toHaveAttribute(
+      'aria-label', expect.stringContaining('absolute carrying amounts after netting each instrument'),
+    )
+    expect(within(riskHealth).getByRole('button', { name: /Model coverage basis:/ })).toHaveAttribute(
+      'aria-label', expect.stringContaining('This is not Exposure Ratio.'),
+    )
     expect(within(riskHealth).getByText('10.00%')).toBeInTheDocument()
     expect(within(riskHealth).getByText(/61\/61 complete/)).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Current drift' })).getByText('SAA 0.00% · TAA 0.00%')).toBeInTheDocument()
-    expect(within(riskHealth).getByText('Cash / Unallocated')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Cash & Settlement')).toBeInTheDocument()
     expect(within(riskHealth).getByText('$200.00')).toBeInTheDocument()
 
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
@@ -584,12 +604,12 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const riskHealth = await screen.findByRole('region', { name: 'Risk health' })
-    const liquidityCard = within(riskHealth).getByText('Cash / Unallocated').closest('article')
+    const liquidityCard = within(riskHealth).getByText('Cash & Settlement').closest('article')
     expect(liquidityCard).not.toBeNull()
     expect(within(liquidityCard as HTMLElement).getByText('$200.00')).toBeInTheDocument()
     expect(liquidityCard).toHaveAttribute(
       'title',
-      'Disclosed exposure outside the covariance model.',
+      'Signed carrying amount of cash and pending settlements outside the covariance model.',
     )
   })
 

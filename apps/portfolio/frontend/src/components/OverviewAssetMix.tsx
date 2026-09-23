@@ -300,7 +300,7 @@ function AssetMixSignedBars({
   const maximum = Math.max(0, ...availableRows.map((row) => row.weight))
   const span = maximum - minimum
   const zeroPosition = span > 0 ? ((0 - minimum) / span) * 100 : 0
-  const ariaLabel = `Asset mix by signed portfolio weight: ${rows
+  const ariaLabel = `Asset mix by current weight: ${rows
     .map((row) => `${row.label} ${formatPercent(row.weight)}`)
     .join(', ')}`
 
@@ -382,8 +382,8 @@ export default function OverviewAssetMix({
               <tr>
                 <th>Category</th>
                 <th>Lines</th>
-                <th><span>Signed NAV Amount</span> ({workspace.base_currency})</th>
-                <th>Portfolio Weight</th>
+                <th><span>Carrying Amount</span> ({workspace.base_currency})</th>
+                <th>Current Weight</th>
                 <th><span>Day Change</span> ({workspace.base_currency})</th>
                 <th>Forward RC</th>
                 <th>Valuation Coverage</th>

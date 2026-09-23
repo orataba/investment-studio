@@ -280,8 +280,8 @@ const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
 const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   line: 'Line',
   pnl_flow: 'P&L / Flow',
-  start_value: 'Start Value',
-  end_value: 'End Value',
+  start_value: 'Beginning Carrying Amount',
+  end_value: 'Ending Carrying Amount',
   begin_weight: 'Begin Weight',
   avg_weight: 'Avg Weight',
   end_weight: 'End Weight',

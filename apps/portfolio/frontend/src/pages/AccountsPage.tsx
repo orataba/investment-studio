@@ -857,7 +857,7 @@ export default function AccountsPage() {
                                 <th>Instrument</th>
                                 <th>Quantity / Price</th>
                                 <th>Cost Basis</th>
-                                <th>Market Value</th>
+                                <th>Carrying Amount</th>
                                 <th>Unrealized P/L</th>
                               </tr>
                             </thead>
@@ -1441,7 +1441,7 @@ function PositionRow({
       <td data-label="Cost Basis">
         {position.cost_basis != null ? formatCurrency(position.cost_basis, position.currency) : '—'}
       </td>
-      <td data-label="Market Value">
+      <td data-label="Carrying Amount">
         {position.market_value != null ? formatCurrency(position.market_value, position.currency) : '—'}
       </td>
       <td data-label="Unrealized P/L" className={eventValued ? undefined : signedValueClass(unrealizedPnl)}>
