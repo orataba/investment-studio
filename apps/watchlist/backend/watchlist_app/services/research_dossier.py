@@ -1,6 +1,7 @@
 """Instrument research materials and methods, using existing research records."""
 from copy import deepcopy
 from datetime import UTC, datetime
+from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -14,10 +15,34 @@ from sqlalchemy.orm import Session
 from watchlist_app.db.models import InstrumentDetail, InstrumentManualProfile
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.services.read_models import serialize_payload
+from watchlist_app.services.research_methods import SUPPORTED_TYPES, TYPE_LABELS, build_research_plan, method_library, module_ids
 
 DATA_ROOT = Path(__file__).resolve().parents[5] / "data" / "research"
-SUPPORTED_TYPES = {"equity", "etf", "index", "crypto", "public_fund", "private_fund"}
 TEXT_LIMIT = 60000
+
+
+class ResearchModuleFocus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    module_id: str
+    reason: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(default_factory=list)
+    selected_by: Literal["user", "research", "initial"] | None = Field(default=None,
+        description="保存时由服务端确定；研究员不得声明为用户选择。")
+
+    @field_validator("module_id")
+    @classmethod
+    def known_module(cls, value):
+        if value not in module_ids():
+            raise ValueError("请选择方法库中的研究模块")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def reason_not_blank(cls, value):
+        if not value.strip():
+            raise ValueError("请说明该研究模块与本标的的关系")
+        return value.strip()
 
 
 class ResearchMandateInput(BaseModel):
@@ -33,6 +58,10 @@ class ResearchMandateInput(BaseModel):
     source_plan: list[str] = Field(default_factory=list, max_length=30,
         description="计划取得的原始材料/数据与日期口径；来源计划不代表已经读取。")
     gaps: list[str] = Field(default_factory=list, max_length=30)
+    user_constraints: list[str] = Field(default_factory=list, max_length=30,
+        description="用户明确的范围、比较基准与方法限制；研究员更新不可覆盖。")
+    module_focus: list[ResearchModuleFocus] = Field(default_factory=list, max_length=20,
+        description="本标的需要补充的适用方法；说明原因并引用原始依据，不改写公共方法。")
 
     @field_validator("title", "background")
     @classmethod
@@ -41,108 +70,139 @@ class ResearchMandateInput(BaseModel):
             raise ValueError("请输入研究底稿标题和背景")
         return value.strip()
 
-    @field_validator("mechanisms", "research_approach", "focus", "source_plan", "gaps")
+    @field_validator("mechanisms", "research_approach", "focus", "source_plan", "gaps", "user_constraints")
     @classmethod
     def concise_items(cls, values):
         if any(not value.strip() or len(value) > 2000 for value in values):
             raise ValueError("研究底稿条目不能为空，且每项最多2000字")
         return [value.strip() for value in values]
 
+    @field_validator("module_focus")
+    @classmethod
+    def unique_modules(cls, values):
+        if len({item.module_id for item in values}) != len(values):
+            raise ValueError("同一方法模块不能重复选择")
+        return values
+
 
 def _registration(session: Session, instrument: InstrumentDetail) -> dict:
     from investment_studio_instrument_core.db_models import Instrument, InstrumentReferenceSnapshot
+    from watchlist_app.db.models import InstrumentTaxonomyAssignment, InstrumentTaxonomyNode
+    from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+    from watchlist_app.services.instrument_taxonomy import build_taxonomy_context
     shared = session.get(Instrument, instrument.instrument_id)
     reference = session.get(InstrumentReferenceSnapshot, instrument.instrument_id)
     reference = reference.value_json if reference else {}
     sections = reference.get("sections") or {}
     profile = sections.get("profile") or {}
     fund = sections.get("fund_info") or {}
+    index = sections.get("index_info") or {}
     manual = session.get(InstrumentManualProfile, instrument.instrument_id)
+    assignment = session.get(InstrumentTaxonomyAssignment, (instrument.instrument_id, INSTRUMENT_TAXONOMY_CODE))
+    node = session.get(InstrumentTaxonomyNode, assignment.node_id) if assignment and assignment.node_id else None
+    strategy = manual.strategy_payload_json if manual else None
+    if strategy and not any(value for key, value in strategy.items() if key != "notes"):
+        strategy = None
     return serialize_payload({
         "name": instrument.instrument_name, "instrument_type": instrument.instrument_type,
         "identifier": instrument.primary_identifier_value,
         "currency": shared.currency if shared else profile.get("currency"),
         "exchange": shared.exchange_code if shared else (instrument.metadata_json or {}).get("exchange_code"),
         "industry": profile.get("industry"), "sector": profile.get("sector"),
-        "website": profile.get("website"), "benchmark": fund.get("benchmark"),
-        "manager": fund.get("management"), "investment_type": fund.get("invest_type"),
+        "website": profile.get("website") or fund.get("website"), "benchmark": fund.get("benchmark"),
+        "manager": fund.get("management") or fund.get("etfCompany"), "investment_type": fund.get("invest_type"),
+        "asset_class": fund.get("assetClass") or fund.get("asset_class") or index.get("asset_class"),
+        "fund_type": fund.get("fund_type"),
+        "taxonomy": {**build_taxonomy_context(node), "assigned_at": assignment.assigned_at if assignment else None},
         "nav_settings": manual.nav_settings_json if manual else None,
-        "disclosed_strategy": manual.strategy_payload_json if manual else None,
+        "disclosed_strategy": strategy,
         "provider": reference.get("provider"), "reference_fetched_at": reference.get("fetched_at"),
         "manual_updated_at": manual.updated_at if manual else None,
     })
 
 
-def _initial_mandate(instrument: InstrumentDetail, registration: dict, frameworks: list[dict]) -> ResearchMandateInput:
+def _initial_mandate(instrument: InstrumentDetail, registration: dict) -> ResearchMandateInput:
+    """Create only this instrument's assignment; shared method prose stays shared."""
     name, kind = instrument.instrument_name, instrument.instrument_type
-    labels = {"equity": "股票", "etf": "ETF", "index": "指数", "crypto": "加密资产现货", "public_fund": "公募基金", "private_fund": "私募基金"}
-    facts = [f"{name}（{instrument.instrument_id}），登记类型为{labels[kind]}"]
+    facts = [f"{name}（{instrument.instrument_id}），登记类型为{TYPE_LABELS[kind]}"]
     for key, label in (("currency", "币种"), ("exchange", "市场"), ("industry", "行业"),
-                       ("benchmark", "登记基准"), ("manager", "登记管理人"), ("investment_type", "登记投资类型")):
+                       ("benchmark", "登记基准"), ("manager", "登记管理人"),
+                       ("investment_type", "登记投资类型"), ("asset_class", "资料中的底层类别")):
         if registration.get(key):
             facts.append(f"{label}：{registration[key]}")
-    methods = [line for framework in frameworks if framework["id"] != "shared-evidence-discipline"
-               for line in framework["body"].splitlines()]
-    approach = [f"先为{name}核对当前登记信息和适用口径，原始材料、工作假设与市场叙事分别记录。",
-                "重要数字按主体、单位、币种、预测或报告期、对照期和原文归属整理后，再判断机制与变化。",
-                "每次研究先更新本标的已有重点与反证；资料不足明确列出缺口，不用通用背景冒充专属研究。"]
-    focus, source_plan, gaps = [], [], ["这是依据登记资料和适用方法形成的初始研究框架，尚不代表已完成专属深度研究。"]
-    if kind == "equity":
-        industry = registration.get("industry")
-        focus.append(f"核实{name}{'在登记行业“' + industry + '”中' if industry else ''}的经营分部、需求、竞争及现金流驱动，并建立同财期比较。")
-        focus.append(f"核对{name}当前研究证券的股本单位、上市结构、融资与每股价值；尚未取得的股权换算关系不可猜测。")
-        source_plan = [f"{registration.get('website') or name + '公司官方披露入口（地址待核实）'}：定位业绩原文、资本结构公告和正式日程。",
-                       "相关交易所/监管原件及公司原始经营披露；机构观点用于检验假设并注明归属。"]
-        if not industry:
-            gaps.append("尚无已登记行业资料；需先识别真实业务，不能只按公司名推断经营模式。")
-    elif kind in {"etf", "public_fund", "index"}:
-        benchmark = registration.get("benchmark")
-        focus.append(f"围绕{name}的登记基准“{benchmark}”核实实际覆盖和传导，基准不是实时持仓。" if benchmark
-                     else f"先取得{name}的编制/投资规则和真实基准，尚不能假定其市场、底层资产或具体敞口。")
-        if kind == "etf":
-            focus.append(f"依据{name}的正式文件及已登记投资类型“{registration.get('investment_type') or '未取得'}”，区分股票、债券、商品和跨境传导；再选用盈利、久期信用或供需等适用指标。")
-        elif kind == "public_fund":
-            focus.append(f"跟踪{name}的份额类别、经理与风格变化；将基金相对基准的回报与实际披露期持仓、费用分开。")
-            focus.append("先用有分红复投证据的总回报净值建立收益、回撤与修复路径；按真实披露频率和共同观察日比较同策略、同份额费率的产品。合同业绩基准、用户选用的比较指数与同类样本分别标注。")
-        else:
-            focus.append(f"跟踪{name}的选样、加权和调整机制；区分价格/全收益指数，不能套用基金经理或申赎条款。")
-        manager = registration.get("manager")
-        source_plan = [f"{manager or name + '官方编制/发行机构（待核实）'}的正式规则、定期披露和调整公告。",
-                       "按真实底层资产取得经营/利率信用/商品供需原始资料，保留报告期、币种和公告日期。"]
-        if not benchmark:
-            gaps.append("登记资料未给出具体基准或编制规则；必须取得正式文件后再确定研究敞口。")
-    elif kind == "crypto":
-        focus = [f"核实{name}的现货资产与报价币种；使用UTC完整日线和全年交易日历，区分现货、期货、永续合约和ETF。",
-                 "研究供给规则、流动性、杠杆清算、链上行为与市场结构；不能把地址视为个人，也不能将减半直接推导成价格上涨。"]
-        source_plan = ["协议与开发者原始文档、公开交易场所现货数据；衍生品和链上统计必须注明口径和覆盖。",
-                       "跟踪制度和基础设施变化的正式公告；现货没有公司盈利和分红，不套用股票DCF或ETF持仓分析。"]
-        gaps.append("尚未建立多交易场所成交量、链上实体调整与杠杆资金基线；价格相关性不能证明资金来源和因果机制。")
+    taxonomy = registration.get("taxonomy") or {}
+    if taxonomy.get("path_labels"):
+        facts.append("已登记分类：" + " / ".join(taxonomy["path_labels"]) + "（研究线索，不是持仓证明）")
+    focus = [f"为{name}建立当前研究基线：哪些事实支持回报前景，价格要求什么兑现，以及关键风险和反证。"]
+    if registration.get("industry"):
+        focus.append(f"核实{name}在登记行业“{registration['industry']}”中的实际业务及关键回报驱动。")
+    if registration.get("benchmark"):
+        focus.append(f"核对{name}的登记基准“{registration['benchmark']}”与真实投资范围及用户比较对象的区别。")
+    source_plan = [f"从{registration.get('website') or registration.get('manager') or name + '的正式披露入口（待核实）'}取得本标的原始材料，并注明归属和适用日期。"]
+    if kind == "private_fund":
+        source_plan = [f"仅使用有权访问的{name}净值、合同和管理人报告；公开检索不发送私有材料或账户内容。"]
+        if not registration.get("disclosed_strategy"):
+            focus.append(f"{name}尚未取得已登记策略正文；结合已登记分类安排核查，不能由名称推断持仓、杠杆或对冲。")
+    plan = build_research_plan(registration)
+    initial = ResearchMandateInput(title=f"{name} · 专属研究安排",
+        background="已登记资料（并非本轮原文核证）：" + "；".join(facts) + "。有原文支持的背景与工作假设待研究后分别补充。",
+        focus=focus, source_plan=source_plan,
+        gaps=["这是初始研究安排，尚不代表已完成专属研究。", *plan["gaps"]])
+    # Retain existing instrument-specific work for environments that have not yet
+    # persisted their mandate. Shared module prose is never copied into it.
+    supplements = json.loads((DATA_ROOT / "mandate_seeds.json").read_text(encoding="utf-8"))
+    supplement = supplements.get(instrument.instrument_id)
+    if supplement:
+        value = initial.model_dump(mode="json")
+        value.update({key: item for key, item in supplement.items() if key != "background"})
+        value["background"] += "\n" + supplement.get("background", "")
+        return ResearchMandateInput.model_validate(value)
+    return initial
+
+
+def effective_mandate(payload: ResearchMandateInput, previous: dict | None, *, origin: str) -> dict:
+    """Resolve writer-owned method choices before both validation and publication."""
+    value = payload.model_dump(mode="json")
+    previous = ResearchMandateInput.model_validate(previous).model_dump(mode="json") if previous else None
+    if origin == "research" or "user_constraints" not in payload.model_fields_set:
+        value["user_constraints"] = deepcopy((previous or {}).get("user_constraints", []))
+    prior_modules = {item["module_id"]: item for item in (previous or {}).get("module_focus", [])}
+    if "module_focus" not in payload.model_fields_set and previous:
+        value["module_focus"] = deepcopy(previous["module_focus"])
     else:
-        strategy = registration.get("disclosed_strategy")
-        focus = [f"核实{name}已登记策略资料的实际含义及适用环境。" if strategy else f"{name}尚无已登记策略正文；先取得该产品的管理人材料，不能由名称推断持仓、杠杆或对冲职责。",
-                 f"核对{name}的净值披露频率、估值与费用、锁定及赎回安排；区分资料缺失与已证实风险。"]
-        source_plan = [f"仅使用{name}本人提供或有权访问的基金合同、管理人报告、净值记录和往来材料。",
-                       "公开检索只使用公开管理人/策略主题，不向外部查询发送本标的私有材料或账户内容。"]
-        if not strategy:
-            gaps.append("未取得该产品的策略正文，尚不能将公开市场事件映射为本产品的实际敞口。")
-    if kind in {"public_fund", "private_fund"}:
-        approach.extend([
-            "先核对单位净值、分红再投资总回报净值、币种、费用与披露频率；累计现金分红净值不能替代总回报净值，缺失观察不前填为零收益。",
-            "以已取得的真实净值区间建立历史基线：收益与回撤、修复时间、上涨/下跌环境表现；条件允许时检验同类与基准的共同样本。不同频率先对齐，短样本不证明完整周期能力。",
-            "滚动相关、贝塔与风格敏感性仅是样本内统计线索，不能还原实际持仓、杠杆、对冲或管理人操作；相对指数的超额也不自动等于选股能力。",
-            "管理人材料、费率、申赎和策略变更有证据时持续补充；没有新净值或新资料时可保持原判断，不为了日更重复改写底稿。",
-        ])
-        if kind == "private_fund":
-            focus.append("优先从已登记策略分类和可用净值判断比较对象；未取得合同策略时，将策略名称线索写成待核实假设，不据此配置确定的风险暴露。")
-        gaps.append("同类/基准统计只使用实际可访问的序列与共同期间；尚未配置、口径不一致或观察不足时保留缺口，不编造排名、超额或相关性。")
-    value = {"title": f"{name} · 专属研究底稿", "background": "已登记资料（并非本轮原文核证）：" + "；".join(facts) + "。\n有原文支持的经营/策略背景及工作假设待研究后分别补充。",
-             "mechanisms": methods, "research_approach": approach, "focus": focus,
-             "source_plan": source_plan, "gaps": gaps}
-    seed = json.loads((DATA_ROOT / "mandate_seeds.json").read_text(encoding="utf-8")).get(instrument.instrument_id)
-    if seed:
-        value.update({key: val for key, val in seed.items() if key != "background"})
-        value["background"] += "\n" + seed["background"]
-    return ResearchMandateInput.model_validate(value)
+        selected = []
+        for item in value["module_focus"]:
+            old = prior_modules.get(item["module_id"])
+            if origin == "research" and old and old.get("selected_by") == "user":
+                selected.append(deepcopy(old))
+            else:
+                same = old and all(item.get(key) == old.get(key) for key in ("module_id", "reason", "source_ids"))
+                selected.append({**item, "selected_by": old.get("selected_by") if same else origin})
+        if origin == "research":
+            selected_ids = {item["module_id"] for item in selected}
+            selected += [deepcopy(item) for key, item in prior_modules.items()
+                         if item.get("selected_by") == "user" and key not in selected_ids]
+        value["module_focus"] = selected
+    return value
+
+
+def plan_for_mandate(registration: dict, mandate: dict | ResearchMandateInput, *,
+                     origin: str | None = None, previous_mandate: dict | None = None) -> dict:
+    if origin is not None:
+        payload = mandate if isinstance(mandate, ResearchMandateInput) else ResearchMandateInput.model_validate(mandate)
+        # A read dossier includes metadata which is not part of the writer schema.
+        previous = ({key: previous_mandate[key] for key in ResearchMandateInput.model_fields if key in previous_mandate}
+                    if previous_mandate else None)
+        value = effective_mandate(payload, previous, origin=origin)
+    else:
+        value = mandate.model_dump(mode="json") if isinstance(mandate, ResearchMandateInput) else mandate
+    return build_research_plan(registration, user_constraints=value.get("user_constraints", []),
+                               module_focus=value.get("module_focus", []))
+
+
+def read_research_plan(session: Session, instrument_id: str) -> dict:
+    mandate = read_mandate(session, instrument_id)
+    return plan_for_mandate(mandate["registration"], mandate)
 
 
 def _mandate_entry(session: Session, instrument_id: str) -> ResearchEntry | None:
@@ -157,16 +217,14 @@ def _mandate_entry(session: Session, instrument_id: str) -> ResearchEntry | None
     return entry
 
 
-def read_mandate(session: Session, instrument_id: str, *, frameworks: list[dict] | None = None) -> dict:
+def read_mandate(session: Session, instrument_id: str) -> dict:
     instrument = require_instrument(session, instrument_id)
     registration = _registration(session, instrument)
     entry = _mandate_entry(session, instrument_id)
     if entry:
         payload = ResearchMandateInput.model_validate(entry.context_json["mandate"])
     else:
-        if frameworks is None:
-            frameworks = _frameworks(instrument)
-        payload = _initial_mandate(instrument, registration, frameworks)
+        payload = _initial_mandate(instrument, registration)
     return serialize_payload({**payload.model_dump(), "instrument_id": instrument_id,
         "role": "research_method", "registration": registration,
         "entry_id": entry.entry_id if entry else None, "updated_at": entry.updated_at if entry else None,
@@ -188,7 +246,8 @@ def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateI
         # dossier_topic holds the instrument lock shared with research publication.
         # Refresh an identity-map entry read before waiting for that lock.
         session.refresh(entry)
-    value = payload.model_dump(mode="json")
+    previous = ResearchMandateInput.model_validate(entry.context_json["mandate"]).model_dump(mode="json") if entry else None
+    value = effective_mandate(payload, previous, origin=origin)
     user_focus = deepcopy(value["focus"] if origin == "user" else (entry.context_json.get("user_focus", []) if entry else []))
     if origin == "user":
         # The editor's focus field is the user's instruction; the researcher owns
@@ -197,7 +256,6 @@ def save_mandate(session: Session, instrument_id: str, payload: ResearchMandateI
     versions = []
     revision = 1
     if entry is not None:
-        previous = ResearchMandateInput.model_validate(entry.context_json["mandate"]).model_dump(mode="json")
         if previous == value and user_focus == entry.context_json.get("user_focus", []):
             return read_mandate(session, instrument_id)
         revision = entry.context_json.get("revision", 1) + 1
@@ -332,10 +390,20 @@ def _document_materials(session: Session, instrument_id: str) -> list[dict]:
             path = folder / stored_name
             if path.resolve().is_relative_to(folder):
                 body, status, extraction = _file_text(path)
-        result.append({"source_id": f"material:document:{instrument_id}:{stored_name or index}",
+        title = row.get("title") or row.get("file_name") or "登记资料"
+        source = row.get("download_url") or row.get("source") or ""
+        # A directory row can be edited while keeping its original filename.
+        # Bind citations to the read text and its attribution, without read clocks
+        # or extraction diagnostics making an unchanged original a new version.
+        identity = {"body": body, "title": title, "source": source, "attribution": {
+            key: row.get(key) for key in ("document_type", "file_name", "as_of_date", "published_at",
+                                         "source", "version_label", "uploaded_at", "notes")}}
+        version = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+        result.append({"source_id": f"material:document:{instrument_id}:{stored_name or index}:{version}",
             "entry_id": None, "instrument_id": instrument_id, "source_type": "instrument_material",
-            "role": "source_material", "title": row.get("title") or row.get("file_name") or "登记资料",
-            "body": body, "source": row.get("download_url") or row.get("source") or "",
+            "role": "source_material", "title": title,
+            "body": body, "source": source,
             "metadata": {**row, "effective_date": row.get("as_of_date"),
                          "extraction": extraction, "extraction_status": status},
             "recorded_at": row.get("uploaded_at")})
@@ -391,6 +459,7 @@ def _research_records(session: Session, instrument_id: str):
 
 
 def _notebooks(session: Session, instrument_id: str, include_history: bool):
+    from watchlist_app.services.research_notebook import notebook_current_view
     notebook, history = None, {}
     for record, research in _research_records(session, instrument_id):
         stamp = {"run_id": record.entry_id, "checked_at": record.context_json.get("cutoff"),
@@ -398,13 +467,13 @@ def _notebooks(session: Session, instrument_id: str, include_history: bool):
                  "created_at": research.get("created_at") or record.completed_at or record.created_at,
                  "updated_at": research.get("updated_at") or record.completed_at or record.created_at}
         if notebook is None:
-            notebook = {**deepcopy(research), **stamp}
+            notebook = notebook_current_view({**deepcopy(research), **stamp})
         if not include_history:
             break
         # Preserve the original saved snapshot of each actual revision; later quiet
         # checks still supply the current notebook's checked_at above.
         history[stamp["version_id"]] = {**stamp, "important_changes": research.get("important_changes", []),
-                                      "notebook": {**deepcopy(research), **stamp}}
+                                      "notebook": notebook_current_view({**deepcopy(research), **stamp})}
     return notebook, list(history.values())
 
 
@@ -433,7 +502,7 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
         view = research.get("investment_view")
         if view:
             candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
-        for field in ("forecasts", "forecast_reviews", "lessons"):
+        for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
             for item in research.get(field, []):
                 candidates += [(field, version) for version in [*item.get("versions", []), item]]
         for kind, value in candidates:
@@ -471,13 +540,6 @@ def _review_cases(instrument_id: str, notebook: dict | None) -> list[dict]:
     return records
 
 
-def _frameworks(instrument: InstrumentDetail) -> list[dict]:
-    framework_data = json.loads((DATA_ROOT / "frameworks.json").read_text(encoding="utf-8"))
-    return [item for item in framework_data["frameworks"]
-            if instrument.instrument_type in item.get("instrument_types", []) and
-            (not item.get("tickers") or instrument.instrument_id.upper() in item["tickers"])]
-
-
 def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None) -> dict:
     """Read materials, methods and completed notebooks without creating records."""
     from watchlist_app.services.research_notebook import retained_public_sources
@@ -488,7 +550,8 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     from studio_identity import current_principal
     local_unrestricted = current_principal().local_unrestricted
     instrument = require_instrument(session, instrument_id)
-    frameworks = _frameworks(instrument)
+    mandate = read_mandate(session, instrument_id)
+    research_plan = plan_for_mandate(mandate["registration"], mandate)
     versions = research_repository.list_note_revisions(session, instrument_id)
     from watchlist_app.services.research_views import note_sources
     pm_views = [{**_serialize_note(note), "sources": note_sources(session, instrument_id, note.research_context or {}), "versions": [
@@ -514,8 +577,9 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     cases.extend(_review_cases(instrument_id, notebook))
     from watchlist_app.services.research_activity import review_agenda
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
-        "instrument_type": instrument.instrument_type, "frameworks": frameworks,
-        "mandate": read_mandate(session, instrument_id, frameworks=frameworks), "materials": materials,
+        "instrument_type": instrument.instrument_type, "research_plan": research_plan, "frameworks": method_library()["frameworks"],
+        "available_modules": [{key: item[key] for key in ("id", "title", "version")} for item in method_library()["frameworks"]],
+        "mandate": mandate, "materials": materials,
         "prior_sources": retained_public_sources(session, instrument_id),
         "historical_cases": cases, "historical_case_limitations": history_limitations,
         "notebook": notebook, "notebook_history": notebook_history,

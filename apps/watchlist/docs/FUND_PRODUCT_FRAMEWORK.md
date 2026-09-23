@@ -173,16 +173,18 @@ Fund Detail 的第一页现在是 `Overview`，它承载两类内容：
 - Fund Taxonomy
   taxonomy path 下拉选择器；内部分类入口只保留这一块
 
-其余产品框架分布改成：
+当前研究相关页面职责为：
 
 - `Overview`
   产品身份和分类
-- `Research`
-  基金定性研究判断、与 Overview chart 打通的逐条 `Research Record`、`Rating` 和 `Current Investment View`
-- `Monitoring`
-  `Monitoring Assessment` 和 freshness / open items
+- `经理观点`
+  投资经理维护的判断与逐条观点记录，并与 Overview chart 关联。
+- `投资研究`
+  当前完整投资判断、重要变化、按适用方法组合的分析、持续问题、证据和历史；基金使用同一页面，按底层资产、策略和产品条款选择方法。阅读模式展示同一份已保存研究。
+- 风险与监控相关页面
+  保留相应的风险观察与复核安排。
 
-Research / Monitoring 字段会按当前分类自动裁剪展示范围；分类未完成时，不再显示一整屏无意义的通用标签。
+既有定性字段继续服务保留记录、列表和筛选。它们不再决定投资研究正文的页面结构；公共方法集中维护，标的专属补充单独维护，分类仅提供适用方法的线索，不能替代真实持仓或产品合同。
 
 ### 4.3 Watchlist
 

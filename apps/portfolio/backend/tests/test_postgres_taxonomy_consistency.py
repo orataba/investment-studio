@@ -5,13 +5,77 @@ from threading import Event, current_thread
 import pytest
 from sqlalchemy import select
 
-from portfolio_app.db.models import PortfolioRecordModel, TaxonomyConfigurationRevisionModel
+from portfolio_app.db.models import (
+    PortfolioRecordModel, TargetSetLineRecordModel, TargetSetRecordModel,
+    TaxonomyAssignmentRecordModel, TaxonomyConfigurationRevisionModel,
+    TaxonomyNodeRecordModel,
+)
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import analytics_scope, portfolio_store
 from .test_postgres_instrument_registry_constraints import postgres_portfolio_env
 
 
 pytestmark = pytest.mark.postgresql_integration
+
+
+def test_subtree_delete_is_atomic_and_keeps_surviving_target_lines(postgres_portfolio_env, monkeypatch):
+    portfolio_id = 'taxonomy-delete'
+    with get_session_factory()() as session:
+        session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Delete planning',
+            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=date(2026, 9, 19)))
+        session.commit()
+    taxonomy = portfolio_store.create_taxonomy(portfolio_id,
+        name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
+        planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
+        status='active', source_template_ref=None)
+    taxonomy_id = taxonomy['taxonomy_id']
+    with get_session_factory()() as session:
+        for node_id, parent in [('removed', None), ('child', 'removed'), ('survivor', None)]:
+            session.add(TaxonomyNodeRecordModel(taxonomy_node_id=node_id, taxonomy_id=taxonomy_id,
+                parent_taxonomy_node_id=parent, node_name=node_id, is_terminal=node_id != 'removed'))
+        session.add(TaxonomyAssignmentRecordModel(assignment_id='assigned', taxonomy_id=taxonomy_id,
+            taxonomy_node_id='child', target_scope='instrument', target_entity_id=postgres_portfolio_env['instrument_id']))
+        session.add_all([
+            TargetSetRecordModel(target_set_id='root-target', taxonomy_id=taxonomy_id,
+                target_set_type='saa', name='Root', risk_budget_enabled=True),
+            TargetSetRecordModel(target_set_id='child-target', taxonomy_id=taxonomy_id,
+                comparator_taxonomy_node_id='removed', target_set_type='saa', name='Child', risk_budget_enabled=True),
+        ])
+        session.flush()
+        for line_id, set_id, node_id, share in [('removed-line', 'root-target', 'removed', .4),
+                                               ('survivor-line', 'root-target', 'survivor', .6),
+                                               ('child-line', 'child-target', 'child', 1)]:
+            session.add(TargetSetLineRecordModel(target_line_id=line_id, target_set_id=set_id,
+                taxonomy_node_id=node_id, target_member_type='taxonomy_node', target_member_id=node_id,
+                target_risk_share=share))
+        session.commit()
+
+    original_mark = portfolio_store._mark_daily_snapshots_stale
+    def fail_publication(*_args, **_kwargs):
+        raise RuntimeError('Interrupted delete')
+    monkeypatch.setattr(portfolio_store, '_mark_daily_snapshots_stale', fail_publication)
+    with pytest.raises(RuntimeError, match='Interrupted delete'):
+        portfolio_store.delete_taxonomy_node(portfolio_id, taxonomy_id, 'removed')
+    with get_session_factory()() as session:
+        assert session.get(TaxonomyNodeRecordModel, 'removed') is not None
+        assert session.get(TaxonomyNodeRecordModel, 'child') is not None
+        assert session.get(TaxonomyAssignmentRecordModel, 'assigned') is not None
+        assert session.get(TargetSetRecordModel, 'child-target') is not None
+        assert session.get(TargetSetLineRecordModel, 'removed-line') is not None
+        assert len(session.scalars(select(TaxonomyConfigurationRevisionModel).where(
+            TaxonomyConfigurationRevisionModel.taxonomy_id == taxonomy_id)).all()) == 1
+
+    monkeypatch.setattr(portfolio_store, '_mark_daily_snapshots_stale', original_mark)
+    assert portfolio_store.delete_taxonomy_node(portfolio_id, taxonomy_id, 'removed')
+    with get_session_factory()() as session:
+        assert session.get(TaxonomyNodeRecordModel, 'removed') is None
+        assert session.get(TaxonomyNodeRecordModel, 'child') is None
+        assert session.get(TaxonomyAssignmentRecordModel, 'assigned') is None
+        assert session.get(TargetSetRecordModel, 'child-target') is None
+        assert session.get(TargetSetLineRecordModel, 'removed-line') is None
+        assert session.get(TargetSetLineRecordModel, 'child-line') is None
+        assert session.get(TargetSetLineRecordModel, 'survivor-line').target_risk_share == .6
+        assert session.get(TargetSetRecordModel, 'root-target') is not None
 
 
 def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_portfolio_env, monkeypatch):

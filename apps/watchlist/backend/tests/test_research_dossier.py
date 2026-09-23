@@ -45,8 +45,11 @@ def test_read_only_dossiers_select_methods_and_historical_cases_by_instrument(do
         assert dossier["mandate"]["role"] == "research_method"
         assert dossier["mandate"]["focus"] and dossier["mandate"]["gaps"]
         assert all(item["role"] == "research_method" for item in dossier["frameworks"])
-        sectors = [item["id"] for item in dossier["frameworks"] if item["id"].startswith("sector-")]
-        assert sectors == ([f"sector-{iid}"] if iid in {"xlk", "xlf"} else [])
+        assert {item["id"] for item in dossier["research_plan"]["modules"]} <= {item["id"] for item in dossier["frameworks"]}
+        assert {item["id"] for item in dossier["available_modules"]} == {item["id"] for item in dossier["frameworks"]}
+        assert not any(item["id"].startswith("sector-") for item in dossier["frameworks"])
+        assert dossier["mandate"]["mechanisms"] == []
+        assert dossier["mandate"]["research_approach"] == []
         assert len(dossier["historical_cases"]) == (14 if iid == "xlk" else 0)
         if iid == "xlk":
             case = dossier["historical_cases"][0]
@@ -79,20 +82,22 @@ def test_mandates_use_actual_registration_and_asset_specific_methods(dossier_cli
     public = dossier_client.get(url("public")).json()["mandate"]
     private = dossier_client.get(url("private")).json()["mandate"]
     assert stock["registration"]["currency"] == "USD"
-    assert "Semiconductors" in stock["background"] and "Semiconductors" in stock["focus"][0]
+    assert "Semiconductors" in stock["background"] and any("Semiconductors" in item for item in stock["focus"])
     assert "https://issuer.example" in stock["source_plan"][0]
-    assert "中证1000指数收益率×95%" in public["focus"][0]
+    assert any("中证1000指数收益率×95%" in item for item in public["focus"])
     assert "登记管理人" in public["background"]
     assert any("不能由名称推断持仓" in item for item in private["focus"])
     assert private["registration"]["disclosed_strategy"] is None
     alibaba = dossier_client.get(url("9988-hk")).json()["mandate"]
     gold = dossier_client.get(url("518880-sh")).json()["mandate"]
-    assert any("股数乘发行价" in item for item in alibaba["research_approach"])
     assert any("原已为负" in item for item in alibaba["mechanisms"])
+    assert any("股数乘发行价" in item for item in alibaba["research_approach"])
     assert any("不能写成简单恒等关系" in item for item in gold["mechanisms"])
     assert any("实际利率" in item for item in gold["mechanisms"])
+    assert alibaba["module_focus"] == gold["module_focus"] == []
     assert "不是对当前" in alibaba["background"] and "不是对当前" in gold["background"]
-    assert not any("EPS" in item for item in gold["mechanisms"])
+    # Names and previously handpicked tickers do not establish a research scope.
+    assert "commodity-supply-demand" not in {item["id"] for item in dossier_client.get(url("518880-sh")).json()["research_plan"]["modules"]}
 
 
 def test_save_updates_one_owned_mandate_without_turning_it_into_material(dossier_client):
@@ -245,7 +250,7 @@ def test_notebook_uses_completed_instrument_research_and_preserves_original_sour
         session.commit()
     dossier = dossier_client.get(url() + "?include_history=true").json()
     assert dossier["notebook"]["run_id"] == "run-1"
-    assert dossier["notebook"]["fundamental_view"] == "基本面判断1"
+    assert dossier["notebook"]["prior_analysis"]["fundamental_view"] == "基本面判断1"
     assert dossier["notebook"]["sources"] == [{"source_id": "original-1"}]
     with get_session_factory()() as session:
         assert service.read_dossier(session, "xlk")["notebook"]["sources"] == [{"source_id": "original-1", "text": "原文"}]
@@ -365,8 +370,7 @@ def test_historical_atlas_is_owned_by_each_instrument_not_a_default_xlk_template
     import json
     from shutil import copyfile
     (tmp_path / "historical_cases").mkdir()
-    for name in ("frameworks.json", "mandate_seeds.json"):
-        copyfile(service.DATA_ROOT / name, tmp_path / name)
+    copyfile(service.DATA_ROOT / "mandate_seeds.json", tmp_path / "mandate_seeds.json")
     (tmp_path / "historical_cases" / "stock.json").write_text(json.dumps({
         "metadata": {"atlas_id": "stock-history"}, "reuse_limitations": ["背景不同不能直接类比"],
         "cases": [{"case_id": "stock-case", "source_id": "historical:stock-case", "case_title": "该公司的历史案例",
@@ -376,3 +380,61 @@ def test_historical_atlas_is_owned_by_each_instrument_not_a_default_xlk_template
     assert stock["historical_cases"][0]["instrument_id"] == "stock"
     assert stock["historical_cases"][0]["atlas_id"] == "stock-history"
     assert dossier_client.get(url("xlf")).json()["historical_cases"] == []
+
+
+def test_registered_taxonomy_and_strategy_reach_the_research_plan(dossier_client):
+    from watchlist_app.db.models import InstrumentTaxonomyAssignment, InstrumentTaxonomyNode
+    from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+    with get_session_factory()() as session:
+        session.add(InstrumentTaxonomyNode(node_id="research-private-credit", taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
+            instrument_type="private_fund", label="已登记信用子策略", level_index=2, is_leaf=True,
+            path_node_ids_json=["fund-private-credit", "research-private-credit"], path_labels_json=["信用策略", "已登记信用子策略"]))
+        session.flush()
+        session.add(InstrumentTaxonomyAssignment(instrument_id="private", taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
+            node_id="research-private-credit", assigned_at=datetime.now(UTC)))
+        session.add(InstrumentManualProfile(instrument_id="private", updated_at=datetime.now(UTC),
+            strategy_payload_json={"summary": "管理人描述的信用研究流程"}))
+        session.commit()
+    result = dossier_client.get(url("private")).json()
+    assert result["mandate"]["registration"]["taxonomy"]["assigned_node_id"] == "research-private-credit"
+    assert result["mandate"]["registration"]["disclosed_strategy"]["summary"] == "管理人描述的信用研究流程"
+    credit = next(item for item in result["research_plan"]["modules"] if item["id"] == "rates-credit")
+    assert credit["applicability"] == "unconfirmed" and "已登记信用子策略" in credit["reason"]
+
+
+def test_user_constraints_and_explicit_method_selection_cannot_be_overwritten_by_research(dossier_client):
+    with get_session_factory()() as session:
+        initial = service.read_mandate(session, "xlk")
+        user = service.ResearchMandateInput.model_validate({**_mandate_payload(initial),
+            "user_constraints": ["只以实际成份为范围"],
+            "module_focus": [{"module_id": "equity-aggregation", "reason": "用户明确选择股票成份研究"}]})
+        first = service.save_mandate(session, "xlk", user)
+        revision = service.ResearchMandateInput.model_validate({**_mandate_payload(first),
+            "background": "研究员新增的背景", "user_constraints": ["扩大至所有行业"], "module_focus": []})
+        after = service.save_mandate(session, "xlk", revision, origin="research")
+        assert after["user_constraints"] == first["user_constraints"]
+        assert after["module_focus"] == first["module_focus"]
+        assert after["module_focus"][0]["selected_by"] == "user"
+        assert after["versions"][-1]["user_constraints"] == first["user_constraints"]
+        assert service.read_dossier_version(session, "xlk", first["version_id"])["value"]["user_constraints"] == first["user_constraints"]
+        cleared = service.save_mandate(session, "xlk", service.ResearchMandateInput.model_validate({
+            **_mandate_payload(after), "user_constraints": [], "module_focus": []}))
+        assert cleared["user_constraints"] == [] and cleared["module_focus"] == []
+
+
+def test_public_method_updates_do_not_rewrite_existing_instrument_supplements(dossier_client, monkeypatch):
+    from copy import deepcopy
+    from watchlist_app.services import research_methods
+    initial = dossier_client.get(url("stock")).json()
+    payload = {**_mandate_payload(initial["mandate"]), "mechanisms": ["既有人工与研究员共同维护的专属机制"]}
+    saved = dossier_client.put(url("stock") + "/mandate", json=payload).json()
+    updated = deepcopy(research_methods.method_library())
+    for item in updated["frameworks"]:
+        if item["id"] == "business-fundamentals":
+            item.update(version="2", body="新版经营研究方法")
+    monkeypatch.setattr(research_methods, "method_library", lambda: updated)
+    current = dossier_client.get(url("stock")).json()
+    assert current["mandate"]["mechanisms"] == saved["mechanisms"]
+    assert current["mandate"]["version_id"] == saved["version_id"]
+    method = next(item for item in current["research_plan"]["modules"] if item["id"] == "business-fundamentals")
+    assert method["version"] == "2" and method["body"] == "新版经营研究方法"

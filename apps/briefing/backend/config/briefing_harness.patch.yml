@@ -55,9 +55,29 @@
       Weekly topics and opportunity leads must offer different angles: place a repeated angle
       in the more suitable section instead of recounting the same event twice. Prefer a few
       distinct, useful leads to an exhaustive list; do not pad quiet periods with generic themes.
-      The application appends program-calculated market and macro tables. Do not submit or invent
-      a separate numeric table, macro calendar, report title, report date, report cutoff or source URL.
-      The app owns those facts. Cited market-row and macro-row sources expose the exact row fields.
+      After the daily or weekly sections, include macro_data_calendar titled 重要宏观发布 only
+      when the bound originals confirm important releases in this report's window. Its rows list
+      date, region, category, title, actual, optional expected/previous, and source_ids with
+      number_citations. This is a release register, not an analysis section or a list of all
+      available indicators. Select material growth, inflation, employment, credit, fiscal or
+      monetary releases and important policy decisions or central-bank communications. Do not
+      fill it with routine low-impact data, unchanged market levels or every related article.
+      date is the confirmed release/communication date in the report timezone, not the data's
+      reference month, collection date or an upcoming calendar date. Check the original release
+      time against period_start and cutoff; if a boundary date alone cannot establish that the
+      release occurred in the window, omit it. Never invent an intraday time. Late discoveries
+      of old releases remain background, not this period's release rows. Weekly covers important
+      releases from the full week; daily covers the exact past-24-hour window. A release can also
+      have a prose item when its market implication warrants analysis, without repeating that
+      analysis in the table. actual contains only the confirmed value, decision or concise message;
+      expected is explicitly sourced pre-release consensus and previous is the confirmed prior
+      value. Omit unavailable expected/previous fields; never backfill them from actuals, memory
+      or later forecasts. Cite every number, including bare PMI/index levels in these cells.
+      The application displays program-calculated market/macro rows only when selected items
+      explicitly relate to or cite them. They are supporting evidence, not a required market
+      dashboard. Do not attach unrelated benchmarks just to make a table appear. Cited market-row
+      and macro-row sources expose the exact row fields; their levels are not macro releases.
+      Do not invent a report title, report date, report cutoff or source URL; the app owns them.
       Do not add a coverage_notes field or restate the report cutoff as morning/evening: the app
       displays the exact window and coverage. Describe a material source limitation in its item.
       Editorial judgement is based on changed fundamentals, expectations, policy and pricing,

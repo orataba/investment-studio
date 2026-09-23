@@ -15,8 +15,71 @@ const detail: ReportDetail = {
   report: { sections: [{ kind: 'takeaway_section', title: '重点信息', groups: [{ title: '宏观', items: [{ title: '央行继续观察就业', tags: ['货币政策', '就业'], summary: '央行维持利率。', analysis: '下一步观察就业。', source_ids: ['text:v1'], related_market_symbols: ['SPY'] }] }, { title: '微观', items: [] }] }] },
 }
 beforeEach(() => { window.history.replaceState(null, '', '/?lang=zh-Hans') })
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 function page(component: React.ReactNode) { return render(<LanguageProvider enableDomTranslation={false}>{component}</LanguageProvider>) }
+
+it('opens the industry directory without reading reports or team research and links to the shared reading view', () => {
+  window.history.replaceState(null, '', '/?lang=en&type=industry&report=private-report')
+  vi.stubEnv('VITE_WATCHLIST_URL', 'https://watchlist.example.com/')
+  const fetch = vi.fn()
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  expect(screen.getByRole('tab', { name: 'Industry research' }).getAttribute('aria-selected')).toBe('true')
+  expect(screen.getByRole('heading', { name: 'U.S. technology' })).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'Read research report' }).getAttribute('href')).toBe('https://watchlist.example.com/instruments/xlk?tab=investment-research&mode=report&lang=en')
+  expect(screen.queryByRole('heading', { name: 'Editions' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Generate edition' })).toBeNull()
+  expect(fetch).not.toHaveBeenCalled()
+})
+
+it('keeps industry navigation selected after an earlier report read completes and restores daily reading', async () => {
+  let resolveDetail!: (value: ReportDetail) => void
+  const response = new Promise<ReportDetail>(resolve => { resolveDetail = resolve })
+  const fetch = vi.fn(async (url: string) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
+    if (url.includes('/reports?')) return { rows: [detail], total: 1 }
+    return response
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-v1'))).toBe(true))
+  const dailyAddress = window.location.href
+  fireEvent.click(screen.getByRole('tab', { name: '行业研究' }))
+  await act(async () => resolveDetail(detail))
+  expect(window.location.search).toBe('?lang=zh-Hans&type=industry')
+  expect(screen.queryByRole('heading', { name: '央行继续观察就业' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '生成本期' })).toBeNull()
+  expect(screen.getByRole('link', { name: '阅读研究报告' }).getAttribute('href')).toContain(':5173/instruments/xlk?tab=investment-research&mode=report&lang=zh-Hans')
+  const industryAddress = window.location.href
+  window.history.replaceState(null, '', dailyAddress)
+  fireEvent.popState(window)
+  await screen.findByRole('heading', { name: '央行继续观察就业' })
+  expect(screen.getByRole('tab', { name: '日报' }).getAttribute('aria-selected')).toBe('true')
+  const reportReads = fetch.mock.calls.length
+  window.history.replaceState(null, '', industryAddress)
+  fireEvent.popState(window)
+  expect(screen.getByRole('heading', { name: '美股科技' })).toBeTruthy()
+  expect(fetch.mock.calls).toHaveLength(reportReads)
+})
+
+it('does not select a newly submitted daily edition after moving to industry research', async () => {
+  let resolveGeneration!: (value: ReportDetail) => void
+  const submission = new Promise<ReportDetail>(resolve => { resolveGeneration = resolve })
+  const fetch = vi.fn(async (url: string, options?: RequestInit) => ({ ok: true, json: async () => {
+    if (url.endsWith('/status')) return { harness_available: true, can_generate: true, can_read_sources: true }
+    if (options?.method === 'POST') return submission
+    return { rows: [], total: 0 }
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  page(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: '生成本期' }))
+  fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+  fireEvent.click(screen.getByRole('tab', { name: '行业研究' }))
+  await act(async () => resolveGeneration(detail))
+  expect(window.location.search).toBe('?lang=zh-Hans&type=industry')
+  expect(screen.getByRole('tab', { name: '行业研究' }).getAttribute('aria-selected')).toBe('true')
+  expect(fetch.mock.calls.some(([url]) => url.endsWith('/report-v1'))).toBe(false)
+})
 
 it('loads the report index once while selecting the default edition and switching editions', async () => {
   const previous = { ...detail, report_id: 'report-previous', version: 2, title: '上一版日报' }
@@ -64,7 +127,7 @@ it('displays macro units without rescaling and labels bound numeric citations', 
     { symbol: 'RAW', label: '原始单位指标', value: 12, unit: 'recorded-unit', date: '2026-09-04', source_ids: [] },
   ]
   report.sources.push({ source_id: 'numeric:treasury', source_type: 'numeric', symbol: 'US_TREASURY_10Y' })
-  report.report!.sections[0].groups![0].items[0].source_ids = ['numeric:treasury', 'market-row:0']
+  report.report!.sections[0].groups![0].items[0].source_ids = ['numeric:treasury', 'market-row:0', 'macro-row:1', 'macro-row:2']
   page(<ReportBody detail={report} onSource={source} />)
   expect(screen.getByText('4.78 %')).toBeTruthy()
   expect(screen.getByText('14.53 点')).toBeTruthy()
@@ -88,6 +151,55 @@ it('shows only cited stocks and preserves their original price-source index', ()
   expect(screen.queryByText('未引用公司')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Apple' }))
   expect(source).toHaveBeenCalledWith('market-row:2')
+})
+
+it.each(['daily', 'weekly'] as const)('shows only selected supporting data in existing %s editions', reportType => {
+  const source = vi.fn()
+  const report = structuredClone(detail)
+  report.report_type = reportType
+  report.market_rows.push({ ...report.market_rows[0], symbol: 'QQQ', label: '未关联基准', source_ids: ['numeric:unused'] })
+  report.macro_rows = [
+    { symbol: 'VIX', label: '未引用波动率', date: '2026-09-04', value: 14, source_ids: ['numeric:vix'] },
+    { symbol: 'US_TREASURY_10Y', label: '已引用国债收益率', date: '2026-09-04', value: 4.5, unit: 'percent', source_ids: ['numeric:treasury'] },
+  ]
+  report.report!.sections[0].groups![0].items[0].source_ids.push('numeric:treasury')
+  page(<ReportBody detail={report} onSource={source} canReadSources={false} />)
+  expect(screen.queryByText('未关联基准')).toBeNull()
+  expect(screen.queryByText('未引用波动率')).toBeNull()
+  expect(screen.getByText('4.5 %')).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: /重要宏观发布/ })).toBeNull()
+  const macroSection = screen.getByRole('heading', { name: '相关宏观指标' }).closest('section')!
+  fireEvent.click(within(macroSection).getByRole('button', { name: '已引用国债收益率' }))
+  expect(source).toHaveBeenCalledWith('macro-row:1')
+})
+
+it('omits unused data panels when a quiet edition has no selected numerical evidence', () => {
+  const report = structuredClone(detail)
+  report.report!.sections[0].groups![0].items[0].related_market_symbols = []
+  report.macro_rows = [{ symbol: 'VIX', label: '波动率', date: '2026-09-04', value: 14, source_ids: [] }]
+  page(<ReportBody detail={report} onSource={vi.fn()} />)
+  expect(screen.queryByRole('heading', { name: '市场表现' })).toBeNull()
+  expect(screen.queryByRole('heading', { name: '相关宏观指标' })).toBeNull()
+  expect(screen.queryByRole('table')).toBeNull()
+  expect(screen.getByRole('heading', { name: '央行继续观察就业' })).toBeTruthy()
+})
+
+it.each(['daily', 'weekly'] as const)('renders important %s releases with source links and empty missing expectations', reportType => {
+  const report = structuredClone(detail)
+  report.report_type = reportType
+  report.report!.sections.push({ kind: 'macro_data_calendar', title: '重要宏观发布', rows: [
+    { title: '政策利率决定', date: '2026-09-07', region: '美国', category: '货币政策', actual: '维持利率', source_ids: ['text:v1'], related_market_symbols: [] },
+    { title: '制造业采购经理指数', date: '2026-09-07', region: '中国', category: '宏观数据', actual: '51.2', expected: '51.0', previous: '50.8', source_ids: ['text:v1'], related_market_symbols: [] },
+  ] })
+  page(<ReportBody detail={report} onSource={vi.fn()} canReadSources={false} />)
+  expect(screen.getByRole('heading', { name: reportType === 'daily' ? '本期重要宏观发布' : '本周重要宏观发布' })).toBeTruthy()
+  const row = screen.getByText('政策利率决定').closest('tr')!
+  const cells = within(row).getAllByRole('cell')
+  expect(cells[4].textContent).toBe('')
+  expect(cells[5].textContent).toBe('')
+  expect(within(row).getByRole('link', { name: '央行 ↗' }).getAttribute('href')).toBe('https://example.com/statement')
+  expect(screen.getByText('51.0')).toBeTruthy()
+  expect(screen.getByText('50.8')).toBeTruthy()
 })
 
 it('keeps a completed edition readable when the latest version failed and shows original dates', async () => {

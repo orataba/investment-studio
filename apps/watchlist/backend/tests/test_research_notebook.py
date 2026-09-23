@@ -22,7 +22,8 @@ def question(key="cash", **changes):
 
 
 def notebook(**changes):
-    return ResearchNotebook(fundamental_view="有依据的当前判断", valuation_view="估值证据不足", **changes)
+    return ResearchNotebook(**{"modules": [{"key": "pricing-compensation", "summary": "有依据的当前判断",
+        "analysis": "估值证据不足"}], **changes})
 
 
 def original(**changes):
@@ -256,7 +257,7 @@ def test_fact_sheet_preserves_comparison_basis_and_requires_instrument_evidence(
     evidence = {"old-original": original()}
     validate_notebook(current, "xlk", evidence)
     saved = retain_notebook(current, None, evidence, "today", CUTOFF)
-    assert saved["facts"] == [fact] and saved["sources"] == [original()]
+    assert saved["facts"] == [{"module_key": None, **fact}] and saved["sources"] == [original()]
     with pytest.raises(ValueError, match="原始依据"):
         validate_notebook(current, "xlk", {})
 
@@ -273,7 +274,7 @@ def test_knowledge_delta_keeps_view_dates_and_forecasts_have_immutable_versions(
         "risk": "短期不确定性上升", "source_ids": ["old-original"]}, forecasts=[forecast()]), None, sources, "first", CUTOFF)
     first_copy = deepcopy(first)
     quiet = retain_notebook(ResearchNotebook(), first, sources, "quiet", "2026-09-08T00:00:00+00:00")
-    assert quiet["fundamental_view"] == first["fundamental_view"]
+    assert quiet["modules"] == first["modules"]
     assert quiet["investment_view"] == first["investment_view"]
     assert quiet["forecasts"] == first["forecasts"]
     assert quiet["version_id"] == first["version_id"]

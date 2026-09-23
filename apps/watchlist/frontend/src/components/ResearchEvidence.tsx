@@ -37,7 +37,7 @@ function ComparisonEvidence({ comparison }: { comparison: SavedComparison }) {
   </div>
 }
 
-function ComputedEvidence({ source }: { source: SavedResearchSource }) {
+export function ComputedEvidence({ source }: { source: SavedResearchSource }) {
   const [showOriginal, setShowOriginal] = useState(false)
   const data = source.data
   const method = typeof source.methodology === 'object' ? source.methodology : null

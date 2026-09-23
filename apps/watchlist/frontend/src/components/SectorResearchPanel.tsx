@@ -24,7 +24,6 @@ export type SectorEventRecord = EventSnapshot & {
 }
 type ResearchResponse = { available: boolean; research_enabled?: boolean; message?: string; sectors: SectorResearch[]; events: SectorEventRecord[] }
 const running = (status?: string) => status === 'queued' || status === 'running'
-const directions = { risk: '风险', opportunity: '机会', uncertain: '重大不确定性' }
 const statusLabels: Record<string, string> = { queued: '等待更新', running: '研究更新中', completed: '研究已更新', limited: '已更新，覆盖受限', failed: '研究更新未完成' }
 function completedReview(sector: SectorResearch) {
   const review = sector.last_completed_review || sector.latest_review
@@ -32,44 +31,9 @@ function completedReview(sector: SectorResearch) {
 }
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' })
 const time = (value: string | null | undefined) => !value ? '待核实' : value.length === 10 ? value : timeFormatter.format(new Date(value))
-function sourceHref(value?: string) {
-  try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined } catch { return undefined }
-}
-
-function ResearchRunSources({ review, instruments, expanded }: { review: Review; instruments: string[]; expanded: boolean }) {
-  type Original = EventSource & { body_available?: boolean }
-  const [sources, setSources] = useState<Original[] | null>(null)
-  const [error, setError] = useState('')
-  useEffect(() => {
-    if (!expanded || sources !== null) return
-    const controller = new AbortController()
-    setError('')
-    void fetchJson<{ sources: Original[] }>(
-      `/api/research/runs/${encodeURIComponent(review.run_id)}/context?section=sources`, { signal: controller.signal },
-    ).then((context) => {
-      if (controller.signal.aborted) return
-      setSources(context.sources.filter(source => source.body_available))
-    }).catch((reason) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '原文列表读取失败')
-    })
-    return () => controller.abort()
-  }, [expanded, review.run_id, sources])
-  return <section className="sector-run-sources" aria-label="对应研究查阅原文">
-    <h4>对应研究查阅原文</h4>
-    <p className="sector-research-note">对应研究截至 {time(review.checked_at)} · {instruments.join('、')}</p>
-    {instruments.length > 1 && <p className="sector-research-note">这些标的共享本轮查阅资料，不代表每篇原文均支持每个标的的结论。</p>}
-    {error ? <p className="sector-research-limitation" role="alert">原文列表暂时无法读取：{error}</p>
-      : sources === null ? <p className="sector-research-note">Loading</p>
-        : sources.length ? <ul className="sector-event-sources">{sources.map((source, index) => <li key={`${source.source_id}:${source.version_id || ''}:${index}`}>
-          {sourceHref(source.url) ? <a href={sourceHref(source.url)} target="_blank" rel="noopener noreferrer" translate="no">{source.title || source.url}</a> : <span translate="no">{source.title || '已保存的来源记录'}</span>}
-          <small>发布 <time dateTime={source.published_at || undefined}>{source.published_at ? time(source.published_at) : '时间未知'}</time> · 取得 <time dateTime={source.retrieved_at || undefined}>{source.retrieved_at ? time(source.retrieved_at) : '时间未知'}</time></small>
-        </li>)}</ul> : <p className="sector-research-note">本轮未保留可打开的原文记录。</p>}
-  </section>
-}
-
-export default function SectorResearchPanel({ instrumentId, variant = 'timeline', onOpenEvents, onAskAssistant }: {
+export default function SectorResearchPanel({ instrumentId, variant = 'timeline', onOpenEvents, onAskAssistant, readingMode = false }: {
   instrumentId: string; variant?: 'timeline' | 'summary' | 'status'
-  onOpenEvents?: () => void; onAskAssistant?: AskResearchAssistant
+  onOpenEvents?: () => void; onAskAssistant?: AskResearchAssistant; readingMode?: boolean
 }) {
   const query = `instrument_id=${encodeURIComponent(instrumentId)}`
   const canWrite = useStudioAccount()?.team_role !== 'reader'
@@ -79,7 +43,6 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
   const [pollingPaused, setPollingPaused] = useState(false)
-  const [expandedSourceScope, setExpandedSourceScope] = useState<string | null>(null)
   const data = snapshot?.query === query ? snapshot.data : null
   const submittedRun = submitted?.query === query ? submitted.runId : null
   const hasRunningReview = data?.sectors.some((sector) => running(sector.latest_review?.status))
@@ -135,94 +98,37 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     finally { setStarting(false) }
   }
 
-  if (!data && !error && query && variant === 'timeline') return <p className="sector-research-note" role="status">Loading</p>
-  if (!data?.sectors.length) return data?.message ? <p className="sector-research-limitation">{data.message}</p> : error ? <p role="alert">研究追踪暂时无法读取：{error}</p>
-    : data && variant === 'timeline' ? <section className="sector-research-panel" aria-label="研究追踪"><h2>研究追踪</h2><p className="sector-research-note">尚未完成研究。</p>{instrumentId && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} onAskAssistant={onAskAssistant} />}</section> : null
+  const sectors = data?.sectors || []
   const statusSummary = busy ? '研究更新中'
-    : data.sectors.some((sector) => sector.latest_review?.status === 'failed') ? '最新更新未完成'
-      : data.sectors.some((sector) => sector.latest_review?.status === 'limited') ? '已更新，覆盖受限'
-        : data.sectors.some((sector) => !completedReview(sector)) ? '尚未完成研究'
-          : data.sectors.every(sector => sector.latest_review?.change_kind === 'none') ? '已检查，无新增投资变化'
-            : data.sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '研究资料已更新' : '研究已更新'
-  const coverage = [...new Set(data.sectors.flatMap((sector) => [
-    ...(sector.latest_review?.coverage || []), ...(completedReview(sector)?.coverage || []),
-  ]))]
-  const completedRuns = new Map<string, { review: Review; instruments: string[] }>()
-  for (const sector of data.sectors) {
-    const completed = completedReview(sector)
-    if (!completed) continue
-    const sourceRunId = completed.view_run_id || completed.run_id
-    const group = completedRuns.get(sourceRunId) || { review: { ...completed, run_id: sourceRunId, checked_at: completed.view_updated_at || completed.checked_at }, instruments: [] }
-    group.instruments.push(sector.ticker || sector.sector_name)
-    completedRuns.set(sourceRunId, group)
-  }
-  const currentRisks = data.events.filter((event) => event.trigger_active && !event.withdrawn)
-  const visibleRisks = variant === 'summary' ? currentRisks.slice(0, 3) : currentRisks
-  const title = variant === 'summary' ? '研究摘要' : variant === 'status' ? '每日研究更新' : '研究追踪'
-  return <section className={`sector-research-panel sector-research-${variant}`} aria-label={title}>
+    : sectors.some(sector => sector.latest_review?.status === 'failed') ? '最新更新未完成'
+      : sectors.some(sector => sector.latest_review?.status === 'limited') ? '已更新，覆盖受限'
+        : !sectors.length || sectors.some(sector => !completedReview(sector)) ? '尚未完成研究'
+          : sectors.every(sector => sector.latest_review?.change_kind === 'none') ? '已检查，无新增投资变化'
+            : sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '研究资料已更新' : '研究已更新'
+  const coverage = [...new Set(sectors.flatMap(sector => sector.latest_review?.coverage || []))]
+  const review = sectors[0]?.latest_review
+  const title = variant === 'summary' ? '投资研究摘要' : variant === 'status' ? '每日研究更新' : '投资研究'
+  return <section className={`sector-research-panel sector-research-${variant}${readingMode ? ' investment-research-reading' : ''}`} aria-label={title}>
     <header className="sector-research-heading">
-      <div className="sector-research-title"><h2>{title}</h2><InfoHint label="研究更新口径" detail="持续检查新信息，只有重要观点、预测或风险变化才形成研究更新。" /><span>{data.sectors.length === 1 ? data.sectors[0].sector_name || data.sectors[0].ticker : `${data.sectors.length} 个标的`} · {statusSummary}</span></div>
+      <div className="sector-research-title"><h2>{title}</h2><InfoHint label="研究更新口径" detail="持续检查新信息，只有重要观点、预测或风险变化才形成研究更新。" /><span>{statusSummary}</span></div>
       <div className="sector-research-actions">
-        {variant === 'summary' ? onOpenEvents && <button onClick={onOpenEvents}>查看研究追踪</button> : <>
-          <button onClick={() => setRefresh((value) => value + 1)} disabled={starting}>刷新状态</button>
-          <button onClick={() => void start()} disabled={!canWrite || busy || !data.available || data.research_enabled === false}>{busy ? '研究更新中…' : '更新研究'}</button>
+        {variant === 'summary' ? onOpenEvents && <button onClick={onOpenEvents}>阅读完整研究</button> : !readingMode && <>
+          <button onClick={() => setRefresh(value => value + 1)} disabled={starting}>刷新状态</button>
+          <button onClick={() => void start()} disabled={!canWrite || busy || !data?.available || data.research_enabled === false}>{busy ? '研究更新中…' : '更新研究'}</button>
         </>}
       </div>
     </header>
-    {(!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
-    {error && <p role="alert">{error}</p>}
+    {data && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
+    {error && <p role="alert">研究更新状态暂时无法读取：{error}</p>}
     {pollingPaused && <p role="status">研究仍在更新，已暂停自动刷新，可手动刷新查看进展。</p>}
-    {data.sectors.filter((sector) => sector.latest_review?.status === 'failed' && sector.latest_review.summary).map((sector) =>
-      <p key={sector.instrument_id} className="sector-research-limitation" role="status">
-        {data.sectors.length > 1 && <strong>{sector.ticker || sector.sector_name} · </strong>}
-        本轮未完成原因：{sector.latest_review!.summary}
-      </p>)}
-
-    {variant !== 'status' && <section className="sector-current-conclusion" aria-label="当前研究结论">
-      <h3>当前研究结论</h3>
-      {data.sectors.map((sector) => {
-        const completed = completedReview(sector)
-        const latest = sector.latest_review
-        const investmentView = completed?.current_research?.investment_view
-        const summary = investmentView?.direction
-        const summaryUpdatedAt = investmentView?.updated_at
-        return <article key={sector.instrument_id}>
-          {data.sectors.length > 1 && <h4>{sector.ticker} · {sector.sector_name}</h4>}
-          {summary?.trim() ? <>
-            <p className="sector-conclusion-date">观点更新于 <time dateTime={summaryUpdatedAt || undefined}>{time(summaryUpdatedAt)}</time></p>
-            <p className="sector-conclusion-body" translate="no">{summary}</p>
-          </> : <p className="sector-research-note">{completed ? '尚未形成研究结论。' : '尚未完成研究。'}</p>}
-          {latest && ['completed', 'limited'].includes(latest.status) && latest.change_kind && <p className="sector-latest-run">本轮检查 <time dateTime={latest.checked_at || undefined}>{time(latest.checked_at)}</time> · {latest.change_kind === 'none' ? latest.status === 'limited' ? '在已覆盖的信息中未发现新增投资变化，资料缺口见研究覆盖' : '未发现新增投资变化' : latest.change_kind === 'knowledge' ? '研究资料已更新' : '投资研究已更新'}</p>}
-          {latest && (latest.run_id !== completed?.run_id || latest.status !== completed?.status) && <p className="sector-latest-run" role="status">最近更新：{statusLabels[latest.status] || '状态待核实'} · {time(latest.checked_at)}</p>}
-        </article>
-      })}
-    </section>}
-
-    {variant === 'timeline' && instrumentId && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} reviewRunId={data.sectors[0].latest_review?.run_id} reviewStatus={data.sectors[0].latest_review?.status} onAskAssistant={onAskAssistant} />}
-
-    <details key={query} className="sector-check-coverage" onToggle={(event) => setExpandedSourceScope(event.currentTarget.open ? query : null)}><summary>研究来源与覆盖{coverage.length ? ` · ${coverage.length} 项限制` : ''}</summary>
-      {data.sectors.map((sector) => <div key={sector.instrument_id}><strong>{sector.ticker} · {sector.sector_name}</strong><p>最新更新 {time(sector.latest_review?.checked_at)} · {sector.latest_review ? statusLabels[sector.latest_review.status] || '状态待核实' : '尚未完成研究'}</p>
-        {sector.latest_review?.reflection && ['completed', 'limited'].includes(sector.latest_review.status) && <div className="sector-reflection">
-          <p><strong>本轮复核</strong> · <span className={sector.latest_review.reflection.status === 'insufficient_evidence' ? 'sector-research-limitation' : undefined}>{sector.latest_review.reflection.status === 'reviewed' ? '已复核既有判断' : '复核证据不足'}</span></p>
-          {sector.latest_review.reflection.summary && <p translate="no">{sector.latest_review.reflection.summary}</p>}
-        </div>}
-        </div>)}
-      {coverage.length > 0 && <ul className="sector-research-limitation">{coverage.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
-      {[...completedRuns].map(([runId, group]) => <ResearchRunSources key={runId} {...group} expanded={expandedSourceScope === query} />)}
-    </details>
-
-    {variant === 'summary' && currentRisks.length > 0 && <section className="sector-current-risks" aria-label="当前风险与机会">
-      <h3>风险与机会</h3>
-      {visibleRisks.map((event) => <article className="sector-current-risk" key={event.case_id}>
-        <div className="sector-current-risk-heading"><strong>{directions[event.direction]}</strong><h4 translate="no">{event.title}</h4>
-          {event.information_type === 'rumor' && <span className="sector-research-limitation">传闻 · 待证实</span>}
-          {event.information_type === 'opinion' && <span>观点</span>}
-        </div>
-
-      </article>)}
-      {variant === 'summary' && currentRisks.length > visibleRisks.length && <p className="sector-research-note">另有 {currentRisks.length - visibleRisks.length} 项持续关注，可在研究追踪中查看。</p>}
-    </section>}
-
-
+    {sectors.filter(sector => sector.latest_review?.status === 'failed' && sector.latest_review.summary).map(sector => <p key={sector.instrument_id} className="sector-research-limitation" role="status">本轮未完成原因：{sector.latest_review!.summary}</p>)}
+    {review?.checked_at && <p className="sector-research-note">最近检查 <time dateTime={review.checked_at}>{time(review.checked_at)}</time></p>}
+    {variant !== 'status' && <ResearchDossierPanel key={instrumentId} instrumentId={instrumentId} reviewRunId={review?.run_id} reviewStatus={review?.status} onAskAssistant={readingMode ? undefined : onAskAssistant} variant={variant === 'summary' ? 'summary' : 'full'} readingMode={readingMode} />}
+    {(coverage.length > 0 || sectors.some(sector => sector.latest_review?.reflection)) && <details className="sector-check-coverage"><summary>本轮检查与覆盖{coverage.length ? ` · ${coverage.length} 项限制` : ''}</summary>
+      {sectors.map(sector => <div key={sector.instrument_id}><p>{sector.latest_review ? statusLabels[sector.latest_review.status] || '状态待核实' : '尚未完成研究'} · {time(sector.latest_review?.checked_at)}</p>
+        {sector.latest_review?.reflection && ['completed', 'limited'].includes(sector.latest_review.status) && <p translate="no">{sector.latest_review.reflection.status === 'reviewed' ? '已复核既有判断' : '复核证据不足'} · {sector.latest_review.reflection.summary}</p>}
+      </div>)}
+      {coverage.length > 0 && <ul className="sector-research-limitation">{coverage.map(gap => <li key={gap}>{gap}</li>)}</ul>}
+    </details>}
   </section>
 }

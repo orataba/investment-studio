@@ -64,7 +64,6 @@ def test_private_fund_analyst_reads_product_evidence_with_source_clocks(client, 
     register_fund(client)
     from watchlist_app.db.models import InstrumentManualProfile, InstrumentExposureHoldingsReadModel
     from watchlist_app.db.session import get_session_factory
-    from watchlist_app.services.research_workbench import ANALYST_FOCUS
 
     clock = datetime(2026, 8, 31, tzinfo=UTC)
     with get_session_factory()() as session:
@@ -85,7 +84,7 @@ def test_private_fund_analyst_reads_product_evidence_with_source_clocks(client, 
     run = start_analysis(client, monkeypatch)
     context = run["context_json"]
     assert context["analyst_focus"][0]["instrument_type"] == "private_fund"
-    assert "未披露" in context["analyst_focus"][0]["guidance"]
+    assert "未知持仓" in context["analyst_focus"][0]["guidance"]
     assert datetime.fromisoformat(context["requested_at"]).tzinfo is not None
     response = client.post(f"/api/research/runs/{run['entry_id']}/tools", json={"tool": "instruments", "instrument_ids": ["sxv264"]})
     assert response.status_code == 200, response.text
@@ -93,9 +92,11 @@ def test_private_fund_analyst_reads_product_evidence_with_source_clocks(client, 
     assert evidence["product_information"]["terms_and_fees"]["redemption"] == "每季度开放一次"
     assert evidence["holdings"]["data"]["as_of_date"] == "2026-06-30"
     assert evidence["holdings"]["freshness"] == "stale"
-    assert "披露滞后" in ANALYST_FOCUS["public_fund"]
-    assert "A股ETF" in ANALYST_FOCUS["etf"]
-    assert "预期上修或下修" in ANALYST_FOCUS["equity"]
+    plan = evidence["research_plan"]
+    assert plan["scope"] in context["analyst_focus"][0]["guidance"]
+    methods = {item["id"]: item for item in plan["modules"]}
+    assert "未披露" in methods["fund-strategy"]["body"]
+    assert "前填" in methods["market-quantitative"]["body"]
 
 
 def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidence(client, monkeypatch):
@@ -124,7 +125,7 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
         # A quiet check does not require an invented notebook or opinion.
         sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate({'reviews': [
             {'instrument_id': 'sxv264', 'change_kind': 'none', 'summary': '', 'coverage': [], 'events': []}]}))
-        paper = {'fundamental_view': '策略来自管理人说明，底层敞口仍待核实。', 'key_drivers': [], 'valuation_view': '暂没有可比估值资料。',
+        paper = {'modules': [{'key': 'fund-strategy', 'summary': '策略来自管理人说明，底层敞口仍待核实。', 'analysis': '暂没有可比估值资料。'}], 'key_drivers': [],
             'questions': [{'key': 'exposure', 'question': '底层敞口是什么？', 'assessment': '尚未披露。', 'next_check': '取得持仓说明。',
                           'status': 'open', 'source_ids': [sid]}], 'source_ids': [sid]}
         sector_research.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'sxv264', 'summary': '继续核实敞口。',
@@ -189,7 +190,7 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
         from watchlist_app.services.research_notebook import research_sources
         assert computed["source_id"] in research_sources(run.context_json, run_id)
         draft = sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "sxv264", "change_kind": "knowledge",
-            "research": {"fundamental_view": "基于共同周度观察日的表现仍需结合策略与敞口解释。", "source_ids": [computed["source_id"]]},
+            "research": {"modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
             "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
                 "title": "共同样本表现待解释", "body": "共同样本超额收益5个百分点，底层敞口仍未知。",
                 "next_watch": "核实策略来源及更长区间表现。", "confidence": "confirmed", "information_type": "fact",
@@ -210,7 +211,7 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
     assert evidence["performance_evidence"]["sample_return_pct"] == automatic_evidence["sample_return_pct"]
     assert evidence["performance_evidence"]["comparisons"][0]["comparison"] == comparison
     assert evidence["performance_evidence"]["source_id"] != automatic_evidence["source_id"]
-    assert "未披露的持仓、杠杆和对冲只能列为待核实项" in evidence["analyst_focus"]
+    assert "未知持仓、杠杆与对冲保持未知" in evidence["analyst_focus"]
 
 
 def test_public_search_preserves_original_publication_and_failed_coverage(client, monkeypatch):

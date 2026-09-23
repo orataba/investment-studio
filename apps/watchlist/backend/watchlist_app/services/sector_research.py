@@ -31,19 +31,9 @@ FUND_INSTRUMENT_TYPES = ("public_fund", "private_fund")
 # Operational check time for funds without a supported source calendar. This is
 # not an investment-market classification or a daily NAV disclosure requirement.
 RESEARCH_TIMEZONES = {**MARKET_SCOPE_TIMEZONES, "fund_nav": "Asia/Shanghai", "crypto": "UTC"}
-SECTORS = {
-    "XLB": ("原材料", ["拆分矿业、化工和包装的供需、库存与定价能力。", "原料价格变化对售价、成本和利润的影响可能相反。"]),
-    "XLC": ("通信服务", ["区分广告平台、内容娱乐和电信公司的经营驱动。", "关注广告需求、用户变现、内容投入、资本开支与监管变化。"]),
-    "XLE": ("能源", ["连接原油与天然气供需、库存、政策和运输中断。", "区分生产商、炼化与油服的利润传导，结合资本开支和现金回报。"]),
-    "XLF": ("金融", ["分别分析银行净息差与信用损失、保险承保和资管资金流。", "关注融资条件、存款成本、监管和资本回报，避免将所有金融公司视为银行。"]),
-    "XLI": ("工业", ["跟踪订单、资本开支、交付、积压订单兑现和利润率。", "区分航空航天、国防、运输与通用工业的周期和政策暴露。"]),
-    "XLK": ("信息技术", ["连接AI投入、供应商收入、客户现金流和投资回报。", "区分半导体、硬件、软件的预期、竞争与政策约束；需求验证公司未必是ETF成分股。"]),
-    "XLP": ("必需消费", ["拆分销量、价格、产品组合、原料成本和渠道库存。", "关注消费者降级、零售竞争、外汇与防御性估值是否已充分反映。"]),
-    "XLRE": ("房地产", ["按物业类型分析入住率、租金、租约、净经营收入与再融资。", "REIT普通EPS可失真；缺少FFO/AFFO与债务到期数据时明确证据缺口。"]),
-    "XLU": ("公用事业", ["连接电力需求、资本开支、监管准许回报与融资需求。", "分析燃料成本传导、利率、信用与项目执行；负荷增长未必立即增加股东回报。"]),
-    "XLV": ("医疗保健", ["区分制药、器械、医疗服务和支付方。", "关注试验与审批、专利、支付政策、医疗利用率及成本，不将单一药物事件外推全行业。"]),
-    "XLY": ("可选消费", ["连接实际收入、信用、促销、库存和消费者可选支出。", "拆分零售、汽车、旅游和平台业务；结合融资、竞争与资本回报判断方向。"]),
-}
+# The existing list-level operation has a defined universe, not a method map.
+SECTORS = {"XLB": "原材料", "XLC": "通信服务", "XLE": "能源", "XLF": "金融", "XLI": "工业",
+           "XLK": "信息技术", "XLP": "必需消费", "XLRE": "房地产", "XLU": "公用事业", "XLV": "医疗保健", "XLY": "可选消费"}
 
 
 class ReviewInProgress(ValueError):
@@ -71,7 +61,7 @@ def scoped_ids(session, instrument_id=None, watchlist_id=None):
 
 def instrument_label(session, iid):
     if iid.upper() in SECTORS:
-        return SECTORS[iid.upper()][0]
+        return SECTORS[iid.upper()]
     return session.get(InstrumentDetail, iid).instrument_name
 
 
@@ -175,7 +165,6 @@ def _future(rows, today):
 
 def sector_snapshot(iid, session, *, as_of=None):
     from watchlist_app.services.sector_estimates import estimate_scope
-    from watchlist_app.services.research_workbench import ANALYST_FOCUS
     scope = estimate_scope(session, iid)
     if scope is None:
         return None
@@ -189,7 +178,7 @@ def sector_snapshot(iid, session, *, as_of=None):
                   "unclassified_holding": "持仓类型待核对"}
     sector = SECTORS.get(iid.upper())
     view = {"instrument_id": iid, "ticker": scope["symbol"], "instrument_type": scope["instrument_type"],
-        "sector_name": sector[0] if sector else scope["name"], "company_symbols": [h["holding_symbol"] for h in stocks],
+        "sector_name": sector or scope["name"], "company_symbols": [h["holding_symbol"] for h in stocks],
         "price_as_of": (raw["etf"]["latest_price"] or {}).get("date"),
         "holdings_as_of": max((str(h.get("as_of_date") or "") for h in raw["holdings"]), default="") or None,
         "holdings_observed_on": max((str(h.get("snapshot_date") or "") for h in raw["holdings"]), default="") or None,
@@ -198,7 +187,6 @@ def sector_snapshot(iid, session, *, as_of=None):
         "annual_estimate_count": sum(bool(_future(h["annual_estimates"], today)) for h in stocks),
         "quarterly_estimate_count": sum(bool(_future(h["quarterly_estimates"], today)) for h in stocks),
         "top_holdings": [] if scope["instrument_type"] == "equity" else [{"symbol": h["holding_symbol"], "name": h["holding_name"], "weight_percent": h["weight_percent"]} for h in stocks[:10]],
-        "research_focus": sector[1] if sector else ANALYST_FOCUS[scope["instrument_type"]],
         "data_gaps": [f"{g.get('symbol', '')}：{gap_labels.get(g['kind'], g['kind'])}" for g in raw["gaps"]]}
     companies = {}
     for h in stocks:
@@ -689,6 +677,17 @@ def _resolve_theme_aliases(review, aliases):
                     item.theme_id = aliases.get(item.theme_id, item.theme_id)
 
 
+def _review_research_plan(session, context, review):
+    """Use the studied method, including a verified same-submission refinement."""
+    from watchlist_app.services.research_dossier import plan_for_mandate, read_mandate
+    bound = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+    mandate = bound.get("mandate") or read_mandate(session, review.instrument_id)
+    if review.research is not None and review.research.mandate_update is not None:
+        return plan_for_mandate(mandate["registration"], review.research.mandate_update,
+                                origin="research", previous_mandate=mandate)
+    return bound.get("research_plan") or plan_for_mandate(mandate["registration"], mandate)
+
+
 def validate_result(session, run, parsed: ReviewResult):
     """Check the full draft against retained evidence without publishing research or events."""
     context = run.context_json
@@ -724,7 +723,9 @@ def validate_result(session, run, parsed: ReviewResult):
             validate_notebook(ResearchNotebook(source_ids=update.source_ids), review.instrument_id, notebook_evidence)
         _validate_research_links(session, run, review, themes)
         if review.research is not None:
-            validate_notebook(review.research, review.instrument_id, notebook_evidence)
+            dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+            validate_notebook(review.research, review.instrument_id, notebook_evidence,
+                              research_plan=_review_research_plan(session, context, review), previous=dossier.get("notebook"), cutoff=cutoff)
         if review.reflection is not None:
             validate_notebook(ResearchNotebook(source_ids=review.reflection.source_ids), review.instrument_id, notebook_evidence)
         for item in review.events:
@@ -802,6 +803,10 @@ def apply_result(session, run, reply):
             after = current.get(key) or {}
             if before.get("version_id", before.get("run_id")) != after.get("version_id", after.get("run_id")):
                 raise ResearchVersionConflict("研究记录在本轮分析期间已有更新，本轮草稿已保留；请基于最新版本继续研究。")
+        if bound.get("research_plan") is not None and [
+            (module["id"], module["version"], module["applicability"]) for module in bound["research_plan"]["modules"]
+        ] != [(module["id"], module["version"], module["applicability"]) for module in current.get("research_plan", {}).get("modules", [])]:
+            raise ResearchVersionConflict("研究方法或研究范围在本轮分析期间已有更新，本轮草稿已保留；请基于最新方法复核。")
         theme_links = review.themes or bool(bound.get("themes") and (review.research is not None or review.events))
         if theme_links and {item["theme_id"]: item["revision_number"] for item in bound.get("themes", [])} != {
                 item["theme_id"]: item["revision_number"] for item in current.get("themes", [])}:
@@ -869,7 +874,8 @@ def apply_result(session, run, reply):
                 "detail": item.body, "snapshot": {**snapshot, "status": case.status, "trigger_active": case.trigger_active}}]
             changed_events = True
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
-        notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"]) if review.research is not None else None
+        notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"],
+            research_plan=_review_research_plan(session, context, review)) if review.research is not None else None
         if notebook and review.research.mandate_update is not None:
             from watchlist_app.services.research_dossier import save_mandate
             save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False, origin="research")

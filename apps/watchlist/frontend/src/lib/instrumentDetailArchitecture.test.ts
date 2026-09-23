@@ -9,7 +9,7 @@ import {
 describe('instrument detail architecture', () => {
   it('gives every listed type prepared research tracking alongside personal views and quantitative risk', () => {
     for (const instrumentType of ['etf', 'equity', 'index'] as const) {
-      expect(listedDetailTabs(instrumentType)).toEqual(['overview', 'research', 'events', 'performance'])
+      expect(listedDetailTabs(instrumentType)).toEqual(['overview', 'investment-research', 'views', 'performance'])
     }
   })
 

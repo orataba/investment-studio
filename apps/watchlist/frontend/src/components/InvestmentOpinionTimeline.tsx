@@ -218,7 +218,7 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
 
   return <section className="investment-opinion-timeline" aria-label={t('投资观点时间线', 'Investment view timeline')}>
     <header className="investment-opinion-heading">
-      <div><h2>{t('投资观点', 'Investment views')}</h2><p>{t('记录你对这个标的的研究与投资判断，按时间保留观点的演变。', 'Keep your own research and investment judgments for this instrument as a dated history.')}</p></div>
+      <div><h2>{t('经理观点', 'PM views')}</h2><p>{t('记录你对这个标的的研究与投资判断，按时间保留观点的演变。', 'Keep your own research and investment judgments for this instrument as a dated history.')}</p></div>
       <button type="button" onClick={() => begin()} disabled={!canWrite || saving || Boolean(draft)}>{t('新增观点', 'Add view')}</button>
     </header>
     {error && <p className="investment-opinion-message" role="alert">{error}</p>}

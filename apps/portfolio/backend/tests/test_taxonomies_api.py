@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from copy import deepcopy
 
 import pytest
 from sqlalchemy import select
@@ -8,6 +9,9 @@ from sqlalchemy import select
 from portfolio_app.api.routes import taxonomies as taxonomies_routes
 from portfolio_app.db.models import (
     AnalyticsScopePolicyRecordModel,
+    PortfolioCalculationStateModel,
+    ResearchRunRecordModel,
+    ResearchSettingsRecordModel,
     TaxonomyAssignmentRecordModel,
     TaxonomyConfigurationRevisionModel,
     TaxonomyRecordModel,
@@ -352,7 +356,7 @@ def test_taxonomy_deletes_manual_watch_instrument(client):
     assert "fund-us-watch" not in universe
 
 
-def test_taxonomy_delete_node_rejects_parent_with_children(client):
+def test_taxonomy_delete_node_removes_its_children(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
         json={
@@ -382,11 +386,12 @@ def test_taxonomy_delete_node_rejects_parent_with_children(client):
     delete_response = client.delete(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{parent_node_id}"
     )
-    assert delete_response.status_code == 400
-    assert "child nodes" in delete_response.json()["detail"]
+    assert delete_response.status_code == 200
+    catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
+    assert not [node for node in catalog["taxonomy_nodes"] if node["taxonomy_id"] == taxonomy_id]
 
 
-def test_taxonomy_delete_node_rejects_assigned_node(client):
+def test_taxonomy_delete_node_unassigns_instruments(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
         json={
@@ -416,8 +421,100 @@ def test_taxonomy_delete_node_rejects_assigned_node(client):
     delete_response = client.delete(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{node_id}"
     )
-    assert delete_response.status_code == 400
-    assert "assignments" in delete_response.json()["detail"]
+    assert delete_response.status_code == 200
+    catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
+    assert not [item for item in catalog["taxonomy_assignments"] if item["taxonomy_id"] == taxonomy_id]
+    assert any(item["instrument_id"] == "equity-us-abbv" for item in catalog["instrument_universe"])
+
+
+def test_taxonomy_delete_subtree_preserves_sibling_budgets_and_saved_research(client):
+    portfolio_id = "investment-studio"
+    base = f"/api/portfolios/{portfolio_id}/taxonomies"
+    created = client.post(base, json={"name": "Deletion scope", "planning_enabled": True,
+        "budgeting_level": "weight_and_risk_budget"})
+    assert created.status_code == 200, created.text
+    taxonomy_id = created.json()["taxonomy_id"]
+    path = f"{base}/{taxonomy_id}"
+
+    def node(name, parent=None):
+        response = client.post(f"{path}/nodes", json={"node_name": name, "parent_taxonomy_node_id": parent})
+        assert response.status_code == 200, response.text
+        return response.json()["taxonomy_node_id"]
+
+    top = node("Top")
+    removed = node("Removed", top)
+    child = node("Child", removed)
+    survivor = node("Survivor", top)
+    assignment = client.post(f"{path}/assignments", json={"target_scope": "instrument",
+        "target_entity_id": "equity-us-abbv", "taxonomy_node_id": child})
+    assert assignment.status_code == 200, assignment.text
+
+    def target(scope, members, member_type="taxonomy_node"):
+        response = client.post(f"{path}/target-sets", json={
+            "name": f"Scope {scope}", "comparator_taxonomy_node_id": scope,
+            "target_set_type": "saa", "weight_enabled": False, "risk_budget_enabled": True,
+            "lines": [{"target_member_type": member_type, "target_member_id": member_id,
+                       "target_risk_share": share} for member_id, share in members],
+        })
+        assert response.status_code == 200, response.text
+        return response.json()["target_set_id"]
+
+    root_target = target(None, [(top, 1)])
+    top_target = target(top, [(removed, 0.4), (survivor, 0.6)])
+    removed_target = target(removed, [(child, 1)])
+    child_target = target(child, [("equity-us-abbv", 1)], "instrument")
+    with get_session_factory()() as session:
+        revisions = session.scalars(select(TaxonomyConfigurationRevisionModel).where(
+            TaxonomyConfigurationRevisionModel.taxonomy_id == taxonomy_id)).all()
+        old_configurations = {row.taxonomy_configuration_revision_id: deepcopy(row.configuration_json) for row in revisions}
+        old_request_id = session.get(PortfolioCalculationStateModel, portfolio_id).refresh_request_id
+        saved_snapshot = deepcopy(revisions[-1].configuration_json)
+        session.add(ResearchRunRecordModel(research_run_id="saved-before-node-delete", portfolio_id=portfolio_id,
+            planning_taxonomy_id=taxonomy_id, detail_json={"configuration_snapshot": saved_snapshot}))
+        settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+        if settings is None:
+            settings = ResearchSettingsRecordModel(portfolio_id=portfolio_id)
+            session.add(settings)
+        settings.planning_taxonomy_id = taxonomy_id
+        settings.comparator_taxonomy_node_id = child
+        settings.frozen_taxonomy_node_ids_json = [removed, survivor]
+        settings.top_sleeve_weight_bounds_json = [{"taxonomy_node_id": removed, "min_weight": 0.1},
+                                                {"taxonomy_node_id": survivor, "max_weight": 0.8}]
+        session.commit()
+
+    deleted = client.delete(f"{path}/nodes/{removed}")
+    assert deleted.status_code == 200, deleted.text
+    catalog = client.get(base).json()
+    assert {item["taxonomy_node_id"] for item in catalog["taxonomy_nodes"] if item["taxonomy_id"] == taxonomy_id} == {top, survivor}
+    target_ids = {item["target_set_id"] for item in catalog["target_sets"]}
+    assert {root_target, top_target}.issubset(target_ids)
+    assert not {removed_target, child_target}.intersection(target_ids)
+    lines = [item for item in catalog["target_set_lines"] if item["target_set_id"] == top_target]
+    assert len(lines) == 1 and lines[0]["target_member_id"] == survivor and lines[0]["target_risk_share"] == 0.6
+    assert any(item["target_set_id"] == top_target for item in catalog["target_set_integrity_issues"])
+    with get_session_factory()() as session:
+        revisions = session.scalars(select(TaxonomyConfigurationRevisionModel).where(
+            TaxonomyConfigurationRevisionModel.taxonomy_id == taxonomy_id)).all()
+        assert len(revisions) == len(old_configurations) + 1
+        for row in revisions:
+            if row.taxonomy_configuration_revision_id in old_configurations:
+                assert row.configuration_json == old_configurations[row.taxonomy_configuration_revision_id]
+        calculation = session.get(PortfolioCalculationStateModel, portfolio_id)
+        assert calculation.refresh_request_id != old_request_id
+        assert calculation.daily_snapshot_status == "stale"
+        assert calculation.dirty_from is None
+        assert session.get(ResearchRunRecordModel, "saved-before-node-delete").detail_json == {"configuration_snapshot": saved_snapshot}
+        settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+        assert settings.comparator_taxonomy_node_id is None
+        assert settings.frozen_taxonomy_node_ids_json == [survivor]
+        assert settings.top_sleeve_weight_bounds_json == [{"taxonomy_node_id": survivor, "max_weight": 0.8}]
+
+    deleted = client.delete(f"{path}/nodes/{survivor}")
+    assert deleted.status_code == 200, deleted.text
+    catalog = client.get(base).json()
+    assert next(item for item in catalog["taxonomy_nodes"] if item["taxonomy_node_id"] == top)["is_terminal"] is True
+    assert not any(item["target_set_id"] == top_target for item in catalog["target_sets"])
+    assert any(item["target_set_id"] == root_target for item in catalog["target_sets"])
 
 
 def test_taxonomy_rejects_adding_child_under_assigned_node(client):
@@ -1161,6 +1258,59 @@ def test_deleting_default_planning_taxonomy_clears_pointer(client):
     catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
     assert catalog_response.status_code == 200
     assert catalog_response.json()["default_planning_taxonomy_id"] is None
+
+
+def test_four_target_dimensions_persist_and_remain_independently_editable(client):
+    base = "/api/portfolios/investment-studio/taxonomies"
+    created = client.post(base, json={"name": "Four target dimensions"})
+    assert created.status_code == 200, created.text
+    taxonomy_id = created.json()["taxonomy_id"]
+    path = f"{base}/{taxonomy_id}"
+    node_ids = []
+    for name in ("Core", "Satellite"):
+        response = client.post(f"{path}/nodes", json={"node_name": name})
+        assert response.status_code == 200, response.text
+        node_ids.append(response.json()["taxonomy_node_id"])
+
+    target_ids = {}
+    # Enable all four dimensions, edit their values, then independently disable
+    # SAA weight and TAA risk while retaining the other two dimensions.
+    for configuration in (
+        {"saa": (0.7, 0.6), "taa": (0.5, 0.4)},
+        {"saa": (0.65, 0.55), "taa": (0.45, 0.35)},
+        {"saa": (None, 0.55), "taa": (0.45, None)},
+    ):
+        targets = []
+        for kind, (weight, risk) in configuration.items():
+            lines = [{"target_member_type": "taxonomy_node", "target_member_id": node_id,
+                      "target_weight": None if weight is None else weight if index == 0 else 1 - weight,
+                      "target_risk_share": None if risk is None else risk if index == 0 else 1 - risk}
+                     for index, node_id in enumerate(node_ids)]
+            if weight is not None:
+                lines.extend({"target_member_type": member_type, "target_member_id": member_id,
+                              "target_weight": 0, "target_risk_share": None}
+                             for member_type, member_id in (("cash_bucket", "__cash__"),
+                                                            ("derivative_bucket", "__derivatives__")))
+            targets.append({"target_set_id": target_ids.get(kind), "target_set_type": kind,
+                            "name": kind.upper(), "weight_enabled": weight is not None,
+                            "risk_budget_enabled": risk is not None, "lines": lines})
+        saved = client.put(f"{path}/target-configuration", json={"target_sets": targets})
+        assert saved.status_code == 200, saved.text
+        catalog = client.get(base).json()
+        for kind, (weight, risk) in configuration.items():
+            target = next(item for item in catalog["target_sets"]
+                          if item["taxonomy_id"] == taxonomy_id and item["target_set_type"] == kind)
+            if kind in target_ids:
+                assert target["target_set_id"] == target_ids[kind]
+            target_ids[kind] = target["target_set_id"]
+            assert target["weight_enabled"] is (weight is not None)
+            assert target["risk_budget_enabled"] is (risk is not None)
+            line = next(item for item in catalog["target_set_lines"]
+                        if item["target_set_id"] == target_ids[kind] and item["target_member_id"] == node_ids[0])
+            assert line["target_weight"] == weight
+            assert line["target_risk_share"] == risk
+        assert not [item for item in catalog["target_set_integrity_issues"]
+                    if item["target_set_id"] in target_ids.values()]
 
 
 def test_target_set_create_update_and_catalog_round_trip(client):

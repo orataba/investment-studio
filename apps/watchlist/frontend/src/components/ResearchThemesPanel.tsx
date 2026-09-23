@@ -11,7 +11,7 @@ import ResearchQuestionTracking from './ResearchQuestionTracking'
 
 const statusLabel = { active: '持续关注', paused: '已暂停', closed: '已结束' }
 type ThemeDraft = ResearchThemeInput & { theme_id?: string }
-export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; onThemesLoaded?: (themes: ResearchTheme[]) => void }) {
+export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded, readOnly = false }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; onThemesLoaded?: (themes: ResearchTheme[]) => void; readOnly?: boolean }) {
   const [data, setData] = useState<ResearchThemesResponse | null>(null)
   const [draft, setDraft] = useState<ThemeDraft | null>(null)
   const [closing, setClosing] = useState<{ themeId: string; reason: string } | null>(null)
@@ -20,7 +20,7 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [refresh, setRefresh] = useState(0)
   const [members, setMembers] = useState<Array<{ user_id: string; display_name: string; active: boolean }>>([])
-  const canWrite = Boolean(data && data.identity.team_role !== 'reader')
+  const canWrite = Boolean(data && data.identity.team_role !== 'reader' && !readOnly)
   useEffect(() => { void fetchJson<typeof members>('/api/research/members').then(setMembers).catch(() => setMembers([])) }, [])
   useEffect(() => { setData(null); setDraft(null); setNotice(null) }, [instrumentId])
   useEffect(() => {
@@ -108,7 +108,7 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   return <section className="research-themes" aria-label="长期主题">
     <div className="research-dossier-section-heading"><h4>长期主题{active.length > 0 && <span> · {active.length}</span>}</h4><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => { setDraft({ title: '', question: '', background: '', responsible_user_id: data?.identity.user_id }); setError(''); setNotice(null) }}>建立主题</button></div>
     {error && <p role="alert">{error}</p>}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
-    {draft && <form className="research-theme-editor" onSubmit={event => void save(event)}>
+    {draft && canWrite && <form className="research-theme-editor" onSubmit={event => void save(event)}>
       <label><span>主题名称</span><input required disabled={saving} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
       <label><span>持续关注的问题</span><textarea required rows={3} disabled={saving} value={draft.question} onChange={event => setDraft({ ...draft, question: event.target.value })} /></label>
       <label><span>背景（可选）</span><textarea rows={2} disabled={saving} value={draft.background || ''} onChange={event => setDraft({ ...draft, background: event.target.value })} /></label>

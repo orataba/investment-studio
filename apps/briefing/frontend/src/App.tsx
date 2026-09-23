@@ -24,9 +24,40 @@ function useCopy() {
   return (zh: string, en: string) => language === 'zh-Hans' ? zh : en
 }
 
+type BriefingView = ReportType | 'industry'
+
 function reportLocation() {
   const params = new URLSearchParams(window.location.search)
-  return { kind: params.get('type') === 'weekly' ? 'weekly' as const : 'daily' as const, selected: params.get('report') || '' }
+  const kind: BriefingView = params.get('type') === 'industry' ? 'industry' : params.get('type') === 'weekly' ? 'weekly' : 'daily'
+  return { kind, selected: kind === 'industry' ? '' : params.get('report') || '' }
+}
+
+function IndustryResearch() {
+  const copy = useCopy()
+  const { language } = useLanguage()
+  const watchlistUrl = resolveWorkspaceUrl(import.meta.env.VITE_WATCHLIST_URL, 'watchlist')
+  // This is the registered shared identity, also resolved by the destination page.
+  const reportUrl = withLanguage(`${watchlistUrl}/instruments/xlk?tab=investment-research&mode=report`, language)
+  return <section className="industry-research" aria-label={copy('行业研究', 'Industry research')}>
+    <article className="industry-entry">
+      <div className="industry-entry-summary">
+        <p className="eyebrow">XLK · {copy('信息技术', 'Information technology')}</p>
+        <h2>{copy('美股科技', 'U.S. technology')}</h2>
+        <p>{copy('以 XLK 实际成份为研究核心，产业链其他公司作为需求、竞争与供给背景。', 'Research centers on actual XLK constituents, with other companies providing demand, competitive and supply-chain context.')}</p>
+        <a className="primary-button" data-workspace-link href={reportUrl}>{copy('阅读研究报告', 'Read research report')} <span aria-hidden="true">→</span></a>
+        <p className="muted industry-access">{copy('使用团队账号阅读与继续研究。', 'Use your team account to read and continue the research.')}</p>
+      </div>
+      <div className="industry-entry-focus">
+        <h3>{copy('研究关注', 'Research focus')}</h3>
+        <ul>
+          <li>{copy('当前判断、本期变化与反证', 'Current assessment, changes and counterevidence')}</li>
+          <li>{copy('经营与现金流、估值与预期修订', 'Operations, cash flow, valuation and estimate revisions')}</li>
+          <li>{copy('相对表现、市场广度与集中度', 'Relative performance, breadth and concentration')}</li>
+          <li>{copy('重要事件、舆论分歧与下次观察', 'Key events, divergent views and what to watch next')}</li>
+        </ul>
+      </div>
+    </article>
+  </section>
 }
 
 function Coverage({ detail }: { detail: ReportDetail }) {
@@ -59,14 +90,18 @@ function Coverage({ detail }: { detail: ReportDetail }) {
 
 export function ReportBody({ detail, onSource, canReadSources = true }: { detail: ReportDetail; onSource: (source: string) => void; canReadSources?: boolean }) {
   const copy = useCopy()
-  const sectionTitles = { takeaway_section: copy('重点信息', 'Key developments'), topic_recommendations: copy('本周话题推荐', 'Weekly topics'), opportunity_leads: copy('新机会线索', 'Research leads') }
+  const sectionTitles = { takeaway_section: copy('重点信息', 'Key developments'), topic_recommendations: copy('本周话题推荐', 'Weekly topics'), opportunity_leads: copy('新机会线索', 'Research leads'), macro_data_calendar: detail.report_type === 'weekly' ? copy('本周重要宏观发布', 'Important releases this week') : copy('本期重要宏观发布', 'Important releases this period') }
   const groupTitle = (title: string) => ({ 宏观: copy('宏观', 'Macro'), 微观: copy('微观', 'Companies and industries') }[title] || title)
   const sourceMap = new Map(detail.sources.map(source => [source.source_id, source]))
-  const relatedSymbols = new Set(detail.report?.sections.flatMap(section => [
-    ...(section.items || []), ...(section.groups?.flatMap(group => group.items) || []),
-  ]).flatMap(item => item.related_market_symbols))
+  const items = detail.report?.sections.flatMap(section => [
+    ...(section.items || []), ...(section.groups?.flatMap(group => group.items) || []), ...(section.rows || []),
+  ]) || []
+  const relatedSymbols = new Set(items.flatMap(item => item.related_market_symbols))
+  const citedSources = new Set(items.flatMap(item => item.source_ids))
   const displayedMarketRows = detail.market_rows.map((row, index) => ({ row, index }))
-    .filter(({ row }) => row.asset_type !== 'equity' || relatedSymbols.has(row.symbol))
+    .filter(({ row, index }) => relatedSymbols.has(row.symbol) || citedSources.has(`market-row:${index}`) || row.source_ids.some(id => citedSources.has(id)))
+  const displayedMacroRows = detail.macro_rows.map((row, index) => ({ row, index }))
+    .filter(({ row, index }) => citedSources.has(`macro-row:${index}`) || row.source_ids.some(id => citedSources.has(id)))
   const numericLabels = new Map<string, string>()
   detail.market_rows.forEach((row, index) => {
     numericLabels.set(`market-row:${index}`, row.label)
@@ -77,6 +112,13 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
     row.source_ids.forEach(id => numericLabels.set(id, row.label))
   })
   const units: Record<string, string> = { percent: '%', index: copy('点', 'index points') }
+  const renderSources = (item: CitedItem) => <div className="source-links"><span>{copy('来源', 'Sources')}</span>{!item.source_ids.length && <span className="negative">{copy('未保留来源。', 'No sources were retained.')}</span>}{item.source_ids.map(id => {
+    const source = sourceMap.get(id)
+    const label = numericLabels.get(id) || source?.source_name || source?.title || source?.symbol || copy('来源', 'Source')
+    const url = safeUrl(source?.url)
+    return url ? <a key={id} href={url} target="_blank" rel="noreferrer" title={source?.title}>{label} ↗</a>
+      : <button key={id} disabled={!canReadSources && !numericLabels.has(id)} onClick={() => onSource(id)} title={source?.title}>{label}</button>
+  })}</div>
   const renderItem = (item: CitedItem, index: number) => <article className="briefing-item" key={item.title}>
     <span className="entry-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
     <div className="entry-content">
@@ -100,38 +142,37 @@ export function ReportBody({ detail, onSource, canReadSources = true }: { detail
         [copy('本周变化', 'This week'), item.this_week], [copy('关注方向', 'Research direction'), item.possible_opportunity],
       ].map(([label, paragraph], index) => paragraph && <p key={index}><span className="prose-label">{label}</span>{paragraph}</p>)}
     </div>
-    <div className="source-links"><span>{copy('来源', 'Sources')}</span>{!item.source_ids.length && <span className="negative">{copy('未保留来源。', 'No sources were retained.')}</span>}{item.source_ids.map(id => {
-      const source = sourceMap.get(id)
-      const label = numericLabels.get(id) || source?.source_name || source?.title || source?.symbol || copy('来源', 'Source')
-      const url = safeUrl(source?.url)
-      return url ? <a key={id} href={url} target="_blank" rel="noreferrer" title={source?.title}>{label} ↗</a>
-        : <button key={id} disabled={!canReadSources && !numericLabels.has(id)} onClick={() => onSource(id)} title={source?.title}>{label}</button>
-    })}</div>
+    {renderSources(item)}
     </div>
   </article>
   return <>
-    {detail.report?.sections.map(section => <section className="report-section" key={section.kind}>
+    {detail.report?.sections.filter(section => section.kind !== 'macro_data_calendar' || section.rows?.length).map(section => <section className="report-section" key={section.kind}>
       <h2>{sectionTitles[section.kind]}</h2>
+      {section.kind === 'macro_data_calendar' && <HorizontalTableScroll className="table-scroll"><table className="macro-release-table"><thead><tr>
+        <th>{copy('发布日期', 'Release date')}</th><th>{copy('地区 / 类别', 'Region / category')}</th><th>{copy('指标 / 事件', 'Indicator / event')}</th><th>{copy('实际 / 决定', 'Actual / decision')}</th><th>{copy('预期', 'Expected')}</th><th>{copy('前值', 'Previous')}</th><th>{copy('来源', 'Sources')}</th>
+      </tr></thead><tbody>{section.rows?.map(row => <tr key={`${row.date}-${row.region}-${row.title}`}>
+        <td>{row.date}</td><td translate="no">{row.region}<small>{row.category}</small></td><td translate="no">{row.title}</td><td translate="no">{row.actual}</td><td translate="no">{row.expected || ''}</td><td translate="no">{row.previous || ''}</td><td>{renderSources(row)}</td>
+      </tr>)}</tbody></table></HorizontalTableScroll>}
       {section.groups?.map(group => <div className="report-group" key={group.title}>
         <h3>{groupTitle(group.title)}</h3>
         {group.items.length ? group.items.map(renderItem) : <p className="muted">{copy('本期没有新增条目。', 'No new items in this section.')}</p>}
       </div>)}
       {section.items && (section.items.length ? section.items.map(renderItem) : <p className="muted">{copy('本期没有形成新的机会线索。', 'No new opportunity leads in this period.')}</p>)}
     </section>)}
-    <section className="report-section">
+    {displayedMarketRows.length > 0 && <section className="report-section">
       <div className="section-heading"><h2>{copy('市场表现', 'Market performance')}</h2><InfoHint label={copy('市场表现口径', 'Market performance basis')} detail={copy('各市场按实际收盘日计算价格涨跌，不含分红；点击资产可查看价格口径。', 'Price changes use each market’s actual closing dates and exclude dividends. Select an asset for its price basis.')} /></div>
-      {displayedMarketRows.length ? <HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('资产', 'Asset')}</th><th>{copy('起始日', 'Start')}</th><th>{copy('截至日', 'As of')}</th><th className="number">{copy('收盘', 'Close')}</th><th className="number">{detail.report_type === 'weekly' ? copy('本周涨跌', 'Week to date') : copy('日涨跌', 'Daily change')}</th></tr></thead><tbody>
+      <HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('资产', 'Asset')}</th><th>{copy('起始日', 'Start')}</th><th>{copy('截至日', 'As of')}</th><th className="number">{copy('收盘', 'Close')}</th><th className="number">{detail.report_type === 'weekly' ? copy('本周涨跌', 'Week to date') : copy('日涨跌', 'Daily change')}</th></tr></thead><tbody>
         {displayedMarketRows.map(({ row, index }) => <tr key={row.symbol}><td><button className="table-source" onClick={() => onSource(`market-row:${index}`)}>{row.label}</button><small>{row.symbol}</small></td><td>{row.start_date}</td><td>{row.end_date}</td><td className="number">{row.end_close.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td><td className={`number ${row.return_pct < 0 ? 'negative' : 'positive'}`}>{signed(row.return_pct)}</td></tr>)}
-      </tbody></table></HorizontalTableScroll> : <p className="muted">{copy('当前没有可计算的行情数据。', 'No market series can be calculated for this report.')}</p>}
-    </section>
-    {detail.macro_rows.length > 0 && <section className="report-section"><h2>{copy('宏观数据', 'Macro data')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{detail.macro_rows.map((row, index) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
+      </tbody></table></HorizontalTableScroll>
+    </section>}
+    {displayedMacroRows.length > 0 && <section className="report-section"><h2>{copy('相关宏观指标', 'Related macro indicators')}</h2><HorizontalTableScroll className="table-scroll"><table><thead><tr><th>{copy('指标', 'Indicator')}</th><th>{copy('数据日期', 'Observation date')}</th><th className="number">{copy('数值', 'Value')}</th></tr></thead><tbody>{displayedMacroRows.map(({ row, index }) => <tr key={`${row.symbol}-${row.date}`}><td><button className="table-source" onClick={() => onSource(`macro-row:${index}`)}>{row.label}</button></td><td>{row.date}</td><td className="number">{row.value} {row.unit && (units[row.unit] || row.unit)}</td></tr>)}</tbody></table></HorizontalTableScroll></section>}
   </>
 }
 
 export default function App() {
   const copy = useCopy()
   const { language } = useLanguage()
-  const [kind, setKind] = useState<ReportType>(() => reportLocation().kind)
+  const [kind, setKind] = useState<BriefingView>(() => reportLocation().kind)
   const [rows, setRows] = useState<ReportSummary[]>([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState(() => reportLocation().selected)
@@ -151,6 +192,7 @@ export default function App() {
   const [limit, setLimit] = useState(30)
   const [showGenerate, setShowGenerate] = useState(false)
   const [cutoff, setCutoff] = useState('')
+  const isIndustry = kind === 'industry'
   const sourceOpen = Boolean(sourceId || source)
   const sourceRef = useModalDialog(sourceOpen, closeSource)
   const statusText = (status: string) => ({ queued: copy('等待生成', 'Queued'), running: copy('正在生成', 'Generating'), completed: copy('已完成', 'Completed'), failed: copy('未完成', 'Failed') }[status] || status)
@@ -160,19 +202,22 @@ export default function App() {
   useEffect(() => {
     function restoreLocation() {
       const route = reportLocation()
-      if (route.kind !== kind || limit !== 30) setLoading(true)
-      setKind(route.kind); setSelected(route.selected); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30)
+      if (route.kind === 'industry') setLoading(false)
+      else if (route.kind !== kind || limit !== 30) setLoading(true)
+      setKind(route.kind); setSelected(route.selected); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30); setShowGenerate(false)
     }
     window.addEventListener('popstate', restoreLocation)
     return () => window.removeEventListener('popstate', restoreLocation)
   }, [kind, limit])
 
   useEffect(() => {
+    if (kind === 'industry') return
     const controller = new AbortController()
-    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean }>('/status', { signal: controller.signal }).then(result => { setAvailable(result.harness_available); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
+    request<{ harness_available: boolean; can_generate: boolean; can_read_sources: boolean }>('/status', { signal: controller.signal }).then(result => { if (controller.signal.aborted) return; setAvailable(result.harness_available); setCanGenerate(result.can_generate); setCanReadSources(result.can_read_sources) }).catch(reason => { if (!controller.signal.aborted) setError(String(reason.message)) })
     return () => controller.abort()
-  }, [])
+  }, [isIndustry])
   useEffect(() => {
+    if (kind === 'industry') return
     const controller = new AbortController()
     Promise.all(Array.from({ length: Math.ceil(limit / 30) }, (_, page) => request<{ rows: ReportSummary[]; total: number }>(`/reports?report_type=${kind}&limit=30&offset=${page * 30}`, { signal: controller.signal }))).then(pages => {
       if (controller.signal.aborted) return
@@ -182,12 +227,13 @@ export default function App() {
     return () => controller.abort()
   }, [kind, revision, limit])
   useEffect(() => {
+    if (kind === 'industry') return
     const candidate = rows.find(row => row.report_type === kind && row.status === 'completed')
       || rows.find(row => row.report_type === kind)
     if (!selected && candidate) choose(candidate.report_id, true)
   }, [rows, selected, kind])
   useEffect(() => {
-    if (!selected) { setDetail(null); setDetailLoading(false); return }
+    if (kind === 'industry' || !selected) { setDetail(null); setDetailLoading(false); return }
     const controller = new AbortController()
     setDetailLoading(true); setDetailError('')
     request<ReportDetail>(`/reports/${selected}`, { signal: controller.signal }).then(result => {
@@ -197,8 +243,9 @@ export default function App() {
       window.history.replaceState(null, '', url)
     }).catch(reason => { if (!controller.signal.aborted) { setDetailError(String(reason.message)); setDetailLoading(false) } })
     return () => controller.abort()
-  }, [selected, revision])
+  }, [selected, revision, kind])
   useEffect(() => {
+    if (kind === 'industry') return
     if (!sourceId || !selected || !canReadSources) return
     const controller = new AbortController()
     setSource(null); setSourceError('')
@@ -206,12 +253,13 @@ export default function App() {
       if (!controller.signal.aborted) setSource(result)
     }).catch(reason => { if (!controller.signal.aborted) setSourceError(String(reason.message)) })
     return () => controller.abort()
-  }, [selected, sourceId, canReadSources])
+  }, [selected, sourceId, canReadSources, kind])
   useEffect(() => {
+    if (isIndustry) return
     if (!rows.some(row => pending(row.status)) && !(detail && pending(detail.status))) return
     const timer = window.setInterval(() => setRevision(value => value + 1), 5000)
     return () => window.clearInterval(timer)
-  }, [rows, detail?.status])
+  }, [rows, detail?.status, kind])
   function choose(id: string, replace = false) {
     if (id === selected) return
     setSelected(id); setDetail(null); closeSource(); setError(''); setDetailError('')
@@ -219,9 +267,9 @@ export default function App() {
     if (replace) window.history.replaceState(null, '', url)
     else window.history.pushState(null, '', url)
   }
-  function changeKind(value: ReportType) {
+  function changeKind(value: BriefingView) {
     if (value === kind) return
-    setKind(value); setSelected(''); setRows([]); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30); setLoading(true)
+    setKind(value); setSelected(''); setRows([]); setDetail(null); closeSource(); setError(''); setDetailError(''); setLimit(30); setLoading(value !== 'industry'); setShowGenerate(false)
     const url = new URL(window.location.href); url.searchParams.delete('report'); url.searchParams.set('type', value); window.history.pushState(null, '', url)
   }
   function closeSource() {
@@ -242,19 +290,21 @@ export default function App() {
     setSourceId(id)
   }
   async function generate() {
+    if (kind === 'industry') return
     setGenerating(true); setError('')
     try {
       const result = await request<ReportSummary>('/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ report_type: kind, cutoff: cutoff || new Date().toISOString() }) })
-      choose(result.report_id); setRevision(value => value + 1); setShowGenerate(false)
+      if (reportLocation().kind === kind) choose(result.report_id)
+      setRevision(value => value + 1); setShowGenerate(false)
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) } finally { setGenerating(false) }
   }
   return <main className="briefing-shell">
     <header className="briefing-masthead"><nav className="workspace-breadcrumbs" aria-label={copy('工作区导航', 'Workspace navigation')}><a data-workspace-link href={withLanguage(resolveWorkspaceUrl(import.meta.env.VITE_HOME_URL, 'home'), language)}>{copy('首页', 'Home')}</a><span aria-hidden="true">/</span><span aria-current="page">{copy('市场简报', 'Market Briefing')}</span></nav><LanguageSelector /></header>
-    <div className="briefing-heading"><div className="section-heading"><h1>{copy('市场简报', 'Market Briefing')}</h1><InfoHint label={copy('关于市场简报', 'About Market Briefing')} detail={copy('关注值得理解的变化，保留每一份判断的依据。', 'Understand meaningful changes, with the evidence behind each edition.')} /></div>{canGenerate && <div className="generation-actions"><button className="primary-button" onClick={() => setShowGenerate(value => !value)} disabled={available === false}>{copy('生成本期', 'Generate edition')}</button>{available === false && <InfoHint tone="warning" label={copy('生成不可用', 'Generation unavailable')} detail={copy('报告生成环境尚未配置。已完成报告仍可阅读。', 'Report generation is not configured. Completed editions remain available.')} />}</div>}</div>
-    {showGenerate && <section className="generate-panel"><div className="section-heading"><h2>{kind === 'daily' ? copy('生成日报', 'Generate daily report') : copy('生成周报', 'Generate weekly report')}</h2><InfoHint label={copy('生成口径', 'Generation basis')} detail={copy('默认以当前时刻为截止时间。日报读取过去24小时；周报重新读取本周一至截止时刻的资料。重新生成会保留为新版本。', 'Uses the current time by default. Daily reports cover 24 hours; weekly reports reread evidence from Monday. Regeneration creates a new version.')} /></div><label>{copy('指定截止时间（含时区，可留空）', 'Cutoff timestamp (include timezone, optional)')}<input type="text" value={cutoff} onChange={event => setCutoff(event.target.value)} placeholder="2026-09-07T22:45:00+08:00" /></label><div><button className="primary-button" onClick={generate} disabled={generating}>{generating ? copy('正在提交…', 'Submitting…') : copy('开始生成', 'Start generation')}</button><button onClick={() => setShowGenerate(false)}>{copy('取消', 'Cancel')}</button></div></section>}
-    {error && <p role="alert" className="error">{error}</p>}
-    <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : copy('周报', 'Weekly')}</button>)}</div>
-    <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史期刊', 'Editions')}</h2>{loading && <p role="status" className="muted">{copy('加载中', 'Loading')}</p>}{rows.map(row => <button className={`edition ${selected === row.report_id ? 'selected' : ''}`} key={row.report_id} onClick={() => choose(row.report_id)}><strong>{row.report_date}</strong><span>{copy('版本', 'Version')} {row.version}<small className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</small></span></button>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多期刊', 'More editions')}</button>}</aside>
+    <div className="briefing-heading"><div className="section-heading"><h1>{copy('市场简报', 'Market Briefing')}</h1><InfoHint label={copy('关于市场简报', 'About Market Briefing')} detail={copy('关注值得理解的变化，保留每一份判断的依据。', 'Understand meaningful changes, with the evidence behind each edition.')} /></div>{!isIndustry && canGenerate && <div className="generation-actions"><button className="primary-button" onClick={() => setShowGenerate(value => !value)} disabled={available === false}>{copy('生成本期', 'Generate edition')}</button>{available === false && <InfoHint tone="warning" label={copy('生成不可用', 'Generation unavailable')} detail={copy('报告生成环境尚未配置。已完成报告仍可阅读。', 'Report generation is not configured. Completed editions remain available.')} />}</div>}</div>
+    {!isIndustry && showGenerate && <section className="generate-panel"><div className="section-heading"><h2>{kind === 'daily' ? copy('生成日报', 'Generate daily report') : copy('生成周报', 'Generate weekly report')}</h2><InfoHint label={copy('生成口径', 'Generation basis')} detail={copy('默认以当前时刻为截止时间。日报读取过去24小时；周报重新读取本周一至截止时刻的资料。重新生成会保留为新版本。', 'Uses the current time by default. Daily reports cover 24 hours; weekly reports reread evidence from Monday. Regeneration creates a new version.')} /></div><label>{copy('指定截止时间（含时区，可留空）', 'Cutoff timestamp (include timezone, optional)')}<input type="text" value={cutoff} onChange={event => setCutoff(event.target.value)} placeholder="2026-09-07T22:45:00+08:00" /></label><div><button className="primary-button" onClick={generate} disabled={generating}>{generating ? copy('正在提交…', 'Submitting…') : copy('开始生成', 'Start generation')}</button><button onClick={() => setShowGenerate(false)}>{copy('取消', 'Cancel')}</button></div></section>}
+    {!isIndustry && error && <p role="alert" className="error">{error}</p>}
+    <div className="briefing-tabs" role="tablist" aria-label={copy('报告类型', 'Report type')}>{(['daily', 'weekly', 'industry'] as const).map(type => <button role="tab" aria-selected={kind === type} key={type} onClick={() => changeKind(type)}>{type === 'daily' ? copy('日报', 'Daily') : type === 'weekly' ? copy('周报', 'Weekly') : copy('行业研究', 'Industry research')}</button>)}</div>
+    {isIndustry ? <IndustryResearch /> : <div className="briefing-layout"><aside className="edition-index" aria-busy={loading}><h2>{copy('历史期刊', 'Editions')}</h2>{loading && <p role="status" className="muted">{copy('加载中', 'Loading')}</p>}{rows.map(row => <button className={`edition ${selected === row.report_id ? 'selected' : ''}`} key={row.report_id} onClick={() => choose(row.report_id)}><strong>{row.report_date}</strong><span>{copy('版本', 'Version')} {row.version}<small className={row.status === 'failed' ? 'negative' : ''}>{statusText(row.status)}</small></span></button>)}{total > rows.length && <button className="load-more" onClick={() => setLimit(value => value + 30)}>{copy('更多期刊', 'More editions')}</button>}</aside>
       <div className="edition-content" aria-busy={detailLoading || loading}>
         {!detail && (loading || detailLoading || Boolean(selected && !detailError)) && <div className="edition-skeleton" role="status" aria-label={copy('加载中', 'Loading')}><div className="edition-skeleton-header" /><div className="edition-skeleton-facts" />{[0, 1, 2].map(index => <div className="edition-skeleton-section" key={index}><span /><span /><span /></div>)}</div>}
         {!detail && !selected && !loading && !error && <p className="muted">{copy('尚无报告。', 'No editions yet.')}</p>}
@@ -265,7 +315,7 @@ export default function App() {
         <details className="coverage"><summary>{copy('来源与覆盖范围', 'Sources and coverage')}</summary><p>{copy('报告保留生成时使用的原文与数值版本；日期未知与未覆盖内容不会被补写为事实。', 'Each edition retains its original evidence and numeric versions. Unknown dates and missing coverage remain explicit.')}</p>{canReadSources && <Coverage detail={detail} />}<ul className="all-sources">{detail.sources.filter(item => item.source_type === 'public_document').map(item => <li key={item.source_id}>{safeUrl(item.url) ? <a href={safeUrl(item.url)} target="_blank" rel="noreferrer" translate="no">{item.title} ↗</a> : <span translate="no">{item.title}</span>}<span>{item.source_name} · {item.published_at || copy('首发时间未知', 'Publication time unknown')}{canReadSources && <> · <button onClick={() => showSource(item.source_id)}>{copy('留存版本', 'Retained version')}</button></>}</span></li>)}</ul></details>
       </>}
       </div>
-    </div>
+    </div>}
     {sourceOpen && <div className="source-backdrop" onClick={event => {
       if (event.target === event.currentTarget) closeSource()
     }}>

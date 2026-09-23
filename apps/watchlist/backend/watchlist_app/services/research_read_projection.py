@@ -112,7 +112,7 @@ def current_view(dossier):
 
 def dossier_sections(dossier):
     notebook = dossier.get("notebook") or {}
-    lists = ("facts", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
+    lists = ("modules", "facts", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
     pm_views = []
     for note in dossier.get("pm_views", []):
         context = note.get("research_context") or {}
@@ -123,6 +123,8 @@ def dossier_sections(dossier):
             "source_read": "本观点依据用此PM version_id读取返回的sources；不要用后来档案内同名source_id替换原版本。来源索引不表示原文已读或事实已核实。"})
     return {"investment_view": notebook.get("investment_view"),
         "mandate": dossier.get("mandate"), "frameworks": dossier.get("frameworks", []),
+        "research_plan": dossier.get("research_plan"),
+        "available_modules": dossier.get("available_modules", []),
         "research_state": {key: value for key, value in notebook.items()
                            if key not in {*lists, "investment_view", "sources"}},
         **{key: notebook.get(key, []) for key in lists},
@@ -142,7 +144,7 @@ def dossier_overview(dossier):
         "notebook_version_id": notebook.get("version_id", notebook.get("run_id")),
         "checked_at": notebook.get("checked_at"), "current_investment_view": current_view(dossier),
         "sections": {key: shape(value) for key, value in dossier_sections(dossier).items()},
-        "next_read": "用read_research_dossier的section读取mandate、frameworks、review_agenda及相关底稿清单；按next_offset和deferred.path完整读完。当前判断不是独立事实。原文按source_id、原判断/PM观点按version_id读取当时版本；索引不表示已读。"}
+        "next_read": "用read_research_dossier的section读取research_plan、mandate、review_agenda、modules及相关底稿清单；按next_offset和deferred.path完整读完。当前判断不是独立事实。原文按source_id、原判断/PM观点按version_id读取当时版本；索引不表示已读。"}
     return checked_overview(result, pageable_fields=[(["current_investment_view"], {
         "tool": "read_research_dossier", "instrument_id": dossier["instrument_id"], "section": "investment_view"})])
 

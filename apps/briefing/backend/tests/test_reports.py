@@ -417,3 +417,72 @@ def test_weekly_schema_is_independent_of_daily_summary(snapshot):
     validate_draft(ReportDraft.model_validate(weekly), snapshot)
     with pytest.raises(ValueError, match="类型"):
         validate_draft(ReportDraft.model_validate(draft()), snapshot)
+
+
+def macro_calendar():
+    return {"kind": "macro_data_calendar", "title": "重要宏观发布", "rows": [{
+        "title": "央行继续观察就业", "date": "2026-09-07", "region": "美国", "category": "货币政策",
+        "actual": "维持政策利率5%", "source_ids": ["text:v1"],
+        "number_citations": [{"source_id": "text:v1", "value": "5", "quote": "央行维持政策利率5%"}]}]}
+
+
+@pytest.mark.parametrize("report_type", ["daily", "weekly"])
+def test_important_macro_releases_are_optional_and_preserve_missing_consensus(snapshot, report_type):
+    snapshot.update(report_window(report_type, datetime(2026, 9, 7, 14, 45, tzinfo=UTC), "Asia/Shanghai"))
+    payload = draft() if report_type == "daily" else {"report_type": "weekly", "sections": [
+        {"kind": "topic_recommendations", "title": "本周话题推荐", "groups": []},
+        {"kind": "opportunity_leads", "title": "新机会线索", "items": []}]}
+    # Existing editions without a release section remain valid. The same event
+    # can legitimately have a release row plus a prose discussion of its impact.
+    validate_draft(ReportDraft.model_validate(payload), snapshot)
+    payload["sections"].append(macro_calendar())
+    result = validate_draft(ReportDraft.model_validate(payload), snapshot)
+    release = result["sections"][-1]["rows"][0]
+    assert release["actual"] == "维持政策利率5%"
+    assert release["expected"] is None and release["previous"] is None
+    assert release["date"] == "2026-09-07"
+
+
+@pytest.mark.parametrize("release_date, accepted", [
+    ("2026-09-05", False), ("2026-09-06", True), ("2026-09-07", True), ("2026-09-08", False),
+])
+def test_macro_release_date_guard_uses_local_cross_midnight_window(snapshot, release_date, accepted):
+    assert snapshot["period_start"] == "2026-09-06T22:45:00+08:00"
+    assert snapshot["period_end"] == "2026-09-07T22:45:00+08:00"
+    payload = draft()
+    payload["sections"].append(macro_calendar())
+    payload["sections"][-1]["rows"][0]["date"] = release_date
+    # This is only a date guard; the independent editor checks original release
+    # times at both partial-day boundaries, without inventing an intraday time.
+    if accepted:
+        validate_draft(ReportDraft.model_validate(payload), snapshot)
+    else:
+        with pytest.raises(ValueError, match="历史发布或未来日程"):
+            validate_draft(ReportDraft.model_validate(payload), snapshot)
+
+
+@pytest.mark.parametrize("kind", ["stored_level", "late_received"])
+def test_macro_release_requires_current_original_not_market_levels_or_imported_history(snapshot, kind):
+    payload = draft()
+    payload["sections"].append(macro_calendar())
+    release = payload["sections"][-1]["rows"][0]
+    if kind == "stored_level":
+        release.update(source_ids=["market-row:0"], actual="维持利率", number_citations=[])
+    else:
+        snapshot["sources"][0]["window_scope"] = "late_received"
+    with pytest.raises(ValueError, match="本期原文依据"):
+        validate_draft(ReportDraft.model_validate(payload), snapshot)
+
+
+@pytest.mark.parametrize("field", ["actual", "expected", "previous"])
+def test_macro_release_bare_numeric_cells_require_exact_bound_citations(snapshot, monkeypatch, field):
+    monkeypatch.setattr("briefing_app.reports.read_bound_source", lambda *_: {
+        "title": "央行声明", "content_text": "央行维持政策利率5%。制造业PMI为51.2。"})
+    payload = draft()
+    payload["sections"].append(macro_calendar())
+    release = payload["sections"][-1]["rows"][0]
+    release[field] = "51.2"
+    with pytest.raises(ValueError, match="51.2 缺少数字引用"):
+        validate_draft(ReportDraft.model_validate(payload), snapshot)
+    release["number_citations"].append({"source_id": "text:v1", "value": "51.2", "quote": "制造业PMI为51.2"})
+    assert validate_draft(ReportDraft.model_validate(payload), snapshot)["sections"][-1]["rows"][0][field] == "51.2"

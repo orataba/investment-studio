@@ -481,8 +481,8 @@ def test_safe_failure_keeps_wrapped_timeout_cause_without_exception_text():
 
 
 def test_quiet_day_working_paper_is_reviewed_against_original_material(monkeypatch):
-    paper = {"fundamental_view": "管理人已证明策略有效。", "key_drivers": [],
-        "valuation_view": "没有可比估值依据。", "questions": [{"key": "strategy", "question": "策略是否有效？",
+    paper = {"modules": [{"key": "fund-strategy", "summary": "管理人已证明策略有效。", "analysis": "没有可比估值依据。"}], "key_drivers": [],
+        "questions": [{"key": "strategy", "question": "策略是否有效？",
         "assessment": "需要后续验证。", "evidence_for": [], "evidence_against": [], "next_check": "核对后续共同期间表现。",
         "status": "open", "source_ids": ["material:m1"]}], "important_changes": [], "next_research": [], "source_ids": ["material:m1"]}
     document = {"reviews": [{"instrument_id": "fund", "summary": "原判断", "coverage": [], "events": [], "research": paper}]}
@@ -498,7 +498,7 @@ def test_quiet_day_working_paper_is_reviewed_against_original_material(monkeypat
             return material
         receipts.append(payload)
         return payload
-    corrected = {**paper, "fundamental_view": "管理人说明了策略机制，尚不能据此确认策略有效。", "catalysts": [], "facts": [], "mandate_update": None}
+    corrected = {**paper, "modules": [{**paper["modules"][0], "summary": "管理人说明了策略机制，尚不能据此确认策略有效。"}], "catalysts": [], "facts": [], "mandate_update": None}
     result = {"reviews": [{"instrument_id": "fund", "summary": "继续验证策略。", "coverage": [], "decisions": [], "research": corrected}]}
     monkeypatch.setenv("INVESTMENT_STUDIO_RESEARCH_RUN_ID", "quiet-run")
     monkeypatch.setattr(review, "_api_request", api)
@@ -641,7 +641,7 @@ def test_citation_exception_does_not_add_unsubmitted_research_items():
 def test_reviewer_can_supply_missing_root_citations_without_erasing_existing_defaults():
     from watchlist_app.services.research_notebook import retain_notebook
     source = {"source_id": "original", "source_type": "public_source", "text": "Dated disclosed fact"}
-    paper = {"fundamental_view": "已有披露事实仍适用"}
+    paper = {"modules": [{"key": "pricing-compensation", "summary": "已有披露事实仍适用"}]}
     prior = retain_notebook(review.ResearchNotebook(**paper, source_ids=["original"]), None,
         {"original": source}, "old", "2026-09-01T00:00:00+00:00")
     for correction in (review.ResearchNotebook(**paper).model_dump(mode="json"), {**paper, "source_ids": ["original"]}):

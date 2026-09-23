@@ -6,7 +6,7 @@ export type WatchlistDetailInstrumentType =
   | 'index'
   | 'crypto'
 
-export type ListedDetailTab = 'overview' | 'research' | 'events' | 'performance'
+export type ListedDetailTab = 'overview' | 'investment-research' | 'views' | 'performance'
 
 export type FundDetailTabCode =
   | 'overview'
@@ -17,16 +17,16 @@ export type FundDetailTabCode =
   | 'people'
   | 'strategy'
   | 'documents'
-  | 'research'
+  | 'investment-research'
   | 'monitoring'
-  | 'events'
+  | 'views'
   | 'archive'
 
-export type FundPrimaryTab = 'overview' | 'research' | 'events' | 'performance' | 'archive'
+export type FundPrimaryTab = 'overview' | 'investment-research' | 'views' | 'performance' | 'archive'
 export type FundArchiveSection = 'exposure' | 'people' | 'strategy' | 'price' | 'documents' | 'monitoring'
 
 export function fundDetailTabs(): readonly FundPrimaryTab[] {
-  return ['overview', 'research', 'events', 'performance', 'archive']
+  return ['overview', 'investment-research', 'views', 'performance', 'archive']
 }
 
 export function resolveFundDetailLocation(tab: string | null, section: string | null, instrumentType: 'public_fund' | 'private_fund'):
@@ -38,19 +38,20 @@ export function resolveFundDetailLocation(tab: string | null, section: string | 
     ? selectedSection as FundArchiveSection : instrumentType === 'public_fund' ? 'exposure' : 'strategy'
   if (sections.includes(legacySection as FundArchiveSection)) return { tab: 'archive', section: resolvedSection }
   if (tab === 'risk') return { tab: 'performance', section: resolvedSection }
-  if (tab === 'analyst') return { tab: 'events', section: resolvedSection }
+  if (tab === 'research') return { tab: 'views', section: resolvedSection }
+  if (tab === 'analyst' || tab === 'events') return { tab: 'investment-research', section: resolvedSection }
   return { tab: fundDetailTabs().includes(tab as FundPrimaryTab) ? tab as FundPrimaryTab : 'overview', section: resolvedSection }
 }
 
-const LISTED_TABS: readonly ListedDetailTab[] = ['overview', 'research', 'events', 'performance']
+const LISTED_TABS: readonly ListedDetailTab[] = ['overview', 'investment-research', 'views', 'performance']
 
 const FUND_TAB_LABELS: Record<
   'public_fund' | 'private_fund',
   Partial<Record<FundDetailTabCode, { en: string; zh: string }>>
 > = {
   public_fund: {
-    research: { en: 'Investment Views', zh: '投资观点' },
-    events: { en: 'Research Tracking', zh: '研究追踪' },
+    'investment-research': { en: 'Investment Research', zh: '投资研究' },
+    views: { en: 'PM Views', zh: '经理观点' },
     performance: { en: 'Performance & Risk', zh: '业绩与风险' },
     archive: { en: 'Fund Archive', zh: '基金档案' },
     price: { en: 'Fees', zh: '费用' },
@@ -58,8 +59,8 @@ const FUND_TAB_LABELS: Record<
     people: { en: 'Management', zh: '管理团队' },
   },
   private_fund: {
-    research: { en: 'Investment Views', zh: '投资观点' },
-    events: { en: 'Research Tracking', zh: '研究追踪' },
+    'investment-research': { en: 'Investment Research', zh: '投资研究' },
+    views: { en: 'PM Views', zh: '经理观点' },
     performance: { en: 'Performance & Risk', zh: '业绩与风险' },
     archive: { en: 'Fund Archive', zh: '基金档案' },
     price: { en: 'Terms', zh: '条款' },

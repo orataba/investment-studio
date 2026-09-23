@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from watchlist_app.services.research_dossier import ResearchMandateInput
 from watchlist_app.services.market_evidence import hydrate_source, retained_sources, source_reference
 
@@ -36,6 +36,7 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources
 
 
 class ResearchQuestion(BaseModel):
+    module_key: str | None = None
     theme_id: str | None = None
     event_key: str | None = None
     pm_note_id: str | None = None
@@ -69,6 +70,7 @@ class ResearchQuestion(BaseModel):
 
 
 class ResearchFact(BaseModel):
+    module_key: str | None = None
     subject: str = Field(min_length=1, max_length=300)
     metric: str = Field(min_length=1, max_length=300)
     value: str = Field(min_length=1, max_length=1000)
@@ -155,10 +157,60 @@ class ResearchLesson(BaseModel):
         return self
 
 
+class ResearchModule(BaseModel):
+    """A maintained analytical section, not a daily article or a layout definition."""
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$",
+        description="Use a module id from this instrument's research_plan; retain the same key across updates.")
+    summary: str = Field(default="", max_length=3000)
+    analysis: str = Field(default="", max_length=16000,
+        description="Readable paragraphs explaining current conditions, mechanisms, opposing evidence and implications. No HTML or invented chart data.")
+    coverage: Literal["supported", "partial", "insufficient"] = Field(default="insufficient",
+        description="Evidence coverage of this analysis, not investment conviction or a quality score.")
+    gaps: list[str] = Field(default_factory=list)
+    next_check: str = Field(default="", max_length=2000)
+    source_ids: list[str] = Field(default_factory=list)
+    figure_source_ids: list[str] = Field(default_factory=list,
+        description="Optional retained computed/holdings/estimate source IDs for source-rendered figures; no arbitrary model-generated chart values.")
+    evidence_as_of: date | None = Field(default=None,
+        description="Material evidence date if one common date is meaningful; otherwise leave null and retain dates on the individual sources.")
+
+
+def notebook_current_view(notebook: dict | None) -> dict | None:
+    """Decode historical working papers at one read boundary, without rewriting originals.
+
+    New submissions use modules only. Old general analysis remains explicitly
+    identified as preceding the modular method; no new judgment date is created.
+    """
+    if notebook is None:
+        return None
+    result = deepcopy(notebook)
+    # Earlier papers were sparse and may predate the structured lists. Supply
+    # read defaults here so every reader consumes the same current contract.
+    for field in ("modules", "key_drivers", "questions", "important_changes", "next_research",
+                  "source_ids", "sources", "catalysts", "facts", "forecasts", "forecast_reviews", "lessons"):
+        result.setdefault(field, [])
+    previous_analysis = result.pop("fundamental_view", "")
+    previous_valuation = result.pop("valuation_view", "")
+    if previous_analysis or previous_valuation:
+        result["prior_analysis"] = {
+            "fundamental_view": previous_analysis, "valuation_view": previous_valuation,
+            "source_ids": deepcopy(result.get("source_ids", [])),
+            "sources": [source_reference(source) for source in result.get("sources", [])
+                        if source.get("source_id") in result.get("source_ids", [])],
+            "updated_at": result.get("updated_at") or result.get("checked_at"),
+            "version_id": result.get("version_id") or result.get("run_id"),
+            "note": "此前保存的综合分析，保留原始日期与依据；适用模块尚待逐项建立。",
+        }
+    return result
+
+
 class ResearchNotebook(BaseModel):
-    fundamental_view: str = Field(default="", max_length=6000)
+    model_config = ConfigDict(extra="forbid")
+
+    modules: list[ResearchModule] = Field(default_factory=list)
     key_drivers: list[str] = Field(default_factory=list)
-    valuation_view: str = Field(default="", max_length=4000)
     questions: list[ResearchQuestion] = Field(default_factory=list)
     important_changes: list[str] = Field(default_factory=list)
     next_research: list[str] = Field(default_factory=list)
@@ -180,6 +232,7 @@ def notebook_source_ids(notebook: ResearchNotebook | dict) -> set[str]:
     def collect(item):
         if isinstance(item, dict):
             refs.update(item.get("source_ids", []))
+            refs.update(item.get("figure_source_ids", []))
             for key, child in item.items():
                 if key != "sources":
                     collect(child)
@@ -277,7 +330,7 @@ def dossier_outline(dossier: dict) -> dict:
     if notebook:
         if notebook.get("investment_view"):
             notebook["investment_view"] = index_versions(notebook["investment_view"])
-        for field in ("forecasts", "forecast_reviews", "lessons"):
+        for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
             if field in notebook:
                 notebook[field] = [index_versions(item) for item in notebook[field]]
     return {**dossier,
@@ -290,7 +343,7 @@ def dossier_outline(dossier: dict) -> dict:
                       for m in dossier.get("materials", [])],
         "historical_cases": [{k: c.get(k) for k in ("source_id", "case_id", "case_title", "role", "current_use", "limitations")}
                              for c in dossier.get("historical_cases", [])],
-        "notebook": {**notebook, "sources": [{k: s.get(k) for k in
+        "notebook": {**{key: value for key, value in notebook.items() if key != "method_plan"}, "sources": [{k: s.get(k) for k in
             ("source_id", "title", "url", "source_type", "source_run_id", "published_at", "retrieved_at", "run_cutoff")}
             for s in notebook.get("sources", [])]} if notebook else None}
 
@@ -418,11 +471,16 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     return sources
 
 
-def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, dict]):
-    for field in ("forecasts", "forecast_reviews", "lessons"):
+def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, dict], *, research_plan: dict | None = None,
+                      previous: dict | None = None, cutoff: datetime | None = None):
+    for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
         keys = [row.key for row in getattr(notebook, field)]
         if len(set(keys)) != len(keys):
-            raise ValueError("同一预测、复盘或经验在本轮重复出现")
+            raise ValueError("同一研究模块、预测、复盘或经验在本轮重复出现")
+    if research_plan is not None:
+        applicable = {module["id"] for module in research_plan.get("modules", [])}
+        if any(module.key not in applicable for module in notebook.modules):
+            raise ValueError("研究模块不在本标的已绑定的方法范围内；请先更新专属方法，再按适用模块研究")
     keys = [q.key for q in notebook.questions]
     if len(set(keys)) != len(keys):
         raise ValueError("同一研究问题在本轮重复出现")
@@ -432,7 +490,10 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
     for catalyst in notebook.catalysts:
         if not any(sources.get(sid, {}).get("source_type") in {"public_source", "research_material"} for sid in catalyst.source_ids):
             raise ValueError("预定事件必须有已取得的日程或披露原文，历史案例和模型判断不能证明日程")
-    refs = notebook_source_ids(notebook)
+    old_modules = {row["key"]: row for row in (previous or {}).get("modules", [])}
+    effective_modules = [ResearchModule.model_validate(_merge_partial(module, old_modules.get(module.key)))
+                         for module in notebook.modules]
+    refs = notebook_source_ids(notebook) | notebook_source_ids({"modules": [module.model_dump(mode="json") for module in effective_modules]})
     unknown = sorted(refs - sources.keys())
     if unknown:
         valid = sorted(sid for sid in refs if sid in sources and _original_source(sources[sid], iid))
@@ -448,6 +509,14 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
             raise ValueError(f"研究底稿引用了其他标的的私有资料或快照：{sid}")
         if not _original_source(source, iid):
             raise ValueError(f"研究底稿依据不是已取得的原文、资料或真实快照：{sid}")
+    for module in effective_modules:
+        if cutoff is not None and module.evidence_as_of is not None and module.evidence_as_of > cutoff.date():
+            raise ValueError("研究模块资料截至日期不能晚于本轮研究截止；预测目标期应在预测中记录")
+        if module.coverage == "supported" and not module.source_ids:
+            raise ValueError("资料充分的模块结论须引用实际取得的证据")
+        for sid in module.figure_source_ids:
+            if sources[sid].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
+                raise ValueError("研究图表必须引用已留存的数值计算、持仓或预期证据")
 
 
 def _versioned(value: dict, previous: dict | None, model: type[BaseModel], version_id: str, run_id: str, recorded_at: str) -> dict:
@@ -480,16 +549,16 @@ def _merge_partial(item: BaseModel, previous: dict | None) -> dict:
     return type(item).model_validate(value).model_dump(mode="json")
 
 
-def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: dict[str, dict], run_id: str, cutoff: str):
-    previous = previous or {}
+def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: dict[str, dict], run_id: str, cutoff: str, *, research_plan: dict | None = None):
+    previous = notebook_current_view(previous) or {}
     recorded_at = datetime.now(UTC).isoformat()
     value = notebook.model_dump(mode="json")
     # A knowledge-only submission leaves the existing working view intact.
-    for field in ("fundamental_view", "valuation_view", "key_drivers", "next_research", "source_ids", "facts"):
+    for field in ("key_drivers", "next_research", "source_ids", "facts"):
         if field not in notebook.model_fields_set and field in previous:
             value[field] = deepcopy(previous[field])
     # A same-key update changes only supplied fields, including explicit empty values.
-    for field in ("questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+    for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
         old = {row["key"]: row for row in previous.get(field, [])}
         value[field] = [_merge_partial(item, old.get(item.key)) for item in getattr(notebook, field)]
     updated = {q["key"] for q in value["questions"]}
@@ -503,26 +572,45 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
             raise ValueError("复盘或经验必须关联此前已保存的预测原版本，不能将事后新建预测作为事前记录")
     if any(not (item.get("forecast_key") or item.get("related_research_update_id")) for item in value["forecast_reviews"]):
         raise ValueError("复盘需要关联此前已保存的预测版本或研究判断记录")
-    for field, model in (("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson)):
+    method_versions = {module["id"]: module["version"] for module in (research_plan or {}).get("modules", [])}
+    for field, model in (("modules", ResearchModule), ("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson)):
         old = {row["key"]: row for row in previous.get(field, [])}
         incoming = {row["key"] for row in value[field]}
         value[field] = [_versioned(row, old.get(row["key"]), model, f"{run_id}:{field}:{row['key']}", run_id, recorded_at)
                         for row in value[field]]
+        if field == "modules":
+            for row in value[field]:
+                row["checked_at"] = cutoff
+                if row["key"] in method_versions:
+                    row["method_version"] = method_versions[row["key"]]
         value[field] += [deepcopy(row) for key, row in old.items() if key not in incoming]
+        if field == "modules":
+            by_key = {row["key"]: row for row in value[field]}
+            order = [*old, *[row["key"] for row in value[field] if row["key"] not in old]]
+            value[field] = [by_key[key] for key in order]
     if notebook.investment_view is not None:
         view = _merge_partial(notebook.investment_view, previous.get("investment_view"))
         value["investment_view"] = _versioned(view, previous.get("investment_view"), InvestmentView,
             f"{run_id}:investment-view", run_id, recorded_at)
     elif "investment_view" not in notebook.model_fields_set:
         value["investment_view"] = deepcopy(previous.get("investment_view"))
+    # Legacy prose is an explicitly dated archive, never an editable module or
+    # an alternative current investment view. Its original source binding stays.
+    if previous.get("prior_analysis"):
+        value["prior_analysis"] = deepcopy(previous["prior_analysis"])
     refs = notebook_source_ids(value)
     # research_sources already includes admissible older originals. Do not restore rejected
     # method/summary/future-publication records through a second unfiltered history path.
     value["sources"] = [source_reference(sources[sid]) for sid in sorted(refs) if sid in sources]
     stable_fields = set(ResearchNotebook.model_fields) - {"important_changes", "mandate_update"}
-    changed = not previous or any(value[key] != previous.get(key, ResearchNotebook.model_fields[key].get_default(call_default_factory=True))
+    def semantic(item):
+        if isinstance(item, dict):
+            return {key: semantic(val) for key, val in item.items() if key not in {"checked_at", "method_version"}}
+        return [semantic(val) for val in item] if isinstance(item, list) else item
+    changed = not previous or any(semantic(value[key]) != semantic(previous.get(key, ResearchNotebook.model_fields[key].get_default(call_default_factory=True)))
                                   for key in stable_fields)
-    return {**value, "run_id": run_id, "checked_at": cutoff,
+    return {**value, "schema_version": 2, "method_plan": deepcopy(research_plan or previous.get("method_plan")),
+            "run_id": run_id, "checked_at": cutoff,
             "version_id": run_id if changed else previous.get("version_id", previous.get("run_id", run_id)),
             "created_at": previous.get("created_at") or recorded_at,
             "updated_at": recorded_at if changed else previous.get("updated_at", recorded_at)}

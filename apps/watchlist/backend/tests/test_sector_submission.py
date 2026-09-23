@@ -36,7 +36,7 @@ def submission(client):
             "next_watch": "跟进兑现情况", "confidence": "reported", "information_type": "fact",
             "recording_type": "backfill", "published_at": "2026-08-01", "occurred_at": None,
             "source_ids": ["original"]}],
-        "research": {"fundamental_view": "资金投入与回报之间仍有不确定性。", "valuation_view": "尚缺估值依据。",
+        "research": {"modules": [{"key": "pricing-compensation", "summary": "资金投入与回报之间仍有不确定性。", "analysis": "尚缺估值依据。"}],
                      "source_ids": ["original"]}}]}
     return rid, draft
 

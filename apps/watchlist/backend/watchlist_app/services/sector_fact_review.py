@@ -195,7 +195,10 @@ only this instrument's research assignment, never shared methods or the PM's inv
 Reject an unsupported assignment-update proposal rather than inventing instrument background.
 Historical cases can inform mechanisms, not prove current exposures or supply trading probabilities.
 Preserve historical information/public-disclosure/trading clocks and the atlas's selection limits.
-Correct research.fundamental_view, key_drivers, valuation_view and questions to match the evidence;
+Correct research.modules, key_drivers and questions to match the evidence;
+each module's coverage describes its actual cited evidence, not confidence in an investment.
+Check scope, evidence_as_of, uncertainty and the module's current analysis, not only new events.
+figure_source_ids must bind retained numerical sources; the application renders their actual data.
 retain stable question keys and qualify unsupported claims as open questions or specific gaps.
 Do not turn the investment manager's view into a fact or rewrite shared methods. Source IDs in research
 and questions must be supplied original evidence. No new message does not refute an open question.
@@ -257,7 +260,7 @@ String fields and string lists in patch replace the corresponding proposed field
 contains only necessary field changes in patch and explicit omitted proposed fields in omit_fields;
 all other fields are copied from the bound draft. Reject cancels that object's proposed change, not the
 existing notebook object. An original proposed null remains null; never introduce a new null withdrawal.
-For facts, questions, catalysts, forecasts, forecast_reviews and lessons, each array included in research.patch
+For modules, facts, questions, catalysts, forecasts, forecast_reviews and lessons, each array included in research.patch
 must contain exactly one accept/reject/correct receipt for EVERY original record. Facts use zero-based index
 from this frozen draft, never output position; the other arrays use their original key. Receipt order does
 not change original record order. Accept copies the checked record without retyping it. Correct copies it
@@ -629,6 +632,13 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
     references_by_instrument = {}
     for review in reviewed:
         references = notebook_source_ids(review.get("research") or {})
+        # A sparse module revision may retain its earlier cited evidence. Supply
+        # the exact originals to the independent reviewer before accepting it.
+        dossier = next((row for row in context.get("research_dossiers", []) if row["instrument_id"] == review["instrument_id"]), {})
+        previous_modules = {row["key"]: row for row in (dossier.get("notebook") or {}).get("modules", [])}
+        for module in (review.get("research") or {}).get("modules", []):
+            previous = previous_modules.get(module["key"], {})
+            references.update(notebook_source_ids({**previous, **module, "versions": []}))
         references.update((review.get("reflection") or {}).get("source_ids", []))
         for event in [*review["events"], *review.get("themes", [])]:
             references.update(event.get("source_ids", []))
@@ -735,7 +745,7 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
     elif value.get("investment_view") is None and proposed.get("investment_view") is not None:
         # Rejection of a proposed revision keeps the old view; it is not a withdrawal.
         value.pop("investment_view", None)
-    for field in ("questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+    for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
         if field not in value:
             continue
         items = {item["key"]: item for item in proposed[field]}
@@ -744,7 +754,7 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
         # Identity and original-judgment references are inputs to review, not
         # facts that a reviewer can silently retarget to a different history.
         for row in value[field]:
-            for key in ("theme_id", "event_key", "pm_note_id", "pm_note_revision", "forecast_key", "forecast_version_id", "related_research_update_id"):
+            for key in ("theme_id", "event_key", "pm_note_id", "pm_note_revision", "forecast_key", "forecast_version_id", "related_research_update_id", "module_key"):
                 if key in items[row["key"]]:
                     row[key] = items[row["key"]][key]
     return ResearchNotebook.model_validate(value)
@@ -782,7 +792,9 @@ def _apply_checks(draft: dict, result: dict, sources: list[dict], dossiers=()) -
             raise ValueError("Fact review cannot invent a research working paper")
         if check.research is not None:
             check.research = _reviewed_delta(original["research"], check.research)
-            validate_notebook(check.research, check.instrument_id, {s["source_id"]: s for s in sources})
+            dossier = next((row for row in dossiers if row["instrument_id"] == check.instrument_id), {})
+            validate_notebook(check.research, check.instrument_id, {s["source_id"]: s for s in sources},
+                              previous=dossier.get("notebook"))
         original_events = {event["event_key"]: event for event in original["events"]}
         if (len(check.decisions) != len(original_events)
                 or {d.event_key for d in check.decisions} != set(original_events)):

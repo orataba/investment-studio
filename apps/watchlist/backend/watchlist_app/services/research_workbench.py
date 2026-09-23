@@ -14,6 +14,8 @@ from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, 
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.api.routes.research import _research_response
 from watchlist_app.services.read_models import serialize_payload
+from watchlist_app.services.research_dossier import read_research_plan
+from watchlist_app.services.research_methods import analyst_guidance
 
 
 def bridge_url(service: str):
@@ -100,16 +102,6 @@ def catalogue(session: Session):
     return output
 
 
-ANALYST_FOCUS = {
-    "equity": "公司分析师：经营与盈利驱动、财务质量、估值所隐含的预期，以及公告和事件如何改变投资判断。区分预测财期、财报期和发布时间；没有可比历史快照不能声称预期上修或下修。",
-    "etf": "ETF分析师：先辨别市场、资产类别和跟踪指数，再分析相关行业或资产驱动、已披露成份集中度和事件冲击。不要把行业股票ETF逻辑套到债券或其他ETF。逐标的核实成份和预期覆盖；A股ETF缺失的数据不能用美股或相似ETF替代。预期变化须同公司、同财期、同频率和币种比较历史采集快照。",
-    "index": "指数分析师：关注编制规则、资产与行业结构、估值及市场环境。区分价格指数和全收益指数；指数本身没有基金经理、申赎条款或基金费用。",
-    "crypto": "加密资产分析师：先核实具体资产、美元现货报价来源与日线截止口径；比特币现货不是ETF或公司股票。围绕供给机制、采用与网络使用、资金与流动性、杠杆清算、市场结构、托管与监管形成研究。链上活动、交易所成交、资金流与衍生品指标各需原始来源，不能仅从价格推断持仓、资金净流入或链上事实。全年交易按UTC已完成日线观察，不能套用252交易日年化、交易所节假日或基金净值。没有新证据时保持旧判断，不能把24小时交易变成连续生成观点的要求。",
-    "public_fund": "公募基金分析师：以可信净值、实际频率、已登记基准和同类策略的共同观察样本研究收益、回撤和稳定性，结合基金经理、风格与费用。标注持仓报告期与披露滞后，不能当成实时持仓；区分基金与份额类别、单位/累计/分红再投净值和股票价格收益。没有新净值或材料时可完成无变化检查，不改写旧判断日期；获取失败须说明覆盖缺口。",
-    "private_fund": "私募基金分析师：以可信净值、实际频率、已登记基准和同类策略的共同观察样本研究收益、回撤和稳定性，结合管理人材料、费用、锁定期和赎回条款。未披露的持仓、杠杆和对冲只能列为待核实项；不要由平滑净值推断低风险，也不要把周度或月度净值当日频。公开市场事件与本产品的关联需要敞口证据。没有新净值或材料时可完成无变化检查，不改写旧判断日期；正常披露滞后不是研究失败，获取失败须说明覆盖缺口。",
-}
-
-
 def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None):
     from watchlist_app.services.shared_instrument_registry import get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
@@ -120,7 +112,8 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
     fund_peer_scope = peer_context(session) if any(asset["instrument_type"] in {"public_fund", "private_fund"} for asset in assets) else None
     for asset in assets:
         iid = asset["instrument_id"]
-        asset["analyst_focus"] = ANALYST_FOCUS.get(asset["instrument_type"])
+        asset["research_plan"] = read_research_plan(session, iid)
+        asset["analyst_focus"] = analyst_guidance(asset["research_plan"])
         asset["reference_data"] = get_shared_reference_data(iid, as_of=as_of)
         if asset["instrument_type"] in {"public_fund", "private_fund"}:
             asset["performance_evidence"] = performance_evidence(session, iid, peer_scope=fund_peer_scope)
@@ -192,7 +185,7 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
         "referenced_research_update": linked_update,
         "referenced_risk_case": linked_risk,
         "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
-                           "guidance": ANALYST_FOCUS.get(instrument.instrument_type)}
+                           "guidance": analyst_guidance(read_research_plan(session, iid))}
                           for iid in topic.instrument_ids if (instrument := session.get(InstrumentDetail, iid))],
         "watchlist_id": watchlist_id,
         "watchlists": [{"watchlist_id": w.watchlist_id, "name": w.name} for w in session.scalars(select(Watchlist).order_by(Watchlist.sort_order))],

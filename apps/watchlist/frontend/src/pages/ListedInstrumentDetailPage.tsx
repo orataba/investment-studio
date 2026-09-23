@@ -8,11 +8,11 @@ import LoadingOverlay from '../components/LoadingOverlay'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
+import EstimateHistoryPanel from '../components/EstimateHistoryPanel'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import type { ResearchReference } from '../lib/researchDossierApi'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
-import EstimateHistoryPanel from '../components/EstimateHistoryPanel'
 import EtfProfilePanel from '../components/EtfProfilePanel'
 import './listed-workspace.css'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -520,9 +520,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
   const [searchParams, setSearchParams] = useSearchParams()
+  const readingMode = searchParams.get('mode') === 'report'
+  const [estimateHistoryOpen, setEstimateHistoryOpen] = useState(false)
   const requestedTab = searchParams.get('tab')
   const tab: ListedDetailTab = requestedTab === 'risk' ? 'performance'
-    : requestedTab === 'analyst' ? 'events'
+    : requestedTab === 'analyst' || requestedTab === 'events' ? 'investment-research'
+    : requestedTab === 'research' ? 'views'
     : tabs.includes(requestedTab as ListedDetailTab) ? requestedTab as ListedDetailTab : 'overview'
   function setTab(nextTab: ListedDetailTab) {
     const next = new URLSearchParams(searchParams)
@@ -1141,7 +1144,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}>
-              {{ overview: zh ? '总览' : 'Overview', research: zh ? '投资观点' : 'Investment Views', events: zh ? '研究追踪' : 'Research Tracking', performance: zh ? '业绩与风险' : 'Performance & Risk' }[item]}
+              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '经理观点' : 'PM Views', performance: zh ? '业绩与风险' : 'Performance & Risk' }[item]}
             </button>
           ))}
         </div>
@@ -1149,7 +1152,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'overview' ? (
         <div className="listed-tab-stack">
-          {listedInstrumentType === 'etf' && <EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} />}
+          {listedInstrumentType === 'etf' && <><EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} /><details className="panel research-estimate-history" onToggle={event => setEstimateHistoryOpen(event.currentTarget.open)}><summary>{zh ? '历史盈利预期快照' : 'Historical earnings estimates'}</summary>{estimateHistoryOpen && <EstimateHistoryPanel instrumentId={instrumentId} language={language} />}</details></>}
           <section className="listed-metric-grid listed-overview-quote">
             <MetricCard label="YTD" value={percentValue(usesCanonicalPriceSeries ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
             <MetricCard label="1 Year" value={percentValue(usesCanonicalPriceSeries ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
@@ -1161,18 +1164,18 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               <div><h3>{zh ? '最新投资观点' : 'Latest Investment View'}</h3>
                 {researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '还没有投资观点。新的判断会按时间保留。' : 'No investment view yet. New judgments are kept in a timeline.'}</p>}
               </div>
-              <button type="button" onClick={() => setTab('research')}>{zh ? '查看观点' : 'View opinions'} →</button>
+              <button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button>
             </div>
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{riskAsOfNote}</span></p></div>
               <button type="button" onClick={() => setTab('performance')}>{zh ? '业绩与风险' : 'Performance & Risk'} →</button>
             </div>
           </section>
-          <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('events')} />
+          <SectorResearchPanel instrumentId={instrumentId} variant="summary" onOpenEvents={() => setTab('investment-research')} />
         </div>
       ) : null}
 
-      {tab === 'research' ? (
+      {tab === 'views' ? (
         <div className="listed-tab-stack listed-research-tab">
           {researchError ? (
             <div className="listed-source-alert" role="alert">
@@ -1293,9 +1296,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       ) : null}
 
-      {tab === 'events' ? <div className="listed-tab-stack">
-        <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} />
-        {listedInstrumentType === 'etf' ? <EstimateHistoryPanel instrumentId={instrumentId} language={language} /> : null}
+      {tab === 'investment-research' ? <div className="listed-tab-stack">
+        <div className="research-reading-toolbar"><button type="button" onClick={() => { const next = new URLSearchParams(searchParams); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); setSearchParams(next, { replace: true }) }}>{readingMode ? (zh ? '返回研究工作面' : 'Research workspace') : (zh ? '报告阅读模式' : 'Read as report')}</button></div>
+        <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} readingMode={readingMode} />
       </div> : null}
     </div>
   )

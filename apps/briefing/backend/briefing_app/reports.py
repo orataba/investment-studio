@@ -4,7 +4,7 @@ import re
 
 from sqlalchemy import func, select, text
 
-from briefing_app.contracts import ReportDraft
+from briefing_app.contracts import MacroRelease, ReportDraft
 from briefing_app.db import Report
 from briefing_app.evidence import report_window, read_bound_source
 
@@ -34,7 +34,9 @@ def begin_report(session, report_type: str, cutoff: datetime, timezone: str, *, 
 
 def report_items(draft: ReportDraft):
     for section in draft.sections:
-        if section.kind == "opportunity_leads":
+        if section.kind == "macro_data_calendar":
+            yield from section.rows
+        elif section.kind == "opportunity_leads":
             yield from section.items
         else:
             for group in section.groups:
@@ -54,8 +56,8 @@ def validate_draft(draft: ReportDraft, snapshot: dict) -> dict:
         raise ValueError("报告类型与当前资料范围不一致")
     kinds = [section.kind for section in draft.sections]
     expected = ["takeaway_section"] if draft.report_type == "daily" else ["topic_recommendations", "opportunity_leads"]
-    if kinds != expected:
-        raise ValueError("日报使用重点信息；周报依次使用本周话题推荐与新机会线索")
+    if kinds not in (expected, [*expected, "macro_data_calendar"]):
+        raise ValueError("日报使用重点信息；周报依次使用本周话题推荐与新机会线索；可在末尾附本期重要宏观发布")
     if draft.report_type == "daily" and [g.title for g in draft.sections[0].groups] != ["宏观", "微观"]:
         raise ValueError("日报重点信息依次包含宏观与微观，信息不足的分组可为空")
     sources = {source["source_id"]: source for source in snapshot["sources"]}
@@ -64,11 +66,14 @@ def validate_draft(draft: ReportDraft, snapshot: dict) -> dict:
     originals = {}
     errors = []
     for item in report_items(draft):
-        if item.title in titles:
+        title_key = (isinstance(item, MacroRelease), item.title)
+        if title_key in titles:
             raise ValueError("同一标题不能重复进入报告")
-        titles.add(item.title)
+        titles.add(title_key)
         try:
             _validate_item(item, snapshot, sources, symbols, originals)
+            if isinstance(item, MacroRelease):
+                _validate_macro_release(item, snapshot, sources)
         except ValueError as exc:
             errors.append(str(exc))
     if errors:
@@ -105,11 +110,27 @@ def _validate_item(item, snapshot, sources, symbols, originals):
     prose = " ".join(str(value) for key, value in item.model_dump().items()
                      if key not in {"source_ids", "number_citations", "related_market_symbols"})
     claimed = {_number(token) for token in re.findall(r"(?<![A-Za-z])[-+]?\d[\d,]*(?:\.\d+)?(?=%|％|bp|BP|亿元|万元|亿美元|万亿美元|美元|港元|欧元|日元|人民币|万桶|桶|万人|人|万亿|十亿|亿|万|million|billion|trillion|倍|个百分点)", prose)}
+    if isinstance(item, MacroRelease):
+        # Release tables can contain bare levels such as PMI 51.2. The prose
+        # unit matcher above must not let those values bypass source checking.
+        for value in (item.actual, item.expected, item.previous):
+            claimed.update(_number(token) for token in re.findall(r"[-+]?\d[\d,]*(?:\.\d+)?", value or ""))
     cited = {_number(citation.value) for citation in item.number_citations}
     missing = claimed - cited
     if missing:
         values = "、".join(str(value) for value in sorted(missing))
         raise ValueError(f"{item.title}：正文数字 {values} 缺少数字引用。value 使用不含单位的原始数字；不能自行换算数量级后引用另一数值")
+
+
+def _validate_macro_release(item: MacroRelease, snapshot: dict, sources: dict):
+    start = datetime.fromisoformat(snapshot["period_start"])
+    end = datetime.fromisoformat(snapshot["period_end"])
+    if not start.date() <= item.date <= end.date():
+        raise ValueError(f"{item.title}：宏观发布必须已在本期发生，不能列入历史发布或未来日程")
+    if not any(sources[source_id]["source_type"] == "public_document"
+               and sources[source_id].get("window_scope", "current") == "current"
+               for source_id in item.source_ids):
+        raise ValueError(f"{item.title}：宏观发布须有本期原文依据；存量行情或本机补录的历史材料不能充当新发布")
 
 
 def report_summary(report: Report) -> dict:

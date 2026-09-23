@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date as Date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -80,7 +80,22 @@ class OpportunitySection(Contract):
     items: list[Opportunity]
 
 
-Section = Annotated[TakeawaySection | TopicSection | OpportunitySection, Field(discriminator="kind")]
+class MacroRelease(CitedItem):
+    date: Date = Field(description="Confirmed release or policy communication date in the report timezone, within this report's window. Never use the observation period, ingestion date or a future scheduled date. Verify the exact release time against the cutoff when available.")
+    region: str = Field(min_length=1)
+    category: Literal["宏观数据", "货币政策", "财政政策", "央行沟通"]
+    actual: str = Field(min_length=1, description="Only the confirmed actual value, policy decision or concise communication. No analysis. Every number, including a bare PMI/index level, requires a number_citation.")
+    expected: str | None = Field(default=None, description="Explicitly sourced pre-release expectation, including units; omit when unavailable. Never use the actual or a subsequent forecast as consensus.")
+    previous: str | None = Field(default=None, description="Explicitly sourced previous value, including units; omit when unavailable.")
+
+
+class MacroCalendarSection(Contract):
+    kind: Literal["macro_data_calendar"]
+    title: Literal["重要宏观发布"]
+    rows: list[MacroRelease]
+
+
+Section = Annotated[TakeawaySection | TopicSection | OpportunitySection | MacroCalendarSection, Field(discriminator="kind")]
 
 
 class ReportDraft(Contract):

@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
+import { dateLabel } from './ResearchEvidence'
 import type { AskResearchAssistant, InvestmentView, ResearchForecast, ResearchForecastReview, ResearchLesson, ResearchReference, SavedResearchNotebook } from '../lib/researchDossierApi'
 
 const forecastStatus = { active: '持续观察', confirmed: '结果已出现', refuted: '预测未成立', expired: '观察期已结束', withdrawn: '已撤回' }
-const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '时间未记录'
 type Sources = (ids: string[]) => ReactNode
 
 function ViewBody({ view }: { view: InvestmentView }) {
@@ -73,7 +73,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
     {view && mode !== 'records' && <section className="research-notebook-current" aria-label={historical ? '当时投资判断' : '当前投资判断'}>
-      {mode !== 'view' && <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>}
+      <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>
       <p className="sector-research-note">观点更新于 <time dateTime={view.updated_at || undefined}>{dateLabel(view.updated_at)}</time></p>
       <ViewBody view={view} />
       {(view.assumptions.length > 0 || view.source_ids.length > 0) && <details><summary>关键假设与依据</summary><ul className="research-dossier-list">{view.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources(view.source_ids)}</details>}

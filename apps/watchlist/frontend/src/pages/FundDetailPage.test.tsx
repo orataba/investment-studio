@@ -22,7 +22,7 @@ vi.mock('../components/InstrumentRiskDrawer', () => ({ default: ({ instrumentId,
 }) => <div role="dialog" aria-label="风险提示" data-instrument={instrumentId} data-name={instrumentName} data-watchlist={watchlistId}>
   <button onClick={onClose}>关闭风险提示</button><button onClick={() => onAskAssistant('这只基金的流动性风险有何变化？')}>追问当前风险</button>
 </div> }))
-vi.mock('../components/SectorResearchPanel', () => ({ default: ({ instrumentId, variant = 'timeline' }: { instrumentId: string; variant?: string }) => <div data-testid="fund-research-tracking" data-instrument={instrumentId} data-variant={variant} /> }))
+vi.mock('../components/SectorResearchPanel', () => ({ default: ({ instrumentId, variant = 'timeline', readingMode = false }: { instrumentId: string; variant?: string; readingMode?: boolean }) => <div data-testid="fund-research-tracking" data-reading={String(readingMode)} data-instrument={instrumentId} data-variant={variant} /> }))
 // Keep InstrumentAssistantDrawer's actual close/URL behavior; isolate only its conversation view.
 vi.mock('./ResearchPage', () => ({ default: ({ instrumentId, watchlistId, initialQuestion, onClose }: { instrumentId: string; watchlistId?: string; initialQuestion?: string; onClose: () => void }) =>
   <div role="dialog" aria-label="研究助手" data-instrument={instrumentId} data-watchlist={watchlistId} data-question={initialQuestion}><button onClick={onClose}>关闭研究助手</button></div> }))
@@ -140,12 +140,12 @@ it('keeps the overview free of duplicate charts and separates personal opinions 
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资观点', '研究追踪', '业绩与风险', '基金档案'])
+  expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '经理观点', '业绩与风险', '基金档案'])
   expect(container.querySelector('.instrument-chart-stage')).toBeNull()
-  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
+  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '经理观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
   expect(screen.queryByText('资料与明细')).toBeNull()
-  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '研究追踪' }))
+  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资研究' }))
   expect(await screen.findByTestId('fund-research-tracking')).toHaveProperty('dataset.instrument', 'fund-1')
   expect(screen.getByTestId('fund-research-tracking').getAttribute('data-variant')).toBe('timeline')
 })
@@ -155,10 +155,10 @@ it.each(['public_fund', 'private_fund'] as const)('opens the %s research assista
   const tracking = await screen.findByTestId('fund-research-tracking')
   expect(tracking.getAttribute('data-variant')).toBe('timeline')
   const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
-  expect(within(navigation).getByRole('button', { name: '研究追踪' }).classList.contains('instrument-detail-tab-active')).toBe(true)
-  fireEvent.click(within(navigation).getByRole('button', { name: '投资观点' }))
+  expect(within(navigation).getByRole('button', { name: '投资研究' }).classList.contains('instrument-detail-tab-active')).toBe(true)
+  fireEvent.click(within(navigation).getByRole('button', { name: '经理观点' }))
   await screen.findByRole('region', { name: '投资观点时间线' })
-  fireEvent.click(within(navigation).getByRole('button', { name: '研究追踪' }))
+  fireEvent.click(within(navigation).getByRole('button', { name: '投资研究' }))
   await screen.findByTestId('fund-research-tracking')
   fireEvent.click(screen.getByRole('button', { name: '研究助手' }))
   const drawer = await screen.findByRole('dialog', { name: '研究助手' })
@@ -167,7 +167,7 @@ it.each(['public_fund', 'private_fund'] as const)('opens the %s research assista
   fireEvent.click(within(drawer).getByRole('button', { name: '关闭研究助手' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: '研究助手' })).toBeNull())
   const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
-  expect(params.get('tab')).toBe('events')
+  expect(params.get('tab')).toBe('investment-research')
   expect(params.get('currency')).toBe('CNY')
   for (const key of ['assistant', 'topic', 'question', 'instruments']) expect(params.has(key)).toBe(false)
   expect(screen.getByTestId('fund-research-tracking').getAttribute('data-instrument')).toBe('fund-1')
@@ -245,4 +245,19 @@ it('preserves old document links and upload access inside the archive', async ()
   expect(container.querySelector('#fund-archive-documents')?.hasAttribute('open')).toBe(true)
   expect(container.querySelector('#fund-archive-documents input[type="file"]')).toBeTruthy()
   expect(container.querySelectorAll('.instrument-detail-tabs')).toHaveLength(1)
+})
+
+
+it.each(['public_fund', 'private_fund'] as const)('opens the same %s research in report mode and preserves legacy PM links', async type => {
+  const { unmount } = show('/instruments/fund-1?tab=investment-research&mode=report&currency=CNY', type)
+  expect((await screen.findByTestId('fund-research-tracking')).getAttribute('data-reading')).toBe('true')
+  fireEvent.click(screen.getByRole('button', { name: '返回研究工作面' }))
+  expect(screen.getByTestId('fund-research-tracking').getAttribute('data-reading')).toBe('false')
+  const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
+  expect(params.get('tab')).toBe('investment-research')
+  expect(params.get('currency')).toBe('CNY')
+  expect(params.has('mode')).toBe(false)
+  unmount()
+  show('/instruments/fund-1?tab=research', type)
+  expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
 })

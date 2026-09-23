@@ -30,6 +30,10 @@ def dossier_view(dossier: dict[str, Any]) -> dict[str, Any]:
         **dossier,
         "prior_sources": [_source_view(source) for source in dossier.get("prior_sources", [])],
         "notebook": _notebook_view(dossier.get("notebook")),
+        # Reviews and lessons are already shown from the notebook. Their agent
+        # catalogue entries do not have the historical event-case schema.
+        "historical_cases": [record for record in dossier.get("historical_cases", [])
+                             if record.get("source_type") != "research_review"],
         "notebook_history": [
             {**record, "notebook": _notebook_view(record.get("notebook"))}
             for record in dossier.get("notebook_history", [])

@@ -3907,52 +3907,66 @@ def delete_taxonomy_node(
         if record is None:
             return False
 
-        child_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(TaxonomyNodeRecordModel)
-                .where(TaxonomyNodeRecordModel.parent_taxonomy_node_id == taxonomy_node_id)
-            )
-            or 0
-        )
-        if child_count:
-            raise ValueError("Cannot delete taxonomy node with child nodes.")
-
-        assignment_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(TaxonomyAssignmentRecordModel)
-                .where(TaxonomyAssignmentRecordModel.taxonomy_node_id == taxonomy_node_id)
-            )
-            or 0
-        )
-        if assignment_count:
-            raise ValueError("Cannot delete taxonomy node with assignments.")
-
-        target_line_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(TargetSetLineRecordModel)
-                .where(TargetSetLineRecordModel.taxonomy_node_id == taxonomy_node_id)
-            )
-            or 0
-        )
-        if target_line_count:
-            raise ValueError("Cannot delete taxonomy node with target-set lines.")
-
-        target_scope_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(TargetSetRecordModel)
-                .where(TargetSetRecordModel.comparator_taxonomy_node_id == taxonomy_node_id)
-            )
-            or 0
-        )
-        if target_scope_count:
-            raise ValueError("Cannot delete taxonomy node while it owns child-scope target sets.")
-
         parent_taxonomy_node_id = record.parent_taxonomy_node_id
-        session.delete(record)
+        nodes = session.scalars(select(TaxonomyNodeRecordModel).where(
+            TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id)).all()
+        children_by_parent: dict[str, list[str]] = {}
+        for node in nodes:
+            if node.parent_taxonomy_node_id:
+                children_by_parent.setdefault(node.parent_taxonomy_node_id, []).append(node.taxonomy_node_id)
+        deleted_node_ids: set[str] = set()
+        pending_node_ids = [taxonomy_node_id]
+        while pending_node_ids:
+            node_id = pending_node_ids.pop()
+            if node_id in deleted_node_ids:
+                continue
+            deleted_node_ids.add(node_id)
+            pending_node_ids.extend(children_by_parent.get(node_id, []))
+
+        assignments = session.scalars(select(TaxonomyAssignmentRecordModel).where(
+            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+            TaxonomyAssignmentRecordModel.taxonomy_node_id.in_(deleted_node_ids))).all()
+        affected_instrument_ids = {item.target_entity_id for item in assignments}
+        for assignment in assignments:
+            session.delete(assignment)
+
+        target_sets = session.scalars(select(TargetSetRecordModel).options(
+            selectinload(TargetSetRecordModel.lines)).where(
+            TargetSetRecordModel.taxonomy_id == taxonomy_id)).all()
+        for target_set in target_sets:
+            if target_set.comparator_taxonomy_node_id in deleted_node_ids:
+                session.delete(target_set)
+                continue
+            # Surviving scopes keep their other members' exact budgets. The
+            # existing integrity checks expose any resulting shortfall.
+            for line in list(target_set.lines):
+                if line.taxonomy_node_id in deleted_node_ids or (
+                    line.target_member_type == "taxonomy_node" and line.target_member_id in deleted_node_ids
+                ):
+                    target_set.lines.remove(line)
+
+        # The name-based allocator can reuse deleted IDs for a new node.
+        # Old node policies must not attach to that new node.
+        # Research runs retain their own immutable policy/configuration snapshot.
+        session.execute(delete(AnalyticsScopePolicyRecordModel).where(
+            AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id,
+            AnalyticsScopePolicyRecordModel.taxonomy_id == taxonomy_id,
+            AnalyticsScopePolicyRecordModel.taxonomy_node_id.in_(deleted_node_ids)))
+        research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
+        if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
+            if research_settings.comparator_taxonomy_node_id in deleted_node_ids:
+                research_settings.comparator_taxonomy_node_id = None
+            research_settings.frozen_taxonomy_node_ids_json = [
+                node_id for node_id in research_settings.frozen_taxonomy_node_ids_json or []
+                if node_id not in deleted_node_ids
+            ]
+            research_settings.top_sleeve_weight_bounds_json = [
+                bound for bound in research_settings.top_sleeve_weight_bounds_json or []
+                if bound.get("taxonomy_node_id") not in deleted_node_ids
+            ]
+        for node in nodes:
+            if node.taxonomy_node_id in deleted_node_ids:
+                session.delete(node)
         session.flush()
         if parent_taxonomy_node_id:
             remaining_child_count = int(
@@ -3967,6 +3981,21 @@ def delete_taxonomy_node(
                 parent_record = session.get(TaxonomyNodeRecordModel, parent_taxonomy_node_id)
                 if parent_record is not None:
                     parent_record.is_terminal = True
+            active_child = session.scalar(select(TaxonomyNodeRecordModel.taxonomy_node_id).where(
+                TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id,
+                TaxonomyNodeRecordModel.parent_taxonomy_node_id == parent_taxonomy_node_id,
+                TaxonomyNodeRecordModel.status == "active").limit(1))
+            active_assignment = session.scalar(select(TaxonomyAssignmentRecordModel.assignment_id).where(
+                TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+                TaxonomyAssignmentRecordModel.taxonomy_node_id == parent_taxonomy_node_id,
+                TaxonomyAssignmentRecordModel.status == "active").limit(1))
+            if active_child is None and active_assignment is None:
+                # An empty scope has no target editor or valid allocation; do
+                # not leave an active, unrepairable zero-member target behind.
+                for target_set in target_sets:
+                    if target_set.comparator_taxonomy_node_id == parent_taxonomy_node_id:
+                        session.delete(target_set)
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         session.flush()
         _record_taxonomy_configuration_revision_in_session(
             session,

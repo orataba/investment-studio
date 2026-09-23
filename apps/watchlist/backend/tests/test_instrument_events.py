@@ -86,7 +86,7 @@ def test_single_instrument_scope_and_runs_do_not_expand_or_block_sector_daily_ch
 def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_empty_check(client, monkeypatch):
     seed_instruments(client, monkeypatch)
     asset = {"instrument_id": "fund-us-agg", "name": "iShares Core U.S. Aggregate Bond ETF", "instrument_type": "etf",
-        "analyst_focus": research_workbench.ANALYST_FOCUS["etf"],
+        "analyst_focus": "依据本标的已确认的债券结构研究利率与信用。",
         "materials": [{"title": "季度报告目录", "file_id": "catalogue-only"}],
         "materials_note": "没有正文的文件不能视为已阅读。",
         "holdings": {"data": {"report_period": "2026-03-31", "items": [{"name": "已披露债券", "weight_percent": 8}]},
@@ -209,7 +209,7 @@ def test_fund_run_starts_while_saved_research_and_dossier_remain_readable(client
     assert overview["sectors"][0]["last_completed_review"]["run_id"] == run_id
     dossier = client.get(f"/api/research/instruments/{iid}/dossier")
     assert dossier.status_code == 200, dossier.text
-    assert dossier.json()["notebook"]["fundamental_view"] == "已有研究判断。"
+    assert dossier.json()["notebook"]["prior_analysis"]["fundamental_view"] == "已有研究判断。"
 
 
 def test_non_sector_etf_singleton_keeps_its_instrument_sources(client, monkeypatch):

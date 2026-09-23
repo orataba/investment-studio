@@ -220,7 +220,7 @@ def test_registered_equity_and_broad_fund_share_real_company_captures_and_bound_
         return response.json()
     monkeypatch.setattr(fact_review, "_api_request", api)
     proposed = {"instrument_id": iid, "change_kind": "knowledge", "events": [],
-        "research": {"fundamental_view": "已取得成分收入与EPS预测；预测仍需后续兑现。", "source_ids": [retained["source_id"]]},
+        "research": {"modules": [{"key": "pricing-compensation", "summary": "已取得成分收入与EPS预测；预测仍需后续兑现。"}], "source_ids": [retained["source_id"]]},
         "reflection": {"status": "reviewed", "summary": "已核对本轮取得的公司预测及其财期、币种。",
                        "source_ids": [retained["source_id"]]}}
     packet = fact_review._evidence_packet(context, [proposed], rid)

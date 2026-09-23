@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchMandateRecord from './ResearchMandateRecord'
 import InvestmentResearchState from './InvestmentResearchState'
+import ResearchModules from './ResearchModules'
+import './investment-research.css'
 import { questionTrackingLabels } from './ResearchQuestionTracking'
 import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import { SourceList, dateLabel, sourceUrl, hasTimeZone } from './ResearchEvidence'
@@ -55,21 +57,19 @@ function TextList({ items }: { items: string[] }) {
   return <ul className="research-dossier-list">{items.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>
 }
 
-function NotebookBody({ notebook, onAskAssistant, instrumentId }: { notebook: SavedResearchNotebook; instrumentId?: string; onAskAssistant?: AskResearchAssistant }) {
+function NotebookBody({ notebook, onAskAssistant, instrumentId, historical = false }: { notebook: SavedResearchNotebook; instrumentId?: string; onAskAssistant?: AskResearchAssistant; historical?: boolean }) {
   return <div className="research-notebook-body">
     {Boolean(notebook.facts?.length) && <details className="research-dossier-record"><summary>事实与口径</summary>{notebook.facts!.map((fact, index) => <article key={index}>
       <h4>{fact.subject} · {fact.metric}</h4><p>{fact.value} · {fact.unit} · {fact.period}</p>
       {fact.comparison && <p>对照：{fact.comparison}</p>}{fact.uncertainty && <p>{fact.uncertainty}</p>}
       <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={(notebook.sources || []).filter(source => fact.source_ids.includes(source.source_id))} />
     </article>)}</details>}
-    {notebook.fundamental_view && <div><h4>基本面判断</h4><p translate="no">{notebook.fundamental_view}</p></div>}
     {notebook.key_drivers.length > 0 && <div><h4>关键驱动</h4><TextList items={notebook.key_drivers} /></div>}
-    {notebook.valuation_view && <div><h4>估值判断</h4><p translate="no">{notebook.valuation_view}</p></div>}
     {notebook.questions.length > 0 && <section aria-label="研究问题与判断"><h4>研究问题与判断</h4>{notebook.questions.map((question) => <NotebookQuestion instrumentId={instrumentId} versionId={notebook.version_id} key={question.key} question={question} sources={notebook.sources} onAskAssistant={onAskAssistant} />)}</section>}
-    {notebook.important_changes.length > 0 && <div><h4>重要变化</h4><TextList items={notebook.important_changes} /></div>}
+    {historical && notebook.important_changes.length > 0 && <div><h4>重要变化</h4><TextList items={notebook.important_changes} /></div>}
     {notebook.next_research.length > 0 && <div><h4>后续研究</h4><TextList items={notebook.next_research} /></div>}
-    {Boolean(notebook.sources?.length) && <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={notebook.sources!} />}
-    {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核当前标的这份研究底稿：\n基本面判断：${notebook.fundamental_view}\n关键驱动：${notebook.key_drivers.join('；')}\n估值判断：${notebook.valuation_view}\n研究问题：${notebook.questions.map((question) => `${question.question}：${question.assessment}`).join('\n')}\n后续研究：${notebook.next_research.join('；')}\n请检查证据是否仍成立，并指出需要补充的资料。`)}>追问这份底稿</button>}
+    {historical && Boolean(notebook.sources?.length) && <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={notebook.sources!} />}
+    {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核当前标的这份研究底稿：\n分领域研究：${(notebook.modules || []).map(module => module.summary).join('；')}\n关键驱动：${notebook.key_drivers.join('；')}\n研究问题：${notebook.questions.map((question) => `${question.question}：${question.assessment}`).join('\n')}\n后续研究：${notebook.next_research.join('；')}\n请检查证据是否仍成立，并指出需要补充的资料。`)}>追问这份底稿</button>}
   </div>
 }
 
@@ -143,8 +143,19 @@ function HistoricalCase({ record, onAskAssistant }: { record: HistoricalResearch
   </details>
 }
 
-export default function ResearchDossierPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant }) {
-  const canWrite = useStudioAccount()?.team_role !== 'reader'
+function PriorAnalysis({ notebook, instrumentId }: { notebook: SavedResearchNotebook; instrumentId: string }) {
+  const prior = notebook.prior_analysis
+  if (!prior) return null
+  return <details className="research-prior-analysis"><summary>既有综合分析 · {dateLabel(prior.updated_at)}</summary>
+    <p className="sector-research-note">{prior.note}</p>
+    {prior.fundamental_view && <><h4>原基本面判断</h4><p className="research-dossier-text" translate="no">{prior.fundamental_view}</p></>}
+    {prior.valuation_view && <><h4>原估值判断</h4><p className="research-dossier-text" translate="no">{prior.valuation_view}</p></>}
+    <SourceList instrumentId={instrumentId} versionId={prior.version_id || undefined} sources={prior.sources} />
+  </details>
+}
+
+export default function ResearchDossierPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, variant = 'full', readingMode = false }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; variant?: 'full' | 'summary'; readingMode?: boolean }) {
+  const canWrite = useStudioAccount()?.team_role !== 'reader' && !readingMode
   const [dossier, setDossier] = useState<ResearchDossier | null>(null)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -161,36 +172,55 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   useEffect(() => {
     const controller = new AbortController()
     setError('')
-    void getResearchDossier(instrumentId, controller.signal).then((value) => {
+    void getResearchDossier(instrumentId, controller.signal, variant === 'full').then((value) => {
       if (!controller.signal.aborted) setDossier(value)
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '研究档案读取失败')
     })
     return () => controller.abort()
-  }, [instrumentId, reviewRunId, reviewStatus, refresh])
+  }, [instrumentId, reviewRunId, reviewStatus, refresh, variant])
   const notebook = dossier?.notebook
   const sources = [...(dossier?.prior_sources || []), ...(notebook?.sources || [])]
   const selectedSources = (ids: string[]) => [...new Map(sources.filter(source => ids.includes(source.source_id)).map(source => [source.source_id, source])).values()]
-  const ask: AskResearchAssistant | undefined = onAskAssistant && ((question, reference) => onAskAssistant(question, reference || { instrument_id: instrumentId, notebook_version_id: notebook?.version_id }))
-  const previousNotebooks = dossier?.notebook_history?.filter((item) => item.run_id !== notebook?.run_id) || []
-  return <div className="research-dossier-panel">
+  const ask: AskResearchAssistant | undefined = !readingMode && onAskAssistant ? ((question, reference) => onAskAssistant(question, reference || { instrument_id: instrumentId, notebook_version_id: notebook?.version_id })) : undefined
+  const currentVersion = notebook?.version_id || notebook?.run_id
+  const previousNotebooks = dossier?.notebook_history?.filter((item) => (item.version_id || item.notebook?.version_id || item.run_id) !== currentVersion) || []
+  return <div className={`research-dossier-panel research-dossier-${variant}`}>
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
-    {notebook?.investment_view && <details className="research-current-dimensions"><summary>判断依据与期限</summary><InvestmentResearchState mode="view" instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /></details>}
-    <ResearchTrackingPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={onAskAssistant} />
+    {!dossier && !error && <p className="sector-research-note" role="status">正在读取投资研究…</p>}
+    {notebook?.investment_view ? <InvestmentResearchState mode="view" instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : dossier && <p className="research-empty-judgment">尚未形成当前投资判断。已保存资料与既有研究可在下方查阅。</p>}
+    {Boolean(notebook?.important_changes.length) && <section className="research-important-changes" aria-label="重要变化"><h3>重要变化</h3><TextList items={notebook!.important_changes} /></section>}
+    {variant === 'full' && <>
+      {dossier?.research_plan?.scope && <p className="research-scope"><strong>研究范围</strong> <span translate="no">{dossier.research_plan.scope}</span></p>}
+      {Boolean(dossier?.research_plan?.gaps.length) && <div className="research-plan-gaps"><strong>范围与资料仍有缺口</strong><TextList items={dossier!.research_plan!.gaps} /></div>}
+      <ResearchModules instrumentId={instrumentId} notebook={notebook} plan={dossier?.research_plan} onAskAssistant={ask} />
+      {notebook && <NotebookBody instrumentId={instrumentId} notebook={notebook} onAskAssistant={ask} />}
+      {notebook && <PriorAnalysis instrumentId={instrumentId} notebook={notebook} />}
+      {dossier && <details className="research-method-plan"><summary>研究方法与范围<span>{readingMode ? '查看当前范围与方法' : '查看方法、编辑关注重点与约束'}</span></summary>
+        {dossier.mandate && <ResearchMandateRecord key={instrumentId} instrumentId={instrumentId} mandate={dossier.mandate} availableModules={dossier.available_modules || dossier.frameworks} readOnly={readingMode} onSaved={mandate => { setDossier(current => current && ({ ...current, mandate })); setRefresh(value => value + 1) }} />}
+        {dossier.research_plan && <>
+          <h4>本次采用的领域方法</h4><TextList items={dossier.research_plan.basis} />
+          {dossier.research_plan.modules.map(module => <details className="research-dossier-record" key={module.id}><summary>{module.title} · {module.applicability === 'unconfirmed' ? '适用范围待核实' : '已采用'}</summary>
+            <p className="sector-research-note">方法版本 {module.version} · {module.reason}</p><p className="research-dossier-text" translate="no">{module.body}</p>
+            {module.questions.length > 0 && <><h4>核心问题</h4><TextList items={module.questions} /></>}
+            {module.evidence_requirements.length > 0 && <><h4>证据要求</h4><TextList items={module.evidence_requirements} /></>}
+          </details>)}
+        </>}
+      </details>}
+      <ResearchTrackingPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={readingMode ? undefined : onAskAssistant} readOnly={readingMode} />
     <details className="research-dossier-archive" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary>研究档案<span>研究底稿、方法、材料与历史案例</span></summary>
+      <summary>研究档案<span>来源、预测验证、材料与历史版本</span></summary>
       {expanded && <div className="research-dossier-archive-body">
         {!dossier && !error && <p className="sector-research-note">正在读取研究档案…</p>}
         {dossier && <>
-          {dossier.mandate && <ResearchMandateRecord key={instrumentId} instrumentId={instrumentId} mandate={dossier.mandate} onSaved={mandate => setDossier(current => current && ({ ...current, mandate }))} />}
           <section aria-label="研究底稿"><h4>研究底稿</h4>
             {notebook && <InvestmentResearchState mode="records" instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} />}
-            {notebook ? <><p className="sector-research-note">底稿更新于 {dateLabel(notebook.updated_at || notebook.checked_at)}</p><NotebookBody instrumentId={instrumentId} notebook={notebook} onAskAssistant={ask} /></> : <p className="sector-research-note">尚未完成研究底稿。已保存的资料会留在档案中。</p>}
+            {notebook ? <><p className="sector-research-note">底稿更新于 {dateLabel(notebook.updated_at || notebook.checked_at)}</p><details className="research-dossier-record"><summary>本份研究的全部依据 · {notebook.sources?.length || 0}</summary><SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={notebook.sources || []} /></details></> : <p className="sector-research-note">尚未完成研究底稿。已保存的资料会留在档案中。</p>}
             {Boolean(notebook?.catalysts?.length) && <details className="research-dossier-record"><summary>研究日程与结果</summary>
               {notebook!.catalysts!.map(catalyst => <Catalyst instrumentId={instrumentId} versionId={notebook?.version_id} key={catalyst.key} catalyst={catalyst} sources={notebook?.sources || []} onAskAssistant={ask} />)}
             </details>}
             {previousNotebooks.length > 0 && <details className="research-dossier-record"><summary>以往底稿变化 · {previousNotebooks.length} 次</summary>
-              {previousNotebooks.map((item) => <article key={item.run_id}><h4>{dateLabel(item.checked_at)}</h4>{item.notebook ? <><InvestmentResearchState historical instrumentId={instrumentId} notebook={item.notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={item.notebook?.version_id} sources={(item.notebook?.sources || []).filter(source => ids.includes(source.source_id))} />} onAskAssistant={onAskAssistant} /><NotebookBody instrumentId={instrumentId} notebook={item.notebook} onAskAssistant={onAskAssistant && (() => onAskAssistant('请复核这份历史底稿，按当时已知信息审视原判断，并区分后来的变化。', { instrument_id: instrumentId, notebook_version_id: item.notebook?.version_id }))} /></> : item.important_changes.length > 0 ? <TextList items={item.important_changes} /> : <p className="sector-research-note">本次未保存重要变化摘要。</p>}</article>)}
+              {previousNotebooks.map((item) => <article key={item.run_id}><h4>{dateLabel(item.checked_at)}</h4>{item.notebook ? <><InvestmentResearchState historical instrumentId={instrumentId} notebook={item.notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={item.notebook?.version_id} sources={(item.notebook?.sources || []).filter(source => ids.includes(source.source_id))} />} onAskAssistant={onAskAssistant} /><ResearchModules instrumentId={instrumentId} notebook={item.notebook} plan={item.notebook.method_plan} /><PriorAnalysis instrumentId={instrumentId} notebook={item.notebook} /><NotebookBody historical instrumentId={instrumentId} notebook={item.notebook} onAskAssistant={onAskAssistant && (() => onAskAssistant('请复核这份历史底稿，按当时已知信息审视原判断，并区分后来的变化。', { instrument_id: instrumentId, notebook_version_id: item.notebook?.version_id }))} /></> : item.important_changes.length > 0 ? <TextList items={item.important_changes} /> : <p className="sector-research-note">本次未保存重要变化摘要。</p>}</article>)}
             </details>}
           </section>
           {Boolean(dossier.prior_sources?.length) && <details className="research-dossier-record"><summary>已取得的公开原文 · {dossier.prior_sources!.length}</summary>
@@ -201,7 +231,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
           </details>)}</section>}
           <section aria-label="研究材料"><div className="research-dossier-section-heading"><h4>研究材料{dossier.materials.length > 0 ? ` · ${dossier.materials.length}` : ''}</h4><button type="button" disabled={!canWrite} onClick={() => { setAdding(true); setNotice(null) }}>添加材料</button></div>
             <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
-            {adding && <MaterialForm instrumentId={instrumentId} onCancel={() => setAdding(false)} onSaved={(material) => { setDossier((current) => current && ({ ...current, materials: [material, ...current.materials] })); setAdding(false); setNotice({ id: Date.now(), message: '材料已保存。', tone: 'success' }) }} />}
+            {adding && canWrite && <MaterialForm instrumentId={instrumentId} onCancel={() => setAdding(false)} onSaved={(material) => { setDossier((current) => current && ({ ...current, materials: [material, ...current.materials] })); setAdding(false); setNotice({ id: Date.now(), message: '材料已保存。', tone: 'success' }) }} />}
             {dossier.materials.length ? dossier.materials.map((material) => <MaterialRecord key={material.source_id} material={material} />) : <p className="sector-research-note">尚未添加研究材料。</p>}
           </section>
           {dossier.historical_cases.length > 0 && <section aria-label="历史案例"><h4>历史案例 · 未经本轮核证</h4>
@@ -212,5 +242,6 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
         </>}
       </div>}
     </details>
+    </>}
   </div>
 }

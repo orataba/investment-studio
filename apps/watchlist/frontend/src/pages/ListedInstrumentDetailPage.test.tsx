@@ -33,7 +33,7 @@ vi.mock('../lib/api', async (importOriginal) => ({
 }))
 
 vi.mock('../components/InstrumentRiskPanel', () => ({ default: ({ mode, instrumentId, onAskAssistant }: { mode?: string; instrumentId?: string; onAskAssistant?: (id: string, question: string) => void }) => <div data-testid="risk-panel" data-mode={mode} data-instrument={instrumentId}><button onClick={() => onAskAssistant?.(instrumentId!, '分析这项风险')}>追问当前风险</button></div> }))
-vi.mock('../components/SectorResearchPanel', () => ({ default: ({ instrumentId, variant = 'timeline' }: { instrumentId: string; variant?: string }) => <div data-testid="sector-panel" data-instrument={instrumentId} data-variant={variant} /> }))
+vi.mock('../components/SectorResearchPanel', () => ({ default: ({ instrumentId, variant = 'timeline', readingMode = false }: { instrumentId: string; variant?: string; readingMode?: boolean }) => <div data-testid="sector-panel" data-reading={String(readingMode)} data-instrument={instrumentId} data-variant={variant} /> }))
 vi.mock('../components/EstimateHistoryPanel', () => ({ default: () => <div data-testid="estimate-history" /> }))
 // Exercise the real drawer's URL cleanup while replacing the conversational UI only.
 vi.mock('./ResearchPage', () => ({ default: ({ instrumentId, watchlistId, onClose }: { instrumentId: string; watchlistId?: string; onClose: () => void }) =>
@@ -329,7 +329,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect(screen.queryByRole('button', { name: /Details|资料与明细/ })).toBeNull()
     expect(apiMocks.getInstrumentReferenceData).not.toHaveBeenCalled()
     expect(apiMocks.getInstrumentMonitoring).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /^Research Tracking$|^研究追踪$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Investment Research$|^投资研究$/ })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Cumulative Return|累计收益/ }))
     expect(screen.queryByRole('img', { name: 'Cumulative return chart' })).not.toBeNull()
     expect(screen.queryByRole('img', { name: 'Index level chart' })).toBeNull()
@@ -361,12 +361,12 @@ describe('ListedInstrumentDetailPage index view', () => {
       detail_supported: true, support_reason: '', corporate_actions: [],
     }} watchlistContext={null} /></MemoryRouter></LanguageProvider>)
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Technology Select Sector SPDR' })).not.toBeNull())
-    await waitFor(() => expect(screen.queryByRole('button', { name: /Investment Views|投资观点/ })).not.toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /PM Views|经理观点/ })).not.toBeNull())
     expect(await screen.findByRole('region', { name: 'ETF profile and holdings' })).toBeTruthy()
     await screen.findByText('0.08%')
     expect(apiMocks.getInstrumentReferenceData).toHaveBeenCalledWith('xlk')
     expect(screen.queryByRole('button', { name: /Details|资料与明细/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Investment Views|投资观点/ }))
+    fireEvent.click(screen.getByRole('button', { name: /PM Views|经理观点/ }))
     expect(screen.queryByRole('button', { name: /Add view|新增观点/ })).not.toBeNull()
     expect(screen.queryByText('Current Investment View')).toBeNull()
     fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$|^业绩与风险$/ })[0])
@@ -400,11 +400,11 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect((await screen.findByRole('dialog', { name: '研究助手' })).getAttribute('data-instrument')).toBe(instrumentId)
     fireEvent.click(screen.getByRole('button', { name: '关闭研究助手' }))
     const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
-    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Views', 'Research Tracking', 'Performance & Risk'])
-    expect(within(navigation).getByRole('button', { name: 'Research Tracking' }).classList.contains('instrument-detail-tab-active')).toBe(true)
-    fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Views' }))
+    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'PM Views', 'Performance & Risk'])
+    expect(within(navigation).getByRole('button', { name: 'Investment Research' }).classList.contains('instrument-detail-tab-active')).toBe(true)
+    fireEvent.click(within(navigation).getByRole('button', { name: 'PM Views' }))
     await screen.findByRole('button', { name: 'Add view' })
-    fireEvent.click(within(navigation).getByRole('button', { name: 'Research Tracking' }))
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Research' }))
     fireEvent.click(screen.getByRole('button', { name: 'Research assistant' }))
     const drawer = await screen.findByRole('dialog', { name: '研究助手' })
     expect(drawer.getAttribute('data-instrument')).toBe(instrumentId)
@@ -412,10 +412,22 @@ describe('ListedInstrumentDetailPage index view', () => {
     fireEvent.click(within(drawer).getByRole('button', { name: '关闭研究助手' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '研究助手' })).toBeNull())
     const params = new URLSearchParams(screen.getByTestId('listed-detail-location').textContent || '')
-    expect(params.get('tab')).toBe('events')
+    expect(params.get('tab')).toBe('investment-research')
     expect(params.get('currency')).toBe('CNY')
     for (const key of ['assistant', 'topic', 'question', 'instruments']) expect(params.has(key)).toBe(false)
     expect(screen.getByTestId('sector-panel').getAttribute('data-instrument')).toBe(instrumentId)
+  })
+
+  it('opens the Briefing report deep link without replacing the saved PM destination', async () => {
+    const instrument = { requested_instrument_id: 'xlk', canonical_instrument_id: 'xlk', instrument_name: 'Technology ETF', instrument_type: 'etf' as const, primary_identifier: 'XLK', detail_view_type: 'etf', detail_subject_id: 'xlk', detail_supported: true, support_reason: '', corporate_actions: [] }
+    const { unmount } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=investment-research&mode=report']}><ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} /><LocationProbe /></MemoryRouter></LanguageProvider>)
+    expect((await screen.findByTestId('sector-panel')).getAttribute('data-reading')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Research workspace' }))
+    expect(screen.getByTestId('sector-panel').getAttribute('data-reading')).toBe('false')
+    expect(new URLSearchParams(screen.getByTestId('listed-detail-location').textContent || '').get('tab')).toBe('investment-research')
+    unmount()
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=research']}><ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} /></MemoryRouter></LanguageProvider>)
+    expect(await screen.findByRole('button', { name: 'Add view' })).toBeTruthy()
   })
 
 })

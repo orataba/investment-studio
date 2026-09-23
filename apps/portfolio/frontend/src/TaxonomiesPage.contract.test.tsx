@@ -301,6 +301,80 @@ describe('Taxonomies rendered page contract', () => {
     })
   })
 
+  it('keeps all four target switches and inputs editable when supplemental holdings fail', async () => {
+    apiMocks.getHoldingsWorkspace.mockRejectedValue(new Error('Calculation pending'))
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...taxonomyCatalog, target_sets: [], target_set_lines: [],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await user.click(await screen.findByRole('button', { name: 'Edit Targets' }))
+    for (const kind of ['SAA', 'TAA']) {
+      for (const dimension of ['weight', 'risk contribution']) {
+        const checkbox = screen.getByRole('checkbox', { name: `${kind} ${dimension} targets` })
+        await user.click(checkbox)
+        expect(checkbox).toBeChecked()
+      }
+      const weight = screen.getByRole('spinbutton', { name: `${kind} target weight for Risk Assets` })
+      await user.type(weight, '100')
+      expect(weight).toHaveValue(100)
+      const risk = screen.getByRole('spinbutton', { name: `${kind} target risk budget for Risk Assets` })
+      await user.type(risk, '100')
+      expect(risk).toHaveValue(100)
+    }
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(apiMocks.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
+    const savedTargets = apiMocks.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2].target_sets
+    expect(savedTargets).toHaveLength(2)
+    for (const kind of ['saa', 'taa']) {
+      expect(savedTargets).toContainEqual(expect.objectContaining({
+        target_set_type: kind, weight_enabled: true, risk_budget_enabled: true,
+        lines: expect.arrayContaining([expect.objectContaining({
+          target_member_id: 'risk-assets', target_weight: 1, target_risk_share: 1,
+        })]),
+      }))
+    }
+  })
+
+  it('preserves edited targets when selecting a node and reveals a collapsed target scope', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await user.click(await screen.findByRole('button', { name: 'Edit Targets' }))
+    const weight = screen.getByRole('spinbutton', { name: 'SAA target weight for Risk Assets' })
+    await user.clear(weight)
+    await user.type(weight, '75')
+    const node = screen.getByRole('button', { name: 'Risk Assets' })
+    await user.click(node)
+    expect(weight).toHaveValue(75)
+    const row = node.closest('tr')!
+    await user.click(row.querySelector('.taxonomy-tree-toggle') as HTMLButtonElement)
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Target scope' }), 'risk-assets')
+    await user.click(screen.getByRole('checkbox', { name: 'SAA weight targets' }))
+    const childWeight = screen.getByRole('spinbutton', { name: /SAA target weight for .*Alpha Fund/ })
+    await user.type(childWeight, '100')
+    expect(childWeight).toHaveValue(100)
+    expect(weight).toHaveValue(75)
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'Edit Targets' }))
+    expect(screen.getByRole('spinbutton', { name: 'SAA target weight for Risk Assets' })).toHaveValue(80)
+  })
+
+  it('explains subtree deletion and requires the node name before deleting', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    const node = await screen.findByRole('button', { name: 'Risk Assets' })
+    fireEvent.contextMenu(node.closest('tr')!)
+    await user.click(screen.getByRole('button', { name: 'Delete Node' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Delete Taxonomy Node' })
+    expect(dialog).toHaveTextContent('node and all descendants')
+    expect(dialog).toHaveTextContent('Transactions, holdings, and saved research snapshots are retained')
+    expect(within(dialog).getByRole('button', { name: 'Delete Node' })).toBeDisabled()
+    expect(apiMocks.deletePortfolioTaxonomyNode).not.toHaveBeenCalled()
+    await user.type(within(dialog).getByRole('textbox'), 'Risk Assets')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Node' }))
+    await waitFor(() => expect(apiMocks.deletePortfolioTaxonomyNode).toHaveBeenCalledWith('3', 'taxonomy-1', 'risk-assets'))
+  })
+
   it('saves target changes from multiple scopes together', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(<TaxonomiesPage />, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')

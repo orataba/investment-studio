@@ -32,8 +32,8 @@ function CurrentFollowup({ followup, onAskAssistant }: { followup: CurrentResear
   </article>
 }
 
-export default function ResearchTrackingPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant }: {
-  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant
+export default function ResearchTrackingPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean
 }) {
   const state = useResearchActivity(instrumentId, reviewRunId, reviewStatus)
   const [themeNames, setThemeNames] = useState<Record<string, string>>({})
@@ -43,7 +43,7 @@ export default function ResearchTrackingPanel({ instrumentId, reviewRunId, revie
     <section className="research-current-tracking" aria-label="当前跟踪">
       <h3>当前跟踪</h3>
       <p className="sector-research-note">更新此标的研究时，一并复核当前跟踪。长期主题积累判断；独立事项解决后退出，记录仍保留。</p>
-      <ResearchThemesPanel {...{ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded }} />
+      <ResearchThemesPanel {...{ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded, readOnly }} />
       <section className="research-current-followups" aria-label="独立跟进事项">
         <h4>独立跟进事项{followups.length > 0 && <span> · {followups.length}</span>}</h4>
         {state.error && <p role="alert">当前跟进暂时无法读取：{state.error}</p>}

@@ -6,9 +6,9 @@ in sector_fact_review's canonical checks and the existing publication boundary.
 from copy import deepcopy
 
 
-_RESEARCH_ITEMS = ("questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
+_RESEARCH_ITEMS = ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
 _REFERENCES = ("theme_id", "event_key", "pm_note_id", "pm_note_revision", "forecast_key",
-               "forecast_version_id", "related_research_update_id")
+               "forecast_version_id", "related_research_update_id", "module_key")
 
 
 def _object(properties, required=None):

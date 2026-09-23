@@ -750,6 +750,7 @@ export default function TaxonomiesPage() {
 
   useEffect(() => {
     setPendingDelete(null)
+    setTargetEditMode(false)
     setActionPending(null)
     setActionError(null)
     setNotice(null)
@@ -1779,10 +1780,13 @@ export default function TaxonomiesPage() {
   ])
 
   useEffect(() => {
+    // Selection and supplemental coverage can rebuild the baseline while the
+    // user edits. Only Save/Cancel or leaving edit mode may replace that draft.
+    if (targetEditMode) return
     setTargetDraftsByScope((current) =>
       targetDraftScopesEqual(current, baselineTargetDraftsByScope) ? current : baselineTargetDraftsByScope,
     )
-  }, [baselineTargetDraftsByScope])
+  }, [baselineTargetDraftsByScope, targetEditMode])
 
   useEffect(() => {
     const preferredScopeNode = selectedComparatorScopeNode?.taxonomy_node_id ?? null
@@ -2031,6 +2035,18 @@ export default function TaxonomiesPage() {
         next.delete(nodeId)
       } else {
         next.add(nodeId)
+      }
+      return next
+    })
+  }
+
+  function revealTargetScope(scopeKey: string) {
+    setActiveTargetScopeKey(scopeKey)
+    setCollapsedNodeIds((current) => {
+      const next = new Set(current)
+      next.delete(TAXONOMY_ROOT_ROW_ID)
+      for (const node of nodePathByNodeId.get(scopeKey) ?? []) {
+        next.delete(node.taxonomy_node_id)
       }
       return next
     })
@@ -3006,7 +3022,9 @@ export default function TaxonomiesPage() {
         : pendingDelete.kind === 'node'
           ? {
               title: 'Delete Taxonomy Node',
-              description: 'This permanently deletes the node and may affect its descendants and assignments. This action cannot be undone.',
+              description: zh
+                ? '将删除此节点及全部子节点、其分类归属和相关目标配置。实际交易与持仓、已保存研究快照会保留；相关持仓将变为未分类，剩余目标不会自动调整，需重新核对并保存。此操作不可撤销。'
+                : 'This deletes the node and all descendants, their assignments, and related target configuration. Transactions, holdings, and saved research snapshots are retained. Affected holdings become unassigned; remaining targets are not redistributed and must be reviewed. This action cannot be undone.',
               label: 'Delete Node',
               confirmationText: pendingDelete.node.node_name,
             }
@@ -3261,7 +3279,7 @@ export default function TaxonomiesPage() {
                         setContextMenuState(null)
                         setTargetEditMode(true)
                       }}
-                      disabled={!canEditPortfolio || (!hasTargetScope && !selectedTaxonomyNodes.length)}
+                      disabled={!canEditPortfolio || refreshing || Boolean(actionPending) || (!hasTargetScope && !selectedTaxonomyNodes.length)}
                     >
                       Edit Targets
                     </button>
@@ -3297,7 +3315,7 @@ export default function TaxonomiesPage() {
                 <div className="taxonomy-target-summary-meta">
                   <strong>{zh ? '目标与集中度' : 'Targets and concentration'}</strong>
                   <label>{zh ? '目标层级' : 'Target scope'} <select value={activeTargetScopeKey}
-                    onChange={(event) => setActiveTargetScopeKey(event.target.value)} disabled={Boolean(actionPending)}>
+                    onChange={(event) => revealTargetScope(event.target.value)} disabled={Boolean(actionPending)}>
                     {Array.from(scopeMembersByScopeKey.keys()).map((key) => <option key={key} value={key}>
                       {key === ROOT_TARGET_SCOPE_KEY ? (zh ? '组合根层' : 'Portfolio root') : (nodePathByNodeId.get(key) ?? []).map((node) => node.node_name).join(' / ')}
                     </option>)}
@@ -3311,6 +3329,7 @@ export default function TaxonomiesPage() {
                         checked={currentScopeDrafts[kind][field]}
                         onChange={(event) => {
                           const enabled = event.target.checked
+                          if (enabled) revealTargetScope(activeTargetScopeKey)
                           setTargetDraftsByScope((current) => ({ ...current, [activeTargetScopeKey]: {
                             ...current[activeTargetScopeKey], [kind]: { ...current[activeTargetScopeKey][kind], [field]: enabled },
                           } }))

@@ -25,6 +25,16 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .briefing-tabs { display: flex; border-bottom: 1px solid var(--studio-line-strong); gap: 28px; }
 .briefing-tabs button { padding: 12px 2px; border: 0; border-bottom: 2px solid transparent; }
 .briefing-tabs button[aria-selected=true] { border-bottom-color: var(--studio-accent); color: var(--studio-accent); font-weight: 500; }
+.industry-research { padding: 34px 0; }
+.industry-entry { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 56px; max-width: 1080px; padding: 28px 0 32px; border-bottom: 1px solid var(--studio-line); }
+.industry-entry h2 { font-size: 28px; font-weight: 500; margin-bottom: 18px; }
+.industry-entry-summary > p:not(.eyebrow) { max-width: 520px; line-height: 1.85; }
+.industry-entry .primary-button { display: inline-flex; align-items: center; gap: 20px; padding: 9px 14px; margin-top: 10px; }
+.industry-access { font-size: 12px; margin: 12px 0 0; }
+.industry-entry-focus { padding: 6px 0 0 32px; border-left: 1px solid var(--studio-line); }
+.industry-entry-focus h3 { font-size: 12px; font-weight: 500; color: var(--studio-muted); margin-bottom: 20px; }
+.industry-entry-focus ul { margin: 0; padding-left: 18px; line-height: 2.3; }
+@media (max-width: 700px) { .industry-entry { grid-template-columns: 1fr; gap: 30px; padding-top: 10px; } .industry-entry-focus { padding: 24px 0 0; border-left: 0; border-top: 1px solid var(--studio-line); } }
 .briefing-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 44px; padding-top: 30px; }
 .edition-index h2 { font-size: 11px; font-weight: 500; color: var(--studio-muted); margin-bottom: 20px; }
 .edition { display: block; width: 100%; padding: 15px 10px 15px 0; text-align: left; border: 0; border-bottom: 1px solid var(--studio-line); }
@@ -69,6 +79,10 @@ td:first-child, th:first-child { position: sticky; left: 0; z-index: 1; padding-
 td small { display: block; color: var(--studio-faint); font-size: 10px; margin-top: 4px; }
 .number { text-align: right; font-variant-numeric: tabular-nums; }
 .table-source { padding: 0; border: 0; background: none; font-size: inherit; text-align: left; }
+.macro-release-table td { vertical-align: top; white-space: normal; line-height: 1.6; min-width: 76px; }
+.macro-release-table td:nth-child(3), .macro-release-table td:nth-child(4) { min-width: 150px; max-width: 240px; }
+.macro-release-table .source-links { margin-top: 0; min-width: 90px; }
+.macro-release-table .source-links > span:first-child { display: none; }
 .table-note { font-size: 12px; }
 .coverage { padding: 25px 0; color: var(--studio-muted); font-size: 12px; }
 .coverage summary { cursor: pointer; color: var(--studio-ink); margin-bottom: 20px; }

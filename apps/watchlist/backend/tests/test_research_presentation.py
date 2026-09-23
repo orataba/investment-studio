@@ -69,3 +69,30 @@ def test_browser_projection_preserves_missing_and_withdrawn_current_view():
                                      "current_research": notebook})
         assert result["summary"] == "本轮失败"
         assert result["current_research"] == (None if notebook is None else {"investment_view": None})
+
+
+def test_saved_reviews_keep_notebook_shape_in_browser_and_agent_case_catalogue(activity_client):
+    with get_session_factory()() as session:
+        first = publish(session, research={"forecasts": [{"key": "financing", "claim": "融资可能改善回款",
+            "horizon": "下一季", "source_ids": ["original"]}]})
+        forecast_version = first.context_json["reviews"]["xlk"]["research"]["forecasts"][0]["version_id"]
+        reference = {"forecast_key": "financing", "forecast_version_id": forecast_version, "source_ids": ["original"]}
+        publish(session, research={
+            "forecast_reviews": [{"key": "financing-review", "outcome": "回款变化尚不能确定",
+                                  "mechanism_assessment": "融资完成不证明经营改善", **reference}],
+            "lessons": [{"key": "financing-lesson", "lesson": "区分资金取得与使用效果",
+                         "applicability": "类似融资情景", "limitations": "单次结果不证明因果", **reference}]})
+        original = read_dossier(session, "xlk", include_history=True)
+        reviews = [row for row in original["historical_cases"] if row.get("source_type") == "research_review"]
+        assert len(reviews) == 2 and all("event" not in row for row in reviews)
+
+    shown = activity_client.get("/api/research/instruments/xlk/dossier?include_history=true").json()
+    assert shown["historical_cases"] == [row for row in original["historical_cases"]
+                                         if row.get("source_type") != "research_review"]
+    assert all("event" in row for row in shown["historical_cases"])
+    for field in ("forecast_reviews", "lessons"):
+        assert shown["notebook"][field] == original["notebook"][field]
+        assert shown["notebook"][field][0]["forecast_version_id"] == forecast_version
+        assert shown["notebook"][field][0]["source_ids"] == ["original"]
+    with get_session_factory()() as session:
+        assert read_dossier(session, "xlk", include_history=True) == original

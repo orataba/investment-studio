@@ -61,14 +61,25 @@ export type ResearchLesson = ResearchRevision & {
   forecast_key: string | null; forecast_version_id: string | null; source_ids: string[]; versions?: ResearchLesson[]
 }
 
+export type ResearchPlanModule = {
+  id: string; title: string; version: string; body: string; questions: string[]; evidence_requirements: string[]
+  applicability: 'applicable' | 'unconfirmed'; reason: string
+}
+export type ResearchPlan = { scope: string; basis: string[]; gaps: string[]; modules: ResearchPlanModule[] }
+export type ResearchModule = ResearchRevision & {
+  key: string; summary: string; analysis: string; coverage: 'supported' | 'partial' | 'insufficient'
+  gaps: string[]; next_check: string; source_ids: string[]; figure_source_ids: string[]
+  evidence_as_of: string | null; method_version?: string; checked_at?: string | null
+}
 export type ResearchNotebook = {
+  modules?: ResearchModule[]
+  method_plan?: ResearchPlan
+  prior_analysis?: { fundamental_view: string; valuation_view: string; source_ids: string[]; updated_at: string | null; version_id: string | null; note: string; sources: NotebookSource[] }
   investment_view?: InvestmentView | null
   forecasts?: ResearchForecast[]
   forecast_reviews?: ResearchForecastReview[]
   lessons?: ResearchLesson[]
-  fundamental_view: string
   key_drivers: string[]
-  valuation_view: string
   questions: ResearchQuestion[]
   important_changes: string[]
   next_research: string[]
@@ -77,7 +88,7 @@ export type ResearchNotebook = {
   facts?: Array<{ subject: string; metric: string; value: string; unit: string; period: string; comparison: string; uncertainty: string; source_ids: string[] }>
 }
 
-export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[] }
+export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[]; user_constraints?: string[]; module_focus?: Array<{ module_id: string; reason: string; source_ids: string[]; selected_by: 'user' | 'research' | 'initial' | null }> }
 export type ResearchMandate = ResearchMandateInput & ResearchRevision & {
   instrument_id: string; role: 'research_method'; entry_id: string | null; updated_at: string | null; versions?: ResearchMandate[]
   readonly user_focus?: string[]; readonly author?: { origin: 'user' | 'research' | 'initial'; display_name?: string } | null
@@ -116,6 +127,8 @@ export type HistoricalResearchCase = {
   limitations: string[]
 }
 export type ResearchDossier = {
+  available_modules?: Array<Pick<ResearchPlanModule, 'id' | 'title' | 'version'>>
+  research_plan?: ResearchPlan
   mandate?: ResearchMandate
   prior_sources?: NotebookSource[]
   frameworks: ResearchFramework[]
@@ -123,7 +136,7 @@ export type ResearchDossier = {
   historical_cases: HistoricalResearchCase[]
   historical_case_limitations?: string[]
   notebook: SavedResearchNotebook | null
-  notebook_history: Array<{ run_id: string; checked_at: string | null; important_changes: string[]; notebook?: SavedResearchNotebook }>
+  notebook_history: Array<{ version_id?: string; run_id: string; checked_at: string | null; important_changes: string[]; notebook?: SavedResearchNotebook }>
 }
 export type ResearchMaterialInput = { title: string; body: string; source: string; published_at?: string; effective_date?: string }
 
@@ -161,8 +174,8 @@ export function updateResearchTheme(instrumentId: string, themeId: string, theme
 
 const dossierPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/dossier`
 
-export function getResearchDossier(instrumentId: string, signal?: AbortSignal) {
-  return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=true`, { signal })
+export function getResearchDossier(instrumentId: string, signal?: AbortSignal, includeHistory = true) {
+  return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=${includeHistory}`, { signal })
 }
 
 export function getSavedResearchSource(instrumentId: string, sourceId: string, signal?: AbortSignal, versionId?: string) {
@@ -176,7 +189,7 @@ export type SavedComparison = {
     correlation_to_target?: number | null; excess_return_pp?: number | null; return_kind?: string; quote_basis?: string }>
 }
 
-export type SavedResearchSource = NotebookSource & {
+export type SavedResearchSource = NotebookSource & EventSource & {
   text?: string; body?: string
   snapshot?: Record<string, unknown>; company?: Record<string, unknown>
   data?: SavedComparison & Record<string, unknown> & {
