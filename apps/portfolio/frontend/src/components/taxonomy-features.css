@@ -2,7 +2,22 @@
 .taxonomy-tree-summary > .taxonomy-target-summary-meta { flex: 1 1 400px; }
 .taxonomy-tree-actions { display: flex; gap: 8px; margin-left: auto; }
 .taxonomy-tree-count { margin-left: 6px; color: var(--portfolio-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
-.taxonomy-table-hint { margin: 4px 0 12px; color: var(--portfolio-muted); font-size: 12px; line-height: 1.5; }
+.taxonomy-page-table .taxonomy-topbar { align-items: center; }
+.taxonomy-page-table .taxonomy-toolbar-button,
+.taxonomy-page-table .taxonomy-picker-trigger {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.taxonomy-page-table .taxonomy-toolbar-button { justify-content: center; }
+.taxonomy-page-table .taxonomy-picker-trigger { padding-left: 0; }
 .taxonomy-overview-table { min-width: 1110px; }
 .taxonomy-tree-scroll { scroll-padding-left: 280px; }
 .taxonomy-overview-table .holding-name-cell { min-width: 280px; }
@@ -35,25 +50,53 @@
 .taxonomy-overview-table .taxonomy-level-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .taxonomy-overview-table .taxonomy-entity-row-draggable .holding-name-cell { cursor: grab; }
 .taxonomy-overview-table .taxonomy-entity-row-draggable:active .holding-name-cell { cursor: grabbing; }
-.taxonomy-overview-table input[type='number'] { width: 86px; min-height: 30px; padding: 4px 6px; text-align: right; }
-.taxonomy-overview-table select { width: 104px; min-height: 30px; padding: 4px 22px 4px 6px; }
+.taxonomy-overview-table input[type='number'],
+.taxonomy-overview-table select {
+  box-sizing: border-box;
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  box-shadow: none;
+}
+.taxonomy-overview-table input[type='number'] { width: 86px; padding: 4px 6px; text-align: right; }
+.taxonomy-overview-table select { width: 104px; padding: 4px 22px 4px 6px; }
+.taxonomy-overview-table input[type='number']:hover:not(:disabled),
+.taxonomy-overview-table select:hover:not(:disabled) { border-bottom-color: var(--portfolio-line-strong); }
+.taxonomy-overview-table input[type='number']:focus-visible,
+.taxonomy-overview-table select:focus-visible {
+  outline: 1px solid var(--portfolio-line-strong);
+  outline-offset: 0;
+  border-bottom-color: var(--portfolio-accent);
+}
 .taxonomy-overview-table td > button { min-height: 26px; padding: 3px 6px; font-size: 12px; }
 .taxonomy-overview-table .taxonomy-subsection-row { border-top: 1px solid var(--portfolio-line-strong); background: var(--portfolio-band); }
-.taxonomy-overview-summary { margin: 12px 0; color: var(--portfolio-muted); font-size: 12px; text-align: right; }
 .taxonomy-editor-notice { padding: 10px 12px; margin: 8px 0; border-left: 2px solid var(--portfolio-line-strong); color: var(--portfolio-muted); background: var(--portfolio-band); font-size: 12px; line-height: 1.5; }
-.taxonomy-target-source { margin-left: 5px; color: var(--portfolio-muted); font-size: 10px; }
-.taxonomy-muted, .taxonomy-limit-date { color: var(--portfolio-muted); font-size: 11px; }
 .taxonomy-reminder-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--portfolio-muted); }
 .taxonomy-reminder-toggle input { width: auto; min-height: 0; }
 .taxonomy-add-instrument { display: grid; grid-template-columns: minmax(250px, 2fr) minmax(180px, 1fr) auto; align-items: end; gap: 12px; margin-top: 16px; padding: 16px 0 4px; border-top: 1px solid var(--portfolio-line); }
 .taxonomy-add-instrument > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--portfolio-muted); }
-.taxonomy-add-instrument select { width: 100%; }
+.taxonomy-add-instrument > label > span { display: inline-flex; align-items: center; gap: 6px; min-height: 16px; }
+.taxonomy-page-table .taxonomy-add-instrument input[type='search'],
+.taxonomy-page-table .taxonomy-add-instrument select {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 18px;
+}
 .taxonomy-add-actions { display: flex; gap: 8px; }
-.taxonomy-add-existing { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--portfolio-muted); }
 @media (max-width: 700px) {
   .taxonomy-tree-actions { margin-left: 0; }
   .taxonomy-add-instrument { grid-template-columns: 1fr; }
-  .taxonomy-limit-date { flex-basis: 100%; }
 }
 .research-taxonomy-choice {
   display: flex;

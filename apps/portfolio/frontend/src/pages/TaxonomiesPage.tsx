@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as Reac
 import { useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
+import InfoHint from '../components/InfoHint'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioInstrumentUniverseRecord,
@@ -168,11 +169,20 @@ const ROOT_TARGET_SCOPE_KEY = '__target_scope_root__'
 const DERIVATIVES_TARGET_LABEL = 'Derivatives'
 const CASH_TARGET_MEMBER_ID = '__cash__'
 const CASH_TARGET_LABEL = 'Cash'
+const TAXONOMY_VERSION_ERROR = 'The taxonomy page and server versions do not match. Complete this environment’s upgrade, then reload.'
+const CONCENTRATION_VERSION_ERROR = 'The concentration settings and page versions do not match. Complete this environment’s upgrade, then reload.'
 const EMPTY_TARGET_SET_DRAFT: TargetSetDraft = {
   name: '',
   status: 'active',
   notes: '',
   lines_by_member_key: {},
+}
+
+function configurationErrorMessage(message: string, zh: boolean) {
+  if (!zh) return message
+  if (message === TAXONOMY_VERSION_ERROR) return '分类页面与后台版本不一致。请完成当前环境的升级后重新加载。'
+  if (message === CONCENTRATION_VERSION_ERROR) return '集中度配置与页面版本不一致。请完成当前环境的升级后重新加载。'
+  return message
 }
 
 function targetScopeKey(comparatorTaxonomyNodeId: string | null) {
@@ -507,7 +517,12 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
   ])
 
   const supplementalMessages: string[] = []
-  const catalog = catalogResult.status === 'fulfilled' ? catalogResult.value : null
+  let catalog = catalogResult.status === 'fulfilled' ? catalogResult.value : null
+  let workspaceError = catalogResult.status === 'rejected' ? extractErrorMessage(catalogResult.reason) : null
+  if (catalog && (!Number.isInteger(catalog.taxonomy_configuration_version) || !Array.isArray(catalog.target_resolution))) {
+    catalog = null
+    workspaceError = TAXONOMY_VERSION_ERROR
+  }
   const holdingsWorkspace = holdingsResult.status === 'fulfilled' ? holdingsResult.value : null
   const accountsResponse = accountsResult.status === 'fulfilled' ? accountsResult.value : null
   const instrumentsResponse = instrumentsResult.status === 'fulfilled' ? instrumentsResult.value : null
@@ -526,7 +541,7 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
     holdingsWorkspace,
     accountsResponse,
     instrumentsResponse,
-    workspaceError: catalogResult.status === 'rejected' ? extractErrorMessage(catalogResult.reason) : null,
+    workspaceError,
     supplementalNotice: supplementalMessages.length ? supplementalMessages.join(' ') : null,
   }
 }
@@ -743,7 +758,7 @@ export default function TaxonomiesPage() {
     let current = true
     setConcentration(null)
     setConcentrationError(null)
-    if (!portfolioId || !holdingsWorkspace?.as_of_date) return
+    if (!portfolioId || !catalog || !holdingsWorkspace?.as_of_date) return
     getConcentration(portfolioId, holdingsWorkspace.as_of_date).then((result) => {
       if (current) setConcentration(result)
     }).catch((error) => { if (current) setConcentrationError(extractErrorMessage(error)) })
@@ -755,12 +770,15 @@ export default function TaxonomiesPage() {
     let current = true
     setConcentrationSettings(null)
     setConcentrationSettingsError(null)
-    if (!portfolioId || !holdingsWorkspace?.as_of_date) return
+    if (!portfolioId || !catalog || !holdingsWorkspace?.as_of_date) return
     getConcentrationSettings(portfolioId, holdingsWorkspace.as_of_date).then((settings) => {
+      if (!Number.isInteger(settings.latest_revision) || !Array.isArray(settings.enabled_taxonomy_ids) || !Array.isArray(settings.limits)) {
+        throw new Error(CONCENTRATION_VERSION_ERROR)
+      }
       if (current) setConcentrationSettings(settings)
     }).catch((error) => { if (current) setConcentrationSettingsError(extractErrorMessage(error)) })
     return () => { current = false }
-  }, [portfolioId, holdingsWorkspace?.as_of_date, concentrationRevision, targetEditMode])
+  }, [portfolioId, holdingsWorkspace?.as_of_date, catalog?.taxonomy_configuration_version, concentrationRevision, targetEditMode])
 
   useEffect(() => {
     if (targetEditMode) return
@@ -1602,30 +1620,21 @@ export default function TaxonomiesPage() {
     const scopeMembers = scopeMembersByScopeKey.get(scopeKey) ?? []
     const singleMember = scopeMembers.filter((item) => item.system_role !== 'cash').length === 1 && member.system_role !== 'cash'
     const stageBlank = !Object.values(draft?.lines_by_member_key ?? {}).some((line) => line.target_value.trim())
-    const inherited = kind === 'taa' && stageBlank
-    const basis = member.system_role === 'cash' ? 'weight' : scopeKey === ROOT_TARGET_SCOPE_KEY ? rootAllocationBasisDraft : allocationBasisDraftsByNodeId[scopeKey]
-    const title = member.system_role === 'cash'
-      ? (zh ? '现金预留占组合 NAV，不计入证券目标合计。' : 'Cash reserve as a share of portfolio NAV; excluded from security target totals.')
-      : (basis === 'weight' ? (zh ? '占父层可配置证券资金' : 'Share of the parent’s investable security capital') : (zh ? '占父层风险预算' : 'Share of the parent’s risk budget'))
     if (canEditPortfolio && editable) return <input type="number" min="0" max="100" step="any" value={value} disabled={Boolean(actionPending)}
-      placeholder={inherited ? (zh ? '继承战略' : 'Inherit SAA') : singleMember && stageBlank ? '100' : '—'}
-      title={title} aria-label={`${kind.toUpperCase()} target for ${member.label}`} draggable={false}
+      placeholder={kind === 'saa' && singleMember && stageBlank ? '100' : '—'}
+      aria-label={`${kind.toUpperCase()} target for ${member.label}`} draggable={false}
       onDragStart={preventTargetEditorDrag}
       onChange={(event) => updateDraftLine(scopeKey, kind, member.member_key, 'target_value', event.target.value)} />
     const resolved = resolvedTargets?.member_targets.find((item) => item.scope_node_id === targetScopeNodeId(scopeKey) && item.member_type === member.target_member_type && item.member_id === member.target_member_id)
     const resolvedValue = kind === 'saa' ? resolved?.strategic_value : resolved?.tactical_value
-    const source = kind === 'saa' ? resolved?.strategic_source : resolved?.tactical_source
-    return <span title={`${title}${kind === 'taa' && source === 'saa' ? (zh ? '；继承战略整层' : '; inherited from the whole SAA level') : ''}`}>
-      {resolvedValue != null ? formatPercent(resolvedValue) : '—'}{kind === 'taa' && source === 'saa' ? <small className="taxonomy-target-source">{zh ? '继承' : 'SAA'}</small> : null}
-    </span>
+    return resolvedValue != null ? formatPercent(resolvedValue) : '—'
   }
 
   function renderGlobalRiskTarget(member: TargetScopeMember) {
     if (member.system_role) return '—'
-    if (targetEditMode && hasTargetChanges) return <span className="taxonomy-muted">{zh ? '保存后更新' : 'After save'}</span>
+    if (targetEditMode && hasTargetChanges) return <span aria-label={zh ? '全组合风险目标保存后更新' : 'Portfolio risk target updates after save'}>—</span>
     const resolved = resolvedTargets?.member_targets.find((item) => item.scope_node_id === targetScopeNodeId(memberScopeKey(member)) && item.member_type === member.target_member_type && item.member_id === member.target_member_id)
-    return resolved?.tactical_global_risk_target != null ? formatPercent(resolved.tactical_global_risk_target)
-      : <span title={zh ? '父路径含多成员资金权重配置或目标未完整，无法直接推导全组合风险目标。' : 'A multi-member weight allocation or incomplete targets on this path prevent a directly derived portfolio risk target.'}>—</span>
+    return resolved?.tactical_global_risk_target != null ? formatPercent(resolved.tactical_global_risk_target) : '—'
   }
 
   function renderAllocationBasis(node: PortfolioTaxonomyNodeRecord | null) {
@@ -1633,7 +1642,7 @@ export default function TaxonomiesPage() {
     const hasMembers = (scopeMembersByScopeKey.get(scopeKey) ?? []).some((member) => member.system_role !== 'cash')
     if (!hasMembers) return '—'
     const value = node ? allocationBasisDraftsByNodeId[node.taxonomy_node_id] ?? node.allocation_basis : rootAllocationBasisDraft
-    if (!targetEditMode) return <span title={zh ? '控制此行下面直接成员的战略与战术目标' : 'Controls the SAA and TAA targets of this row’s direct children'}>{value === 'weight' ? (zh ? '权重' : 'Weight') : (zh ? '风险预算' : 'Risk budget')}</span>
+    if (!targetEditMode) return value === 'weight' ? (zh ? '权重' : 'Weight') : (zh ? '风险预算' : 'Risk budget')
     return <select aria-label={`Allocation basis for ${node?.node_name ?? selectedTaxonomy?.name}`} value={value} disabled={!canEditPortfolio || Boolean(actionPending)}
       onChange={(event) => { const next = event.target.value as AllocationBasis
         if (node) setAllocationBasisDraftsByNodeId((current) => ({ ...current, [node.taxonomy_node_id]: next }))
@@ -2366,7 +2375,6 @@ export default function TaxonomiesPage() {
     const key = concentrationLimitKey(scope, entityId, taxonomyId)
     if (targetEditMode && canEditPortfolio) return <input type="number" min="0" step="any"
       aria-label={`Concentration limit for ${name}`} value={limitDrafts[key] ?? ''} placeholder="—"
-      title={zh ? '占组合 NAV；留空不设限，0 表示禁止正敞口。' : 'Share of portfolio NAV; blank means no limit, zero prohibits positive exposure.'}
       disabled={!concentrationSettings || Boolean(actionPending)}
       onChange={(event) => setLimitDrafts((current) => ({ ...current, [key]: event.target.value }))} />
     const enabled = scope !== 'taxonomy' || taxonomyConcentrationEnabled
@@ -2390,7 +2398,6 @@ export default function TaxonomiesPage() {
     return <tr key={entity.entity_id}
       className={['taxonomy-entity-row', assignmentDragEnabled ? 'taxonomy-entity-row-draggable' : 'taxonomy-entity-row-drag-locked', selected ? 'taxonomy-entity-row-active' : ''].filter(Boolean).join(' ')}
       draggable={assignmentDragEnabled} data-assignment-drag={assignmentDragEnabled ? 'enabled' : 'disabled'}
-      aria-describedby={targetEditMode ? 'taxonomy-target-edit-lock-message' : undefined}
       onDragStart={assignmentDragEnabled ? (event) => handleEntityDragStart(event, entity) : undefined}
       onDragEnd={assignmentDragEnabled ? () => setDragTargetNodeId(null) : undefined}
       onContextMenu={canEditPortfolio && !lockedCashEntity && !targetEditMode ? (event) => handleEntityContextMenu(event, entity) : undefined}>
@@ -2447,7 +2454,7 @@ export default function TaxonomiesPage() {
     const rows: ReactElement[] = [<tr key={TAXONOMY_CASH_ROW_ID} className="taxonomy-system-cash-row taxonomy-category-row">
       <td><div className="taxonomy-node-row" style={{ paddingLeft: `${depth * 18}px` }}><button type="button" className="taxonomy-tree-toggle" aria-label="Toggle cash" aria-expanded={!collapsed} onClick={() => toggleNodeCollapse(TAXONOMY_CASH_ROW_ID)}>
         <span className={`taxonomy-tree-arrow ${collapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button><span>{zh ? '现金预留' : CASH_TARGET_LABEL}</span></div></td>
-      <td><span title={zh ? '现金预留单独占组合NAV' : 'Cash reserve is a separate share of portfolio NAV'}>NAV</span></td>
+      <td>NAV</td>
       <td>{cashAggregate.current_value_base != null ? formatCurrency(cashAggregate.current_value_base, baseCurrency) : '—'}</td>
       <td>{cashAggregate.current_weight != null ? formatPercent(cashAggregate.current_weight) : '—'}</td>
       <td>{renderTargetCell('saa', member, targetEditMode)}</td><td>{renderTargetCell('taa', member, targetEditMode)}</td><td>—</td><td>—</td>
@@ -2519,7 +2526,7 @@ export default function TaxonomiesPage() {
         {notice || workspaceError || actionError || supplementalNotice ? (
           <div className="page-toast-stack" role="status" aria-live="polite">
             {notice ? <div className="page-toast page-toast-success">{notice}</div> : null}
-            {workspaceError ? <div className="page-toast page-toast-error">{workspaceError}</div> : null}
+            {workspaceError ? <div className="page-toast page-toast-error">{configurationErrorMessage(workspaceError, zh)}</div> : null}
             {actionError ? <div className="page-toast page-toast-error">{actionError}</div> : null}
             {supplementalNotice ? <div className="page-toast">{supplementalNotice}</div> : null}
           </div>
@@ -2540,29 +2547,32 @@ export default function TaxonomiesPage() {
                   {taxonomyPickerOpen ? <div className="taxonomy-picker-menu">
                     {taxonomies.map((taxonomy) => <button type="button" key={taxonomy.taxonomy_id} className={`taxonomy-picker-option ${taxonomy.taxonomy_id === resolvedSelectedTaxonomyId ? 'taxonomy-picker-option-active' : ''}`}
                       translate="no" onClick={() => handleTaxonomySelection(taxonomy.taxonomy_id)}>{taxonomy.name}</button>)}
-                    {canEditPortfolio ? <button type="button" className="taxonomy-picker-option" onClick={() => { closeModalStack(); setShowTaxonomyCreate(true) }}>{zh ? '+ 新建分类' : '+ New taxonomy'}</button> : null}
                   </div> : null}
                 </div>
               </div>
               <div className="taxonomy-header-actions">
-                <button type="button" className="button-secondary" disabled={!canEditPortfolio || !selectedTaxonomy || targetEditMode || Boolean(actionPending)} onClick={() => startInstrumentAdd(selectedNode?.is_terminal ? selectedNode : null)}>{zh ? '+ 添加标的' : '+ Add instrument'}</button>
+                <button type="button" className="button-secondary taxonomy-toolbar-button" disabled={!canEditPortfolio || targetEditMode || Boolean(actionPending)} onClick={() => { closeModalStack(); setShowTaxonomyCreate(true) }}>{zh ? '+ 添加分类' : '+ Add taxonomy'}</button>
+                <button type="button" className="button-secondary taxonomy-toolbar-button" disabled={!canEditPortfolio || !selectedTaxonomy || targetEditMode || Boolean(actionPending)} onClick={() => startInstrumentAdd(selectedNode?.is_terminal ? selectedNode : null)}>{zh ? '+ 添加标的' : '+ Add instrument'}</button>
                 {targetEditMode ? <>
-                  <span className="taxonomy-limit-date">{zh ? '限额从 ' : 'Limits effective from '}{holdingsWorkspace?.as_of_date ?? '—'}{zh ? ' 起生效' : ''}</span>
-                  <button type="button" className="button-primary" onClick={() => void handleSaveTargetsConfiguration()} disabled={!canSaveTargetsConfiguration || Boolean(actionPending)}>{actionPending === 'targets-save' ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}</button>
-                  <button type="button" className="button-secondary" disabled={Boolean(actionPending)} onClick={cancelConfigurationEdit}>{zh ? '取消' : 'Cancel'}</button>
-                </> : <button type="button" className="button-primary" disabled={!canEditPortfolio || !selectedTaxonomy || refreshing || concentrationSettingsLoading || Boolean(actionPending)} onClick={beginConfigurationEdit}>{zh ? '编辑' : 'Edit'}</button>}
+                  <button type="button" className="button-primary taxonomy-toolbar-button" onClick={() => void handleSaveTargetsConfiguration()} disabled={!canSaveTargetsConfiguration || Boolean(actionPending)}>{actionPending === 'targets-save' ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}</button>
+                  <button type="button" className="button-secondary taxonomy-toolbar-button" disabled={Boolean(actionPending)} onClick={cancelConfigurationEdit}>{zh ? '取消' : 'Cancel'}</button>
+                </> : <button type="button" className="button-primary taxonomy-toolbar-button" disabled={!canEditPortfolio || !selectedTaxonomy || refreshing || concentrationSettingsLoading || Boolean(actionPending)} onClick={beginConfigurationEdit}>{zh ? '编辑' : 'Edit'}</button>}
+                <InfoHint label={targetEditMode ? (zh ? '编辑与保存' : 'Editing and saving') : (zh ? '分类操作' : 'Taxonomy actions')}
+                  detail={targetEditMode
+                    ? [zh ? '配置依据、战略与战术目标、集中度上限一起保存；编辑期间分类结构与归属锁定。' : 'Allocation bases, SAA and TAA targets, and concentration limits save together. Structure and assignment changes are locked while editing.',
+                      zh ? `限额从 ${holdingsWorkspace?.as_of_date ?? '—'} 起生效。` : `Limits take effect from ${holdingsWorkspace?.as_of_date ?? '—'}.`]
+                    : (zh ? '右键分类行可添加子分类、重命名或删除；右键标的可调整归属。' : 'Right-click a category to add a child, rename or delete it. Right-click an instrument to change its assignment.')} />
               </div>
             </div>
             {showInstrumentAdd && canEditPortfolio ? <form className="taxonomy-add-instrument" onSubmit={(event) => void handleAddRegistryInstrumentToUniverse(event)} aria-label={zh ? '添加标的' : 'Add instrument'}>
               <SecurityInstrumentPicker label={zh ? '标的' : 'Instrument'} ariaLabel="Search instrument" value={instrumentAddInstrumentId} instruments={instrumentRows.filter((item) => !isCashInstrument(item))}
                 portfolioId={portfolioId} onSelect={setInstrumentAddInstrumentId} onInstrumentRegistered={(instrument) => setInstrumentsResponse((current) => ({ portfolio_id: portfolioId, instruments: [...(current?.instruments ?? []).filter((item) => item.instrument_id !== instrument.instrument_id), instrument] }))} />
-              <label><span>{zh ? '归入分类' : 'Assign to'}</span><select aria-label="Instrument destination" value={instrumentAddNodeId} onChange={(event) => setInstrumentAddNodeId(event.target.value)}>
+              <label><span>{zh ? '归入分类' : 'Assign to'}{instrumentAddExistingAssignment ? <InfoHint label={zh ? '目前归属' : 'Current assignment'} detail={nodeById.get(instrumentAddExistingAssignment.taxonomy_node_id)?.node_name ?? instrumentAddExistingAssignment.taxonomy_node_id} /> : null}</span><select aria-label="Instrument destination" value={instrumentAddNodeId} onChange={(event) => setInstrumentAddNodeId(event.target.value)}>
                 <option value="">{zh ? '暂未分类' : 'Unassigned'}</option>{selectedTaxonomyNodes.filter((node) => node.is_terminal).map((node) => <option key={node.taxonomy_node_id} value={node.taxonomy_node_id}>{(nodePathByNodeId.get(node.taxonomy_node_id) ?? []).map((item) => item.node_name).join(' / ')}</option>)}
               </select></label>
-              <div className="taxonomy-add-actions"><button type="submit" className="button-primary" disabled={!instrumentAddInstrumentId || Boolean(actionPending) || Boolean(instrumentAddExistingAssignment && !instrumentAddNodeId)}>
+              <div className="taxonomy-add-actions"><button type="submit" className="button-primary taxonomy-toolbar-button" disabled={!instrumentAddInstrumentId || Boolean(actionPending) || Boolean(instrumentAddExistingAssignment && !instrumentAddNodeId)}>
                 {instrumentAddExistingAssignment && instrumentAddExistingAssignment.taxonomy_node_id !== instrumentAddNodeId ? (zh ? '移动标的' : 'Move instrument') : (zh ? '添加标的' : 'Add instrument')}
-              </button><button type="button" className="button-secondary" disabled={Boolean(actionPending)} onClick={() => setShowInstrumentAdd(false)}>{zh ? '取消' : 'Cancel'}</button></div>
-              {instrumentAddExistingAssignment ? <p className="taxonomy-add-existing">{zh ? '目前归属：' : 'Currently assigned to: '}{nodeById.get(instrumentAddExistingAssignment.taxonomy_node_id)?.node_name ?? instrumentAddExistingAssignment.taxonomy_node_id}</p> : null}
+              </button><button type="button" className="button-secondary taxonomy-toolbar-button" disabled={Boolean(actionPending)} onClick={() => setShowInstrumentAdd(false)}>{zh ? '取消' : 'Cancel'}</button></div>
             </form> : null}
           </section>
 
@@ -2576,27 +2586,35 @@ export default function TaxonomiesPage() {
                 </span>
               </div>
               <div className="taxonomy-tree-actions"><button type="button" className="table-inline-button" onClick={() => setCollapsedNodeIds(new Set())}>{zh ? '展开全部' : 'Expand all'}</button>
-                <button type="button" className="table-inline-button" onClick={() => setCollapsedNodeIds(new Set([TAXONOMY_ROOT_ROW_ID, ...selectedTaxonomyNodes.map((node) => node.taxonomy_node_id), TAXONOMY_DERIVATIVES_ROW_ID, TAXONOMY_CASH_ROW_ID, TAXONOMY_UNASSIGNED_ROW_ID]))}>{zh ? '收起全部' : 'Collapse all'}</button></div>
+                <button type="button" className="table-inline-button" onClick={() => setCollapsedNodeIds(new Set([...selectedTaxonomyNodes.map((node) => node.taxonomy_node_id), TAXONOMY_DERIVATIVES_ROW_ID, TAXONOMY_CASH_ROW_ID, TAXONOMY_UNASSIGNED_ROW_ID]))}>{zh ? '收起全部' : 'Collapse all'}</button></div>
             </div>
-            <p className="taxonomy-table-hint">{zh ? '父行“本层依据”决定其子行目标；战略与战术共用。战术整层留空时继承战略。根证券权重以扣除实际衍生品资金和现金预留后的资金为分母。' : 'Each parent’s basis controls its children’s SAA and TAA targets. A blank TAA level inherits SAA. Root security weights use capital after actual derivatives and the cash reserve.'}</p>
-            {targetEditMode ? <div id="taxonomy-target-edit-lock-message" className="taxonomy-editor-notice">{zh ? '可直接编辑整树。配置依据、目标和限额一次保存；分类结构与归属暂时锁定。' : 'Edit the whole tree. Bases, targets and limits save together; structure and assignments are locked until Save or Cancel.'}</div> : null}
             {targetEditMode && (targetSaveBlockedReason || concentrationValidationError) ? <div className="taxonomy-target-validation-message" role="alert">{targetSaveBlockedReason} {concentrationValidationError}</div> : null}
             {configurationConflict ? <div className="taxonomy-editor-notice"><span>{zh ? '草稿已保留。重新载入会放弃当前草稿，并读取最新配置。' : 'Your draft is preserved. Reloading discards this draft and reads the latest configuration.'}</span>{' '}
               <button type="button" className="table-inline-button" disabled={Boolean(actionPending)} onClick={() => { cancelConfigurationEdit(); setConcentrationRevision((value) => value + 1); void reloadWorkspace() }}>{zh ? '放弃草稿并重新载入' : 'Discard draft and reload'}</button></div> : null}
             {targetSetIntegrityNotice ? <div className="taxonomy-target-integrity-warning" role="alert">{targetSetIntegrityNotice}</div> : null}
-            {concentrationError || concentrationSettingsError ? <div className="taxonomy-editor-notice">{zh ? '集中度数据不可用：' : 'Concentration unavailable: '}{[concentrationError, concentrationSettingsError].filter(Boolean).join(' ')}</div> : null}
+            {concentrationError || concentrationSettingsError ? <div className="taxonomy-editor-notice">{zh ? '集中度数据不可用：' : 'Concentration unavailable: '}{[concentrationError, concentrationSettingsError].filter(Boolean).map((message) => configurationErrorMessage(message!, zh)).join(' ')}</div> : null}
             <HorizontalTableScroll className="table-shell taxonomy-tree-scroll"><table className="transactions-table taxonomy-overview-table" aria-label={zh ? '分类与资产总览' : 'Classification and asset overview'}>
-              <thead><tr><th>{zh ? '名称' : 'Name'}</th><th title={zh ? '决定下一层目标的含义' : 'Determines the target basis of direct children'}>{zh ? '本层依据' : 'Children’s basis'}</th>
-                <th title={zh ? '证券市值；衍生品账面金额' : 'Security market value; derivative carrying value'}>{zh ? '金额' : 'Value'}</th>
-                <th title={zh ? '集中度敞口占组合NAV；各父子行不可累加' : 'Concentration exposure / portfolio NAV; parents and children are not additive'}>{zh ? '敞口 / NAV' : 'Exposure / NAV'}</th>
-                <th>{zh ? '战略目标' : 'SAA target'}</th><th>{zh ? '战术目标' : 'TAA target'}</th>
-                <th>{zh ? '全组合战术风险目标' : 'Portfolio TAA risk target'}</th><th title={zh ? '手填提醒上限，留空不设限' : 'Manually entered reminder limit; blank means no limit'}>{zh ? '集中度上限' : 'Concentration limit'}</th>
+              <thead><tr><th>{zh ? '名称' : 'Name'}</th><th>{zh ? '本层依据' : 'Children’s basis'} <InfoHint label={zh ? '本层依据' : 'Children’s basis'} detail={zh
+                  ? ['父行的依据决定其直接子行目标的含义；战略与战术共用。', '权重目标占父层可配置证券资金；根层先扣除实际衍生品资金与现金预留。风险预算目标占父层风险预算。']
+                  : ['Each parent’s basis controls its direct children’s SAA and TAA targets.', 'Weight targets use the parent’s investable security capital, after actual derivatives and the cash reserve at the root. Risk budgets use the parent’s risk budget.']} /></th>
+                <th>{zh ? '金额' : 'Value'} <InfoHint label={zh ? '金额' : 'Value'} detail={zh ? '证券市值、衍生品账面金额，按组合本位币显示。' : 'Security market value and derivative carrying value, in the portfolio base currency.'} /></th>
+                <th>{zh ? '敞口 / NAV' : 'Exposure / NAV'} <InfoHint label={zh ? '敞口 / NAV' : 'Exposure / NAV'} detail={zh
+                  ? `集中度敞口占组合 NAV；父子行不可累加。组合 NAV：${portfolioNav != null ? formatCurrency(portfolioNav, baseCurrency) : '—'}。`
+                  : `Concentration exposure / portfolio NAV; parent and child rows are not additive. Portfolio NAV: ${portfolioNav != null ? formatCurrency(portfolioNav, baseCurrency) : '—'}.`} /></th>
+                <th>{zh ? '战略目标' : 'SAA target'} <InfoHint label={zh ? '战略目标' : 'SAA target'} detail={zh ? '同一父层证券目标合计 100%。现金预留单独占组合 NAV，不计入证券合计；衍生品只显示实际资金。' : 'Security targets total 100% within each parent. Cash is a separate NAV reserve, excluded from that total. Derivatives use actual capital only.'} /></th>
+                <th>{zh ? '战术目标' : 'TAA target'} <InfoHint label={zh ? '战术目标' : 'TAA target'} detail={zh ? '战术目标整层留空时继承战略；填写时须补齐本层全部成员。查看时显示实际生效的目标。' : 'A completely blank TAA level inherits SAA. A partially filled level must be completed. The read view shows effective targets.'} /></th>
+                <th>{zh ? '全组合战术风险目标' : 'Portfolio TAA risk target'} <InfoHint label={zh ? '全组合战术风险目标' : 'Portfolio TAA risk target'} detail={zh
+                  ? '沿父层风险预算推导至组合总风险。路径包含多成员权重配置或目标不完整时无法直接推导，显示 —。修改依据或目标后，保存时更新。'
+                  : 'Derived through parent risk budgets to total portfolio risk. A multi-member weight allocation or incomplete targets prevents derivation, shown as —. Changes to bases or targets update after saving.'} /></th>
+                <th>{zh ? '集中度上限' : 'Concentration limit'} <InfoHint label={zh ? '集中度上限' : 'Concentration limit'} detail={zh
+                  ? ['手填敞口 / NAV 提醒上限，不是优化器硬约束。留空不设限，0 表示禁止正敞口。', '根行开关只控制本分类节点的提醒；单一证券和 FCN 限额仍有效。']
+                  : ['A manually entered exposure / NAV reminder, not a hard optimizer constraint. Blank means no limit; zero prohibits positive exposure.', 'The root switch controls taxonomy-node reminders only. Individual security and FCN limits remain active.']} /></th>
               </tr></thead><tbody>
                 <tr className={`taxonomy-root-row ${!selectedNode ? 'taxonomy-node-row-active' : ''}`} onContextMenu={canEditPortfolio && !targetEditMode && !actionPending ? (event) => { event.preventDefault(); setSelectedNodeId(null); setContextMenuState({ kind: 'taxonomy', taxonomyId: selectedTaxonomy.taxonomy_id, x: event.clientX, y: event.clientY }) } : undefined}>
                   <td className="holding-name-cell"><div className="taxonomy-node-row"><button type="button" className="taxonomy-tree-toggle" aria-label={`${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'Expand' : 'Collapse'} ${selectedTaxonomy.name}`} aria-expanded={!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID)} onClick={() => toggleNodeCollapse(TAXONOMY_ROOT_ROW_ID)}><span className={`taxonomy-tree-arrow ${collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} /></button>
                     <button type="button" className="taxonomy-node-select" translate="no" onClick={() => revealTargetScope(ROOT_TARGET_SCOPE_KEY)}>{selectedTaxonomy.name}</button></div></td>
                   <td>{renderAllocationBasis(null)}</td><td>{displayedBookValueBase != null ? formatCurrency(displayedBookValueBase, baseCurrency) : '—'}</td><td>—</td><td>—</td><td>—</td><td>—</td>
-                  <td><label className="taxonomy-reminder-toggle" title={zh ? '只控制本分类节点的限额提醒；单一证券和FCN限额仍有效。' : 'Controls reminders for taxonomy nodes only; individual security and FCN limits remain active.'}>
+                  <td><label className="taxonomy-reminder-toggle">
                     <input type="checkbox" aria-label="Taxonomy concentration reminders" checked={taxonomyConcentrationEnabled} disabled={!canEditPortfolio || !targetEditMode || !concentrationSettings || Boolean(actionPending)} onChange={(event) => setTaxonomyConcentrationEnabled(event.target.checked)} />{zh ? '分类提醒' : 'Reminders'}</label></td>
                 </tr>
                 {!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? <>{renderNodeTreeRows(null, 1)}{renderDerivativeTreeRows(1)}{renderCashTreeRows(1)}
@@ -2605,27 +2623,26 @@ export default function TaxonomiesPage() {
                   {!collapsedNodeIds.has(TAXONOMY_UNASSIGNED_ROW_ID) ? coverageSummary.unassignedEntities.slice().sort((a, b) => a.label.localeCompare(b.label)).map((entity) => renderEntityTreeRow(entity, 2)) : null}
                 </> : null}
               </tbody></table></HorizontalTableScroll>
-            <p className="taxonomy-overview-summary">{zh ? '组合 NAV ' : 'Portfolio NAV '}{portfolioNav != null ? formatCurrency(portfolioNav, baseCurrency) : '—'}{' · '}{zh ? '展示账面金额 ' : 'Displayed book value '}{displayedBookValueBase != null ? formatCurrency(displayedBookValueBase, baseCurrency) : '—'}</p>
           </section> : null}
           <TaxonomyModal
             open={canEditPortfolio && showTaxonomyCreate}
-            title="New Taxonomy"
+            title={zh ? '添加分类' : 'New Taxonomy'}
             onClose={() => setShowTaxonomyCreate(false)}
           >
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleCreateTaxonomy(event)}>
               <div className="taxonomy-form-grid taxonomy-topbar-form-grid">
                 <label>
-                  <span>Name</span>
+                  <span>{zh ? '名称' : 'Name'}</span>
                   <input value={taxonomyName} onChange={(event) => setTaxonomyName(event.target.value)} required />
                 </label>
               </div>
               <div className="transaction-form-footer">
                 <div className="taxonomy-footer-actions">
                   <button type="button" className="toolbar-link" onClick={() => setShowTaxonomyCreate(false)}>
-                    Cancel
+                    {zh ? '取消' : 'Cancel'}
                   </button>
                   <button type="submit" className="toolbar-link button-primary" disabled={actionPending === 'taxonomy-create'}>
-                    {actionPending === 'taxonomy-create' ? 'Creating…' : 'Create Taxonomy'}
+                    {actionPending === 'taxonomy-create' ? (zh ? '创建中…' : 'Creating…') : (zh ? '创建分类' : 'Create Taxonomy')}
                   </button>
                 </div>
               </div>
@@ -2721,7 +2738,6 @@ export default function TaxonomiesPage() {
             >
               {contextMenuTaxonomy ? (
                 <>
-                  <button type="button" className="taxonomy-context-menu-item" onClick={() => { closeModalStack(); setContextMenuState(null); setShowTaxonomyCreate(true) }}>{zh ? '新建分类' : 'New taxonomy'}</button>
                   <button type="button" className="taxonomy-context-menu-item" onClick={() => startNodeCreate('root')}>{zh ? '添加子分类' : 'Add child category'}</button>
                   <button type="button" className="taxonomy-context-menu-item" onClick={() => startInstrumentAdd(null)}>{zh ? '添加标的' : 'Add instrument'}</button>
                   <button type="button" className="taxonomy-context-menu-item" disabled={concentrationSettingsLoading} onClick={beginConfigurationEdit}>{zh ? '编辑目标与限额' : 'Edit targets and limits'}</button>

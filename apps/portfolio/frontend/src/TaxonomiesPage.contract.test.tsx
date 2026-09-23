@@ -7,6 +7,7 @@ import TaxonomiesPage from './pages/TaxonomiesPage'
 import type { PortfolioTaxonomyCatalogResponse, PortfolioResolvedMemberTarget, SharedInstrumentRecord } from './lib/api'
 import { fcnContractFixture, holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
+import { useLanguage } from '../../../../packages/ui/src/i18n'
 
 const access = vi.hoisted(() => ({ can_edit: true }))
 const concentrationMocks = vi.hoisted(() => ({ getConcentration: vi.fn(), getConcentrationSettings: vi.fn() }))
@@ -60,6 +61,10 @@ function PortfolioNavigation() {
   const navigate = useNavigate()
   return <button onClick={() => navigate('/portfolios/4/taxonomies')}>Next portfolio</button>
 }
+function LanguageSwitch() {
+  const { setLanguage } = useLanguage()
+  return <button onClick={() => setLanguage('zh-Hans')}>Switch language</button>
+}
 async function ready() { await screen.findByRole('button', { name: 'Risk Assets' }); await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Taxonomy concentration reminders' })).toBeChecked()) }
 async function changeNumber(name: string, value: string) { fireEvent.change(screen.getByRole('spinbutton', { name }), { target: { value } }) }
 
@@ -103,7 +108,7 @@ describe('Taxonomies integrated tree contract', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Allocation basis for Allocation' }), 'weight')
     await changeNumber('SAA target for Growth', '55'); await changeNumber('SAA target for Defensive', '45')
     await changeNumber('TAA target for ALPHA · Alpha Fund', '100'); await changeNumber('Concentration limit for Risk Assets', '80')
-    expect(screen.getAllByText('After save').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText('Portfolio risk target updates after save').length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalledTimes(1))
     const payload = api.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]
@@ -142,7 +147,7 @@ describe('Taxonomies integrated tree contract', () => {
   it('keeps derived risk targets visible for concentration-only edits and preserves zero limits', async () => {
     const user = userEvent.setup(); renderPage(); await ready(); await user.click(screen.getByRole('button', { name: 'Edit' }))
     await changeNumber('Concentration limit for ALPHA · Alpha Fund', '0')
-    expect(screen.queryByText('After save')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Portfolio risk target updates after save')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.savePortfolioTaxonomyTargetConfiguration).toHaveBeenCalled())
     const payload = api.savePortfolioTaxonomyTargetConfiguration.mock.calls[0][2]
@@ -292,7 +297,8 @@ describe('Taxonomies integrated tree contract', () => {
   it('shows the existing assignment and explicitly moves an instrument without duplicating it', async () => {
     const user = userEvent.setup(); renderPage(); await ready(); await user.click(screen.getByRole('button', { name: '+ Add instrument' }))
     await user.type(screen.getByRole('searchbox', { name: 'Search instrument' }), 'Alpha'); await user.click(screen.getByRole('button', { name: /ALPHA.*Alpha Fund/ }))
-    expect(screen.getByText('Currently assigned to: Growth')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Current assignment: Growth' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Growth')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Instrument destination' }), 'defensive')
     await user.click(screen.getByRole('button', { name: 'Move instrument' }))
     await waitFor(() => expect(api.updatePortfolioTaxonomyAssignment).toHaveBeenCalledWith('3', 'tax', 'assignment-alpha', { taxonomy_node_id: 'defensive' }))
@@ -314,9 +320,78 @@ describe('Taxonomies integrated tree contract', () => {
     const user = userEvent.setup(); renderPage(); await ready()
     expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '+ Add instrument' })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'Collapse all' })); expect(screen.queryByRole('button', { name: 'Growth' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Add taxonomy' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Collapse Allocation' }))
+    await user.click(screen.getByRole('button', { name: 'Collapse all' }))
+    expect(screen.getByRole('button', { name: 'Risk Assets' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse Allocation' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Toggle cash' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: 'Toggle unassigned' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Growth' })).not.toBeInTheDocument()
+    expect(screen.queryByText('ALPHA · Alpha Fund')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Expand all' })); expect(screen.getByRole('button', { name: 'Growth' })).toBeInTheDocument()
     expect(screen.getByText('ALPHA · Alpha Fund')).toBeInTheDocument()
+  })
+
+  it.each([false, true])('creates a taxonomy from the visible toolbar, including an empty catalog (%s)', async (empty) => {
+    const catalog = catalogFixture()
+    if (empty) {
+      catalog.taxonomies = []; catalog.taxonomy_nodes = []; catalog.taxonomy_assignments = []
+      catalog.target_sets = []; catalog.target_set_lines = []; catalog.target_resolution = []
+      api.getPortfolioTaxonomyCatalog.mockResolvedValue(catalog)
+    }
+    api.createPortfolioTaxonomy.mockResolvedValue({ taxonomy_id: 'new-taxonomy', name: 'Regions' })
+    const user = userEvent.setup(); renderPage()
+    const add = await screen.findByRole('button', { name: '+ Add taxonomy' })
+    await user.click(add)
+    const dialog = screen.getByRole('dialog', { name: 'New Taxonomy' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'Regions')
+    await user.click(within(dialog).getByRole('button', { name: 'Create Taxonomy' }))
+    await waitFor(() => expect(api.createPortfolioTaxonomy).toHaveBeenCalledWith('3', { name: 'Regions', taxonomy_type: 'custom', purpose: null, root_allocation_basis: 'weight' }))
+  })
+
+  it('shows necessary explanations on demand through the shared info control', async () => {
+    const user = userEvent.setup(); renderPage(); await ready()
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Each parent’s basis controls/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^TAA target:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('A completely blank TAA level inherits SAA')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.queryByText(/Limits take effect/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Editing and saving:/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Limits take effect from 2026-07-15')
+    expect(screen.getByRole('button', { name: '+ Add taxonomy' })).toBeDisabled()
+  })
+
+  it('reports an old server contract without crashing or treating its configuration as empty', async () => {
+    const oldCatalog = { ...catalogFixture(), taxonomy_configuration_version: undefined, target_resolution: undefined }
+    api.getPortfolioTaxonomyCatalog.mockResolvedValue(oldCatalog)
+    renderPage()
+    expect(await screen.findByText(/The taxonomy page and server versions do not match/)).toBeInTheDocument()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(concentrationMocks.getConcentrationSettings).not.toHaveBeenCalled()
+  })
+
+  it('reports an old concentration contract without calling includes on a missing field', async () => {
+    concentrationMocks.getConcentrationSettings.mockResolvedValue({ portfolio_id: '3', revision: 1, rules: [] })
+    renderPage()
+    expect(await screen.findByText(/The concentration settings and page versions do not match/)).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Classification and asset overview' })).toBeInTheDocument()
+  })
+
+  it('preserves unsaved configuration and the editing session when the language changes', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<><TaxonomiesPage /><LanguageSwitch /></>, '/portfolios/3/taxonomies', '/portfolios/:portfolioId/taxonomies')
+    await ready(); await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await changeNumber('SAA target for Cash', '25')
+    await user.click(screen.getByRole('button', { name: 'Switch language' }))
+    expect(screen.getByRole('spinbutton', { name: 'SAA target for Cash' })).toHaveValue(25)
+    expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '+ 添加分类' })).toBeDisabled()
+    expect(api.getPortfolioTaxonomyCatalog).toHaveBeenCalledTimes(1)
+    expect(api.savePortfolioTaxonomyTargetConfiguration).not.toHaveBeenCalled()
   })
 
   it('keeps derivative carrying value separate from FCN concentration exposure and inline limits', async () => {
