@@ -93,7 +93,9 @@ explicit correction rather than choosing a different dimension silently. The
 selected dimension's disabled stages remain absent, including their cash
 reserve, so a disabled TAA continues to inherit SAA. Complete vectors within the
 old rounding tolerance are normalized proportionally; original values and
-disabled stages remain in the migration audit. The monotonic counter remains in
+disabled stages remain in the migration audit. Targets left in an empty current
+leaf are retired using the same cleanup as moving its last member; parent
+allocations stay unchanged and the original targets remain in the audit. The monotonic counter remains in
 `portfolio_taxonomy_state`.
 
 Migration 0068 expands every dated concentration revision to explicit member

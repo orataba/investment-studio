@@ -141,3 +141,77 @@ def test_disabled_taa_is_absent_after_migration_and_original_values_remain_audit
         assert root["taa"]["rows"] == root["saa"]["rows"]
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("empty_leaf_parent_budget", [0.0, 0.2])
+def test_empty_scope_orphans_are_retired_without_reallocating_parent_or_moving_assets(
+    postgres_reconciliation_database, empty_leaf_parent_budget,
+):
+    """A moved fund left unreachable SAA/TAA rows in the cloud's empty Hedge leaf."""
+    config = _portfolio_config(postgres_reconciliation_database)
+    command.upgrade(config, "20260923_0066")
+    engine = sa.create_engine(postgres_reconciliation_database)
+    try:
+        _seed_legacy(engine)
+        metadata = sa.MetaData(schema="portfolio")
+        tables = {name: sa.Table(name, metadata, autoload_with=engine) for name in (
+            "taxonomy_node_record", "taxonomy_assignment_record", "target_set_record", "target_set_line_record")}
+        with engine.begin() as connection:
+            for node_id in ("hedge", "neutral"):
+                connection.execute(tables["taxonomy_node_record"].insert().values(
+                    taxonomy_node_id=node_id, taxonomy_id="tree", parent_taxonomy_node_id="equity",
+                    node_name=node_id, sort_order=0, is_terminal=True,
+                    default_target_dimension="risk_budget", status="active"))
+            connection.execute(tables["taxonomy_assignment_record"].insert().values(
+                assignment_id="moved-fund", taxonomy_id="tree", target_scope="instrument",
+                target_entity_id="fund", taxonomy_node_id="neutral", status="active"))
+            for stage in ("saa", "taa"):
+                for scope in ("equity", "hedge", "neutral"):
+                    set_id = f"{scope}-{stage}"
+                    connection.execute(tables["target_set_record"].insert().values(
+                        target_set_id=set_id, taxonomy_id="tree", comparator_taxonomy_node_id=scope,
+                        name=set_id, target_set_type=stage, weight_enabled=False,
+                        risk_budget_enabled=True, status="active"))
+                    members = [("taxonomy_node", "hedge", empty_leaf_parent_budget),
+                               ("taxonomy_node", "neutral", 1 - empty_leaf_parent_budget)] if scope == "equity" else [
+                                   ("instrument", "fund", 1.0)]
+                    for kind, member_id, value in members:
+                        connection.execute(tables["target_set_line_record"].insert().values(
+                            target_line_id=f"{set_id}-{member_id}", target_set_id=set_id,
+                            taxonomy_node_id=member_id if kind == "taxonomy_node" else None,
+                            target_member_type=kind, target_member_id=member_id, target_risk_share=value))
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(sa.text("SELECT count(*) FROM portfolio.target_set_record "
+                "WHERE comparator_taxonomy_node_id='hedge'")) == 0
+            assert connection.scalar(sa.text("SELECT count(*) FROM portfolio.target_set_line_record "
+                "WHERE target_set_id IN ('hedge-saa','hedge-taa')")) == 0
+            assert connection.scalar(sa.text("SELECT taxonomy_node_id FROM portfolio.taxonomy_assignment_record "
+                "WHERE assignment_id='moved-fund'")) == "neutral"
+            assert connection.scalar(sa.text("SELECT count(*) FROM portfolio.taxonomy_node_record "
+                "WHERE taxonomy_node_id='hedge'")) == 1
+            current = connection.scalar(sa.text("SELECT configuration_json FROM portfolio.taxonomy_configuration_revision "
+                "WHERE taxonomy_id='tree' AND superseded_by_revision_id IS NULL"))
+            assert connection.scalar(sa.text("SELECT configuration_json FROM portfolio.taxonomy_configuration_revision "
+                "WHERE taxonomy_configuration_revision_id='original'")) == {"old": "audit"}
+        original = current["migration_audit"]["original_configuration"]
+        original_ids = {row["target_set_id"] for row in original["target_sets"]}
+        assert {"hedge-saa", "hedge-taa"} <= original_ids
+        assert {row["target_line_id"]: row["target_risk_share"] for row in original["target_set_lines"]
+            if row["target_set_id"] in {"hedge-saa", "hedge-taa"}} == {
+                "hedge-saa-fund": 1.0, "hedge-taa-fund": 1.0}
+        for stage in ("saa", "taa"):
+            lines = {row["target_member_id"]: row["target_value"] for row in current["target_set_lines"]
+                     if row["target_set_id"] == f"equity-{stage}"}
+            # A positive budget on an empty child still needs an explicit user
+            # decision. Migration must not silently assign it to its sibling.
+            assert lines == {"hedge": empty_leaf_parent_budget, "neutral": 1 - empty_leaf_parent_budget}
+            neutral = next(row for row in current["target_set_lines"] if row["target_set_id"] == f"neutral-{stage}")
+            assert (neutral["target_member_id"], neutral["target_value"]) == ("fund", 1.0)
+        from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
+        resolved = resolve_taxonomy_targets(current, scope_node_id="equity")
+        assert resolved["errors"] == []
+        hedge = next(row for row in resolved["scope_targets"] if row["scope_node_id"] == "hedge")
+        assert hedge["saa"]["status"] == hedge["taa"]["status"] == "missing"
+    finally:
+        engine.dispose()

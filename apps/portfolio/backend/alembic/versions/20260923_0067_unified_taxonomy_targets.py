@@ -23,6 +23,19 @@ def _target_basis(target_set, taxonomies, nodes):
             taxonomies[target_set["taxonomy_id"]]["root_default_target_dimension"])
 
 
+def _empty_scope_target_set_ids(nodes, target_sets, assignments):
+    """Match move/delete cleanup for current leaves whose last member departed."""
+    active_scopes = {(row["taxonomy_id"], row["taxonomy_node_id"])
+                     for row in nodes if row["status"] == "active"}
+    populated_scopes = {(row["taxonomy_id"], row["parent_taxonomy_node_id"])
+                        for row in nodes if row["status"] == "active"}
+    populated_scopes.update((row["taxonomy_id"], row["taxonomy_node_id"])
+                            for row in assignments if row["status"] == "active")
+    return {row["target_set_id"] for row in target_sets
+            if row["status"] == "active"
+            and (row["taxonomy_id"], row["comparator_taxonomy_node_id"]) in active_scopes - populated_scopes}
+
+
 def convert_target_lines(taxonomies, nodes, target_sets, lines):
     """Choose the configured basis, never convert capital percentages into RC."""
     tax_by_id = {row["taxonomy_id"]: row for row in taxonomies}
@@ -87,7 +100,13 @@ def upgrade():
     assignments = _rows(connection, "taxonomy_assignment_record")
     portfolios = _rows(connection, "portfolio_record")
     settings = _rows(connection, "research_settings_record")
-    converted = convert_target_lines(taxonomies, nodes, target_sets, old_lines)
+    # Old moves could leave targets in a now-empty leaf. The editor has no
+    # members to edit there; apply the runtime's empty-scope cleanup. Do not
+    # change the parent's allocation to that node or move any assignments.
+    # Both removed vectors remain in original_configuration below.
+    empty_scope_target_ids = _empty_scope_target_set_ids(nodes, target_sets, assignments)
+    converted = convert_target_lines(taxonomies, nodes,
+        [row for row in target_sets if row["target_set_id"] not in empty_scope_target_ids], old_lines)
     tax_by_id = {row["taxonomy_id"]: row for row in taxonomies}
     nodes_by_id = {row["taxonomy_node_id"]: row for row in nodes}
     for row in settings:
@@ -108,7 +127,7 @@ def upgrade():
     for target_set in target_sets:
         basis = _target_basis(target_set, tax_by_id, nodes_by_id)
         enabled_field = "weight_enabled" if basis == "weight" else "risk_budget_enabled"
-        if not target_set[enabled_field]:
+        if not target_set[enabled_field] or target_set["target_set_id"] in empty_scope_target_ids:
             connection.execute(sa.text("DELETE FROM target_set_record WHERE target_set_id=:id"),
                 {"id": target_set["target_set_id"]})
     for row in converted:
