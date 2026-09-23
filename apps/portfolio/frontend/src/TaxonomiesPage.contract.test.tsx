@@ -88,6 +88,10 @@ describe('Taxonomies integrated tree contract', () => {
     const table = screen.getByRole('table', { name: 'Classification and asset overview' })
     expect(within(table).getByRole('button', { name: 'Allocation' })).toHaveAttribute('translate', 'no')
     expect(within(table).getByRole('button', { name: 'Growth' })).toHaveAttribute('translate', 'no')
+    expect(within(table).getByRole('button', { name: 'Allocation' })).toHaveAttribute('data-tree-level', 'root')
+    expect(within(table).getByRole('button', { name: 'Risk Assets' })).toHaveAttribute('data-tree-level', 'primary')
+    expect(within(table).getByRole('button', { name: 'Growth' })).toHaveAttribute('data-tree-level', 'nested')
+    expect(within(table).getByText('ALPHA · Alpha Fund')).toHaveAttribute('data-tree-level', 'item')
     expect(within(table).getAllByRole('columnheader')).toHaveLength(8)
     const growth = screen.getByRole('button', { name: 'Growth' }).closest('tr')!
     expect(within(growth).getByText('Weight')).toBeInTheDocument()
@@ -98,6 +102,83 @@ describe('Taxonomies integrated tree contract', () => {
     expect(within(table).getByText('66.67%')).toBeInTheDocument()
     expect(screen.queryByText(/Manage taxonomy|Planning taxonomy|Configure children of|Taxonomy default limits|Portfolio limits/)).not.toBeInTheDocument()
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  })
+
+  it('preserves the table, column frames, rows, and toolbar action area when entering and leaving edit mode', async () => {
+    const user = userEvent.setup(); renderPage(); await ready()
+    const table = screen.getByRole('table') as HTMLTableElement
+    const columns = Array.from(table.querySelectorAll('col'))
+    const columnWidths = columns.map((column) => column.style.width)
+    const rows = Array.from(table.rows)
+    const cells = rows.map((row) => Array.from(row.cells))
+    const actionArea = screen.getByRole('button', { name: 'Edit' }).parentElement
+    expect(columns).toHaveLength(8)
+    expect(columnWidths.every((width) => Number.parseFloat(width) > 0)).toBe(true)
+    expect(columnWidths.reduce((total, width) => total + Number.parseFloat(width), 0)).toBe(100)
+
+    function expectStableTable() {
+      expect(screen.getByRole('table')).toBe(table)
+      expect(table.rows).toHaveLength(rows.length)
+      columns.forEach((column, index) => {
+        expect(table.querySelectorAll('col')[index]).toBe(column)
+        expect(column.style.width).toBe(columnWidths[index])
+      })
+      rows.forEach((row, rowIndex) => {
+        expect(table.rows[rowIndex]).toBe(row)
+        cells[rowIndex].forEach((cell, cellIndex) => expect(row.cells[cellIndex]).toBe(cell))
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    }
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    expectStableTable()
+    expect(screen.getByRole('button', { name: 'Save' }).parentElement).toBe(actionArea)
+    expect(screen.getByRole('button', { name: 'Cancel' }).parentElement).toBe(actionArea)
+    const growthCells = cells[rows.findIndex((row) => within(row).queryByRole('button', { name: 'Growth' }))]
+    expect(within(growthCells[1]).getByRole('combobox')).toHaveValue('weight')
+    expect(within(growthCells[4]).getByRole('spinbutton')).toHaveValue(60)
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expectStableTable()
+    expect(screen.getByRole('button', { name: 'Edit' }).parentElement).toBe(actionArea)
+    expect(growthCells[1]).toHaveTextContent('Weight')
+    expect(growthCells[4]).toHaveTextContent('60.00%')
+  })
+
+  it('labels amounts in the reporting currency and uses converted values without adding currencies to asset names', async () => {
+    api.getHoldingsWorkspace.mockResolvedValue(holdingsWorkspaceFixture({ base_currency: 'USD', rows: [
+      holdingFixture({ instrument_core: instrumentFixture({ currency: 'HKD' }), market_value: 6240, market_value_base: 800 }),
+      holdingFixture({ line_id: 'fcn-holding', instrument_core: null, holding_category: 'derivatives', holding_kind: 'fcn', derivative_contract_id: 'fcn-1', derivative_contract: fcnContractFixture({ currency: 'HKD' }), market_value: 390, market_value_base: 50 }),
+    ] }))
+    renderPage(); await ready()
+    expect(screen.getByRole('columnheader', { name: 'Value (USD)' })).toBeInTheDocument()
+    for (const [name, amount] of [['ALPHA · Alpha Fund', '$800.00'], ['Alpha FCN', '$50.00'], ['Operating Cash', '$200.00']]) {
+      const row = screen.getByText(name).closest('tr')!
+      const cells = within(row).getAllByRole('cell')
+      expect(cells[0]).not.toHaveTextContent(/USD|HKD/)
+      expect(cells[2]).toHaveTextContent(amount)
+    }
+    const root = within(screen.getByRole('table')).getByRole('button', { name: 'Allocation' }).closest('tr')!
+    expect(within(root).getAllByRole('cell')[2]).toHaveTextContent('$1,050.00')
+  })
+
+  it('uses the accounts reporting currency when holdings cannot be loaded', async () => {
+    api.getHoldingsWorkspace.mockRejectedValue(new Error('Holdings unavailable'))
+    renderPage()
+    expect(await screen.findByRole('columnheader', { name: 'Value (USD)' })).toBeInTheDocument()
+    const row = screen.getByText('Operating Cash').closest('tr')!
+    expect(within(row).getAllByRole('cell')[2]).toHaveTextContent('$200.00')
+    expect(screen.getByText(/Current holdings coverage unavailable/)).toBeInTheDocument()
+  })
+
+  it('does not invent a reporting currency when monetary data is unavailable', async () => {
+    api.getHoldingsWorkspace.mockRejectedValue(new Error('Holdings unavailable'))
+    api.getPortfolioAccountsWorkspace.mockRejectedValue(new Error('Accounts unavailable'))
+    renderPage()
+    expect(await screen.findByRole('columnheader', { name: 'Value' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /Value \(/ })).not.toBeInTheDocument()
+    const root = within(screen.getByRole('table')).getByRole('button', { name: 'Allocation' }).closest('tr')!
+    expect(within(root).getAllByRole('cell')[2]).toHaveTextContent('—')
+    expect(screen.getByText(/Account coverage unavailable/)).toBeInTheDocument()
   })
 
   it('saves basis, targets across levels, and all concentration limits in one request', async () => {
@@ -360,7 +441,8 @@ describe('Taxonomies integrated tree contract', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Edit' }))
     expect(screen.queryByText(/Limits take effect/)).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /^Editing and saving:/ }))
+    expect(screen.queryByRole('button', { name: /^Editing and saving:|^Taxonomy actions:|^Value:|^Exposure \/ NAV:|^SAA target:/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Concentration limit:/ }))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Limits take effect from 2026-07-15')
     expect(screen.getByRole('button', { name: '+ Add taxonomy' })).toBeDisabled()
   })

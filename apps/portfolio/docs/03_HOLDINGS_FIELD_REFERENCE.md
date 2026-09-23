@@ -92,7 +92,7 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 
 表格行本身不承担导航。只有资产、合约或现金/结算行的名称是详情入口；其他单元格保持普通表格行为，并允许按住鼠标左右拖动横向滚动。这样查看宽表时不会因为选中字段或拖动而误入详情页。
 
-`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 表内部按 taxonomy、instrument type、currency 等字段建立二级分组；FCN、Options 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 读取当前默认 planning taxonomy 与当前 active instrument assignment，不跟随 Holdings `as_of_date` 回放；无 assignment 为 `Unassigned`。covered call 等策略继续由独立股票行和 short Call 行表达，不额外制造策略持仓类型。
+`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 只在 Securities 表内部按 taxonomy、instrument type、currency 等字段建立分组；FCN、Options 与 Cash & Settlement 不参与该分组。菜单直接列出当前活动分类，并保留一级和末级分组。Taxonomy / Taxonomy Leaf 读取明确选中的分类及当前 active instrument assignment，不跟随 Holdings `as_of_date` 回放；未选择分类显示 `—`，已选分类但无 assignment 为 `Unassigned`。视图保存具体 taxonomy ID；分类失效后不静默改用其他分类，不存在全局默认分类。covered call 等策略继续由独立股票行和 short Call 行表达，不额外制造策略持仓类型。
 
 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，`strike_notional = strike × required underlying`。Strike 与 strike notional 使用 Registry underlying 的报价币种（`strike_currency`），不能沿用可能不同的合约权利金币种；base amount 只有在 as-of FX 可用时才发布。written Call 的 backing 将组合内同一 underlying 的现有股票数量与该标的全部 open written Call 所需数量汇总比较；written Put 将行权价币种的 settled cash 与该币种全部 open written Put 的 strike notional 汇总比较。结果只是一项组合层即时风险提示，不把股票或现金分配给具体合约，也不代表券商保证金或质押状态；不同币种的 premium/strike 没有明确兑换条款时不生成净 payoff，也不自动实物交割。covered call 等策略仍由独立股票和期权事实表达，不新增策略持仓类型。
 
@@ -140,8 +140,8 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 | `instrument` | Instrument | canonical instrument name；现金为对应币种现金名称 | 仅作为组名或 subtotal 标签 | `none` |
 | `ticker` | Ticker | Registry primary identifier | 留空 | `none` |
 | `instrument_type` | Instrument Type | canonical instrument type | 留空；可作为 Group By 维度 | `none` |
-| `taxonomy_top` | Taxonomy | Securities 使用当前默认 planning taxonomy 的顶层节点，无当前 assignment 为 Unassigned；不按 Holdings `as_of_date` 回放 | 留空；可作为 Securities 的 Group By 维度 | `none` |
-| `taxonomy_leaf` | Taxonomy Leaf | Securities 使用当前默认 planning taxonomy 的当前叶节点，无当前 assignment 为 Unassigned | 留空；可作为 Securities 的 Group By 维度 | `none` |
+| `taxonomy_top` | Taxonomy | Securities 使用明确选中分类的顶层节点；未选分类为 —，已选但无当前 assignment 为 Unassigned；不按 Holdings `as_of_date` 回放 | 留空；可作为 Securities 的 Group By 维度 | `none` |
+| `taxonomy_leaf` | Taxonomy Leaf | Securities 使用明确选中分类的当前叶节点；未选分类为 —，已选但无当前 assignment 为 Unassigned | 留空；可作为 Securities 的 Group By 维度 | `none` |
 | `currency` | Currency | instrument currency；现金为该现金币种 | 留空；可作为 Group By 维度 | `none` |
 | `holding_date` | Holding Since | 当前开放头寸里最早的 holding start date；不包含已经平掉的旧头寸 | 留空，不拼接不同成员起点 | `none` |
 | `quantity` | Quantity | 当前开放 quantity；short-option obligation 为负的 open contract count；现金行是 settled cash amount | 留空，不跨不同份额单位求和 | `none` |

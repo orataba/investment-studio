@@ -313,6 +313,9 @@ describe('Performance rendered page contract', () => {
     expect(screen.queryByRole('row', { name: /TWR Linking Difference/ })).not.toBeInTheDocument()
     expect(within(screen.getByRole('row', { name: /^Growth/ })).getByText('+2.00%')).toBeVisible()
     expect(within(screen.getByRole('row', { name: /^Asset/ })).getByText('+2.00%')).toBeVisible()
+    expect(screen.getByText('Growth')).toHaveAttribute('data-tree-level', 'primary')
+    expect(screen.getByText('Asset')).toHaveAttribute('data-tree-level', 'item')
+    expect(screen.getByText('Portfolio Total')).toHaveAttribute('data-tree-level', 'root')
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
       'aria-label', expect.stringContaining('Linked contributions sum to period TWR; child contributions sum to their parent.'),
     )
@@ -322,6 +325,7 @@ describe('Performance rendered page contract', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Update' }))
     const bridge = await screen.findByRole('row', { name: /TWR Linking Difference/ })
     expect(within(bridge).getByText('-0.12%')).toBeVisible()
+    expect(within(bridge).getByText('TWR Linking Difference')).not.toHaveAttribute('data-tree-level')
     expect(screen.getByRole('columnheader', { name: /Arithmetic Return Contribution/ })).toBeVisible()
     expect(screen.getByRole('button', { name: /Calculation details:/ })).toHaveAttribute(
       'aria-label', expect.stringContaining('Arithmetic contributions + TWR linking difference = period TWR.'),
@@ -367,11 +371,12 @@ describe('Performance rendered page contract', () => {
       '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
       '/portfolios/:portfolioId/performance')
     const row = await screen.findByRole('row', { name: /Valid group/ })
+    expect(within(row).getByText('Valid group')).toHaveAttribute('data-tree-level', 'item')
     expect(within(row).getByText('+0.75')).toBeVisible()
     expect(within(row).getByText('+25.00%')).toBeVisible()
   })
 
-  it('waits for the default planning taxonomy before loading calculation groups', async () => {
+  it('waits for the saved grouping classification before loading calculation groups', async () => {
     let resolveTaxonomyCatalog: ((value: object) => void) | undefined
     apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
       store: {
@@ -380,7 +385,7 @@ describe('Performance rendered page contract', () => {
           {
             id: 'risk-attribution',
             name: 'Default',
-            state: { groupBy: 'taxonomy' },
+            state: { groupBy: 'taxonomy', groupingTaxonomyId: 'tax-planning' },
           },
         ],
       },
@@ -427,6 +432,106 @@ describe('Performance rendered page contract', () => {
       axis: 'taxonomy',
       taxonomy_id: 'tax-planning',
     }, expect.any(AbortSignal))
+  })
+
+  it('lists current classifications directly and preserves the chosen grouping in the view', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      portfolio_id: '3',
+      taxonomies: [
+        { taxonomy_id: 'risk', name: 'Risk Characteristics', status: 'active' },
+        { taxonomy_id: 'industry', name: 'Industry', status: 'active' },
+        { taxonomy_id: 'old', name: 'Archived classification', status: 'archived' },
+      ],
+    })
+    const page = renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    await user.click(await screen.findByRole('button', { name: /Group By\s*: None/ }))
+    const menu = screen.getByRole('dialog', { name: 'Group performance calculations' })
+    expect(within(menu).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(menu).queryByText('Grouping')).not.toBeInTheDocument()
+    expect(within(menu).queryByText('Classifications')).not.toBeInTheDocument()
+    expect(within(menu).queryByRole('button', { name: 'Taxonomy' })).not.toBeInTheDocument()
+    expect(within(menu).queryByText('Archived classification')).not.toBeInTheDocument()
+    expect(within(menu).getByRole('button', { name: 'Risk Characteristics' })).toBeVisible()
+    await user.click(within(menu).getByRole('button', { name: 'Industry' }))
+    expect(screen.getByRole('button', { name: /Group By\s*: Industry/ })).toBeVisible()
+    await waitFor(() => expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenLastCalledWith('3', {
+      ...windowFilters, axis: 'taxonomy', taxonomy_id: 'industry',
+    }, expect.any(AbortSignal)))
+    let savedStore: { views: Array<{ id: string; state: { groupBy: string; groupingTaxonomyId: string } }> } | undefined
+    await waitFor(() => {
+      const calls = apiMocks.savePortfolioTableViewStore.mock.calls
+      savedStore = calls[calls.length - 1]?.[2]
+      expect(savedStore?.views.find((view) => view.id === 'risk-attribution')?.state).toEqual(expect.objectContaining({
+        groupBy: 'taxonomy', groupingTaxonomyId: 'industry',
+      }))
+    })
+    page.unmount()
+    apiMocks.getPortfolioTableViewStore.mockResolvedValue({ store: savedStore })
+    apiMocks.getPortfolioPerformanceCalculationGroups.mockClear()
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    expect(await screen.findByRole('button', { name: /Group By\s*: Industry/ })).toBeVisible()
+    await waitFor(() => expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
+      ...windowFilters, axis: 'taxonomy', taxonomy_id: 'industry',
+    }, expect.any(AbortSignal)))
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups.mock.calls.some(([, filters]) => filters.taxonomy_id === 'risk')).toBe(false)
+  })
+
+  it.each(['', 'deleted', 'archived'])('does not substitute the first classification for an unavailable saved grouping (%s)', async (groupingTaxonomyId) => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValue({ store: {
+      activeViewId: 'risk-attribution',
+      views: [{ id: 'risk-attribution', name: 'Default', state: { groupBy: 'taxonomy', groupingTaxonomyId } }],
+    } })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3', taxonomies: [
+      { taxonomy_id: 'risk', name: 'Risk Characteristics', status: 'active' },
+      { taxonomy_id: 'archived', name: 'Archived classification', status: 'archived' },
+    ] })
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    await waitFor(() => expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
+      ...windowFilters, axis: 'instrument', taxonomy_id: undefined,
+    }, expect.any(AbortSignal)))
+    expect(screen.getByRole('button', { name: /Group By\s*: None/ })).toBeVisible()
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups.mock.calls.every(([, filters]) => filters.axis !== 'taxonomy')).toBe(true)
+  })
+
+  it('switches classification together with each saved view', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3', taxonomies: [
+      { taxonomy_id: 'risk', name: 'Risk Characteristics', status: 'active' },
+      { taxonomy_id: 'industry', name: 'Industry', status: 'active' },
+    ] })
+    apiMocks.getPortfolioTableViewStore.mockResolvedValue({ store: {
+      activeViewId: 'risk-attribution',
+      views: [
+        { id: 'risk-attribution', name: 'Default', state: { groupBy: 'taxonomy', groupingTaxonomyId: 'risk' } },
+        { id: 'industry-view', name: 'Industry View', state: { groupBy: 'taxonomy', groupingTaxonomyId: 'industry' } },
+      ],
+    } })
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    await screen.findByRole('button', { name: /Group By\s*: Risk Characteristics/ })
+    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Industry View' }))
+    expect(screen.getByRole('button', { name: /Group By\s*: Industry/ })).toBeVisible()
+    await waitFor(() => expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenLastCalledWith('3', {
+      ...windowFilters, axis: 'taxonomy', taxonomy_id: 'industry',
+    }, expect.any(AbortSignal)))
+  })
+
+  it('shows a classification read failure without falling back to ungrouped performance', async () => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValue({ store: {
+      activeViewId: 'risk-attribution',
+      views: [{ id: 'risk-attribution', name: 'Default', state: { groupBy: 'taxonomy', groupingTaxonomyId: 'risk' } }],
+    } })
+    apiMocks.getPortfolioTaxonomyCatalog.mockRejectedValue(new Error('Classification read failed.'))
+    renderPortfolioPage(<PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15', '/portfolios/:portfolioId/performance')
+    expect((await screen.findAllByText('Classification read failed.')).length).toBeGreaterThan(0)
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).not.toHaveBeenCalled()
+    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
   })
 
   it.each(['price_return', 'unknown'] as const)('shows benchmark differences and relative statistics for a %s price series', async (returnSemantics) => {

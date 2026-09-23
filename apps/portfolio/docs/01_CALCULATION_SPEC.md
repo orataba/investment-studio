@@ -1198,7 +1198,7 @@ taxonomy 父节点包含全部后代；父子节点及不同 taxonomy 是不同�
 
 集中度是 `exposure / portfolio NAV` 的上限提醒，不是配置目标或求解器硬约束。单证券以 Registry instrument_id、单 FCN 以 contract_id 保存全组合唯一上限；分类节点以 taxonomy_id/node_id 保存各自上限。各 taxonomy 的启用集合只控制节点提醒，关闭时保留上限，单证券／FCN 限额不受影响。空白不限制，明确 0 禁止正敞口；只有 `known_weight > limit_weight` 才是 `breached`，等于上限不算超限。无上限为 `unconfigured`；缺数据为 `unavailable`，但已知下界超过上限仍是确定超限。没有通用规则、继承/覆盖、关注线或逐项启用状态。
 
-限额、taxonomy 监控集合与 FCN 分配共同保存为组合拥有的不可变 revision，使用明确 `effective_from`。树表统一保存采用当前展示估值日并在按钮旁说明；历史读取选择该日已生效配置，同一日期取最高 revision。编辑读取返回实际生效 `revision` 和全局最新 `latest_revision`，提交 `expected_revision=latest_revision` 防止覆盖并发写入；不能把未来已保存的内容当成当前日草稿。历史分组仍使用当前 taxonomy 名称、状态、层级和归属。
+限额、taxonomy 监控集合与 FCN 分配共同保存为组合拥有的不可变 revision，使用明确 `effective_from`。树表统一保存采用当前展示估值日，生效日由集中度列头提示说明；历史读取选择该日已生效配置，同一日期取最高 revision。编辑读取返回实际生效 `revision` 和全局最新 `latest_revision`，提交 `expected_revision=latest_revision` 防止覆盖并发写入；不能把未来已保存的内容当成当前日草稿。历史分组仍使用当前 taxonomy 名称、状态、层级和归属。
 
 Taxonomies 树表逐项编辑上限，可与依据和目标同事务保存。任一校验或 revision 冲突使整次操作回滚；纯集中度保存不增加 taxonomy_configuration_version、不重算核算数据、不使 Research 失效。Holdings 的“敞口与集中度”显示完整金额、余量与来源，在单 FCN 视图内编辑本金分配。Overview 仅列超限摘要，并披露已配置但缺数据的项目；DSH 使用同一投影，浏览分组不控制其覆盖范围。
 

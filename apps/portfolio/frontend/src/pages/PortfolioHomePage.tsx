@@ -144,11 +144,13 @@ type HoldingTaxonomyLabels = {
   topLevelLabel: string
   leafId: string
   leafLabel: string
+  leafDepth: number
 }
 
 type HoldingsColumnContext = {
   workspace: HoldingsWorkspaceResponse
   taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>
+  taxonomySelected: boolean
   riskMetrics?: HoldingsGroupRiskMetrics
 }
 
@@ -239,6 +241,7 @@ export const HOLDINGS_GROUP_AGGREGATION_KIND: Record<
 type HoldingsGroup = {
   key: string
   label: string
+  depth: number
   rows: PortfolioHoldingRow[]
   marketValueBase: number
   weight: number
@@ -278,6 +281,7 @@ type HoldingsViewState = {
   columns: HoldingsColumnKey[]
   columnWidths: Partial<Record<HoldingsColumnKey, number>>
   groupBy: HoldingsGroupByKey
+  groupingTaxonomyId?: string
   sortField: HoldingsColumnKey | null
   sortDirection: HoldingsSortDirection
 }
@@ -1490,14 +1494,9 @@ function resolveNodePath(
 }
 
 function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | null, selectedTaxonomyId?: string) {
-  const taxonomies = (catalog?.taxonomies ?? []).filter(
-    (taxonomy) => taxonomy.status === 'active',
-  )
-  return (
-    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId) ??
-    taxonomies[0] ??
-    null
-  )
+  return catalog?.taxonomies.find(
+    (taxonomy) => taxonomy.status === 'active' && taxonomy.taxonomy_id === selectedTaxonomyId,
+  ) ?? null
 }
 
 function labelsForTaxonomyAssignment(
@@ -1513,6 +1512,7 @@ function labelsForTaxonomyAssignment(
     topLevelLabel: topLevelNode?.node_name ?? 'Unassigned',
     leafId: leafNode?.taxonomy_node_id ?? `unassigned:${taxonomyId}`,
     leafLabel: leafNode?.node_name ?? 'Unassigned',
+    leafDepth: Math.max(1, path.length),
   }
 }
 
@@ -1567,12 +1567,13 @@ function taxonomyLabelsForHoldingRow(
 
 function taxonomyDisplayLabel(
   row: PortfolioHoldingRow,
-  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
+  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels> | null,
   level: 'top' | 'leaf',
 ) {
   if (row.holding_category !== 'securities') {
     return 'N/A'
   }
+  if (!taxonomyByInstrumentId) return '—'
   const labels = taxonomyLabelsForHoldingRow(row, taxonomyByInstrumentId)
   return level === 'top'
     ? labels?.topLevelLabel ?? 'Unassigned'
@@ -1669,6 +1670,7 @@ function normalizeHoldingsViewState(value: unknown): HoldingsViewState {
     columns: normalizeHoldingsColumns(Array.isArray(record.columns) ? (record.columns as HoldingsColumnKey[]) : DEFAULT_HOLDINGS_COLUMNS),
     columnWidths: normalizeHoldingsColumnWidths(record.columnWidths),
     groupBy: parseHoldingsGroupBy(typeof record.groupBy === 'string' ? record.groupBy : null),
+    groupingTaxonomyId: typeof record.groupingTaxonomyId === 'string' ? record.groupingTaxonomyId : '',
     sortField,
     sortDirection: parseHoldingsSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null),
   }
@@ -1688,6 +1690,7 @@ function serializeHoldingsViewState(value: HoldingsViewState) {
     columns: normalized.columns,
     columnWidths,
     groupBy: normalized.groupBy,
+    groupingTaxonomyId: normalized.groupingTaxonomyId ?? '',
     sortField: normalized.sortField,
     sortDirection: normalized.sortDirection,
   })
@@ -1819,9 +1822,9 @@ function holdingColumnExportValue(
     case 'instrument_type':
       return formatLabel(holdingAssetType(row))
     case 'taxonomy_top':
-      return taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top')
+      return taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'top')
     case 'taxonomy_leaf':
-      return taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf')
+      return taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'leaf')
     case 'currency':
       return holdingCurrency(row)
     case 'holding_date':
@@ -2008,7 +2011,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
         className="holding-name-stack"
         title={`${instrumentTrendCoverageLabel(row)}. ${instrumentTrendReasonLabel(row)}`}
       >
-        <span translate="no">{holdingName(row)}</span>
+        <span className="portfolio-tree-label" data-tree-level="item" translate="no">{holdingName(row)}</span>
       </div>
     ),
     sortValue: (row) => holdingName(row),
@@ -2039,14 +2042,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   taxonomy_top: {
     key: 'taxonomy_top',
     label: 'Taxonomy',
-    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top'),
-    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top'),
+    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'top'),
+    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'top'),
   },
   taxonomy_leaf: {
     key: 'taxonomy_leaf',
     label: 'Taxonomy Leaf',
-    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf'),
-    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf'),
+    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'leaf'),
+    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomySelected ? context.taxonomyByInstrumentId : null, 'leaf'),
   },
   currency: {
     key: 'currency',
@@ -2502,6 +2505,7 @@ function resolveGroupForRow(
     return {
       key: taxonomy?.topLevelId ?? '__unassigned_taxonomy__',
       label: taxonomy?.topLevelLabel ?? 'Unassigned',
+      depth: 1,
     }
   }
   if (groupBy === 'taxonomy_leaf') {
@@ -2509,18 +2513,19 @@ function resolveGroupForRow(
     return {
       key: taxonomy?.leafId ?? '__unassigned_taxonomy_leaf__',
       label: taxonomy?.leafLabel ?? 'Unassigned',
+      depth: taxonomy?.leafDepth ?? 1,
     }
   }
   if (groupBy === 'instrument_type') {
-    return { key: holdingAssetType(row), label: formatLabel(holdingAssetType(row)) }
+    return { key: holdingAssetType(row), label: formatLabel(holdingAssetType(row)), depth: 1 }
   }
   if (groupBy === 'currency') {
-    return { key: holdingCurrency(row), label: holdingCurrency(row) }
+    return { key: holdingCurrency(row), label: holdingCurrency(row), depth: 1 }
   }
   if (groupBy === 'coverage') {
-    return { key: row.coverage_status, label: formatLabel(row.coverage_status) }
+    return { key: row.coverage_status, label: formatLabel(row.coverage_status), depth: 1 }
   }
-  return { key: '__all__', label: 'All Holdings' }
+  return { key: '__all__', label: 'All Holdings', depth: 1 }
 }
 
 function buildGroupedRows(
@@ -2535,6 +2540,7 @@ function buildGroupedRows(
     const current = groups.get(groupRef.key) ?? {
       key: groupRef.key,
       label: groupRef.label,
+      depth: groupRef.depth,
       rows: [],
       marketValueBase: 0,
       weight: 0,
@@ -2658,6 +2664,9 @@ export default function PortfolioHomePage() {
     const rawGroupBy = searchParams.get('holdings_group_by')
     return rawGroupBy ? parseHoldingsGroupBy(rawGroupBy) : initialHoldingsViewState.groupBy
   })
+  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState(initialHoldingsViewState.groupingTaxonomyId ?? '')
+  const groupingTaxonomy = resolveGroupingTaxonomy(taxonomyCatalog, groupingTaxonomyId)
+  const renderedHoldingsGroupBy = holdingsGroupBy.startsWith('taxonomy_') && !groupingTaxonomy ? 'none' : holdingsGroupBy
   const waitingForTaxonomy = !taxonomyCatalog && !taxonomyError && (
     holdingsGroupBy.startsWith('taxonomy_') || holdingsColumns.some((column) => column.startsWith('taxonomy_'))
   )
@@ -2704,14 +2713,19 @@ export default function PortfolioHomePage() {
       columns: normalizeHoldingsColumns(holdingsColumns),
       columnWidths: normalizeHoldingsColumnWidths(holdingsColumnWidths),
       groupBy: holdingsGroupBy,
+      groupingTaxonomyId,
       sortField: holdingsSortField,
       sortDirection: holdingsSortDirection,
     }),
-    [holdingsColumnWidths, holdingsColumns, holdingsGroupBy, holdingsSortDirection, holdingsSortField],
+    [holdingsColumnWidths, holdingsColumns, holdingsGroupBy, groupingTaxonomyId, holdingsSortDirection, holdingsSortField],
   )
   const holdingsViewEdited = !holdingsViewStatesEqual(currentHoldingsViewState, activeHoldingsView.state)
   const selectedGroupByOption =
     HOLDINGS_GROUP_BY_OPTIONS.find((option) => option.value === holdingsGroupBy) ?? HOLDINGS_GROUP_BY_OPTIONS[0]
+  const selectedGroupByLabel = holdingsGroupBy.startsWith('taxonomy_') && groupingTaxonomy
+    ? `${groupingTaxonomy.name} · ${holdingsGroupBy === 'taxonomy_top' ? (zh ? '一级' : 'Top level') : (zh ? '末级' : 'Leaf level')}`
+    : holdingsGroupBy.startsWith('taxonomy_') && taxonomyError ? (zh ? '不可用' : 'Unavailable')
+    : selectedGroupByOption.label
 
   useEffect(() => {
     if (
@@ -2735,8 +2749,18 @@ export default function PortfolioHomePage() {
     portfolioId,
   ])
 
-  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState('')
-  const groupingTaxonomy = resolveGroupingTaxonomy(taxonomyCatalog, groupingTaxonomyId)
+  useEffect(() => {
+    if (!taxonomyCatalog || holdingsViewStoreReadyPortfolioId !== portfolioId || groupingTaxonomy) return
+    if (groupingTaxonomyId) setGroupingTaxonomyId('')
+    if (holdingsGroupBy.startsWith('taxonomy_')) {
+      setHoldingsGroupBy('none')
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current)
+        next.delete('holdings_group_by')
+        return next
+      })
+    }
+  }, [taxonomyCatalog, holdingsViewStoreReadyPortfolioId, portfolioId, groupingTaxonomy, groupingTaxonomyId, holdingsGroupBy, setSearchParams])
   const taxonomyByInstrumentId = useMemo(
     () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog, groupingTaxonomyId),
     [taxonomyCatalog, groupingTaxonomyId],
@@ -2747,9 +2771,10 @@ export default function PortfolioHomePage() {
         ? {
             workspace,
             taxonomyByInstrumentId,
+            taxonomySelected: Boolean(groupingTaxonomy),
           }
         : null,
-    [taxonomyByInstrumentId, workspace],
+    [taxonomyByInstrumentId, groupingTaxonomy, workspace],
   )
   const visibleColumns = useMemo(
     () => normalizeHoldingsColumns(holdingsColumns).map((column) => HOLDINGS_COLUMN_DEFINITIONS[column]),
@@ -2836,28 +2861,28 @@ export default function PortfolioHomePage() {
     [workspace?.rows],
   )
   const groupedSecurityRows = useMemo(() => {
-    if (holdingsGroupBy === 'none') {
+    if (renderedHoldingsGroupBy === 'none') {
       return []
     }
     return buildGroupedRows(
       sortedSecurityRows,
-      holdingsGroupBy,
+      renderedHoldingsGroupBy,
       taxonomyByInstrumentId,
       workspace,
     )
-  }, [holdingsGroupBy, sortedSecurityRows, taxonomyByInstrumentId, workspace])
+  }, [renderedHoldingsGroupBy, sortedSecurityRows, taxonomyByInstrumentId, workspace])
 
-  const riskGroupingTaxonomy = holdingsGroupBy.startsWith('taxonomy_') ? taxonomyByInstrumentId : null
+  const riskGroupingTaxonomy = renderedHoldingsGroupBy.startsWith('taxonomy_') ? taxonomyByInstrumentId : null
   const securityRiskMetrics = useMemo(() => {
     if (!workspace) return null
-    const groups = holdingsGroupBy === 'none' ? [] : buildGroupedRows(
-      securityRows, holdingsGroupBy, riskGroupingTaxonomy ?? new Map(), workspace,
+    const groups = renderedHoldingsGroupBy === 'none' ? [] : buildGroupedRows(
+      securityRows, renderedHoldingsGroupBy, riskGroupingTaxonomy ?? new Map(), workspace,
     )
     return {
       subtotal: buildHoldingsGroupRiskMetrics(securityRows, workspace),
       groups: new Map(groups.map((group) => [group.key, buildHoldingsGroupRiskMetrics(group.rows, workspace)])),
     }
-  }, [securityRows, workspace, holdingsGroupBy, riskGroupingTaxonomy])
+  }, [securityRows, workspace, renderedHoldingsGroupBy, riskGroupingTaxonomy])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -2882,6 +2907,7 @@ export default function PortfolioHomePage() {
     setHoldingsColumnDraft(normalized.columns)
     setHoldingsColumnWidths(normalized.columnWidths)
     setHoldingsGroupBy(normalized.groupBy)
+    setGroupingTaxonomyId(normalized.groupingTaxonomyId ?? '')
     setHoldingsSortField(normalized.sortField)
     setHoldingsSortDirection(normalized.sortDirection)
     setSearchParams((current) => {
@@ -3013,8 +3039,9 @@ export default function PortfolioHomePage() {
     })
   }
 
-  function handleGroupByChange(value: HoldingsGroupByKey) {
+  function handleGroupByChange(value: HoldingsGroupByKey, taxonomyId?: string) {
     setHoldingsGroupBy(value)
+    if (taxonomyId) setGroupingTaxonomyId(taxonomyId)
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
       if (value === 'none') {
@@ -3126,13 +3153,13 @@ export default function PortfolioHomePage() {
       )
     }
     const securityHeader = [
-      ...(holdingsGroupBy !== 'none' ? ['Security Group'] : []),
+      ...(renderedHoldingsGroupBy !== 'none' ? ['Security Group'] : []),
       ...visibleColumns.map((column) => column.label),
     ]
     const securityDataRows: TableCell[][] = []
     const appendSecurityRow = (row: PortfolioHoldingRow, groupLabel: string | null) => {
       securityDataRows.push([
-        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'Unassigned'] : []),
+        ...(renderedHoldingsGroupBy !== 'none' ? [groupLabel ?? 'Unassigned'] : []),
         ...visibleColumns.map((column) =>
           holdingColumnExportValue(column.key, row, columnContext),
         ),
@@ -3144,7 +3171,7 @@ export default function PortfolioHomePage() {
       riskMetrics: HoldingsGroupRiskMetrics | undefined,
     ) => {
       securityDataRows.push([
-        ...(holdingsGroupBy !== 'none' ? [label] : []),
+        ...(renderedHoldingsGroupBy !== 'none' ? [label] : []),
         ...visibleColumns.map((column, index) =>
           index === 0
             ? `${label} (${workspace.base_currency})`
@@ -3152,7 +3179,7 @@ export default function PortfolioHomePage() {
         ),
       ])
     }
-    if (holdingsGroupBy === 'none') {
+    if (renderedHoldingsGroupBy === 'none') {
       sortedSecurityRows.forEach((row) => appendSecurityRow(row, null))
     } else {
       groupedSecurityRows.forEach((group) => {
@@ -3509,7 +3536,7 @@ export default function PortfolioHomePage() {
             >
               {index === 0 ? (
                 <div className={`holdings-group-header holdings-${level}-header`}>
-                  <span className="holdings-group-title">{group.label || 'Unassigned'}</span>
+                  <span className="holdings-group-title portfolio-tree-label" data-tree-level={group.depth > 1 ? 'nested' : 'primary'}>{group.label || 'Unassigned'}</span>
                   <span className="holdings-group-count">{formatNumber(group.rows.length, 0)}</span>
                 </div>
               ) : (
@@ -3873,7 +3900,7 @@ export default function PortfolioHomePage() {
                       onClick={() => setHoldingsGroupByOpen(true)}
                     >
                       Group By{'\u00A0: '}
-                      {selectedGroupByOption.label}{holdingsGroupBy.startsWith('taxonomy_') && groupingTaxonomy ? ` · ${groupingTaxonomy.name}` : ''}
+                      {selectedGroupByLabel}
                     </button>
                   </div>
                 </div>
@@ -3955,7 +3982,7 @@ export default function PortfolioHomePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {holdingsGroupBy !== 'none'
+                      {renderedHoldingsGroupBy !== 'none'
                         ? groupedSecurityRows.map((group) => (
                             <Fragment key={group.key}>
                               {renderHoldingsGroupRow(group, 'subgroup')}
@@ -4108,12 +4135,7 @@ export default function PortfolioHomePage() {
               </button>
             </div>
             <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
-              <label>{zh ? '分类' : 'Taxonomy'} <select aria-label={zh ? '持仓分组分类' : 'Holdings grouping taxonomy'} value={groupingTaxonomy?.taxonomy_id ?? ''}
-                onChange={(event) => { setGroupingTaxonomyId(event.target.value); setHoldingsGroupBy('taxonomy_top') }}>
-                {!groupingTaxonomy && <option value="">{zh ? '暂无分类' : 'No taxonomy'}</option>}
-                {(taxonomyCatalog?.taxonomies ?? []).filter((taxonomy) => taxonomy.status === 'active').map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}</option>)}
-              </select></label>
-              {HOLDINGS_GROUP_BY_OPTIONS.map((option) => (
+              {HOLDINGS_GROUP_BY_OPTIONS.filter((option) => !option.value.startsWith('taxonomy_')).map((option) => (
                 <button
                   type="button"
                   className={`portfolio-table-config-groupby-option ${option.value === holdingsGroupBy ? 'portfolio-table-config-groupby-option-active' : ''}`}
@@ -4122,6 +4144,21 @@ export default function PortfolioHomePage() {
                 >
                   <span>{option.label}</span>
                 </button>
+              ))}
+              {(taxonomyCatalog?.taxonomies ?? []).filter((taxonomy) => taxonomy.status === 'active').map((taxonomy) => (
+                <div className="portfolio-table-config-groupby-section" role="group" aria-label={taxonomy.name} key={taxonomy.taxonomy_id}>
+                  {(['taxonomy_top', 'taxonomy_leaf'] as const).map((value) => (
+                    <button
+                      type="button"
+                      className={`portfolio-table-config-groupby-option ${value === holdingsGroupBy && taxonomy.taxonomy_id === groupingTaxonomyId ? 'portfolio-table-config-groupby-option-active' : ''}`}
+                      aria-pressed={value === holdingsGroupBy && taxonomy.taxonomy_id === groupingTaxonomyId}
+                      key={value}
+                      onClick={() => handleGroupByChange(value, taxonomy.taxonomy_id)}
+                    >
+                      <span><span translate="no">{taxonomy.name}</span> · {value === 'taxonomy_top' ? (zh ? '一级' : 'Top level') : (zh ? '末级' : 'Leaf level')}</span>
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
           </div>

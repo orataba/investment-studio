@@ -16,6 +16,7 @@ import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import RiskRankedBars from '../components/RiskRankedBars'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   getHoldingsWorkspace,
   getPortfolioInstrumentPriceChart,
@@ -808,6 +809,7 @@ function accumulateBucket(
 }
 
 export default function OverviewPage() {
+  const zh = useLanguage().language === 'zh-Hans'
   const { portfolioId = '' } = useParams()
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
@@ -1096,8 +1098,10 @@ export default function OverviewPage() {
     [benchmarkChart],
   )
 
-  const compositionTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
-  const compositionTaxonomyId = (compositionTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId) ?? compositionTaxonomies[0])?.taxonomy_id ?? null
+  const compositionTaxonomies = taxonomyCatalog?.portfolio_id === portfolioId
+    ? taxonomyCatalog.taxonomies.filter((taxonomy) => taxonomy.status === 'active') : []
+  const compositionTaxonomyId = (compositionTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId)
+    ?? (!selectedTaxonomyId && compositionTaxonomies.length === 1 ? compositionTaxonomies[0] : null))?.taxonomy_id ?? null
 
   const composition = useMemo(() => {
     const nodesById = new Map<string, PortfolioTaxonomyNodeRecord>(
@@ -1121,6 +1125,8 @@ export default function OverviewPage() {
         leafLabel: string
       }
     >()
+
+    if (!compositionTaxonomyId) return { topLevelBuckets: [], assignedLabelByInstrumentId }
 
     nonCashHoldingsRows.forEach((row) => {
       const value = baseAmountForRow(
@@ -1484,7 +1490,7 @@ export default function OverviewPage() {
     {
       key: 'sleeve',
       label: TOP_HOLDING_COLUMN_LABELS.sleeve,
-      render: (row) => composition.assignedLabelByInstrumentId.get(holdingReferenceId(row))?.leafLabel ?? 'Unassigned',
+      render: (row) => composition.assignedLabelByInstrumentId.get(holdingReferenceId(row))?.leafLabel ?? (compositionTaxonomyId ? 'Unassigned' : '—'),
     },
     {
       key: 'sparkline',
@@ -1835,11 +1841,13 @@ export default function OverviewPage() {
                       <select aria-label="Overview taxonomy" value={compositionTaxonomyId ?? ''} onChange={(event) => {
                         setSelectedTaxonomyId(event.target.value)
                         try { localStorage.setItem(taxonomyStorageKey, event.target.value) } catch { /* Browsing works without storage. */ }
-                      }}>{compositionTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}</option>)}</select>
+                      }}><option value="" disabled>{zh ? '请选择分类' : 'Select a taxonomy'}</option>{compositionTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}</option>)}</select>
                     </label> : null}
                   </div>
                   {taxonomyLoading ? <CalculationStatus /> : taxonomyError ? (
                     <div className="error-state">{taxonomyError}</div>
+                  ) : !compositionTaxonomyId ? (
+                    <div className="price-chart-empty">{compositionTaxonomies.length ? (zh ? '请选择分类' : 'Select a taxonomy.') : (zh ? '暂无分类' : 'No taxonomy.')}</div>
                   ) : sleeveRibbonSegments ? (
                     <StrategySleeveDonut
                       segments={sleeveRibbonSegments}

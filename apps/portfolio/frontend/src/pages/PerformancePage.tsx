@@ -13,7 +13,6 @@ import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
-import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
@@ -114,6 +113,7 @@ type RelativePerformanceMetrics = {
 type CalculationGroupByOption = {
   value: CalculationGroupByKey
   label: string
+  taxonomyId?: string
   disabled?: boolean
 }
 
@@ -152,6 +152,7 @@ type CalculationTableViewState = {
   columns: CalculationColumnKey[]
   mode: CalculationTableMode
   groupBy: CalculationGroupByKey
+  groupingTaxonomyId: string
   sortField: CalculationColumnKey | null
   sortDirection: CalculationSortDirection
 }
@@ -322,6 +323,7 @@ const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
   columns: RISK_ATTRIBUTION_COLUMNS,
   mode: 'risk_attribution',
   groupBy: 'none',
+  groupingTaxonomyId: '',
   sortField: null,
   sortDirection: 'asc',
 }
@@ -342,6 +344,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
       columns: FULL_CALCULATION_COLUMNS,
       mode: 'calculation',
       groupBy: 'none',
+      groupingTaxonomyId: '',
       sortField: null,
       sortDirection: 'asc',
     },
@@ -367,6 +370,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
       ],
       mode: 'calculation',
       groupBy: 'none',
+      groupingTaxonomyId: '',
       sortField: null,
       sortDirection: 'asc',
     },
@@ -682,6 +686,7 @@ function normalizeCalculationTableViewState(value: unknown): CalculationTableVie
     ),
     mode: parseCalculationTableMode(typeof record.mode === 'string' ? record.mode : null),
     groupBy: parseCalculationGroupBy(typeof record.groupBy === 'string' ? record.groupBy : null),
+    groupingTaxonomyId: typeof record.groupingTaxonomyId === 'string' ? record.groupingTaxonomyId : '',
     sortField,
     sortDirection: parseCalculationSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null),
   }
@@ -693,6 +698,7 @@ function serializeCalculationTableViewState(value: CalculationTableViewState) {
     columns: normalized.columns,
     mode: normalized.mode,
     groupBy: normalized.groupBy,
+    groupingTaxonomyId: normalized.groupingTaxonomyId,
     sortField: normalized.sortField,
     sortDirection: normalized.sortDirection,
   })
@@ -1531,7 +1537,6 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
 }
 
 function PerformancePage() {
-  const zh = useLanguage().language === 'zh-Hans'
   const { portfolioId } = useParams<{ portfolioId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -1705,32 +1710,42 @@ function PerformancePage() {
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [taxonomyCatalogReadyPortfolioId, setTaxonomyCatalogReadyPortfolioId] = useState<string | null>(null)
+  const [taxonomyCatalogError, setTaxonomyCatalogError] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
-  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState('')
-  const groupingTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
+  const [groupingTaxonomyId, setGroupingTaxonomyId] = useState(initialCalculationTableViewState.groupingTaxonomyId)
+  const groupingTaxonomies = useMemo(
+    () => taxonomyCatalog && taxonomyCatalog.portfolio_id === portfolioId
+      ? taxonomyCatalog.taxonomies.filter((taxonomy) => taxonomy.status === 'active')
+      : [],
+    [portfolioId, taxonomyCatalog],
+  )
   const selectedGroupingTaxonomy = useMemo(
-    () =>
-      groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === groupingTaxonomyId) ??
-      groupingTaxonomies[0] ?? null,
-    [taxonomyCatalog, groupingTaxonomyId],
+    () => groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === groupingTaxonomyId) ?? null,
+    [groupingTaxonomies, groupingTaxonomyId],
   )
   const taxonomyCatalogReady = taxonomyCatalogReadyPortfolioId === portfolioId
   const calculationTableViewStoreSettled =
     calculationTableViewStoreSettledPortfolioId === portfolioId
   const effectiveCalculationGroupBy: CalculationGroupByKey =
-    calculationGroupBy === 'taxonomy' && taxonomyCatalogReady && !selectedGroupingTaxonomy
+    calculationGroupBy === 'taxonomy' && taxonomyCatalogReady && !taxonomyCatalogError && !selectedGroupingTaxonomy
       ? 'none'
       : calculationGroupBy
   const resolvedCalculationGroupBy: PortfolioContributionAxis =
     effectiveCalculationGroupBy === 'none' ? 'instrument' : effectiveCalculationGroupBy
   const calculationGroupsReady =
     calculationTableViewStoreSettled &&
-    (resolvedCalculationGroupBy !== 'taxonomy' || taxonomyCatalogReady)
+    (resolvedCalculationGroupBy !== 'taxonomy' || (taxonomyCatalogReady && Boolean(selectedGroupingTaxonomy)))
+  useEffect(() => {
+    if (!taxonomyCatalogReady || taxonomyCatalogError || !calculationTableViewStoreSettled) return
+    if (groupingTaxonomyId && !selectedGroupingTaxonomy) setGroupingTaxonomyId('')
+    if (calculationGroupBy === 'taxonomy' && !selectedGroupingTaxonomy) setCalculationGroupBy('none')
+  }, [calculationGroupBy, calculationTableViewStoreSettled, groupingTaxonomyId, selectedGroupingTaxonomy,
+    taxonomyCatalogError, taxonomyCatalogReady])
   const calculationGroupsFilters = useMemo(
     () => ({
       ...calculationWindowFilters,
@@ -1776,7 +1791,8 @@ function PerformancePage() {
     fallbackError: 'Failed to load calculation groups.',
   })
   const calculationGroupsPending =
-    calculationGroupsLoading || Boolean(workspace && !calculationGroupsReady)
+    calculationGroupsLoading || Boolean(workspace && !calculationGroupsReady && !taxonomyCatalogError)
+  const calculationGroupsDisplayError = calculationGroupsError ?? (calculationGroupBy === 'taxonomy' ? taxonomyCatalogError : null)
   const calculationGroupByOptions = useMemo<CalculationGroupByOption[]>(
     () => [
       {
@@ -1795,16 +1811,17 @@ function PerformancePage() {
         value: 'account',
         label: 'Account',
       },
-      {
+      ...groupingTaxonomies.map((taxonomy): CalculationGroupByOption => ({
         value: 'taxonomy',
-        label: 'Taxonomy',
-        disabled: !selectedGroupingTaxonomy,
-      },
+        taxonomyId: taxonomy.taxonomy_id,
+        label: taxonomy.name,
+      })),
     ],
-    [selectedGroupingTaxonomy],
+    [groupingTaxonomies],
   )
   const selectedCalculationGroupByOption =
-    calculationGroupByOptions.find((option) => option.value === effectiveCalculationGroupBy) ??
+    calculationGroupByOptions.find((option) => option.value === effectiveCalculationGroupBy
+      && (option.value !== 'taxonomy' || option.taxonomyId === groupingTaxonomyId)) ??
     calculationGroupByOptions[0]
   const calculationTableViews = useMemo(
     () => getCalculationTableViews(calculationTableViewStore),
@@ -1819,10 +1836,11 @@ function PerformancePage() {
       columns: normalizeCalculationColumns(calculationColumns),
       mode: calculationTableMode,
       groupBy: calculationGroupBy,
+      groupingTaxonomyId,
       sortField: calculationSortField,
       sortDirection: calculationSortDirection,
     }),
-    [calculationColumns, calculationGroupBy, calculationSortDirection, calculationSortField, calculationTableMode],
+    [calculationColumns, calculationGroupBy, calculationSortDirection, calculationSortField, calculationTableMode, groupingTaxonomyId],
   )
   const calculationTableViewEdited = !calculationTableViewStatesEqual(
     currentCalculationTableViewState,
@@ -1873,8 +1891,9 @@ function PerformancePage() {
     )
   }, [calculationColumnCategory, calculationColumnSearch])
 
-  function handleCalculationGroupByChange(value: CalculationGroupByKey) {
-    setCalculationGroupBy(value)
+  function handleCalculationGroupByChange(option: CalculationGroupByOption) {
+    setCalculationGroupBy(option.value)
+    setGroupingTaxonomyId(option.taxonomyId ?? '')
     setCalculationGroupByOpen(false)
   }
 
@@ -1928,6 +1947,7 @@ function PerformancePage() {
     setCalculationTableMode(normalized.mode)
     setCalculationModeDraft(normalized.mode)
     setCalculationGroupBy(normalized.groupBy)
+    setGroupingTaxonomyId(normalized.groupingTaxonomyId)
     setCalculationSortField(normalized.sortField)
     setCalculationSortDirection(normalized.sortDirection)
   }
@@ -2100,12 +2120,15 @@ function PerformancePage() {
       setBenchmarkInstruments([])
       setTaxonomyCatalog(null)
       setTaxonomyCatalogReadyPortfolioId(null)
+      setTaxonomyCatalogError(null)
       return
     }
 
     let cancelled = false
     const controller = new AbortController()
     setTaxonomyCatalogReadyPortfolioId(null)
+    setTaxonomyCatalog(null)
+    setTaxonomyCatalogError(null)
     getPortfolioInstruments(portfolioId, controller.signal)
       .then((response) => {
         if (!cancelled) {
@@ -2124,10 +2147,11 @@ function PerformancePage() {
           setTaxonomyCatalogReadyPortfolioId(portfolioId)
         }
       })
-      .catch(() => {
+      .catch((requestError: unknown) => {
         if (!cancelled) {
           setTaxonomyCatalog(null)
           setTaxonomyCatalogReadyPortfolioId(portfolioId)
+          setTaxonomyCatalogError(requestError instanceof Error ? requestError.message : 'Classifications unavailable.')
         }
       })
 
@@ -2681,7 +2705,12 @@ function PerformancePage() {
 
   function renderCalculationTableCellValue(row: CalculationTableRow, column: CalculationColumnKey): ReactNode {
     if (column === 'line') {
-      return calculationTableRowLabel(row)
+      const label = calculationTableRowLabel(row)
+      if (row.kind === 'synthetic' && row.syntheticKind !== 'portfolio_total') return label
+      const level = row.kind === 'synthetic' ? 'root'
+        : row.kind === 'group' && (row.row.children?.length || (calculationGroupsWorkspace?.summary.axis ?? 'instrument') !== 'instrument')
+          ? 'primary' : 'item'
+      return <span className="portfolio-tree-label" data-tree-level={level}>{label}</span>
     }
     const value = calculationTableMetricValue(row, column)
     switch (column) {
@@ -3004,7 +3033,7 @@ function PerformancePage() {
                       onClick={() => setCalculationGroupByOpen(true)}
                     >
                       Group By{'\u00A0: '}
-                      {selectedCalculationGroupByOption.label}{effectiveCalculationGroupBy === 'taxonomy' && selectedGroupingTaxonomy ? ` · ${selectedGroupingTaxonomy.name}` : ''}
+                      <span translate={selectedCalculationGroupByOption.taxonomyId ? 'no' : undefined}>{selectedCalculationGroupByOption.label}</span>
                     </button>
                     <DownloadFormatMenu
                       wrapperClassName="portfolio-download-menu"
@@ -3018,8 +3047,8 @@ function PerformancePage() {
                 </div>
               </div>
               {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
-              {calculationGroupsError ? (
-                <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
+              {calculationGroupsDisplayError ? (
+                <div className="inline-notice inline-notice-error">{calculationGroupsDisplayError}</div>
               ) : null}
               {pendingSettlementFxUnavailable ? (
                 <div className="inline-notice inline-notice-warning" role="status">
@@ -3062,8 +3091,8 @@ function PerformancePage() {
                         colSpan={visibleCalculationColumns.length}
                         label="Loading"
                       />
-                    ) : calculationGroupsError ? (
-                      <TableStatusRow colSpan={visibleCalculationColumns.length} label={calculationGroupsError} tone="error" />
+                    ) : calculationGroupsDisplayError ? (
+                      <TableStatusRow colSpan={visibleCalculationColumns.length} label={calculationGroupsDisplayError} tone="error" />
                     ) : (
                       <TableStatusRow
                         colSpan={visibleCalculationColumns.length}
@@ -3212,31 +3241,24 @@ function PerformancePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div>
-                <div className="panel-title">Group By</div>
-                <div className="section-heading">Grouping</div>
-              </div>
+              <div className="panel-title">Group By</div>
               <button type="button" onClick={() => setCalculationGroupByOpen(false)}>
                 Close
               </button>
             </div>
             <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
-              <label>{zh ? '分类' : 'Taxonomy'} <select aria-label={zh ? '绩效分组分类' : 'Performance grouping taxonomy'} value={selectedGroupingTaxonomy?.taxonomy_id ?? ''}
-                onChange={(event) => { setGroupingTaxonomyId(event.target.value); setCalculationGroupBy('taxonomy') }}>
-                {!groupingTaxonomies.length && <option value="">{zh ? '暂无分类' : 'No taxonomy'}</option>}
-                {groupingTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}</option>)}
-              </select></label>
+              {taxonomyCatalogError ? <div className="inline-notice inline-notice-error" role="alert">{taxonomyCatalogError}</div> : null}
               {calculationGroupByOptions.map((option) => (
                 <button
+                  key={option.taxonomyId ? `taxonomy:${option.taxonomyId}` : option.value}
                   type="button"
                   className={`portfolio-table-config-groupby-option ${
-                    option.value === effectiveCalculationGroupBy ? 'portfolio-table-config-groupby-option-active' : ''
+                    option === selectedCalculationGroupByOption ? 'portfolio-table-config-groupby-option-active' : ''
                   }`}
-                  key={option.value}
-                  onClick={() => handleCalculationGroupByChange(option.value)}
+                  onClick={() => handleCalculationGroupByChange(option)}
                   disabled={option.disabled}
                 >
-                  <span>{option.label}</span>
+                  <span translate={option.taxonomyId ? 'no' : undefined}>{option.label}</span>
                 </button>
               ))}
             </div>

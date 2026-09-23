@@ -1539,11 +1539,11 @@ export default function RiskPage() {
   const [accountsWorkspace, setAccountsWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const targetTaxonomyStorageKey = `investment_studio.portfolio.risk.target-taxonomy.${portfolioId}`
-  const [targetTaxonomyId, setTargetTaxonomyId] = useState(() => {
-    try { return localStorage.getItem(targetTaxonomyStorageKey) ?? '' } catch { return '' }
+  const [targetTaxonomyId, setTargetTaxonomyId] = useState<string | null>(() => {
+    try { return localStorage.getItem(targetTaxonomyStorageKey) } catch { return null }
   })
   useEffect(() => {
-    try { setTargetTaxonomyId(localStorage.getItem(targetTaxonomyStorageKey) ?? '') } catch { setTargetTaxonomyId('') }
+    try { setTargetTaxonomyId(localStorage.getItem(targetTaxonomyStorageKey)) } catch { setTargetTaxonomyId(null) }
   }, [targetTaxonomyStorageKey])
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
@@ -1747,8 +1747,15 @@ export default function RiskPage() {
     return () => { cancelled = true; controller.abort() }
   }, [portfolioId, riskWindowEndDate, riskPolicyRevision])
 
-  const targetTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
-  const targetTaxonomy = targetTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === targetTaxonomyId) ?? targetTaxonomies[0] ?? null
+  const targetTaxonomies = taxonomyCatalog?.portfolio_id === portfolioId
+    ? taxonomyCatalog.taxonomies.filter((taxonomy) => taxonomy.status === 'active') : []
+  const targetTaxonomy = targetTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === targetTaxonomyId) ?? null
+  const soleTargetTaxonomyId = targetTaxonomies.length === 1 ? targetTaxonomies[0].taxonomy_id : null
+  useEffect(() => {
+    if (targetTaxonomyId !== null || !soleTargetTaxonomyId) return
+    setTargetTaxonomyId(soleTargetTaxonomyId)
+    try { localStorage.setItem(targetTaxonomyStorageKey, soleTargetTaxonomyId) } catch { /* View selection is optional persistence. */ }
+  }, [soleTargetTaxonomyId, targetTaxonomyId, targetTaxonomyStorageKey])
   const matrixTaxonomy = targetTaxonomy
   const targetTaxonomyNodeById = useMemo(() => buildNodeLookup(taxonomyCatalog, targetTaxonomy?.taxonomy_id), [targetTaxonomy?.taxonomy_id, taxonomyCatalog])
   const targetResolution = taxonomyCatalog?.target_resolution?.find((item) => item.taxonomy_id === targetTaxonomy?.taxonomy_id)
@@ -2304,12 +2311,13 @@ export default function RiskPage() {
                     {holdingsWorkspace.as_of_date} · {holdingsWorkspace.forward_risk?.status === 'ok' ? (zh ? '模型可用' : 'Model available') : (zh ? '模型不可用' : 'Model unavailable')} · {productionRiskDescription}
                   </div>
                 </div>
-                {targetTaxonomy ? <>
+                {targetTaxonomies.length ? <>
                   <label className="concentration-toolbar-actions">{zh ? '分类' : 'Taxonomy'}
-                    <select aria-label={zh ? '风险分类' : 'Risk taxonomy'} value={targetTaxonomy.taxonomy_id} onChange={(event) => {
+                    <select aria-label={zh ? '风险分类' : 'Risk taxonomy'} value={targetTaxonomy?.taxonomy_id ?? ''} onChange={(event) => {
                       setTargetTaxonomyId(event.target.value)
                       try { localStorage.setItem(targetTaxonomyStorageKey, event.target.value) } catch { /* View selection is optional persistence. */ }
                     }}>
+                      <option value="">{zh ? '请选择分类' : 'Choose taxonomy'}</option>
                       {targetTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}</option>)}
                     </select>
                   </label>

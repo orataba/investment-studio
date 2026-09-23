@@ -67,6 +67,25 @@ function taxonomyCatalogFixture(
   }
 }
 
+function groupingCatalogFixture() {
+  return taxonomyCatalogFixture({
+    taxonomies: [
+      { taxonomy_id: 'strategy', portfolio_id: '3', name: 'Strategy', taxonomy_type: 'allocation', primary_assignment_scope: 'instrument', root_allocation_basis: 'weight', status: 'active' },
+      { taxonomy_id: 'region', portfolio_id: '3', name: 'Region', taxonomy_type: 'region', primary_assignment_scope: 'instrument', root_allocation_basis: 'weight', status: 'active' },
+      { taxonomy_id: 'retired', portfolio_id: '3', name: 'Retired', taxonomy_type: 'allocation', primary_assignment_scope: 'instrument', root_allocation_basis: 'weight', status: 'archived' },
+    ],
+    taxonomy_nodes: [
+      { taxonomy_node_id: 'growth', taxonomy_id: 'strategy', parent_taxonomy_node_id: null, node_name: 'Growth', sort_order: 0, is_terminal: false, allocation_basis: 'weight', status: 'active' },
+      { taxonomy_node_id: 'listed-funds', taxonomy_id: 'strategy', parent_taxonomy_node_id: 'growth', node_name: 'Listed Funds', sort_order: 0, is_terminal: true, allocation_basis: 'weight', status: 'active' },
+      { taxonomy_node_id: 'asia', taxonomy_id: 'region', parent_taxonomy_node_id: null, node_name: 'Asia', sort_order: 0, is_terminal: true, allocation_basis: 'weight', status: 'active' },
+    ],
+    taxonomy_assignments: [
+      { assignment_id: 'strategy-assignment', taxonomy_id: 'strategy', target_scope: 'instrument', target_entity_id: 'asset-1', taxonomy_node_id: 'listed-funds', status: 'active' },
+      { assignment_id: 'region-assignment', taxonomy_id: 'region', target_scope: 'instrument', target_entity_id: 'asset-1', taxonomy_node_id: 'asia', status: 'active' },
+    ],
+  })
+}
+
 function renderHoldings(
   workspace = holdingsWorkspaceFixture(),
   taxonomyCatalog = taxonomyCatalogFixture(),
@@ -1231,14 +1250,21 @@ describe('Holdings rendered page contract', () => {
     await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
       within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', {
-        name: 'Taxonomy',
+        name: 'Current Allocation · Top level',
       }),
     )
 
     const securityTable = screen.getByRole('table', { name: 'Security holdings' })
     expect(within(securityTable).getAllByText('Current Risk Assets')).toHaveLength(1)
+    expect(within(securityTable).getByText('Current Risk Assets')).toHaveAttribute('data-tree-level', 'primary')
+    expect(within(securityTable).getByText('Alpha Fund')).toHaveAttribute('data-tree-level', 'item')
     expect(within(screen.getByRole('table', { name: 'FCN holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
     expect(within(screen.getByRole('table', { name: 'Cash and settlement holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Group By.*Current Allocation/ }))
+    await user.click(screen.getByRole('button', { name: 'Current Allocation · Leaf level' }))
+    expect(within(securityTable).getByText('Current Listed Funds')).toHaveAttribute('data-tree-level', 'nested')
+    expect(within(securityTable).queryByText('Current Risk Assets')).not.toBeInTheDocument()
   })
 
   it('shows Unassigned when a Security has no assignment in the current taxonomy', async () => {
@@ -1266,10 +1292,106 @@ describe('Holdings rendered page contract', () => {
     await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
       within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', {
-        name: 'Taxonomy',
+        name: 'Current Allocation · Top level',
       }),
     )
     expect(document.querySelector('.holdings-subgroup-row')).toHaveTextContent('Unassigned')
+  })
+
+  it('lists active taxonomies directly and saves the selected taxonomy and depth in the view', async () => {
+    renderHoldings(holdingsWorkspaceFixture(), groupingCatalogFixture())
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: /Group By.*None/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Choose grouping' })
+    expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Taxonomy' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /Retired/ })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Strategy · Top level' })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Region · Leaf level' }))
+
+    expect(screen.getByRole('button', { name: /Group By.*Region · Leaf level/ })).toBeInTheDocument()
+    expect(screen.getByText('Asia')).toHaveAttribute('data-tree-level', 'primary')
+    expect(screen.queryByText('Growth')).not.toBeInTheDocument()
+    await waitFor(() => {
+      const calls = apiMocks.savePortfolioTableViewStore.mock.calls.filter(([, scope]) => scope === 'holdings')
+      const store = calls[calls.length - 1]?.[2] as { views: Array<{ id: string; state: { groupBy: string; groupingTaxonomyId?: string } }> } | undefined
+      expect(store?.views.find((view) => view.id === 'default')?.state).toMatchObject({ groupBy: 'taxonomy_leaf', groupingTaxonomyId: 'region' })
+    })
+  })
+
+  it('restores each saved view with its own explicit taxonomy instead of the first taxonomy', async () => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({ store: {
+      activeViewId: 'custom:region',
+      views: [
+        { id: 'custom:region', name: 'By Region', state: { groupBy: 'taxonomy_leaf', groupingTaxonomyId: 'region' } },
+        { id: 'custom:strategy', name: 'By Strategy', state: { groupBy: 'taxonomy_top', groupingTaxonomyId: 'strategy' } },
+      ],
+    } })
+    renderHoldings(holdingsWorkspaceFixture(), groupingCatalogFixture())
+    const user = userEvent.setup()
+    await waitForHoldings()
+    expect(await screen.findByText('Asia')).toBeInTheDocument()
+    expect(screen.queryByText('Growth')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /View\s*: By Region/ }))
+    await user.click(screen.getByRole('option', { name: 'By Strategy' }))
+    expect(screen.getByText('Growth')).toBeInTheDocument()
+    expect(screen.queryByText('Asia')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /View\s*: By Strategy/ }))
+    await user.click(screen.getByRole('option', { name: 'By Region' }))
+    expect(screen.getByText('Asia')).toBeInTheDocument()
+  })
+
+  it.each(['', 'deleted', 'retired'])('clears an unavailable saved taxonomy %s without calling assigned holdings Unassigned', async (taxonomyId) => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({ store: {
+      activeViewId: 'custom:taxonomy',
+      views: [{ id: 'custom:taxonomy', name: 'By Taxonomy', state: { columns: ['instrument', 'taxonomy_top', 'taxonomy_leaf'], groupBy: 'taxonomy_top', groupingTaxonomyId: taxonomyId } }],
+    } })
+    renderHoldings(holdingsWorkspaceFixture(), groupingCatalogFixture())
+    await waitForHoldings()
+    await waitFor(() => expect(screen.getByRole('button', { name: /Group By.*None/ })).toBeInTheDocument())
+    const table = screen.getByRole('table', { name: 'Security holdings' })
+    expect(within(table).queryByText('Unassigned')).not.toBeInTheDocument()
+    expect(within(table).queryByText('Growth')).not.toBeInTheDocument()
+    expect(within(table).queryByText('Asia')).not.toBeInTheDocument()
+    const row = within(table).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
+    expect(row.querySelector('[data-column-key="taxonomy_top"]')).toHaveTextContent('—')
+    expect(row.querySelector('[data-column-key="taxonomy_leaf"]')).toHaveTextContent('—')
+  })
+
+  it('keeps taxonomy identity columns when switching to another grouping dimension', async () => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({ store: {
+      activeViewId: 'custom:region',
+      views: [{ id: 'custom:region', name: 'By Region', state: { columns: ['instrument', 'taxonomy_top', 'taxonomy_leaf'], groupBy: 'taxonomy_top', groupingTaxonomyId: 'region' } }],
+    } })
+    renderHoldings(holdingsWorkspaceFixture(), groupingCatalogFixture())
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: /Group By.*Region/ }))
+    await user.click(screen.getByRole('button', { name: 'Currency' }))
+    const row = screen.getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
+    expect(row.querySelector('[data-column-key="taxonomy_top"]')).toHaveTextContent('Asia')
+    expect(row.querySelector('[data-column-key="taxonomy_leaf"]')).toHaveTextContent('Asia')
+    expect(screen.queryByText('Unassigned')).not.toBeInTheDocument()
+  })
+
+  it('retains a saved taxonomy when its catalog read fails without misclassifying holdings', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockRejectedValueOnce(new Error('Classification catalog offline.'))
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({ store: {
+      activeViewId: 'custom:region',
+      views: [{ id: 'custom:region', name: 'By Region', state: { columns: ['instrument', 'taxonomy_top'], groupBy: 'taxonomy_top', groupingTaxonomyId: 'region' } }],
+    } })
+    renderHoldings()
+    await waitForHoldings()
+    expect(await screen.findByText('Classification catalog offline.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Group By.*Unavailable/ })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'Alpha Fund' })).toBeInTheDocument()
+    expect(screen.queryByText('Unassigned')).not.toBeInTheDocument()
+    await waitFor(() => {
+      const calls = apiMocks.savePortfolioTableViewStore.mock.calls.filter(([, scope]) => scope === 'holdings')
+      const store = calls[calls.length - 1]?.[2] as { views: Array<{ id: string; state: { groupBy: string; groupingTaxonomyId?: string } }> } | undefined
+      expect(store?.views.find((view) => view.id === 'custom:region')?.state).toMatchObject({ groupBy: 'taxonomy_top', groupingTaxonomyId: 'region' })
+    })
   })
 
   it('fails closed when only local-currency returns exist for a non-base security', async () => {

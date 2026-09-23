@@ -80,7 +80,8 @@ describe('Overview rendered page contract', () => {
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1)
   })
 
-  it('shows and persists the selected classification without changing portfolio values', async () => {
+  it.each(['', 'deleted-taxonomy'])('requires an explicit choice for multiple or unavailable classifications (%s)', async (savedTaxonomyId) => {
+    if (savedTaxonomyId) localStorage.setItem('investment_studio.portfolio.overview.taxonomy.3', savedTaxonomyId)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3', taxonomy_configuration_version: 0,
       taxonomies: ['strategy', 'industry'].map((id) => ({ taxonomy_id: id, name: id === 'strategy' ? 'Strategy' : 'Industry', status: 'active' })),
       taxonomy_nodes: ['strategy', 'industry'].map((id) => ({ taxonomy_id: id, taxonomy_node_id: `${id}-leaf`, parent_taxonomy_node_id: null, node_name: id === 'strategy' ? 'Growth Strategy' : 'Technology', status: 'active' })),
@@ -91,6 +92,10 @@ describe('Overview rendered page contract', () => {
     renderPortfolioPage(<OverviewPage />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
     const selector = await screen.findByRole('combobox', { name: 'Overview taxonomy' })
     const card = screen.getByText('Strategy Sleeves').closest('section')!
+    expect(selector).toHaveValue('')
+    expect(card).not.toHaveTextContent('Growth Strategy')
+    expect(card).toHaveTextContent('Select a taxonomy.')
+    await user.selectOptions(selector, 'strategy')
     expect(card).toHaveTextContent('Growth Strategy')
     const reads = apiMocks.getHoldingsWorkspace.mock.calls.length
     await user.selectOptions(selector, 'industry')
@@ -217,6 +222,9 @@ describe('Overview rendered page contract', () => {
   })
 
   it('keeps carried holdings unavailable in top-holding market analytics', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3',
+      taxonomies: [{ taxonomy_id: 'strategy', name: 'Strategy', status: 'active' }],
+      taxonomy_nodes: [], taxonomy_assignments: [] })
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [
@@ -267,6 +275,9 @@ describe('Overview rendered page contract', () => {
   })
 
   it('separates taxonomy coverage from classified sleeve allocation', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3',
+      taxonomies: [{ taxonomy_id: 'strategy', name: 'Strategy', status: 'active' }],
+      taxonomy_nodes: [], taxonomy_assignments: [] })
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [holdingFixture({ allocation: 0.8, market_value_base: 800 })],
@@ -483,6 +494,9 @@ describe('Overview rendered page contract', () => {
   })
 
   it('does not treat a foreign local value as base currency when FX conversion is missing', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3',
+      taxonomies: [{ taxonomy_id: 'strategy', name: 'Strategy', status: 'active' }],
+      taxonomy_nodes: [], taxonomy_assignments: [] })
     const user = userEvent.setup()
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({

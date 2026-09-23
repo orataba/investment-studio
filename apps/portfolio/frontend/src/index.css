@@ -56,6 +56,24 @@ textarea {
   letter-spacing: 0;
 }
 
+select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--portfolio-ink);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
+  box-shadow: none;
+}
+
+.portfolio-tree-label[data-tree-level='root'] { font-weight: 700; }
+.portfolio-tree-label[data-tree-level='primary'] { font-weight: 600; }
+.portfolio-tree-label[data-tree-level='nested'] { font-weight: 500; }
+.portfolio-tree-label[data-tree-level='item'] { font-weight: 400; }
+
 button {
   appearance: none;
   padding: 6px 10px;
@@ -366,12 +384,6 @@ button:disabled {
 
 .portfolio-settings-grid select {
   width: 100%;
-  min-height: 32px;
-  padding: 6px 8px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: #ffffff;
-  color: var(--portfolio-ink);
 }
 
 .portfolio-settings-grid select:focus-visible {
@@ -2015,14 +2027,7 @@ input[type='checkbox'] {
 }
 
 .risk-control-label select {
-  height: 30px;
   min-width: 72px;
-  padding: 0 8px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: white;
-  color: var(--portfolio-ink);
-  font-size: 13px;
 }
 
 .risk-control-label select:focus-visible {
@@ -2238,17 +2243,10 @@ input[type='checkbox'] {
 
 .risk-scope-select-box select {
   width: 100%;
-  height: 32px;
   min-width: 0;
   padding: 0 34px 0 10px;
   overflow: hidden;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
   appearance: none;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  line-height: 1.2;
   outline: none;
   text-overflow: ellipsis;
 }
@@ -2963,8 +2961,8 @@ input[type='checkbox'] {
 
 .portfolio-table-view-select,
 .portfolio-table-view-button {
-  height: 30px;
-  min-height: 30px;
+  height: 100%;
+  min-height: 0;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -3048,7 +3046,8 @@ input[type='checkbox'] {
 
 .portfolio-table-view-button:focus-visible,
 .portfolio-table-view-select:focus-visible {
-  outline: none;
+  outline: 1px solid var(--portfolio-accent);
+  outline-offset: -2px;
   box-shadow: none;
 }
 
@@ -3710,7 +3709,7 @@ input[type='checkbox'] {
 .option-outcome-fields input,
 .option-outcome-fields select {
   width: 100%;
-  height: 34px;
+  height: 30px;
   padding: 5px 8px;
   border: 1px solid var(--portfolio-line-strong);
   border-radius: 0;
@@ -3900,6 +3899,10 @@ input[type='checkbox'] {
 .portfolio-table-config-groupby-list {
   display: grid;
   gap: 0;
+}
+
+.portfolio-table-config-groupby-section + .portfolio-table-config-groupby-section {
+  border-top: 1px solid var(--portfolio-line-strong);
 }
 
 .portfolio-table-config-groupby-option {
@@ -5007,7 +5010,7 @@ input[type='checkbox'] {
 .transaction-form select,
 .transaction-picker-search input,
 .transaction-notes-field textarea {
-  min-height: 32px;
+  min-height: 30px;
   width: 100%;
   padding: 5px 8px;
   border: 1px solid var(--portfolio-line-strong);
@@ -5015,6 +5018,7 @@ input[type='checkbox'] {
   background: #ffffff;
   color: var(--portfolio-ink);
   font: inherit;
+  font-weight: 400;
   box-shadow: none;
 }
 
@@ -5245,14 +5249,7 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-purpose-field select {
-  min-height: 32px;
   width: 100%;
-  padding: 5px 8px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font: inherit;
   font-size: 11px;
 }
 
@@ -5796,7 +5793,6 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-review-grid input:not([type='checkbox']),
-.transaction-capture-review-grid select,
 .transaction-capture-review-grid textarea {
   width: 100%;
   min-width: 0;
@@ -5862,15 +5858,10 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-review-duplicate select,
-.transaction-capture-review-contract-source select {
+.transaction-capture-review-contract-source select,
+.transaction-capture-review-grid select {
   width: 100%;
   min-width: 0;
-  padding: 7px 8px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font: inherit;
   font-size: 11px;
 }
 
@@ -7150,8 +7141,8 @@ input[type='checkbox'] {
 
 .research-run-form {
   --research-run-control-min-width: 136px;
-  --research-run-control-height: 36px;
-  --research-run-label-height: 14px;
+  --research-run-control-height: 30px;
+  --research-run-label-height: 16px;
   --research-run-gap: 12px;
   gap: var(--research-run-gap);
   padding: 16px 18px 18px;
@@ -7905,10 +7896,7 @@ input[type='checkbox'] {
 }
 
 .taxonomy-page-table .transaction-form input,
-.taxonomy-page-table .transaction-form select,
 .taxonomy-page-table .taxonomy-add-instrument-form input,
-.taxonomy-page-table .taxonomy-add-instrument-form select,
-.taxonomy-page-table .taxonomy-topbar-field select,
 .taxonomy-page-table .taxonomy-topbar-field input {
   min-height: 0;
   padding: 6px 0;
@@ -7920,10 +7908,7 @@ input[type='checkbox'] {
 }
 
 .taxonomy-page-table .transaction-form input:focus,
-.taxonomy-page-table .transaction-form select:focus-visible,
 .taxonomy-page-table .taxonomy-add-instrument-form input:focus,
-.taxonomy-page-table .taxonomy-add-instrument-form select:focus-visible,
-.taxonomy-page-table .taxonomy-topbar-field select:focus-visible,
 .taxonomy-page-table .taxonomy-topbar-field input:focus {
   outline: none;
   border-bottom-color: var(--portfolio-accent);
@@ -8021,10 +8006,10 @@ input[type='checkbox'] {
   justify-content: space-between;
   gap: 10px;
   width: 100%;
-  min-height: 28px;
-  padding: 0;
-  border: none;
-  border-bottom: 1px solid var(--portfolio-line-strong);
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--portfolio-line-strong);
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 13px;
@@ -8037,7 +8022,7 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.taxonomy-picker-caret {
+.portfolio-select-caret {
   width: 0;
   height: 0;
   border-left: 4px solid transparent;

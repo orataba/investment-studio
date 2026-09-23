@@ -729,7 +729,9 @@ describe('Risk rendered page contract', () => {
     const selector = await screen.findByRole('combobox', { name: 'Risk taxonomy' })
     const healthBefore = screen.getByRole('region', { name: 'Risk health' }).querySelector('.risk-health-strip')?.textContent
     const holdingsReads = apiMocks.getHoldingsWorkspace.mock.calls.length
-    expect(screen.getByText('Portfolio risk target gap')).toBeInTheDocument()
+    expect(selector).toHaveValue('')
+    expect(within(selector).getByRole('option', { name: 'Choose taxonomy' })).toBeInTheDocument()
+    expect(screen.queryByText('Portfolio risk target gap')).not.toBeInTheDocument()
     await user.selectOptions(selector, 'industry')
     const drift = screen.getByRole('region', { name: 'Current drift' })
     expect(drift).toHaveTextContent('No directly derived portfolio risk target for this taxonomy.')
@@ -740,6 +742,51 @@ describe('Risk rendered page contract', () => {
     expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe('industry')
     await user.selectOptions(selector, 'taxonomy-1')
     expect(within(drift).getByRole('img', { name: 'Risk budget target gap' })).toBeInTheDocument()
+  })
+
+  it('automatically selects the only active taxonomy only before any selection has been stored', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'retired', name: 'Retired', status: 'archived' }],
+    })
+    const page = renderRiskPage()
+    const selector = await screen.findByRole('combobox', { name: 'Risk taxonomy' })
+    await waitFor(() => expect(selector).toHaveValue('taxonomy-1'))
+    expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe('taxonomy-1')
+    expect(within(selector).queryByRole('option', { name: 'Retired' })).not.toBeInTheDocument()
+    await user.selectOptions(selector, '')
+    expect(selector).toHaveValue('')
+    expect(screen.queryByText('Portfolio risk target gap')).not.toBeInTheDocument()
+    expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe('')
+    page.unmount()
+    renderRiskPage()
+    expect(await screen.findByRole('combobox', { name: 'Risk taxonomy' })).toHaveValue('')
+    expect(screen.queryByText('Portfolio risk target gap')).not.toBeInTheDocument()
+  })
+
+  it.each(['deleted', 'retired'])('does not replace a stored unavailable taxonomy %s with the remaining active taxonomy', async (taxonomyId) => {
+    localStorage.setItem('investment_studio.portfolio.risk.target-taxonomy.3', taxonomyId)
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ ...taxonomyCatalog,
+      taxonomies: [...taxonomyCatalog.taxonomies, { ...taxonomyCatalog.taxonomies[0], taxonomy_id: 'retired', name: 'Retired', status: 'archived' }],
+    })
+    renderRiskPage()
+    const selector = await screen.findByRole('combobox', { name: 'Risk taxonomy' })
+    expect(selector).toHaveValue('')
+    expect(within(selector).queryByRole('option', { name: 'Retired' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Portfolio risk target gap')).not.toBeInTheDocument()
+    expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe(taxonomyId)
+    await userEvent.setup().selectOptions(selector, 'taxonomy-1')
+    expect(screen.getByRole('img', { name: 'Risk budget target gap' })).toBeInTheDocument()
+  })
+
+  it('preserves the stored taxonomy selection when its catalog cannot be read', async () => {
+    localStorage.setItem('investment_studio.portfolio.risk.target-taxonomy.3', 'taxonomy-1')
+    apiMocks.getPortfolioTaxonomyCatalog.mockRejectedValueOnce(new Error('Classification catalog offline.'))
+    renderRiskPage()
+    expect(await screen.findByText('Classification catalog offline.')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Risk health' })).toBeInTheDocument()
+    expect(localStorage.getItem('investment_studio.portfolio.risk.target-taxonomy.3')).toBe('taxonomy-1')
+    expect(screen.queryByRole('combobox', { name: 'Risk taxonomy' })).not.toBeInTheDocument()
   })
 
   it('does not substitute capital weights when portfolio risk targets cannot be derived', async () => {

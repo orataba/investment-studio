@@ -1,6 +1,7 @@
 .concentration-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .concentration-toolbar-actions > label { display: flex; align-items: center; gap: 8px; }
-.concentration-toolbar-actions select, .concentration-field select, .concentration-field input { font: inherit; color: inherit; border: 1px solid var(--line, #dbe3e9); border-radius: 6px; padding: 7px 10px; background: var(--surface, #fff); min-width: 0; }
+.concentration-toolbar-actions select, .concentration-field select { min-width: 0; }
+.concentration-field input { height: 30px; font: inherit; font-weight: 400; color: var(--portfolio-ink); border: 1px solid var(--portfolio-line-strong); border-radius: 0; padding: 0 8px; background: transparent; min-width: 0; }
 .concentration-table-wrap { overflow-x: auto; }
 .concentration-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .concentration-table th, .concentration-table td { padding: 12px 10px; border-bottom: 1px solid var(--line, #e7ecf0); text-align: right; white-space: nowrap; }

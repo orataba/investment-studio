@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ResearchPage from './pages/ResearchPage'
@@ -390,6 +390,70 @@ describe('Research rendered page contract', () => {
     expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled()
     expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse a saved research classification that is no longer available', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: 'deleted', planning_taxonomy_name: 'Deleted Plan' },
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    expect(await screen.findByLabelText('Research taxonomy')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled()
+    expect(screen.queryByText('Deleted Plan')).not.toBeInTheDocument()
+    expect(screen.getByText('No research taxonomy selected')).toBeVisible()
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it('refreshes available research schemes without replacing a valid explicit choice', async () => {
+    const industry = { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }
+    const region = { taxonomy_id: 'region', name: 'Region', taxonomy_type: 'custom' }
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry],
+    })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [{
+      ...industry, root_allocation_basis: 'weight', status: 'active',
+    }], taxonomy_nodes: [] })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    await screen.findByText('Solved Result')
+    fireEvent.change(screen.getByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalled())
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry, region],
+    })
+    fireEvent(window, new CustomEvent('portfolio-risk-policy-updated', { detail: { portfolioId: '3' } }))
+    await waitFor(() => expect(screen.getByLabelText('Research taxonomy').querySelector('option[value="region"]')).toHaveTextContent('Region'))
+    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it('clears a removed local research choice and prevents its queued settings write after refresh', async () => {
+    const industry = { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry],
+    })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [{
+      ...industry, root_allocation_basis: 'weight', status: 'active',
+    }], taxonomy_nodes: [] })
+    let resolveRiskPolicy: ((value: object) => void) | undefined
+    apiMocks.getPortfolioRiskPolicy.mockReturnValueOnce(new Promise((resolve) => { resolveRiskPolicy = resolve }))
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    await screen.findByText('Solved Result')
+    fireEvent.change(screen.getByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await waitFor(() => expect(apiMocks.getPortfolioRiskPolicy).toHaveBeenCalled())
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: null, planning_taxonomy_name: null },
+    })
+    fireEvent(window, new CustomEvent('portfolio-risk-policy-updated', { detail: { portfolioId: '3' } }))
+    await waitFor(() => expect(screen.getByLabelText('Research taxonomy')).toHaveValue(''))
+    await act(async () => {
+      resolveRiskPolicy?.({ lookback_days: 365, calculation_frequency: 'daily', missing_return_policy: 'strict',
+        covariance_model_id: 'sample_covariance', contribution_mode: 'signed' })
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled())
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Research taxonomy').querySelector('option[value="industry"]')).toBeNull()
   })
 
   it('preserves existing research notes when run settings auto-save', async () => {

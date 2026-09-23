@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import InfoHint from '../components/InfoHint'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -1035,6 +1036,7 @@ export default function ResearchPage() {
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
   const taxonomyChoiceRef = useRef<{ portfolioId: string; taxonomyId: string } | null>(null)
+  const availableTaxonomyIdsRef = useRef(new Set<string>())
   const [asOfMode, setAsOfMode] = useState<PortfolioResearchAsOfMode>('dynamic')
   const [asOfDate, setAsOfDate] = useState('')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
@@ -1055,6 +1057,9 @@ export default function ResearchPage() {
   const [walkForwardTestMonths, setWalkForwardTestMonths] = useState('6')
 
   currentPortfolioIdRef.current = portfolioId
+  availableTaxonomyIdsRef.current = new Set(
+    workbench?.portfolio_id === portfolioId ? workbench.planning_taxonomy_options.map((item) => item.taxonomy_id) : [],
+  )
 
   async function reloadWorkbench(targetPortfolioId = portfolioId) {
     if (targetPortfolioId && currentPortfolioIdRef.current !== targetPortfolioId) {
@@ -1103,6 +1108,7 @@ export default function ResearchPage() {
     invalidateRequests(workbenchRequestSequenceRef)
     invalidateRequests(runRequestSequenceRef)
     draftPortfolioIdRef.current = ''
+    taxonomyChoiceRef.current = null
     setWorkbench(null)
     setRunDetailLoading(false)
     setRunDetailError(null)
@@ -1175,6 +1181,21 @@ export default function ResearchPage() {
       return
     }
     draftPortfolioIdRef.current = portfolioId
+    const localTaxonomyChoice = taxonomyChoiceRef.current?.portfolioId === portfolioId ? taxonomyChoiceRef.current : null
+    const requestedTaxonomyId = localTaxonomyChoice?.taxonomyId ?? workbench.settings.planning_taxonomy_id ?? ''
+    const choiceUnavailable = Boolean(requestedTaxonomyId && !availableTaxonomyIdsRef.current.has(requestedTaxonomyId))
+    const nextPlanningTaxonomyId = choiceUnavailable
+      ? ''
+      : requestedTaxonomyId || (!localTaxonomyChoice && workbench.planning_taxonomy_options.length === 1
+        ? workbench.planning_taxonomy_options[0].taxonomy_id : '')
+    if (choiceUnavailable) {
+      // A removed scheme never turns into another allocation plan implicitly.
+      taxonomyChoiceRef.current = { portfolioId, taxonomyId: '' }
+      if (autoSaveTimeoutRef.current != null) {
+        window.clearTimeout(autoSaveTimeoutRef.current)
+        autoSaveTimeoutRef.current = null
+      }
+    }
     const nextAsOf = resolveResearchAsOfDraft(workbench.settings, workbench.as_of_date)
     const nextBenchmarkInstrumentId = workbench.settings.backtest_benchmark_instrument_id ?? ''
     const nextCapitalMode = workbench.settings.capital_mode
@@ -1184,9 +1205,7 @@ export default function ResearchPage() {
       maxWeightPct: formatPercentInput(item.max_weight),
     }))
     const nextDraft: ResearchRunSetupDraft = {
-      planningTaxonomyId: taxonomyChoiceRef.current?.portfolioId === portfolioId
-        ? taxonomyChoiceRef.current.taxonomyId
-        : workbench.settings.planning_taxonomy_id ?? (workbench.planning_taxonomy_options.length === 1 ? workbench.planning_taxonomy_options[0].taxonomy_id : ''),
+      planningTaxonomyId: nextPlanningTaxonomyId,
       ...nextAsOf,
       notes: workbench.settings.notes ?? null,
       capitalMode: nextCapitalMode,
@@ -1617,6 +1636,9 @@ export default function ResearchPage() {
     if (currentPortfolioIdRef.current !== targetPortfolioId) {
       return null
     }
+    if (draft.planningTaxonomyId && !availableTaxonomyIdsRef.current.has(draft.planningTaxonomyId)) {
+      throw new Error('Selected research taxonomy is unavailable. Choose a current taxonomy.')
+    }
     const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
     const frozenTaxonomyNodeIds = draft.frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
     const topSleeveWeightBounds = serializeTopSleeveBounds(draft.topSleeveBounds)
@@ -1658,7 +1680,7 @@ export default function ResearchPage() {
 
   async function handleRunResearch() {
     const targetPortfolioId = portfolioId
-    if (!targetPortfolioId || !canEditPortfolio || !runSetupDraftRef.current.planningTaxonomyId) {
+    if (!targetPortfolioId || !canEditPortfolio || !availableTaxonomyIdsRef.current.has(runSetupDraftRef.current.planningTaxonomyId)) {
       return
     }
     const runRequest = beginRequest(runRequestSequenceRef, targetPortfolioId)
@@ -1747,7 +1769,7 @@ export default function ResearchPage() {
   )
   const planningTaxonomyName = workbench?.planning_taxonomy_options.find(
     (option) => option.taxonomy_id === planningTaxonomyId,
-  )?.name ?? workbench?.settings.planning_taxonomy_name ?? 'No planning taxonomy'
+  )?.name ?? (zh ? '未选择研究分类' : 'No research taxonomy selected')
   const capitalModeLabel = CAPITAL_MODE_OPTIONS.find((option) => option.value === capitalMode)?.label ?? formatLabel(capitalMode)
   const rebalanceLabel = REBALANCE_OPTIONS.find((option) => option.value === backtestRebalanceFrequency)?.label
     ?? backtestRebalanceFrequency.toUpperCase()
@@ -1799,7 +1821,7 @@ export default function ResearchPage() {
                 <div className="panel-title">Research Configuration</div>
                 <div className="research-command-meta">
                   <QualityWarningsNotice warnings={workbench.current_context.quality_warnings} />
-                  <span>{planningTaxonomyName}</span>
+                  <span translate="no">{planningTaxonomyName}</span>
                   <span>{zh ? '数据截至' : 'Data cutoff'} · {asOfMode === 'dynamic' ? workbench.as_of_date : asOfDate || '-'}</span>
                   <span>{zh ? '当前目标' : 'Current targets'}</span>
                   <span>{capitalModeLabel}</span>
@@ -1828,23 +1850,22 @@ export default function ResearchPage() {
                 <fieldset className="research-settings-fieldset" disabled={!canEditPortfolio || actionPending === 'run'}>
                   <div className="research-settings-bar">
                 <div className="research-taxonomy-choice">
-                  <label>
-                    <span>{zh ? '研究分类' : 'Research taxonomy'}</span>
-                    <select aria-label={zh ? '研究分类' : 'Research taxonomy'} value={planningTaxonomyId} onChange={(event) => {
+                  <div className="research-taxonomy-field">
+                    <span><label htmlFor="research-taxonomy">{zh ? '研究分类' : 'Research taxonomy'}</label><InfoHint label={zh ? '研究分类' : 'Research taxonomy'} detail={zh ? '研究与回测统一使用本次运行保存的当前目标。日期设置只限定行情和持仓数据。' : 'Research and backtests use the current targets saved with each run. Date settings only limit market and holdings data.'} /></span>
+                    <select id="research-taxonomy" aria-label={zh ? '研究分类' : 'Research taxonomy'} value={planningTaxonomyId} onChange={(event) => {
                       taxonomyChoiceRef.current = { portfolioId, taxonomyId: event.target.value }
                       setPlanningTaxonomyId(event.target.value)
                       setFrozenNodeIds([])
                       setTopSleeveBounds([])
                       updateRunSetupDraft({ planningTaxonomyId: event.target.value, frozenNodeIds: [], topSleeveBounds: [] })
                     }}>
-                      {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value={planningTaxonomyId}>{zh ? '请选择已配置目标的分类' : 'Select a taxonomy with targets'}</option>}
+                      {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value="">{zh ? '请选择研究分类' : 'Select a research taxonomy'}</option>}
                       {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
                     </select>
-                  </label>
+                  </div>
                   {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
                     <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行研究前配置目标' : 'Configure targets before running Research'}</Link>
                   )}
-                  <p className="section-caption">{zh ? '研究与回测统一使用本次运行保存的当前目标。日期设置只限定行情和持仓数据。' : 'Research and backtests use the current targets saved with each run. Date settings only limit market and holdings data.'}</p>
                 </div>
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
@@ -1957,9 +1978,7 @@ export default function ResearchPage() {
                     </label>
                   ) : null}
                   <div className="research-freeze-field" ref={frozenMenuRef}>
-                    <span title="No-trade fixes the current holding; modeled securities remain in covariance and risk contribution.">
-                      No-trade Sleeves
-                    </span>
+                    <span>{zh ? '不交易分类' : 'No-trade Sleeves'} <InfoHint label={zh ? '不交易分类' : 'No-trade Sleeves'} detail={zh ? '保持当前持仓不交易；已纳入模型的证券仍参与协方差与风险贡献计算。' : 'No-trade fixes the current holding; modeled securities remain in covariance and risk contribution.'} /></span>
                     <button
                       type="button"
                       className="research-freeze-trigger"
@@ -1969,7 +1988,7 @@ export default function ResearchPage() {
                       aria-expanded={frozenMenuOpen}
                     >
                       <span>{frozenMenuLabel}</span>
-                      <span aria-hidden="true">v</span>
+                      <span className="portfolio-select-caret" aria-hidden="true" />
                     </button>
                     {frozenMenuOpen ? (
                       <div className="research-freeze-menu" role="menu">
@@ -2000,7 +2019,7 @@ export default function ResearchPage() {
                         aria-expanded={boundsMenuOpen}
                       >
                         <span>{boundsMenuLabel}</span>
-                        <span aria-hidden="true">v</span>
+                        <span className="portfolio-select-caret" aria-hidden="true" />
                       </button>
                       {boundsMenuOpen ? (
                         <div className="research-bounds-menu" role="menu">

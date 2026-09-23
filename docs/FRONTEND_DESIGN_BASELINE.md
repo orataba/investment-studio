@@ -32,7 +32,8 @@
 
 - 正文字重保持 regular。
 - 次级信息用更深的中性灰和 regular weight，不使用“灰色粗体”制造层级。
-- 标题和关键数字最多使用 medium weight；表格内数值避免默认加粗。
+- 普通标题最多使用 medium weight；表格内金额、比例等数值使用 regular，不随名称层级加粗。
+- Portfolio 分类树、Holdings 与 Performance 分类分组共用 `.portfolio-tree-label` 名称层级：组合根 `root` 为 700，一级分类 `primary` 为 600，子分类 `nested` 为 500，标的 `item` 为 400。三级及更深沿用 500 并通过缩进区别；Holdings 平铺的末级分组按分类实际深度取字重，不额外制造父行。
 - 页面级标题、section title、table header 的层级通过字号、线条和位置区分。
 
 ## UI Copy
@@ -57,6 +58,8 @@
 - Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
 - Holdings 分为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四个按内容显示的直接表面；Securities、FCN、Options 独立保存视图与可见字段，Cash & Settlement 使用固定字段，只有 Securities 提供排序与 `Group By`。FCN、Options 的系统视图均以 `Default` 开始，切换系统视图时保持表格框架宽度稳定。无 rows 的表面不渲染，全部为空时只显示一个统一空态；
 - Portfolio 与 Watchlist 的表格工具统一使用 `View`、`Columns`、`Group By` 文案，以及 30px、高对比细边框、直角、透明背景的控制样式。View selector 为文字和箭头预留独立空间；Holdings instrument 数量紧邻表标题，不能混入按钮区；
+- Portfolio 原生 select 和已有自定义选择器统一为 30px、直角、1px 中性灰边框、regular 字重；表格内编辑可保留紧凑字号和宽度，继续使用相同边框、字体与键盘焦点反馈。使用原生选择器或已有菜单，不为页面另造覆盖层。
+- Holdings 与 Performance 的 `Group By` 菜单直接列出当前可用分类，不在通用“分类”项之后再加第二个分类选择器。Holdings 每套分类保留“分类名 · 一级 / 末级”两种平铺分组；视图同时保存分组方式及具体分类 ID。未选择、已删除或停用的分类不得静默切到首项；失效分组回到 `None`。未选分类时身份列显示 `—`，选中分类但标的无归属时才显示 `Unassigned`。
 - Overview 承载全组合 `Asset Mix`：固定汇总 `Securities / FCN / Options / Cash & Settlement`，并以单行 `Portfolio Total` 收尾。金额和权重按资产负债表符号展示，所有分类继续使用 canonical NAV 与同一全组合 Forward RC 分母；该高层汇总不在 Holdings 重复；
 - Holdings 不再展示或导出第二套 `Portfolio Total`；页面顶部 portfolio headline 和 Overview `Asset Mix` 已分别承担总览与分类对账职责。Securities group/subtotal 的 base-currency 总未实现收益使用组内 historical-FX open cost 分母；
 - Holdings group / subtotal 只计算有稳定业务含义的字段：绝对量加总、比例重算、当前权重 return、共同路径 risk 和同一全组合分母下的 Forward RC。Quantity、Book Avg Cost、Quote、Holding Since、Chart、Coverage、Held Max DD 等单标的字段留空；完整映射见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)；
