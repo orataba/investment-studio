@@ -54,7 +54,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "instrument_data": "20260920_0036",
         "data_ingestion": "20260904_0009",
         "portfolio": "20260923_0068",
-        "watchlist": "20260923_0062",
+        "watchlist": "20260923_0063",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }
@@ -187,16 +187,16 @@ def test_audit_contract_names_cover_registry_0019(
     )
 
 
+@pytest.mark.parametrize("versions", [
+    {"instrument_data": "20260712_0007", "data_ingestion": "20260716_0002",
+     "portfolio": "20260711_0032", "watchlist": "20260728_0030"},
+    {"watchlist": "20260923_0062"},
+], ids=["legacy-schema", "missing-retained-portfolio-scope"])
 def test_migration_source_heads_are_unsupported_after_cutover(
     audit_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    versions: dict[str, str],
 ) -> None:
-    versions = {
-        "instrument_data": "20260712_0007",
-        "data_ingestion": "20260716_0002",
-        "portfolio": "20260711_0032",
-        "watchlist": "20260728_0030",
-    }
     monkeypatch.setattr(
         audit_module,
         "_version_state",

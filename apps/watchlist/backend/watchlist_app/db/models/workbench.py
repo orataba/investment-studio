@@ -40,11 +40,17 @@ class ResearchEntry(TimestampMixin, Base):
 
 from watchlist_app.db.research_scope import (
     RESEARCH_SCOPE_FUNCTION_DDL, RESEARCH_SCOPE_INDEX, research_scope_expression,
+    RESEARCH_PORTFOLIO_SCOPE_FUNCTION_DDL, RESEARCH_PORTFOLIO_SCOPE_INDEX, research_portfolio_scope_expression,
 )
 
 _scope_index = Index(RESEARCH_SCOPE_INDEX, research_scope_expression(ResearchEntry.context_json),
                      postgresql_using="gin").ddl_if(dialect="postgresql")
 event.listen(_scope_index, "before_create", DDL(RESEARCH_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
+
+_portfolio_scope_index = Index(RESEARCH_PORTFOLIO_SCOPE_INDEX, ResearchEntry.topic_id,
+    postgresql_where=research_portfolio_scope_expression(ResearchEntry.context_json)).ddl_if(dialect="postgresql")
+event.listen(_portfolio_scope_index, "before_create",
+    DDL(RESEARCH_PORTFOLIO_SCOPE_FUNCTION_DDL).execute_if(dialect="postgresql"))
 
 
 class RiskReviewRule(TimestampMixin, Base):

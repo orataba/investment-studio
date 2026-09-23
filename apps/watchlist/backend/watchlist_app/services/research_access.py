@@ -80,11 +80,20 @@ def iter_research_projection_rows(session, query, fields):
     Callers that stop early must close this iterator to release its server cursor.
     """
     from types import SimpleNamespace
-    from sqlalchemy import case
+    from sqlalchemy import Text, and_, case, cast, false, func, or_
     postgres = session.get_bind().dialect.name == "postgresql"
     if postgres:
         affected, _ = _postgres_projection_context()
-        query = query.add_columns(case((affected, ResearchEntry.context_json)).label("_original_context"))
+        # The SQL working copy replaces each actual NUL with a literal U+FFFD.
+        # An unaffected selected field is already exact even when an unrelated
+        # retained source contains NUL. Restore the original only if a selected
+        # value could contain a replacement. A pre-existing U+FFFD merely causes
+        # a conservative extra read; it never changes the returned value.
+        selected = query.selected_columns
+        needs_original = or_(*(func.strpos(cast(selected[name], Text), "\ufffd") > 0
+                               for name in fields)) if fields else false()
+        query = query.add_columns(case((and_(affected, needs_original), ResearchEntry.context_json))
+                                  .label("_original_context"))
     result = session.execute(query.execution_options(yield_per=1))
     try:
         for row in result.mappings():
@@ -129,7 +138,14 @@ def topic_portfolio_ids_by_topic(session, topics):
                    values["risk_scope"]["portfolio_id"].as_string().label("risk_portfolio_id")).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
-    scopes = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(portfolio_ids)),
+    query = query.where(ResearchEntry.topic_id.in_(portfolio_ids))
+    if session.get_bind().dialect.name == "postgresql":
+        from watchlist_app.db.research_scope import research_portfolio_scope_expression
+        # All historical kinds remain eligible. The partial index skips only
+        # contexts with no possible portfolio scope; the original projection
+        # still supplies exact IDs, including retained NUL/literal escape values.
+        query = query.where(research_portfolio_scope_expression(ResearchEntry.context_json))
+    scopes = iter_research_projection_rows(session, query,
         {"portfolio_id": ("portfolio_id",), "risk_portfolio_id": ("risk_scope", "portfolio_id")})
     for row in scopes:
         portfolio_ids[row.topic_id].update(value for value in (row.portfolio_id, row.risk_portfolio_id) if value)

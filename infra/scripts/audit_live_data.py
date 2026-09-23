@@ -34,7 +34,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "instrument_data": "20260920_0036",
     "data_ingestion": "20260904_0009",
     "portfolio": "20260923_0068",
-    "watchlist": "20260923_0062",
+    "watchlist": "20260923_0063",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }

@@ -15,6 +15,8 @@
 
 Eight schemas use seven Alembic chains; `market_data` and `market_text` share the market chain. Immutable numerical Parquet and original text objects live outside PostgreSQL under the configured public data root. Restore both metadata and matching objects; see [Market Data Pipeline](MARKET_DATA_PIPELINE.md).
 
+The live audit accepts the exact seven heads registered in `FINAL_FLAT_TABLE_HEADS` in [audit_live_data.py](../infra/scripts/audit_live_data.py). A new migration must update that registry and the current-head fixture in [test_audit_live_data.py](../infra/tests/test_audit_live_data.py); its migration-source check verifies all seven chains without accessing a business database. Run that test module before invoking an installer.
+
 ## Start PostgreSQL
 
 ```bash
