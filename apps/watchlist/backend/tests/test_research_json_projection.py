@@ -111,7 +111,7 @@ def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypa
          {"reviews": {"xlk": {"status": "completed", "reflection": {"status": "reviewed",
              "summary": r"literal \u0000", "reviewed_update_ids": ["research:literal"]}}}}),
     ]
-    selects = [select(literal(topic).label("topic_id"), literal(team).label("team_id"),
+    selects = [select(literal(topic).label("entry_id"), literal(topic).label("topic_id"), literal(team).label("team_id"),
         literal("analysis").label("kind"), literal(status).label("status"),
         literal(completed, type_=DateTime(timezone=True)).label("completed_at"),
         literal(datetime(2026, 9, 3, tzinfo=UTC)).label("created_at"),
@@ -123,12 +123,13 @@ def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypa
     monkeypatch.setattr(workbench, "ResearchEntry", table)
     monkeypatch.setattr(access, "ResearchEntry", table)
     monkeypatch.setattr(activity, "current_principal", lambda: SimpleNamespace(local_unrestricted=False, team_id="team-a"))
-    monkeypatch.setattr(access, "topic_portfolio_ids", lambda _session, topic:
-        {"retained-portfolio"} if topic.topic_id == "private-history" else set())
+    monkeypatch.setattr(access, "topic_portfolio_ids_by_topic", lambda _session, topics:
+        {topic.topic_id: {"retained-portfolio"} if topic.topic_id == "private-history" else set() for topic in topics})
     engine = create_engine(url, connect_args={"options": "-c default_transaction_read_only=on"})
     try:
         with Session(engine) as session:
-            monkeypatch.setattr(session, "get", lambda _model, topic_id: SimpleNamespace(topic_id=topic_id, team_id="team-a"))
+            monkeypatch.setattr(session, "scalars", lambda _statement: [
+                SimpleNamespace(topic_id=topic, team_id="team-a") for topic, team, *_ in fixtures if team == "team-a"])
             receipts = activity.review_receipts(session, "xlk")
             assert receipts == {
                 "research:original": {"last_reviewed_at": cutoff, "last_review_status": "reviewed",

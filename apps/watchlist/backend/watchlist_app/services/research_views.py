@@ -20,22 +20,49 @@ def _stance_selection(session, instrument_id, actor):
 
 
 def read_current_stance(session, instrument_id, *, actor=None):
-    actor = actor or research_identity()
-    selection = _stance_selection(session, instrument_id, actor)
-    if selection is None or selection.note_id is None:
-        return None
+    return read_current_stances(session, [instrument_id], actor=actor).get(instrument_id)
+
+
+def read_current_stances(session, instrument_ids, *, actor=None):
+    """Resolve the latest explicit choices together, within this read only."""
+    from sqlalchemy import func, tuple_
+    from watchlist_app.db.models.research import InstrumentInvestmentStance, InstrumentResearchNote
     from watchlist_app.api.routes.research import _serialize_note_revision
     from watchlist_app.services.read_models import serialize_payload
-    from watchlist_app.db.models.research import InstrumentResearchNote
-    revision = note_version(session, instrument_id, selection.note_id, selection.note_revision, actor=actor)
-    current = session.get(InstrumentResearchNote, (instrument_id, selection.note_id))
-    if current is None or current.deleted_at:
-        return None
-    return serialize_payload({"selection_id": selection.selection_id, "selected_at": selection.selected_at,
-        "selected_by": selection.selected_by, "selected_by_name": selection.selected_by_name,
-        "note": {**_serialize_note_revision(revision), "created_at": current.created_at,
-                 "updated_at": revision.recorded_at, "updated_by": revision.recorded_by},
-        "has_later_revision": current.revision_number != selection.note_revision})
+    actor = actor or research_identity()
+    if not instrument_ids:
+        return {}
+    ranked = select(InstrumentInvestmentStance.selection_id, func.row_number().over(
+        partition_by=InstrumentInvestmentStance.instrument_id,
+        order_by=(InstrumentInvestmentStance.selected_at.desc(), InstrumentInvestmentStance.selection_id.desc())).label("rank"))
+    ranked = ranked.where(InstrumentInvestmentStance.instrument_id.in_(instrument_ids),
+        InstrumentInvestmentStance.team_id == actor["team_id"]).subquery()
+    selections = list(session.scalars(select(InstrumentInvestmentStance).join(ranked,
+        ranked.c.selection_id == InstrumentInvestmentStance.selection_id).where(ranked.c.rank == 1)))
+    selected = [row for row in selections if row.note_id is not None]
+    if not selected:
+        return {}
+    revisions = {(row.instrument_id, row.note_id, row.revision_number): row for row in session.scalars(
+        select(InstrumentResearchNoteRevision).where(tuple_(InstrumentResearchNoteRevision.instrument_id,
+            InstrumentResearchNoteRevision.note_id, InstrumentResearchNoteRevision.revision_number).in_(
+                [(row.instrument_id, row.note_id, row.note_revision) for row in selected])))}
+    notes = {(row.instrument_id, row.note_id): row for row in session.scalars(select(InstrumentResearchNote).where(
+        tuple_(InstrumentResearchNote.instrument_id, InstrumentResearchNote.note_id).in_(
+            [(row.instrument_id, row.note_id) for row in selected])))}
+    result = {}
+    for selection in selected:
+        revision = revisions.get((selection.instrument_id, selection.note_id, selection.note_revision))
+        if revision is None or (not current_principal().local_unrestricted and revision.team_id != actor["team_id"]):
+            raise ValueError("找不到当前团队标的的原始观点版本")
+        current = notes.get((selection.instrument_id, selection.note_id))
+        if current is None or current.deleted_at:
+            continue
+        result[selection.instrument_id] = serialize_payload({"selection_id": selection.selection_id, "selected_at": selection.selected_at,
+            "selected_by": selection.selected_by, "selected_by_name": selection.selected_by_name,
+            "note": {**_serialize_note_revision(revision), "created_at": current.created_at,
+                     "updated_at": revision.recorded_at, "updated_by": revision.recorded_by},
+            "has_later_revision": current.revision_number != selection.note_revision})
+    return result
 
 
 def select_current_stance(session, instrument_id, note_id, revision, *, actor=None):

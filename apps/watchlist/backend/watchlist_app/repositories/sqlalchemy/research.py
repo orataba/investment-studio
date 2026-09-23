@@ -158,7 +158,8 @@ class SQLAlchemyInstrumentResearchRepository:
                 select(InstrumentResearchNote).where(
                     InstrumentResearchNote.instrument_id.in_(instrument_ids),
                     InstrumentResearchNote.deleted_at.is_(None),
-                )
+                ).order_by(InstrumentResearchNote.instrument_id, InstrumentResearchNote.note_date.desc(),
+                    InstrumentResearchNote.created_at.desc(), InstrumentResearchNote.note_id)
             ).all()
         )
 

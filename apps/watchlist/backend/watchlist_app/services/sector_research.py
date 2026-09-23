@@ -94,18 +94,17 @@ def review_states(session, *, instrument_ids=None):
     ).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
-    query = query.where(ResearchEntry.kind == "analysis",
-        True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
-        or_(values["sector_run"].is_(True), values["research_run"].is_(True)))
+    scope_filters = [ResearchEntry.kind == "analysis",
+        True if principal.local_unrestricted else ResearchEntry.team_id == team_id]
     if requested_ids is not None:
         # Failed/queued checks may not yet contain a review. The saved run scope,
         # rather than the result or today's topic membership, determines inclusion.
-        query = query.where(instrument_run_scope(session, sorted(requested_ids)))
+        scope_filters.append(instrument_run_scope(session, sorted(requested_ids)))
+    query = query.where(*scope_filters, or_(values["sector_run"].is_(True), values["research_run"].is_(True)))
     # Authorize using IDs before fetching any notebooks. A status lookup used to
     # decode every historical review (and NUL-bearing original) into one list.
-    topics = session.execute(query.with_only_columns(
-        ResearchTopic.topic_id, ResearchTopic.portfolio_id, maintain_column_froms=True)
-        .join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
+    topics = session.execute(select(ResearchTopic.topic_id, ResearchTopic.portfolio_id)
+        .select_from(ResearchEntry).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(*scope_filters,
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
     ).distinct()).all()
     # Include all entries, including older notes and risk conversations, when
@@ -113,7 +112,8 @@ def review_states(session, *, instrument_ids=None):
     portfolio_scopes = topic_portfolio_ids_by_topic(session, topics)
     allowed_topics = {topic_id for topic_id, portfolios in portfolio_scopes.items() if not portfolios}
     runs = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(allowed_topics))
-        .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+        .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(),
+                  ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()),
         {name: (name,) for name in values})
     with closing(runs):
         for run in runs:
@@ -938,7 +938,10 @@ def apply_result(session, run, reply):
 
 
 def _research_market(session, instrument_id):
-    instrument = session.get(Instrument, instrument_id)
+    return research_market_for_instrument(session.get(Instrument, instrument_id))
+
+
+def research_market_for_instrument(instrument):
     if instrument is None:
         return None
     if instrument.instrument_type == "crypto":

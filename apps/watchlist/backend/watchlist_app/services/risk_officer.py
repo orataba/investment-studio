@@ -13,7 +13,7 @@ from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_workbench import external_json
-from watchlist_app.services.risk_performance import peer_context, performance_evidence
+from watchlist_app.services.risk_performance import peer_context, performance_context, performance_evidence
 
 TOPIC_PREFIX = "risk-officer:"
 SCOPE_KEYS = ("watchlist_id", "instrument_id", "portfolio_id")
@@ -68,27 +68,53 @@ def _portfolio_snapshot(portfolio_id):
         "exposure_note": "市值与市值占净值是持仓敞口描述，不是风险贡献；有正负持仓时净额可能抵消。"}
 
 
-def _research_context(session, instrument_id, notebook):
+def _research_context_inputs(session, instrument_ids):
+    from studio_identity import current_principal
+    from investment_studio_instrument_core.db_models import Instrument
+    from watchlist_app.api.routes.research import research_repository
+    from watchlist_app.services.research_identity import research_identity
+    from watchlist_app.services.research_themes import theme_record
+    from watchlist_app.services.research_views import read_current_stances
+    from watchlist_app.services.sector_research import research_market_for_instrument
+    actor = research_identity()
+    themes, notes = {}, {}
+    if not instrument_ids:
+        return {"actor": actor, "themes": {}, "notes": {}, "profiles": {}, "stances": {}, "markets": {}}
+    entries = session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id.in_(
+        [f"dossier:{iid}" for iid in instrument_ids]), ResearchEntry.kind == "note",
+        True if current_principal().local_unrestricted else ResearchEntry.team_id == actor["team_id"]))
+    for entry in entries:
+        if (entry.context_json or {}).get("role") == "research_theme":
+            themes.setdefault(entry.context_json["instrument_id"], []).append(theme_record(entry))
+    for note in research_repository.list_notes_for_instruments(session, instrument_ids):
+        notes.setdefault(note.instrument_id, []).append(note)
+    return {"actor": actor, "themes": themes, "notes": notes,
+        "profiles": {row.instrument_id: row for row in research_repository.list_profiles(session, instrument_ids)},
+        "stances": read_current_stances(session, instrument_ids, actor=actor),
+        "markets": {row.instrument_id: research_market_for_instrument(row) for row in session.scalars(
+            select(Instrument).where(Instrument.instrument_id.in_(instrument_ids)))}}
+
+
+def _research_context(session, instrument_id, notebook, *, inputs=None):
     """Bind current team judgments, without hydrating the historical source corpus."""
     from studio_identity import current_principal
-    from watchlist_app.api.routes.research import _serialize_note, _serialize_profile, research_repository
-    from watchlist_app.services.research_identity import research_identity
-    from watchlist_app.services.research_themes import theme_index
-    from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
+    from watchlist_app.api.routes.research import _serialize_note, _serialize_profile
+    from watchlist_app.services.sector_research import RESEARCH_TIMEZONES
 
-    actor = research_identity()
-    inactive = {theme["theme_id"] for theme in theme_index(session, instrument_id, actor=actor)
+    inputs = inputs if inputs is not None else _research_context_inputs(session, [instrument_id])
+    actor = inputs["actor"]
+    inactive = {theme["theme_id"] for theme in inputs["themes"].get(instrument_id, [])
                 if theme["status"] != "active"}
-    market = _research_market(session, instrument_id)
+    market = inputs["markets"].get(instrument_id)
     zone = ZoneInfo(RESEARCH_TIMEZONES[market]) if market else None
     review_day = datetime.now(UTC).astimezone(zone).date() if zone else None
     records = []
-    profile = research_repository.get_profile(session, instrument_id)
+    profile = inputs["profiles"].get(instrument_id)
     if profile is not None:
         records.append({"kind": "pm_profile", "source_id": f"risk-pm-profile:{instrument_id}:{profile.revision_number}",
             "instrument_id": instrument_id, "value": _serialize_profile(profile),
             "note": "标的PM档案及历史研究字段；current_view/thesis是旧档案原文，不是当前选定的总体观点，后者仅见current_stance。保留研究阶段，不推定仍建议持有。primary_analyst是负责人、updated_by是维护人，均不等于原观点作者；此档案未保存独立作者归属，不能补推。"})
-    for note in research_repository.list_notes(session, instrument_id):
+    for note in inputs["notes"].get(instrument_id, []):
         if (not current_principal().local_unrestricted and note.team_id != actor["team_id"]
                 or note.completed_at is not None or (note.research_context or {}).get("theme_id") in inactive):
             continue
@@ -127,9 +153,8 @@ def _research_context(session, instrument_id, notebook):
             records.append({"kind": kind, "source_id": f"risk-{kind}:{instrument_id}:{identity}",
                 "instrument_id": instrument_id, "value": value,
                 "note": "研究员保存的判断、反证和下一检查条件；到期只要求复核，不表示预测已经兑现或错误。"})
-    from watchlist_app.services.research_views import read_current_stance
     from watchlist_app.services.research_read_projection import source_index
-    stance = read_current_stance(session, instrument_id, actor=actor)
+    stance = inputs["stances"].get(instrument_id)
     if stance:
         context = stance["note"].get("research_context") or {}
         stance["note"]["research_context"] = {**context, "sources": [source_index(source) for source in context.get("sources", [])]}
@@ -183,6 +208,9 @@ def read_snapshot(session, **scope):
     states = review_states(session, instrument_ids=[item["instrument_id"] for item in instruments])
     latest_research, completed_research = states["latest"], states["last_completed"]
     peer_scope = peer_context(session) if instruments else None
+    instrument_ids = [item["instrument_id"] for item in instruments]
+    research_inputs = _research_context_inputs(session, instrument_ids)
+    performance_inputs = performance_context(session, instrument_ids, peer_scope=peer_scope)
     for item in instruments:
         iid = item["instrument_id"]
         latest, completed = latest_research.get(iid), completed_research.get(iid)
@@ -197,7 +225,7 @@ def read_snapshot(session, **scope):
                 if view else None,
             "note": "研究员已保存的判断与复核状态，供风险分析衔接；不是独立原始证据，也不表示本轮重新核实。资料覆盖不足本身不是投资风险，正常净值披露滞后不等于研究失败。",
         }
-        item["research_context"] = _research_context(session, iid, notebook)
+        item["research_context"] = _research_context(session, iid, notebook, inputs=research_inputs)
         status = (latest or {}).get("status")
         gap = {None: "尚无已留存的研究检查，研究覆盖尚未确认",
             "queued": "本次研究仍在等待，尚未完成新的检查",
@@ -215,7 +243,7 @@ def read_snapshot(session, **scope):
                 summary["longest_underwater_period_months"] = summary.pop("max_duration_months")
             summary["duration_note"] = "最长水下期是全样本统计，不是 peak_date 至 valley_date 的最大回撤区间时长，也不是当前回撤持续时间。"
             item["risk"] = {**risk, "drawdown_summary": summary}
-        item["performance_evidence"] = performance_evidence(session, item["instrument_id"], peer_scope=peer_scope)
+        item["performance_evidence"] = performance_evidence(session, item["instrument_id"], context=performance_inputs)
     cases = sorted((case for case in workspace["cases"] if case["trigger_active"]
                     and case["status"] not in {"handled", "resolved"}
                     and (case.get("evidence_json") or {}).get("direction") != "opportunity"

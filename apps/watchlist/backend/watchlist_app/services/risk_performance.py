@@ -1,7 +1,9 @@
 """Retained return evidence for risk review, independently of configured alert lines."""
+from dataclasses import dataclass
 from datetime import date
 import math
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 
 from watchlist_app.db.models import InstrumentChartReadModel, InstrumentDetail, InstrumentManualProfile, InstrumentPerformanceReadModel
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService, _node_path_labels, _node_path_node_ids, _peer_geographic_exposure, _peer_taxonomy_is_comparable
@@ -94,16 +96,70 @@ def _taxonomy_peers(instrument_id, context):
     return peers, metadata, reason
 
 
-def performance_evidence(session, instrument_id, *, peer_scope=None):
-    chart = session.get(InstrumentChartReadModel, instrument_id)
+@dataclass(frozen=True)
+class PerformanceEvidenceContext:
+    """Rows retained only for one read and its actual comparison universe."""
+    instrument_ids: frozenset[str]
+    records: dict[type, dict[str, object]]
+    peers: dict[str, tuple]
+
+    def get(self, model, instrument_id):
+        return self.records[model].get(instrument_id)
+
+
+def performance_context(session, instrument_ids, *, peer_scope=None):
+    """Batch-load targets and their saved peers, including absent records.
+
+    Holding these rows for the read avoids fetching a shared comparator once per
+    target. This is request-scoped data, not a cache across configurations or reads.
+    """
+    ids = frozenset(instrument_ids)
+
+    def load(model, selected_ids, *columns):
+        if not selected_ids:
+            return {}
+        return {row.instrument_id: row for row in session.scalars(select(model)
+            .where(model.instrument_id.in_(sorted(selected_ids)))
+            .options(load_only(model.instrument_id, *columns)))}
+
+    profiles = load(InstrumentManualProfile, ids, InstrumentManualProfile.nav_settings_json)
+    scope = peer_scope if peer_scope is not None else peer_context(session) if ids else None
+    peers = {iid: _taxonomy_peers(iid, scope) for iid in ids}
+    comparison_ids = set()
+    for iid in ids:
+        profile = profiles.get(iid)
+        settings = (profile.nav_settings_json or {}) if profile else {}
+        comparison_ids.update(peers[iid][0])
+        comparison_ids.update(settings.get("peer_baseline_instrument_ids") or [])
+        if baseline := settings.get("default_benchmark_instrument_id"):
+            comparison_ids.add(baseline)
+    records = {
+        InstrumentManualProfile: profiles,
+        InstrumentChartReadModel: load(InstrumentChartReadModel, ids | comparison_ids,
+            InstrumentChartReadModel.payload_json, InstrumentChartReadModel.source_cutoff_at,
+            InstrumentChartReadModel.data_freshness_status),
+        InstrumentPerformanceReadModel: load(InstrumentPerformanceReadModel, ids,
+            InstrumentPerformanceReadModel.payload_json, InstrumentPerformanceReadModel.source_cutoff_at,
+            InstrumentPerformanceReadModel.data_freshness_status),
+        InstrumentDetail: load(InstrumentDetail, comparison_ids, InstrumentDetail.instrument_name),
+    }
+    return PerformanceEvidenceContext(ids, records, peers)
+
+
+def performance_evidence(session, instrument_id, *, peer_scope=None, context=None):
+    if context is not None and instrument_id not in context.instrument_ids:
+        raise ValueError("Instrument is outside this performance evidence context.")
+    get_record = context.get if context is not None else session.get
+    chart = get_record(InstrumentChartReadModel, instrument_id)
     series = (chart.payload_json.get("research_returns") or {}) if chart else {}
     points = _points(series)
     dates = sorted(points)
-    profile = session.get(InstrumentManualProfile, instrument_id)
+    profile = get_record(InstrumentManualProfile, instrument_id)
     settings = (profile.nav_settings_json or {}) if profile else {}
     baseline = settings.get("default_benchmark_instrument_id")
     explicit_peers = settings.get("peer_baseline_instrument_ids") or []
-    taxonomy_peers, peer_group, peer_limitation = _taxonomy_peers(instrument_id, peer_scope if peer_scope is not None else peer_context(session))
+    taxonomy_peers, peer_group, peer_limitation = (context.peers[instrument_id] if context is not None else
+        _taxonomy_peers(instrument_id, peer_scope if peer_scope is not None else peer_context(session)))
     peers = [*taxonomy_peers, *explicit_peers]
     limitations = []
     if not baseline and not peers:
@@ -111,7 +167,7 @@ def performance_evidence(session, instrument_id, *, peer_scope=None):
     if len(dates) < 2:
         limitations.append("可用连续收益序列不足，未计算阶段表现。")
     frequency = (series.get("frequency") or {}).get("resolved_frequency")
-    perf = session.get(InstrumentPerformanceReadModel, instrument_id)
+    perf = get_record(InstrumentPerformanceReadModel, instrument_id)
     months = _month_periods(points)
     output = {"source_id": f"risk-performance:{instrument_id}", "available": len(dates) >= 2,
         "currency": series.get("currency"), "frequency": frequency, "return_kind": (series.get("metadata") or {}).get("return_kind"),
@@ -127,8 +183,8 @@ def performance_evidence(session, instrument_id, *, peer_scope=None):
         "method": "选定收益序列的实际观察日；非重叠月度区间以上月末观察值为起点。最新月单列为截至最新观察日，不能当作完整月。短样本不年化；不凭亏损数值自动设风险等级。"}
     for other_id in dict.fromkeys([*([baseline] if baseline else []), *peers]):
         role = "configured_benchmark" if other_id == baseline else "taxonomy_peer" if other_id in taxonomy_peers else "configured_peer"
-        instrument = session.get(InstrumentDetail, other_id)
-        other_chart = session.get(InstrumentChartReadModel, other_id)
+        instrument = get_record(InstrumentDetail, other_id)
+        other_chart = get_record(InstrumentChartReadModel, other_id)
         other_series = (other_chart.payload_json.get("research_returns") or {}) if other_chart else {}
         other_points = _points(other_series)
         label = instrument.instrument_name if instrument else other_id

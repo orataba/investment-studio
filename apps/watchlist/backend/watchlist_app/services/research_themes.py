@@ -433,11 +433,12 @@ def save_analyst_theme(session, instrument_id, update, *, actor=None, provenance
 
 def research_progress(session, instrument_id, *, theme_id=None, note_id=None, actor=None):
     from watchlist_app.services.research_dossier import _research_records
+    from watchlist_app.services.research_activity import question_progress_value
     actor = actor or research_identity()
     progress, last = [], {}
     # A theme's research assessment is already stored in the analyst notebook.
     # Project its material revisions; do not copy them into the PM's own view.
-    for run, notebook in reversed(list(_research_records(session, instrument_id))):
+    for run, notebook in _research_records(session, instrument_id, oldest_first=True):
         if not current_principal().local_unrestricted and run.team_id != actor["team_id"]:
             continue
         for question in notebook.get("questions", []):
@@ -447,8 +448,7 @@ def research_progress(session, instrument_id, *, theme_id=None, note_id=None, ac
                 continue
             if not theme_id and not note_id:
                 continue
-            value = {key: question.get(key) for key in ("key", "assessment", "next_check", "status", "source_ids",
-                "evidence_for", "evidence_against", "pm_note_id", "pm_note_revision")}
+            value = question_progress_value(question)
             if value == last.get(question["key"]):
                 continue
             last[question["key"]] = value
@@ -457,19 +457,20 @@ def research_progress(session, instrument_id, *, theme_id=None, note_id=None, ac
     return progress
 
 
-def themes_view(session, instrument_id, *, actor=None):
+def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None):
     from watchlist_app.api.routes.research import _serialize_note
     from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
     actor = actor or research_identity()
-    notes = SQLAlchemyInstrumentResearchRepository().list_notes(session, instrument_id)
+    notes = notes if notes is not None else SQLAlchemyInstrumentResearchRepository().list_notes(session, instrument_id)
     themes = theme_index(session, instrument_id, actor=actor)
     from watchlist_app.services.research_activity import research_activity, review_receipts, judgment_changed_at, judgment_review_receipt
-    updates = research_activity(session, instrument_id, actor=actor)["updates"]
+    activity = activity if activity is not None else research_activity(session, instrument_id, actor=actor, include_theme_progress=True)
+    updates = activity["updates"]
     receipts = review_receipts(session, instrument_id) if themes else {}
     for theme in themes:
         theme["notes"] = [_serialize_note(note) for note in notes if (current_principal().local_unrestricted or note.team_id == actor["team_id"])
                           and (note.research_context or {}).get("theme_id") == theme["theme_id"]]
-        theme["research_progress"] = research_progress(session, instrument_id, theme_id=theme["theme_id"], actor=actor)
+        theme["research_progress"] = activity["theme_progress"].get(theme["theme_id"], [])
         theme["updates"] = [row for row in updates if theme["theme_id"] in row["theme_ids"]]
         current = [row for row in theme["updates"] if row["kind"] == "question"
                         and row["reference"].get("theme_id") == theme["theme_id"]

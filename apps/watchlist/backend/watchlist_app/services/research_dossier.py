@@ -432,19 +432,23 @@ def _research_records(session: Session, instrument_id: str, *, oldest_first: boo
     ).select_from(ResearchEntry).join(ResearchTopic)
     if relation is not None:
         query = query.join(relation, true())
-    query = query.where(
+    scope_filters = (
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
         True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
-        instrument_run_scope(session, instrument_id), review["research"].as_string().is_not(None),
+        instrument_run_scope(session, instrument_id),
     )
-    topics = session.execute(query.with_only_columns(
-        ResearchEntry.topic_id, ResearchTopic.portfolio_id, maintain_column_froms=True).distinct()).all()
+    query = query.where(*scope_filters, review["research"].as_string().is_not(None))
+    # Candidate IDs need the indexed scope, not another parse of every notebook.
+    # The actual payload query below retains its publication/result predicates.
+    topics = session.execute(select(ResearchEntry.topic_id, ResearchTopic.portfolio_id)
+        .select_from(ResearchEntry).join(ResearchTopic).where(*scope_filters).distinct()).all()
     portfolios = topic_portfolio_ids_by_topic(session, topics)
     stamp = func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at)
     records = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(
         [topic_id for topic_id, ids in portfolios.items() if not ids]))
-        .order_by(stamp.asc() if oldest_first else stamp.desc()),
+        .order_by(*(column.asc() if oldest_first else column.desc() for column in
+            (stamp, ResearchEntry.created_at, ResearchEntry.entry_id))),
         {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction", "organization_revision")},
          "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")})
     with closing(records):
@@ -580,11 +584,12 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     mandate = read_mandate(session, instrument_id)
     research_plan = plan_for_mandate(mandate["registration"], mandate)
     versions = research_repository.list_note_revisions(session, instrument_id)
+    notes = research_repository.list_notes(session, instrument_id)
     from watchlist_app.services.research_views import note_sources, read_current_stance
     pm_views = [{**_serialize_note(note), "sources": note_sources(session, instrument_id, note.research_context or {}), "versions": [
         {"revision_number": v.revision_number, "version_id": f"pm:{v.note_id}:{v.revision_number}",
          "recorded_at": v.recorded_at} for v in versions if v.note_id == note.note_id]}
-        for note in research_repository.list_notes(session, instrument_id)
+        for note in notes
         if local_unrestricted or note.team_id == actor["team_id"]]
     entries = session.execute(select(ResearchEntry, ResearchTopic).join(ResearchTopic).where(
         ResearchEntry.kind == "evidence", ResearchTopic.portfolio_id.is_(None),
@@ -602,8 +607,9 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
                   "reuse_limitations": history_limitations} for case in atlas["cases"]]
     notebook, notebook_history = _notebooks(session, instrument_id, include_history)
     cases.extend(_review_cases(instrument_id, notebook))
-    from watchlist_app.services.research_activity import review_agenda
-    current_themes = themes_view(session, instrument_id, actor=actor)["themes"]
+    from watchlist_app.services.research_activity import research_activity, review_agenda
+    activity = research_activity(session, instrument_id, actor=actor, include_theme_progress=True)
+    current_themes = themes_view(session, instrument_id, actor=actor, activity=activity, notes=notes)["themes"]
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
         "instrument_type": instrument.instrument_type, "research_plan": research_plan, "frameworks": method_library()["frameworks"],
         "available_modules": [{key: item[key] for key in ("id", "title", "version")} for item in method_library()["frameworks"]],
@@ -613,5 +619,5 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         "notebook": notebook, "notebook_history": notebook_history,
         "themes": current_themes, "pm_views": pm_views,
         "current_stance": read_current_stance(session, instrument_id, actor=actor),
-        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor, themes=current_themes),
+        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor, themes=current_themes, activity=activity),
         "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

@@ -596,16 +596,23 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
     if ids is not None:
         cases_query = cases_query.where(RiskCase.instrument_id.in_(ids))
         instruments = [x for x in instruments if x["instrument_id"] in ids]
+    member_ids = [item["instrument_id"] for item in instruments]
+    risks = {row.instrument_id: row for row in session.scalars(select(InstrumentRiskReadModel).where(
+        InstrumentRiskReadModel.instrument_id.in_(member_ids)))} if member_ids else {}
+    rules = {row.instrument_id: row for row in session.scalars(select(RiskReviewRule).where(
+        RiskReviewRule.instrument_id.in_(member_ids)))} if member_ids else {}
+    charts = {row.instrument_id: row for row in session.scalars(select(InstrumentChartReadModel).where(
+        InstrumentChartReadModel.instrument_id.in_(member_ids)))} if member_ids else {}
     for item in instruments:
         iid = item["instrument_id"]
-        risk = session.get(InstrumentRiskReadModel, iid)
-        rule = session.get(RiskReviewRule, iid)
+        risk = risks.get(iid)
+        rule = rules.get(iid)
         item["risk"] = risk.payload_json if risk else None
         item["freshness"] = risk.data_freshness_status if risk else "missing"
         item["drawdown_limit"] = rule.drawdown_limit if rule else None
         item["drawdown_change_pp"] = None
         item["previous_observation_date"] = None
-        chart = session.get(InstrumentChartReadModel, iid)
+        chart = charts.get(iid)
         series = (chart.payload_json.get("research_returns") or {}) if chart else {}
         points = series.get("points") or []
         item["period_limits"] = rule.period_limits_json if rule else {}

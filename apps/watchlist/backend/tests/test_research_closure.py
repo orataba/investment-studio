@@ -134,7 +134,11 @@ def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(clie
         states = sector_research.review_states(session, instrument_ids=instrument_ids)
         assert states["latest"]["fund-us-agg"]["current_summary"].startswith("public-")
         assert states["last_completed"] == states["latest"]
-        assert calls == [["repeated-portfolio-topic", "repeated-public-topic"]]
+        # Candidate IDs use relational columns and indexed scope only. The shared
+        # payload query still excludes unpublished analysis, after one historical
+        # permission check, without parsing every retained context twice.
+        candidate_topics = ["repeated-portfolio-topic", "repeated-public-topic", "unrelated-analysis-topic"]
+        assert calls == [candidate_topics]
         assert len(queries) == 3
         calls.clear()
         queries.clear()
@@ -143,7 +147,7 @@ def test_review_states_batch_topic_scopes_without_reusing_them_across_reads(clie
             status="recorded", title="私有组合历史", context_json={"portfolio_id": "new-private-scope"}))
         session.commit()
         assert sector_research.review_states(session, instrument_ids=instrument_ids) == {"latest": {}, "last_completed": {}}
-        assert calls == [["repeated-portfolio-topic", "repeated-public-topic"]]
+        assert calls == [candidate_topics]
         assert len(queries) == 3
 
 

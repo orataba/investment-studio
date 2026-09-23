@@ -463,7 +463,7 @@ def test_risk_reads_latest_research_coverage_and_prior_judgment_for_every_suppor
 
 def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(client, monkeypatch):
     from watchlist_app.db.models.research import InstrumentResearchNote, InstrumentResearchProfile
-    from watchlist_app.services import research_themes, sector_research
+    from watchlist_app.services import sector_research
     from watchlist_app import research_mcp
     seed(client)
     instant = datetime(2026, 9, 13, 2, tzinfo=UTC)
@@ -472,8 +472,6 @@ def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(clien
         def now(cls, tz=None):
             return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
     monkeypatch.setattr(service, "datetime", Clock)
-    monkeypatch.setattr(sector_research, "_research_market", lambda *_: "fund_nav")
-    monkeypatch.setattr(research_themes, "theme_index", lambda *_a, **_k: [{"theme_id": "closed-theme", "status": "closed"}])
     notebook = {"investment_view": None, "questions": [
         {"key": "demand", "question": "需求是否改善", "assessment": "暂时支持", "status": "supported", "tracking_status": "active",
          "evidence_for": ["订单改善"], "evidence_against": ["现金回收未改善"], "next_check": "核对现金流", "pm_note_id": "pm", "pm_note_revision": 3,
@@ -494,6 +492,14 @@ def test_risk_binds_attributed_pm_views_active_questions_and_due_forecasts(clien
                 "last_completed": {"risk-a": completed}}
     monkeypatch.setattr(sector_research, "review_states", scoped_states)
     with get_session_factory()() as session:
+        from investment_studio_instrument_core.db_models import Instrument
+        from watchlist_app.db.models.workbench import ResearchTopic
+        session.add(Instrument(instrument_id="risk-a", instrument_name="Risk A", instrument_type="etf", currency="CNY",
+            exchange_code="XSHG", quote_selection_policy_json={}, source_settings_json={}))
+        session.add(ResearchTopic(topic_id="dossier:risk-a", title="Research", instrument_ids=["risk-a"], visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="closed-theme", topic_id="dossier:risk-a", kind="note", title="Closed theme",
+            context_json={"role": "research_theme", "instrument_id": "risk-a", "author": "PM", "theme_status": "closed"}))
         session.add(InstrumentResearchProfile(instrument_id="risk-a", research_stage="watching",
             thesis="订单变现支持中期收益", current_view="仍需等待现金流验证", disconfirming_evidence="应收继续增长会推翻逻辑",
             key_risks="回款及赎回流动性", monitoring_plan="检查下一季回款与赎回窗口", time_horizon="两个季度",

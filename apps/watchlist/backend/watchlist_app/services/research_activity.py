@@ -63,7 +63,12 @@ def _event_updates(session, iid):
     return updates
 
 
-def _notebook_updates(session, iid, events):
+def question_progress_value(question):
+    return {key: question.get(key) for key in ("key", "assessment", "next_check", "status", "source_ids",
+        "evidence_for", "evidence_against", "pm_note_id", "pm_note_revision")}
+
+
+def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None):
     from watchlist_app.services.research_dossier import _research_records
     from watchlist_app.services.sector_research import _source_views
     updates, previous, chains = [], {}, {}
@@ -76,7 +81,20 @@ def _notebook_updates(session, iid, events):
         "investment_view": ("judgment", "direction", "direction"),
     }
     metadata = {"version_id", "versions", "created_at", "updated_at", "source_run_id"}
-    for run, notebook in reversed(list(_research_records(session, iid))):
+    progress_last = {}
+    for run, notebook in _research_records(session, iid, oldest_first=True):
+        if theme_progress is not None and (current_principal().local_unrestricted or run.team_id == actor["team_id"]):
+            for question in notebook.get("questions", []):
+                theme_id = question.get("theme_id")
+                if not theme_id:
+                    continue
+                value = question_progress_value(question)
+                identity = (theme_id, question["key"])
+                if progress_last.get(identity) == value:
+                    continue
+                progress_last[identity] = value
+                theme_progress.setdefault(theme_id, []).append({**value, "run_id": run.entry_id,
+                    "recorded_at": run.context_json.get("cutoff"), "author_role": "researcher"})
         sources = {source["source_id"]: source for source in notebook.get("sources", [])}
         correction = (run.context_json.get("citation_correction") or {}) if run.context_json.get("recordkeeping_only") else {}
         organization = (run.context_json.get("organization_revision") or {}) if run.context_json.get("recordkeeping_only") else {}
@@ -213,10 +231,11 @@ def _opinion_updates(session, iid, actor):
     return updates
 
 
-def research_activity(session, instrument_id, *, actor=None, include_recent_events=False):
+def research_activity(session, instrument_id, *, actor=None, include_recent_events=False, include_theme_progress=False):
     actor = actor or research_identity()
     events = _event_updates(session, instrument_id)
-    updates = [*events, *_notebook_updates(session, instrument_id, events),
+    theme_progress = {} if include_theme_progress else None
+    updates = [*events, *_notebook_updates(session, instrument_id, events, theme_progress=theme_progress, actor=actor),
                *_theme_updates(session, instrument_id, actor), *_opinion_updates(session, instrument_id, actor)]
     by_id = {row["update_id"]: row for row in updates}
     for row in sorted(updates, key=lambda row: row["recorded_at"]):
@@ -229,6 +248,8 @@ def research_activity(session, instrument_id, *, actor=None, include_recent_even
                 row["reference"]["theme_id"] = linked["reference"]["theme_id"]
     result = {"instrument_id": instrument_id,
         "updates": sorted(by_id.values(), key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)}
+    if theme_progress is not None:
+        result["theme_progress"] = theme_progress
     if include_recent_events:
         result["recent_events"] = [row for row in result["updates"] if row["kind"] == "event"
             and not row.get("superseded") and not row.get("withdrawn") and row.get("follow_up") == "none"]
@@ -239,7 +260,7 @@ def review_receipts(session, instrument_id):
     """Only a published receipt for an exact judgment proves that it was checked."""
     from sqlalchemy import JSON, String, func, select, true
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-    from watchlist_app.services.research_access import research_context_projection, research_projection_rows, topic_portfolio_ids
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
     relation, context = research_context_projection(session, {"cutoff": String, "reviews": JSON})
     review = context["reviews"][instrument_id]
@@ -251,18 +272,16 @@ def review_receipts(session, instrument_id):
             ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
             review["status"].as_string().in_(["completed", "limited"]),
             True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
-        ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+        ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(),
+                   ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc()),
         {"cutoff": ("cutoff",), "reflection": ("reviews", instrument_id, "reflection")})
-    receipts, allowed = {}, {}
+    topics = list(session.scalars(select(ResearchTopic).where(ResearchTopic.topic_id.in_({row.topic_id for row in rows}),
+        True if principal.local_unrestricted else ResearchTopic.team_id == principal.team_id))) if rows else []
+    allowed = {topic_id for topic_id, portfolios in topic_portfolio_ids_by_topic(session, topics).items() if not portfolios}
+    receipts = {}
     for row in rows:
         topic_id, reflection = row.topic_id, row.reflection
-        if not isinstance(reflection, dict):
-            continue
-        if topic_id not in allowed:
-            topic = session.get(ResearchTopic, topic_id)
-            allowed[topic_id] = bool(topic and (principal.local_unrestricted or topic.team_id == principal.team_id)
-                                     and not topic_portfolio_ids(session, topic))
-        if not allowed[topic_id]:
+        if not isinstance(reflection, dict) or topic_id not in allowed:
             continue
         for identifier in reflection.get("reviewed_update_ids", []):
             receipts.setdefault(identifier, {"last_reviewed_at": _time(row.completed_at or row.cutoff),
@@ -298,12 +317,12 @@ def resolve_event_reference(session, instrument_id, case_id, version_id):
     return result
 
 
-def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None, themes=None):
+def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None, themes=None, activity=None):
     """Point to existing judgments; these are questions to check, not new evidence."""
     from watchlist_app.services.research_themes import theme_index
-    inactive_themes = {theme["theme_id"] for theme in theme_index(session, instrument_id, actor=actor)
+    inactive_themes = {theme["theme_id"] for theme in (themes if themes is not None else theme_index(session, instrument_id, actor=actor))
                        if theme["status"] != "active"}
-    updates = research_activity(session, instrument_id, actor=actor)["updates"]
+    updates = (activity if activity is not None else research_activity(session, instrument_id, actor=actor))["updates"]
     assignments = {row["update_id"]: row["reference"].get("theme_id") for row in updates}
     current = [row for row in updates
                if not row.get("superseded") and not row.get("withdrawn")
