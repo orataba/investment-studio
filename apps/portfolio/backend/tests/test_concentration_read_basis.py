@@ -94,7 +94,7 @@ def reader_basis(monkeypatch):
 
     monkeypatch.setattr(concentration, "get_session_factory", lambda: Session)
     monkeypatch.setattr(concentration, "read_concentration_settings", lambda *_args, **_kwargs: {
-        "revision": 0, "rules": [], "fcn_allocations": [],
+        "revision": 0, "enabled_taxonomy_ids": [], "limits": [], "fcn_allocations": [],
     })
     monkeypatch.setattr(workspace_routes, "resolve_holdings_request", lambda *_args, **_kwargs: (
         {"portfolio_id": "p", "as_of_date": cached["as_of_date"]}, date.fromisoformat(cached["as_of_date"]),

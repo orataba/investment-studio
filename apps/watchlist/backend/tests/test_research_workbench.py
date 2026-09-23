@@ -300,7 +300,7 @@ def test_risk_breach_updates_once_followup_is_not_recovery_and_recurrence_is_new
 
 def test_completed_instrument_notes_leave_due_projection_and_retain_revision(client):
     wid = seed(client)
-    request = {'note': {'note_date': '2026-01-01', 'title': '检查经理变更', 'note_type': 'review', 'follow_up_date': '2026-01-02'}}
+    request = {'note': {'note_date': '2026-01-01', 'title': '检查经理变更', 'research_context': {'background': '管理团队变化需要核实'}, 'note_type': 'review', 'follow_up_date': '2026-01-02'}}
     created = client.post('/api/instruments/sxv264/research/notes', json=request).json()
     note = created['notes'][0]
     request['note']['completed_at'] = '2026-01-03T00:00:00Z'
@@ -334,7 +334,7 @@ def test_minor_sample_lows_and_low_importance_notes_do_not_raise_attention(clien
         summary.payload_json = {'freshness': {'data_freshness_status': 'fresh', 'latest_observation_date': '2026-09-04'}}
         refresh_risk_cases(session, ['sxv264'])
         session.commit()
-    request = {'note': {'note_date': '2026-09-04', 'title': '普通波动观察', 'note_type': 'risk', 'importance': 'low', 'body': '变化很小，继续观察'}}
+    request = {'note': {'note_date': '2026-09-04', 'title': '普通波动观察', 'research_context': {'background': '当前净值普通波动'}, 'note_type': 'risk', 'importance': 'low', 'body': '变化很小，继续观察'}}
     response = client.post('/api/instruments/sxv264/research/notes', json=request)
     assert response.status_code == 200, response.text
     def active():

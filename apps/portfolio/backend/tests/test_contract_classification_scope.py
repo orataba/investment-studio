@@ -53,21 +53,20 @@ def test_research_ignores_contract_only_assignments_but_keeps_explicit_target_me
         _seed_contract(session, 'classified-fcn', 'linked-only', date(2026, 4, 1))
         session.commit()
     configuration = {
-        'taxonomy': {'taxonomy_id': 'test-taxonomy', 'name': 'Custom', 'planning_enabled': True, 'status': 'active'},
+        'taxonomy': {'taxonomy_id': 'test-taxonomy', 'name': 'Custom', 'root_allocation_basis': 'weight', 'status': 'active'},
         'taxonomy_nodes': [{'taxonomy_node_id': 'leaf', 'node_name': 'Leaf', 'status': 'active'}],
         'taxonomy_assignments': [{'taxonomy_node_id': 'leaf', 'target_scope': 'instrument', 'target_entity_id': 'linked-only', 'status': 'active'}],
         'target_sets': [], 'target_set_lines': [],
     }
     from portfolio_app.services import research_inputs
     monkeypatch.setattr(research_inputs, 'current_taxonomy_configuration_in_session', lambda *args: deepcopy(configuration))
-    monkeypatch.setattr(research_inputs, 'current_analytics_policies_by_node', lambda *args, **kwargs: {})
     def state():
         return research_solver._build_taxonomy_state('investment-studio', planning_taxonomy_id='test-taxonomy',
             as_of_date=date(2026, 4, 15), direct_fx_instruments={})
     assert not state().direct_assignments_by_node
     configuration['target_sets'] = [{'target_set_id': 'explicit', 'status': 'active', 'target_set_type': 'saa'}]
     configuration['target_set_lines'] = [{'target_set_id': 'explicit', 'target_member_type': 'instrument',
-                                         'target_member_id': 'linked-only', 'target_weight': 0.1}]
+                                         'target_member_id': 'linked-only', 'target_value': 0.1}]
     assert state().direct_assignments_by_node['leaf'][0]['target_entity_id'] == 'linked-only'
 
 
@@ -75,7 +74,7 @@ def test_research_can_select_custom_taxonomy_before_targets_but_cannot_run(clien
     base = '/api/portfolios/investment-studio'
     response = client.post(f'{base}/taxonomies', json={
         'name': 'Industry classification', 'taxonomy_type': 'custom',
-        'primary_assignment_scope': 'instrument', 'planning_enabled': False,
+        'primary_assignment_scope': 'instrument',
     })
     assert response.status_code == 200, response.json()
     taxonomy_id = response.json()['taxonomy_id']
@@ -87,4 +86,4 @@ def test_research_can_select_custom_taxonomy_before_targets_but_cannot_run(clien
     assert option['targets_available'] is False
     response = client.post(f'{base}/research/runs', json={'requested_by': 'pytest'})
     assert response.status_code == 400, response.json()
-    assert 'Configure active weight or risk-contribution targets' in response.json()['detail']
+    assert 'no active complete allocation target vector' in response.json()['detail']

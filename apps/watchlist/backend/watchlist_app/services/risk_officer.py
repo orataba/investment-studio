@@ -87,7 +87,7 @@ def _research_context(session, instrument_id, notebook):
     if profile is not None:
         records.append({"kind": "pm_profile", "source_id": f"risk-pm-profile:{instrument_id}:{profile.revision_number}",
             "instrument_id": instrument_id, "value": _serialize_profile(profile),
-            "note": "标的PM档案的完整当前版本，含当前观点、假设、风险、反证、期限和监测计划；保留研究阶段，不推定仍建议持有。primary_analyst是负责人、updated_by是维护人，均不等于原观点作者；此档案未保存独立作者归属，不能补推。"})
+            "note": "标的PM档案及历史研究字段；current_view/thesis是旧档案原文，不是当前选定的总体观点，后者仅见current_stance。保留研究阶段，不推定仍建议持有。primary_analyst是负责人、updated_by是维护人，均不等于原观点作者；此档案未保存独立作者归属，不能补推。"})
     for note in research_repository.list_notes(session, instrument_id):
         if (not current_principal().local_unrestricted and note.team_id != actor["team_id"]
                 or note.completed_at is not None or (note.research_context or {}).get("theme_id") in inactive):
@@ -127,9 +127,15 @@ def _research_context(session, instrument_id, notebook):
             records.append({"kind": kind, "source_id": f"risk-{kind}:{instrument_id}:{identity}",
                 "instrument_id": instrument_id, "value": value,
                 "note": "研究员保存的判断、反证和下一检查条件；到期只要求复核，不表示预测已经兑现或错误。"})
-    return {"records": records,
+    from watchlist_app.services.research_views import read_current_stance
+    from watchlist_app.services.research_read_projection import source_index
+    stance = read_current_stance(session, instrument_id, actor=actor)
+    if stance:
+        context = stance["note"].get("research_context") or {}
+        stance["note"]["research_context"] = {**context, "sources": [source_index(source) for source in context.get("sources", [])]}
+    return {"records": records, "current_stance": stance,
         "counts": {kind: sum(row["kind"] == kind for row in records) for kind in ("pm_profile", "pm_view", "active_question", "forecast_check")},
-        "note": "绑定标的PM档案当前版本、当前团队可见且未结束的PM观点及有效主题内继续跟踪的问题/预测；历史版本、已完成观点、暂停/结束问题和撤回预测不在当前清单。保留原文、已有归属、原日期与来源引用；这些是待检验判断，不是独立事实。预测复核日期按标的市场时区判断，市场未知时不推定到期。"}
+        "note": "current_stance是用户明确选定的总体观点原版本；未选定则为空，不由最新随笔或旧档案推定。records包含PM档案历史字段、团队可见且未结束的观点及有效主题内的问题/预测。保留原文、已有归属、原日期与来源引用；这些是待检验判断，不是独立事实。预测复核日期按标的市场时区判断，市场未知时不推定到期。"}
 
 
 def read_snapshot(session, **scope):

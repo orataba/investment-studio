@@ -133,6 +133,7 @@ def dossier_sections(dossier):
         "materials": dossier.get("materials", []), "historical_cases": dossier.get("historical_cases", []),
         "historical_case_limitations": dossier.get("historical_case_limitations", []),
         "themes": dossier.get("themes", []), "pm_views": pm_views,
+        "current_stance": dossier.get("current_stance"),
         "review_agenda": dossier.get("review_agenda", {}),
         "versions": [{key: row.get(key) for key in ("version_id", "run_id", "created_at", "updated_at", "checked_at")}
                      for row in dossier.get("notebook_history", [])]}

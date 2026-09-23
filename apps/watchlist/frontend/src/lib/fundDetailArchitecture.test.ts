@@ -5,7 +5,7 @@ it('keeps five fund destinations and preserves each fund family’s archive voca
   expect(fundDetailTabs()).toEqual(['overview', 'investment-research', 'views', 'performance', 'archive'])
   for (const type of ['public_fund', 'private_fund'] as const) {
     expect(fundDetailTabLabel(type, 'performance', 'zh-Hans', '')).toBe('业绩与风险')
-    expect(fundDetailTabLabel(type, 'views', 'zh-Hans', '')).toBe('经理观点')
+    expect(fundDetailTabLabel(type, 'views', 'zh-Hans', '')).toBe('投资观点')
     expect(fundDetailTabLabel(type, 'investment-research', 'zh-Hans', '')).toBe('投资研究')
     expect(fundDetailTabLabel(type, 'archive', 'zh-Hans', '')).toBe('基金档案')
   }

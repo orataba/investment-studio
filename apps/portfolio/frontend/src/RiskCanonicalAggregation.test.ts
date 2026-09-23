@@ -10,15 +10,12 @@ const taxonomy = {
   name: 'Risk taxonomy',
   taxonomy_type: 'allocation',
   primary_assignment_scope: 'instrument',
-  planning_enabled: true,
-  budgeting_level: 'root',
-  root_default_target_dimension: 'risk_budget',
+  root_allocation_basis: 'risk_budget',
   status: 'active',
 } as const
 
 const catalog: PortfolioTaxonomyCatalogResponse = {
   portfolio_id: '3',
-  default_planning_taxonomy_id: taxonomy.taxonomy_id,
   taxonomies: [taxonomy],
   taxonomy_nodes: [
     {
@@ -28,7 +25,7 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
       node_name: 'Equity',
       sort_order: 1,
       is_terminal: true,
-      default_target_dimension: 'risk_budget',
+      allocation_basis: 'risk_budget',
       status: 'active',
     },
     {
@@ -38,7 +35,7 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
       node_name: 'Diversifiers',
       sort_order: 2,
       is_terminal: true,
-      default_target_dimension: 'risk_budget',
+      allocation_basis: 'risk_budget',
       status: 'active',
     },
   ],
@@ -72,9 +69,8 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
   target_sets: [],
   target_set_lines: [],
   target_set_integrity_issues: [],
-  analytics_scope_policy_version: 0,
-  analytics_scope_policies: [],
-  analytics_taxonomy_selections: [],
+  target_resolution: [],
+  taxonomy_configuration_version: 0,
 }
 
 function canonicalHolding(
@@ -82,7 +78,7 @@ function canonicalHolding(
   allocation: number,
   riskShare: number,
   contributionToVariance: number,
-  riskBudgetEligible = true,
+  riskEligible = true,
 ) {
   return holdingFixture({
     line_id: `holding:${instrumentId}`,
@@ -96,7 +92,7 @@ function canonicalHolding(
     forward_risk_share: riskShare,
     forward_contribution_to_variance: contributionToVariance,
     forward_risk_status: 'ok',
-    risk_budget_eligible: riskBudgetEligible,
+    risk_eligible: riskEligible,
   })
 }
 
@@ -111,9 +107,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       forward_risk: {
         status: 'ok',
         errors: [],
-        scope_name: 'Modeled Market Sleeve',
-        scope_policy_versions: [1],
-        configuration_versions: [2],
+        model_name: 'Modeled Market Sleeve',
         total_nav: 1000,
         modeled_net_exposure: 1000,
         modeled_gross_exposure: 1000,
@@ -159,9 +153,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       forward_risk: {
         status: 'unavailable',
         errors: ['Strict return coverage is stale by 8 days.'],
-        scope_name: 'Modeled Market Sleeve',
-        scope_policy_versions: [1],
-        configuration_versions: [2],
+        model_name: 'Modeled Market Sleeve',
         total_nav: 1000,
         modeled_net_exposure: 1000,
         modeled_gross_exposure: 1000,
@@ -185,7 +177,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
     expect(result.errors).toEqual(['Strict return coverage is stale by 8 days.'])
   })
 
-  it('renormalizes risk contribution inside the risk-budget-eligible sleeve', () => {
+  it('rejects a partial modeled contribution total instead of renormalizing it', () => {
     const workspace = holdingsWorkspaceFixture({
       rows: [
         canonicalHolding('alpha', 0.2, 0.2, 0.002),
@@ -195,9 +187,7 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       forward_risk: {
         status: 'ok',
         errors: [],
-        scope_name: 'Modeled Market Sleeve',
-        scope_policy_versions: [1],
-        configuration_versions: [2],
+        model_name: 'Modeled Market Sleeve',
         total_nav: 1000,
         modeled_net_exposure: 1000,
         modeled_gross_exposure: 1000,
@@ -219,17 +209,11 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       catalog,
       taxonomy,
       referenceDate: workspace.as_of_date,
-      eligibility: 'risk_budget',
     })
 
-    expect(result.errors).toEqual([])
-    expect(result.value).toEqual([
-      expect.objectContaining({
-        groupKey: 'equity',
-        weight: 0.5,
-        riskShare: 1,
-        contributionToVariance: 0.005,
-      }),
+    expect(result.value).toEqual([])
+    expect(result.errors).toEqual([
+      'Production forward risk shares must aggregate to 100% before taxonomy grouping; got 50.00%.',
     ])
   })
 })

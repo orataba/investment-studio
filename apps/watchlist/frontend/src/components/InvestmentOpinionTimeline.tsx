@@ -1,9 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   createInstrumentResearchNote,
   deleteInstrumentResearchNote,
-  getInstrumentResearch,
   updateInstrumentResearchNote,
+  selectInvestmentStance,
   type InvestmentOpinionResearchContextInput,
   type InstrumentResearchNote,
   type InstrumentResearchNoteInput,
@@ -12,7 +12,7 @@ import {
 } from '../lib/api'
 import { getResearchThemes, type AskResearchAssistant, type ResearchTheme } from '../lib/researchDossierApi'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
-import { SourceList } from './ResearchEvidence'
+import { SourceList, dateLabel } from './ResearchEvidence'
 import './investment-opinion-timeline.css'
 
 type Props = {
@@ -51,11 +51,9 @@ function orderedNotes(notes: InstrumentResearchNote[]) {
   return [...notes].sort((a, b) => b.note_date.localeCompare(a.note_date) || b.created_at.localeCompare(a.created_at))
 }
 
-export function latestInvestmentOpinion(research: InstrumentResearchResponse): { title: string; body: string; noteDate: string | null } | null {
-  const latest = orderedNotes(research.notes)[0]
-  if (latest) return { title: latest.title, body: latest.body || latest.summary, noteDate: latest.note_date }
-  const body = research.profile.current_view || research.profile.thesis
-  return body.trim() ? { title: DEFAULT_TITLE, body, noteDate: research.profile.updated_at?.slice(0, 10) || null } : null
+export function currentInvestmentOpinion(research: InstrumentResearchResponse): { title: string; body: string; noteDate: string | null } | null {
+  const selected = research.current_stance?.note
+  return selected ? { title: selected.title, body: selected.body || selected.summary, noteDate: selected.note_date } : null
 }
 
 function localDate() {
@@ -78,20 +76,20 @@ function noteInput(draft: OpinionDraft, analyst: string): InstrumentResearchNote
     author: original?.author ?? analyst,
     follow_up_date: original?.follow_up_date ?? null,
     completed_at: original?.completed_at ?? null,
-    ...(draft.contextEdited ? { research_context: draft.context } : {}),
+    ...(!original || draft.contextEdited ? { research_context: draft.context } : {}),
   }
 }
 
 function editableContext(note: InstrumentResearchNote): InvestmentOpinionResearchContextInput | undefined {
   if (!note.research_context) return undefined
-  const fields: Array<keyof InvestmentOpinionResearchContextInput> = ['theme_id', 'research_update_id', 'event_case_id', 'event_version_id', 'related_note_id', 'related_revision', 'relationship', 'background', 'horizon', 'verification', 'invalidation', 'outcome', 'mechanism_assessment', 'alternative_explanations', 'lesson', 'applicability', 'limitations', 'source_ids']
+  const fields: Array<keyof InvestmentOpinionResearchContextInput> = ['theme_id', 'research_update_id', 'event_case_id', 'event_version_id', 'theme_version_id', 'notebook_version_id', 'investment_view_version_id', 'related_note_id', 'related_revision', 'relationship', 'background', 'horizon', 'verification', 'invalidation', 'outcome', 'mechanism_assessment', 'alternative_explanations', 'lesson', 'applicability', 'limitations', 'source_ids']
   return Object.fromEntries(fields.filter(key => key in note.research_context!).map(key => [key, note.research_context![key]]))
 }
 
 export function InvestmentOpinionContext({ note, language = 'zh-Hans', instrumentId }: { note: InstrumentResearchNote; language?: 'en' | 'zh-Hans'; instrumentId?: string }) {
   const t = (zh: string, en: string) => language === 'zh-Hans' ? zh : en
   const context = note.research_context
-  if (!context) return null
+  if (!context) return <p className="investment-opinion-hint">{t('这条历史观点未记录当时背景。', 'The original background was not recorded for this historical view.')}</p>
   const fields: Array<[string, string | undefined]> = [
     [t('当时背景与依据', 'Background and reasoning'), context.background], [t('判断期限', 'Horizon'), context.horizon],
     [t('验证条件', 'What to verify'), context.verification], [t('改判条件', 'What would change the view'), context.invalidation],
@@ -100,8 +98,8 @@ export function InvestmentOpinionContext({ note, language = 'zh-Hans', instrumen
     [t('经验', 'Lesson'), context.lesson], [t('适用条件', 'Applicability'), context.applicability], [t('局限', 'Limitations'), context.limitations],
   ]
   const populated = fields.filter(([, value]) => value?.trim())
-  if (!populated.length && !context.source_quote && !context.source_ids?.length) return null
   return <details className="investment-opinion-context"><summary>{t('背景、验证与经验', 'Context, verification and lessons')}</summary>
+    {!context.background?.trim() && <p className="investment-opinion-hint">{t('这条历史观点未记录当时背景。', 'The original background was not recorded for this historical view.')}</p>}
     <dl>{populated.map(([label, value]) => <div key={label}><dt>{label}</dt><dd translate="no">{value}</dd></div>)}</dl>
     {context.source_quote && <p className="investment-opinion-source" translate="no"><span>{t('原话', 'Original statement')}</span>{context.source_quote}</p>}
     {context.sources?.length ? <SourceList sources={context.sources} instrumentId={instrumentId} versionId={`pm:${note.note_id}:${note.revision_number}`} /> : Boolean(context.source_ids?.length) && <p className="investment-opinion-source"><span>{t('资料引用', 'Evidence references')}</span>{context.source_ids!.join(' · ')}</p>}
@@ -121,13 +119,22 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
   const [localUnrestricted, setLocalUnrestricted] = useState(false)
   const [themesError, setThemesError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const mutationScope = useRef<object | null>(null)
   const notes = orderedNotes(research.notes)
   const legacy = legacyFields.filter(([field]) => typeof research.profile[field] === 'string' && String(research.profile[field]).trim())
 
   useEffect(() => {
+    mutationScope.current = {}
     setDraft(null)
+    setSaving(false)
+    setCanWrite(false)
+    setThemes([])
+    setIdentityName('')
+    setIdentityId(null)
+    setLocalUnrestricted(false)
     setError('')
     setNotice('')
+    return () => { mutationScope.current = null }
   }, [instrumentId])
 
   useEffect(() => {
@@ -140,16 +147,13 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
   }, [instrumentId, refresh])
 
   useEffect(() => {
-    let cancelled = false
     const updated = (event: Event) => {
       if (!(event as CustomEvent<string[]>).detail.includes(instrumentId)) return
       setRefresh(value => value + 1)
-      void getInstrumentResearch(instrumentId).then(value => { if (!cancelled) onChange(value) })
-        .catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : t('观点刷新失败', 'Could not refresh views')) })
     }
     window.addEventListener(RESEARCH_UPDATED, updated)
-    return () => { cancelled = true; window.removeEventListener(RESEARCH_UPDATED, updated) }
-  }, [instrumentId, onChange])
+    return () => window.removeEventListener(RESEARCH_UPDATED, updated)
+  }, [instrumentId])
 
   useEffect(() => {
     if (!requestedNoteDate || !canWrite) return
@@ -169,58 +173,90 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
 
   function continueView(original: InstrumentResearchNote) {
     setDraft({ date: localDate(), title: '', body: '', source: '', contextEdited: true,
-      context: { relationship: 'update', related_note_id: original.note_id, related_revision: original.revision_number, ...(original.research_context?.theme_id ? { theme_id: original.research_context.theme_id } : {}) } })
+      context: { relationship: 'update', background: `${original.note_date} · ${original.title}\n${original.body || original.summary}`, related_note_id: original.note_id, related_revision: original.revision_number, ...(original.research_context?.theme_id ? { theme_id: original.research_context.theme_id } : {}) } })
     setError('')
     setNotice('')
   }
 
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!draft || !canWrite) return
+    if (!draft || !canWrite || saving) return
     if (!draft.body.trim()) {
       setError(t('请填写投资观点。', 'Enter an investment view.'))
+      return
+    }
+    if (!draft.original && !draft.context?.background?.trim()) {
+      setError(t('请填写形成观点时的背景。', 'Add the context in which you formed this view.'))
       return
     }
     setSaving(true)
     setError('')
     setNotice('')
+    const scope = mutationScope.current
     try {
       const payload = { note: noteInput(draft, research.profile.primary_analyst), updated_by: 'terminal_ui' }
       const response = draft.original
         ? await updateInstrumentResearchNote(instrumentId, draft.original.note_id, payload)
         : await createInstrumentResearchNote(instrumentId, payload)
+      announceResearchPublication([instrumentId])
+      if (scope !== mutationScope.current) return
       onChange(response)
       setDraft(null)
       setNotice(t('投资观点已保存。', 'Investment view saved.'))
-      announceResearchPublication([instrumentId])
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t('保存失败，请重试。', 'Could not save. Please try again.'))
+      if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : t('保存失败，请重试。', 'Could not save. Please try again.'))
     } finally {
-      setSaving(false)
+      if (scope === mutationScope.current) setSaving(false)
     }
   }
 
   async function remove(noteId: string) {
+    if (!canWrite || saving) return
+    const scope = mutationScope.current
     setSaving(true)
     setError('')
     setNotice('')
     try {
-      onChange(await deleteInstrumentResearchNote(instrumentId, noteId))
+      const response = await deleteInstrumentResearchNote(instrumentId, noteId)
+      announceResearchPublication([instrumentId])
+      if (scope !== mutationScope.current) return
+      onChange(response)
       setDraft(null)
       setNotice(t('记录已删除。', 'Record deleted.'))
-      announceResearchPublication([instrumentId])
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t('删除失败，请重试。', 'Could not delete. Please try again.'))
+      if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : t('删除失败，请重试。', 'Could not delete. Please try again.'))
     } finally {
-      setSaving(false)
+      if (scope === mutationScope.current) setSaving(false)
     }
+  }
+
+  async function chooseStance(note: InstrumentResearchNote | null) {
+    if (!canWrite || saving) return
+    const scope = mutationScope.current
+    setSaving(true); setError('')
+    try {
+      const response = await selectInvestmentStance(instrumentId, note)
+      announceResearchPublication([instrumentId])
+      if (scope === mutationScope.current) onChange(response)
+    } catch (reason) { if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : t('选择失败', 'Could not select view')) }
+    finally { if (scope === mutationScope.current) setSaving(false) }
   }
 
   return <section className="investment-opinion-timeline" aria-label={t('投资观点时间线', 'Investment view timeline')}>
     <header className="investment-opinion-heading">
-      <div><h2>{t('经理观点', 'PM views')}</h2><p>{t('记录你对这个标的的研究与投资判断，按时间保留观点的演变。', 'Keep your own research and investment judgments for this instrument as a dated history.')}</p></div>
+      <div><h2>{t('投资观点', 'Investment views')}</h2><p>{t('保留每次判断的背景、理由和演变。总体观点由你明确选定。', 'Keep the context, reasoning and evolution of your judgments. Select your overall view explicitly.')}</p></div>
       <button type="button" onClick={() => begin()} disabled={!canWrite || saving || Boolean(draft)}>{t('新增观点', 'Add view')}</button>
     </header>
+    <section className="investment-opinion-current" aria-label={t('当前总体观点', 'Current overall view')}>
+      <h3>{t('当前总体观点', 'Current overall view')}</h3>
+      {research.current_stance ? <>
+        <strong translate="no">{research.current_stance.note.title}</strong>
+        <p translate="no">{research.current_stance.note.body || research.current_stance.note.summary}</p>
+        <p className="investment-opinion-hint">{research.current_stance.note.author} · {research.current_stance.note.note_date} · v{research.current_stance.note.revision_number}</p>
+        {research.current_stance.has_later_revision && <p>{t('原记录已有更正；当前仍保留你选定的版本。', 'This record has a correction; the selected version is still retained.')}</p>}
+        <button type="button" disabled={!canWrite || saving} onClick={() => void chooseStance(null)}>{t('取消当前选定', 'Clear selection')}</button>
+      </> : <p>{t('尚未选定总体观点。可从下方记录中选择。', 'No overall view selected. Choose a record below.')}</p>}
+    </section>
     {error && <p className="investment-opinion-message" role="alert">{error}</p>}
     {notice && <p className="investment-opinion-message" role="status">{notice}</p>}
     {draft && <form className="investment-opinion-editor" onSubmit={(event) => void save(event)}>
@@ -231,13 +267,16 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
         <label><span>{t('标题（可选）', 'Title (optional)')}</span><input value={draft.title} disabled={saving} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
       </div>
       <label><span>{t('观点', 'View')}</span><textarea rows={5} value={draft.body} required autoFocus disabled={saving} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></label>
+      <label><span>{t('当时背景与依据', 'Background and evidence')}</span><textarea rows={3} required={!draft.original} value={draft.context?.background || ''} disabled={saving}
+        placeholder={t('当时发生了什么、看到了哪些资料，以及这个判断针对什么问题', 'What happened, what evidence was available, and what question this judgment addresses')}
+        onChange={event => setDraft({ ...draft, contextEdited: true, context: { ...draft.context, background: event.target.value } })} /></label>
       <label><span>{t('来源（可选）', 'Source (optional)')}</span><input value={draft.source} disabled={saving} placeholder={t('链接、报告或讨论出处', 'Link, report or discussion reference')} onChange={(event) => setDraft({ ...draft, source: event.target.value })} /></label>
       {identityName && <p className="investment-opinion-hint">{t('团队共享 · 作者', 'Shared with team · Author')}：{draft.original?.author || identityName}</p>}
       <details className="investment-opinion-context"><summary>{t('关联主题与验证条件（可选）', 'Theme and verification (optional)')}</summary>
         {themesError ? <p role="alert">{themesError}</p> : <label><span>{t('持续关注主题', 'Research theme')}</span><select value={draft.context?.theme_id || ''} disabled={saving} onChange={event => setDraft({ ...draft, contextEdited: true, context: { ...draft.context, theme_id: event.target.value || null } })}>
           <option value="">{t('暂不关联', 'No theme')}</option>{themes.map(theme => <option key={theme.theme_id} value={theme.theme_id}>{theme.title}{theme.status !== 'active' ? ` · ${theme.status === 'paused' ? t('已暂停', 'Paused') : t('已结束', 'Closed')}` : ''}</option>)}
         </select></label>}
-        {([['background', t('当时背景与依据', 'Background and reasoning')], ['horizon', t('判断期限', 'Horizon')], ['verification', t('验证条件', 'What to verify')], ['invalidation', t('改判条件', 'What would change the view')]] as const).map(([key, label]) => <label key={key}><span>{label}</span><textarea rows={2} value={draft.context?.[key] || ''} disabled={saving} onChange={event => setDraft({ ...draft, contextEdited: true, context: { ...draft.context, [key]: event.target.value } })} /></label>)}
+        {([['horizon', t('判断期限', 'Horizon')], ['verification', t('验证条件', 'What to verify')], ['invalidation', t('改判条件', 'What would change the view')]] as const).map(([key, label]) => <label key={key}><span>{label}</span><textarea rows={2} value={draft.context?.[key] || ''} disabled={saving} onChange={event => setDraft({ ...draft, contextEdited: true, context: { ...draft.context, [key]: event.target.value } })} /></label>)}
       </details>
       <div className="investment-opinion-editor-actions">
         {draft.original && <button className="investment-opinion-delete" type="button" disabled={saving} onClick={() => void remove(draft.original!.note_id)}>{t('删除记录', 'Delete record')}</button>}
@@ -247,7 +286,7 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
     </form>}
     {notes.length ? <ol className="investment-opinion-entries">
       {notes.map((note) => <li key={note.note_id}>
-        <div className="investment-opinion-date"><time dateTime={note.note_date}>{note.note_date}</time><span translate="no">{note.author || t('未标注作者', 'Author not recorded')}</span><span>{t('实际记录', 'Recorded')} <time dateTime={note.created_at}>{note.created_at.replace('T', ' ').slice(0, 16)}</time></span>{onOpenNote && <button type="button" onClick={() => onOpenNote(note.note_date)}>{t('在业绩图中查看', 'View on chart')}</button>}</div>
+        <div className="investment-opinion-date"><time dateTime={note.note_date}>{note.note_date}</time><span translate="no">{note.author || t('未标注作者', 'Author not recorded')}</span><span>{t('实际记录', 'Recorded')} <time dateTime={note.created_at}>{dateLabel(note.created_at)}</time></span>{onOpenNote && <button type="button" onClick={() => onOpenNote(note.note_date)}>{t('在业绩图中查看', 'View on chart')}</button>}</div>
         <article>
           <div className="investment-opinion-entry-heading">
             <h3 translate="no">{note.title === DEFAULT_TITLE ? t('投资观点', 'Investment view') : note.title}</h3>
@@ -265,6 +304,9 @@ export default function InvestmentOpinionTimeline({ instrumentId, research, onCh
           {note.source_refs && <p className="investment-opinion-source"><span>{t('来源', 'Source')}</span>{/^https?:\/\/\S+$/i.test(note.source_refs)
             ? <a href={note.source_refs} target="_blank" rel="noreferrer">{note.source_refs}</a> : note.source_refs}</p>}
           <div className="investment-opinion-followups"><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => continueView(note)}>{t('补充判断', 'Add a follow-up view')}</button>
+            {note.note_type !== 'review' && !['review', 'lesson'].includes(note.research_context?.relationship || '') &&
+              <button type="button" disabled={!canWrite || saving || (research.current_stance?.note.note_id === note.note_id && research.current_stance.note.revision_number === note.revision_number)}
+                onClick={() => void chooseStance(note)}>{research.current_stance?.note.note_id === note.note_id && research.current_stance.note.revision_number === note.revision_number ? t('已选为总体观点', 'Selected overall view') : t('设为当前总体观点', 'Use as overall view')}</button>}
             {onAskAssistant && <button type="button" onClick={() => onAskAssistant(t(`请围绕这条投资经理观点继续讨论和复核：${note.title}。请区分原始判断、后续结果和机制是否得到支持，保留不同意见；只有我明确要求保存时，才把我的新判断或复盘记录下来。`, `Continue discussing and reviewing this PM view: ${note.title}. Distinguish the original judgment, subsequent outcomes and evidence for the mechanism. Keep differing opinions; save my new view or review only when I explicitly ask.`), { instrument_id: instrumentId, pm_note_id: note.note_id, pm_note_revision: note.revision_number, ...(note.research_context?.theme_id ? { theme_id: note.research_context.theme_id } : {}) })}>{t('与助手讨论 / 复盘', 'Discuss / review with assistant')}</button>}
           </div>
         </article>

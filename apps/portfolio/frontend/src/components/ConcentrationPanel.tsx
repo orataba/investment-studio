@@ -4,7 +4,7 @@ import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import { usePortfolioAccess } from './PortfolioAccessProvider'
 import InfoHint from './InfoHint'
-import { ConcentrationSettings } from './ConcentrationSettings'
+import FcnAllocationEditor from './FcnAllocationEditor'
 import {
   concentrationScopeKey, getConcentration, type ConcentrationResponse, type ConcentrationRow,
 } from '../lib/concentrationApi'
@@ -58,11 +58,11 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
     }
     return true
   })
-  const scale = Math.max(0.01, ...visibleRows.flatMap((row) => [row.weight ?? row.lower_bound_weight ?? 0, row.limit_weight ?? 0, row.watch_weight ?? 0]))
+  const scale = Math.max(0.01, ...visibleRows.flatMap((row) => [row.weight ?? row.lower_bound_weight ?? 0, row.limit_weight ?? 0]))
   const coverage = [...new Set([...(data?.coverage ?? []), ...(scope?.coverage ?? [])])]
   const statuses = {
-    within: text('Within limit', '限额内'), watch: text('Watch', '关注'), breached: text('Over limit', '超限'),
-    unconfigured: text('Observe only', '仅观察'), unavailable: text('Unavailable', '不可用'),
+    within: text('Within limit', '限额内'), breached: text('Over limit', '超限'),
+    unconfigured: text('No limit', '未设上限'), unavailable: text('Unavailable', '不可用'),
   }
   return <section className="portfolio-section-block concentration-panel" aria-label={text('Concentration', '集中度')}>
     <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
@@ -77,7 +77,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
           onChange={(event) => { setSelectedScope(event.target.value); setExpanded(new Set()); setDetail(null); try { localStorage.setItem(storageKey, event.target.value) } catch { /* Browsing still works without storage. */ } }}>
           {(data?.scopes ?? []).map((item) => <option key={concentrationScopeKey(item)} value={concentrationScopeKey(item)}>{item.scope === 'security' ? text('Direct securities', '直接证券') : item.scope === 'fcn' ? text('Single FCN', '单 FCN') : item.name}</option>)}
         </select></label>
-        <ConcentrationSettings portfolioId={portfolioId} initialScopeKey={scope ? concentrationScopeKey(scope) : undefined} canEdit={canEdit} />
+        <a href={`/portfolios/${encodeURIComponent(portfolioId)}/taxonomies`}>{text('Edit limits in Taxonomies', '在分类中编辑上限')}</a>
       </div>
     </div>
     {error ? <div role="alert" className="inline-notice inline-notice-error">{concentrationMessage(error, zh)}</div> : null}
@@ -87,9 +87,10 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
         <span>{text('Options excluded · no stock delivery scenario', '不含期权 · 不含接票情景')}</span>
         {data.status !== 'complete' || scope?.status !== 'complete' ? <span className="concentration-status concentration-status-unavailable">{text('Incomplete coverage', '覆盖不完整')}</span> : null}
       </div>
+      {scope?.enabled === false ? <p className="portfolio-detail-meta">{text('Alerts for this taxonomy are off. Saved limits remain visible.', '此分类提醒已关闭，已填上限仍保留。')}</p> : null}
       {coverage.length ? <details className="concentration-coverage"><summary>{text('Coverage and calculation notes', '覆盖与计算说明')} ({coverage.length})</summary><ul>{coverage.map((note) => <li key={note}>{concentrationMessage(note, zh)}</li>)}</ul></details> : null}
       {visibleRows.length ? <HorizontalTableScroll className="concentration-table-wrap"><table className="concentration-table" aria-label={text('Concentration exposures and limits', '集中度敞口及限额')}>
-        <thead><tr><th>{text('Member', '成员')}</th><th>{text('Exposure', '敞口分布')}</th><th>{text('Current / NAV', '当前 / NAV')}</th><th>{text('Watch', '关注线')}</th><th>{text('Limit', '上限')}</th><th>{text('Headroom', '剩余额度')}</th><th>{text('Status', '状态')}</th></tr></thead>
+        <thead><tr><th>{text('Member', '成员')}</th><th>{text('Exposure', '敞口分布')}</th><th>{text('Current / NAV', '当前 / NAV')}</th><th>{text('Limit / NAV', '上限 / NAV')}</th><th>{text('Headroom', '剩余额度')}</th><th>{text('Status', '状态')}</th></tr></thead>
         <tbody>{visibleRows.map((row) => <tr key={row.entity_id}>
           <td><div className="concentration-row-name" style={{ paddingLeft: `${Math.min(row.depth ?? 0, 8) * 14}px` }}>
             {childIds.has(row.entity_id) ? <button type="button" aria-label={`${expanded.has(row.entity_id) ? text('Collapse', '收起') : text('Expand', '展开')} ${row.name}`} aria-expanded={expanded.has(row.entity_id)} onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(row.entity_id)) next.delete(row.entity_id); else next.add(row.entity_id); return next })}>{expanded.has(row.entity_id) ? '▾' : '▸'}</button> : null}
@@ -98,13 +99,13 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
           <td className="concentration-bar-cell"><div className="concentration-track" aria-hidden="true">
             <span className="concentration-fill-security" style={{ width: `${data.nav && data.nav > 0 ? Math.min(100, (row.security_exposure_base ?? 0) / data.nav / scale * 100) : 0}%` }} />
             <span className="concentration-fill-fcn" style={{ width: `${data.nav && data.nav > 0 ? Math.min(100, (row.fcn_exposure_base ?? 0) / data.nav / scale * 100) : 0}%` }} />
-            {row.watch_weight != null ? <i className="concentration-watch-marker" style={{ left: `${row.watch_weight / scale * 100}%` }} /> : null}
             {row.limit_weight != null ? <i className="concentration-limit-marker" style={{ left: `${row.limit_weight / scale * 100}%` }} /> : null}
           </div></td>
-          <td title={row.exposure_base == null ? `${text('Known exposure', '已知敞口')} ${formatCurrency(row.known_exposure_base, data.base_currency)}` : formatCurrency(row.exposure_base, data.base_currency)}>{row.weight == null && row.lower_bound_weight != null ? `≥ ${formatPercent(row.lower_bound_weight)}` : formatPercent(row.weight)}</td><td>{formatPercent(row.watch_weight)}</td><td>{formatPercent(row.limit_weight)}</td><td>{formatPercent(row.headroom_weight)}</td>
-          <td><span className={`concentration-status concentration-status-${row.status}`}>{statuses[row.status]}</span>{row.coverage.length ? <InfoHint label={text('Row coverage', '此行覆盖说明')} detail={row.coverage.map((note) => concentrationMessage(note, zh)).join(' · ')} /> : null}</td>
+          <td title={row.exposure_base == null ? `${text('Known exposure', '已知敞口')} ${formatCurrency(row.known_exposure_base, data.base_currency)}` : formatCurrency(row.exposure_base, data.base_currency)}>{row.weight == null && row.lower_bound_weight != null ? `≥ ${formatPercent(row.lower_bound_weight)}` : formatPercent(row.weight)}</td><td>{formatPercent(row.limit_weight)}</td><td>{formatPercent(row.headroom_weight)}</td>
+          <td><span className={`concentration-status concentration-status-${row.status}`}>{scope?.enabled === false ? text('Alerts off', '提醒已关闭') : statuses[row.status]}</span>{row.coverage.length ? <InfoHint label={text('Row coverage', '此行覆盖说明')} detail={row.coverage.map((note) => concentrationMessage(note, zh)).join(' · ')} /> : null}</td>
         </tr>)}</tbody>
       </table></HorizontalTableScroll> : !loading ? <div className="risk-chart-empty">{text('No exposure in this scope.', '此范围暂无敞口。')}</div> : null}
+      {canEdit && data.fcn_contracts.length > 0 ? <div hidden={scope?.scope !== 'fcn'}><FcnAllocationEditor key={`${portfolioId}:${data.as_of_date}`} portfolioId={portfolioId} data={data} /></div> : null}
     </> : null}
     {detail && data ? <SourceDrawer row={detail} currency={data.base_currency} underlyingNames={new Map(data.fcn_contracts.flatMap((contract) => contract.underlyings.map((item) => [item.instrument_id, item.name] as const)))} onClose={() => setDetail(null)} /> : null}
   </section>

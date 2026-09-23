@@ -66,7 +66,7 @@ def test_current_taxonomy_migration_keeps_latest_edits_and_rebuilds_all_history(
             c.execute(tables['research_run_record'].insert().values(research_run_id='saved', portfolio_id='current',
                 job_type='target_weight_solve', status='completed', lookback_days=90, as_of_date=date(2026, 1, 2),
                 detail_json=payload, request_payload_json={'effective_from': '2020-01-01'}))
-        command.upgrade(config, 'head')
+        command.upgrade(config, '20260920_0064')
         inspector = sa.inspect(engine)
         for name in ('analytics_scope_policy_record', 'analytics_taxonomy_selection_record', 'taxonomy_configuration_revision'):
             columns = {col['name'] for col in inspector.get_columns(name, schema='portfolio')}

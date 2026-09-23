@@ -435,9 +435,8 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
             "taxonomy": {
                 "taxonomy_id": "taxonomy-fx-topology",
                 "name": "Planning",
-                "root_default_target_dimension": "weight",
+                "root_allocation_basis": "weight",
                 "primary_assignment_scope": "instrument",
-                "planning_enabled": True,
                 "status": "active",
             },
             "taxonomy_nodes": [],

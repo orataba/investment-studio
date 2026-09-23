@@ -30,8 +30,7 @@ def test_system_citation_revision_updates_current_sources_without_changing_judgm
         checked = publish(session, reflection={"status": "reviewed", "summary": "复核原判断，仍待观察",
             "reviewed_update_ids": [originals["question"]["update_id"]]})
         before_states = sector_research.review_states(session)
-        before_followups = research_activity(session, "xlk", include_followups=True)["current_followups"]
-        before_theme = themes_view(session, "xlk")["themes"][0] if theme else None
+        before_theme = themes_view(session, "xlk")["themes"][0]
         current, _ = _notebooks(session, "xlk", True)
         evidence = {source["source_id"]: source for source in current["sources"]}
         delta = ResearchNotebook.model_validate({"questions": [{**question, "source_ids": ["original"]}],
@@ -69,7 +68,7 @@ def test_system_citation_revision_updates_current_sources_without_changing_judgm
         assert notebook["questions"][0] == {**current["questions"][0], "source_ids": ["original"]}
         assert any(row["version_id"] == current["version_id"] for row in history)
         assert session.get(ResearchEntry, original_run.entry_id).context_json == original_context
-        activity = research_activity(session, "xlk", include_followups=True)
+        activity = research_activity(session, "xlk", include_recent_events=True)
         revisions = [row for row in activity["updates"] if row.get("change") == "citation_corrected"]
         assert len(revisions) == 2
         for row in revisions:
@@ -78,14 +77,8 @@ def test_system_citation_revision_updates_current_sources_without_changing_judgm
             assert row["author_role"] == "system" and row["recorded_at"] == corrected_at
             assert row["citation_correction"]["source_update_id"] == original["update_id"]
             assert [source["source_id"] for source in row["sources"]] == ["original"]
-        if theme:
-            after = themes_view(session, "xlk")["themes"][0]
-            assert after["last_changed_at"] == before_theme["last_changed_at"]
-            assert after["current_questions"][0]["last_reviewed_at"] == before_theme["current_questions"][0]["last_reviewed_at"]
-            assert after["current_questions"][0]["last_changed_at"] == before_theme["current_questions"][0]["last_changed_at"]
-            assert [source["source_id"] for source in after["current_questions"][0]["sources"]] == ["original"]
-        else:
-            followup = activity["current_followups"][0]
-            assert followup["title"] == before_followups[0]["title"]
-            assert followup["last_changed_at"] == before_followups[0]["last_changed_at"]
-            assert followup["last_reviewed_at"] == before_followups[0]["last_reviewed_at"]
+        after = themes_view(session, "xlk")["themes"][0]
+        assert after["last_changed_at"] == before_theme["last_changed_at"]
+        assert after["current_questions"][0]["last_reviewed_at"] == before_theme["current_questions"][0]["last_reviewed_at"]
+        assert after["current_questions"][0]["last_changed_at"] == before_theme["current_questions"][0]["last_changed_at"]
+        assert [source["source_id"] for source in after["current_questions"][0]["sources"]] == ["original"]

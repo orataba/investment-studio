@@ -12,6 +12,8 @@
 - id: session-title-llm
   disabled: true
 - id: code-runtime
+  # Arbitrary harness execution stays off; run_quant_analysis uses the API's
+  # OS-isolated, source-bound Python worker and reports actual availability.
   disabled: true
 - id: agent-instructions
   disabled: true

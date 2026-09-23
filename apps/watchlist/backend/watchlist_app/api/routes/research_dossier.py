@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -102,23 +102,48 @@ def themes(instrument_id: str, session: Session = Depends(get_db_session)):
 def activity(instrument_id: str, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_activity import research_activity
     require_instrument(session, instrument_id)
-    return research_activity(session, instrument_id, include_followups=True)
+    return research_activity(session, instrument_id, include_recent_events=True)
 
 
 @router.post("/research/instruments/{instrument_id}/themes", status_code=201)
-def create_theme(instrument_id: str, request: ThemeInput, session: Session = Depends(get_db_session)):
+def create_theme(instrument_id: str, request: ThemeInput, background: BackgroundTasks, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
-    result = save_theme(session, instrument_id, request)
+    try:
+        result = save_theme(session, instrument_id, request)
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
     session.commit()
-    return result
+    return _request_theme_research(session, instrument_id, result, background) if result["status"] == "active" else result
+
+
+def _request_theme_research(session, instrument_id, result, background):
+    from watchlist_app.services.research_runner import harness_available, run_analysis, authorize_run
+    if not harness_available():
+        return {**result, "research_run_id": None, "research_status": "unavailable",
+                "research_message": "主题已保存；研究运行环境尚不可用，恢复后将补充初始研究。"}
+    from watchlist_app.services.sector_research import begin_run
+    from studio_identity import IdentityError, current_principal
+    run, created = begin_run(session, [instrument_id], question=f"为重点主题 {result['theme_id']} 补充研究基线：读取创建背景和引用资料，主动检索补充证据，明确研究问题、当前认识、重要性和下一观察。")
+    if created:
+        principal = current_principal()
+        try:
+            token = authorize_run(principal, run.entry_id)
+        except (IdentityError, HTTPException):
+            return {**result, "research_run_id": run.entry_id, "research_status": "failed",
+                    "research_message": "主题已保存；研究授权暂不可用，尚未建立研究基线。"}
+        background.add_task(run_analysis, run.entry_id, token, principal)
+    return {**result, "research_run_id": run.entry_id, "research_status": run.status}
 
 
 @router.patch("/research/instruments/{instrument_id}/themes/{theme_id}")
-def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, session: Session = Depends(get_db_session)):
+def update_theme(instrument_id: str, theme_id: str, request: ThemePatch, background: BackgroundTasks, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
         result = save_theme(session, instrument_id, request, theme_id=theme_id)
         session.commit()
+        if result["status"] == "active" and result["baseline_status"] == "pending" and any(
+                key in request.model_fields_set for key in ("title", "question", "background", "reference", "status")):
+            return _request_theme_research(session, instrument_id, result, background)
         return result
     except LookupError as error:
         raise HTTPException(404, str(error)) from error

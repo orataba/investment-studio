@@ -353,7 +353,7 @@ def _seed_required_instrument_registry_rows(database_url: str, instrument_ids: l
         engine.dispose()
 
 
-def _seed_instrument_ids_required_by_watchlist_baseline(database_url: str) -> None:
+def _seed_instrument_ids_required_by_watchlist_baseline(database_url: str, revision: str = "head") -> None:
     _run_watchlist_upgrade_until_fk(database_url)
     engine = create_engine(database_url)
     try:
@@ -376,7 +376,7 @@ def _seed_instrument_ids_required_by_watchlist_baseline(database_url: str) -> No
     finally:
         engine.dispose()
     _seed_required_instrument_registry_rows(database_url, instrument_ids)
-    _run_watchlist_upgrade(database_url)
+    _run_watchlist_upgrade(database_url, revision)
 
 
 def _admin_database_url(database_url: str) -> str:
@@ -385,7 +385,7 @@ def _admin_database_url(database_url: str) -> str:
 
 
 @pytest.fixture
-def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch, request) -> dict[str, str]:
     base_database_url = os.getenv("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
     if not base_database_url:
         pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured.")
@@ -417,7 +417,7 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     engine = session_module.get_engine()
     try:
         command.upgrade(_instrument_registry_config(), "20260902_0029")
-        _seed_instrument_ids_required_by_watchlist_baseline(database_url)
+        _seed_instrument_ids_required_by_watchlist_baseline(database_url, getattr(request, "param", "head"))
         command.upgrade(_instrument_registry_config(), "head")
 
         instrument = shared_store.create_instrument(

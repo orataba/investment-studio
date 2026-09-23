@@ -177,12 +177,30 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
     elif reference.get("event_case_id"):
         from watchlist_app.services.research_activity import resolve_event_reference
         linked_update = resolve_event_reference(session, reference["instrument_id"], reference["event_case_id"], reference.get("event_version_id"))
+    referenced_versions = []
+    from watchlist_app.services.research_dossier import read_dossier_version
+    for key in ("notebook_version_id", "investment_view_version_id", "forecast_version_id", "theme_version_id"):
+        if reference.get(key):
+            version = read_dossier_version(session, reference["instrument_id"], reference[key])
+            expected = {"notebook_version_id": "notebook", "investment_view_version_id": "investment_view",
+                        "forecast_version_id": "forecasts", "theme_version_id": "theme"}[key]
+            if version["kind"] != expected:
+                raise ValueError("引用的研究版本类型不一致")
+            if key == "theme_version_id" and reference.get("theme_id") != version["value"].get("theme_id"):
+                raise ValueError("引用的主题与主题版本不一致")
+            referenced_versions.append(version)
+    if reference.get("source_ids"):
+        sources = {s["source_id"]: s for version in referenced_versions for s in version.get("sources", [])}
+        sources.update({s["source_id"]: s for s in (linked_update or {}).get("sources", [])})
+        if any(sid not in sources for sid in reference["source_ids"]):
+            raise ValueError("图表资料须引用同一份已保存研究的版本及来源")
     return serialize_payload({
         "research_actor": research_identity(),
         "topic_id": topic.topic_id, "question": question, "as_of_date": (page_context or {}).get("as_of_date") or date.today(), "requested_at": datetime.now(UTC),
         "research_run": True, "instrument_ids": list(topic.instrument_ids), "cutoff": datetime.now(UTC),
         "page_context": page_context,
         "referenced_research_update": linked_update,
+        "referenced_research_versions": referenced_versions,
         "referenced_risk_case": linked_risk,
         "analyst_focus": [{"instrument_id": iid, "instrument_type": instrument.instrument_type,
                            "guidance": analyst_guidance(read_research_plan(session, iid))}

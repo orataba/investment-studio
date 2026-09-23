@@ -96,12 +96,12 @@ def _get_cached_portfolio_value(
 
 
 def holdings_analysis_args(
-    as_of_date: date | None, risk_policy: dict[str, object], policy_version: int,
+    as_of_date: date | None, risk_policy: dict[str, object], configuration_version: int,
 ) -> tuple:
     return (
         _date_key(as_of_date),
         json.dumps(risk_policy, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
-        policy_version,
+        configuration_version,
     )
 
 
@@ -110,14 +110,14 @@ def get_cached_holdings_analytics_workspace(
     *,
     as_of_date: date | None,
     risk_policy: dict[str, object],
-    analytics_policy_version: int,
+    taxonomy_configuration_version: int,
     builder: Callable[[], T],
     response_projection: Callable[[T], T] | None = None,
 ) -> T:
     value = _get_cached_portfolio_value(
         portfolio_id,
         surface="holdings_analytics",
-        args=holdings_analysis_args(as_of_date, risk_policy, analytics_policy_version),
+        args=holdings_analysis_args(as_of_date, risk_policy, taxonomy_configuration_version),
         builder=builder,
     )
     # A projection must leave the cached value untouched. Copy only its retained

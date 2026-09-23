@@ -99,7 +99,6 @@ describe('Performance rendered page contract', () => {
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
       portfolio_id: '3',
-      default_planning_taxonomy_id: null,
       taxonomies: [],
       taxonomy_nodes: [],
       taxonomy_assignments: [],
@@ -107,6 +106,7 @@ describe('Performance rendered page contract', () => {
       target_sets: [],
       target_set_lines: [],
       target_set_integrity_issues: [],
+  target_resolution: [],
     })
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
   })
@@ -403,11 +403,9 @@ describe('Performance rendered page contract', () => {
     await act(async () => {
       resolveTaxonomyCatalog?.({
         portfolio_id: '3',
-        default_planning_taxonomy_id: 'tax-planning',
         taxonomies: [
           {
             taxonomy_id: 'tax-planning',
-            planning_enabled: true,
             status: 'active',
           },
         ],
@@ -417,6 +415,7 @@ describe('Performance rendered page contract', () => {
         target_sets: [],
         target_set_lines: [],
         target_set_integrity_issues: [],
+  target_resolution: [],
       })
     })
 

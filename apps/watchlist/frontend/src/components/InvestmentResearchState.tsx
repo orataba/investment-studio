@@ -1,6 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { dateLabel } from './ResearchEvidence'
 import type { AskResearchAssistant, InvestmentView, ResearchForecast, ResearchForecastReview, ResearchLesson, ResearchReference, SavedResearchNotebook } from '../lib/researchDossierApi'
+import ResearchOpinionComposer from './ResearchOpinionComposer'
+import { useStudioAccount } from './AccountBoundary'
 
 const forecastStatus = { active: '持续观察', confirmed: '结果已出现', refuted: '预测未成立', expired: '观察期已结束', withdrawn: '已撤回' }
 type Sources = (ids: string[]) => ReactNode
@@ -63,7 +65,11 @@ function LessonBody({ lesson, sources }: { lesson: ResearchLesson; sources: Sour
   </>
 }
 
-export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full' }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records' }) {
+export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full', compact = false }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records'; compact?: boolean }) {
+  const [writing, setWriting] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [notice, setNotice] = useState('')
+  const canWrite = useStudioAccount()?.team_role !== 'reader'
   const view = notebook.investment_view
   const forecasts = notebook.forecasts || []
   const activeForecasts = forecasts.filter(item => item.status === 'active')
@@ -72,12 +78,15 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const lessons = notebook.lessons || []
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
-    {view && mode !== 'records' && <section className="research-notebook-current" aria-label={historical ? '当时投资判断' : '当前投资判断'}>
+    {view && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : '当前投资判断'}>
       <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>
       <p className="sector-research-note">观点更新于 <time dateTime={view.updated_at || undefined}>{dateLabel(view.updated_at)}</time></p>
-      <ViewBody view={view} />
+      {compact ? <>{!expanded && <><p className="research-current-direction" translate="no">{view.direction}</p><div className="research-current-summary">{view.horizon && <p><strong>期限</strong><span translate="no">{view.horizon}</span></p>}{view.attractiveness && <p><strong>吸引力</strong><span translate="no">{view.attractiveness}</span></p>}{view.risk && <p><strong>主要风险</strong><span translate="no">{view.risk}</span></p>}</div></>}<details onToggle={event => setExpanded(event.currentTarget.open)}><summary>完整判断与改判条件</summary>{expanded && <ViewBody view={view} />}</details></> : <ViewBody view={view} />}
       {(view.assumptions.length > 0 || view.source_ids.length > 0) && <details><summary>关键假设与依据</summary><ul className="research-dossier-list">{view.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources(view.source_ids)}</details>}
       {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(historical ? '请复核这份历史底稿中的投资判断。先按当时已知信息审视判断，再区分后来出现的变化与遗漏。' : '请复核当前投资判断。结合新的信息与当前定价，说明后续方向、吸引力或风险是否需要调整；没有实质变化时直接说明。', reference)}>{historical ? '追问当时的观点' : '追问当前观点'}</button>}
+      {!historical && canWrite && <button className="sector-event-ask" type="button" onClick={() => setWriting(value => !value)}>记录投资观点</button>}
+      {writing && view && <ResearchOpinionComposer instrumentId={instrumentId} title="对当前研究判断的观点" context={{ notebook_version_id: notebook.version_id, investment_view_version_id: view.version_id, source_ids: view.source_ids, background: `研究判断：${view.direction}\n期限：${view.horizon}\n投资吸引力：${view.attractiveness}\n风险：${view.risk}\n判断更新：${view.updated_at || notebook.updated_at || notebook.checked_at}` }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
+      {notice && <p role="status">{notice}</p>}
       {Boolean(view.versions?.length) && <details className="research-dossier-record"><summary>观点修订历史 · {view.versions!.length} 次</summary>{view.versions!.map(version => <article key={version.version_id}><h4>{dateLabel(version.updated_at)}</h4><ViewBody view={version} />{version.assumptions.length > 0 && <><h4>当时的关键假设</h4><ul className="research-dossier-list">{version.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}{sources(version.source_ids)}{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请复核这个历史观点。先按当时已知信息审视原判断，再区分后来出现的变化与遗漏；不要把后来的结果当作当时已知。', { ...reference, investment_view_version_id: version.version_id })}>追问当时的观点</button>}</article>)}</details>}
     </section>}
     {mode !== 'view' && activeForecasts.length > 0 && <section className="research-notebook-current" aria-label={historical ? '当时持续预测' : '持续预测'}><h3>{historical ? '当时持续预测' : '持续预测'}</h3>{activeForecasts.map(forecast => <ForecastRecord key={forecast.key} {...{ forecast, reference, sources, onAskAssistant }} />)}</section>}

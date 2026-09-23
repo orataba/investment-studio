@@ -24,9 +24,11 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioPerformance: vi.fn(),
   getPortfolioInstruments: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
+  getConcentration: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
+vi.mock('./lib/concentrationApi', () => ({ getConcentration: apiMocks.getConcentration }))
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
@@ -34,7 +36,9 @@ vi.mock('./components/PortfolioWorkspaceLayout', () => ({
 describe('Overview rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.removeItem('investment_studio.portfolio.overview.taxonomy.3')
     apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(workspaceSummaryFixture())
+    apiMocks.getConcentration.mockResolvedValue({ scopes: [] })
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [
@@ -47,7 +51,8 @@ describe('Overview rendered page contract', () => {
     )
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
       portfolio_id: '3',
-      default_planning_taxonomy_id: null,
+      taxonomy_configuration_version: 0,
+      target_resolution: [],
       taxonomies: [],
       taxonomy_nodes: [],
       taxonomy_assignments: [],
@@ -73,6 +78,26 @@ describe('Overview rendered page contract', () => {
     expect(screen.getByText('Top Holdings')).toBeInTheDocument()
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(1)
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows and persists the selected classification without changing portfolio values', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ portfolio_id: '3', taxonomy_configuration_version: 0,
+      taxonomies: ['strategy', 'industry'].map((id) => ({ taxonomy_id: id, name: id === 'strategy' ? 'Strategy' : 'Industry', status: 'active' })),
+      taxonomy_nodes: ['strategy', 'industry'].map((id) => ({ taxonomy_id: id, taxonomy_node_id: `${id}-leaf`, parent_taxonomy_node_id: null, node_name: id === 'strategy' ? 'Growth Strategy' : 'Technology', status: 'active' })),
+      taxonomy_assignments: ['strategy', 'industry'].map((id) => ({ assignment_id: `${id}-assignment`, taxonomy_id: id, target_scope: 'instrument', target_entity_id: 'asset-1', taxonomy_node_id: `${id}-leaf`, status: 'active' })),
+      target_resolution: [], target_sets: [], target_set_lines: [], instrument_universe: [], target_set_integrity_issues: [],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(<OverviewPage />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
+    const selector = await screen.findByRole('combobox', { name: 'Overview taxonomy' })
+    const card = screen.getByText('Strategy Sleeves').closest('section')!
+    expect(card).toHaveTextContent('Growth Strategy')
+    const reads = apiMocks.getHoldingsWorkspace.mock.calls.length
+    await user.selectOptions(selector, 'industry')
+    expect(card).toHaveTextContent('Technology')
+    expect(card).not.toHaveTextContent('Growth Strategy')
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(reads)
+    expect(localStorage.getItem('investment_studio.portfolio.overview.taxonomy.3')).toBe('industry')
   })
 
   it('includes a funded-segment start when it is exactly the rolling return boundary', () => {

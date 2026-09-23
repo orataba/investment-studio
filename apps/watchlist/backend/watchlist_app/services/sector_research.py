@@ -239,7 +239,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
         for prior in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc())):
-            if not prior.context_json.get("sector_run"):
+            if not prior.context_json.get("sector_run") or prior.context_json.get("recordkeeping_only"):
                 continue
             checked = datetime.fromisoformat(prior.context_json["cutoff"])
             if _research_dates(session, ids, checked) != research_dates:
@@ -249,19 +249,25 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
                 from watchlist_app.services.research_dossier import read_dossier
                 # A later conversation may have added a forecast or observation date.
                 trigger_context = {**prior.context_json, "reviews": {},
-                    "research_dossiers": [read_dossier(session, iid) for iid in ids]}
+                    "research_dossiers": [read_dossier(session, iid) for iid in ids],
+                    "attempted_theme_baselines": prior.context_json.get("attempted_theme_baselines", {
+                        theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
+                        for dossier in prior.context_json.get("research_dossiers", []) for theme in dossier.get("themes", [])})}
                 incremental_trigger = {iid: trigger for iid in ids if (
                     trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
                 if not incremental_trigger:
                     return prior, False
                 break
+    from watchlist_app.services.research_themes import theme_index
+    attempted_baselines = {theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
+                          for theme in theme_index(session, ids[0])}
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=title,
         body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
         status="queued", context_json={"sector_run": True, "event_scope": "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
         "research_actor": research_identity(),
         **({"question": question} if question is not None else {}),
-        "incremental_trigger": incremental_trigger,
+        "incremental_trigger": incremental_trigger, "attempted_theme_baselines": attempted_baselines,
         "web_evidence": [], "reviews": {}})
     session.add(run)
     session.commit()
@@ -573,7 +579,7 @@ def _theme_scope(session, run, review):
         previous = analyst_theme_target(session, review.instrument_id, update)
         if previous and previous["theme_id"] not in themes:
             raise ValueError("研究主题在本轮未读取，请基于最新研究档案更新")
-        if previous and run.context_json.get("sector_run") and previous["status"] != "active":
+        if previous and previous.get("pinned") and run.context_json.get("sector_run") and previous["status"] != "active":
             raise ValueError("原本已暂停或结束的主题不能由自动研究更新或恢复")
         if update.theme_key in themes and (not previous or themes[update.theme_key]["theme_id"] != previous["theme_id"]):
             raise ValueError("新主题的本轮别名不能覆盖已有主题标识")
@@ -586,6 +592,9 @@ def _theme_scope(session, run, review):
         themes[update.theme_key] = projected
         if previous:
             themes[previous["theme_id"]] = projected
+    canonical = {value["theme_id"]: value for value in themes.values()}
+    if sum(value["status"] == "active" for value in canonical.values()) > 10:
+        raise ValueError("最多同时跟踪10个重点主题；请在同轮先明确合并、暂停或关闭被替换主题。")
     return themes
 
 
@@ -621,11 +630,16 @@ def _validate_research_links(session, run, review, themes):
 
     if review.research is not None:
         forecast_versions = _forecast_versions(dossier.get("notebook") or {})
-        for field in ("questions", "forecasts", "forecast_reviews", "lessons"):
+        for field in ("questions", "forecasts", "forecast_reviews", "lessons", "catalysts"):
             previous = {item["key"]: item for item in (dossier.get("notebook") or {}).get(field, [])}
             for model in getattr(review.research, field):
                 row = _merge_partial(model, previous.get(model.key))
                 check_theme(row.get("theme_id"))
+                active = ((field == "questions" and row.get("tracking_status", "active") == "active")
+                          or (field == "forecasts" and row.get("status", "active") == "active")
+                          or (field == "catalysts" and row.get("status", "scheduled") == "scheduled"))
+                if active and not row.get("theme_id"):
+                    raise ValueError("持续跟踪的问题和量化判断必须归入重点主题；请关联或建立主题，避免独立跟进事项。")
                 if row.get("event_key") and row["event_key"] not in event_keys:
                     raise ValueError("研究判断关联的事件不属于当前标的")
                 if row.get("related_research_update_id"):
@@ -652,6 +666,8 @@ def _validate_research_links(session, run, review, themes):
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                                                      RiskCase.signal == f"sector:{item.event_key}"))
         effective = _effective_event(item, case)
+        if effective.follow_up == "watch" and not effective.theme_ids:
+            raise ValueError("需要持续跟踪的事件必须归入重点主题；无需跟踪的重要事件使用follow_up=none。")
         if len(effective.theme_ids) != len(set(effective.theme_ids)):
             raise ValueError("同一事件的关注主题引用重复")
         prior_theme_ids = set(event_record(case)["theme_ids"]) if case else set()
@@ -671,7 +687,7 @@ def _resolve_theme_aliases(review, aliases):
         if "theme_ids" in event.model_fields_set:
             event.theme_ids = list(dict.fromkeys(aliases.get(value, value) for value in event.theme_ids))
     if review.research:
-        for field in ("questions", "forecasts", "forecast_reviews", "lessons"):
+        for field in ("questions", "forecasts", "forecast_reviews", "lessons", "catalysts"):
             for item in getattr(review.research, field):
                 if item.theme_id:
                     item.theme_id = aliases.get(item.theme_id, item.theme_id)
@@ -719,8 +735,18 @@ def validate_result(session, run, parsed: ReviewResult):
     # Validate the full reply before changing any persistent event.
     for review in parsed.reviews:
         themes = _theme_scope(session, run, review)
+        if context.get("sector_run"):
+            dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+            checked_ids = {themes[update.theme_key]["theme_id"] for update in review.themes}
+            missing = [theme["theme_id"] for theme in dossier.get("themes", [])
+                       if theme["status"] == "active" and theme["theme_id"] not in checked_ids]
+            if missing:
+                raise ValueError("本轮须逐一复核所有重点主题；无变化只提交theme_id/theme_key。未复核：" + ", ".join(missing))
         for update in review.themes:
-            validate_notebook(ResearchNotebook(source_ids=update.source_ids), review.instrument_id, notebook_evidence)
+            validate_notebook(ResearchNotebook(source_ids=[*update.source_ids, *update.figure_source_ids]), review.instrument_id, notebook_evidence)
+            for source_id in update.figure_source_ids:
+                if notebook_evidence[source_id].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
+                    raise ValueError("主题图表必须绑定真实留存的数值来源")
         _validate_research_links(session, run, review, themes)
         if review.research is not None:
             dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
@@ -833,9 +859,11 @@ def apply_result(session, run, reply):
         from watchlist_app.services.research_themes import save_analyst_theme
         aliases, changed_themes, published_themes = {}, False, []
         theme_scope = _theme_scope(session, run, review)
-        for update in review.themes:
+        # Free a slot in the same locked transaction before publishing a replacement.
+        for update in sorted(review.themes, key=lambda item: item.status not in {"paused", "closed"}):
             previous = theme_scope[update.theme_key]
-            saved = save_analyst_theme(session, review.instrument_id, update, provenance={"source_run_id": run.entry_id})
+            saved = save_analyst_theme(session, review.instrument_id, update,
+                provenance={"source_run_id": run.entry_id}, sources=notebook_evidence)
             aliases[update.theme_key] = saved["theme_id"]
             published_themes.append({key: saved[key] for key in ("theme_id", "theme_key", "source_ids")})
             changed_themes = changed_themes or saved["theme_id"] != previous["theme_id"] or saved["revision_number"] != previous.get("revision_number")
@@ -942,11 +970,19 @@ def daily_review_groups(session, *, now=None):
         .order_by(InstrumentAttributeValue.adopted_at.desc(), InstrumentAttributeValue.instrument_attribute_value_id.desc())):
         statuses.setdefault(value.instrument_id, value.value_json)
     selected = [iid for iid, status in statuses.items() if status in {"Proposed", "Invested"}]
+    pending = set()
+    for entry in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "note")):
+        context = entry.context_json or {}
+        if (context.get("role") == "research_theme" and context.get("theme_status") == "active"
+                and context.get("baseline_status") == "pending" and context.get("instrument_id") in registered):
+            pending.add(context["instrument_id"])
+    selected = list(set(selected) | pending)
     ids = sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
     now = now or datetime.now(UTC)
-    groups = [[iid] for iid in ids if _research_due(_research_market(session, iid), now)]
+    groups = [[iid] for iid in ids if (market := _research_market(session, iid)) is not None
+              and (iid in pending or _research_due(market, now))]
     reviews = latest_reviews(session, instrument_ids=[iid for group in groups for iid in group])
     # Resume the least recently attempted work first, including after a restart or date change.
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))

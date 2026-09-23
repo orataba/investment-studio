@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, TaxonomyConfigurationRevisionModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.taxonomy_configuration import taxonomy_configuration_version
 from .test_research_api import _create_planning_taxonomy, _create_target_sets
 
 
@@ -20,7 +21,7 @@ def _target_change(client, taxonomy_id, node_ids):
                   and item['target_set_type'] == 'taa')
     lines = [deepcopy(item) for item in catalog['target_set_lines'] if item['target_set_id'] == target['target_set_id']]
     for line in lines:
-        line['target_weight'] = .51 if line['target_member_id'] == node_ids['Defensive Equity'] else .49
+        line['target_value'] = .51 if line['target_member_id'] == node_ids['Defensive Equity'] else .49
     return {**target, 'lines': lines}
 
 
@@ -38,19 +39,21 @@ def test_target_configuration_is_atomic_and_publishes_one_revision(client):
     target = _target_change(client, taxonomy_id, nodes)
     original_catalog = client.get(f'{BASE}/taxonomies').json()
     before = _revision_state(taxonomy_id)
-    payload = {'node_defaults': {nodes['Risk Assets']: 'risk_budget'},
+    payload = {'expected_configuration_version': taxonomy_configuration_version(PORTFOLIO), 'root_allocation_basis': 'risk_budget',
+               'node_allocation_bases': {nodes['Risk Assets']: 'risk_budget'},
                'target_sets': [target, {**target, 'target_set_id': None, 'target_set_type': 'saa',
                                       'comparator_taxonomy_node_id': 'missing-node'}]}
     invalid = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json=payload)
     assert invalid.status_code == 400, invalid.text
     assert _revision_state(taxonomy_id) == before
     after_failure = client.get(f'{BASE}/taxonomies').json()
-    for key in ['target_sets', 'target_set_lines', 'taxonomy_nodes']:
+    for key in ['taxonomies', 'target_sets', 'target_set_lines', 'taxonomy_nodes']:
         assert after_failure[key] == original_catalog[key]
 
     payload['target_sets'] = [target]
     saved = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json=payload)
     assert saved.status_code == 200, saved.text
+    assert saved.json()['root_allocation_basis'] == 'risk_budget'
     after_count, after_generation = _revision_state(taxonomy_id)
     assert after_count == before[0] + 1
     assert after_generation != before[1]
@@ -58,7 +61,30 @@ def test_target_configuration_is_atomic_and_publishes_one_revision(client):
         state = session.get(PortfolioCalculationStateModel, PORTFOLIO)
         assert state.daily_snapshot_status == 'stale'
     updated = client.get(f'{BASE}/taxonomies').json()
-    assert next(item for item in updated['taxonomy_nodes'] if item['taxonomy_node_id'] == nodes['Risk Assets'])['default_target_dimension'] == 'risk_budget'
+    assert next(item for item in updated['taxonomy_nodes'] if item['taxonomy_node_id'] == nodes['Risk Assets'])['allocation_basis'] == 'risk_budget'
+
+
+def test_target_configuration_can_save_only_root_basis_and_omission_preserves_it(client):
+    taxonomy_id, nodes = _create_planning_taxonomy(client)
+    before_count, before_generation = _revision_state(taxonomy_id)
+    saved = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'expected_configuration_version': taxonomy_configuration_version(PORTFOLIO),
+        'root_allocation_basis': 'risk_budget',
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['root_allocation_basis'] == 'risk_budget'
+    after_count, after_generation = _revision_state(taxonomy_id)
+    assert after_count == before_count + 1
+    assert after_generation != before_generation
+    with get_session_factory()() as session:
+        current = session.scalars(select(TaxonomyConfigurationRevisionModel).where(
+            TaxonomyConfigurationRevisionModel.taxonomy_id == taxonomy_id,
+            TaxonomyConfigurationRevisionModel.superseded_by_revision_id.is_(None))).one()
+        assert current.configuration_json['taxonomy']['root_allocation_basis'] == 'risk_budget'
+    node_only = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'expected_configuration_version': taxonomy_configuration_version(PORTFOLIO),
+        'node_allocation_bases': {nodes['Risk Assets']: 'weight'},
+    })
+    assert node_only.status_code == 200, node_only.text
+    assert node_only.json()['root_allocation_basis'] == 'risk_budget'
 
 
 def test_research_discloses_unassigned_holdings_even_when_their_values_net_to_zero(client, monkeypatch):
@@ -78,12 +104,12 @@ def test_current_targets_apply_to_dynamic_and_pinned_data_dates_and_run_snapshot
     _create_target_sets(client, taxonomy_id, nodes)
     target = _target_change(client, taxonomy_id, nodes)
     settings = {'planning_taxonomy_id': taxonomy_id, 'comparator_taxonomy_node_id': nodes['Risk Assets'],
-                'lookback_days': 30, 'target_dimension': 'scope_default', 'capital_mode': 'unit_notional'}
+                'lookback_days': 30, 'capital_mode': 'unit_notional'}
     response = client.put(f'{BASE}/research/settings', json={**settings, 'as_of_mode': 'dynamic'})
     assert response.status_code == 200, response.text
     previous = client.post(f'{BASE}/research/runs', json={})
     assert previous.status_code == 200, previous.text
-    save = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={
+    save = client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'expected_configuration_version': taxonomy_configuration_version(PORTFOLIO),
         'target_sets': [target],
     })
     assert save.status_code == 200, save.text
@@ -117,12 +143,13 @@ def test_current_targets_apply_to_dynamic_and_pinned_data_dates_and_run_snapshot
         snapshot = stored_run.request_payload_json['target_configuration_snapshot']
         assert snapshot['target_snapshot_fingerprint'] == pinned_context['target_snapshot_fingerprint']
         assert snapshot['taxonomy_nodes'] and snapshot['taxonomy_assignments']
-        assert snapshot['instrument_analytics_scopes']
+        assert snapshot['configuration_version'] > 0
+        assert 'instrument_analytics_scopes' not in snapshot
         assert snapshot['captured_at']
         saved_snapshot = deepcopy(snapshot)
     for line in target['lines']:
-        line['target_weight'] = .6 if line['target_member_id'] == nodes['Defensive Equity'] else .4
-    assert client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'target_sets': [target]}).status_code == 200
+        line['target_value'] = .6 if line['target_member_id'] == nodes['Defensive Equity'] else .4
+    assert client.put(f'{BASE}/taxonomies/{taxonomy_id}/target-configuration', json={'expected_configuration_version': taxonomy_configuration_version(PORTFOLIO), 'target_sets': [target]}).status_code == 200
     with get_session_factory()() as session:
         stored_run = session.get(ResearchRunRecordModel, pinned.json()['research_run_id'])
         assert stored_run.request_payload_json['target_configuration_snapshot'] == saved_snapshot
@@ -132,7 +159,7 @@ def test_current_targets_apply_to_dynamic_and_pinned_data_dates_and_run_snapshot
 
 
 
-def test_current_target_snapshot_identity_is_stable_until_a_policy_changes(client):
+def test_current_target_snapshot_identity_is_stable_until_its_configuration_changes(client):
     from portfolio_app.services.research_inputs import capture_current_target_configuration
     taxonomy_id, nodes = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, nodes)
@@ -140,12 +167,10 @@ def test_current_target_snapshot_identity_is_stable_until_a_policy_changes(clien
     repeat = capture_current_target_configuration(PORTFOLIO, taxonomy_id)
     assert before['captured_at'] != repeat['captured_at']
     assert before['target_snapshot_fingerprint'] == repeat['target_snapshot_fingerprint']
-    response = client.put(f'{BASE}/taxonomies/{taxonomy_id}/analytics-scope-policies/{nodes["Defensive Equity"]}', json={
-        'risk_eligible': False, 'risk_budget_eligible': False,
-        'performance_scope': 'ordinary', 'valuation_basis': 'market', 'exclusion_reason': 'Scope review',
-    })
+    response = client.patch(f'{BASE}/taxonomies/{taxonomy_id}/nodes/{nodes["Risk Assets"]}',
+        json={'allocation_basis': 'risk_budget'})
     assert response.status_code == 200, response.text
     changed = capture_current_target_configuration(PORTFOLIO, taxonomy_id)
     assert before['target_snapshot_fingerprint'] != changed['target_snapshot_fingerprint']
-    assert before['instrument_analytics_scopes']['equity-us-abbv']['risk_eligible'] is True
-    assert changed['instrument_analytics_scopes']['equity-us-abbv']['risk_eligible'] is False
+    assert changed['configuration_version'] > before['configuration_version']
+    assert before['taxonomy_assignments'] == changed['taxonomy_assignments']

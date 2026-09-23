@@ -92,7 +92,10 @@ def test_concentration_settings_read_does_not_depend_on_valuation(raw_client, ca
     before = _state()
     response = raw_client.get(f"/api/portfolios/{PORTFOLIO_ID}/concentration/settings")
     assert response.status_code == 200, response.text
-    assert response.json()["rules"] == []
+    payload = response.json()
+    assert payload["enabled_taxonomy_ids"] == []
+    assert payload["limits"] == []
+    assert payload["fcn_allocations"] == []
     assert _state() == before
 
 

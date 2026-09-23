@@ -1716,7 +1716,6 @@ function PerformancePage() {
   const selectedGroupingTaxonomy = useMemo(
     () =>
       groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === groupingTaxonomyId) ??
-      groupingTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === taxonomyCatalog?.default_planning_taxonomy_id) ??
       groupingTaxonomies[0] ?? null,
     [taxonomyCatalog, groupingTaxonomyId],
   )

@@ -1313,11 +1313,7 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert summary["latest_complete_as_of_date"] == "2026-04-15"
     assert summary["performance_basis"] == "market_value"
     assert summary["performance_label"] == "Total Portfolio Return"
-    assert summary["ordinary_sleeve_twr_status"] == "unavailable"
-    assert summary["ordinary_sleeve_twr_reason"] == (
-        "Sleeve boundary cash flows are not maintained as a cash subledger; "
-        "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
-    )
+
     assert summary["derivative_lifecycle_realized_pnl"] == pytest.approx(0.0)
     assert summary["external_cash_in"] == pytest.approx(50000.0 + 120000.0 / 7.8)
     assert summary["external_cash_out"] == 12000.0
@@ -4785,8 +4781,6 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7394,8 +7388,6 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7524,8 +7516,6 @@ def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(cl
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7679,8 +7669,6 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -7841,8 +7829,6 @@ def test_taxonomy_contribution_and_entries_keep_cash_outside_security_taxonomy(c
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -8585,8 +8571,6 @@ def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9058,8 +9042,6 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9429,8 +9411,6 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9712,8 +9692,6 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -9854,8 +9832,6 @@ def test_taxonomy_calculation_groups_use_current_configuration_and_system_cash_g
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10037,8 +10013,6 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_current_group(
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10275,8 +10249,6 @@ def test_period_calculation_drilldown_taxonomy_uses_current_configuration(client
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }
@@ -10863,8 +10835,6 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": False,
-            "budgeting_level": None,
             "status": "active",
             "source_template_ref": None,
         }

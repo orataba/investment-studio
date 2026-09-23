@@ -7,11 +7,6 @@ from fastapi import APIRouter, HTTPException, Query
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.api.contracts import (
-    AnalyticsScopePolicyUpsertRequest,
-    AnalyticsScopePolicyRecord,
-    AnalyticsTaxonomySelectionRecord,
-    DefaultPlanningTaxonomyResponse,
-    DefaultPlanningTaxonomyUpdateRequest,
     PortfolioInstrumentUniverseCreateRequest,
     PortfolioInstrumentUniverseRecord,
     TargetSetCreateRequest,
@@ -31,10 +26,7 @@ from portfolio_app.api.contracts import (
     TaxonomyUpdateRequest,
     TaxonomyTargetConfigurationRequest,
 )
-from portfolio_app.services.analytics_scope import (
-    current_taxonomy_catalog,
-    replace_analytics_scope_policy,
-)
+from portfolio_app.services.taxonomy_configuration import current_taxonomy_catalog
 from portfolio_app.services.instrument_charts import (
     build_instrument_holdings_market_profile_from_detail,
     empty_instrument_holdings_market_profile,
@@ -57,9 +49,6 @@ from portfolio_app.services.portfolio_store import (
     delete_target_set,
     get_portfolio,
     get_taxonomy,
-    list_target_set_integrity_issues,
-    list_portfolio_instrument_universe,
-    set_default_planning_taxonomy,
     update_taxonomy,
     update_taxonomy_assignment,
     update_taxonomy_node,
@@ -156,7 +145,7 @@ def get_portfolio_taxonomies(
 
     catalog = current_taxonomy_catalog(portfolio_id)
 
-    universe_records = list_portfolio_instrument_universe(portfolio_id)
+    universe_records = catalog["instrument_universe"]
     risk_basis_profile = None
     if include_market_profile:
         resolved_as_of_date = (
@@ -178,7 +167,6 @@ def get_portfolio_taxonomies(
 
     return TaxonomyCatalogResponse(
         portfolio_id=portfolio_id,
-        default_planning_taxonomy_id=catalog.get("default_planning_taxonomy_id"),
         risk_basis=risk_basis_profile,
         taxonomies=[TaxonomyRecord.model_validate(item) for item in catalog["taxonomies"]],
         taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in catalog["taxonomy_nodes"]],
@@ -186,50 +174,20 @@ def get_portfolio_taxonomies(
             TaxonomyAssignmentRecord.model_validate(item)
             for item in catalog["taxonomy_assignments"]
         ],
-        analytics_scope_policy_version=catalog["analytics_scope_policy_version"],
-        analytics_scope_policies=[
-            AnalyticsScopePolicyRecord.model_validate(item)
-            for item in catalog["analytics_scope_policies"]
-        ],
-        analytics_taxonomy_selections=[
-            AnalyticsTaxonomySelectionRecord.model_validate(item)
-            for item in catalog["analytics_taxonomy_selections"]
-        ],
+        taxonomy_configuration_version=catalog["taxonomy_configuration_version"],
         instrument_universe=[
             PortfolioInstrumentUniverseRecord.model_validate(item)
             for item in universe_records
         ],
         target_sets=[TargetSetRecord.model_validate(item) for item in catalog["target_sets"]],
         target_set_lines=[TargetSetLineRecord.model_validate(item) for item in catalog["target_set_lines"]],
+        target_resolution=catalog.get("target_resolution", []),
         target_set_integrity_issues=[
             TargetSetIntegrityIssueRecord.model_validate(item)
-            for item in list_target_set_integrity_issues(portfolio_id)
+            for item in catalog["target_set_integrity_issues"]
         ],
     )
 
-@router.put("/{portfolio_id}/taxonomies/default-planning", response_model=DefaultPlanningTaxonomyResponse)
-def update_default_planning_taxonomy(
-    portfolio_id: str,
-    payload: DefaultPlanningTaxonomyUpdateRequest,
-) -> DefaultPlanningTaxonomyResponse:
-    if get_portfolio(portfolio_id) is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-
-    try:
-        updated_portfolio = set_default_planning_taxonomy(
-            portfolio_id,
-            payload.taxonomy_id,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    if updated_portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-
-    return DefaultPlanningTaxonomyResponse(
-        portfolio_id=portfolio_id,
-        default_planning_taxonomy_id=updated_portfolio.get("default_planning_taxonomy_id"),
-    )
 
 
 @router.post("/{portfolio_id}/taxonomies/instrument-universe", response_model=PortfolioInstrumentUniverseRecord)
@@ -286,9 +244,7 @@ def create_portfolio_taxonomy(
         taxonomy_type=payload.taxonomy_type,
         purpose=payload.purpose,
         primary_assignment_scope=payload.primary_assignment_scope,
-        planning_enabled=payload.planning_enabled,
-        budgeting_level=payload.budgeting_level,
-        root_default_target_dimension=payload.root_default_target_dimension,
+        root_allocation_basis=payload.root_allocation_basis,
         status=payload.status,
         source_template_ref=payload.source_template_ref,
     )
@@ -353,7 +309,7 @@ def create_portfolio_taxonomy_node(
             node_code=payload.node_code,
             sort_order=payload.sort_order,
             is_terminal=payload.is_terminal,
-            default_target_dimension=payload.default_target_dimension,
+            allocation_basis=payload.allocation_basis,
             status=payload.status,
         )
     except ValueError as error:
@@ -506,8 +462,6 @@ def create_portfolio_target_set(
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             target_set_type=payload.target_set_type,
             name=payload.name,
-            weight_enabled=payload.weight_enabled,
-            risk_budget_enabled=payload.risk_budget_enabled,
             status=payload.status,
             notes=payload.notes,
             lines=[item.model_dump() for item in payload.lines],
@@ -566,39 +520,16 @@ def delete_portfolio_target_set(
     }
 
 
-@router.put(
-    "/{portfolio_id}/taxonomies/{taxonomy_id}/analytics-scope-policies/{taxonomy_node_id}",
-    response_model=AnalyticsScopePolicyRecord,
-)
-def replace_portfolio_analytics_scope_policy(
-    portfolio_id: str,
-    taxonomy_id: str,
-    taxonomy_node_id: str,
-    payload: AnalyticsScopePolicyUpsertRequest,
-) -> AnalyticsScopePolicyRecord:
-    if get_portfolio(portfolio_id) is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    if get_taxonomy(portfolio_id, taxonomy_id) is None:
-        raise HTTPException(status_code=404, detail="Taxonomy not found")
-    try:
-        record = replace_analytics_scope_policy(
-            portfolio_id,
-            taxonomy_id=taxonomy_id,
-            taxonomy_node_id=taxonomy_node_id,
-            **payload.model_dump(),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return AnalyticsScopePolicyRecord.model_validate(record)
-
-
 @router.put("/{portfolio_id}/taxonomies/{taxonomy_id}/target-configuration", response_model=TaxonomyRecord)
 def save_portfolio_taxonomy_target_configuration(
     portfolio_id: str, taxonomy_id: str, payload: TaxonomyTargetConfigurationRequest,
 ) -> TaxonomyRecord:
     try:
         result = save_taxonomy_target_configuration(portfolio_id, taxonomy_id,
-            node_defaults=payload.node_defaults,
+            expected_configuration_version=payload.expected_configuration_version,
+            root_allocation_basis=payload.root_allocation_basis,
+            concentration=payload.concentration,
+            node_allocation_bases=payload.node_allocation_bases,
             target_sets=[item.model_dump() for item in payload.target_sets])
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

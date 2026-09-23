@@ -7,6 +7,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import ConcentrationAlerts from '../components/ConcentrationAlerts'
 import InfoHint from '../components/InfoHint'
 import OverviewAssetMix from '../components/OverviewAssetMix'
 import PerformanceNavChart from '../components/PerformanceNavChart'
@@ -813,6 +814,13 @@ export default function OverviewPage() {
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [taxonomyLoading, setTaxonomyLoading] = useState(true)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
+  const taxonomyStorageKey = `investment_studio.portfolio.overview.taxonomy.${portfolioId}`
+  const [selectedTaxonomyId, setSelectedTaxonomyId] = useState(() => {
+    try { return localStorage.getItem(taxonomyStorageKey) ?? '' } catch { return '' }
+  })
+  useEffect(() => {
+    try { setSelectedTaxonomyId(localStorage.getItem(taxonomyStorageKey) ?? '') } catch { setSelectedTaxonomyId('') }
+  }, [taxonomyStorageKey])
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
@@ -1088,8 +1096,8 @@ export default function OverviewPage() {
     [benchmarkChart],
   )
 
-  const defaultPlanningTaxonomyId =
-    summary?.default_planning_taxonomy_id ?? taxonomyCatalog?.default_planning_taxonomy_id ?? null
+  const compositionTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
+  const compositionTaxonomyId = (compositionTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId) ?? compositionTaxonomies[0])?.taxonomy_id ?? null
 
   const composition = useMemo(() => {
     const nodesById = new Map<string, PortfolioTaxonomyNodeRecord>(
@@ -1097,7 +1105,7 @@ export default function OverviewPage() {
     )
     const activeAssignments = (taxonomyCatalog?.taxonomy_assignments ?? []).filter(
       (assignment) =>
-        assignment.taxonomy_id === defaultPlanningTaxonomyId &&
+        assignment.taxonomy_id === compositionTaxonomyId &&
         assignment.target_scope === 'instrument' &&
         assignment.status === 'active',
     )
@@ -1175,7 +1183,7 @@ export default function OverviewPage() {
       assignedLabelByInstrumentId,
     }
   }, [
-    defaultPlanningTaxonomyId,
+    compositionTaxonomyId,
     nonCashHoldingsRows,
     holdingsWorkspace?.as_of_date,
     resolvedBaseCurrency,
@@ -1636,6 +1644,7 @@ export default function OverviewPage() {
 
         {!workspaceLoading && holdingsWorkspace ? (
           <>
+            <ConcentrationAlerts portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />
             <div className="performance-block-grid">
               <section className="portfolio-section-block overview-performance-block">
                 <div className="overview-nav-grid">
@@ -1822,6 +1831,12 @@ export default function OverviewPage() {
                 <section className="portfolio-section-block">
                   <div className="portfolio-detail-toolbar portfolio-section-toolbar">
                     <div className="panel-title">Strategy Sleeves</div>
+                    {compositionTaxonomies.length ? <label className="concentration-toolbar-actions">Taxonomy
+                      <select aria-label="Overview taxonomy" value={compositionTaxonomyId ?? ''} onChange={(event) => {
+                        setSelectedTaxonomyId(event.target.value)
+                        try { localStorage.setItem(taxonomyStorageKey, event.target.value) } catch { /* Browsing works without storage. */ }
+                      }}>{compositionTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}</option>)}</select>
+                    </label> : null}
                   </div>
                   {taxonomyLoading ? <CalculationStatus /> : taxonomyError ? (
                     <div className="error-state">{taxonomyError}</div>

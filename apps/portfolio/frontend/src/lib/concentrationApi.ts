@@ -1,14 +1,11 @@
 import { requestPortfolioResource } from './api'
 
 export type ConcentrationScopeKind = 'security' | 'fcn' | 'taxonomy'
-export type ConcentrationRule = {
-  rule_id: string
+export type ConcentrationLimit = {
   scope: ConcentrationScopeKind
   taxonomy_id: string | null
-  entity_id: string | null
-  watch_weight: number | null
+  entity_id: string
   limit_weight: number | null
-  enabled: boolean
 }
 export type FcnAllocation = {
   contract_id: string
@@ -18,8 +15,17 @@ export type FcnAllocation = {
 export type ConcentrationSettingsRecord = {
   portfolio_id: string
   revision: number
+  latest_revision: number
   effective_from: string | null
-  rules: ConcentrationRule[]
+  enabled_taxonomy_ids: string[]
+  limits: ConcentrationLimit[]
+  fcn_allocations: FcnAllocation[]
+}
+export type ConcentrationSettingsInput = {
+  expected_revision: number
+  effective_from: string
+  enabled_taxonomy_ids: string[]
+  limits: ConcentrationLimit[]
   fcn_allocations: FcnAllocation[]
 }
 export type ConcentrationSource = {
@@ -43,11 +49,9 @@ export type ConcentrationRow = {
   weight: number | null
   security_exposure_base: number | null
   fcn_exposure_base: number | null
-  watch_weight: number | null
   limit_weight: number | null
-  status: 'within' | 'watch' | 'breached' | 'unconfigured' | 'unavailable'
+  status: 'within' | 'breached' | 'unconfigured' | 'unavailable'
   headroom_weight: number | null
-  rule_id: string | null
   sources: ConcentrationSource[]
   coverage: string[]
 }
@@ -55,6 +59,7 @@ export type ConcentrationScope = {
   scope: ConcentrationScopeKind
   taxonomy_id: string | null
   name: string
+  enabled: boolean
   rows: ConcentrationRow[]
   status: 'complete' | 'partial' | 'unavailable'
   coverage: string[]
@@ -65,6 +70,8 @@ export type ConcentrationResponse = {
   base_currency: string
   nav: number | null
   weight_basis: 'portfolio_nav'
+  valuation_basis: 'operating_book'
+  excluded_option_positions: number
   status: 'complete' | 'partial' | 'unavailable'
   settings_revision: number
   settings_effective_from?: string | null
@@ -83,15 +90,10 @@ const path = (portfolioId: string) => `/api/portfolios/${encodeURIComponent(port
 export function getConcentration(portfolioId: string, asOfDate?: string) {
   return requestPortfolioResource<ConcentrationResponse>(`${path(portfolioId)}${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ''}`)
 }
-export function getConcentrationSettings(portfolioId: string) {
-  return requestPortfolioResource<ConcentrationSettingsRecord>(`${path(portfolioId)}/settings`)
+export function getConcentrationSettings(portfolioId: string, asOfDate?: string) {
+  return requestPortfolioResource<ConcentrationSettingsRecord>(`${path(portfolioId)}/settings${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ''}`)
 }
-export function saveConcentrationSettings(portfolioId: string, input: {
-  expected_revision: number
-  effective_from: string
-  rules: ConcentrationRule[]
-  fcn_allocations: FcnAllocation[]
-}) {
+export function saveConcentrationSettings(portfolioId: string, input: ConcentrationSettingsInput) {
   return requestPortfolioResource<ConcentrationSettingsRecord>(`${path(portfolioId)}/settings`, { method: 'PUT', body: JSON.stringify(input) })
 }
 

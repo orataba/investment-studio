@@ -39,7 +39,6 @@ class PortfolioRecordModel(Base):
     day_change_pct: Mapped[float | None] = mapped_column(default=0.0)
     securities_count: Mapped[int] = mapped_column(nullable=False, default=0)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
-    default_planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
     risk_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
 
     accounts: Mapped[list["AccountRecordModel"]] = relationship(
@@ -104,18 +103,10 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
-    analytics_policy_state: Mapped["PortfolioAnalyticsPolicyStateModel | None"] = relationship(
+    taxonomy_state: Mapped["PortfolioTaxonomyStateModel | None"] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
         uselist=False,
-    )
-    analytics_scope_policies: Mapped[list["AnalyticsScopePolicyRecordModel"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
-    )
-    analytics_taxonomy_selections: Mapped[list["AnalyticsTaxonomySelectionRecordModel"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
     )
     taxonomy_configuration_revisions: Mapped[list["TaxonomyConfigurationRevisionModel"]] = relationship(
         back_populates="portfolio",
@@ -1103,9 +1094,7 @@ class TaxonomyRecordModel(Base):
     taxonomy_type: Mapped[str] = mapped_column(String, nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
     primary_assignment_scope: Mapped[str] = mapped_column(String, nullable=False)
-    planning_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    budgeting_level: Mapped[str | None] = mapped_column(String)
-    root_default_target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="weight")
+    root_allocation_basis: Mapped[str] = mapped_column(String, nullable=False, default="weight")
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     source_template_ref: Mapped[str | None] = mapped_column(String)
 
@@ -1137,7 +1126,7 @@ class TaxonomyNodeRecordModel(Base):
     node_code: Mapped[str | None] = mapped_column(String)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
     is_terminal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    default_target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="weight")
+    allocation_basis: Mapped[str] = mapped_column(String, nullable=False, default="weight")
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
 
     taxonomy: Mapped[TaxonomyRecordModel] = relationship(back_populates="nodes")
@@ -1165,12 +1154,12 @@ class TaxonomyAssignmentRecordModel(Base):
     taxonomy: Mapped[TaxonomyRecordModel] = relationship(back_populates="assignments")
 
 
-class PortfolioAnalyticsPolicyStateModel(Base):
-    __tablename__ = "portfolio_analytics_policy_state"
+class PortfolioTaxonomyStateModel(Base):
+    __tablename__ = "portfolio_taxonomy_state"
     __table_args__ = (
         CheckConstraint(
             "current_version >= 0",
-            name="ck_analytics_policy_state_version",
+            name="ck_taxonomy_state_version",
         ),
     )
 
@@ -1187,107 +1176,7 @@ class PortfolioAnalyticsPolicyStateModel(Base):
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(
-        back_populates="analytics_policy_state"
-    )
-
-
-class AnalyticsScopePolicyRecordModel(Base):
-    __tablename__ = "analytics_scope_policy_record"
-    __table_args__ = (
-        CheckConstraint(
-            "performance_scope IN ('ordinary', 'derivative_lifecycle', "
-            "'operational_only', 'unallocated')",
-            name="ck_analytics_scope_policy_performance_scope",
-        ),
-        CheckConstraint(
-            "valuation_basis IN ('market', 'fair_value', 'carrying', 'event', "
-            "'obligation', 'cash', 'unknown')",
-            name="ck_analytics_scope_policy_valuation_basis",
-        ),
-        UniqueConstraint(
-            "portfolio_id",
-            "policy_version",
-            name="uq_analytics_scope_policy_portfolio_version",
-        ),
-        Index(
-            "ix_analytics_scope_policy_resolve",
-            "portfolio_id",
-            "taxonomy_id",
-            "taxonomy_node_id",
-            "superseded_by_policy_id",
-        ),
-        Index(
-            "uq_analytics_scope_policy_current",
-            "portfolio_id",
-            "taxonomy_id",
-            "taxonomy_node_id",
-            unique=True,
-            postgresql_where=text("superseded_by_policy_id IS NULL"),
-            sqlite_where=text("superseded_by_policy_id IS NULL"),
-        ),
-    )
-
-    analytics_scope_policy_id: Mapped[str] = mapped_column(String, primary_key=True)
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    taxonomy_id: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-    taxonomy_node_id: Mapped[str] = mapped_column(String, nullable=False)
-    risk_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    risk_budget_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    performance_scope: Mapped[str] = mapped_column(String, nullable=False)
-    valuation_basis: Mapped[str] = mapped_column(String, nullable=False)
-    exclusion_reason: Mapped[str | None] = mapped_column(String)
-    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    superseded_by_policy_id: Mapped[str | None] = mapped_column(String)
-    created_at: Mapped[str] = mapped_column(String, nullable=False)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(
-        back_populates="analytics_scope_policies"
-    )
-
-
-class AnalyticsTaxonomySelectionRecordModel(Base):
-    __tablename__ = "analytics_taxonomy_selection_record"
-    __table_args__ = (
-        UniqueConstraint(
-            "portfolio_id",
-            "selection_version",
-            name="uq_analytics_taxonomy_selection_portfolio_version",
-        ),
-        Index(
-            "ix_analytics_taxonomy_selection_resolve",
-            "portfolio_id",
-            "superseded_by_selection_id",
-        ),
-        Index(
-            "uq_analytics_taxonomy_selection_current",
-            "portfolio_id",
-            unique=True,
-            postgresql_where=text("superseded_by_selection_id IS NULL"),
-            sqlite_where=text("superseded_by_selection_id IS NULL"),
-        ),
-    )
-
-    analytics_taxonomy_selection_id: Mapped[str] = mapped_column(
-        String,
-        primary_key=True,
-    )
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    taxonomy_id: Mapped[str | None] = mapped_column(String)
-    selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    superseded_by_selection_id: Mapped[str | None] = mapped_column(String)
-    created_at: Mapped[str] = mapped_column(String, nullable=False)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(
-        back_populates="analytics_taxonomy_selections"
+        back_populates="taxonomy_state"
     )
 
 
@@ -1357,8 +1246,6 @@ class TargetSetRecordModel(Base):
     comparator_taxonomy_node_id: Mapped[str | None] = mapped_column(String)
     target_set_type: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    weight_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    risk_budget_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     notes: Mapped[str | None] = mapped_column(String)
 
@@ -1377,8 +1264,8 @@ class TargetSetLineRecordModel(Base):
             name="ck_target_set_line_member_type",
         ),
         CheckConstraint(
-            "target_member_type NOT IN ('cash_bucket', 'derivative_bucket') OR target_risk_share IS NULL",
-            name="ck_target_set_line_non_risk_member_risk_null",
+            "target_member_type != 'derivative_bucket'",
+            name="ck_target_set_line_no_derivative_target",
         ),
         Index(
             "ix_target_set_line_record_target_set_node",
@@ -1403,8 +1290,7 @@ class TargetSetLineRecordModel(Base):
     taxonomy_node_id: Mapped[str | None] = mapped_column(String)
     target_member_type: Mapped[str] = mapped_column(String, nullable=False, default="taxonomy_node")
     target_member_id: Mapped[str] = mapped_column(String, nullable=False)
-    target_weight: Mapped[float | None]
-    target_risk_share: Mapped[float | None]
+    target_value: Mapped[float | None]
     notes: Mapped[str | None] = mapped_column(String)
 
     target_set: Mapped[TargetSetRecordModel] = relationship(back_populates="lines")
@@ -1449,7 +1335,6 @@ class ResearchSettingsRecordModel(Base):
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
     calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="daily")
     missing_return_policy: Mapped[str] = mapped_column(String, nullable=False, default="strict")
-    target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
     capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")
     gross_exposure: Mapped[float | None]
     target_volatility: Mapped[float | None]

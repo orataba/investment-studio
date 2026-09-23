@@ -6,12 +6,14 @@ export type ResearchAssistantReference = {
   risk_case_id?: string
   risk_case_updated_at?: string
   notebook_version_id?: string
+  theme_version_id?: string
   investment_view_version_id?: string
   forecast_key?: string
   forecast_version_id?: string
   theme_id?: string
   pm_note_id?: string
   pm_note_revision?: number
+  source_ids?: string[]
 }
 
 export const riskReferenceParams = ['research_update_id', 'event_case_id', 'event_version_id', 'risk_case_id', 'risk_case_updated_at'] as const

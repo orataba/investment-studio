@@ -18,7 +18,7 @@ def test_dynamic_research_date_is_resolved_after_its_snapshot_refresh(client, mo
     response = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
         "planning_taxonomy_id": taxonomy_id, "comparator_taxonomy_node_id": nodes["Risk Assets"],
         "as_of_mode": "dynamic", "lookback_days": 30,
-        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+        "capital_mode": "unit_notional",
     })
     assert response.status_code == 200, response.text
     original_read = research.get_portfolio
@@ -73,7 +73,7 @@ def test_failed_research_publish_rolls_back_pruning_and_preserves_previous_repor
     response = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
         "planning_taxonomy_id": taxonomy_id, "comparator_taxonomy_node_id": nodes["Risk Assets"],
         "as_of_date": "2026-04-15", "lookback_days": 30,
-        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+        "capital_mode": "unit_notional",
     })
     assert response.status_code == 200, response.text
     first = client.post(f"/api/portfolios/{PORTFOLIO_ID}/research/runs", json={})
@@ -149,7 +149,7 @@ def test_research_input_change_during_calculation_preserves_previous_run(client,
     response = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
         "planning_taxonomy_id": taxonomy_id, "comparator_taxonomy_node_id": nodes["Risk Assets"],
         "as_of_date": "2026-04-15", "lookback_days": 30,
-        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+        "capital_mode": "unit_notional",
     })
     assert response.status_code == 200
     first = client.post(f"/api/portfolios/{PORTFOLIO_ID}/research/runs", json={})
@@ -225,3 +225,74 @@ def test_research_fingerprint_tracks_current_target_market_data_without_transact
         session.get(Instrument, 'fund-us-watch').market_data_updated_at = '2026-09-20T00:00:00Z'
         session.flush()
         assert fingerprint() != before
+
+
+@pytest.mark.parametrize(
+    ("solver_version", "identity_version", "expected_state", "reason"),
+    [
+        (research.RESEARCH_TARGET_SOLVER_VERSION, research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "current", None),
+        (None, research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
+        ("recursive_local_covariance", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
+        ("global_leaf_scalar_targets_v2", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
+        (research.RESEARCH_TARGET_SOLVER_VERSION, 5, "stale", "earlier Research input identity version"),
+    ],
+)
+def test_research_algorithm_version_is_required_for_current_result(solver_version, identity_version, expected_state, reason):
+    from copy import deepcopy
+    from datetime import date
+
+    settings = {
+        "planning_taxonomy_id": "planning",
+        "as_of_mode": "pinned",
+        "as_of_date": "2026-04-15",
+    }
+    request = {
+        **settings,
+        "lookback_days": 90,
+        "calculation_frequency": "daily",
+        "missing_return_policy": research.RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+        "frozen_taxonomy_node_ids": [],
+        "top_sleeve_weight_bounds": [],
+        "backtest_robustness_scenarios": [],
+        "planning_state_fingerprint": "sha256:unchanged-financial-inputs",
+        "planning_state_fingerprint_version": identity_version,
+        "solver_version": solver_version,
+    }
+    saved_detail = {"headline": "Saved result", "target_assumptions": ["Original method"], "leaf_targets": [{"member_id": "a", "target_weight": 1.0}]}
+    row = ResearchRunRecordModel(
+        research_run_id="archived", portfolio_id=PORTFOLIO_ID, status="completed",
+        as_of_date=date(2026, 4, 15), request_payload_json=deepcopy(request), detail_json=deepcopy(saved_detail),
+    )
+
+    state, reasons = research._research_run_reliability(
+        row,
+        latest_portfolio_as_of_date=date(2026, 4, 15),
+        settings_payload=settings,
+        production_risk_model={},
+        latest_transaction_date=None,
+        current_planning_state_fingerprint=request["planning_state_fingerprint"],
+    )
+
+    assert state == expected_state
+    if reason is None:
+        assert reasons == []
+    else:
+        assert any(reason in item for item in reasons)
+    assert row.request_payload_json == request
+    assert row.detail_json == saved_detail
+
+
+def test_research_fingerprint_invalidates_cached_analysis_when_solver_changes(client, monkeypatch):
+    from datetime import date
+
+    taxonomy_id, nodes = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, nodes)
+    with get_session_factory()() as session:
+        before = research._planning_state_fingerprint(
+            session, portfolio_id=PORTFOLIO_ID, planning_taxonomy_id=taxonomy_id, as_of_date=date(2026, 4, 15),
+        )
+        monkeypatch.setattr(research, "RESEARCH_TARGET_SOLVER_VERSION", "next-target-solver")
+        after = research._planning_state_fingerprint(
+            session, portfolio_id=PORTFOLIO_ID, planning_taxonomy_id=taxonomy_id, as_of_date=date(2026, 4, 15),
+        )
+    assert after != before

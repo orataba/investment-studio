@@ -171,13 +171,11 @@ const workbenchFixture = {
   portfolio_name: 'Long-Term Portfolio',
   base_currency: 'USD',
   as_of_date: '2026-07-15',
-  default_planning_taxonomy_id: 'taxonomy-1',
   planning_taxonomy_options: [
     {
       taxonomy_id: 'taxonomy-1',
       name: 'Policy Allocation',
       taxonomy_type: 'allocation',
-      budgeting_level: 'root',
     },
   ],
   planning_scope_options: [
@@ -186,7 +184,7 @@ const workbenchFixture = {
       label: 'Top Level',
       path: 'Top Level',
       depth: 0,
-      default_target_dimension: 'weight',
+      allocation_basis: 'weight',
       has_children: true,
     },
     {
@@ -194,7 +192,7 @@ const workbenchFixture = {
       label: 'Risk Assets',
       path: 'Top Level / Risk Assets',
       depth: 1,
-      default_target_dimension: 'risk_budget',
+      allocation_basis: 'risk_budget',
       has_children: false,
     },
   ],
@@ -208,7 +206,6 @@ const workbenchFixture = {
     lookback_days: 365,
     calculation_frequency: 'daily',
     missing_return_policy: 'strict',
-    target_dimension: 'scope_default',
     capital_mode: 'unit_notional',
     gross_exposure: null,
     target_volatility: null,
@@ -373,7 +370,7 @@ describe('Research rendered page contract', () => {
   it('keeps the saved research taxonomy and marks results from another taxonomy as historical', async () => {
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       settings: { ...workbenchFixture.settings, planning_taxonomy_id: 'industry', planning_taxonomy_name: 'Industry' },
-      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom', budgeting_level: 'root' }],
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }],
     })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     await screen.findByTestId('research-result-taxonomy')
@@ -381,6 +378,18 @@ describe('Research rendered page contract', () => {
     expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Policy Allocation')
     expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Run Research again')
     expect(screen.getByText('Historical result — not current or execution-ready.')).toBeInTheDocument()
+  })
+
+  it('requires a taxonomy choice when multiple classifications exist and none is saved', async () => {
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: null, planning_taxonomy_name: null },
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }],
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    expect(await screen.findByLabelText('Research taxonomy')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled()
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
 
   it('preserves existing research notes when run settings auto-save', async () => {
@@ -404,12 +413,9 @@ describe('Research rendered page contract', () => {
   it('saves a selected custom taxonomy and clears constraints from the previous taxonomy', async () => {
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       settings: { ...workbenchFixture.settings, frozen_taxonomy_node_ids: ['risk-assets'] },
-      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options,
-        { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom', budgeting_level: null, targets_available: false }],
+      planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom', targets_available: false }],
     })
-    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [
-      { taxonomy_id: 'industry', name: 'Industry', planning_enabled: false, status: 'active' },
-    ], taxonomy_nodes: [] })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [{ taxonomy_id: 'industry', name: 'Industry', root_allocation_basis: 'weight', status: 'active' }], taxonomy_nodes: [] })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     fireEvent.change(await screen.findByLabelText('Research taxonomy'), { target: { value: 'industry' } })
     await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith('3',
@@ -633,4 +639,24 @@ describe('Research rendered page contract', () => {
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
     expect(within(periodReturnRow).getByText('0.60%')).toBeInTheDocument()
   })
+
+  it.each([
+    ['portfolio', 'One portfolio-wide solve with each level retaining its weight or risk-budget basis.'],
+    ['selected_research_scope', 'One global solve within the selected research scope; risk contributions are relative to that scope.'],
+  ])('discloses the global attribution universe for %s', async (scope, note) => {
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({ ...completedRun, detail: {
+      ...completedRun.detail, solver_version: 'global_leaf_scalar_targets_v3', risk_attribution_scope: scope,
+    } })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    expect(await screen.findByText(note)).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Solved RC' })).toHaveAttribute('title', expect.stringContaining('same global covariance'))
+  })
+
+  it('keeps the recorded attribution distinct for an archived solver result', async () => {
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const result = await screen.findByRole('columnheader', { name: 'Solved RC' })
+    expect(result).toHaveAttribute('title', expect.stringContaining('recorded with this saved run'))
+    expect(screen.queryByText(/One portfolio-wide solve/)).not.toBeInTheDocument()
+  })
+
 })

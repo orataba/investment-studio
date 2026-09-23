@@ -5672,6 +5672,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
         "note_date": "2026-04-30",
         "note_type": "meeting",
         "title": "Manager call",
+        "research_context": {"background": "Reviewing product capacity after the manager call."},
         "summary": "Capacity now needs review.",
         "body": "The PM described a tighter soft-close threshold.",
         "importance": "high",
@@ -5710,6 +5711,10 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     assert no_op_note_response.status_code == 200
     assert no_op_note_response.json()["notes"][0]["revision_number"] == 1
     assert no_op_note_response.json()["notes"][0]["updated_by"] == actor["user_id"]
+    assert no_op_note_response.json()["current_stance"] is None
+    selected = client.put("/api/instruments/sxv264/research/current-stance", json={
+        "note_id": note_id, "revision_number": 1})
+    assert selected.status_code == 200
 
     screener_response = client.post(
         "/api/screener/query",
@@ -5737,7 +5742,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
         for row in screener_response.json()["rows"]
         if row["instrument_id"] == "sxv264"
     )
-    assert research_row["attr.research_current_view"] == "Cautious"
+    assert research_row["attr.research_current_view"] == research_note["body"]
     assert research_row["attr.manual_rating"] == 4
     assert research_row["attr.primary_analyst"] == "Researcher A"
     assert research_row["attr.research_next_review_date"] == "2026-05-15"
@@ -6108,6 +6113,7 @@ def test_monitoring_dashboard_surfaces_missing_metadata_quotes_and_open_recalc_j
                 "note_date": "2020-01-01",
                 "note_type": "review",
                 "title": "Outstanding manager follow-up",
+                "research_context": {"background": "Manager review requires follow-up."},
                 "follow_up_date": "2020-01-03",
             },
             "updated_by": "test",

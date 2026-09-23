@@ -31,15 +31,19 @@ def seed_instruments(client, monkeypatch):
         session.commit()
 
 
-def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, **changes):
+def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, themes=None, **changes):
     events = [] if sources is None else [{"event_key": "index-rule-change", "action": "new", "direction": "risk",
         "title": "跟踪指数规则变更", "body": "编制机构公告确认指数规则调整，需核对实际跟踪敞口的变化。",
         "next_watch": "核对后续持仓披露和指数编制说明。", "confidence": "confirmed", "information_type": "fact",
         "recording_type": "backfill", "published_at": "2026-06-01", "occurred_at": None,
-        "source_ids": sources, **changes}]
+        "theme_ids": ["index-exposure"], "source_ids": sources, **changes}]
+    if themes is None:
+        themes = [{"theme_key": "index-exposure", "kind": "event", "title": "指数规则及跟踪敞口",
+            "question": "指数编制调整是否改变产品实际跟踪敞口？",
+            "priority_reason": "规则变化的组合影响仍未确认，需要结合后续披露跟进。"}] if events else []
     return json.dumps({"reviews": [{"instrument_id": iid, "summary": summary,
                                    "change_kind": "investment" if events else "none", "coverage": [], "events": events,
-                                   "research": None}]})
+                                   "themes": themes, "research": None}]})
 
 
 def test_single_instrument_scope_and_runs_do_not_expand_or_block_sector_daily_checks(client, monkeypatch):
@@ -124,8 +128,12 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
         assert case.history_json[0]["snapshot"]["sources"][0]["text"] == source["text"]
         newer, created = service.begin_run(session, ["fund-us-agg"])
         assert created
-        newer.context_json = {**newer.context_json, "web_evidence": [{"operation": "search", "sources": []}]}
-        service.apply_result(session, newer, reply("fund-us-agg", summary="本轮未核实到重大新增。"))
+        from watchlist_app.services.research_dossier import read_dossier
+        bound = read_dossier(session, "fund-us-agg")
+        newer.context_json = {**newer.context_json, "research_dossiers": [bound],
+                             "web_evidence": [{"operation": "search", "sources": []}]}
+        service.apply_result(session, newer, reply("fund-us-agg", summary="本轮未核实到重大新增。",
+            themes=[{"theme_id": item["theme_id"], "theme_key": item["theme_key"]} for item in bound["themes"]]))
         newer.created_at = newer.completed_at = datetime.now(UTC) - timedelta(minutes=1)
         session.commit()
         assert case.trigger_active and len(case.history_json) == 1

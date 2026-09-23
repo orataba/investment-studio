@@ -4199,11 +4199,6 @@ def build_portfolio_performance_report_from_snapshots(
                 if performance_is_operational
                 else "Total Portfolio Return"
             ),
-            "ordinary_sleeve_twr_status": "unavailable",
-            "ordinary_sleeve_twr_reason": (
-                "Sleeve boundary cash flows are not maintained as a cash subledger; "
-                "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
-            ),
             "mean_daily_return": mean_daily_return,
             "annualized_return_from_daily_mean": annualized_return_from_daily_mean,
             "annualized_volatility": annualized_volatility,

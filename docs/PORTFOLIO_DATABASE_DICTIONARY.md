@@ -14,7 +14,7 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 | Audit/idempotency controls | `transaction_change_log`, `transaction_idempotency_record`, `transaction_id_allocator` | Portfolio transaction store |
 | Screenshot evidence and agent drafts | `transaction_capture_record`, `transaction_capture_batch`, `transaction_capture_batch_item`, `transaction_capture_analysis_revision` | Portfolio transaction-capture API and analysis worker |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
-| Planning/research | current taxonomy, targets, analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
+| Planning/research | current taxonomy, targets, concentration limits, research settings/runs | Portfolio planning and research APIs |
 | Shared asset identity/market facts | `instrument_data.*` | Data maintenance CLI and ingestion jobs |
 
 The `instrument_id` values stored in Portfolio are logical references to reusable market assets in shared Instrument Data. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Instrument Data market assets.
@@ -27,7 +27,7 @@ One row per portfolio.
 
 | Columns |
 |---|
-| **PK** `portfolio_id VARCHAR`; `portfolio_name VARCHAR`; `base_currency VARCHAR`; `inception_date DATE`; `valuation_timezone VARCHAR`; `valuation_cutoff_policy VARCHAR`; `as_of_date DATE?`; `nav FLOAT?`; `day_change_value FLOAT?`; `day_change_pct FLOAT?`; `securities_count INTEGER`; `sort_order INTEGER`; `default_planning_taxonomy_id VARCHAR?`; `risk_policy_json JSON?` |
+| **PK** `portfolio_id VARCHAR`; `portfolio_name VARCHAR`; `base_currency VARCHAR`; `inception_date DATE`; `valuation_timezone VARCHAR`; `valuation_cutoff_policy VARCHAR`; `as_of_date DATE?`; `nav FLOAT?`; `day_change_value FLOAT?`; `day_change_pct FLOAT?`; `securities_count INTEGER`; `sort_order INTEGER`; `risk_policy_json JSON?` |
 
 ### `portfolio.account_record`
 
@@ -234,13 +234,17 @@ Portfolio classification/planning taxonomy.
 
 | Columns |
 |---|
-| **PK** `taxonomy_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `name VARCHAR`; `taxonomy_type VARCHAR`; `purpose VARCHAR?`; `primary_assignment_scope VARCHAR`; `planning_enabled BOOLEAN`; `budgeting_level VARCHAR?`; `root_default_target_dimension VARCHAR`; `status VARCHAR`; `source_template_ref VARCHAR?` |
+| **PK** `taxonomy_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `name VARCHAR`; `taxonomy_type VARCHAR`; `purpose VARCHAR?`; `primary_assignment_scope VARCHAR`; `root_allocation_basis VARCHAR`; `status VARCHAR`; `source_template_ref VARCHAR?` |
 
 ### `portfolio.taxonomy_node_record`
 
 | Columns |
 |---|
-| **PK** `taxonomy_node_id VARCHAR`; **FK** `taxonomy_id → taxonomy_record.taxonomy_id`; `parent_taxonomy_node_id VARCHAR?`; `node_name VARCHAR`; `node_code VARCHAR?`; `sort_order INTEGER`; `is_terminal BOOLEAN`; `default_target_dimension VARCHAR`; `status VARCHAR` |
+| **PK** `taxonomy_node_id VARCHAR`; **FK** `taxonomy_id → taxonomy_record.taxonomy_id`; `parent_taxonomy_node_id VARCHAR?`; `node_name VARCHAR`; `node_code VARCHAR?`; `sort_order INTEGER`; `is_terminal BOOLEAN`; `allocation_basis VARCHAR`; `status VARCHAR` |
+
+`root_allocation_basis` and each node's `allocation_basis` select how that parent's direct-member targets enter the global Research solve: capital weight or global Euler risk-contribution share. SAA and TAA share that basis and each line stores one scalar `target_value`. The target-configuration API saves root/node bases, changed SAA/TAA vectors and optional concentration settings in one transaction. Target changes publish one configuration revision; concentration-only changes do not. Omitting a basis preserves its saved value.
+
+New taxonomies and nodes use independent UUID identities, including when copied into another portfolio. Names can be reused after deletion but identities cannot: archived concentration rules and Research snapshots keep their original references and must not attach to a replacement object with the same name. Existing identifiers and saved revisions are not rewritten.
 
 ### `portfolio.taxonomy_assignment_record`
 
@@ -248,29 +252,13 @@ Portfolio classification/planning taxonomy.
 |---|
 | **PK** `assignment_id VARCHAR`; **FK** `taxonomy_id → taxonomy_record.taxonomy_id`; `target_scope VARCHAR`; `target_entity_id VARCHAR`; `taxonomy_node_id VARCHAR`; `status VARCHAR` |
 
-### `portfolio.portfolio_analytics_policy_state`
+### `portfolio.portfolio_taxonomy_state`
 
-Monotonic configuration version for one portfolio. Scope-policy, selection, and taxonomy-configuration changes share this version sequence so materialized analytics can retain one auditable input identity.
+Monotonic configuration version for one portfolio. Classification, assignment and target changes share this version sequence. Catalog and materialized source identities expose it as `taxonomy_configuration_version`; it does not grant market-risk eligibility. There is no global default taxonomy or planning eligibility switch. Research owns its selected `planning_taxonomy_id`; browsing selections do not mutate another page.
 
 | Columns |
 |---|
 | **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `current_version INTEGER`; `updated_at VARCHAR` |
-
-### `portfolio.analytics_scope_policy_record`
-
-Current eligibility and valuation policy for an exact taxonomy node or the reserved `__root__` / `__unassigned__` policy nodes. Automatic versions and supersession retain the change audit; runtime reads use the current version without a date filter. A partial unique index enforces one unsuperseded row per portfolio, taxonomy and node.
-
-| Columns |
-|---|
-| **PK** `analytics_scope_policy_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR`; `taxonomy_node_id VARCHAR`; `risk_eligible BOOLEAN`; `risk_budget_eligible BOOLEAN`; `performance_scope VARCHAR`; `valuation_basis VARCHAR`; `exclusion_reason VARCHAR?`; `policy_version INTEGER`; `superseded_by_policy_id VARCHAR?`; `created_at VARCHAR` |
-
-### `portfolio.analytics_taxonomy_selection_record`
-
-Current explicit selection of the taxonomy used by analytics. A null `taxonomy_id` is an audited explicit unassignment; absence of a current row also fails closed. A partial unique index enforces one unsuperseded selection per portfolio.
-
-| Columns |
-|---|
-| **PK** `analytics_taxonomy_selection_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `taxonomy_id VARCHAR?`; `selection_version INTEGER`; `superseded_by_selection_id VARCHAR?`; `created_at VARCHAR` |
 
 ### `portfolio.taxonomy_configuration_revision`
 
@@ -282,39 +270,47 @@ Automatically versioned audit snapshot of a taxonomy, its nodes, assignments, ta
 
 ### `portfolio.concentration_policy_revision`
 
-Immutable, effective-dated concentration limits and FCN principal allocation settings owned by a portfolio. Each revision stores the complete policy document: direct security, single FCN and custom taxonomy default/entity limits, plus equal/custom linked-underlying principal allocations. No built-in financial limits are seeded. The editor uses an expected revision; a portfolio row lock serializes concurrent first saves as well as later saves. Historical reads choose the latest effective date not after the holding date, then the highest revision on that date.
+Immutable, effective-dated concentration limits and FCN principal allocations owned by a portfolio. `settings_json` schema 2 contains `enabled_taxonomy_ids`, explicit `limits` and `fcn_allocations`. A limit identifies `scope`, optional `taxonomy_id`, required `entity_id` and `limit_weight`. Securities and FCN contracts have one portfolio-wide limit each; taxonomy nodes have independent limits. Empty limits are omitted, zero forbids positive exposure, and a breach requires strictly greater exposure/NAV. No default, inheritance, override, watch threshold or per-member enabled state remains.
+
+Taxonomy switches control node reminders only and retain entered caps when disabled. They never disable portfolio-wide security/FCN caps or actual market-risk coverage. Caps do not become solver constraints. Holdings owns detailed exposure/source display; Overview consumes the same projection for breach and unavailable summaries.
 
 | Columns |
 |---|
 | **PK/FK** `portfolio_id → portfolio_record.portfolio_id` (cascade delete); **PK** `revision INTEGER > 0`; `effective_from DATE`; `settings_json JSON`; `created_by VARCHAR`; `created_at VARCHAR` |
 
-Index: `(portfolio_id, effective_from, revision)`. Taxonomy/node and portfolio-local FCN references in the document are validated on edits; unchanged archived references can remain for history. This does not change NAV, the production analytics taxonomy, or materialized valuation generation. Portfolio copy refuses effective-dated configuration history until explicit identity remapping exists. Downgrade refuses to erase saved policies.
+Index: `(portfolio_id, effective_from, revision)`. Historical reads choose the greatest effective date not after the holding date, then the greatest revision on that date. Editing reads include both selected `revision` and global `latest_revision`; saves compare `expected_revision` to the latter. A portfolio row lock serializes concurrent first saves and later saves. The session helper joins the target transaction without committing or invalidating Research. Pure concentration saves do not alter taxonomy versions, valuation generations or Research inputs.
+
+Edited taxonomy/node and FCN references are validated; unchanged archived references may remain. Deleted objects never reuse their IDs. Portfolio copy preserves all dated and future revisions, remaps taxonomy/node identities consistently (including deleted historical members), and remaps portfolio-local FCN references. Registry security identities and original migration evidence remain unchanged; `copied_from_portfolio_id` records the source portfolio. Migration 0068 expands all old default/entity policies, including future-dated revisions, to explicit limits using current and archived member identities. Each converted document retains `migration_audit.original_settings`; the editor exposes only current fields. Runtime has no old-rule interpreter. Revision/date/author/time are preserved; after a native new-format save or portfolio copy, recovery to old semantics requires the pre-migration backup because the source audit cannot restore the copy's remapped identities.
 
 ### `portfolio.target_set_record`
 
 | Columns |
 |---|
-| **PK** `target_set_id VARCHAR`; **FK** `taxonomy_id → taxonomy_record.taxonomy_id`; `comparator_taxonomy_node_id VARCHAR?`; `target_set_type VARCHAR`; `name VARCHAR`; `weight_enabled BOOLEAN`; `risk_budget_enabled BOOLEAN`; `status VARCHAR`; `notes VARCHAR?` |
+| **PK** `target_set_id VARCHAR`; **FK** `taxonomy_id → taxonomy_record.taxonomy_id`; `comparator_taxonomy_node_id VARCHAR?`; `target_set_type VARCHAR`; `name VARCHAR`; `status VARCHAR`; `notes VARCHAR?` |
 
 ### `portfolio.target_set_line_record`
 
 | Columns |
 |---|
-| **PK** `target_line_id VARCHAR`; **FK** `target_set_id → target_set_record.target_set_id`; `taxonomy_node_id VARCHAR?`; `target_member_type VARCHAR`; `target_member_id VARCHAR`; `target_weight FLOAT?`; `target_risk_share FLOAT?`; `notes VARCHAR?` |
+| **PK** `target_line_id VARCHAR`; **FK** `target_set_id → target_set_record.target_set_id`; `taxonomy_node_id VARCHAR?`; `target_member_type VARCHAR`; `target_member_id VARCHAR`; `target_value FLOAT?`; `notes VARCHAR?` |
 
-`target_member_type` is limited to `taxonomy_node`, `instrument`, `cash_bucket`, and `derivative_bucket`. Cash and derivative buckets may carry a weight target but never a risk target.
+`target_member_type` admits `taxonomy_node`, `instrument` and root `cash_bucket`; the explicit no-derivative-target constraint rejects derivative buckets. Securities form a complete 100% vector interpreted by the parent allocation basis. Root Cash is a separate NAV reserve and does not join that sum. An entirely empty TAA vector inherits SAA, including cash reserve; partial TAA is invalid. Derivative capital remains actual fixed holdings, not a target line.
 
 ### `portfolio.research_settings_record`
 
 | Columns |
 |---|
-| **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `planning_taxonomy_id VARCHAR?`; `comparator_taxonomy_node_id VARCHAR?`; `as_of_mode VARCHAR`; `as_of_date DATE?`; `lookback_days INTEGER`; `calculation_frequency VARCHAR (= daily)`; `missing_return_policy VARCHAR`; `target_dimension VARCHAR`; `capital_mode VARCHAR`; `gross_exposure FLOAT?`; `target_volatility FLOAT?`; `max_gross_exposure FLOAT?`; `frozen_taxonomy_node_ids_json JSON?`; `top_sleeve_weight_bounds_json JSON?`; `backtest_rebalance_frequency VARCHAR`; `backtest_benchmark_instrument_id VARCHAR?`; `backtest_cash_yield_annual FLOAT`; `backtest_commission_bps FLOAT`; `backtest_tax_bps FLOAT`; `backtest_slippage_bps FLOAT`; `backtest_implementation_delay_days INTEGER`; `backtest_robustness_scenarios_json JSON?`; `backtest_walk_forward_training_months INTEGER`; `backtest_walk_forward_test_months INTEGER`; `notes VARCHAR?`; `updated_at VARCHAR?` |
+| **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `planning_taxonomy_id VARCHAR?`; `comparator_taxonomy_node_id VARCHAR?`; `as_of_mode VARCHAR`; `as_of_date DATE?`; `lookback_days INTEGER`; `calculation_frequency VARCHAR (= daily)`; `missing_return_policy VARCHAR`; `capital_mode VARCHAR`; `gross_exposure FLOAT?`; `target_volatility FLOAT?`; `max_gross_exposure FLOAT?`; `frozen_taxonomy_node_ids_json JSON?`; `top_sleeve_weight_bounds_json JSON?`; `backtest_rebalance_frequency VARCHAR`; `backtest_benchmark_instrument_id VARCHAR?`; `backtest_cash_yield_annual FLOAT`; `backtest_commission_bps FLOAT`; `backtest_tax_bps FLOAT`; `backtest_slippage_bps FLOAT`; `backtest_implementation_delay_days INTEGER`; `backtest_robustness_scenarios_json JSON?`; `backtest_walk_forward_training_months INTEGER`; `backtest_walk_forward_test_months INTEGER`; `notes VARCHAR?`; `updated_at VARCHAR?` |
 
 ### `portfolio.research_run_record`
 
 | Columns |
 |---|
 | **PK** `research_run_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `job_type VARCHAR`; `status VARCHAR`; `requested_at VARCHAR?`; `started_at VARCHAR?`; `finished_at VARCHAR?`; `as_of_date DATE?`; `planning_taxonomy_id VARCHAR?`; `lookback_days INTEGER`; `requested_by VARCHAR?`; `headline VARCHAR?`; `detail_json JSON?`; `artifacts_json JSON?`; `request_payload_json JSON?`; `error_message VARCHAR?` |
+
+`request_payload_json` records the immutable current-target snapshot, its fingerprint, `planning_state_fingerprint_version` and `solver_version`. The current global method is `global_leaf_scalar_targets_v3`; its identity also participates in the derived-analysis cache fingerprint. Current target snapshots use schema 3 and planning fingerprints use version 7. A missing or earlier method/input-identity version makes the saved result stale without rewriting its archived payload or artifacts.
+
+New result details and backtest methodology disclose `solver_version` and `risk_attribution_scope` (`portfolio` or `selected_research_scope`). `scope_solve_events` are hierarchical checks of one global leaf-covariance solution, not separate local solves; each event identifies the same global leaf set and reports the parent's Weight/Risk target attainment. A selected-scope result does not include outside holdings in its risk attribution.
 
 ## Instrument Registry tables read by Portfolio
 
@@ -426,10 +422,11 @@ For a colleague implementing transaction ingestion, the relevant read sequence i
 
 Do not treat daily snapshots, holdings, lots, postings, or instrument-universe rows as input tables. They are deterministic projections of facts plus Registry data and may be rebuilt.
 
-Before a release is described as Risk-ready, run the read-only audit with
-`--fail-on-warning`. A current analytics taxonomy selection and its
-configuration are business-owned facts; the application does not
-invent a default when they are absent. A portfolio with no
-`default_planning_taxonomy_id` is explicitly outside Risk / Research readiness
-and therefore is not reported as a missing-selection warning; runtime analytics
-still fail closed for that portfolio.
+Before a release is described as ready, run the read-only audit with
+`--fail-on-warning`. Taxonomy structure, assignments and targets are business-owned
+facts; the application does not invent missing classifications or targets.
+Research readiness requires the chosen current configuration to cover its
+members. Actual holdings risk is independent of that planning readiness: missing
+classification or a zero target does not remove a holding from market-risk
+coverage. Unavailable valuation, return or FX data must remain visible as
+uncovered exposure, never as zero risk.

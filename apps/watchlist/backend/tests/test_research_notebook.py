@@ -193,7 +193,7 @@ def test_history_is_retained_as_conditional_reference_without_new_event_or_publi
 
 
 def test_scheduled_catalyst_retains_original_time_and_remains_pending_until_release_evidence():
-    catalyst = {"key": "cpi-august", "title": "美国8月CPI", "scheduled_at": "2026-09-11T08:30:00-04:00",
+    catalyst = {"key": "cpi-august", "theme_id": None, "title": "美国8月CPI", "scheduled_at": "2026-09-11T08:30:00-04:00",
                 "status": "scheduled", "relevance": "观察通胀对实际利率与黄金的影响。", "scenarios": ["高于预期时核实实际利率与美元反应。"],
                 "next_check": "取得正式首发数据和发布前共识。", "outcome": "", "source_ids": ["old-original"]}
     sources = {"old-original": original()}

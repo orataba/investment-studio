@@ -28,12 +28,18 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTableViewStore: vi.fn(),
   getPortfolioUnresolvedOptionActions: vi.fn(),
   savePortfolioTableViewStore: vi.fn(),
+  getConcentration: vi.fn(),
 }))
 const tableExportMocks = vi.hoisted(() => ({
   downloadTable: vi.fn(),
 }))
 
 vi.mock('./lib/api', () => apiMocks)
+vi.mock('./lib/concentrationApi', () => ({
+  getConcentration: apiMocks.getConcentration,
+  getConcentrationSettings: vi.fn(), saveConcentrationSettings: vi.fn(),
+  concentrationScopeKey: (scope: { scope: string; taxonomy_id: string | null }) => scope.scope === 'taxonomy' ? `taxonomy:${scope.taxonomy_id}` : scope.scope,
+}))
 vi.mock('../../../../packages/ui/src/tableExport', () => tableExportMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
@@ -48,17 +54,15 @@ function taxonomyCatalogFixture(
 ): PortfolioTaxonomyCatalogResponse {
   return {
     portfolio_id: '3',
-    default_planning_taxonomy_id: null,
     taxonomies: [],
     taxonomy_nodes: [],
     taxonomy_assignments: [],
-    analytics_scope_policy_version: 0,
-    analytics_scope_policies: [],
-    analytics_taxonomy_selections: [],
+    taxonomy_configuration_version: 0,
     instrument_universe: [],
     target_sets: [],
     target_set_lines: [],
     target_set_integrity_issues: [],
+  target_resolution: [],
     ...overrides,
   }
 }
@@ -283,6 +287,23 @@ describe('Holdings rendered page contract', () => {
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogFixture())
     apiMocks.getPortfolioTableViewStore.mockImplementation(async () => ({ store: null }))
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
+  })
+
+  it('opens concentration from Holdings and preserves the separate book-value view', async () => {
+    const user = userEvent.setup()
+    const workspace = holdingsWorkspaceFixture()
+    apiMocks.getConcentration.mockResolvedValue({ portfolio_id: '3', as_of_date: workspace.as_of_date, base_currency: 'USD', nav: 1000,
+      weight_basis: 'portfolio_nav', valuation_basis: 'operating_book', excluded_option_positions: 0, status: 'complete', settings_revision: 0,
+      scopes: [{ scope: 'security', taxonomy_id: null, name: 'Securities', enabled: true, rows: [], status: 'complete', coverage: [] }], coverage: [], sources: [], fcn_contracts: [] })
+    renderHoldings(workspace)
+    await waitForHoldings()
+    await user.click(screen.getByRole('tab', { name: 'Exposure and concentration' }))
+    expect(await screen.findByRole('region', { name: 'Concentration' })).toBeInTheDocument()
+    expect(apiMocks.getConcentration).toHaveBeenCalledWith('3', workspace.as_of_date)
+    expect(screen.queryByRole('region', { name: 'Securities' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Holdings' }))
+    await waitForHoldings()
+    expect(screen.queryByRole('region', { name: 'Concentration' })).not.toBeInTheDocument()
   })
 
   it('translates currency-qualified holdings fields while preserving user names across language changes', async () => {
@@ -1154,16 +1175,12 @@ describe('Holdings rendered page contract', () => {
   })
 
   it('groups only Securities with the current taxonomy, independently of the holdings date', async () => {
-    const security = holdingFixture({
-      taxonomy_id: 'historical-taxonomy',
-      taxonomy_node_id: 'historical-leaf',
-    })
+    const security = holdingFixture()
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [security, fcnHolding(), cashHolding()],
       }),
       taxonomyCatalogFixture({
-        default_planning_taxonomy_id: 'current-taxonomy',
         taxonomies: [
           {
             taxonomy_id: 'current-taxonomy',
@@ -1171,8 +1188,7 @@ describe('Holdings rendered page contract', () => {
             name: 'Current Allocation',
             taxonomy_type: 'allocation',
             primary_assignment_scope: 'instrument',
-            planning_enabled: true,
-            root_default_target_dimension: 'weight',
+            root_allocation_basis: 'weight',
             status: 'active',
           },
         ],
@@ -1184,7 +1200,7 @@ describe('Holdings rendered page contract', () => {
             node_name: 'Current Risk Assets',
             sort_order: 0,
             is_terminal: false,
-            default_target_dimension: 'weight',
+            allocation_basis: 'weight',
             status: 'active',
           },
           {
@@ -1194,7 +1210,7 @@ describe('Holdings rendered page contract', () => {
             node_name: 'Current Listed Funds',
             sort_order: 0,
             is_terminal: true,
-            default_target_dimension: 'weight',
+            allocation_basis: 'weight',
             status: 'active',
           },
         ],
@@ -1231,7 +1247,6 @@ describe('Holdings rendered page contract', () => {
         rows: [holdingFixture()],
       }),
       taxonomyCatalogFixture({
-        default_planning_taxonomy_id: 'current-taxonomy',
         taxonomies: [
           {
             taxonomy_id: 'current-taxonomy',
@@ -1239,8 +1254,7 @@ describe('Holdings rendered page contract', () => {
             name: 'Current Allocation',
             taxonomy_type: 'allocation',
             primary_assignment_scope: 'instrument',
-            planning_enabled: true,
-            root_default_target_dimension: 'weight',
+            root_allocation_basis: 'weight',
             status: 'active',
           },
         ],

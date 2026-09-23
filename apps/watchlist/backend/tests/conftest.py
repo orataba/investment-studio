@@ -609,11 +609,11 @@ def mutate_shared_instrument_metadata_for_drift(
         session.commit()
 
 
-def _run_alembic_upgrade(database_url: str) -> None:
+def _run_alembic_upgrade(database_url: str, revision: str = "head") -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
 
 @pytest.fixture(autouse=True)
 def research_test_actor(monkeypatch):
@@ -628,7 +628,7 @@ def research_test_actor(monkeypatch):
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(tmp_path, monkeypatch: pytest.MonkeyPatch, request) -> TestClient:
     database_path = tmp_path / "test.db"
     monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
     monkeypatch.setenv("INVESTMENT_STUDIO_WATCHLIST_DATABASE_SCHEMA", "")
@@ -643,7 +643,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_alembic_upgrade(f"sqlite+pysqlite:///{database_path}")
+    _run_alembic_upgrade(f"sqlite+pysqlite:///{database_path}", getattr(request, "param", "head"))
     InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
     shared_store.reset_store(
         session_module.get_session_factory(),

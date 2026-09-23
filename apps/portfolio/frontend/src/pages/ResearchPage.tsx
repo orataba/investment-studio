@@ -243,7 +243,7 @@ function buildPlanningScopeOptions(
       label: 'Top Level',
       path: 'Top Level',
       depth: 0,
-      default_target_dimension: taxonomy.root_default_target_dimension ?? 'weight',
+      allocation_basis: taxonomy.root_allocation_basis ?? 'weight',
       has_children: Boolean(childrenByParent.get(null)?.length),
     },
   ]
@@ -260,7 +260,7 @@ function buildPlanningScopeOptions(
       label: node.node_name,
       path,
       depth,
-      default_target_dimension: node.default_target_dimension ?? 'weight',
+      allocation_basis: node.allocation_basis ?? 'weight',
       has_children: Boolean(childrenByParent.get(node.taxonomy_node_id)?.length),
     })
     ;(childrenByParent.get(node.taxonomy_node_id) ?? []).forEach((child) => appendNode(child, path, depth + 1))
@@ -1186,7 +1186,7 @@ export default function ResearchPage() {
     const nextDraft: ResearchRunSetupDraft = {
       planningTaxonomyId: taxonomyChoiceRef.current?.portfolioId === portfolioId
         ? taxonomyChoiceRef.current.taxonomyId
-        : workbench.settings.planning_taxonomy_id ?? workbench.default_planning_taxonomy_id ?? '',
+        : workbench.settings.planning_taxonomy_id ?? (workbench.planning_taxonomy_options.length === 1 ? workbench.planning_taxonomy_options[0].taxonomy_id : ''),
       ...nextAsOf,
       notes: workbench.settings.notes ?? null,
       capitalMode: nextCapitalMode,
@@ -1633,7 +1633,6 @@ export default function ResearchPage() {
       missing_return_policy: riskPolicy.missing_return_policy,
       covariance_model_id: riskPolicy.covariance_model_id,
       contribution_mode: riskPolicy.contribution_mode,
-      target_dimension: 'scope_default',
       capital_mode: draft.capitalMode,
       gross_exposure: draft.capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
       target_volatility: volatilityMode ? parsedTargetVolatility : null,
@@ -1659,7 +1658,7 @@ export default function ResearchPage() {
 
   async function handleRunResearch() {
     const targetPortfolioId = portfolioId
-    if (!targetPortfolioId) {
+    if (!targetPortfolioId || !canEditPortfolio || !runSetupDraftRef.current.planningTaxonomyId) {
       return
     }
     const runRequest = beginRequest(runRequestSequenceRef, targetPortfolioId)
@@ -1722,6 +1721,10 @@ export default function ResearchPage() {
     : null
   const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== planningTaxonomyId)
   const staleRun = latestRun?.status === 'completed' && (latestRun.reliability_state === 'stale' || changedTaxonomy)
+  const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3'].includes(latestRun?.detail?.solver_version ?? '')
+  const riskContributionTitle = globalSolverRun
+    ? 'Risk contributions use the same global covariance and solved asset weights as the optimizer. Each category sums its asset contributions.'
+    : 'Risk contribution recorded with this saved run. Rerun Research to use the current global solver.'
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
     ? latestRun?.detail?.scope_solve_events ?? []
     : latestRun?.detail?.solve_event
@@ -1807,7 +1810,7 @@ export default function ResearchPage() {
                 type="button"
                 className="toolbar-link button-primary research-run-button"
                 onClick={() => void handleRunResearch()}
-                disabled={!canEditPortfolio || actionPending === 'run' || scopeActionBlocked}
+                disabled={!canEditPortfolio || !planningTaxonomyId || actionPending === 'run' || scopeActionBlocked}
               >
                 {actionPending === 'run' ? 'Running...' : 'Run Research'}
               </button>
@@ -1835,7 +1838,7 @@ export default function ResearchPage() {
                       updateRunSetupDraft({ planningTaxonomyId: event.target.value, frozenNodeIds: [], topSleeveBounds: [] })
                     }}>
                       {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value={planningTaxonomyId}>{zh ? '请选择已配置目标的分类' : 'Select a taxonomy with targets'}</option>}
-                      {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
+                      {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
                     </select>
                   </label>
                   {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
@@ -2367,7 +2370,7 @@ export default function ResearchPage() {
                         <th>Solved Weight</th>
                         <th>Change</th>
                         <th>Target Risk</th>
-                        <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
+                        <th title={riskContributionTitle}>
                           Solved RC
                         </th>
                         <th>Bounds</th>
@@ -2419,7 +2422,7 @@ export default function ResearchPage() {
                           <th>Current MV</th>
                           <th>Target Capital</th>
                           <th>Target Risk</th>
-                          <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
+                          <th title={riskContributionTitle}>
                             Look-through RC
                           </th>
                           <th>Action</th>
@@ -2538,7 +2541,13 @@ export default function ResearchPage() {
                 <div className="research-evidence-body">
                   <section className="portfolio-section-block">
                     <div className="panel-header panel-header-inline">
-                      <div><div className="panel-title">Solver Diagnostics</div></div>
+                      <div><div className="panel-title">Solver Diagnostics</div>
+                        {globalSolverRun ? <div className="panel-subtitle">
+                          {latestRun.detail?.risk_attribution_scope === 'selected_research_scope'
+                            ? (zh ? '所选研究范围内统一求解；风险贡献相对于该范围。' : 'One global solve within the selected research scope; risk contributions are relative to that scope.')
+                            : (zh ? '全组合统一求解；各层沿用自身的权重或风险预算依据。' : 'One portfolio-wide solve with each level retaining its weight or risk-budget basis.')}
+                        </div> : null}
+                      </div>
                     </div>
                     <HorizontalTableScroll className="table-shell">
                       <table className="transactions-table research-solver-diagnostics-table">

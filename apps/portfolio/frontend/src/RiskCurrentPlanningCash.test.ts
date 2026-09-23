@@ -13,15 +13,12 @@ const taxonomy = {
   name: 'Planning',
   taxonomy_type: 'allocation',
   primary_assignment_scope: 'instrument',
-  planning_enabled: true,
-  budgeting_level: 'root',
-  root_default_target_dimension: 'weight',
+  root_allocation_basis: 'weight',
   status: 'active',
 } as const
 
 const catalog: PortfolioTaxonomyCatalogResponse = {
   portfolio_id: '3',
-  default_planning_taxonomy_id: taxonomy.taxonomy_id,
   taxonomies: [taxonomy],
   taxonomy_nodes: [
     {
@@ -31,7 +28,7 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
       node_name: 'Risk Assets',
       sort_order: 1,
       is_terminal: true,
-      default_target_dimension: 'risk_budget',
+      allocation_basis: 'risk_budget',
       status: 'active',
     },
   ],
@@ -49,9 +46,8 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
   target_sets: [],
   target_set_lines: [],
   target_set_integrity_issues: [],
-  analytics_scope_policy_version: 0,
-  analytics_scope_policies: [],
-  analytics_taxonomy_selections: [],
+  target_resolution: [],
+  taxonomy_configuration_version: 0,
 }
 
 function account(

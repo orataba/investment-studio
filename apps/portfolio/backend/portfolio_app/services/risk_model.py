@@ -390,20 +390,18 @@ def _clear_forward_risk_fields(
     )
 
 
-def _forward_risk_scope_disclosure(
+def _forward_risk_coverage_disclosure(
     workspace: dict[str, object],
     *,
     calculation_frequency: CalculationFrequency,
 ) -> dict[str, object]:
     summary = (
-        workspace.get("analytics_scope_summary")
-        if isinstance(workspace.get("analytics_scope_summary"), dict)
+        workspace.get("risk_coverage_summary")
+        if isinstance(workspace.get("risk_coverage_summary"), dict)
         else {}
     )
     return {
-        "scope_name": summary.get("scope_name") or "Modeled Market Sleeve",
-        "scope_policy_versions": list(summary.get("scope_policy_versions") or []),
-        "configuration_versions": list(summary.get("configuration_versions") or []),
+        "model_name": summary.get("model_name") or "Market risk model",
         "total_nav": summary.get("total_nav"),
         "modeled_net_exposure": summary.get("modeled_net_exposure"),
         "modeled_gross_exposure": summary.get("modeled_gross_exposure"),
@@ -434,7 +432,7 @@ def enrich_holdings_forward_risk(
 
     snapshot = portfolio_risk_model_snapshot(risk_policy)
     workspace["risk_policy"] = snapshot
-    scope_disclosure = _forward_risk_scope_disclosure(
+    coverage_disclosure = _forward_risk_coverage_disclosure(
         workspace,
         calculation_frequency=calculation_frequency,
     )
@@ -448,13 +446,13 @@ def enrich_holdings_forward_risk(
             "status": "unavailable",
             "errors": ["Forward RC requires the portfolio base currency."],
             "risk_model": snapshot,
-            **scope_disclosure,
+            **coverage_disclosure,
         }
         return workspace
 
     active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]] = []
     errors: list[str] = []
-    total_nav = _safe_float(scope_disclosure.get("total_nav"))
+    total_nav = _safe_float(coverage_disclosure.get("total_nav"))
     if total_nav is None or not np.isfinite(total_nav) or total_nav <= 1e-12:
         errors.append("Forward RC requires positive finite total NAV.")
     for index, raw_row in enumerate(rows):
@@ -467,6 +465,17 @@ def enrich_holdings_forward_risk(
         is_derivative = _holding_row_is_derivative(raw_row)
         is_cash = _holding_row_is_cash(raw_row)
         is_pending = is_pending_monetary_holding(raw_row)
+        quantity = _safe_float(raw_row.get("quantity"))
+        # Missing valuation cannot establish that an open holding has zero
+        # exposure, even if its eligibility flag was already cleared upstream.
+        if (not is_derivative and (market_value is None or not np.isfinite(market_value))
+                and (quantity is None or not np.isfinite(quantity) or quantity != 0)):
+            _clear_forward_risk_fields(raw_row, status="valuation_unavailable")
+            errors.append(
+                "Forward RC cannot treat unmodeled market exposure "
+                f"{_row_label(raw_row)} as zero risk."
+            )
+            continue
         is_base_currency_monetary = not has_exposure or (
             base_currency and instrument_currency == base_currency
         )
@@ -491,11 +500,11 @@ def enrich_holdings_forward_risk(
                     if is_pending
                     else "cash_unallocated"
                     if is_cash
-                    else "policy_excluded"
+                    else "valuation_unavailable"
                 )
                 if has_exposure and not is_cash and not is_pending:
                     errors.append(
-                        "Forward RC cannot model policy-excluded market exposure "
+                        "Forward RC cannot treat unmodeled market exposure "
                         f"{_row_label(raw_row)} as zero risk."
                     )
             continue
@@ -553,7 +562,7 @@ def enrich_holdings_forward_risk(
             "status": "unavailable",
             "errors": errors,
             "risk_model": snapshot,
-            **scope_disclosure,
+            **coverage_disclosure,
         }
         return workspace
     if not active:
@@ -561,7 +570,7 @@ def enrich_holdings_forward_risk(
             "status": "unavailable",
             "errors": ["Modeled sleeve risk requires at least one eligible risky holding."],
             "risk_model": snapshot,
-            **scope_disclosure,
+            **coverage_disclosure,
         }
         return workspace
 
@@ -625,7 +634,7 @@ def enrich_holdings_forward_risk(
             "errors": [str(error)],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
-            **scope_disclosure,
+            **coverage_disclosure,
         }
         return workspace
 
@@ -637,7 +646,7 @@ def enrich_holdings_forward_risk(
             "errors": ["Forward RC requires positive finite portfolio variance."],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
-            **scope_disclosure,
+            **coverage_disclosure,
         }
         return workspace
 
@@ -658,6 +667,6 @@ def enrich_holdings_forward_risk(
         "observation_count": int(len(coverage.returns)),
         "coverage": coverage_snapshot,
         "modeled_weight_basis": "total_nav_zero_return_cash_and_derivatives",
-        **scope_disclosure,
+        **coverage_disclosure,
     }
     return workspace

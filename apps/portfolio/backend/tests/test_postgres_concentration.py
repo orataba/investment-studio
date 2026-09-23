@@ -16,7 +16,8 @@ from .test_postgres_instrument_registry_constraints import postgres_portfolio_en
 pytestmark = pytest.mark.postgresql_integration
 
 
-def test_concurrent_first_policy_save_has_one_winner_without_lost_edits(postgres_portfolio_env):
+def test_concurrent_first_policy_save_has_one_winner_without_lost_edits(postgres_portfolio_env, monkeypatch):
+    monkeypatch.setattr("portfolio_app.services.instrument_registry.get_registry_instrument", lambda _id: {"instrument_type": "equity"})
     checks = inspect(get_engine()).get_check_constraints("concentration_policy_revision", schema="portfolio")
     assert {item["name"] for item in checks} == {"ck_concentration_policy_revision_positive_revision"}
     with get_session_factory()() as session:
@@ -24,7 +25,7 @@ def test_concurrent_first_policy_save_has_one_winner_without_lost_edits(postgres
         session.commit()
     barrier = Barrier(2)
     def save(limit):
-        request = ConcentrationSettingsUpdate(expected_revision=0, effective_from=date(2026, 9, 8), rules=[{"rule_id": "s", "scope": "security", "limit_weight": limit}])
+        request = ConcentrationSettingsUpdate(expected_revision=0, effective_from=date(2026, 9, 8), limits=[{"scope": "security", "entity_id": "A", "limit_weight": limit}])
         with principal_context(Principal("pm", "PM", "default")):
             barrier.wait(timeout=10)
             try:
@@ -36,4 +37,4 @@ def test_concurrent_first_policy_save_has_one_winner_without_lost_edits(postgres
     with get_session_factory()() as session:
         revisions = list(session.scalars(select(ConcentrationPolicyRevisionModel)))
         assert len(revisions) == 1
-        assert revisions[0].settings_json["rules"][0]["limit_weight"] in {0.1, 0.2}
+        assert revisions[0].settings_json["limits"][0]["limit_weight"] in {0.1, 0.2}

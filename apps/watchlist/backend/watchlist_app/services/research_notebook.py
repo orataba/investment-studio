@@ -10,6 +10,7 @@ from watchlist_app.services.market_evidence import hydrate_source, retained_sour
 
 
 class ResearchCatalyst(BaseModel):
+    theme_id: str | None = None
     key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     title: str = Field(min_length=1, max_length=250)
     scheduled_at: str = Field(description="YYYY-MM-DD日期，或含数字时区偏移的ISO8601时间。不得包含ET/盘前等缩写、括号或解释；说明写入relevance。",
@@ -351,6 +352,7 @@ def dossier_outline(dossier: dict) -> dict:
 def dossier_source(dossier: dict, source_id: str) -> dict:
     for source in [*dossier.get("materials", []), *dossier.get("historical_cases", []),
                    *dossier.get("prior_sources", []),
+                   *(source for theme in dossier.get("themes", []) for source in theme.get("sources", [])),
                    *(source for view in dossier.get("pm_views", []) for source in view.get("sources", [])),
                    *(dossier.get("notebook") or {}).get("sources", [])]:
         if source.get("source_id") == source_id:
@@ -422,6 +424,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
     for dossier in context.get("research_dossiers", []):
         iid = dossier["instrument_id"]
         for source in [*dossier.get("prior_sources", []), *(dossier.get("notebook") or {}).get("sources", []),
+                       *(source for theme in dossier.get("themes", []) for source in theme.get("sources", [])),
                        *(source for view in dossier.get("pm_views", []) for source in view.get("sources", []))]:
             source = hydrate_source(source, cutoff=cutoff)
             if _original_source(source, iid, cutoff):

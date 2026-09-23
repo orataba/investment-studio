@@ -105,7 +105,6 @@ def update_portfolio_research_settings(
             missing_return_policy=payload.missing_return_policy,
             covariance_model_id=payload.covariance_model_id,
             contribution_mode=payload.contribution_mode,
-            target_dimension=payload.target_dimension,
             capital_mode=payload.capital_mode,
             gross_exposure=payload.gross_exposure,
             target_volatility=payload.target_volatility,

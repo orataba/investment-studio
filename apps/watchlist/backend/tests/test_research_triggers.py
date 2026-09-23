@@ -348,3 +348,17 @@ def test_scheduled_run_reopens_for_same_day_source_and_does_not_retry_consumed_t
         sources = following.context_json["incremental_trigger"]["trigger-gold"]["reasons"][0]["sources"]
         assert [item["source_id"] for item in sources] == [new_source["source_id"]]
         assert following.context_json["incremental_trigger"]["trigger-gold"]["coverage_cursor"]["market_queries"][0]["cutoff"] == stamp(3, 12).isoformat()
+
+
+def test_new_theme_baseline_and_later_manual_reference_trigger_once_per_request(store):
+    theme = {"theme_id": "theme-credit", "title": "信用传导", "status": "active", "baseline_status": "pending",
+             "created_at": stamp(1).isoformat(), "baseline_requested_at": stamp(1).isoformat()}
+    prior = context(research_dossiers=[{"instrument_id": "gold", "themes": [theme]}], attempted_theme_baselines={})
+    result = triggers.research_trigger(session(), "gold", prior, now=stamp(4))
+    assert result["reasons"][0]["kind"] == "theme_baseline"
+    prior["attempted_theme_baselines"] = {theme["theme_id"]: theme["baseline_requested_at"]}
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None
+    theme["baseline_requested_at"] = stamp(3).isoformat()
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4))["reasons"][0]["kind"] == "theme_baseline"
+    theme["status"] = "paused"
+    assert triggers.research_trigger(session(), "gold", prior, now=stamp(4)) is None

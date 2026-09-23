@@ -10,7 +10,7 @@ from studio_runtime import operation
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioRecordModel, PortfolioWorkspaceReadModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.analytics_scope import analytics_policy_version
+from portfolio_app.services.taxonomy_configuration import taxonomy_configuration_version
 from portfolio_app.services.holdings_workspace import (
     _portfolio_calculation_frequency_profile, read_holdings_analysis,
 )
@@ -48,7 +48,7 @@ def _current_projection_inputs(
             return None
         as_of = latest.as_of_date
         policy = portfolio_risk_model_snapshot(normalize_portfolio_risk_policy(portfolio_record.risk_policy_json))
-        args = holdings_analysis_args(as_of, policy, analytics_policy_version(portfolio_id, session=session))
+        args = holdings_analysis_args(as_of, policy, taxonomy_configuration_version(portfolio_id, session=session))
     portfolio = {"portfolio_id": portfolio_id, "as_of_date": as_of.isoformat()}
     keys = {
         "holdings_analytics": ("holdings_analytics", *args, *fingerprint),

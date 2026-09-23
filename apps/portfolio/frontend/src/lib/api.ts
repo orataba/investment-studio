@@ -1,3 +1,4 @@
+import type { ConcentrationSettingsInput } from './concentrationApi'
 import type {
   InstrumentCore,
   DataStatus,
@@ -106,7 +107,6 @@ export type PortfolioWorkspaceSummary = {
   nav: number
   day_change_value: number | null
   day_change_pct: number | null
-  default_planning_taxonomy_id?: string | null
   toolbar_label: string
   badges: string[]
   sections: WorkspaceSection[]
@@ -129,7 +129,6 @@ export type PortfolioEntryRecord = {
   day_return_capital?: number | null
   securities_count: number
   sort_order: number
-  default_planning_taxonomy_id?: string | null
 }
 
 export type PortfolioCreatePayload = {
@@ -323,8 +322,6 @@ export type PortfolioPerformanceSummary = {
   risk_unavailable_reason: string | null
   performance_basis: PortfolioPerformanceBasis
   performance_label: string
-  ordinary_sleeve_twr_status: 'unavailable'
-  ordinary_sleeve_twr_reason: string
   latest_complete_as_of_date: string | null
   start_nav: number | null
   end_nav: number | null
@@ -455,9 +452,7 @@ export type PortfolioRiskPolicyRecord = {
 export type PortfolioForwardRiskSummary = {
   status: 'ok' | 'unavailable' | string
   errors: string[]
-  scope_name: string
-  scope_policy_versions: number[]
-  configuration_versions: number[]
+  model_name: string
   total_nav: number | null
   modeled_net_exposure: number | null
   modeled_gross_exposure: number | null
@@ -465,7 +460,7 @@ export type PortfolioForwardRiskSummary = {
   excluded_liability: number | null
   cash_unallocated_exposure: number | null
   coverage_ratio: number | null
-  excluded_rows: PortfolioAnalyticsScopeExcludedRow[]
+  excluded_rows: PortfolioRiskCoverageExcludedRow[]
   calculation_frequency: PortfolioCalculationFrequency
   modeled_weight_basis?: 'total_nav_zero_return_cash_and_derivatives'
   risk_model?: PortfolioRiskPolicyRecord | null
@@ -496,27 +491,18 @@ export type PortfolioHoldingCategory =
   | 'derivatives'
   | 'cash_and_settlement'
 
-export type PortfolioPerformanceScope =
-  | 'ordinary'
-  | 'derivative_lifecycle'
-  | 'operational_only'
-  | 'unallocated'
-
-export type PortfolioAnalyticsScopeExcludedRow = {
+export type PortfolioRiskCoverageExcludedRow = {
   line_id: string | null
   instrument_id: string | null
   instrument_name: string | null
   holding_category: PortfolioHoldingCategory
-  exposure_base: number
+  exposure_base: number | null
   exclusion_reason: string | null
-  scope_status: string
+  modeling_status: string
 }
 
-export type PortfolioAnalyticsScopeSummary = {
-  scope_name: string
-  scope_policy_versions: number[]
-  configuration_versions: number[]
-  taxonomy_selection_versions: number[]
+export type PortfolioRiskCoverageSummary = {
+  model_name: string
   total_nav: number | null
   modeled_net_exposure: number
   modeled_gross_exposure: number
@@ -524,15 +510,8 @@ export type PortfolioAnalyticsScopeSummary = {
   excluded_liability: number
   cash_unallocated_exposure: number
   coverage_ratio: number | null
-  excluded_rows: PortfolioAnalyticsScopeExcludedRow[]
-  cash_scope_breakdown: Array<{
-    performance_scope: PortfolioPerformanceScope
-    currency: string
-    net_cash_effect: number
-    absolute_cash_activity: number
-  }>
-  ordinary_sleeve_twr_status: 'unavailable'
-  ordinary_sleeve_twr_reason: string
+  excluded_rows: PortfolioRiskCoverageExcludedRow[]
+
 }
 
 export type PortfolioPeriodCalculationGroupMetrics = {
@@ -873,24 +852,9 @@ export type PortfolioHoldingRow = {
   account_count?: number
   open_position_lot_count?: number
   is_liability?: boolean
-  scope_status: string
-  taxonomy_id: string | null
-  taxonomy_node_id: string | null
-  resolved_policy_node_id: string | null
-  inherited_from_node_id: string | null
-  analytics_scope_policy_id: string | null
-  scope_policy_version: number | null
-  configuration_version: number | null
-  taxonomy_selection_version: number | null
-  analytics_scope_policy?: PortfolioPerformanceScope
-  analytics_scope_valuation_eligible?: boolean
-  analytics_scope_system_exclusion_reason?: string | null
-  analytics_scope: PortfolioPerformanceScope
-  performance_scope: PortfolioPerformanceScope
+  modeling_status: string
   performance_eligible: boolean
   risk_eligible: boolean
-  risk_budget_eligible: boolean
-  valuation_basis_policy: string
   exclusion_reason: string | null
   open_contract_quantity?: number | null
   required_underlying_quantity?: number | null
@@ -1036,7 +1000,7 @@ export type HoldingsWorkspaceResponse = {
   }
   risk_policy?: PortfolioRiskPolicyRecord | null
   forward_risk?: PortfolioForwardRiskSummary | null
-  analytics_scope_summary: PortfolioAnalyticsScopeSummary
+  risk_coverage_summary: PortfolioRiskCoverageSummary
   operational_summary: HoldingsOperationalSummary
   operational_alerts: HoldingsOperationalAlert[]
   summary_cards: HoldingsSummaryCard[]
@@ -1177,9 +1141,7 @@ export type PortfolioTaxonomyRecord = {
   taxonomy_type: string
   purpose?: string | null
   primary_assignment_scope: TaxonomyAssignmentScope
-  planning_enabled: boolean
-  budgeting_level?: string | null
-  root_default_target_dimension: 'weight' | 'risk_budget'
+  root_allocation_basis: 'weight' | 'risk_budget'
   status: string
   source_template_ref?: string | null
 }
@@ -1192,7 +1154,7 @@ export type PortfolioTaxonomyNodeRecord = {
   node_code?: string | null
   sort_order: number
   is_terminal: boolean
-  default_target_dimension: 'weight' | 'risk_budget'
+  allocation_basis: 'weight' | 'risk_budget'
   status: string
 }
 
@@ -1205,30 +1167,6 @@ export type PortfolioTaxonomyAssignmentRecord = {
   status: string
 }
 
-export type PortfolioAnalyticsScopePolicyRecord = {
-  analytics_scope_policy_id: string
-  portfolio_id: string
-  taxonomy_id: string
-  taxonomy_node_id: string
-  risk_eligible: boolean
-  risk_budget_eligible: boolean
-  performance_scope: 'ordinary' | 'derivative_lifecycle' | 'operational_only' | 'unallocated'
-  valuation_basis: 'market' | 'fair_value' | 'carrying' | 'event' | 'obligation' | 'cash' | 'unknown'
-  exclusion_reason?: string | null
-  policy_version: number
-  superseded_by_policy_id?: string | null
-  created_at: string
-}
-
-export type PortfolioAnalyticsTaxonomySelectionRecord = {
-  analytics_taxonomy_selection_id: string
-  portfolio_id: string
-  taxonomy_id?: string | null
-  selection_version: number
-  superseded_by_selection_id?: string | null
-  created_at: string
-}
-
 export type PortfolioTargetSetType = 'saa' | 'taa'
 
 export type PortfolioTargetSetRecord = {
@@ -1237,8 +1175,6 @@ export type PortfolioTargetSetRecord = {
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
-  weight_enabled: boolean
-  risk_budget_enabled: boolean
   status: string
   notes?: string | null
 }
@@ -1249,8 +1185,7 @@ export type PortfolioTargetSetLineRecord = {
   target_member_type: PortfolioTargetMemberType
   target_member_id: string
   taxonomy_node_id?: string | null
-  target_weight?: number | null
-  target_risk_share?: number | null
+  target_value?: number | null
   notes?: string | null
 }
 
@@ -1286,9 +1221,48 @@ export type PortfolioInstrumentUniverseRecord = {
   instrument_return_series_all?: HoldingReturnSeries | null
 }
 
+export type PortfolioTargetResolutionStatus = 'complete' | 'missing' | 'invalid'
+export type PortfolioTargetResolutionSource = 'saa' | 'taa' | 'single_member' | null
+export type PortfolioResolvedTargetStage = {
+  status: PortfolioTargetResolutionStatus
+  source_stage: PortfolioTargetResolutionSource
+  source_target_set_id: string | null
+  inherited: boolean
+  rows: Array<{ member_type: PortfolioTargetMemberType; member_id: string; target_value: number | null; target_basis: 'weight' | 'risk_budget' }>
+  errors: string[]
+}
+export type PortfolioResolvedScopeTarget = {
+  scope_node_id: string | null
+  allocation_basis: 'weight' | 'risk_budget'
+  saa: PortfolioResolvedTargetStage
+  taa: PortfolioResolvedTargetStage
+}
+export type PortfolioResolvedMemberTarget = {
+  scope_node_id: string | null
+  member_type: PortfolioTargetMemberType
+  member_id: string
+  taxonomy_node_id: string | null
+  target_basis: 'weight' | 'risk_budget'
+  strategic_value: number | null
+  tactical_value: number | null
+  strategic_source: PortfolioTargetResolutionSource
+  tactical_source: PortfolioTargetResolutionSource
+  strategic_target_set_id: string | null
+  tactical_target_set_id: string | null
+  strategic_global_risk_target: number | null
+  tactical_global_risk_target: number | null
+  strategic_status: PortfolioTargetResolutionStatus
+  tactical_status: PortfolioTargetResolutionStatus
+}
+export type PortfolioTaxonomyTargetResolution = {
+  taxonomy_id: string
+  scope_targets: PortfolioResolvedScopeTarget[]
+  member_targets: PortfolioResolvedMemberTarget[]
+  errors: string[]
+}
+
 export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
-  default_planning_taxonomy_id?: string | null
   risk_basis?: {
     window_start_date?: string
     window_end_date?: string
@@ -1304,22 +1278,12 @@ export type PortfolioTaxonomyCatalogResponse = {
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
   taxonomy_assignments: PortfolioTaxonomyAssignmentRecord[]
-  analytics_scope_policy_version: number
-  analytics_scope_policies: PortfolioAnalyticsScopePolicyRecord[]
-  analytics_taxonomy_selections: PortfolioAnalyticsTaxonomySelectionRecord[]
+  taxonomy_configuration_version: number
   instrument_universe: PortfolioInstrumentUniverseRecord[]
   target_sets: PortfolioTargetSetRecord[]
   target_set_lines: PortfolioTargetSetLineRecord[]
   target_set_integrity_issues: PortfolioTargetSetIntegrityIssueRecord[]
-}
-
-export type PortfolioDefaultPlanningTaxonomyUpdatePayload = {
-  taxonomy_id?: string | null
-}
-
-export type PortfolioDefaultPlanningTaxonomyResponse = {
-  portfolio_id: string
-  default_planning_taxonomy_id?: string | null
+  target_resolution: PortfolioTaxonomyTargetResolution[]
 }
 
 export type PortfolioInstrumentUniverseCreatePayload = {
@@ -1331,7 +1295,7 @@ export type PortfolioResearchInstrumentEligibilityUpdatePayload = {
 }
 
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
-export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
+export type PortfolioResearchTargetDimension = 'weight' | 'risk_budget'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
 export type PortfolioResearchCalculationFrequency = 'daily'
 export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
@@ -1344,7 +1308,6 @@ export type PortfolioResearchPlanningTaxonomyOption = {
   targets_available?: boolean
   name: string
   taxonomy_type: string
-  budgeting_level?: string | null
 }
 
 export type PortfolioResearchPlanningScopeOption = {
@@ -1352,7 +1315,7 @@ export type PortfolioResearchPlanningScopeOption = {
   label: string
   path: string
   depth: number
-  default_target_dimension: 'weight' | 'risk_budget'
+  allocation_basis: 'weight' | 'risk_budget'
   has_children: boolean
 }
 
@@ -1368,7 +1331,6 @@ export type PortfolioResearchSettingsRecord = {
   lookback_days: number
   calculation_frequency: PortfolioResearchCalculationFrequency
   missing_return_policy: PortfolioResearchMissingReturnPolicy
-  target_dimension: PortfolioResearchTargetDimension
   capital_mode: PortfolioResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
@@ -1399,7 +1361,6 @@ export type PortfolioResearchSettingsUpdatePayload = {
   missing_return_policy?: PortfolioResearchMissingReturnPolicy
   covariance_model_id?: PortfolioRiskCovarianceModel
   contribution_mode?: PortfolioRiskContributionMode
-  target_dimension?: PortfolioResearchTargetDimension
   capital_mode?: PortfolioResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
@@ -1534,7 +1495,7 @@ export type PortfolioResearchScopeSelectionRecord = {
   label: string
   path: string
   depth: number
-  default_target_dimension: 'weight' | 'risk_budget'
+  allocation_basis: 'weight' | 'risk_budget'
   member_source: string
 }
 
@@ -1544,7 +1505,7 @@ export type PortfolioResearchMemberTargetRecord = {
   label: string
   scope_path?: string | null
   member_path?: string | null
-  default_target_dimension?: 'weight' | 'risk_budget' | null
+  allocation_basis?: 'weight' | 'risk_budget' | null
   selected_target_dimension?: PortfolioResearchTargetDimension | null
   source_target_set_type?: 'saa' | 'taa' | null
   current_weight?: number | null
@@ -1592,13 +1553,15 @@ export type PortfolioResearchSolvedResultGroupRecord = {
 }
 
 export type PortfolioResearchSolveEventRecord = {
+  solver_version?: string | null
+  risk_attribution_scope?: 'portfolio' | 'selected_research_scope' | null
   as_of_date: string
   scope_node_id?: string | null
   scope_label: string
   scope_path?: string | null
   scope_depth?: number | null
   requested_target_dimension?: string | null
-  taxonomy_default_target_dimension?: 'weight' | 'risk_budget' | null
+  taxonomy_allocation_basis?: 'weight' | 'risk_budget' | null
   target_dimension?: PortfolioResearchTargetDimension | null
   solver_kind?: string | null
   solver_detail?: string | null
@@ -1661,7 +1624,7 @@ export type PortfolioResearchTargetRowRecord = {
   label: string
   current_weight?: number | null
   current_value_base?: number | null
-  default_target_dimension?: 'weight' | 'risk_budget' | null
+  allocation_basis?: 'weight' | 'risk_budget' | null
   selected_target_dimension?: PortfolioResearchTargetDimension | null
   source_target_set_type?: 'saa' | 'taa' | null
   source_target_set_id?: string | null
@@ -1739,6 +1702,8 @@ export type PortfolioResearchBacktestContributionReconciliationRecord = {
 }
 
 export type PortfolioResearchBacktestMethodologyRecord = {
+  solver_version?: string | null
+  risk_attribution_scope?: 'portfolio' | 'selected_research_scope' | null
   name: string
   target_configuration?: 'current_snapshot' | null
   target_snapshot_fingerprint?: string | null
@@ -1874,6 +1839,8 @@ export type PortfolioResearchBacktestBenchmarkComparisonResponse = {
 }
 
 export type PortfolioResearchRunDetailRecord = {
+  solver_version?: string | null
+  risk_attribution_scope?: 'portfolio' | 'selected_research_scope' | null
   headline?: string | null
   coverage_note?: string | null
   signals: PortfolioResearchContextSignalRecord[]
@@ -1936,7 +1903,6 @@ export type PortfolioResearchWorkbenchResponse = {
   portfolio_name: string
   base_currency: string
   as_of_date: string
-  default_planning_taxonomy_id?: string | null
   planning_taxonomy_options: PortfolioResearchPlanningTaxonomyOption[]
   planning_scope_options: PortfolioResearchPlanningScopeOption[]
   calculation_frequency: PortfolioResearchCalculationFrequencyProfile
@@ -1963,9 +1929,7 @@ export type PortfolioTaxonomyCreatePayload = {
   taxonomy_type?: string
   purpose?: string | null
   primary_assignment_scope?: TaxonomyAssignmentScope
-  planning_enabled?: boolean
-  budgeting_level?: string | null
-  root_default_target_dimension?: 'weight' | 'risk_budget'
+  root_allocation_basis?: 'weight' | 'risk_budget'
   status?: string
   source_template_ref?: string | null
 }
@@ -1976,7 +1940,7 @@ export type PortfolioTaxonomyNodeCreatePayload = {
   parent_taxonomy_node_id?: string | null
   sort_order?: number | null
   is_terminal?: boolean
-  default_target_dimension?: 'weight' | 'risk_budget'
+  allocation_basis?: 'weight' | 'risk_budget'
   status?: string
 }
 
@@ -1984,9 +1948,7 @@ export type PortfolioTaxonomyUpdatePayload = {
   name?: string | null
   taxonomy_type?: string | null
   purpose?: string | null
-  planning_enabled?: boolean
-  budgeting_level?: string | null
-  root_default_target_dimension?: 'weight' | 'risk_budget' | null
+  root_allocation_basis?: 'weight' | 'risk_budget' | null
   status?: string | null
 }
 
@@ -1995,7 +1957,7 @@ export type PortfolioTaxonomyNodeUpdatePayload = {
   node_code?: string | null
   parent_taxonomy_node_id?: string | null
   sort_order?: number | null
-  default_target_dimension?: 'weight' | 'risk_budget' | null
+  allocation_basis?: 'weight' | 'risk_budget' | null
   status?: string | null
 }
 
@@ -2015,8 +1977,7 @@ export type PortfolioTargetSetLinePayload = {
   target_member_type: PortfolioTargetMemberType
   target_member_id: string
   taxonomy_node_id?: string | null
-  target_weight?: number | null
-  target_risk_share?: number | null
+  target_value?: number | null
   notes?: string | null
 }
 
@@ -2025,21 +1986,11 @@ export type PortfolioTargetSetConfigurationPayload = {
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
-  weight_enabled: boolean
-  risk_budget_enabled: boolean
   status?: string
   notes?: string | null
   lines: PortfolioTargetSetLinePayload[]
 }
 
-
-export type PortfolioAnalyticsScopePolicyUpsertPayload = {
-  risk_eligible: boolean
-  risk_budget_eligible: boolean
-  performance_scope: PortfolioAnalyticsScopePolicyRecord['performance_scope']
-  valuation_basis: PortfolioAnalyticsScopePolicyRecord['valuation_basis']
-  exclusion_reason?: string | null
-}
 
 export type PortfolioAccountCategory = 'cash' | 'security' | 'fcn' | 'option'
 export type PortfolioCashPurpose = 'operating' | 'margin' | 'collateral' | 'financing'
@@ -3668,20 +3619,6 @@ export function getPortfolioTaxonomyCatalog(
   return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`, { signal })
 }
 
-export function updatePortfolioDefaultPlanningTaxonomy(
-  portfolioId: string,
-  payload: PortfolioDefaultPlanningTaxonomyUpdatePayload,
-) {
-  return fetchJson<PortfolioDefaultPlanningTaxonomyResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/default-planning`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    },
-  )
-}
-
 export function createPortfolioInstrumentUniverseRecord(
   portfolioId: string,
   payload: PortfolioInstrumentUniverseCreatePayload,
@@ -3916,7 +3853,10 @@ export function savePortfolioTaxonomyTargetConfiguration(
   portfolioId: string,
   taxonomyId: string,
   payload: {
-    node_defaults: Record<string, 'weight' | 'risk_budget'>
+    expected_configuration_version: number
+    root_allocation_basis?: 'weight' | 'risk_budget'
+    node_allocation_bases: Record<string, 'weight' | 'risk_budget'>
+    concentration?: ConcentrationSettingsInput
     target_sets: PortfolioTargetSetConfigurationPayload[]
   },
 ) {
@@ -3939,22 +3879,6 @@ export function deletePortfolioTargetSet(
     `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}`,
     {
       method: 'DELETE',
-    },
-  )
-}
-
-export function replacePortfolioAnalyticsScopePolicy(
-  portfolioId: string,
-  taxonomyId: string,
-  taxonomyNodeId: string,
-  payload: PortfolioAnalyticsScopePolicyUpsertPayload,
-) {
-  return fetchJson<PortfolioAnalyticsScopePolicyRecord>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/analytics-scope-policies/${encodeURIComponent(taxonomyNodeId)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(payload),
     },
   )
 }

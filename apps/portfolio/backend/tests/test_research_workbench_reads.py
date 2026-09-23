@@ -267,7 +267,7 @@ def test_workbench_reuses_only_analysis_and_keeps_settings_live(client, monkeypa
                     as_of_date='2026-04-15', lookback_days=90,
                     calculation_frequency='daily', missing_return_policy='complete_case_drop',
                     covariance_model_id='sample_covariance', contribution_mode='abs',
-                    target_dimension='scope_default', capital_mode='unit_notional')
+                    capital_mode='unit_notional')
     path = '/api/portfolios/investment-studio/research'
     assert client.put(path + '/settings', json=settings).status_code == 200
     research._run_portfolio_daily_snapshot_recalculation_synchronously('investment-studio')

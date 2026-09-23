@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from watchlist_app.api.contracts import (
     InstrumentResearchNoteUpsertRequest,
     InstrumentResearchProfileUpsertRequest,
+    InvestmentStanceSelectionInput,
 )
 from watchlist_app.db.models.research import (
     InstrumentResearchNote,
@@ -22,7 +23,7 @@ from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrume
 from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_identity import research_identity
-from watchlist_app.services.research_views import prepare_note_values
+from watchlist_app.services.research_views import prepare_note_values, read_current_stance, select_current_stance
 
 
 router = APIRouter()
@@ -108,6 +109,7 @@ def _serialize_note(record: InstrumentResearchNote) -> dict[str, object]:
 def _research_response(session: Session, instrument_id: str) -> dict[str, object]:
     return {
         "profile": _serialize_profile(research_repository.get_profile(session, instrument_id)),
+        "current_stance": read_current_stance(session, instrument_id),
         "notes": [
             _serialize_note(note)
             for note in research_repository.list_notes(session, instrument_id)
@@ -173,7 +175,15 @@ def get_instrument_research_history(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
+    from sqlalchemy import select
+    from watchlist_app.db.models.research import InstrumentInvestmentStance
+    selections = session.scalars(select(InstrumentInvestmentStance).where(
+        InstrumentInvestmentStance.instrument_id == instrument_id,
+        InstrumentInvestmentStance.team_id == research_identity()["team_id"],
+    ).order_by(InstrumentInvestmentStance.selected_at.desc()))
     return {
+        "stance_selections": serialize_payload([{key: getattr(row, key) for key in
+            ("selection_id", "note_id", "note_revision", "selected_at", "selected_by", "selected_by_name")} for row in selections]),
         "profile_revisions": [
             _serialize_profile_revision(record)
             for record in research_repository.list_profile_revisions(
@@ -262,6 +272,18 @@ def create_instrument_research_note(
     return _research_response(session, instrument_id)
 
 
+@router.put("/{instrument_id}/research/current-stance")
+def set_instrument_investment_stance(instrument_id: str, request: InvestmentStanceSelectionInput,
+                                    session: Session = Depends(get_db_session)) -> dict:
+    _ensure_instrument_exists(session, instrument_id)
+    try:
+        select_current_stance(session, instrument_id, request.note_id, request.revision_number)
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
+    session.commit()
+    return _research_response(session, instrument_id)
+
+
 @router.put("/{instrument_id}/research/notes/{note_id}")
 def update_instrument_research_note(
     instrument_id: str,
@@ -298,12 +320,19 @@ def delete_instrument_research_note(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
+    from sqlalchemy import select
+    from watchlist_app.db.models.instruments import InstrumentDetail
+    session.execute(select(InstrumentDetail.instrument_id).where(
+        InstrumentDetail.instrument_id == instrument_id).with_for_update())
     record = research_repository.get_note(session, instrument_id, note_id, for_update=True)
     if record is None:
         raise HTTPException(status_code=404, detail="Research note not found")
     actor = research_identity()
     if not current_principal().local_unrestricted and (record.team_id != actor["team_id"] or (record.author_user_id != actor["user_id"] and actor["team_role"] != "admin")):
         raise HTTPException(403, "不能删除其他投资经理的观点")
+    stance = read_current_stance(session, instrument_id, actor=actor)
+    if stance and stance["note"]["note_id"] == note_id:
+        select_current_stance(session, instrument_id, None, None, actor=actor)
     research_repository.delete_note(
         session,
         record,

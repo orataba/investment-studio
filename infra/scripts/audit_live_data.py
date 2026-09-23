@@ -33,8 +33,8 @@ FINAL_FLAT_TABLE_HEADS = {
     "identity": "20260919_0002",
     "instrument_data": "20260920_0036",
     "data_ingestion": "20260904_0009",
-    "portfolio": "20260920_0065",
-    "watchlist": "20260920_0060",
+    "portfolio": "20260923_0068",
+    "watchlist": "20260923_0062",
     "market_data": "studio_market_0002",  # This migration chain also owns market_text.
     "briefing": "20260908_0003",
 }
@@ -258,6 +258,7 @@ AUDIT_CHECK_NAMES = (
     "watchlist_group_by_contract",
     "watchlist_saved_view_field_contract",
     "watchlist_taxonomy_history_contract",
+    "portfolio_snapshot_source_generation",
     "portfolio_account_category_contract",
     "portfolio_inception_contract",
     "portfolio_instrument_reference_contract",
@@ -287,8 +288,7 @@ AUDIT_CHECK_NAMES = (
     "reserved_cash_taxonomy_nodes",
     "taxonomy_assignment_overlap",
     "current_unassigned_planning_holdings",
-    "analytics_scope_missing_current_selection",
-    "analytics_scope_incomplete_configuration",
+    "taxonomy_configuration_state_incomplete",
     "price_bar_contract",
     "corporate_action_event_integrity",
     "held_confirmed_share_split_events_covered",
@@ -643,7 +643,7 @@ def _current_unassigned_planning_holdings_query() -> str:
         SELECT count(*)
         FROM current_holdings holding
         JOIN portfolio.taxonomy_record taxonomy USING (portfolio_id)
-        WHERE taxonomy.status = 'active' AND taxonomy.planning_enabled
+        WHERE taxonomy.status = 'active'
           AND NOT EXISTS (
             SELECT 1
             FROM portfolio.taxonomy_assignment_record assignment
@@ -3386,69 +3386,16 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
-                    name="analytics_scope_missing_current_selection",
+                    name="taxonomy_configuration_state_incomplete",
                     query="""
                         SELECT count(*)
-                        FROM portfolio.portfolio_record portfolio
-                        WHERE portfolio.default_planning_taxonomy_id IS NOT NULL
-                          AND NOT EXISTS (
-                            SELECT 1
-                            FROM portfolio.analytics_taxonomy_selection_record selection
-                            WHERE selection.portfolio_id = portfolio.portfolio_id
-                              AND selection.taxonomy_id IS NOT NULL
-                              AND selection.superseded_by_selection_id IS NULL
-                        )
+                        FROM portfolio.taxonomy_configuration_revision revision
+                        LEFT JOIN portfolio.portfolio_taxonomy_state state
+                          ON state.portfolio_id = revision.portfolio_id
+                        WHERE state.portfolio_id IS NULL
+                           OR state.current_version < revision.configuration_version
                     """,
-                    detail=(
-                        "A portfolio declaring an analytics taxonomy needs an explicit current "
-                        "selection for Holdings/Risk integrity; the runtime fails closed without it."
-                    ),
-                    warning_only=True,
-                )
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="analytics_scope_incomplete_configuration",
-                    query="""
-                        WITH current_selection AS (
-                            SELECT DISTINCT ON (selection.portfolio_id)
-                                   selection.portfolio_id, selection.taxonomy_id
-                            FROM portfolio.analytics_taxonomy_selection_record selection
-                            WHERE selection.taxonomy_id IS NOT NULL
-                              AND selection.superseded_by_selection_id IS NULL
-                            ORDER BY selection.portfolio_id, selection.selection_version DESC
-                        )
-                        SELECT count(*)
-                        FROM current_selection selection
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM portfolio.taxonomy_record taxonomy
-                            WHERE taxonomy.portfolio_id = selection.portfolio_id
-                              AND taxonomy.taxonomy_id = selection.taxonomy_id
-                              AND taxonomy.status = 'active'
-                        )
-                           OR NOT EXISTS (
-                            SELECT 1
-                            FROM portfolio.analytics_scope_policy_record policy
-                            WHERE policy.portfolio_id = selection.portfolio_id
-                              AND policy.taxonomy_id = selection.taxonomy_id
-                              AND policy.taxonomy_node_id = '__root__'
-                              AND policy.superseded_by_policy_id IS NULL
-                        )
-                           OR NOT EXISTS (
-                            SELECT 1
-                            FROM portfolio.analytics_scope_policy_record policy
-                            WHERE policy.portfolio_id = selection.portfolio_id
-                              AND policy.taxonomy_id = selection.taxonomy_id
-                              AND policy.taxonomy_node_id = '__unassigned__'
-                              AND policy.superseded_by_policy_id IS NULL
-                        )
-                    """,
-                    detail=(
-                        "The current analytics selection requires an active taxonomy plus current "
-                        "root and unassigned scope policies. Historical displays use this same configuration."
-                    ),
+                    detail="The current taxonomy version must cover every saved configuration revision.",
                     warning_only=True,
                 )
             )
@@ -3459,27 +3406,29 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="taxonomy_target_sum",
                     query="""
                         WITH target_totals AS (
-                            SELECT
-                                target_set.target_set_id,
-                                target_set.weight_enabled,
-                                target_set.risk_budget_enabled,
-                                sum(line.target_weight) AS weight_total,
-                                sum(line.target_risk_share) AS risk_total
+                            SELECT target_set.target_set_id,
+                                target_set.comparator_taxonomy_node_id AS scope,
+                                coalesce(node.allocation_basis, taxonomy.root_allocation_basis) AS basis,
+                                sum(line.target_value) FILTER (WHERE line.target_member_type != 'cash_bucket') AS security_total,
+                                coalesce(sum(line.target_value) FILTER (WHERE line.target_member_type = 'cash_bucket'), 0) AS cash_reserve,
+                                count(*) FILTER (WHERE line.target_value IS NULL) AS missing_values
                             FROM portfolio.target_set_record target_set
-                            LEFT JOIN portfolio.target_set_line_record line
-                                USING (target_set_id)
+                            JOIN portfolio.taxonomy_record taxonomy USING (taxonomy_id)
+                            LEFT JOIN portfolio.taxonomy_node_record node
+                                ON node.taxonomy_node_id = target_set.comparator_taxonomy_node_id
+                            LEFT JOIN portfolio.target_set_line_record line USING (target_set_id)
                             WHERE target_set.status = 'active'
-                            GROUP BY
-                                target_set.target_set_id,
-                                target_set.weight_enabled,
-                                target_set.risk_budget_enabled
+                            GROUP BY target_set.target_set_id, target_set.comparator_taxonomy_node_id,
+                                node.allocation_basis, taxonomy.root_allocation_basis
                         )
-                        SELECT count(*)
-                        FROM target_totals
-                        WHERE (weight_enabled AND abs(coalesce(weight_total, 0) - 1) > 1e-8)
-                           OR (risk_budget_enabled AND abs(coalesce(risk_total, 0) - 1) > 1e-8)
+                        SELECT count(*) FROM target_totals
+                        WHERE missing_values > 0 OR cash_reserve < 0 OR cash_reserve > 1
+                           OR (scope IS NOT NULL AND cash_reserve != 0)
+                           OR (abs(coalesce(security_total, 0) - 1) > 1e-6
+                               AND NOT (scope IS NULL AND basis = 'weight'
+                                        AND cash_reserve = 1 AND security_total = 0))
                     """,
-                    detail="Each enabled target dimension must sum to 100% within its scope.",
+                    detail="Security targets must sum to 100% within their scope; root cash is a separate NAV reserve.",
                 )
             )
             checks.append(
@@ -3489,7 +3438,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     query="""
                         SELECT count(*)
                         FROM portfolio.target_set_line_record
-                        WHERE target_weight < 0 OR target_risk_share < 0
+                        WHERE target_value < 0
                     """,
                     detail="Long-only planning targets may not contain negative shares.",
                 )

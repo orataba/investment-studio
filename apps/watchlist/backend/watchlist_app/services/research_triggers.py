@@ -252,7 +252,14 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         documents = list({row["source_id"]: row for row in [*documents, *revisions]}.values())
     risk_changes = _risk_changes(session, instrument_id, since, now)
     due = _due_items(session, instrument_id, prior_context, since, now)
+    attempted = prior_context.get("attempted_theme_baselines", {})
+    dossier = next((row for row in prior_context.get("research_dossiers", []) if row["instrument_id"] == instrument_id), {})
+    pending_themes = [{"theme_id": row["theme_id"], "title": row["title"], "reference": row.get("reference")}
+        for row in dossier.get("themes", []) if row["status"] == "active" and row.get("baseline_status") == "pending"
+        and attempted.get(row["theme_id"]) != (row.get("baseline_requested_at") or row.get("created_at"))]
     reasons = []
+    if pending_themes:
+        reasons.append({"kind": "theme_baseline", "reason": "新建重点主题需要主动补充研究基线。", "themes": pending_themes})
     if documents:
         reasons.append({"kind": "new_research_sources", "reason": "已研究范围出现新的、实质修订或撤回的来源资料。", "sources": documents})
     if risk_changes:

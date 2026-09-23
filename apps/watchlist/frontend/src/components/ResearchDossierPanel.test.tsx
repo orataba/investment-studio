@@ -7,10 +7,12 @@ import ResearchDossierPanel from './ResearchDossierPanel'
 import SectorResearchPanel from './SectorResearchPanel'
 import { LanguageProvider, LanguageSelector } from '../../../../../packages/ui/src/i18n'
 import { announceResearchPublication } from '../lib/researchUpdates'
+import { researchMessages, researchPatterns } from '../researchMessages'
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('../lib/api', () => ({ fetchJson: request, API_BASE_URL: '' }))
-vi.mock('./ResearchTrackingPanel', () => ({ default: () => null }))
+vi.mock('./ResearchThemesPanel', () => ({ default: () => <div data-testid="themes-panel" /> }))
+vi.mock('./ResearchRecentEvents', () => ({ default: () => <div data-testid="recent-events" /> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers() })
 const question = { key: 'cloud-cash', question: '云投入能否转化为现金回报？', assessment: '收入已有改善，现金回收仍待验证。', evidence_for: ['新增合同增长。'], evidence_against: ['折旧负担仍在增加。'], next_check: '对照下一期现金流及资本开支。', status: 'open' as const, source_ids: ['original-1'] }
 const notebook: SavedResearchNotebook = { run_id: 'completed-1', checked_at: '2026-09-06T08:00:00+08:00', prior_analysis: { fundamental_view: '底层需求仍在增长，需要核实回报质量。', valuation_view: '当前估值需要收入兑现。', source_ids: [], sources: [], version_id: 'prior-notebook', updated_at: '2026-09-01T08:00:00Z', note: '此前保存的综合分析，保留原日期。' }, key_drivers: ['客户现金回报'], questions: [question], important_changes: ['新合同提高了下一季收入可见度。'], next_research: ['核实新增合同转化情况。'], source_ids: ['original-1'], sources: [{ source_id: 'original-1', title: '公司原始报告', url: 'https://example.com/original', published_at: '2026-09-05', retrieved_at: '2026-09-06T07:00:00+08:00' }] }
@@ -24,6 +26,7 @@ beforeEach(() => { request.mockResolvedValue(dossier()) })
 async function expandArchive() {
   await act(async () => { const summary = screen.getByText('研究档案', { selector: 'summary' }); if (!summary.closest('details')?.open) fireEvent.click(summary) })
   await screen.findByRole('region', { name: '研究材料' })
+  const raw = screen.queryByText('底稿原始记录', { selector: 'summary' }); if (raw && !raw.closest('details')?.open) fireEvent.click(raw)
 }
 
 it('presents independent investment dimensions and binds forecast follow-ups to the original version', async () => {
@@ -69,7 +72,7 @@ it('reloads a completed notebook when the same research run finishes', async () 
   request.mockResolvedValue(dossier())
   rerender(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="run-1" reviewStatus="completed" />)
   await expandArchive()
-  expect(screen.getByRole('region', { name: '研究问题与判断' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: '当时研究问题与判断' })).toBeTruthy()
   expect(request).toHaveBeenCalledTimes(2)
 })
 
@@ -127,7 +130,7 @@ it('shows saved research questions and important changes while leaving long mate
   const ask = vi.fn()
   render(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="completed-1" onAskAssistant={ask} />)
   await expandArchive()
-  const questions = screen.getByRole('region', { name: '研究问题与判断' })
+  const questions = screen.getByRole('region', { name: '当时研究问题与判断' })
   expect(within(questions).getByText(question.assessment)).toBeTruthy()
   expect(screen.getByText(notebook.important_changes[0])).toBeTruthy()
   expect(screen.getByText(material.body).closest('details')?.open).toBe(false)
@@ -176,7 +179,7 @@ it('saves text material with separate publication and effective dates without al
   await screen.findByText('材料已保存。')
   expect(request).toHaveBeenCalledWith('/api/research/instruments/fund-1/dossier/materials', { method: 'POST', body: JSON.stringify({ title: '管理人访谈', source: '管理人电话访谈', published_at: '2026-09-05', effective_date: '2026-08-31', body: '访谈材料' }) })
   expect(screen.getByText('管理人访谈', { selector: 'summary' })).toBeTruthy()
-  expect(within(screen.getByRole('region', { name: '研究问题与判断' })).getByText(question.assessment)).toBeTruthy()
+  expect(within(screen.getByRole('region', { name: '当时研究问题与判断' })).getByText(question.assessment)).toBeTruthy()
 })
 
 it('edits the instrument research mandate through its own API while preserving research materials and judgments', async () => {
@@ -193,7 +196,7 @@ it('edits the instrument research mandate through its own API while preserving r
   render(<ResearchDossierPanel instrumentId="fund-1" />)
   await act(async () => {})
   expect(screen.getByText(mandate.background).closest('.research-method-plan')?.hasAttribute('open')).toBe(false)
-  fireEvent.click(screen.getByText('研究方法与范围', { selector: 'summary' }))
+  fireEvent.click(screen.getByText('研究设置与范围', { selector: 'summary' }))
   await expandArchive()
   const task = screen.getByRole('region', { name: '研究框架' })
   expect(within(task).getByText(mandate.background)).toBeTruthy()
@@ -209,7 +212,7 @@ it('edits the instrument research mandate through its own API while preserving r
     ['/api/research/instruments/fund-1/dossier/mandate', { method: 'PUT', body: JSON.stringify(input) }],
   ])
   expect(within(task).getByText(saved.focus[1])).toBeTruthy()
-  expect(within(screen.getByRole('region', { name: '研究问题与判断' })).getByText(question.assessment)).toBeTruthy()
+  expect(within(screen.getByRole('region', { name: '当时研究问题与判断' })).getByText(question.assessment)).toBeTruthy()
   fireEvent.click(screen.getByText(material.title, { selector: 'summary' }))
   expect(within(screen.getByRole('region', { name: '研究材料' })).getByText(material.body)).toBeTruthy()
 })
@@ -273,7 +276,7 @@ it('does not invent questions before a completed notebook exists and refreshes a
   request.mockResolvedValue(dossier())
   rerender(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="completed-1" />)
   await expandArchive()
-  expect(screen.getByRole('region', { name: '研究问题与判断' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: '当时研究问题与判断' })).toBeTruthy()
   expect(request).toHaveBeenCalledTimes(2)
 })
 
@@ -286,7 +289,7 @@ it('keeps the overview summary short and retains the saved notebook when the lat
   expect(request.mock.calls.some(([path]) => path.endsWith('/dossier?include_history=false'))).toBe(true)
   rerender(<SectorResearchPanel instrumentId="fund-1" />)
   await expandArchive()
-  const questions = screen.getByRole('region', { name: '研究问题与判断' })
+  const questions = screen.getByRole('region', { name: '当时研究问题与判断' })
   expect(within(questions).getByText(question.assessment)).toBeTruthy()
   expect(within(screen.getByRole('region', { name: '当前投资判断' })).getByText('已完成的当前判断。')).toBeTruthy()
   expect(within(questions).queryByText('新一轮未完成。')).toBeNull()
@@ -377,14 +380,15 @@ it('keeps released and cancelled outcomes in the archive without duplicating sch
 it('translates research controls in both languages while preserving saved research wording', async () => {
   window.history.replaceState(null, '', '/?lang=en')
   request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, questions: [{ ...question, question: 'Risk', assessment: 'Research' }] } })
-  render(<LanguageProvider><LanguageSelector /><ResearchDossierPanel instrumentId="fund-1" onAskAssistant={vi.fn()} /></LanguageProvider>)
+  render(<LanguageProvider messages={researchMessages} patterns={researchPatterns}><LanguageSelector /><ResearchDossierPanel instrumentId="fund-1" onAskAssistant={vi.fn()} /></LanguageProvider>)
   await act(async () => { fireEvent.click(screen.getByText('Research archive', { selector: 'summary' })) })
-  const questions = await screen.findByRole('region', { name: 'Research questions and judgments' })
+  fireEvent.click(await screen.findByText('Original notebook records', { selector: 'summary' }))
+  const questions = await screen.findByRole('region', { name: 'Historical questions and judgments' })
   expect(within(questions).getByRole('heading', { name: 'Risk' })).toBeTruthy()
   expect(within(questions).getByText('Research')).toBeTruthy()
   expect(within(questions).getByRole('button', { name: 'Ask about this question' })).toBeTruthy()
   fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'zh-Hans' } })
-  await screen.findByRole('region', { name: '研究问题与判断' })
+  await screen.findByRole('region', { name: '当时研究问题与判断' })
   expect(within(questions).getByRole('heading', { name: 'Risk' })).toBeTruthy()
   expect(within(questions).getByText('Research')).toBeTruthy()
   expect(within(questions).getByRole('button', { name: '追问这个问题' })).toBeTruthy()
@@ -396,7 +400,7 @@ it('keeps decoded prior analysis folded and binds its evidence to the original n
   const priorSource = { source_id: 'old-source', title: '旧底稿的原始来源', document_id: 'old-document', version_id: 'old-source-version' }
   const prior = { ...notebook.prior_analysis!, source_ids: ['old-source'], sources: [priorSource], version_id: 'old-notebook-version' }
   request.mockImplementation(async (path: string) => path.includes('?source_id=') ? { text: '当时留存的证据正文' } : { ...dossier(), notebook: { ...notebook, version_id: 'new-notebook-version', prior_analysis: prior } })
-  render(<ResearchDossierPanel instrumentId="fund-1" />)
+  render(<ResearchDossierPanel instrumentId="fund-1" readingMode />)
   const label = await screen.findByText(/^既有综合分析/)
   expect(label.closest('details')?.open).toBe(false)
   fireEvent.click(label)
@@ -430,5 +434,5 @@ it.each([false, true])('keeps saved reviews and lessons readable in the current 
   expect(screen.getByText(lesson.lesson)).toBeTruthy()
   expect(screen.getByText(lesson.limitations)).toBeTruthy()
   expect(screen.getAllByRole('link', { name: '公司原始报告' }).length).toBeGreaterThan(0)
-  expect(Boolean(screen.queryByRole('button', { name: '复核这条经验' }))).toBe(!readingMode)
+  expect(Boolean(screen.queryByRole('button', { name: '复核这条经验' }))).toBe(true)
 })

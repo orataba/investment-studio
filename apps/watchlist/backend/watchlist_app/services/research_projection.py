@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session
 from watchlist_app.db.models.workbench import RiskCase
 
-from watchlist_app.db.models.research import InstrumentResearchNote
+from watchlist_app.db.models.research import InstrumentResearchNote, InstrumentResearchNoteRevision, InstrumentInvestmentStance
 from watchlist_app.repositories.sqlalchemy.research import (
     SQLAlchemyInstrumentResearchRepository,
 )
@@ -59,14 +59,12 @@ def build_research_watchlist_attribute_overrides(
 
     repository = SQLAlchemyInstrumentResearchRepository()
     overrides = {
-        instrument_id: {"research_note_count": 0, "research_stage": "watching"}
+        instrument_id: {"research_note_count": 0, "research_stage": "watching", "research_current_view": None}
         for instrument_id in normalized_ids
     }
     for profile in repository.list_profiles(session, normalized_ids):
         values = overrides[profile.instrument_id]
         values["research_stage"] = profile.research_stage
-        if profile.current_view:
-            values["research_current_view"] = profile.current_view
         if profile.manual_rating is not None:
             values["manual_rating"] = profile.manual_rating
         if profile.primary_analyst:
@@ -74,6 +72,21 @@ def build_research_watchlist_attribute_overrides(
         if profile.next_review_date is not None:
             values["research_next_review_date"] = profile.next_review_date
         values["research_updated_at"] = profile.updated_at
+
+    from watchlist_app.services.research_identity import research_identity
+    selections = select(InstrumentInvestmentStance.instrument_id, InstrumentInvestmentStance.note_id,
+        InstrumentInvestmentStance.note_revision, func.row_number().over(
+            partition_by=InstrumentInvestmentStance.instrument_id,
+            order_by=(InstrumentInvestmentStance.selected_at.desc(), InstrumentInvestmentStance.selection_id.desc())).label("rank"),
+        ).where(InstrumentInvestmentStance.instrument_id.in_(normalized_ids),
+                InstrumentInvestmentStance.team_id == research_identity()["team_id"]).subquery()
+    selected_notes = select(InstrumentResearchNoteRevision).join(selections, and_(
+        selections.c.instrument_id == InstrumentResearchNoteRevision.instrument_id,
+        selections.c.note_id == InstrumentResearchNoteRevision.note_id,
+        selections.c.note_revision == InstrumentResearchNoteRevision.revision_number,
+        selections.c.rank == 1))
+    for selected in session.scalars(selected_notes):
+        overrides[selected.instrument_id]["research_current_view"] = selected.body or selected.summary
 
     notes_by_instrument: dict[str, list[InstrumentResearchNote]] = defaultdict(list)
     for note in repository.list_notes_for_instruments(session, normalized_ids):

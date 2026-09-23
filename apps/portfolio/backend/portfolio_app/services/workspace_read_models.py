@@ -16,7 +16,7 @@ from portfolio_app.db.models import PortfolioRecordModel, PortfolioWorkspaceRead
 from portfolio_app.db.session import get_session_factory
 
 
-WORKSPACE_ANALYSIS_VERSION = 1
+WORKSPACE_ANALYSIS_VERSION = 3
 PUBLISHED_SURFACES = frozenset({"holdings_analytics", "portfolio_risk_basis"})
 
 

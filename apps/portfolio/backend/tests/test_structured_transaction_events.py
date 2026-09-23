@@ -1670,11 +1670,7 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     assert performance_summary["performance_label"] == (
         "Total Portfolio Operational Return"
     )
-    assert performance_summary["ordinary_sleeve_twr_status"] == "unavailable"
-    assert performance_summary["ordinary_sleeve_twr_reason"] == (
-        "Sleeve boundary cash flows are not maintained as a cash subledger; "
-        "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
-    )
+
     assert performance_summary["derivative_lifecycle_realized_pnl"] == pytest.approx(
         197.0
     )

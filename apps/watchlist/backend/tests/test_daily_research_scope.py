@@ -11,6 +11,7 @@ from watchlist_app.services import sector_research as service, shared_instrument
 
 def test_daily_scope_uses_latest_saved_proposed_or_invested_status_and_reloads_changes(client, monkeypatch):
     monkeypatch.setattr(service, "_research_due", lambda market, now: True)
+    monkeypatch.setattr(service, "_research_market", lambda session, iid: "us")
     rows = [
         ("proposed", "etf", True, "Proposed"),
         ("invested", "equity", True, "Invested"),

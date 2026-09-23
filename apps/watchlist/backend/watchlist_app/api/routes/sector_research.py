@@ -10,6 +10,7 @@ from watchlist_app.services import sector_research as service
 from watchlist_app.services.research_runner import harness_available, run_analysis
 from watchlist_app.services.sector_estimates import read_estimate_evidence
 from watchlist_app.services.research_user_commands import UserCommand
+from watchlist_app.services.research_quant import QuantAnalysisInput
 from watchlist_app.api.research_presentation import review_status_view
 
 router = APIRouter()
@@ -260,6 +261,41 @@ def submit_draft(run_id: str, request: service.ReviewResult, session: Session = 
     return {"status": "pending_fact_review", "run_id": run_id,
             "instrument_ids": run.context_json["instrument_ids"],
             "message": "草稿已验证并保存，仍待独立复核；尚未发布研究结论或事件。"}
+
+
+@router.get("/research/runs/{run_id}/quant-availability")
+def quant_availability(run_id: str, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.quant_sandbox import availability
+    from watchlist_app.services.research_quant import QuantOutput
+    market_run(session, run_id)
+    return {**availability(), "output_schema": QuantOutput.model_json_schema(),
+            "input_contract": "inputs[source_id] holds the exact retained source; params holds explicit assumptions. Define result as a JSON-compatible dictionary. No network, host files or package installation."}
+
+
+@router.get("/research/runs/{run_id}/quant-inputs")
+def quant_inputs(run_id: str, instrument_id: str, version_id: str | None = None, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_quant import input_catalogue
+    run = market_run(session, run_id)
+    try:
+        return {"instrument_id": instrument_id, "version_id": version_id,
+                "sources": input_catalogue(run.context_json, run_id, instrument_id, version_id)}
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/research/runs/{run_id}/quant")
+def run_quant(run_id: str, request: QuantAnalysisInput, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.quant_sandbox import SandboxUnavailable
+    from watchlist_app.services.research_quant import execute_analysis, analysis_overview
+    run = market_run(session, run_id)
+    try:
+        evidence = execute_analysis(run, request)
+    except SandboxUnavailable as error:
+        raise HTTPException(503, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    session.commit()
+    return analysis_overview(evidence)
 
 
 @router.get("/research/runs/{run_id}/sector-company/{instrument_id}/{symbol}")

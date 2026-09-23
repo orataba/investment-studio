@@ -43,6 +43,7 @@ from portfolio_app.services.research_inputs import capture_current_target_config
 from portfolio_app.services.research_solver import (
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    RESEARCH_TARGET_SOLVER_VERSION,
     SYSTEM_CASH_TARGET_LABEL,
     SYSTEM_CASH_TARGET_MEMBER_ID,
     SYSTEM_DERIVATIVE_TARGET_LABEL,
@@ -77,7 +78,7 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
-RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 5
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 7
 logger = logging.getLogger(__name__)
 DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
     {
@@ -310,10 +311,15 @@ def _ensure_research_settings_record(
     session,
     portfolio_id: str,
     *,
-    default_planning_taxonomy_id: str | None,
     default_as_of_date: date,
 ) -> ResearchSettingsRecordModel:
     record = session.get(ResearchSettingsRecordModel, portfolio_id)
+    available = session.scalars(select(TaxonomyRecordModel.taxonomy_id).where(
+        TaxonomyRecordModel.portfolio_id == portfolio_id,
+        TaxonomyRecordModel.status == "active",
+        TaxonomyRecordModel.primary_assignment_scope == "instrument",
+    ).limit(2)).all()
+    unique_taxonomy_id = available[0] if len(available) == 1 else None
     if record is not None:
         changed = False
         if _research_as_of_mode(record) == RESEARCH_AS_OF_MODE_DYNAMIC and record.as_of_date is not None:
@@ -321,8 +327,8 @@ def _ensure_research_settings_record(
             # portfolio date is resolved at read/run time instead.
             record.as_of_date = None
             changed = True
-        if not record.target_dimension:
-            record.target_dimension = "scope_default"
+        if record.planning_taxonomy_id is None and unique_taxonomy_id is not None:
+            record.planning_taxonomy_id = unique_taxonomy_id
             changed = True
         if not record.capital_mode:
             record.capital_mode = "unit_notional"
@@ -351,14 +357,13 @@ def _ensure_research_settings_record(
 
     record = ResearchSettingsRecordModel(
         portfolio_id=portfolio_id,
-        planning_taxonomy_id=default_planning_taxonomy_id,
+        planning_taxonomy_id=unique_taxonomy_id,
         comparator_taxonomy_node_id=None,
         as_of_mode=RESEARCH_AS_OF_MODE_DYNAMIC,
         as_of_date=None,
         lookback_days=90,
         calculation_frequency="daily",
         missing_return_policy=RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
-        target_dimension="scope_default",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
@@ -402,8 +407,8 @@ def _validate_planning_taxonomy(
     )
     if taxonomy is None:
         raise ValueError("Planning taxonomy not found.")
-    if taxonomy.status != "active":
-        raise ValueError("Research planning taxonomy must be active.")
+    if taxonomy.status != "active" or taxonomy.primary_assignment_scope != "instrument":
+        raise ValueError("Research taxonomy must be an active instrument classification.")
     return taxonomy
 
 
@@ -492,17 +497,16 @@ def _validate_top_sleeve_weight_bounds(
 
 def _planning_taxonomy_options(portfolio_id: str) -> list[dict[str, object]]:
     configured = {item["taxonomy_id"] for item in list_target_sets(portfolio_id)
-                  if item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))}
+                  if item.get("status") == "active"}
     return [
         {
             "taxonomy_id": item["taxonomy_id"],
             "name": item["name"],
             "taxonomy_type": item["taxonomy_type"],
-            "budgeting_level": item.get("budgeting_level"),
             "targets_available": item["taxonomy_id"] in configured,
         }
         for item in list_taxonomies(portfolio_id)
-        if item.get("status") == "active"
+        if item.get("status") == "active" and item.get("primary_assignment_scope") == "instrument"
     ]
 
 
@@ -560,7 +564,6 @@ def _serialize_settings_row(
         "lookback_days": int(row.lookback_days or 90),
         "calculation_frequency": "daily",
         "missing_return_policy": row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
-        "target_dimension": row.target_dimension or "scope_default",
         "capital_mode": row.capital_mode or "unit_notional",
         "gross_exposure": _safe_float(row.gross_exposure),
         "target_volatility": _safe_float(row.target_volatility),
@@ -654,6 +657,7 @@ def _planning_state_fingerprint(
         return None
     state = {
         "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
+        "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
         "as_of_date": as_of_date.isoformat(),
         "target_snapshot_fingerprint": configuration["target_snapshot_fingerprint"],
         # Dates alone do not detect an amended/deleted historical transaction.
@@ -728,6 +732,12 @@ def _research_run_reliability(
         )
 
     request_payload = row.request_payload_json if isinstance(row.request_payload_json, dict) else {}
+    if request_payload.get("solver_version") != RESEARCH_TARGET_SOLVER_VERSION:
+        reasons.append(
+            "Run uses an earlier target solver; rerun Research with the global leaf-covariance solver before treating it as current."
+        )
+    elif request_payload.get("planning_state_fingerprint_version") != RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION:
+        reasons.append("Run uses an earlier Research input identity version; rerun Research before treating it as current.")
     run_planning_state_fingerprint = str(request_payload.get("planning_state_fingerprint") or "").strip()
     if not run_planning_state_fingerprint:
         reasons.append(
@@ -758,7 +768,6 @@ def _research_run_reliability(
                 or settings_payload.get("missing_return_policy")
                 or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
             ),
-            "target_dimension": settings_payload.get("target_dimension"),
             "capital_mode": settings_payload.get("capital_mode"),
             "gross_exposure": settings_payload.get("gross_exposure"),
             "target_volatility": settings_payload.get("target_volatility"),
@@ -1364,13 +1373,8 @@ def _build_current_target_signals(
             "tone": "neutral",
         },
         {
-            "label": "Target Dimension",
-            "value": _format_dimension(settings_payload.get("target_dimension") or "scope_default"),
-            "tone": "neutral",
-        },
-        {
-            "label": "Scope Default",
-            "value": _format_dimension(scope.get("default_target_dimension") or "weight"),
+            "label": "Allocation Basis",
+            "value": _format_dimension(scope.get("allocation_basis") or "weight"),
             "tone": "neutral",
         },
         {
@@ -1501,7 +1505,7 @@ def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
                 ),
                 "current_weight": current_weight,
                 "current_value_base": _safe_float((actual_row or {}).get("current_value_base")),
-                "default_target_dimension": (target_row or {}).get("default_target_dimension"),
+                "allocation_basis": (target_row or {}).get("allocation_basis"),
                 "selected_target_dimension": (target_row or {}).get("selected_dimension"),
                 "source_target_set_type": (target_row or {}).get("source_target_set_type"),
                 "source_target_set_id": (target_row or {}).get("source_target_set_id"),
@@ -1535,7 +1539,9 @@ def _build_target_assumptions(
     solve_event: dict[str, object] | None,
 ) -> list[str]:
     assumptions = [
-        "Local target solves are long-only and fully invested within each selected scope; member weights are bounded between 0% and 100%.",
+        "One global allocation solve uses all eligible leaf securities in the selected research scope and one aligned leaf covariance matrix. Target allocations are long-only; fixed-capital and no-trade constraints remain explicit.",
+        "Each parent keeps its configured allocation basis: Weight sets child capital as a fraction of parent capital; Risk sets child Euler risk contribution as a fraction of parent contribution under the same global covariance.",
+        "Concentration limits are exposure-to-NAV monitoring thresholds; they are not hard constraints on this target solve.",
     ]
     frequency = "daily"
     assumptions.append(
@@ -1550,27 +1556,26 @@ def _build_target_assumptions(
         )
     else:
         assumptions.append("Missing-return handling is strict: active covariance/RC inputs must have complete aligned returns.")
-    if str(settings_payload.get("target_dimension") or "") == "scope_default":
-        assumptions.append("Scope Default resolves each sleeve using that sleeve's own default target dimension before rolling results upward.")
-    if str((solve_event or {}).get("target_dimension") or "") == "risk_budget":
-        covariance_model = str((solve_event or {}).get("covariance_model") or "research covariance").replace("_", " ")
+    assumptions.append("Each parent applies its configured allocation basis within the same global solve; an entirely absent tactical vector inherits that parent's strategic vector.")
+    covariance_model = (solve_event or {}).get("covariance_model")
+    if covariance_model:
         contribution_mode = str((solve_event or {}).get("risk_contribution_mode") or "risk").upper()
         assumptions.append(
-            f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions; "
-            "leaf implementation weights can roll up through the sleeve tree, but risk targets remain local and are not multiplied by ancestor risk targets."
+            f"The trailing {str(covariance_model).replace('_', ' ')} estimate is computed once at leaf level using {contribution_mode} contributions. "
+            "Parent diagnostics and look-through RC aggregate that same global solution; covariance is not re-estimated separately within sleeves."
         )
-        assumptions.append(
-            "Look-through forward RC is recomputed from the solved leaf weights under the portfolio-level leaf covariance. "
-            "Because correlation shrinkage is re-estimated at each hierarchy level, look-through RC can differ from a parent sleeve's locally achieved risk-budget share."
-        )
-    if str(settings_payload.get("target_dimension") or "") != "scope_default":
-        assumptions.append("The selected scope can use an explicit target-dimension override; child sleeves still use their own configured default target dimension.")
+    else:
+        assumptions.append("This solve has no available global risk-contribution estimate; capital allocations and fixed-capital entries do not establish zero economic risk.")
+    if int((solve_event or {}).get("no_trade_member_count") or 0):
+        assumptions.append("Frozen members preserve actual capital. Weight targets allocate the remaining capital among adjustable members in their configured ratios; Risk targets retain frozen members in the full global risk equation.")
+    if (solve_event or {}).get("risk_attribution_scope") == "selected_research_scope":
+        assumptions.append("This run covers only the selected research scope; its risk contributions exclude outside holdings and must not be read as full-portfolio attribution.")
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
-        assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
+        assumptions.append("For the globally solved targets, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "volatility_cap":
-        assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility and only scales risky exposure down when it exceeds the volatility cap.")
+        assumptions.append("For the globally solved targets, Research estimates risky-sleeve volatility and only scales risky exposure down when it exceeds the volatility cap.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
-        assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
+        assumptions.append("For the globally solved targets, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
     if any(str(item.get("source_label_override") or "") == "Single Member" for item in target_rows):
         assumptions.append("Single-member sleeves resolve to 100% of that member; multi-member scopes require an active complete SAA/TAA target set.")
     assumptions.extend(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
@@ -1607,6 +1612,8 @@ def _build_current_target_detail(
         f"under {planning_taxonomy_name or 'the selected planning taxonomy'}."
     )
     return {
+        "solver_version": solution.get("solver_version"),
+        "risk_attribution_scope": solution.get("risk_attribution_scope"),
         "headline": headline,
         "coverage_note": (
             f"Valuation and market observations through {context.get('as_of_date')}; "
@@ -1759,7 +1766,7 @@ def _write_artifacts(
         ("member_targets", "Member Targets CSV", member_targets_path),
         ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),
         ("solve_event", "Solve Event CSV", solve_event_path),
-        ("scope_solve_events", "Scope Solve Events CSV", scope_solve_events_path),
+        ("scope_solve_events", "Hierarchy Constraint Diagnostics CSV", scope_solve_events_path),
         ("target_weight_gaps", "Target Weight Gaps CSV", target_weight_gaps_path),
     ]:
         artifacts.append(
@@ -1792,7 +1799,6 @@ def get_research_workbench(
         record = _ensure_research_settings_record(
             session,
             portfolio_id,
-            default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
             default_as_of_date=latest_portfolio_as_of_date,
         )
         scope_name_map = _scope_name_map(
@@ -1912,7 +1918,6 @@ def get_research_workbench(
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
         "base_currency": str(portfolio.get("base_currency") or "USD"),
         "as_of_date": _iso_date(latest_portfolio_as_of_date),
-        "default_planning_taxonomy_id": str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
         "planning_taxonomy_options": _planning_taxonomy_options(portfolio_id),
         "planning_scope_options": build_research_scope_options(
             portfolio_id,
@@ -1947,7 +1952,6 @@ def update_research_settings(
     missing_return_policy: str,
     covariance_model_id: str,
     contribution_mode: str,
-    target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
@@ -1982,7 +1986,6 @@ def update_research_settings(
         row = _ensure_research_settings_record(
             session,
             portfolio_id,
-            default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
             default_as_of_date=latest_portfolio_as_of_date,
         )
         resolved_planning_taxonomy_id = str(planning_taxonomy_id or "").strip() or None
@@ -2028,7 +2031,6 @@ def update_research_settings(
         row.lookback_days = int(lookback_days or 90)
         row.calculation_frequency = "daily"
         row.missing_return_policy = (missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip() or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
-        row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
         row.gross_exposure = gross_exposure
         row.target_volatility = target_volatility
@@ -2168,7 +2170,6 @@ def run_portfolio_research(
         settings_row = _ensure_research_settings_record(
             session,
             portfolio_id,
-            default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
             default_as_of_date=latest_portfolio_as_of_date,
         )
         taxonomy = _validate_planning_taxonomy(session, portfolio_id, settings_row.planning_taxonomy_id)
@@ -2186,9 +2187,8 @@ def run_portfolio_research(
         configuration = capture_current_target_configuration(
             portfolio_id, str(settings_row.planning_taxonomy_id), session=session,
         ) if settings_row.planning_taxonomy_id else None
-        if not any(item.get("status") == "active" and (item.get("weight_enabled") or item.get("risk_budget_enabled"))
-                   for item in (configuration or {}).get("target_sets", [])):
-            raise ValueError("Configure active weight or risk-contribution targets for the selected taxonomy before running Research.")
+        if configuration is None:
+            raise ValueError("Select a taxonomy before running Research.")
         production_risk_model = get_portfolio_risk_policy(portfolio_id)
         risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
         risk_calculation_frequency = "daily"
@@ -2242,7 +2242,8 @@ def run_portfolio_research(
                 "risk_model": deepcopy(production_risk_model or {}),
                 "planning_state_fingerprint_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
                 "planning_state_fingerprint": planning_state_fingerprint,
-                "target_dimension": settings_row.target_dimension or "scope_default",
+                "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
+                "risk_attribution_scope": "portfolio" if resolved_scope_node_id is None else "selected_research_scope",
                 "capital_mode": research_capital_mode,
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
                 "target_volatility": _safe_float(settings_row.target_volatility),
@@ -2311,7 +2312,6 @@ def run_portfolio_research(
                     lookback_days=risk_lookback_days,
                     calculation_frequency=risk_calculation_frequency,
                     missing_return_policy=risk_missing_return_policy,
-                    target_dimension=settings_row.target_dimension or "scope_default",
                     capital_mode=research_capital_mode,
                     gross_exposure=_safe_float(settings_row.gross_exposure),
                     target_volatility=_safe_float(settings_row.target_volatility),
@@ -2332,7 +2332,6 @@ def run_portfolio_research(
                     lookback_days=risk_lookback_days,
                     calculation_frequency=risk_calculation_frequency,
                     missing_return_policy=risk_missing_return_policy,
-                    target_dimension=settings_row.target_dimension or "scope_default",
                     capital_mode=research_capital_mode,
                     gross_exposure=_safe_float(settings_row.gross_exposure),
                     target_volatility=_safe_float(settings_row.target_volatility),

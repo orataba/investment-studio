@@ -40,7 +40,7 @@ def test_planning_audit_reads_current_assignments_against_latest_complete_holdin
                 instrument_id=postgres_portfolio_env['instrument_id'], currency='USD', quantity=1 if day == yesterday else 0,
                 market_value_base=100, holding_json={'valuation_basis': 'market_quote'}, calculated_at='fixture'))
         session.add(TaxonomyRecordModel(taxonomy_id='planning', portfolio_id='planning-audit',
-            name='Planning', taxonomy_type='custom', primary_assignment_scope='instrument', planning_enabled=True))
+            name='Planning', taxonomy_type='custom', primary_assignment_scope='instrument'))
         session.flush()
         node = TaxonomyNodeRecordModel(taxonomy_node_id='node', taxonomy_id='planning', node_name='Current')
         assignment = TaxonomyAssignmentRecordModel(assignment_id='assignment', taxonomy_id='planning',

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
@@ -89,6 +89,26 @@ class InstrumentResearchProfileRevision(Base):
     manual_rating: Mapped[int | None] = mapped_column(Integer)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_by: Mapped[str | None]
+
+
+class InstrumentInvestmentStance(Base):
+    """Explicit, append-only choices of the team's current overall view."""
+    __tablename__ = "instrument_investment_stance"
+    __table_args__ = (
+        CheckConstraint("(note_id IS NULL) = (note_revision IS NULL)", name="stance_reference_pair"),
+        ForeignKeyConstraint(["instrument_id", "note_id", "note_revision"],
+            ["instrument_research_note_revision.instrument_id", "instrument_research_note_revision.note_id", "instrument_research_note_revision.revision_number"]),
+        Index("idx_investment_stance_scope_time", "instrument_id", "team_id", "selected_at"),
+    )
+
+    selection_id: Mapped[str] = mapped_column(primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"))
+    team_id: Mapped[str] = mapped_column(Text, nullable=False)
+    note_id: Mapped[str | None] = mapped_column(Text)
+    note_revision: Mapped[int | None] = mapped_column(Integer)
+    selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    selected_by: Mapped[str] = mapped_column(Text, nullable=False)
+    selected_by_name: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class InstrumentResearchNote(Base):

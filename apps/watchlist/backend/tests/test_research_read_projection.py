@@ -51,7 +51,7 @@ def test_scoped_archive_reads_use_two_queries_and_never_materialize_complete_run
         assert not session.identity_map  # No ORM run/context or per-topic lazy loads.
         assert all(not column.compare(ResearchEntry.__table__.c.context_json)
                    for statement in queries for column in statement.selected_columns)
-        assert all(set(record.context_json) == {"cutoff", "recordkeeping_only", "citation_correction"}
+        assert all(set(record.context_json) == {"cutoff", "recordkeeping_only", "citation_correction", "organization_revision"}
                    for record, _ in rows)
         queries.clear()
         sources = research_notebook.retained_public_sources(session, "xlk")

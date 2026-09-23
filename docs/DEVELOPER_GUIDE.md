@@ -100,7 +100,7 @@ docs/                          当前仓库级合同与手册
 | 修改 Watchlist 指标 | Watchlist canonical recalc/read model | `RETURN_SERIES_CONTRACT.md`、详情页和主表字段、monitoring、导出 |
 | 修改交易 | Portfolio command/store/ledger | Preview/Commit、日期与金额合同、lots/obligations、cash posting、snapshot invalidation、导入导出、审计日志 |
 | 修改 Portfolio 计算 | Portfolio calculation service | `01_CALCULATION_SPEC.md`、Holdings 字典、coverage/unavailable 语义、`calculation_version` 和重建路径 |
-| 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | 当前配置版本、PIT 行情输入、target 完整性、Risk/Risk Budget eligibility、历史模拟披露 |
+| 修改 taxonomy 或 Research solve | Portfolio taxonomy/research services | 根／节点依据与目标原子保存、配置和算法版本失效、PIT 行情输入、全局 leaf covariance、最终层级约束、历史模拟披露 |
 | 修改身份或运行诊断 | `packages/identity`、`home`、`packages/runtime`、`packages/ui` | 当前会话与资源权限、停用/撤权、请求关联、耗时边界、敏感信息不入日志 |
 | 修改数据库结构 | 对应 Alembic chain | 单库八 schema 依赖顺序、升级数据、恢复路径、migration-head 和 PostgreSQL integration tests |
 | 修改部署脚本 | `infra/launchd` 或 `infra/systemd` | 停写、备份、迁移、回滚、原服务集合恢复、loopback 网络边界、shell tests |
@@ -238,7 +238,8 @@ INVESTMENT_STUDIO_LOCAL_DATABASE_URL='postgresql+psycopg://investment_studio@127
 - Documents 只具备现有数据/附件能力，没有完整通用文档工作台；PDF/图片 OCR 和官方指数方法论文档摄取未实现。
 - Portfolio 支持股票／ETF 的显式卖空与回补；不支持直接债券、融资、PE/VC capital call、基金份额转换或衍生品 transfer。
 - FCN/Option 没有 daily fair value、Greeks、自动 barrier/行权或 covariance risk；相关持仓按明确的 carrying/liability 口径披露。
-- Portfolio taxonomy 与分析范围采用当前配置，修改后完整重算历史展示；Research 以每次运行保存的当前目标快照做历史模拟，行情按决策日截断，不是历史实际目标的重放或实盘绩效。执行模型不包含拒单、部分成交、容量和 market impact。
+- Portfolio taxonomy 管理当前分类、单标量目标及逐项集中度。根 `root_allocation_basis` / 节点 `allocation_basis` 是 SAA/TAA 共用依据，目标行只存 `target_value`；只有整层空 TAA 才继承 SAA，部分向量明确 invalid。根 Cash 是独立 NAV 预留，衍生品只读实际资本。没有全局默认规划、planning 门控或 Research 维度覆盖。共享 resolver 供 catalog、Risk 和 Research 消费，不能在 UI 另建解析逻辑。依据／目标／限额可同事务保存；目标修改发布一次分类版本并重算，纯限额修改只增加浓度 revision，不影响研究身份。浓度分子为证券 gross 市值加 FCN 本金；单证券／FCN 上限全组合唯一，节点上限由 taxonomy 开关监控，缺数据不得视为正常。
+- Research 对选中范围内全部叶证券建立一个 covariance，联合施加各父节点的 `W_child = a × W_parent` 或全局 Euler `Q_child = b × Q_parent`，最终权重、RC 和层级诊断保持同一口径。`RESEARCH_TARGET_SOLVER_VERSION` 属于运行与缓存输入身份；变更算法须更新方法版本并使旧结果明确 stale，不能改写存档输出或混用旧解。每次运行保存当前目标快照做历史模拟，行情按决策日截断，不是历史实际目标的重放或实盘绩效。执行模型不包含拒单、部分成交、容量和 market impact。
 - 共享登录会话由 Home 提供；远程访问须通过配置了 TLS 和页面/API 会话校验的受控入口。
 - 远程访问和供应商 transport 的当前限制以 [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md) 为准。
 

@@ -13,9 +13,10 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
-import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
+import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import type { ResearchReference } from '../lib/researchDossierApi'
+import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
@@ -364,7 +365,7 @@ type LocalizedText = {
 const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   overview: { en: 'Overview', zh: '总览' },
   'investment-research': { en: 'Investment Research', zh: '投资研究' },
-  views: { en: 'PM Views', zh: '经理观点' },
+  views: { en: 'Investment Views', zh: '投资观点' },
   performance: { en: 'Performance & Risk', zh: '业绩与风险' },
   archive: { en: 'Fund Archive', zh: '基金档案' },
 }
@@ -2999,6 +3000,22 @@ export default function FundDetailPage({
   }, [rollingRiskSettings])
 
   useEffect(() => {
+    let request = 0
+    const updated = (event: Event) => {
+      if (!(event as CustomEvent<string[]>).detail.includes(fundId)) return
+      const currentRequest = ++request
+      void getInstrumentResearch(fundId).then(research => {
+        if (currentRequest !== request) return
+        setBundle(current => current?.summary.instrument_id === fundId ? { ...current, research } : current)
+      }).catch(reason => {
+        if (currentRequest === request) setLoadWarning(reason instanceof Error ? reason.message : 'Investment views could not be refreshed.')
+      })
+    }
+    window.addEventListener(RESEARCH_UPDATED, updated)
+    return () => { request += 1; window.removeEventListener(RESEARCH_UPDATED, updated) }
+  }, [fundId])
+
+  useEffect(() => {
     let cancelled = false
     const previousBundle = bundle?.summary.instrument_id === fundId ? bundle : null
     const bundleKey = `${fundType}:${fundId}:${refreshToken}`
@@ -5165,7 +5182,7 @@ export default function FundDetailPage({
   const lifetimePerformanceSnapshot =
     performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ||
     buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
-  const currentOpinion = latestInvestmentOpinion(research)
+  const currentOpinion = currentInvestmentOpinion(research)
   const overviewRankingValue =
     performance.ranking
       ? [
@@ -7754,7 +7771,7 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'investment-research' ? <>
-        <div className="research-reading-toolbar"><button type="button" onClick={() => setDetailSearchParams(params => { const next = new URLSearchParams(params); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); return next }, { replace: true })}>{readingMode ? (language === 'zh-Hans' ? '返回研究工作面' : 'Research workspace') : (language === 'zh-Hans' ? '报告阅读模式' : 'Read as report')}</button></div>
+        <div className="research-reading-toolbar"><button type="button" onClick={() => setDetailSearchParams(params => { const next = new URLSearchParams(params); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); return next }, { replace: true })}>{readingMode ? (language === 'zh-Hans' ? '研究概览' : 'Research overview') : (language === 'zh-Hans' ? '深度研究报告' : 'In-depth report')}</button></div>
         <SectorResearchPanel instrumentId={fundId} onAskAssistant={openAssistant} readingMode={readingMode} />
       </> : null}
 

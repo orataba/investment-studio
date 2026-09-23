@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from portfolio_app.api.concentration_contracts import ConcentrationSettingsUpdate
+
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, time
 from typing import Literal
@@ -31,7 +33,7 @@ TargetMemberType = Literal[
     "cash_bucket",
     "derivative_bucket",
 ]
-DefaultTargetDimension = Literal["weight", "risk_budget"]
+AllocationBasis = Literal["weight", "risk_budget"]
 TransactionCommandType = Literal[
     "short_sell",
     "buy_to_cover",
@@ -1498,8 +1500,6 @@ class PerformanceSummary(BaseModel):
     risk_unavailable_reason: str | None = None
     performance_basis: Literal["market_value", "operational_carrying_basis"] = "market_value"
     performance_label: str = "Total Portfolio Return"
-    ordinary_sleeve_twr_status: Literal["unavailable"] = "unavailable"
-    ordinary_sleeve_twr_reason: str
     latest_complete_as_of_date: date | None = None
     start_nav: float | None = None
     end_nav: float | None = None
@@ -1687,9 +1687,7 @@ class TaxonomyRecord(BaseModel):
     taxonomy_type: str
     purpose: str | None = None
     primary_assignment_scope: TaxonomyAssignmentScope
-    planning_enabled: bool = False
-    budgeting_level: str | None = None
-    root_default_target_dimension: DefaultTargetDimension = "weight"
+    root_allocation_basis: AllocationBasis = "weight"
     status: str = "active"
     source_template_ref: str | None = None
 
@@ -1702,7 +1700,7 @@ class TaxonomyNodeRecord(BaseModel):
     node_code: str | None = None
     sort_order: int = 0
     is_terminal: bool = True
-    default_target_dimension: DefaultTargetDimension = "weight"
+    allocation_basis: AllocationBasis = "weight"
     status: str = "active"
 
 
@@ -1713,79 +1711,6 @@ class TaxonomyAssignmentRecord(BaseModel):
     target_entity_id: str
     taxonomy_node_id: str
     status: str = "active"
-
-
-class AnalyticsScopePolicyRecord(BaseModel):
-    analytics_scope_policy_id: str
-    portfolio_id: str
-    taxonomy_id: str
-    taxonomy_node_id: str
-    risk_eligible: bool
-    risk_budget_eligible: bool
-    performance_scope: Literal[
-        "ordinary",
-        "derivative_lifecycle",
-        "operational_only",
-        "unallocated",
-    ]
-    valuation_basis: Literal[
-        "market",
-        "fair_value",
-        "carrying",
-        "event",
-        "obligation",
-        "cash",
-        "unknown",
-    ]
-    exclusion_reason: str | None = None
-    policy_version: int = Field(ge=1)
-    superseded_by_policy_id: str | None = None
-    created_at: str
-
-
-class AnalyticsScopePolicyUpsertRequest(BaseModel):
-    risk_eligible: bool
-    risk_budget_eligible: bool
-    performance_scope: Literal[
-        "ordinary",
-        "derivative_lifecycle",
-        "operational_only",
-        "unallocated",
-    ]
-    valuation_basis: Literal[
-        "market",
-        "fair_value",
-        "carrying",
-        "event",
-        "obligation",
-        "cash",
-        "unknown",
-    ]
-    exclusion_reason: str | None = None
-
-    @field_validator("exclusion_reason", mode="before")
-    @classmethod
-    def validate_optional_text(cls, value: object) -> object:
-        return _normalize_optional_text(value)
-
-    @model_validator(mode="after")
-    def validate_policy(self) -> "AnalyticsScopePolicyUpsertRequest":
-        if self.risk_budget_eligible and not self.risk_eligible:
-            raise ValueError("risk_budget_eligible requires risk_eligible.")
-        if (
-            not self.risk_eligible or self.performance_scope != "ordinary"
-        ) and not self.exclusion_reason:
-            raise ValueError("Excluded or non-ordinary policies require exclusion_reason.")
-        return self
-
-
-class AnalyticsTaxonomySelectionRecord(BaseModel):
-    analytics_taxonomy_selection_id: str
-    portfolio_id: str
-    taxonomy_id: str | None = None
-    selection_version: int = Field(ge=1)
-    superseded_by_selection_id: str | None = None
-    created_at: str
 
 
 class PortfolioInstrumentUniverseRecord(BaseModel):
@@ -1828,8 +1753,6 @@ class TargetSetRecord(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str
-    weight_enabled: bool = False
-    risk_budget_enabled: bool = False
     status: str = "active"
     notes: str | None = None
 
@@ -1840,8 +1763,7 @@ class TargetSetLineRecord(BaseModel):
     target_member_type: TargetMemberType
     target_member_id: str
     taxonomy_node_id: str | None = None
-    target_weight: float | None = None
-    target_risk_share: float | None = None
+    target_value: float | None = None
     notes: str | None = None
 
 
@@ -1858,22 +1780,16 @@ class TargetSetIntegrityIssueRecord(BaseModel):
 
 class TaxonomyCatalogResponse(BaseModel):
     portfolio_id: str
-    default_planning_taxonomy_id: str | None = None
     risk_basis: dict[str, object] | None = None
     taxonomies: list[TaxonomyRecord]
     taxonomy_nodes: list[TaxonomyNodeRecord]
     taxonomy_assignments: list[TaxonomyAssignmentRecord]
-    analytics_scope_policy_version: int = 0
-    analytics_scope_policies: list[AnalyticsScopePolicyRecord] = Field(
-        default_factory=list
-    )
-    analytics_taxonomy_selections: list[AnalyticsTaxonomySelectionRecord] = Field(
-        default_factory=list
-    )
+    taxonomy_configuration_version: int = 0
     instrument_universe: list[PortfolioInstrumentUniverseRecord] = Field(default_factory=list)
     target_sets: list[TargetSetRecord] = Field(default_factory=list)
     target_set_lines: list[TargetSetLineRecord] = Field(default_factory=list)
     target_set_integrity_issues: list[TargetSetIntegrityIssueRecord] = Field(default_factory=list)
+    target_resolution: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ResearchPlanningTaxonomyOption(BaseModel):
@@ -1881,7 +1797,6 @@ class ResearchPlanningTaxonomyOption(BaseModel):
     taxonomy_id: str
     name: str
     taxonomy_type: str
-    budgeting_level: str | None = None
 
 
 class ResearchPlanningScopeOption(BaseModel):
@@ -1889,7 +1804,7 @@ class ResearchPlanningScopeOption(BaseModel):
     label: str
     path: str
     depth: int = 0
-    default_target_dimension: DefaultTargetDimension = "weight"
+    allocation_basis: AllocationBasis = "weight"
     has_children: bool = False
 
 
@@ -1955,7 +1870,6 @@ class ResearchSettingsRecord(BaseModel):
     lookback_days: int = Field(default=90)
     calculation_frequency: ResearchCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
-    target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
@@ -1993,7 +1907,6 @@ class ResearchSettingsUpdateRequest(BaseModel):
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
     contribution_mode: PortfolioRiskContributionMode = "signed"
-    target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
@@ -2194,7 +2107,7 @@ class ResearchScopeSelectionRecord(BaseModel):
     label: str
     path: str
     depth: int = 0
-    default_target_dimension: DefaultTargetDimension = "weight"
+    allocation_basis: AllocationBasis = "weight"
     member_source: str = "child_sleeves"
 
 
@@ -2204,7 +2117,7 @@ class ResearchMemberTargetRecord(BaseModel):
     label: str
     scope_path: str | None = None
     member_path: str | None = None
-    default_target_dimension: DefaultTargetDimension | None = None
+    allocation_basis: AllocationBasis | None = None
     selected_target_dimension: ResearchTargetDimension | None = None
     source_target_set_type: TargetSetType | None = None
     current_weight: float | None = None
@@ -2252,13 +2165,17 @@ class ResearchSolvedResultGroupRecord(BaseModel):
 
 
 class ResearchSolveEventRecord(BaseModel):
+    solver_version: str | None = None
+    risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
+    global_leaf_count: int | None = None
+    global_leaf_ids: list[str] = Field(default_factory=list)
     as_of_date: str
     scope_node_id: str | None = None
     scope_label: str
     scope_path: str | None = None
     scope_depth: int | None = None
     requested_target_dimension: str | None = None
-    taxonomy_default_target_dimension: DefaultTargetDimension | None = None
+    taxonomy_allocation_basis: AllocationBasis | None = None
     target_dimension: ResearchTargetDimension | None = None
     solver_kind: str | None = None
     solver_detail: str | None = None
@@ -2321,7 +2238,7 @@ class ResearchTargetRowRecord(BaseModel):
     label: str
     current_weight: float | None = None
     current_value_base: float | None = None
-    default_target_dimension: DefaultTargetDimension | None = None
+    allocation_basis: AllocationBasis | None = None
     selected_target_dimension: ResearchTargetDimension | None = None
     source_target_set_type: TargetSetType | None = None
     source_target_set_id: str | None = None
@@ -2399,6 +2316,8 @@ class ResearchBacktestContributionReconciliationRecord(BaseModel):
 
 
 class ResearchBacktestMethodologyRecord(BaseModel):
+    solver_version: str | None = None
+    risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
     name: str
     target_configuration: Literal["current_snapshot"] | None = None
     target_snapshot_fingerprint: str | None = None
@@ -2557,6 +2476,8 @@ class ResearchBacktestBenchmarkComparisonResponse(BaseModel):
 
 
 class ResearchRunDetailRecord(BaseModel):
+    solver_version: str | None = None
+    risk_attribution_scope: Literal["portfolio", "selected_research_scope"] | None = None
     headline: str | None = None
     coverage_note: str | None = None
     signals: list[ResearchContextSignalRecord] = Field(default_factory=list)
@@ -2629,7 +2550,6 @@ class ResearchWorkbenchResponse(BaseModel):
     portfolio_name: str
     base_currency: str
     as_of_date: date
-    default_planning_taxonomy_id: str | None = None
     planning_taxonomy_options: list[ResearchPlanningTaxonomyOption] = Field(default_factory=list)
     planning_scope_options: list[ResearchPlanningScopeOption] = Field(default_factory=list)
     calculation_frequency: ResearchCalculationFrequencyProfile
@@ -2651,18 +2571,8 @@ class ResearchArtifactContentResponse(BaseModel):
     content: str
 
 
-class DefaultPlanningTaxonomyUpdateRequest(BaseModel):
-    taxonomy_id: str | None = None
-
-    @field_validator("taxonomy_id", mode="before")
-    @classmethod
-    def validate_optional_text(cls, value: object) -> object:
-        return _normalize_optional_text(value)
 
 
-class DefaultPlanningTaxonomyResponse(BaseModel):
-    portfolio_id: str
-    default_planning_taxonomy_id: str | None = None
 
 
 class TaxonomyCreateRequest(BaseModel):
@@ -2670,27 +2580,20 @@ class TaxonomyCreateRequest(BaseModel):
     taxonomy_type: str = "custom"
     purpose: str | None = None
     primary_assignment_scope: TaxonomyAssignmentScope = "instrument"
-    planning_enabled: bool = False
-    budgeting_level: str | None = None
-    root_default_target_dimension: DefaultTargetDimension = "weight"
+    root_allocation_basis: AllocationBasis = "weight"
     status: str = "active"
     source_template_ref: str | None = None
 
-    @field_validator("name", "taxonomy_type", "status", "root_default_target_dimension", mode="before")
+    @field_validator("name", "taxonomy_type", "status", "root_allocation_basis", mode="before")
     @classmethod
     def validate_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
 
-    @field_validator("purpose", "budgeting_level", "source_template_ref", mode="before")
+    @field_validator("purpose", "source_template_ref", mode="before")
     @classmethod
     def validate_optional_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
 
-    @model_validator(mode="after")
-    def validate_taxonomy_contract(self) -> "TaxonomyCreateRequest":
-        if self.budgeting_level and not self.planning_enabled:
-            raise ValueError("budgeting_level requires planning_enabled.")
-        return self
 
 
 class TaxonomyNodeCreateRequest(BaseModel):
@@ -2699,10 +2602,10 @@ class TaxonomyNodeCreateRequest(BaseModel):
     parent_taxonomy_node_id: str | None = None
     sort_order: int | None = None
     is_terminal: bool = True
-    default_target_dimension: DefaultTargetDimension = "weight"
+    allocation_basis: AllocationBasis = "weight"
     status: str = "active"
 
-    @field_validator("node_name", "status", "default_target_dimension", mode="before")
+    @field_validator("node_name", "status", "allocation_basis", mode="before")
     @classmethod
     def validate_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
@@ -2717,28 +2620,21 @@ class TaxonomyUpdateRequest(BaseModel):
     name: str | None = None
     taxonomy_type: str | None = None
     purpose: str | None = None
-    planning_enabled: bool | None = None
-    budgeting_level: str | None = None
-    root_default_target_dimension: DefaultTargetDimension | None = None
+    root_allocation_basis: AllocationBasis | None = None
     status: str | None = None
 
-    @field_validator("name", "taxonomy_type", "status", "root_default_target_dimension", mode="before")
+    @field_validator("name", "taxonomy_type", "status", "root_allocation_basis", mode="before")
     @classmethod
     def validate_required_text(cls, value: object) -> object:
         if value is None:
             return None
         return _normalize_required_text(value)
 
-    @field_validator("purpose", "budgeting_level", mode="before")
+    @field_validator("purpose", mode="before")
     @classmethod
     def validate_optional_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
 
-    @model_validator(mode="after")
-    def validate_taxonomy_contract(self) -> "TaxonomyUpdateRequest":
-        if self.budgeting_level and self.planning_enabled is False:
-            raise ValueError("budgeting_level requires planning_enabled.")
-        return self
 
 
 class TaxonomyNodeUpdateRequest(BaseModel):
@@ -2746,10 +2642,10 @@ class TaxonomyNodeUpdateRequest(BaseModel):
     node_code: str | None = None
     parent_taxonomy_node_id: str | None = None
     sort_order: int | None = None
-    default_target_dimension: DefaultTargetDimension | None = None
+    allocation_basis: AllocationBasis | None = None
     status: str | None = None
 
-    @field_validator("node_name", "status", "default_target_dimension", mode="before")
+    @field_validator("node_name", "status", "allocation_basis", mode="before")
     @classmethod
     def validate_required_text(cls, value: object) -> object:
         if value is None:
@@ -2790,8 +2686,7 @@ class TargetSetLineInput(BaseModel):
     target_member_type: TargetMemberType | None = None
     target_member_id: str | None = None
     taxonomy_node_id: str | None = None
-    target_weight: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    target_risk_share: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    target_value: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     notes: str | None = None
 
     @field_validator("target_member_type", mode="before")
@@ -2838,8 +2733,6 @@ class TaxonomyTargetSetConfigurationInput(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str = Field(min_length=1)
-    weight_enabled: bool = False
-    risk_budget_enabled: bool = False
     status: Literal["active", "inactive"] = "active"
     notes: str | None = None
     lines: list[TargetSetLineInput] = Field(default_factory=list)
@@ -2851,7 +2744,10 @@ class TaxonomyTargetSetConfigurationInput(BaseModel):
 
 
 class TaxonomyTargetConfigurationRequest(BaseModel):
-    node_defaults: dict[str, DefaultTargetDimension] = Field(default_factory=dict)
+    expected_configuration_version: int = Field(ge=0)
+    root_allocation_basis: AllocationBasis | None = None
+    node_allocation_bases: dict[str, AllocationBasis] = Field(default_factory=dict)
+    concentration: ConcentrationSettingsUpdate | None = None
     target_sets: list[TaxonomyTargetSetConfigurationInput] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -2859,7 +2755,7 @@ class TaxonomyTargetConfigurationRequest(BaseModel):
         scopes = [(item.comparator_taxonomy_node_id, item.target_set_type) for item in self.target_sets]
         if len(scopes) != len(set(scopes)):
             raise ValueError("A target scope can only be saved once per request.")
-        if not self.node_defaults and not self.target_sets:
+        if self.root_allocation_basis is None and not self.node_allocation_bases and not self.target_sets and self.concentration is None:
             raise ValueError("No target configuration changes were provided.")
         return self
 
@@ -2868,8 +2764,6 @@ class TargetSetCreateRequest(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str = Field(min_length=1)
-    weight_enabled: bool = False
-    risk_budget_enabled: bool = False
     status: str = "active"
     notes: str | None = None
     lines: list[TargetSetLineInput] = Field(default_factory=list)
@@ -2884,19 +2778,10 @@ class TargetSetCreateRequest(BaseModel):
     def validate_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
 
-    @model_validator(mode="after")
-    def validate_target_set_contract(self) -> "TargetSetCreateRequest":
-        if not self.weight_enabled and not self.risk_budget_enabled:
-            raise ValueError("At least one target dimension must be enabled.")
-        if not self.lines:
-            raise ValueError("Target set lines are required.")
-        return self
 
 
 class TargetSetUpdateRequest(BaseModel):
     name: str | None = None
-    weight_enabled: bool | None = None
-    risk_budget_enabled: bool | None = None
     status: str | None = None
     notes: str | None = None
     lines: list[TargetSetLineInput] | None = None
@@ -2913,11 +2798,6 @@ class TargetSetUpdateRequest(BaseModel):
     def validate_optional_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
 
-    @model_validator(mode="after")
-    def validate_target_set_contract(self) -> "TargetSetUpdateRequest":
-        if self.weight_enabled is False and self.risk_budget_enabled is False:
-            raise ValueError("At least one target dimension must be enabled.")
-        return self
 
 
 ContributionAxis = Literal["instrument", "account", "instrument_type", "currency", "taxonomy"]

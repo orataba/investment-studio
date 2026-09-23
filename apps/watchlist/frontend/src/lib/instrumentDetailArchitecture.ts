@@ -51,7 +51,7 @@ const FUND_TAB_LABELS: Record<
 > = {
   public_fund: {
     'investment-research': { en: 'Investment Research', zh: '投资研究' },
-    views: { en: 'PM Views', zh: '经理观点' },
+    views: { en: 'Investment Views', zh: '投资观点' },
     performance: { en: 'Performance & Risk', zh: '业绩与风险' },
     archive: { en: 'Fund Archive', zh: '基金档案' },
     price: { en: 'Fees', zh: '费用' },
@@ -60,7 +60,7 @@ const FUND_TAB_LABELS: Record<
   },
   private_fund: {
     'investment-research': { en: 'Investment Research', zh: '投资研究' },
-    views: { en: 'PM Views', zh: '经理观点' },
+    views: { en: 'Investment Views', zh: '投资观点' },
     performance: { en: 'Performance & Risk', zh: '业绩与风险' },
     archive: { en: 'Fund Archive', zh: '基金档案' },
     price: { en: 'Terms', zh: '条款' },

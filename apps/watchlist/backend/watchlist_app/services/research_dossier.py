@@ -419,14 +419,14 @@ def _research_records(session: Session, instrument_id: str):
     team_id = principal.team_id
     relation, context = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
         "research_run": Boolean, "cutoff": String, "recordkeeping_only": Boolean,
-        "citation_correction": JSON, "reviews": JSON})
+        "citation_correction": JSON, "organization_revision": JSON, "reviews": JSON})
     review = context["reviews"][instrument_id]
     query = select(ResearchEntry.entry_id, ResearchEntry.team_id, ResearchEntry.topic_id,
         ResearchEntry.status, ResearchEntry.created_at, ResearchEntry.completed_at,
         ResearchTopic.portfolio_id,
         context["sector_run"].label("sector_run"), context["research_run"].label("research_run"),
         context["cutoff"].label("cutoff"), context["recordkeeping_only"].label("recordkeeping_only"),
-        context["citation_correction"].label("citation_correction"),
+        context["citation_correction"].label("citation_correction"), context["organization_revision"].label("organization_revision"),
         review["status"].as_string().label("review_status"), review["research"].label("research"),
     ).select_from(ResearchEntry).join(ResearchTopic)
     if relation is not None:
@@ -437,7 +437,7 @@ def _research_records(session: Session, instrument_id: str):
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
         instrument_run_scope(session, instrument_id), review["research"].as_string().is_not(None),
     ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
-        {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction")},
+        {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction", "organization_revision")},
          "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")})
     topics = {row.topic_id: SimpleNamespace(topic_id=row.topic_id, portfolio_id=row.portfolio_id) for row in records}
     portfolios = topic_portfolio_ids_by_topic(session, topics.values())
@@ -454,7 +454,7 @@ def _research_records(session: Session, instrument_id: str):
         record = SimpleNamespace(**{key: getattr(row, key) for key in
             ("entry_id", "team_id", "topic_id", "status", "created_at", "completed_at")},
             context_json={"cutoff": row.cutoff, "recordkeeping_only": row.recordkeeping_only,
-                          "citation_correction": row.citation_correction})
+                          "citation_correction": row.citation_correction, "organization_revision": row.organization_revision})
         yield record, research
 
 
@@ -462,7 +462,7 @@ def _notebooks(session: Session, instrument_id: str, include_history: bool):
     from watchlist_app.services.research_notebook import notebook_current_view
     notebook, history = None, {}
     for record, research in _research_records(session, instrument_id):
-        stamp = {"run_id": record.entry_id, "checked_at": record.context_json.get("cutoff"),
+        stamp = {"run_id": record.entry_id, "checked_at": research.get("checked_at") if record.context_json.get("recordkeeping_only") else record.context_json.get("cutoff"),
                  "version_id": research.get("version_id", record.entry_id),
                  "created_at": research.get("created_at") or record.completed_at or record.created_at,
                  "updated_at": research.get("updated_at") or record.completed_at or record.created_at}
@@ -482,6 +482,22 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
     from watchlist_app.services.research_notebook import notebook_source_ids
     from watchlist_app.services.market_evidence import hydrate_source
     require_instrument(session, instrument_id)
+    if version_id.startswith("theme:"):
+        from watchlist_app.services.research_themes import get_theme, theme_record
+        try:
+            identifier, revision = version_id.removeprefix("theme:").rsplit(":", 1)
+            current = theme_record(get_theme(session, instrument_id, identifier, actor=actor))
+            value = next(row for row in [*current.get("versions", []), current]
+                         if row.get("revision_number", 1) == int(revision))
+        except (ValueError, StopIteration) as error:
+            raise LookupError("当前标的没有这个已保存的主题版本") from error
+        cutoff = value.get("updated_at") or value.get("created_at")
+        sources = [hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None)
+                   for source in value.get("sources", [])]
+        return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": "theme",
+            "value": {key: deepcopy(item) for key, item in value.items() if key != "versions"}, "sources": sources,
+            "information_cutoff": cutoff, "recorded_at": cutoff,
+            "usage_note": "当时保存的主题判断与依据；不使用后来研究中的同名来源替换。"})
     if version_id.startswith("pm:"):
         from watchlist_app.services.research_views import note_version, note_sources
         from watchlist_app.api.routes.research import _serialize_note_revision
@@ -502,7 +518,7 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
         view = research.get("investment_view")
         if view:
             candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
-        for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
+        for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
             for item in research.get(field, []):
                 candidates += [(field, version) for version in [*item.get("versions", []), item]]
         for kind, value in candidates:
@@ -515,6 +531,7 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
                        for source in research.get("sources", []) if source.get("source_id") in refs]
             return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": kind,
                 "value": value, "sources": sources, "information_cutoff": cutoff,
+                "recorded_at": record.completed_at or record.created_at,
                 "usage_note": "这是当时保存的研究及其引用依据，不补入后来资料；预测与复盘均不是独立原始事实证据。"})
     mandate = read_mandate(session, instrument_id)
     for value in [*mandate.get("versions", []), mandate]:
@@ -543,7 +560,7 @@ def _review_cases(instrument_id: str, notebook: dict | None) -> list[dict]:
 def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None) -> dict:
     """Read materials, methods and completed notebooks without creating records."""
     from watchlist_app.services.research_notebook import retained_public_sources
-    from watchlist_app.services.research_themes import theme_index
+    from watchlist_app.services.research_themes import themes_view
     from watchlist_app.services.research_identity import research_identity
     from watchlist_app.api.routes.research import _serialize_note, research_repository
     actor = actor or research_identity()
@@ -553,7 +570,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     mandate = read_mandate(session, instrument_id)
     research_plan = plan_for_mandate(mandate["registration"], mandate)
     versions = research_repository.list_note_revisions(session, instrument_id)
-    from watchlist_app.services.research_views import note_sources
+    from watchlist_app.services.research_views import note_sources, read_current_stance
     pm_views = [{**_serialize_note(note), "sources": note_sources(session, instrument_id, note.research_context or {}), "versions": [
         {"revision_number": v.revision_number, "version_id": f"pm:{v.note_id}:{v.revision_number}",
          "recorded_at": v.recorded_at} for v in versions if v.note_id == note.note_id]}
@@ -576,6 +593,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     notebook, notebook_history = _notebooks(session, instrument_id, include_history)
     cases.extend(_review_cases(instrument_id, notebook))
     from watchlist_app.services.research_activity import review_agenda
+    current_themes = themes_view(session, instrument_id, actor=actor)["themes"]
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
         "instrument_type": instrument.instrument_type, "research_plan": research_plan, "frameworks": method_library()["frameworks"],
         "available_modules": [{key: item[key] for key in ("id", "title", "version")} for item in method_library()["frameworks"]],
@@ -583,6 +601,7 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         "prior_sources": retained_public_sources(session, instrument_id),
         "historical_cases": cases, "historical_case_limitations": history_limitations,
         "notebook": notebook, "notebook_history": notebook_history,
-        "themes": theme_index(session, instrument_id, actor=actor), "pm_views": pm_views,
-        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor),
+        "themes": current_themes, "pm_views": pm_views,
+        "current_stance": read_current_stance(session, instrument_id, actor=actor),
+        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor, themes=current_themes),
         "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

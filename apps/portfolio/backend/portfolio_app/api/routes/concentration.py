@@ -12,8 +12,8 @@ settings_router = APIRouter()
 
 
 @settings_router.get("/{portfolio_id}/concentration/settings")
-def concentration_settings(portfolio_id: str):
-    return read_concentration_settings(portfolio_id)
+def concentration_settings(portfolio_id: str, as_of_date: date | None = None):
+    return read_concentration_settings(portfolio_id, as_of_date=as_of_date)
 
 
 @settings_router.put("/{portfolio_id}/concentration/settings")

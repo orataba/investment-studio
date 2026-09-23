@@ -14,6 +14,7 @@ export type ResearchAssistantNote = {
   topicId: string
   title: string
   body: string
+  background: string
   reference?: ResearchAssistantReference
 }
 
@@ -166,6 +167,7 @@ export default function ResearchAssistant({
     instrumentId: string
     title: string
     body: string
+    background: string
   } | null>(null)
   const questionRef = useRef<HTMLTextAreaElement>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
@@ -526,6 +528,7 @@ export default function ResearchAssistant({
                         instrumentId: focusIds.length === 1 ? focusIds[0] : '',
                         title: entry.title,
                         body: entry.body,
+                        background: `当时讨论的问题：${entry.title}`,
                       })
                     }
                   >
@@ -576,6 +579,11 @@ export default function ResearchAssistant({
                   setAdoption({ ...adoption, title: e.target.value })
                 }
               />
+            </label>
+            <label>
+              当时背景与依据
+              <textarea rows={3} required value={adoption.background}
+                onChange={(e) => setAdoption({ ...adoption, background: e.target.value })} />
             </label>
             <label>
               研究记录

@@ -6,11 +6,12 @@ import { Link, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
-import InvestmentOpinionTimeline, { latestInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
+import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
 import EstimateHistoryPanel from '../components/EstimateHistoryPanel'
 import InstrumentAssistantDrawer from '../components/InstrumentAssistantDrawer'
 import type { ResearchReference } from '../lib/researchDossierApi'
+import { RESEARCH_UPDATED } from '../lib/researchUpdates'
 import InstrumentRiskDrawer from '../components/InstrumentRiskDrawer'
 import WorkspaceTools from '../../../../../packages/ui/src/WorkspaceTools'
 import EtfProfilePanel from '../components/EtfProfilePanel'
@@ -561,6 +562,23 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const settingsDialogRef = useModalDialog(settingsOpen, closeSettings)
 
   useEffect(() => {
+    let request = 0
+    const updated = (event: Event) => {
+      if (!(event as CustomEvent<string[]>).detail.includes(instrumentId)) return
+      const currentRequest = ++request
+      void getInstrumentResearch(instrumentId).then(value => {
+        if (currentRequest !== request) return
+        setResearch(value)
+        setResearchError(null)
+      }).catch(reason => {
+        if (currentRequest === request) setResearchError(reason instanceof Error ? reason.message : 'Investment views could not be refreshed.')
+      })
+    }
+    window.addEventListener(RESEARCH_UPDATED, updated)
+    return () => { request += 1; window.removeEventListener(RESEARCH_UPDATED, updated) }
+  }, [instrumentId])
+
+  useEffect(() => {
     let cancelled = false
     setRiskInstrumentId(null)
     setAssistant(null)
@@ -919,7 +937,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     },
   ]
 
-  const latestOpinion = latestInvestmentOpinion(research)
+  const latestOpinion = currentInvestmentOpinion(research)
   const zh = language === 'zh-Hans'
 
   if (loading) return <LoadingOverlay />
@@ -1144,7 +1162,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <button type="button" key={item}
               className={`instrument-detail-tab ${tab === item ? 'instrument-detail-tab-active' : ''}`}
               onClick={() => setTab(item)}>
-              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '经理观点' : 'PM Views', performance: zh ? '业绩与风险' : 'Performance & Risk' }[item]}
+              {{ overview: zh ? '总览' : 'Overview', 'investment-research': zh ? '投资研究' : 'Investment Research', views: zh ? '投资观点' : 'Investment Views', performance: zh ? '业绩与风险' : 'Performance & Risk' }[item]}
             </button>
           ))}
         </div>
@@ -1297,7 +1315,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       ) : null}
 
       {tab === 'investment-research' ? <div className="listed-tab-stack">
-        <div className="research-reading-toolbar"><button type="button" onClick={() => { const next = new URLSearchParams(searchParams); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); setSearchParams(next, { replace: true }) }}>{readingMode ? (zh ? '返回研究工作面' : 'Research workspace') : (zh ? '报告阅读模式' : 'Read as report')}</button></div>
+        <div className="research-reading-toolbar"><button type="button" onClick={() => { const next = new URLSearchParams(searchParams); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); setSearchParams(next, { replace: true }) }}>{readingMode ? (zh ? '研究概览' : 'Research overview') : (zh ? '深度研究报告' : 'In-depth report')}</button></div>
         <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} readingMode={readingMode} />
       </div> : null}
     </div>

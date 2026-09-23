@@ -273,6 +273,9 @@ class InstrumentResearchNoteContextInput(BaseModel):
     research_update_id: str | None = None
     event_case_id: str | None = None
     event_version_id: str | None = None
+    notebook_version_id: str | None = None
+    theme_version_id: str | None = None
+    investment_view_version_id: str | None = None
     related_note_id: str | None = None
     related_revision: int | None = Field(default=None, ge=1)
     relationship: Literal["initial", "update", "review", "lesson"] = "initial"
@@ -331,6 +334,13 @@ class InstrumentResearchNoteUpsertRequest(BaseModel):
 
     note: InstrumentResearchNoteInput
     updated_by: str | None = None
+
+
+class InvestmentStanceSelectionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note_id: str | None = None
+    revision_number: int | None = Field(default=None, ge=1)
 
 
 class NavSettingsUpsertRequest(BaseModel):

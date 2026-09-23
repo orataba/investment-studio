@@ -40,6 +40,17 @@
 .investment-opinion-message[role='alert'] { color: #b42318; }
 .investment-opinion-heading button { flex-shrink: 0; }
 
+.investment-opinion-current {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+  max-width: 900px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.investment-opinion-current h3 { margin: 0 0 8px; font-size: 14px; font-weight: 500; }
+.investment-opinion-current strong { font-weight: 500; }
+.investment-opinion-current p { margin: 6px 0 12px; white-space: pre-wrap; }
+
 .investment-opinion-entries {
   list-style: none;
   padding: 0;

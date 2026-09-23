@@ -72,9 +72,11 @@ class ResearchReferenceInput(BaseModel):
     pm_note_revision: int | None = Field(default=None, ge=1)
     instrument_id: str
     notebook_version_id: str | None = None
+    theme_version_id: str | None = None
     investment_view_version_id: str | None = None
     forecast_key: str | None = None
     forecast_version_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
     risk_case_id: str | None = Field(default=None, min_length=1)
     risk_case_updated_at: datetime | None = None
 
@@ -83,8 +85,8 @@ class ResearchReferenceInput(BaseModel):
         if bool(self.risk_case_id) != bool(self.risk_case_updated_at):
             raise ValueError("风险事项引用须同时包含事项标识和页面读取的更新时间，请刷新后重试")
         if self.risk_case_id and any((self.research_update_id, self.event_case_id, self.event_version_id,
-                self.theme_id, self.pm_note_id, self.pm_note_revision, self.notebook_version_id,
-                self.investment_view_version_id, self.forecast_key, self.forecast_version_id)):
+                self.theme_id, self.theme_version_id, self.pm_note_id, self.pm_note_revision, self.notebook_version_id,
+                self.investment_view_version_id, self.forecast_key, self.forecast_version_id, self.source_ids)):
             raise ValueError("当前风险快照不能与历史研究版本混为同一个引用")
         return self
 

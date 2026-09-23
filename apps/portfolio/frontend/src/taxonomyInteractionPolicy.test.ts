@@ -4,9 +4,7 @@ import {
   TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE,
   canDragTaxonomyEntity,
   canDropTaxonomyEntity,
-  targetDimensionEnabledForDraft,
 } from './lib/taxonomyInteractionPolicy'
-import taxonomiesPageSource from './pages/TaxonomiesPage.tsx?raw'
 
 describe('taxonomy target edit interaction policy', () => {
   it('pauses both assignment drag sources and drop targets while target values are edited', () => {
@@ -80,24 +78,4 @@ describe('taxonomy target edit interaction policy', () => {
     ).toBe(false)
   })
 
-  it('wires the policy to both drag sources, drop targets, and target editors', () => {
-    expect(taxonomiesPageSource).toContain('draggable={assignmentDragEnabled}')
-    expect(taxonomiesPageSource).toContain(
-      'onDragOver={assignmentDropEnabled ? (event) => handleNodeDragOver(event, node) : undefined}',
-    )
-    expect(taxonomiesPageSource).toContain('onDrop={assignmentDropEnabled ? (event) => void handleNodeDrop(event, node) : undefined}')
-    expect(taxonomiesPageSource).toContain('id="taxonomy-target-edit-lock-message"')
-    expect(taxonomiesPageSource).toContain('Edit Targets')
-    expect(taxonomiesPageSource).toContain('onDragStart={preventTargetEditorDrag}')
-    expect(taxonomiesPageSource).toContain('placeholder="Required"')
-    expect(taxonomiesPageSource).toContain('aria-invalid={targetWeightMissing}')
-    expect(taxonomiesPageSource).toContain('aria-invalid={targetRiskMissing}')
-  })
-
-  it('preserves explicitly disabled dimensions when editing an existing target set', () => {
-    expect(targetDimensionEnabledForDraft(false, true)).toBe(false)
-    expect(targetDimensionEnabledForDraft(true, false)).toBe(true)
-    expect(targetDimensionEnabledForDraft(undefined, true)).toBe(true)
-    expect(targetDimensionEnabledForDraft(null, false)).toBe(false)
-  })
 })

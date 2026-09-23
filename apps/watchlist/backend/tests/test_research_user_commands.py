@@ -145,7 +145,7 @@ def test_wrong_scope_or_model_owned_metadata_is_rejected(client, conversation):
 
 def test_pm_opinion_may_be_unverified_but_cited_source_must_be_real_and_in_scope(client, conversation):
     command = view_command()
-    command["note"]["research_context"] = {"source_ids": ["invented"]}
+    command["note"]["research_context"] = {"background": "根据当时观察提出待验证判断", "source_ids": ["invented"]}
     assert client.post(conversation, json=command).status_code == 422
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "user-command-run")
@@ -181,7 +181,7 @@ def test_pm_sources_are_frozen_with_the_view_and_reusable_through_the_dossier(cl
         run.context_json = {**run.context_json, "instrument_inputs": [{"instrument_id": "gold-command", "name": "黄金", "currency": "USD", "observed_value": 100}]}
         session.commit()
     command = view_command()
-    command["note"]["research_context"] = {"source_ids": [sid]}
+    command["note"]["research_context"] = {"background": "根据当时取得的数据形成判断", "source_ids": [sid]}
     saved = client.post(conversation, json=command)
     assert saved.status_code == 200, saved.text
     version_id = f"pm:{saved.json()['id']}:1"
@@ -207,7 +207,7 @@ def test_editing_a_pm_view_does_not_rebind_unchanged_material_ids(client, conver
     material = client.post("/api/research/instruments/gold-command/dossier/materials", json={
         "title": "原始资料", "body": "保存观点时取得的原始说明", "source": "管理人", "published_at": "2026-09-01"}).json()
     payload = {"note": {"note_date": date.today().isoformat(), "title": "独立投资观点", "body": "当时判断",
-                        "research_context": {"source_ids": [material["source_id"]]}}}
+                        "research_context": {"background": "根据当时已取得的管理人说明形成判断", "source_ids": [material["source_id"]]}}}
     response = client.post("/api/instruments/gold-command/research/notes", json=payload)
     assert response.status_code == 200, response.text
     note = response.json()["notes"][0]

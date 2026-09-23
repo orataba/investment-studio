@@ -11,7 +11,7 @@ from portfolio_app.db.models import (
     TaxonomyNodeRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import analytics_scope, portfolio_store
+from portfolio_app.services import taxonomy_configuration, portfolio_store
 from .test_postgres_instrument_registry_constraints import postgres_portfolio_env
 
 
@@ -26,7 +26,7 @@ def test_subtree_delete_is_atomic_and_keeps_surviving_target_lines(postgres_port
         session.commit()
     taxonomy = portfolio_store.create_taxonomy(portfolio_id,
         name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
-        planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
+        root_allocation_basis='weight',
         status='active', source_template_ref=None)
     taxonomy_id = taxonomy['taxonomy_id']
     with get_session_factory()() as session:
@@ -37,9 +37,9 @@ def test_subtree_delete_is_atomic_and_keeps_surviving_target_lines(postgres_port
             taxonomy_node_id='child', target_scope='instrument', target_entity_id=postgres_portfolio_env['instrument_id']))
         session.add_all([
             TargetSetRecordModel(target_set_id='root-target', taxonomy_id=taxonomy_id,
-                target_set_type='saa', name='Root', risk_budget_enabled=True),
+                target_set_type='saa', name='Root'),
             TargetSetRecordModel(target_set_id='child-target', taxonomy_id=taxonomy_id,
-                comparator_taxonomy_node_id='removed', target_set_type='saa', name='Child', risk_budget_enabled=True),
+                comparator_taxonomy_node_id='removed', target_set_type='saa', name='Child'),
         ])
         session.flush()
         for line_id, set_id, node_id, share in [('removed-line', 'root-target', 'removed', .4),
@@ -47,7 +47,7 @@ def test_subtree_delete_is_atomic_and_keeps_surviving_target_lines(postgres_port
                                                ('child-line', 'child-target', 'child', 1)]:
             session.add(TargetSetLineRecordModel(target_line_id=line_id, target_set_id=set_id,
                 taxonomy_node_id=node_id, target_member_type='taxonomy_node', target_member_id=node_id,
-                target_risk_share=share))
+                target_value=share))
         session.commit()
 
     original_mark = portfolio_store._mark_daily_snapshots_stale
@@ -74,7 +74,7 @@ def test_subtree_delete_is_atomic_and_keeps_surviving_target_lines(postgres_port
         assert session.get(TargetSetRecordModel, 'child-target') is None
         assert session.get(TargetSetLineRecordModel, 'removed-line') is None
         assert session.get(TargetSetLineRecordModel, 'child-line') is None
-        assert session.get(TargetSetLineRecordModel, 'survivor-line').target_risk_share == .6
+        assert session.get(TargetSetLineRecordModel, 'survivor-line').target_value == .6
         assert session.get(TargetSetRecordModel, 'root-target') is not None
 
 
@@ -87,12 +87,12 @@ def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_po
         session.commit()
     taxonomy = portfolio_store.create_taxonomy(portfolio_id,
         name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
-        planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
+        root_allocation_basis='weight',
         status='active', source_template_ref=None)
     taxonomy_id = taxonomy['taxonomy_id']
     nodes = [portfolio_store.create_taxonomy_node(portfolio_id, taxonomy_id=taxonomy_id,
         node_name=name, node_code=None, parent_taxonomy_node_id=None,
-        sort_order=ordinal, is_terminal=True, default_target_dimension='weight', status='active')
+        sort_order=ordinal, is_terminal=True, allocation_basis='weight', status='active')
         for ordinal, name in enumerate(['Equity', 'Rates'])]
     first_inside_revision, second_attempted, release_first = Event(), Event(), Event()
     original_record = portfolio_store._record_taxonomy_configuration_revision_in_session
@@ -134,62 +134,137 @@ def test_concurrent_taxonomy_edits_publish_complete_serial_revisions(postgres_po
         }
 
 
-def test_scope_policy_and_taxonomy_writers_share_portfolio_first_lock_order(postgres_portfolio_env, monkeypatch):
-    portfolio_id = 'planning-lock-order'
-    inception_date = date(2026, 9, 19)
+def test_concurrent_target_editors_reject_stale_draft_after_waiting_for_lock(postgres_portfolio_env, monkeypatch):
+    from fastapi import HTTPException
+    portfolio_id = 'target-editor-concurrent'
     with get_session_factory()() as session:
-        session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Planning lock order',
-            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=inception_date))
+        session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Concurrent targets',
+            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=date(2026, 9, 23)))
         session.commit()
-    taxonomy = portfolio_store.create_taxonomy(portfolio_id,
-        name='Planning', taxonomy_type='custom', purpose=None, primary_assignment_scope='instrument',
-        planning_enabled=True, budgeting_level='weight_and_risk_budget', root_default_target_dimension='weight',
+    taxonomy = portfolio_store.create_taxonomy(portfolio_id, name='Targets', taxonomy_type='custom',
+        purpose=None, primary_assignment_scope='instrument', root_allocation_basis='weight',
         status='active', source_template_ref=None)
     taxonomy_id = taxonomy['taxonomy_id']
-    taxonomy_locked, release_taxonomy, policy_attempted, policy_version_locked = Event(), Event(), Event(), Event()
+    version = taxonomy_configuration.taxonomy_configuration_version(portfolio_id)
+    first_inside, second_started, release_first = Event(), Event(), Event()
     original_record = portfolio_store._record_taxonomy_configuration_revision_in_session
-    original_next_version = analytics_scope._next_policy_version
 
     def record(session, **kwargs):
-        if current_thread().name.startswith('taxonomy-editor'):
-            taxonomy_locked.set()
-            assert release_taxonomy.wait(timeout=10)
+        if current_thread().name.startswith('first-target-editor'):
+            first_inside.set()
+            assert release_first.wait(timeout=10)
         return original_record(session, **kwargs)
 
-    def next_version(session, requested_portfolio_id):
-        version = original_next_version(session, requested_portfolio_id)
-        if current_thread().name.startswith('policy-editor'):
-            policy_version_locked.set()
-        return version
-
-    def edit_policy():
-        policy_attempted.set()
-        return analytics_scope.replace_analytics_scope_policy(portfolio_id, taxonomy_id=taxonomy_id,
-            taxonomy_node_id=analytics_scope.ROOT_POLICY_NODE_ID,
-            risk_eligible=False, risk_budget_eligible=False, performance_scope='ordinary',
-            valuation_basis='market', exclusion_reason='Excluded by PM')
-
     monkeypatch.setattr(portfolio_store, '_record_taxonomy_configuration_revision_in_session', record)
-    monkeypatch.setattr(analytics_scope, '_next_policy_version', next_version)
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='taxonomy-editor') as taxonomy_pool, \
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix='policy-editor') as policy_pool:
-        first = taxonomy_pool.submit(portfolio_store.update_taxonomy, portfolio_id, taxonomy_id,
-            name='Current planning')
-        assert taxonomy_locked.wait(timeout=10)
-        second = policy_pool.submit(edit_policy)
-        assert policy_attempted.wait(timeout=10)
+
+    def save(basis, second=False):
+        if second:
+            second_started.set()
+        return portfolio_store.save_taxonomy_target_configuration(portfolio_id, taxonomy_id,
+            expected_configuration_version=version, root_allocation_basis=basis,
+            node_allocation_bases={}, target_sets=[])
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='first-target-editor') as first_pool, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix='second-target-editor') as second_pool:
+        first = first_pool.submit(save, 'risk_budget')
+        assert first_inside.wait(timeout=10)
+        second = second_pool.submit(save, 'weight', True)
+        assert second_started.wait(timeout=10)
         try:
-            # A policy writer must wait for the portfolio before taking the
-            # version row that the taxonomy writer will need to finish.
-            assert not policy_version_locked.wait(timeout=.2)
             with pytest.raises(TimeoutError):
                 second.result(timeout=.1)
         finally:
-            release_taxonomy.set()
-        assert first.result(timeout=10)['name'] == 'Current planning'
-        assert second.result(timeout=10)['risk_eligible'] is False
-    policies = analytics_scope.list_analytics_scope_policies(portfolio_id, taxonomy_id=taxonomy_id)
-    root_policies = [item for item in policies if item['taxonomy_node_id'] == analytics_scope.ROOT_POLICY_NODE_ID
-                     and item['superseded_by_policy_id'] is None]
-    assert len(root_policies) == 1
-    assert root_policies[0]['risk_eligible'] is False
+            release_first.set()
+        first.result(timeout=10)
+        with pytest.raises(HTTPException) as error:
+            second.result(timeout=10)
+        assert error.value.status_code == 409
+    current = taxonomy_configuration.current_taxonomy_configuration(portfolio_id, taxonomy_id)
+    assert current['taxonomy']['root_allocation_basis'] == 'risk_budget'
+    assert current['configuration_version'] == version + 1
+
+
+def test_assignments_in_different_portfolios_do_not_compete_for_global_sequence(postgres_portfolio_env, monkeypatch):
+    taxonomies = []
+    for portfolio_id in ['assignment-owner-a', 'assignment-owner-b']:
+        with get_session_factory()() as session:
+            session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name=portfolio_id,
+                base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=date(2026, 9, 23)))
+            session.commit()
+        taxonomy = portfolio_store.create_taxonomy(portfolio_id, name='Industry', taxonomy_type='custom',
+            purpose=None, primary_assignment_scope='instrument', root_allocation_basis='weight',
+            status='active', source_template_ref=None)
+        node = portfolio_store.create_taxonomy_node(portfolio_id, taxonomy_id=taxonomy['taxonomy_id'],
+            node_name='Technology', node_code=None, parent_taxonomy_node_id=None,
+            sort_order=0, is_terminal=True, allocation_basis='weight', status='active')
+        taxonomies.append((portfolio_id, taxonomy['taxonomy_id'], node['taxonomy_node_id']))
+    first_inside, release_first = Event(), Event()
+    original_record = portfolio_store._record_taxonomy_configuration_revision_in_session
+
+    def record(session, **kwargs):
+        if current_thread().name.startswith('first-assignment'):
+            first_inside.set()
+            assert release_first.wait(timeout=10)
+        return original_record(session, **kwargs)
+
+    monkeypatch.setattr(portfolio_store, '_record_taxonomy_configuration_revision_in_session', record)
+
+    def assign(index):
+        portfolio_id, taxonomy_id, node_id = taxonomies[index]
+        return portfolio_store.create_taxonomy_assignment(portfolio_id, taxonomy_id=taxonomy_id,
+            taxonomy_node_id=node_id, target_scope='instrument',
+            target_entity_id=postgres_portfolio_env['instrument_id'], status='active')
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='first-assignment') as first_pool, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix='second-assignment') as second_pool:
+        first = first_pool.submit(assign, 0)
+        assert first_inside.wait(timeout=10)
+        try:
+            second_result = second_pool.submit(assign, 1).result(timeout=3)
+        finally:
+            release_first.set()
+        first_result = first.result(timeout=10)
+    assert first_result['assignment_id'] != second_result['assignment_id']
+
+
+def test_catalog_integrity_and_member_list_share_configuration_read_lock(postgres_portfolio_env, monkeypatch):
+    portfolio_id = 'catalog-snapshot'
+    with get_session_factory()() as session:
+        session.add(PortfolioRecordModel(portfolio_id=portfolio_id, portfolio_name='Catalog',
+            base_currency='USD', valuation_timezone='UTC', valuation_cutoff_policy='close', inception_date=date(2026, 9, 23)))
+        session.commit()
+    taxonomy = portfolio_store.create_taxonomy(portfolio_id, name='Original', taxonomy_type='custom',
+        purpose=None, primary_assignment_scope='instrument', root_allocation_basis='weight',
+        status='active', source_template_ref=None)
+    version = taxonomy_configuration.taxonomy_configuration_version(portfolio_id)
+    inside_read, writer_started, release_read = Event(), Event(), Event()
+    original_integrity = portfolio_store.list_target_set_integrity_issues
+
+    def integrity(*args, **kwargs):
+        assert kwargs.get('_session') is not None
+        inside_read.set()
+        assert release_read.wait(timeout=10)
+        return original_integrity(*args, **kwargs)
+
+    monkeypatch.setattr(portfolio_store, 'list_target_set_integrity_issues', integrity)
+
+    def rename():
+        writer_started.set()
+        return portfolio_store.update_taxonomy(portfolio_id, taxonomy['taxonomy_id'], name='Current')
+
+    with ThreadPoolExecutor(max_workers=1) as reader, ThreadPoolExecutor(max_workers=1) as writer:
+        read = reader.submit(taxonomy_configuration.current_taxonomy_catalog, portfolio_id)
+        assert inside_read.wait(timeout=10)
+        write = writer.submit(rename)
+        assert writer_started.wait(timeout=10)
+        try:
+            with pytest.raises(TimeoutError):
+                write.result(timeout=.1)
+        finally:
+            release_read.set()
+        catalog = read.result(timeout=10)
+        write.result(timeout=10)
+    assert catalog['taxonomies'][0]['name'] == 'Original'
+    assert catalog['taxonomy_configuration_version'] == version
+    assert catalog['target_set_integrity_issues'] == []
+    assert catalog['instrument_universe'] == []

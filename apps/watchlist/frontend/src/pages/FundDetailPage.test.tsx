@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import { emptyInstrumentResearchResponse } from '../lib/api'
 import FundDetailPage from './FundDetailPage'
+import { announceResearchPublication } from '../lib/researchUpdates'
 
 const api = vi.hoisted(() => ({ summary: vi.fn(), library: vi.fn(), nav: vi.fn(), research: vi.fn(), reference: vi.fn(), attributes: vi.fn(),
   performance: vi.fn(), risk: vi.fn(), documents: vi.fn(), strategy: vi.fn(), taxonomy: vi.fn(), resolve: vi.fn() }))
@@ -61,6 +62,20 @@ function LocationProbe() {
   const location = useLocation()
   return <output data-testid="fund-detail-location">{location.search}</output>
 }
+
+it('refreshes published fund opinions across research and investment-view tabs', async () => {
+  show('/instruments/fund-1?tab=investment-research')
+  await screen.findByTestId('fund-research-tracking')
+  const note = { note_id: 'new-view', note_date: '2026-09-23', note_type: 'thesis_update', title: '基金观察', body: '新增主题观点应立即出现在基金观点页。', summary: '', importance: 'normal', tags: [], source_refs: '', people: '', author: 'Shaw', follow_up_date: null, completed_at: null, created_at: '2026-09-23T09:00:00Z', updated_at: '2026-09-23T09:00:00Z', updated_by: 'terminal_ui', revision_number: 1 }
+  api.research.mockResolvedValue({ ...emptyInstrumentResearchResponse(), notes: [note] })
+  await act(async () => announceResearchPublication(['other']))
+  expect(api.research).toHaveBeenCalledTimes(1)
+  await act(async () => announceResearchPublication(['fund-1']))
+  expect(api.research).toHaveBeenCalledTimes(2)
+  fireEvent.click(screen.getByRole('button', { name: '投资观点' }))
+  expect(await screen.findByText(note.body)).toBeTruthy()
+  expect(api.summary).toHaveBeenCalledTimes(1)
+})
 
 it('places the three instrument tools beside the fund title and keeps only breadcrumbs and language in the topbar', async () => {
   const { container } = show()
@@ -140,9 +155,9 @@ it('keeps the overview free of duplicate charts and separates personal opinions 
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '经理观点', '业绩与风险', '基金档案'])
+  expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '业绩与风险', '基金档案'])
   expect(container.querySelector('.instrument-chart-stage')).toBeNull()
-  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '经理观点' }))
+  fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()
   expect(screen.queryByText('资料与明细')).toBeNull()
   fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资研究' }))
@@ -156,7 +171,7 @@ it.each(['public_fund', 'private_fund'] as const)('opens the %s research assista
   expect(tracking.getAttribute('data-variant')).toBe('timeline')
   const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
   expect(within(navigation).getByRole('button', { name: '投资研究' }).classList.contains('instrument-detail-tab-active')).toBe(true)
-  fireEvent.click(within(navigation).getByRole('button', { name: '经理观点' }))
+  fireEvent.click(within(navigation).getByRole('button', { name: '投资观点' }))
   await screen.findByRole('region', { name: '投资观点时间线' })
   fireEvent.click(within(navigation).getByRole('button', { name: '投资研究' }))
   await screen.findByTestId('fund-research-tracking')
@@ -251,7 +266,7 @@ it('preserves old document links and upload access inside the archive', async ()
 it.each(['public_fund', 'private_fund'] as const)('opens the same %s research in report mode and preserves legacy PM links', async type => {
   const { unmount } = show('/instruments/fund-1?tab=investment-research&mode=report&currency=CNY', type)
   expect((await screen.findByTestId('fund-research-tracking')).getAttribute('data-reading')).toBe('true')
-  fireEvent.click(screen.getByRole('button', { name: '返回研究工作面' }))
+  fireEvent.click(screen.getByRole('button', { name: '研究概览' }))
   expect(screen.getByTestId('fund-research-tracking').getAttribute('data-reading')).toBe('false')
   const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
   expect(params.get('tab')).toBe('investment-research')

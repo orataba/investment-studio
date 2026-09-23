@@ -20,6 +20,7 @@ import HoldingsSectionTables, {
 } from '../components/HoldingsSectionTables'
 import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
 import HoldingsOperationalStatus from '../components/HoldingsOperationalStatus'
+import ConcentrationPanel from '../components/ConcentrationPanel'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import { OPTION_OUTCOME_RECORDED_EVENT } from '../components/OptionOutcomePrompt'
@@ -1494,10 +1495,6 @@ function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | nul
   )
   return (
     taxonomies.find((taxonomy) => taxonomy.taxonomy_id === selectedTaxonomyId) ??
-    taxonomies.find(
-      (taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id,
-    ) ??
-    taxonomies.find((taxonomy) => taxonomy.planning_enabled) ??
     taxonomies[0] ??
     null
   )
@@ -2564,6 +2561,7 @@ export default function PortfolioHomePage() {
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+  const concentrationView = searchParams.get('view') === 'concentration'
   const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const loadedHoldingsInputRef = useRef<{ key: string; full: boolean } | null>(null)
   const [taxonomyCatalogResponse, setTaxonomyCatalog] =
@@ -3774,6 +3772,10 @@ export default function PortfolioHomePage() {
       <section className="portfolio-detail-surface holdings-surface">
         <div className="holdings-filter-bar">
           <div className="holdings-filter-group">
+            <div className="concentration-view-tabs" role="tablist" aria-label={zh ? '持仓视图' : 'Holdings view'}>
+              <button type="button" role="tab" aria-selected={!concentrationView} onClick={() => updateSearchParam('view', null)}>{zh ? '持仓' : 'Holdings'}</button>
+              <button type="button" role="tab" aria-selected={concentrationView} onClick={() => updateSearchParam('view', 'concentration')}>{zh ? '敞口与集中度' : 'Exposure and concentration'}</button>
+            </div>
             <label>
               <input
                 className="holdings-filter-input"
@@ -3784,7 +3786,7 @@ export default function PortfolioHomePage() {
               />
             </label>
           </div>
-          <div className="holdings-filter-actions">
+          {!concentrationView ? <div className="holdings-filter-actions">
             <QualityWarningsNotice warnings={workspace?.quality_warnings} />
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
@@ -3794,7 +3796,7 @@ export default function PortfolioHomePage() {
               disabled={!workspace || !workspace.rows.length}
               onSelect={handleDownload}
             />
-          </div>
+          </div> : null}
         </div>
         {loading || waitingForTaxonomy ? <CalculationStatus /> : null}
         {loading && workspace ? (
@@ -3822,7 +3824,8 @@ export default function PortfolioHomePage() {
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {!waitingForTaxonomy && !error && workspace && columnContext ? (
+        {concentrationView && !error && workspace ? <ConcentrationPanel key={portfolioId} portfolioId={portfolioId} asOfDate={workspace.as_of_date} /> : null}
+        {!concentrationView && !waitingForTaxonomy && !error && workspace && columnContext ? (
           <>
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">

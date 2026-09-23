@@ -319,7 +319,6 @@ def setup() -> str:
         derivative_contract=option_contract(call_open, "Synthetic Open Written SPY Call", "call", "2026-06-01", "2027-01-15", 1.10),
     )
 
-    effective = {"effective_from": START}
     top_specs = (
         ("Global Equity", 0.25, False),
         ("Nominal Bonds", 0.35, False),
@@ -334,14 +333,11 @@ def setup() -> str:
     if existing_taxonomy_state and existing_taxonomy_state["taxonomies"]:
         taxonomy = existing_taxonomy_state["taxonomies"][0]
         taxonomy_id = str(taxonomy["taxonomy_id"])
-        if taxonomy.get("budgeting_level") != "weight_and_risk_budget":
+        if taxonomy.get("root_allocation_basis") != "risk_budget":
             taxonomy = api(
                 prefix + f"/taxonomies/{taxonomy_id}",
                 {
-                    **effective,
-                    "budgeting_level": "weight_and_risk_budget",
-                    "planning_enabled": True,
-                    "root_default_target_dimension": "risk_budget",
+                    "root_allocation_basis": "risk_budget",
                 },
                 "PATCH",
             )
@@ -378,12 +374,9 @@ def setup() -> str:
         taxonomy = api(
             prefix + "/taxonomies",
             {
-                **effective,
                 "name": "Global All Weather Risk Budget QA",
-                "planning_enabled": True,
-                "budgeting_level": "weight_and_risk_budget",
-                "root_default_target_dimension": "risk_budget",
-                "purpose": "Synthetic hierarchical risk budgets with effective-dated derivative capital.",
+                "root_allocation_basis": "risk_budget",
+                "purpose": "Synthetic current hierarchical risk budgets with actual dated derivative capital.",
             },
         )
         taxonomy_id = str(taxonomy["taxonomy_id"])
@@ -392,11 +385,10 @@ def setup() -> str:
             top_nodes[name] = api(
                 prefix + f"/taxonomies/{taxonomy_id}/nodes",
                 {
-                    **effective,
                     "node_name": name,
                     "sort_order": sort_order,
                     "is_terminal": terminal,
-                    "default_target_dimension": "risk_budget",
+                    "allocation_basis": "risk_budget",
                 },
             )
         child_nodes: dict[str, list[tuple[dict[str, object], float]]] = {}
@@ -407,19 +399,17 @@ def setup() -> str:
                 node = api(
                     prefix + f"/taxonomies/{taxonomy_id}/nodes",
                     {
-                        **effective,
-                        "node_name": name,
+                            "node_name": name,
                         "parent_taxonomy_node_id": parent_id,
                         "sort_order": sort_order,
                         "is_terminal": True,
-                        "default_target_dimension": "risk_budget",
+                        "allocation_basis": "risk_budget",
                     },
                 )
                 api(
                     prefix + f"/taxonomies/{taxonomy_id}/assignments",
                     {
-                        **effective,
-                        "target_scope": "instrument",
+                            "target_scope": "instrument",
                         "target_entity_id": instrument_id,
                         "taxonomy_node_id": node["taxonomy_node_id"],
                     },
@@ -429,7 +419,6 @@ def setup() -> str:
         api(
             prefix + f"/taxonomies/{taxonomy_id}/assignments",
             {
-                **effective,
                 "target_scope": "instrument",
                 "target_entity_id": "vnq",
                 "taxonomy_node_id": top_nodes["Real Assets"]["taxonomy_node_id"],
@@ -438,86 +427,40 @@ def setup() -> str:
 
     risk_shares = {name: share for name, share, _ in top_specs}
 
-    def root_lines(derivative_weight: float) -> list[dict[str, object]]:
-        cash_weight = 0.05
-        risky_weight = 1 - cash_weight - derivative_weight
-        return [
-            {
-                "target_member_type": "taxonomy_node",
-                "target_member_id": top_nodes[name]["taxonomy_node_id"],
-                "target_weight": risky_weight * risk_share,
-                "target_risk_share": risk_share,
-            }
-            for name, risk_share in risk_shares.items()
-        ] + [
-            {
-                "target_member_type": "derivative_bucket",
-                "target_member_id": "__derivatives__",
-                "target_weight": derivative_weight,
-                "target_risk_share": None,
-                "notes": "Fixed capital only; excluded from covariance and risk-budget contribution.",
-            },
-            {
-                "target_member_type": "cash_bucket",
-                "target_member_id": "__cash__",
-                "target_weight": cash_weight,
-                "target_risk_share": None,
-            },
+    def root_lines() -> list[dict[str, object]]:
+        return [{"target_member_type": "taxonomy_node",
+                 "target_member_id": top_nodes[name]["taxonomy_node_id"],
+                 "target_value": risk_share} for name, risk_share in risk_shares.items()] + [
+            {"target_member_type": "cash_bucket", "target_member_id": "__cash__", "target_value": 0.05},
         ]
 
     root_target = api(
         prefix + f"/taxonomies/{taxonomy_id}/target-sets",
         {
-            **effective,
             "target_set_type": "saa",
             "name": "All Weather top-level risk and fixed capital",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "notes": "Risk budgets apply only to risky ETF sleeves; FCN/options are fixed-capital proxy exposure.",
-            "lines": root_lines(0),
+            "lines": root_lines(),
         },
     )
     for parent_name, children in child_nodes.items():
         api(
             prefix + f"/taxonomies/{taxonomy_id}/target-sets",
             {
-                **effective,
                 "comparator_taxonomy_node_id": top_nodes[parent_name]["taxonomy_node_id"],
                 "target_set_type": "saa",
                 "name": f"{parent_name} child risk budgets",
-                "weight_enabled": False,
-                "risk_budget_enabled": True,
                 "lines": [
                     {
                         "target_member_type": "taxonomy_node",
                         "target_member_id": node["taxonomy_node_id"],
-                        "target_risk_share": risk_share,
+                        "target_value": risk_share,
                     }
                     for node, risk_share in children
                 ],
             },
         )
 
-    for effective_from, derivative_weight in (
-        ("2015-06-15", 0.10),
-        ("2016-06-30", 0.00),
-        ("2018-09-04", 0.05),
-        ("2019-03-15", 0.00),
-        ("2020-04-01", 0.10),
-        ("2021-04-01", 0.00),
-        ("2024-01-02", 0.10),
-    ):
-        root_target = api(
-            prefix + f"/taxonomies/{taxonomy_id}/target-sets/{root_target['target_set_id']}",
-            {
-                "effective_from": effective_from,
-                "lines": root_lines(derivative_weight),
-                "notes": f"Effective-dated fixed derivative capital {derivative_weight:.0%}; risky risk budgets unchanged.",
-            },
-            "PATCH",
-        )
-
-    api(prefix + "/taxonomies/default-planning", {**effective, "taxonomy_id": taxonomy_id}, "PUT")
     settings = api(
         prefix + "/research/settings",
         {
@@ -529,7 +472,6 @@ def setup() -> str:
             "missing_return_policy": "complete_case_drop",
             "covariance_model_id": "ewma_vol_shrinkage_corr_covariance",
             "contribution_mode": "signed",
-            "target_dimension": "scope_default",
             "capital_mode": "volatility_cap",
             "target_volatility": 0.10,
             "frozen_taxonomy_node_ids": [],
@@ -602,7 +544,7 @@ def scenarios(pid: str) -> None:
     }
     base = {key: deepcopy(settings.get(key)) for key in (
         "planning_taxonomy_id", "comparator_taxonomy_node_id", "lookback_days", "calculation_frequency",
-        "missing_return_policy", "target_dimension", "capital_mode", "gross_exposure", "target_volatility",
+        "missing_return_policy", "capital_mode", "gross_exposure", "target_volatility",
         "max_gross_exposure", "frozen_taxonomy_node_ids", "top_sleeve_weight_bounds",
     )}
     base.update(
@@ -743,7 +685,6 @@ def derivative_boundary(pid: str) -> None:
         lookback_days=settings["lookback_days"],
         calculation_frequency=settings["calculation_frequency"],
         missing_return_policy=settings["missing_return_policy"],
-        target_dimension=settings["target_dimension"],
         capital_mode=settings["capital_mode"],
         gross_exposure=settings["gross_exposure"],
         target_volatility=settings["target_volatility"],

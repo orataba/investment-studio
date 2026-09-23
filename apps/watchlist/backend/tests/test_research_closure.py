@@ -39,13 +39,14 @@ def test_automatic_review_cannot_resume_paused_theme_through_implicit_original_l
 def test_review_agenda_omits_inactive_theme_assignments_but_keeps_shared_events(activity_client, status):
     with get_session_factory()() as session:
         theme = save_theme(session, "xlk", ThemeInput(title="融资效果", question="资金是否改善经营？"))
+        other = save_theme(session, "xlk", ThemeInput(title="独立经营判断", question="另一项经营假设是否成立？"))
         session.commit()
-        publish(session, events=[event(theme_ids=[theme["theme_id"]])], research={
+        publish(session, events=[event(theme_ids=[theme["theme_id"], other["theme_id"]])], research={
             "questions": [{"key": "funding", "theme_id": theme["theme_id"], "question": theme["question"],
                 "assessment": "效果待验证", "next_check": "下一季", "source_ids": ["original"]}],
             "forecasts": [{"key": "theme-forecast", "theme_id": theme["theme_id"], "claim": "经营可能改善",
                 "horizon": "下一季", "source_ids": ["original"]},
-                {"key": "independent-forecast", "claim": "另一项独立判断", "horizon": "下一季", "source_ids": ["original"]}]})
+                {"key": "independent-forecast", "theme_id": other["theme_id"], "claim": "另一项独立判断", "horizon": "下一季", "source_ids": ["original"]}]})
         original = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "question")
         publish(session, research={"lessons": [{"key": "funding-lesson", "related_research_update_id": original["update_id"],
             "lesson": "融资不是经营改善的充分条件", "source_ids": ["original"]}]})

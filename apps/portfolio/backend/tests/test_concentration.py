@@ -43,8 +43,8 @@ def group(result, scope, entity, tid=None):
     return next(row for row in selected["rows"] if row["entity_id"] == entity)
 
 
-def rule(scope, *, tid=None, entity=None, limit=0.2, watch=None, enabled=True, rule_id="r"):
-    return {"scope": scope, "taxonomy_id": tid, "entity_id": entity, "limit_weight": limit, "watch_weight": watch, "enabled": enabled, "rule_id": rule_id}
+def limit(scope, *, tid=None, entity="A", maximum=0.2):
+    return {"scope": scope, "taxonomy_id": tid, "entity_id": entity, "limit_weight": maximum}
 
 
 def test_remaining_principal_is_allocated_once_and_not_added_to_direct_stock_limits():
@@ -75,7 +75,7 @@ def test_missing_account_snapshots_cannot_turn_live_exposure_into_zero():
 
 
 def test_custom_allocation_and_fx_are_applied_to_nominal_not_cost():
-    settings = {"revision": 1, "rules": [], "fcn_allocations": [{"contract_id": "F", "method": "custom", "weights": [
+    settings = {"revision": 1, "limits": [], "fcn_allocations": [{"contract_id": "F", "method": "custom", "weights": [
         {"instrument_id": "A", "weight": 0.75}, {"instrument_id": "B", "weight": 0.25}]}]}
     result = project_portfolio_concentration(workspace([fcn(currency="HKD", rate=0.125)]), catalog(), settings)
     assert group(result, "fcn", "F")["exposure_base"] == 25_000
@@ -92,12 +92,13 @@ def test_options_and_closed_fcns_are_excluded_without_removing_nav():
     assert group(result, "security", "A")["weight"] == 0.1
 
 
-def test_limits_override_defaults_and_missing_data_never_claims_within_limit():
-    settings = {"revision": 1, "fcn_allocations": [], "rules": [rule("security", limit=0.15),
-        rule("security", entity="A", limit=0.1, rule_id="A"), rule("fcn", limit=0.3, watch=0.15, rule_id="F")]}
+def test_explicit_limits_are_unique_portfolio_wide_and_missing_data_never_claims_within_limit():
+    settings = {"revision": 1, "fcn_allocations": [], "limits": [limit("security", maximum=0.09), limit("fcn", entity="F", maximum=0.3)]}
     result = project_portfolio_concentration(workspace([security(), fcn()]), catalog(), settings)
     assert group(result, "security", "A")["status"] == "breached"
-    assert group(result, "fcn", "F")["status"] == "watch"
+    assert group(result, "fcn", "F")["status"] == "within"
+    assert group(result, "taxonomy", "tech", "industry")["limit_weight"] is None
+    assert group(result, "taxonomy", "US", "country")["limit_weight"] is None
     missing = project_portfolio_concentration(workspace([fcn(currency="HKD")]), catalog(), settings)
     assert group(missing, "fcn", "F")["status"] == "unavailable"
     assert group(missing, "fcn", "F")["exposure_base"] is None
@@ -106,7 +107,7 @@ def test_limits_override_defaults_and_missing_data_never_claims_within_limit():
 def test_incomplete_classification_keeps_unclassified_and_known_breach():
     partial = catalog()
     partial["taxonomy_assignments"] = [row for row in partial["taxonomy_assignments"] if row["target_entity_id"] != "B"]
-    settings = {"revision": 1, "rules": [rule("taxonomy", tid="country", limit=0.15)], "fcn_allocations": []}
+    settings = {"revision": 1, "enabled_taxonomy_ids": ["country"], "limits": [limit("taxonomy", tid="country", entity="US", maximum=0.15), limit("taxonomy", tid="country", entity="CN")], "fcn_allocations": []}
     result = project_portfolio_concentration(workspace([security(), fcn()]), partial, settings)
     us = group(result, "taxonomy", "US", "country")
     assert us["status"] == "breached"
@@ -116,23 +117,33 @@ def test_incomplete_classification_keeps_unclassified_and_known_breach():
     assert group(result, "taxonomy", "unassigned:country", "country")["status"] == "unconfigured"
 
 
-def test_disabled_scope_preserves_but_disables_specific_limits():
-    settings = {"revision": 1, "rules": [rule("security", enabled=False), rule("security", entity="A", limit=0.01, rule_id="A")], "fcn_allocations": []}
-    result = project_portfolio_concentration(workspace([security()]), catalog(), settings)
-    assert group(result, "security", "A")["status"] == "unconfigured"
-    settings["rules"][0]["enabled"] = True
+def test_disabled_taxonomy_preserves_caps_without_disabling_direct_security_limits():
+    settings = {"revision": 1, "enabled_taxonomy_ids": [], "limits": [limit("security", maximum=0.01), limit("taxonomy", tid="industry", entity="tech", maximum=0.01)], "fcn_allocations": []}
     result = project_portfolio_concentration(workspace([security()]), catalog(), settings)
     assert group(result, "security", "A")["status"] == "breached"
+    assert group(result, "taxonomy", "tech", "industry")["status"] == "unconfigured"
+    assert group(result, "taxonomy", "tech", "industry")["limit_weight"] == 0.01
+    settings["enabled_taxonomy_ids"] = ["industry"]
+    result = project_portfolio_concentration(workspace([security()]), catalog(), settings)
+    assert group(result, "taxonomy", "tech", "industry")["status"] == "breached"
 
 
-@pytest.mark.parametrize("rules,allocations", [
-    ([rule("taxonomy")], []), ([rule("security", watch=0.3)], []),
-    ([rule("security"), rule("security", rule_id="other")], []),
+@pytest.mark.parametrize("exposure,maximum,status", [(0, 0, "within"), (1, 0, "breached"), (100_000, 0.1, "within"), (100_001, 0.1, "breached"), (100_000, None, "unconfigured")])
+def test_zero_empty_and_exact_upper_limit_have_distinct_meanings(exposure, maximum, status):
+    settings = {"revision": 1, "limits": [limit("security", maximum=maximum)]}
+    result = project_portfolio_concentration(workspace([security(value=exposure)]), catalog(), settings)
+    assert group(result, "security", "A")["status"] == status
+
+
+@pytest.mark.parametrize("limits,allocations", [
+    ([limit("taxonomy")], []), ([{**limit("security"), "watch_weight": 0.3}], []),
+    ([limit("security"), limit("security")], []),
+    ([limit("security", entity=None)], []),
     ([], [{"contract_id": "F", "method": "custom", "weights": [{"instrument_id": "A", "weight": 0.7}]}]),
 ])
-def test_invalid_limits_and_allocations_are_rejected(rules, allocations):
+def test_invalid_limits_and_allocations_are_rejected(limits, allocations):
     with pytest.raises(ValidationError):
-        ConcentrationSettingsUpdate(expected_revision=0, effective_from=date(2026, 9, 8), rules=rules, fcn_allocations=allocations)
+        ConcentrationSettingsUpdate(expected_revision=0, effective_from=date(2026, 9, 8), limits=limits, fcn_allocations=allocations)
 
 
 def test_settings_are_dated_and_revision_checked(client):
@@ -140,18 +151,24 @@ def test_settings_are_dated_and_revision_checked(client):
     initial = client.get(path)
     assert initial.status_code == 200, initial.text
     assert initial.json()["revision"] == 0
-    first = {"expected_revision": 0, "effective_from": "2026-04-01", "rules": [rule("security")], "fcn_allocations": []}
+    first = {"expected_revision": 0, "effective_from": "2026-04-01", "limits": [limit("security", entity="equity-us-abbv")], "fcn_allocations": []}
     saved = client.put(path, json=first)
     assert saved.status_code == 200, saved.text
     assert saved.json()["revision"] == 1
     assert client.put(path, json=first).status_code == 409
     assert read_concentration_settings("investment-studio", as_of_date=date(2026, 3, 31))["revision"] == 0
     assert read_concentration_settings("investment-studio", as_of_date=date(2026, 4, 2))["revision"] == 1
-    second = {**first, "expected_revision": 1, "effective_from": "2026-05-01", "rules": [rule("security", limit=0.25)]}
+    second = {**first, "expected_revision": 1, "effective_from": "2026-05-01", "limits": [limit("security", entity="equity-us-abbv", maximum=0.25)]}
     assert client.put(path, json=second).status_code == 200
-    assert read_concentration_settings("investment-studio", as_of_date=date(2026, 4, 15))["rules"][0]["limit_weight"] == 0.2
-    assert read_concentration_settings("investment-studio", as_of_date=date(2026, 5, 1))["rules"][0]["limit_weight"] == 0.25
-    assert client.get(path).json()["revision"] == 2
+    assert read_concentration_settings("investment-studio", as_of_date=date(2026, 4, 15))["limits"][0]["limit_weight"] == 0.2
+    assert read_concentration_settings("investment-studio", as_of_date=date(2026, 5, 1))["limits"][0]["limit_weight"] == 0.25
+    displayed = client.get(path, params={"as_of_date": "2026-04-15"}).json()
+    assert displayed["revision"] == 1
+    assert displayed["latest_revision"] == 2
+    assert displayed["limits"][0]["limit_weight"] == 0.2
+    assert client.put(path, json={**first, "expected_revision": displayed["latest_revision"], "limits": [limit("security", entity="equity-us-abbv", maximum=None)]}).status_code == 200
+    assert client.get(path).json()["limits"] == []
+    assert client.get(path).json()["revision"] == 3
 
 
 def test_api_concentration_reconciles_direct_securities_with_account_snapshots(client):
@@ -165,31 +182,43 @@ def test_api_concentration_reconciles_direct_securities_with_account_snapshots(c
     assert data["settings_revision"] == 0
 
 
-def test_archived_unchanged_rules_do_not_block_other_limit_edits(client):
+def test_archived_unchanged_limits_do_not_block_other_limit_edits(client):
     from portfolio_app.db.models import TaxonomyRecordModel
     from portfolio_app.db.session import get_session_factory
     with get_session_factory()() as session:
         tid = "archive-limits"
-        session.add(TaxonomyRecordModel(taxonomy_id=tid, portfolio_id="investment-studio", name="Archive limits", taxonomy_type="custom", primary_assignment_scope="instrument", status="active", planning_enabled=False))
+        session.add(TaxonomyRecordModel(taxonomy_id=tid, portfolio_id="investment-studio", name="Archive limits", taxonomy_type="custom", primary_assignment_scope="instrument", status="active"))
         session.commit()
     path = "/api/portfolios/investment-studio/concentration/settings"
-    payload = {"expected_revision": 0, "effective_from": "2026-04-01", "rules": [rule("taxonomy", tid=tid)], "fcn_allocations": []}
+    node = client.post(f"/api/portfolios/investment-studio/taxonomies/{tid}/nodes", json={"node_name": "Industry"}).json()
+    payload = {"expected_revision": 0, "effective_from": "2026-04-01", "enabled_taxonomy_ids": [tid], "limits": [limit("taxonomy", tid=tid, entity=node["taxonomy_node_id"])], "fcn_allocations": []}
     assert client.put(path, json=payload).status_code == 200
     with get_session_factory()() as session:
         session.get(TaxonomyRecordModel, tid).status = "inactive"
         session.commit()
     payload["expected_revision"] = 1
-    payload["rules"].append(rule("security", rule_id="s"))
+    payload["limits"].append(limit("security", entity="equity-us-abbv"))
+    assert client.put(path, json=payload).status_code == 200
+    future = {"expected_revision": 2, "effective_from": "2026-08-01", "limits": [limit("security", entity="equity-us-abbv")]}
+    assert client.put(path, json=future).status_code == 200
+    displayed = client.get(path, params={"as_of_date": "2026-04-15"}).json()
+    assert displayed["revision"] == 2 and displayed["latest_revision"] == 3
+    assert displayed["enabled_taxonomy_ids"] == [tid]
+    payload["expected_revision"] = displayed["latest_revision"]
+    payload["effective_from"] = "2026-04-15"
     assert client.put(path, json=payload).status_code == 200
 
 
-def test_portfolio_copy_cannot_silently_drop_dated_concentration_policy(client):
+def test_portfolio_copy_preserves_dated_concentration_policy(client):
     from portfolio_app.services.portfolio_store import copy_portfolio
     path = "/api/portfolios/investment-studio/concentration/settings"
-    payload = {"expected_revision": 0, "effective_from": "2026-04-01", "rules": [rule("security")], "fcn_allocations": []}
+    payload = {"expected_revision": 0, "effective_from": "2026-04-01", "limits": [limit("security", entity="equity-us-abbv")], "fcn_allocations": []}
     assert client.put(path, json=payload).status_code == 200
-    with pytest.raises(ValueError, match="explicit remapping of concentration policy references"):
-        copy_portfolio("investment-studio")
+    copied = copy_portfolio("investment-studio")
+    response = client.get(f"/api/portfolios/{copied['portfolio_id']}/concentration/settings")
+    assert response.status_code == 200, response.text
+    assert response.json()["limits"] == payload["limits"]
+    assert response.json()["effective_from"] == payload["effective_from"]
 
 
 def test_historical_concentration_uses_current_classification_and_keeps_holding_date(client):

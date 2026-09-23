@@ -51,48 +51,40 @@ def _add(row, source, kind):
         row[f"{kind}_exposure_base"] += value
 
 
-def _finish(row, nav, rules, scope, taxonomy_id):
-    exact = next((r for r in rules if r["scope"] == scope and r.get("taxonomy_id") == taxonomy_id and r.get("entity_id") == row["entity_id"]), None)
-    default = next((r for r in rules if r["scope"] == scope and r.get("taxonomy_id") == taxonomy_id and r.get("entity_id") is None), None)
-    # A disabled scope default is the master switch; retain overrides for re-enabling.
-    rule = default if default is not None and not default.get("enabled", True) else exact or default
+def _finish(row, nav, limits, scope, taxonomy_id, enabled):
+    configured = next((item for item in limits if item["scope"] == scope and item.get("taxonomy_id") == taxonomy_id and item["entity_id"] == row["entity_id"]), None)
     # An unknown classification may span many nodes; its sum cannot prove that
-    # any one real category has breached the default category limit.
+    # any one real category has breached its limit.
     if scope == "taxonomy" and row["entity_id"] == f"unassigned:{taxonomy_id}":
-        rule = None
-    active = rule is not None and rule.get("enabled", True)
-    watch = number(rule.get("watch_weight")) if active else None
-    limit = number(rule.get("limit_weight")) if active else None
+        configured = None
+    limit = number(configured.get("limit_weight")) if configured else None
     amount = row["security_exposure_base"] + row["fcn_exposure_base"]
     missing = row.pop("_missing")
     known_weight = amount / nav if nav is not None and nav > 0 else None
     weight = known_weight if not missing else None
     # Missing positive exposures cannot reverse an already demonstrated breach.
-    if known_weight is not None and limit is not None and known_weight >= limit:
+    if enabled and known_weight is not None and limit is not None and known_weight > limit:
         status = "breached"
     elif missing or known_weight is None:
         status = "unavailable"
-    elif watch is None and limit is None:
+    elif not enabled or limit is None:
         status = "unconfigured"
-    elif watch is not None and known_weight >= watch:
-        status = "watch"
     else:
         status = "within"
     row.update(exposure_base=None if missing else amount, known_exposure_base=amount,
                weight=weight, lower_bound_weight=known_weight if missing else None,
-               watch_weight=watch, limit_weight=limit, status=status,
+               limit_weight=limit, status=status,
                headroom_weight=limit - weight if limit is not None and weight is not None else None,
-               rule_id=rule["rule_id"] if rule else None,
                coverage=list(dict.fromkeys(row["coverage"])))
     return row
 
 
-def _scope(scope, name, rows, nav, rules, *, taxonomy_id=None, coverage=None):
-    finalized = [_finish(row, nav, rules, scope, taxonomy_id) for row in rows]
+def _scope(scope, name, rows, nav, limits, *, taxonomy_id=None, coverage=None, enabled=True):
+    finalized = [_finish(row, nav, limits, scope, taxonomy_id, enabled) for row in rows]
     if scope != "taxonomy":
         finalized.sort(key=lambda row: row["known_exposure_base"], reverse=True)
     status = "unavailable" if nav is None or nav <= 0 else "partial" if any(row["coverage"] for row in finalized) or coverage else "complete"
-    return {"scope": scope, "taxonomy_id": taxonomy_id, "name": name, "rows": finalized, "status": status, "coverage": coverage or []}
+    return {"scope": scope, "taxonomy_id": taxonomy_id, "name": name, "enabled": enabled, "rows": finalized, "status": status, "coverage": coverage or []}
 
 
 def project_portfolio_concentration(workspace: dict, catalog: dict, settings: dict | None = None, *, holding_rows: list[dict] | None = None) -> dict:
@@ -100,14 +92,17 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
     settings = settings or empty_settings(pid)
     nav = number((workspace.get("totals") or {}).get("nav"))
     base_currency = workspace.get("base_currency")
-    rules = settings.get("rules", [])
+    limits = settings.get("limits", [])
+    enabled_taxonomies = set(settings.get("enabled_taxonomy_ids", []))
     allocations = {item["contract_id"]: item for item in settings.get("fcn_allocations", [])}
     enriched = {(row.get("position_reference_id") or row.get("derivative_contract_id"), row.get("holding_kind", "position")): row for row in workspace.get("rows", [])}
     security_rows, fcn_rows, allocated_sources, sources, fcn_contracts = {}, {}, [], [], []
     issues = []
     excluded_options = 0
     input_rows = holding_rows if holding_rows is not None else workspace.get("rows", [])
-    if holding_rows == [] and any(number(row.get("quantity")) != 0 for row in workspace.get("rows", [])):
+    # A net-zero workspace position can still contain offsetting long and short
+    # accounts. Missing account rows must not turn that gross exposure into zero.
+    if holding_rows == [] and workspace.get("rows"):
         raise ConcentrationUnavailable()
     for index, original in enumerate(input_rows):
         row = {**enriched.get((original.get("position_reference_id") or original.get("derivative_contract_id"), original.get("holding_kind", "position")), {}), **original}
@@ -181,8 +176,8 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
                 allocated_sources.append((iid, piece, "fcn"))
                 sources.append(piece)
     scopes = [
-        _scope("security", "Direct securities", list(security_rows.values()), nav, rules),
-        _scope("fcn", "FCN contracts", list(fcn_rows.values()), nav, rules),
+        _scope("security", "Direct securities", list(security_rows.values()), nav, limits),
+        _scope("fcn", "FCN contracts", list(fcn_rows.values()), nav, limits),
     ]
     for taxonomy in catalog.get("taxonomies", []):
         if taxonomy.get("status", "active") != "active":
@@ -230,7 +225,7 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
         ordered = [groups[nid] for nid in sorted(groups, key=sort_key)]
         if unassigned["sources"]:
             ordered.append(unassigned)
-        scopes.append(_scope("taxonomy", taxonomy["name"], ordered, nav, rules, taxonomy_id=tid, coverage=limitations))
+        scopes.append(_scope("taxonomy", taxonomy["name"], ordered, nav, limits, taxonomy_id=tid, coverage=limitations, enabled=tid in enabled_taxonomies))
         scopes[-1]["taxonomy_configuration"] = (catalog.get("concentration_taxonomy_configurations") or {}).get(tid)
     coverage = [
         "Gross direct security market value and remaining FCN principal / current portfolio NAV; options, cash and settlements are excluded from numerators.",
@@ -248,12 +243,12 @@ def project_portfolio_concentration(workspace: dict, catalog: dict, settings: di
             "scopes": scopes, "fcn_contracts": fcn_contracts, "coverage": [*coverage, *issues], "excluded_option_positions": excluded_options,
             "sources": [{"source_id": source_id, "title": "Portfolio concentration and configured limits", "portfolio_id": pid,
                          "source_type": "portfolio_concentration", "start_date": workspace.get("as_of_date"), "end_date": workspace.get("as_of_date"),
-                         "currency": base_currency, "detail_path": f"/portfolios/{quote(pid, safe='')}/risk"}, *sources]}
+                         "currency": base_currency, "detail_path": f"/portfolios/{quote(pid, safe='')}/holdings?view=concentration"}, *sources]}
 
 
 def read_portfolio_concentration(portfolio_id: str, *, as_of_date: date | None = None, workspace: dict | None = None) -> dict:
     from portfolio_app.services.holdings_workspace import resolve_holdings_request
-    from portfolio_app.services.analytics_scope import current_taxonomy_configuration_in_session
+    from portfolio_app.services.taxonomy_configuration import current_taxonomy_configuration_in_session
     from portfolio_app.services.workspace_cache import get_cached_materialized_holdings_workspace
     from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument_summaries
     if workspace is None:

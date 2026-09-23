@@ -8,7 +8,7 @@ import pytest
 
 from investment_studio_instrument_core.db_models import Instrument
 from portfolio_app.db.models import (
-    PortfolioAnalyticsPolicyStateModel,
+    PortfolioTaxonomyStateModel,
     AccountRecordModel,
     PortfolioCalculationStateModel,
     PortfolioDailySnapshotModel,
@@ -44,10 +44,10 @@ def _baseline():
 
 def _change_source(field):
     with get_session_factory()() as session:
-        if field == "analytics_policy_version":
-            state = session.get(PortfolioAnalyticsPolicyStateModel, PORTFOLIO_ID)
+        if field == "taxonomy_configuration_version":
+            state = session.get(PortfolioTaxonomyStateModel, PORTFOLIO_ID)
             if state is None:
-                session.add(PortfolioAnalyticsPolicyStateModel(
+                session.add(PortfolioTaxonomyStateModel(
                     portfolio_id=PORTFOLIO_ID, current_version=1,
                     updated_at="2099-01-01T00:00:00.000001Z",
                 ))
@@ -75,7 +75,7 @@ def _capture_builder(monkeypatch, before_build=None):
 
 
 @pytest.mark.parametrize("field", [
-    "market_data_updated_at", "calculation_inputs_updated_at", "analytics_policy_version",
+    "market_data_updated_at", "calculation_inputs_updated_at", "taxonomy_configuration_version",
 ])
 @pytest.mark.parametrize("when", ["queued", "claimed"])
 def test_missed_source_notification_cannot_reuse_a_transaction_dirty_prefix(monkeypatch, field, when):
@@ -156,7 +156,7 @@ def test_source_change_after_seed_selection_discards_then_rebuilds_the_prefix(mo
 
 @pytest.mark.parametrize("missing", [
     "calculation_version", "source_generation", "market_data_updated_at",
-    "calculation_inputs_updated_at", "analytics_policy_version",
+    "calculation_inputs_updated_at", "taxonomy_configuration_version",
 ])
 def test_prefix_with_missing_source_evidence_cannot_seed_incremental_work(monkeypatch, missing):
     _, dirty_from, seed_date = _baseline()

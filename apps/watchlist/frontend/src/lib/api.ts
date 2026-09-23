@@ -820,6 +820,9 @@ export type InvestmentOpinionResearchContextInput = {
   research_update_id?: string | null
   event_case_id?: string | null
   event_version_id?: string | null
+  notebook_version_id?: string | null
+  theme_version_id?: string | null
+  investment_view_version_id?: string | null
   related_note_id?: string | null
   related_revision?: number | null
   relationship?: 'initial' | 'update' | 'review' | 'lesson'
@@ -844,11 +847,20 @@ export type InvestmentOpinionResearchContext = InvestmentOpinionResearchContextI
   readonly source_quote?: string
   readonly research_snapshot?: Record<string, unknown>
   readonly information_cutoff?: string
+  readonly background_origin?: 'user' | 'research_snapshot'
 }
 
 export type InstrumentResearchResponse = {
   profile: InstrumentResearchProfile
   notes: InstrumentResearchNote[]
+  current_stance?: {
+    selection_id: string
+    selected_at: string
+    selected_by: string
+    selected_by_name: string
+    note: InstrumentResearchNote
+    has_later_revision: boolean
+  } | null
 }
 
 export type InstrumentResearchProfileInput = Omit<
@@ -1684,6 +1696,12 @@ export function createInstrumentResearchNote(
     buildInstrumentDetailApiPath(instrumentId, 'research/notes'),
     { method: 'POST', body: JSON.stringify(payload) },
   )
+}
+
+export function selectInvestmentStance(instrumentId: string, note: Pick<InstrumentResearchNote, 'note_id' | 'revision_number'> | null) {
+  return fetchJson<InstrumentResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research/current-stance'), {
+    method: 'PUT', body: JSON.stringify(note || { note_id: null, revision_number: null }),
+  })
 }
 
 export function updateInstrumentResearchNote(

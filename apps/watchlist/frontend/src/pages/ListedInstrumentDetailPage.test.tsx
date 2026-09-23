@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import ListedInstrumentDetailPage from './ListedInstrumentDetailPage'
+import { emptyInstrumentResearchResponse } from '../lib/api'
+import { announceResearchPublication } from '../lib/researchUpdates'
 
 const apiMocks = vi.hoisted(() => ({
   getInstrumentAttributes: vi.fn(),
@@ -151,6 +153,22 @@ afterEach(() => {
 })
 
 describe('ListedInstrumentDetailPage index view', () => {
+  it('refreshes investment views published from research before switching tabs', async () => {
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=investment-research']}><ListedInstrumentDetailPage instrument={{
+      requested_instrument_id: 'xlk', canonical_instrument_id: 'xlk', instrument_name: 'Technology ETF', instrument_type: 'etf', primary_identifier: 'XLK', detail_view_type: 'etf', detail_subject_id: 'xlk', detail_supported: true, support_reason: '', corporate_actions: [],
+    }} watchlistContext={null} /></MemoryRouter></LanguageProvider>)
+    await screen.findByTestId('sector-panel')
+    const note = { note_id: 'new-view', note_date: '2026-09-23', note_type: 'thesis_update', title: '科技估值', body: '新增主题观点应立即出现在观点页。', summary: '', importance: 'normal', tags: [], source_refs: '', people: '', author: 'Shaw', follow_up_date: null, completed_at: null, created_at: '2026-09-23T09:00:00Z', updated_at: '2026-09-23T09:00:00Z', updated_by: 'terminal_ui', revision_number: 1 }
+    apiMocks.getInstrumentResearch.mockResolvedValue({ ...emptyInstrumentResearchResponse(), notes: [note] })
+    await act(async () => announceResearchPublication(['other']))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(1)
+    await act(async () => announceResearchPublication(['xlk']))
+    expect(apiMocks.getInstrumentResearch).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
+    expect(await screen.findByText(note.body)).toBeTruthy()
+    expect(apiMocks.getInstrumentSummary).toHaveBeenCalledTimes(1)
+  })
+
   it.each([false, true])('validates crypto risk within each window instead of inheriting an older gap (recent gap: %s)', async (recentGap) => {
     const recent = Array.from({ length: 62 }, (_, index) => ({
       date: new Date(Date.UTC(2026, 6, 1 + index)).toISOString().slice(0, 10),
@@ -361,12 +379,12 @@ describe('ListedInstrumentDetailPage index view', () => {
       detail_supported: true, support_reason: '', corporate_actions: [],
     }} watchlistContext={null} /></MemoryRouter></LanguageProvider>)
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Technology Select Sector SPDR' })).not.toBeNull())
-    await waitFor(() => expect(screen.queryByRole('button', { name: /PM Views|经理观点/ })).not.toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Investment Views|投资观点/ })).not.toBeNull())
     expect(await screen.findByRole('region', { name: 'ETF profile and holdings' })).toBeTruthy()
     await screen.findByText('0.08%')
     expect(apiMocks.getInstrumentReferenceData).toHaveBeenCalledWith('xlk')
     expect(screen.queryByRole('button', { name: /Details|资料与明细/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /PM Views|经理观点/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Investment Views|投资观点/ }))
     expect(screen.queryByRole('button', { name: /Add view|新增观点/ })).not.toBeNull()
     expect(screen.queryByText('Current Investment View')).toBeNull()
     fireEvent.click(screen.getAllByRole('button', { name: /^Performance & Risk$|^业绩与风险$/ })[0])
@@ -400,9 +418,9 @@ describe('ListedInstrumentDetailPage index view', () => {
     expect((await screen.findByRole('dialog', { name: '研究助手' })).getAttribute('data-instrument')).toBe(instrumentId)
     fireEvent.click(screen.getByRole('button', { name: '关闭研究助手' }))
     const navigation = container.querySelector('.instrument-detail-tabs') as HTMLElement
-    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'PM Views', 'Performance & Risk'])
+    expect(within(navigation).getAllByRole('button').map((node) => node.textContent)).toEqual(['Overview', 'Investment Research', 'Investment Views', 'Performance & Risk'])
     expect(within(navigation).getByRole('button', { name: 'Investment Research' }).classList.contains('instrument-detail-tab-active')).toBe(true)
-    fireEvent.click(within(navigation).getByRole('button', { name: 'PM Views' }))
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Views' }))
     await screen.findByRole('button', { name: 'Add view' })
     fireEvent.click(within(navigation).getByRole('button', { name: 'Investment Research' }))
     fireEvent.click(screen.getByRole('button', { name: 'Research assistant' }))
@@ -422,7 +440,7 @@ describe('ListedInstrumentDetailPage index view', () => {
     const instrument = { requested_instrument_id: 'xlk', canonical_instrument_id: 'xlk', instrument_name: 'Technology ETF', instrument_type: 'etf' as const, primary_identifier: 'XLK', detail_view_type: 'etf', detail_subject_id: 'xlk', detail_supported: true, support_reason: '', corporate_actions: [] }
     const { unmount } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=investment-research&mode=report']}><ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} /><LocationProbe /></MemoryRouter></LanguageProvider>)
     expect((await screen.findByTestId('sector-panel')).getAttribute('data-reading')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Research workspace' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Research overview' }))
     expect(screen.getByTestId('sector-panel').getAttribute('data-reading')).toBe('false')
     expect(new URLSearchParams(screen.getByTestId('listed-detail-location').textContent || '').get('tab')).toBe('investment-research')
     unmount()

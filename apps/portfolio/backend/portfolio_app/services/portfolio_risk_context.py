@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 from portfolio_app.services.risk_model import (
     _daily_mark_to_last_return_matrix, _return_series_with_periods,
     _row_key, estimate_covariance,
@@ -21,23 +22,32 @@ def _holding_id(row):
     return row.get("derivative_contract_id") or row.get("position_reference_id")
 
 
-def _groups(workspace, catalog):
-    taxonomy_id = catalog.get("default_planning_taxonomy_id")
+def _groups(workspace, catalog, taxonomy_id=None):
+    if taxonomy_id is None:
+        active = [row["taxonomy_id"] for row in catalog.get("taxonomies", []) if row.get("status", "active") == "active"]
+        taxonomy_id = active[0] if len(active) == 1 else None
     nodes = {row["taxonomy_node_id"]: row for row in catalog.get("taxonomy_nodes", [])
              if row["taxonomy_id"] == taxonomy_id and row["status"] == "active"}
     assignments = {}
     for item in catalog.get("taxonomy_assignments", []):
         if item["taxonomy_id"] == taxonomy_id and item["target_scope"] == "instrument" and item["status"] == "active":
             assignments.setdefault(item["target_entity_id"], []).append(item["taxonomy_node_id"])
-    limitations = [] if taxonomy_id else ["未配置默认规划分类，无法汇总类别风险贡献或目标差。"]
+    limitations = [] if taxonomy_id else ["需明确选择分类，不能在多个分类中推定风险分组或目标。"]
     nav = _number((workspace.get("totals") or {}).get("nav"))
     if nav is None or nav <= 0:
         limitations.append("组合净值无效，未计算分类市值权重。")
     weights_available = not limitations
-    groups = {}
+    groups, member_rows = {}, {}
+    target_coverage_errors = []
     for row in workspace.get("rows", []):
         core = row.get("instrument_core") or {}
         category = row.get("holding_category")
+        value = _number(row.get("market_value_base"))
+        zero_exposure = (
+            row.get("forward_risk_status") == "no_exposure"
+            and value is not None and abs(value) <= 1e-9
+        )
+        ancestor_ids = []
         if category == "derivatives":
             key, name = "derivative_bucket:__derivatives__", "衍生品"
         elif category == "cash_and_settlement":
@@ -51,6 +61,7 @@ def _groups(workspace, catalog):
             node = nodes.get(matches[0]) if matches else None
             seen = set()
             while node and node.get("parent_taxonomy_node_id"):
+                ancestor_ids.append(node["taxonomy_node_id"])
                 if node["taxonomy_node_id"] in seen:
                     limitations.append("分类层级存在循环，未继续汇总。")
                     weights_available = False
@@ -59,15 +70,30 @@ def _groups(workspace, catalog):
                 seen.add(node["taxonomy_node_id"])
                 node = nodes.get(node["parent_taxonomy_node_id"])
             key, name = (node["taxonomy_node_id"], node["node_name"]) if node else (f"unassigned:{taxonomy_id}", "未分类")
+            if node:
+                ancestor_ids.append(node["taxonomy_node_id"])
+            elif row.get("risk_eligible"):
+                target_coverage_errors.append("存在未分类风险敞口；不能将部分分类重新归一后比较全组合风险预算。")
+            if not row.get("risk_eligible") and abs(_number(row.get("market_value_base")) or 0.0) > 1e-12:
+                target_coverage_errors.append("证券目标范围内存在模型未覆盖的实际敞口，未计算全组合预算偏移。")
+            member_keys = [*ancestor_ids, f"instrument:{core.get('instrument_id')}"]
+            for member_key in member_keys:
+                member = member_rows.setdefault(member_key, {"group_id": member_key, "risk_share": 0.0,
+                    "name": nodes.get(member_key, {}).get("node_name") or core.get("instrument_name") or member_key,
+                    "risk_status": "modeled"})
+                share = 0.0 if zero_exposure else _number(row.get("forward_risk_share"))
+                if not row.get("risk_eligible") or (row.get("forward_risk_status") != "ok" and not zero_exposure) or share is None:
+                    member["risk_status"] = "unavailable"
+                else:
+                    member["risk_share"] += share
         group = groups.setdefault(key, {"group_id": key, "name": name, "instrument_ids": [], "holding_ids": [],
             "market_value_base": 0.0, "weight": None, "risk_share": 0.0, "contribution_to_variance": 0.0,
-            "risk_budget_share": 0.0, "_has_risk_member": False, "_has_risk_budget_member": False})
+            "risk_budget_share": 0.0, "_has_risk_member": False})
         iid, hid = core.get("instrument_id"), _holding_id(row)
         if iid and iid not in group["instrument_ids"]:
             group["instrument_ids"].append(iid)
         if hid and hid not in group["holding_ids"]:
             group["holding_ids"].append(hid)
-        value = _number(row.get("market_value_base"))
         if value is None:
             group["market_value_base"] = None
             weights_available = False
@@ -76,66 +102,68 @@ def _groups(workspace, catalog):
             group["market_value_base"] += value
         if row.get("risk_eligible"):
             group["_has_risk_member"] = True
-            group["_has_risk_budget_member"] |= bool(row.get("risk_budget_eligible"))
             share, contribution = _number(row.get("forward_risk_share")), _number(row.get("forward_contribution_to_variance"))
-            if row.get("forward_risk_status") != "ok" or share is None or contribution is None:
+            if zero_exposure:
+                share, contribution = 0.0, 0.0
+            if (row.get("forward_risk_status") != "ok" and not zero_exposure) or share is None or contribution is None:
                 limitations.append(f"{core.get('instrument_name') or hid}的生产风险贡献不可用。")
             else:
                 group["risk_share"] += share
                 group["contribution_to_variance"] += contribution
-                if row.get("risk_budget_eligible"):
-                    group["risk_budget_share"] += share
     risk = workspace.get("forward_risk") or {}
     risk_ready = risk.get("status") == "ok" and not limitations
-    budget_total = sum(group["risk_budget_share"] for group in groups.values())
     for group in groups.values():
         group["weight"] = group["market_value_base"] / nav if group["market_value_base"] is not None and nav is not None and nav > 0 else None
         has_risk_member = group.pop("_has_risk_member")
-        has_risk_budget_member = group.pop("_has_risk_budget_member")
         group["risk_status"] = "outside_model" if not has_risk_member else "modeled" if risk_ready else "unavailable"
         if not risk_ready or not has_risk_member:
             group["risk_share"] = group["contribution_to_variance"] = group["risk_budget_share"] = None
         else:
-            group["risk_budget_share"] = group["risk_budget_share"] / budget_total if has_risk_budget_member and budget_total else None
+            group["risk_budget_share"] = group["risk_share"]
+    for member in member_rows.values():
+        if not risk_ready or member["risk_status"] != "modeled":
+            member["risk_share"] = None
     return {"status": "ok" if risk_ready else "limited", "weights_available": weights_available, "taxonomy_id": taxonomy_id,
+        "member_rows": list(member_rows.values()), "target_comparison_available": risk_ready and not target_coverage_errors,
+        "target_coverage_errors": list(dict.fromkeys(target_coverage_errors)),
         "rows": sorted(groups.values(), key=lambda row: abs(row["risk_share"] or 0), reverse=True), "limitations": limitations}
 
 
 def _targets(catalog, groups):
-    by_group = {row["group_id"]: row for row in groups["rows"]}
-    nodes = {row["taxonomy_node_id"]: row for row in catalog.get("taxonomy_nodes", [])}
-    sets = [row for row in catalog.get("target_sets", []) if row["taxonomy_id"] == groups["taxonomy_id"]
-            and not row.get("comparator_taxonomy_node_id") and row["status"] == "active"]
-    rows, limitations = [], ["目标是配置参照；当前未配置允许偏离带或越限阈值，不能把目标差自动称为超限。"]
-    for target_set in sets:
-        for line in catalog.get("target_set_lines", []):
-            if line["target_set_id"] != target_set["target_set_id"]:
+    taxonomy_id = groups["taxonomy_id"]
+    taxonomy = next((row for row in catalog.get("taxonomies", []) if row["taxonomy_id"] == taxonomy_id), None)
+    if taxonomy is None:
+        return {"status": "unavailable", "rows": [], "limitations": ["需明确选择分类后比较风险预算。"]}
+    resolution = next((row for row in catalog.get("target_resolution", []) if row["taxonomy_id"] == taxonomy_id), None)
+    if resolution is None:
+        resolution = resolve_taxonomy_targets({**catalog, "taxonomy": taxonomy})
+    current_by_key = {row["group_id"]: row for row in groups["member_rows"]}
+    rows = []
+    limitations = ["偏移采用同一生产风险模型的全组合RC分母，不重新归一分类子集；配置预算与模型求解值分别保留。",
+                  "目标是配置参照；未配置偏离阈值，目标差不自动构成越限。",
+                  *groups["target_coverage_errors"], *resolution["errors"]]
+    comparable = groups["target_comparison_available"]
+    for member in resolution["member_targets"]:
+        if member["member_type"] == "cash_bucket":
+            continue
+        key = member["member_id"] if member["member_type"] == "taxonomy_node" else f"instrument:{member['member_id']}"
+        group = current_by_key.get(key)
+        # An absent holding has zero current exposure. A held but unmodeled
+        # member has unavailable RC, never an invented zero contribution.
+        current = (group["risk_share"] if group else 0.0) if comparable else None
+        for stage, prefix in (("saa", "strategic"), ("taa", "tactical")):
+            target = member[f"{prefix}_global_risk_target"]
+            if target is None:
                 continue
-            member_type, member_id = line["target_member_type"], line["target_member_id"]
-            key = member_id if member_type == "taxonomy_node" else f"{member_type}:{member_id}"
-            group = by_group.get(key)
-            if member_type not in {"taxonomy_node", "cash_bucket", "derivative_bucket"}:
-                limitations.append(f"根目标{target_set['name']}包含直接标的成员，未套用分类目标差。")
-                continue
-            for dimension, enabled, target_key, current_key in (
-                ("weight", "weight_enabled", "target_weight", "weight"),
-                ("risk_budget", "risk_budget_enabled", "target_risk_share", "risk_budget_share"),
-            ):
-                target = _number(line.get(target_key))
-                if not target_set[enabled] or target is None:
-                    continue
-                current = group[current_key] if group else 0.0
-                if dimension == "weight" and not groups["weights_available"]:
-                    current = None
-                if dimension == "risk_budget" and groups["status"] != "ok":
-                    current = None
-                rows.append({"target_set_id": target_set["target_set_id"], "target_set_type": target_set["target_set_type"],
-                    "group_id": key, "name": group["name"] if group else nodes.get(member_id, {}).get("node_name", member_id),
-                    "dimension": dimension, "current": current, "target": target,
-                    "gap_pp": (current - target) * 100 if current is not None else None,
-                    "breach": None, "threshold_status": "not_configured"})
-    if not sets:
-        limitations.append("尚无有效的默认分类根层SAA/TAA目标。")
+            rows.append({"target_set_id": member[f"{prefix}_target_set_id"], "target_set_type": stage,
+                         "source_stage": member[f"{prefix}_source"], "scope_node_id": member["scope_node_id"],
+                         "group_id": key, "name": group["name"] if group else member["label"],
+                         "dimension": "risk_budget", "risk_attribution_scope": "portfolio",
+                         "current": current, "target": target,
+                         "gap_pp": (current - target) * 100 if current is not None else None,
+                         "breach": None, "threshold_status": "not_configured"})
+    if not rows:
+        limitations.append("当前分类没有可由连续风险预算或单一风险子成员推导的全组合RC目标；Weight分叉以下留空。")
     return {"status": "available" if rows else "unavailable", "rows": rows, "limitations": list(dict.fromkeys(limitations))}
 
 
@@ -170,9 +198,9 @@ def _correlations(workspace):
         return {"status": "unavailable", "pairs": [], "limitations": [str(error)]}
 
 
-def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=None):
+def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=None, taxonomy_id=None):
     pid, current_date = workspace["portfolio_id"], workspace["as_of_date"]
-    groups, correlations = _groups(workspace, catalog), _correlations(workspace)
+    groups, correlations = _groups(workspace, catalog, taxonomy_id), _correlations(workspace)
     risk = workspace.get("forward_risk") or {}
     comparison = {"status": "unavailable", "previous_as_of_date": previous.get("as_of_date") if previous else None,
         "current_as_of_date": current_date, "risk_group_changes": [], "correlation_changes": [],
@@ -182,9 +210,9 @@ def project_portfolio_risk(workspace, catalog, previous=None, *, previous_error=
         old_risk = previous.get("forward_risk") or {}
         comparable = (previous["as_of_date"] < current_date and workspace["base_currency"] == previous["base_currency"]
             and risk.get("status") == old_risk.get("status") == "ok"
-            and all(risk.get(key) == old_risk.get(key) for key in ["risk_model", "scope_policy_versions", "configuration_versions"]))
+            and risk.get("risk_model") == old_risk.get("risk_model"))
         if comparable:
-            old_groups, old_correlations = _groups(previous, catalog), _correlations(previous)
+            old_groups, old_correlations = _groups(previous, catalog, groups["taxonomy_id"]), _correlations(previous)
             if groups["status"] == old_groups["status"] == "ok":
                 old_by_id = {row["group_id"]: row for row in old_groups["rows"]}
                 current_by_id = {row["group_id"]: row for row in groups["rows"]}
@@ -283,7 +311,7 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
             "weight_basis": "portfolio_nav", "scopes": [], "coverage": [unavailable.detail],
             "sources": [{"source_id": source_id, "source_type": "portfolio_concentration", "portfolio_id": portfolio_id,
                 "title": "Concentration unavailable: account-level holdings missing", "end_date": workspace["as_of_date"],
-                "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"}]}
+                "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/holdings?view=concentration"}]}
     tail_risk = read_portfolio_tail_risk(portfolio_id, workspace=workspace)
     result["concentration"] = concentration
     result["tail_risk"] = tail_risk
@@ -292,13 +320,15 @@ def read_portfolio_risk_context(portfolio_id: str, *, as_of_date: date | None = 
     # A browser grouping is not a monitoring preference. Read all configured
     # target classifications, keeping the same production risk observations.
     result["targets_by_taxonomy"] = []
+    result["portfolio_metrics"]["groups_by_taxonomy"] = []
     for taxonomy in catalog.get("taxonomies", []):
         if taxonomy.get("status", "active") != "active":
             continue
-        selected_catalog = {**catalog, "default_planning_taxonomy_id": taxonomy["taxonomy_id"]}
         target_source_id = f"portfolio-risk:{portfolio_id}:targets:{taxonomy['taxonomy_id']}"
+        taxonomy_groups = _groups(workspace, catalog, taxonomy["taxonomy_id"])
+        result["portfolio_metrics"]["groups_by_taxonomy"].append({"name": taxonomy["name"], **taxonomy_groups})
         result["targets_by_taxonomy"].append({"taxonomy_id": taxonomy["taxonomy_id"], "name": taxonomy["name"], "source_id": target_source_id,
-            **_targets(selected_catalog, _groups(workspace, selected_catalog))})
+            **_targets(catalog, taxonomy_groups)})
         result["sources"].append({"source_id": target_source_id, "source_type": "portfolio_taxonomy_targets", "portfolio_id": portfolio_id,
             "taxonomy_id": taxonomy["taxonomy_id"], "title": f"{taxonomy['name']} targets", "start_date": None,
             "end_date": workspace["as_of_date"], "valuation_as_of_date": workspace["as_of_date"], "date_basis": "当前保存目标；日期为对应持仓估值截至日", "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/risk"})

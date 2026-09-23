@@ -8,7 +8,6 @@ from sqlalchemy import select
 
 from portfolio_app.api.routes import taxonomies as taxonomies_routes
 from portfolio_app.db.models import (
-    AnalyticsScopePolicyRecordModel,
     PortfolioCalculationStateModel,
     ResearchRunRecordModel,
     ResearchSettingsRecordModel,
@@ -17,11 +16,6 @@ from portfolio_app.db.models import (
     TaxonomyRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.analytics_scope import (
-    ROOT_POLICY_NODE_ID,
-    UNASSIGNED_POLICY_NODE_ID,
-)
-
 
 def test_market_profile_enrichment_reuses_one_registry_batch(monkeypatch):
     records = [
@@ -96,8 +90,11 @@ def test_taxonomy_api_has_one_current_configuration_and_keeps_market_data_cutoff
     schema = client.app.openapi()
     removed_fields = {"effective_from", "effective_to", "planning_as_of_date", "current_planning"}
     for name, model in schema["components"]["schemas"].items():
-        if name.startswith(("Taxonomy", "TargetSet", "DefaultPlanningTaxonomy", "AnalyticsScopePolicy", "AnalyticsTaxonomySelection")):
+        if name.startswith(("Taxonomy", "TargetSet", "DefaultPlanningTaxonomy")):
             assert not removed_fields.intersection(model.get("properties", {})), name
+    assert not any("analytics-scope-policies" in path for path in schema["paths"])
+    assert not any(name.startswith(("AnalyticsScopePolicy", "AnalyticsTaxonomySelection"))
+        for name in schema["components"]["schemas"])
     catalog_path = "/api/portfolios/{portfolio_id}/taxonomies"
     for path, operations in schema["paths"].items():
         if "/taxonomies" not in path:
@@ -132,16 +129,13 @@ def test_taxonomy_create_node_assignment_round_trip(client):
             "name": "Risk Sleeves",
             "taxonomy_type": "risk_sleeve",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
             "purpose": "Current planning lens",
         },
     )
     assert taxonomy_response.status_code == 200
     taxonomy_payload = taxonomy_response.json()
-    assert taxonomy_payload["taxonomy_id"].startswith("tax-risk-sleeves")
-    assert taxonomy_payload["planning_enabled"] is True
-    assert taxonomy_payload["root_default_target_dimension"] == "weight"
+    assert taxonomy_payload["name"] == "Risk Sleeves"
+    assert taxonomy_payload["root_allocation_basis"] == "weight"
 
     node_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_payload['taxonomy_id']}/nodes",
@@ -233,7 +227,7 @@ def test_taxonomy_assignment_create_ignores_descriptive_imported_ids(client):
     )
 
     assert assignment_response.status_code == 200
-    assert assignment_response.json()["assignment_id"] == "assign-0001"
+    assert assignment_response.json()["assignment_id"].startswith("tax-assignment-")
 
 
 def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
@@ -430,8 +424,7 @@ def test_taxonomy_delete_node_unassigns_instruments(client):
 def test_taxonomy_delete_subtree_preserves_sibling_budgets_and_saved_research(client):
     portfolio_id = "investment-studio"
     base = f"/api/portfolios/{portfolio_id}/taxonomies"
-    created = client.post(base, json={"name": "Deletion scope", "planning_enabled": True,
-        "budgeting_level": "weight_and_risk_budget"})
+    created = client.post(base, json={"name": "Deletion scope"})
     assert created.status_code == 200, created.text
     taxonomy_id = created.json()["taxonomy_id"]
     path = f"{base}/{taxonomy_id}"
@@ -452,9 +445,8 @@ def test_taxonomy_delete_subtree_preserves_sibling_budgets_and_saved_research(cl
     def target(scope, members, member_type="taxonomy_node"):
         response = client.post(f"{path}/target-sets", json={
             "name": f"Scope {scope}", "comparator_taxonomy_node_id": scope,
-            "target_set_type": "saa", "weight_enabled": False, "risk_budget_enabled": True,
-            "lines": [{"target_member_type": member_type, "target_member_id": member_id,
-                       "target_risk_share": share} for member_id, share in members],
+            "target_set_type": "saa", "lines": [{"target_member_type": member_type, "target_member_id": member_id,
+                       "target_value": share} for member_id, share in members],
         })
         assert response.status_code == 200, response.text
         return response.json()["target_set_id"]
@@ -490,7 +482,7 @@ def test_taxonomy_delete_subtree_preserves_sibling_budgets_and_saved_research(cl
     assert {root_target, top_target}.issubset(target_ids)
     assert not {removed_target, child_target}.intersection(target_ids)
     lines = [item for item in catalog["target_set_lines"] if item["target_set_id"] == top_target]
-    assert len(lines) == 1 and lines[0]["target_member_id"] == survivor and lines[0]["target_risk_share"] == 0.6
+    assert len(lines) == 1 and lines[0]["target_member_id"] == survivor and lines[0]["target_value"] == 0.6
     assert any(item["target_set_id"] == top_target for item in catalog["target_set_integrity_issues"])
     with get_session_factory()() as session:
         revisions = session.scalars(select(TaxonomyConfigurationRevisionModel).where(
@@ -562,130 +554,16 @@ def test_taxonomy_create_rejects_non_security_scope(client):
             "name": "Account Planning",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "account",
-            "planning_enabled": True,
         },
     )
     assert response.status_code == 422
     assert "instrument" in str(response.json())
 
 
-def test_default_planning_taxonomy_can_be_set_and_cleared(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/investment-studio/taxonomies",
-        json={
-            "name": "Core Planning Axis",
-            "taxonomy_type": "custom",
-            "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-
-    set_response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": taxonomy_id},
-    )
-    assert set_response.status_code == 200
-    assert set_response.json()["default_planning_taxonomy_id"] == taxonomy_id
-
-    catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
-    assert catalog_response.status_code == 200
-    assert catalog_response.json()["default_planning_taxonomy_id"] == taxonomy_id
-
-    clear_response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": None},
-    )
-    assert clear_response.status_code == 200
-    assert clear_response.json()["default_planning_taxonomy_id"] is None
 
 
-def test_selecting_imported_planning_taxonomy_initializes_analytics_state(client):
-    taxonomy_id = "tax-imported-planning"
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        session.add(
-            TaxonomyRecordModel(
-                taxonomy_id=taxonomy_id,
-                portfolio_id="investment-studio",
-                name="Imported Planning Axis",
-                taxonomy_type="risk_sleeve",
-                purpose=None,
-                primary_assignment_scope="instrument",
-                planning_enabled=True,
-                budgeting_level="weight_and_risk_budget",
-                root_default_target_dimension="weight",
-                status="active",
-                source_template_ref=None,
-            )
-        )
-        session.commit()
-
-    root_policy_response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/"
-        f"{taxonomy_id}/analytics-scope-policies/{ROOT_POLICY_NODE_ID}",
-        json={
-            "risk_eligible": True,
-            "risk_budget_eligible": True,
-            "performance_scope": "ordinary",
-            "valuation_basis": "market",
-            "exclusion_reason": None,
-        },
-    )
-    assert root_policy_response.status_code == 200, root_policy_response.text
-
-    response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": taxonomy_id},
-    )
-    assert response.status_code == 200, response.text
-
-    with session_factory() as session:
-        policies = session.scalars(
-            select(AnalyticsScopePolicyRecordModel).where(
-                AnalyticsScopePolicyRecordModel.portfolio_id == "investment-studio",
-                AnalyticsScopePolicyRecordModel.taxonomy_id == taxonomy_id,
-            )
-        ).all()
-        configuration = session.scalar(
-            select(TaxonomyConfigurationRevisionModel).where(
-                TaxonomyConfigurationRevisionModel.portfolio_id == "investment-studio",
-                TaxonomyConfigurationRevisionModel.taxonomy_id == taxonomy_id,
-            )
-        )
-
-    policies_by_node = {policy.taxonomy_node_id: policy for policy in policies}
-    assert set(policies_by_node) == {
-        ROOT_POLICY_NODE_ID,
-        UNASSIGNED_POLICY_NODE_ID,
-    }
-    assert policies_by_node[ROOT_POLICY_NODE_ID].risk_eligible is True
-    assert policies_by_node[ROOT_POLICY_NODE_ID].risk_budget_eligible is True
-    assert policies_by_node[UNASSIGNED_POLICY_NODE_ID].risk_eligible is False
-    assert policies_by_node[UNASSIGNED_POLICY_NODE_ID].performance_scope == "unallocated"
-    assert configuration is not None
-    assert configuration.configuration_version > 0
-    assert not hasattr(configuration, "effective_from")
 
 
-def test_default_planning_taxonomy_rejects_non_planning_taxonomy(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/investment-studio/taxonomies",
-        json={
-            "name": "Sector Lens",
-            "taxonomy_type": "sector",
-            "primary_assignment_scope": "instrument",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-
-    response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": taxonomy_id},
-    )
-    assert response.status_code == 400
-    assert "planning-enabled" in response.json()["detail"]
 
 
 def test_taxonomy_update_node_and_assignment_round_trip(client):
@@ -695,8 +573,6 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
             "name": "Editable Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -733,13 +609,13 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
         json={
             "name": "Editable Planning Axis 2",
             "purpose": "Updated purpose",
-            "root_default_target_dimension": "risk_budget",
+            "root_allocation_basis": "risk_budget",
         },
     )
     assert update_taxonomy_response.status_code == 200
     assert update_taxonomy_response.json()["name"] == "Editable Planning Axis 2"
     assert update_taxonomy_response.json()["purpose"] == "Updated purpose"
-    assert update_taxonomy_response.json()["root_default_target_dimension"] == "risk_budget"
+    assert update_taxonomy_response.json()["root_allocation_basis"] == "risk_budget"
 
     update_node_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{child_node_id}",
@@ -781,8 +657,6 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
             "name": "Planning With Cash",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -791,19 +665,19 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
         json={
             "node_name": "Liquidity Reserve",
-            "default_target_dimension": "risk_budget",
+            "allocation_basis": "risk_budget",
         },
     )
     assert cash_node_response.status_code == 200
     cash_node_payload = cash_node_response.json()
-    assert cash_node_payload["default_target_dimension"] == "risk_budget"
+    assert cash_node_payload["allocation_basis"] == "risk_budget"
 
     update_node_response = client.patch(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{cash_node_payload['taxonomy_node_id']}",
-        json={"default_target_dimension": "weight"},
+        json={"allocation_basis": "weight"},
     )
     assert update_node_response.status_code == 200
-    assert update_node_response.json()["default_target_dimension"] == "weight"
+    assert update_node_response.json()["allocation_basis"] == "weight"
 
     assignment_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/assignments",
@@ -824,8 +698,6 @@ def test_target_set_rejects_non_normalized_weight_totals(client):
             "name": "Levered Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -846,24 +718,20 @@ def test_target_set_rejects_non_normalized_weight_totals(client):
         json={
             "target_set_type": "saa",
             "name": "Levered Root Scope",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "taxonomy_node_id": first_child_id,
-                    "target_weight": 1.2,
-                    "target_risk_share": 0.8,
+                    "target_value": 0.9,
                 },
                 {
                     "taxonomy_node_id": second_child_id,
-                    "target_weight": 0.3,
-                    "target_risk_share": 0.2,
+                    "target_value": 0.3,
                 },
             ],
         },
     )
     assert target_set_response.status_code == 400
-    assert "target_weight values must sum to 100%." in str(target_set_response.json())
+    assert "sum to 100%" in str(target_set_response.json())
 
 
 def test_target_set_rejects_non_normalized_risk_share_totals(client):
@@ -873,8 +741,6 @@ def test_target_set_rejects_non_normalized_risk_share_totals(client):
             "name": "Risk Share Validation Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -895,18 +761,14 @@ def test_target_set_rejects_non_normalized_risk_share_totals(client):
         json={
             "target_set_type": "saa",
             "name": "Invalid Risk Share",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "taxonomy_node_id": first_child_id,
-                    "target_weight": 1.2,
-                    "target_risk_share": 0.8,
+                    "target_value": 0.9,
                 },
                 {
                     "taxonomy_node_id": second_child_id,
-                    "target_weight": 0.3,
-                    "target_risk_share": 0.35,
+                    "target_value": 0.3,
                 },
             ],
         },
@@ -922,8 +784,6 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "name": "Current Scope Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -961,18 +821,16 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
             "name": "Current Member Scope",
-            "weight_enabled": True,
-            "risk_budget_enabled": False,
             "lines": [
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_weight": 0.4,
+                    "target_value": 0.4,
                 },
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_weight": 0.6,
+                    "target_value": 0.6,
                 }
             ],
         },
@@ -993,8 +851,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "taxonomy_node_id": None,
             "target_member_type": "instrument",
             "target_member_id": "equity-us-abbv",
-            "target_weight": 0.4,
-            "target_risk_share": None,
+            "target_value": 0.4,
             "notes": None,
         },
         {
@@ -1003,8 +860,7 @@ def test_target_set_scope_uses_current_assignment_members(client):
             "taxonomy_node_id": None,
             "target_member_type": "instrument",
             "target_member_id": "fund-us-agg",
-            "target_weight": 0.6,
-            "target_risk_share": None,
+            "target_value": 0.6,
             "notes": None,
         }
     ]
@@ -1017,8 +873,6 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
             "name": "Integrity Scope Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -1043,12 +897,11 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
             "comparator_taxonomy_node_id": sleeve_id,
             "target_set_type": "saa",
             "name": "Absolute Return SAA",
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_risk_share": 1.0,
+                    "target_value": 1.0,
                 }
             ],
         },
@@ -1060,13 +913,12 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
             "comparator_taxonomy_node_id": sleeve_id,
             "target_set_type": "taa",
             "name": "Archived Absolute Return TAA",
-            "risk_budget_enabled": True,
             "status": "archived",
             "lines": [
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_risk_share": 1.0,
+                    "target_value": 1.0,
                 }
             ],
         },
@@ -1106,12 +958,12 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_risk_share": 0.5,
+                    "target_value": 0.5,
                 },
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_risk_share": 0.5,
+                    "target_value": 0.5,
                 },
             ]
         },
@@ -1121,196 +973,10 @@ def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
     assert repaired_catalog["target_set_integrity_issues"] == []
 
 
-def test_root_risk_budget_excludes_cash_and_rejects_cash_risk_values(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/investment-studio/taxonomies",
-        json={
-            "name": "Root Cash Integrity Axis",
-            "taxonomy_type": "custom",
-            "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-    defensive_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"node_name": "Defensive", "sort_order": 0},
-    )
-    growth_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"node_name": "Growth", "sort_order": 1},
-    )
-
-    risky_lines = [
-        {
-            "taxonomy_node_id": defensive_response.json()["taxonomy_node_id"],
-            "target_weight": None,
-            "target_risk_share": 0.4,
-        },
-        {
-            "taxonomy_node_id": growth_response.json()["taxonomy_node_id"],
-            "target_weight": None,
-            "target_risk_share": 0.6,
-        },
-    ]
-    for cash_risk_share in (0.0, 0.1):
-        invalid_cash_response = client.post(
-            f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-            json={
-                "target_set_type": "saa",
-                "name": "Invalid Root Risk Budget",
-                "weight_enabled": False,
-                "risk_budget_enabled": True,
-                "lines": [
-                    *risky_lines,
-                    {
-                        "target_member_type": "cash_bucket",
-                        "target_member_id": "__cash__",
-                        "target_weight": None,
-                        "target_risk_share": cash_risk_share,
-                    },
-                ],
-            },
-        )
-        assert invalid_cash_response.status_code == 400
-        assert "leave target_risk_share empty" in invalid_cash_response.json()["detail"]
-
-    invalid_cash_placeholder_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={
-            "target_set_type": "saa",
-            "name": "Invalid Root Cash Placeholder",
-            "weight_enabled": False,
-            "risk_budget_enabled": True,
-            "lines": [
-                *risky_lines,
-                {
-                    "target_member_type": "cash_bucket",
-                    "target_member_id": "__cash__",
-                    "target_weight": None,
-                    "target_risk_share": None,
-                },
-            ],
-        },
-    )
-    assert invalid_cash_placeholder_response.status_code == 400
-    assert "not part of risk-budget-only" in invalid_cash_placeholder_response.json()["detail"]
-
-    target_set_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={
-            "target_set_type": "saa",
-            "name": "Root Risk Budget",
-            "weight_enabled": False,
-            "risk_budget_enabled": True,
-            "lines": risky_lines,
-        },
-    )
-    assert target_set_response.status_code == 200
-
-    catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
-    assert catalog_response.status_code == 200
-    assert catalog_response.json()["target_set_integrity_issues"] == []
-
-    tactical_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={"node_name": "Tactical", "sort_order": 2},
-    )
-    assert tactical_response.status_code == 200
-    structurally_drifted_catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
-    assert structurally_drifted_catalog["target_set_integrity_issues"] == [
-        {
-            "taxonomy_id": taxonomy_id,
-            "comparator_taxonomy_node_id": None,
-            "scope_label": "Top Level",
-            "target_set_id": target_set_response.json()["target_set_id"],
-            "target_set_type": "saa",
-            "target_set_name": "Root Risk Budget",
-            "issue_code": "invalid_active_target_set",
-            "message": "Target set lines must cover every direct member in the selected scope.",
-        }
-    ]
 
 
-def test_deleting_default_planning_taxonomy_clears_pointer(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/investment-studio/taxonomies",
-        json={
-            "name": "Bridgewater Planning Axis",
-            "taxonomy_type": "risk_sleeve",
-            "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "risk_budget",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-
-    set_response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": taxonomy_id},
-    )
-    assert set_response.status_code == 200
-
-    delete_response = client.delete(f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}")
-    assert delete_response.status_code == 200
-
-    catalog_response = client.get("/api/portfolios/investment-studio/taxonomies")
-    assert catalog_response.status_code == 200
-    assert catalog_response.json()["default_planning_taxonomy_id"] is None
 
 
-def test_four_target_dimensions_persist_and_remain_independently_editable(client):
-    base = "/api/portfolios/investment-studio/taxonomies"
-    created = client.post(base, json={"name": "Four target dimensions"})
-    assert created.status_code == 200, created.text
-    taxonomy_id = created.json()["taxonomy_id"]
-    path = f"{base}/{taxonomy_id}"
-    node_ids = []
-    for name in ("Core", "Satellite"):
-        response = client.post(f"{path}/nodes", json={"node_name": name})
-        assert response.status_code == 200, response.text
-        node_ids.append(response.json()["taxonomy_node_id"])
-
-    target_ids = {}
-    # Enable all four dimensions, edit their values, then independently disable
-    # SAA weight and TAA risk while retaining the other two dimensions.
-    for configuration in (
-        {"saa": (0.7, 0.6), "taa": (0.5, 0.4)},
-        {"saa": (0.65, 0.55), "taa": (0.45, 0.35)},
-        {"saa": (None, 0.55), "taa": (0.45, None)},
-    ):
-        targets = []
-        for kind, (weight, risk) in configuration.items():
-            lines = [{"target_member_type": "taxonomy_node", "target_member_id": node_id,
-                      "target_weight": None if weight is None else weight if index == 0 else 1 - weight,
-                      "target_risk_share": None if risk is None else risk if index == 0 else 1 - risk}
-                     for index, node_id in enumerate(node_ids)]
-            if weight is not None:
-                lines.extend({"target_member_type": member_type, "target_member_id": member_id,
-                              "target_weight": 0, "target_risk_share": None}
-                             for member_type, member_id in (("cash_bucket", "__cash__"),
-                                                            ("derivative_bucket", "__derivatives__")))
-            targets.append({"target_set_id": target_ids.get(kind), "target_set_type": kind,
-                            "name": kind.upper(), "weight_enabled": weight is not None,
-                            "risk_budget_enabled": risk is not None, "lines": lines})
-        saved = client.put(f"{path}/target-configuration", json={"target_sets": targets})
-        assert saved.status_code == 200, saved.text
-        catalog = client.get(base).json()
-        for kind, (weight, risk) in configuration.items():
-            target = next(item for item in catalog["target_sets"]
-                          if item["taxonomy_id"] == taxonomy_id and item["target_set_type"] == kind)
-            if kind in target_ids:
-                assert target["target_set_id"] == target_ids[kind]
-            target_ids[kind] = target["target_set_id"]
-            assert target["weight_enabled"] is (weight is not None)
-            assert target["risk_budget_enabled"] is (risk is not None)
-            line = next(item for item in catalog["target_set_lines"]
-                        if item["target_set_id"] == target_ids[kind] and item["target_member_id"] == node_ids[0])
-            assert line["target_weight"] == weight
-            assert line["target_risk_share"] == risk
-        assert not [item for item in catalog["target_set_integrity_issues"]
-                    if item["target_set_id"] in target_ids.values()]
 
 
 def test_target_set_create_update_and_catalog_round_trip(client):
@@ -1320,8 +986,6 @@ def test_target_set_create_update_and_catalog_round_trip(client):
             "name": "Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -1353,18 +1017,14 @@ def test_target_set_create_update_and_catalog_round_trip(client):
         json={
             "target_set_type": "saa",
             "name": "Top Level SAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "taxonomy_node_id": core_node_id,
-                    "target_weight": 0.7,
-                    "target_risk_share": 0.6,
+                    "target_value": 0.7,
                 },
                 {
                     "taxonomy_node_id": satellite_node_id,
-                    "target_weight": 0.3,
-                    "target_risk_share": 0.4,
+                    "target_value": 0.3,
                 },
             ],
         },
@@ -1378,18 +1038,14 @@ def test_target_set_create_update_and_catalog_round_trip(client):
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "taa",
             "name": "Core Sleeve TAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "taxonomy_node_id": growth_node_id,
-                    "target_weight": 0.55,
-                    "target_risk_share": 0.5,
+                    "target_value": 0.55,
                 },
                 {
                     "taxonomy_node_id": income_node_id,
-                    "target_weight": 0.45,
-                    "target_risk_share": 0.5,
+                    "target_value": 0.45,
                 },
             ],
         },
@@ -1402,13 +1058,11 @@ def test_target_set_create_update_and_catalog_round_trip(client):
             "lines": [
                 {
                     "taxonomy_node_id": core_node_id,
-                    "target_weight": 0.68,
-                    "target_risk_share": 0.58,
+                    "target_value": 0.68,
                 },
                 {
                     "taxonomy_node_id": satellite_node_id,
-                    "target_weight": 0.32,
-                    "target_risk_share": 0.42,
+                    "target_value": 0.32,
                 },
             ],
         },
@@ -1424,7 +1078,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
     updated_saa = next(item for item in catalog_payload["target_sets"] if item["target_set_id"] == saa_target_set_id)
     assert "effective_to" not in updated_saa
     root_lines = [item for item in catalog_payload["target_set_lines"] if item["target_set_id"] == saa_target_set_id]
-    assert sum(item["target_weight"] for item in root_lines) == pytest.approx(1.0)
+    assert sum(item["target_value"] for item in root_lines) == pytest.approx(1.0)
 
 
 def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
@@ -1434,8 +1088,6 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
             "name": "Leaf Member Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -1470,26 +1122,21 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
             "name": "Invalid Leaf Sleeve Mix",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_weight": 0.45,
-                    "target_risk_share": 0.75,
+                    "target_value": 0.45,
                 },
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_weight": 0.35,
-                    "target_risk_share": 0.25,
+                    "target_value": 0.35,
                 },
                 {
                     "target_member_type": "cash_bucket",
                     "target_member_id": "cash-usd-main",
-                    "target_weight": 0.2,
-                    "target_risk_share": 0.0,
+                    "target_value": 0.2,
                 },
             ],
         },
@@ -1503,20 +1150,16 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
             "comparator_taxonomy_node_id": root_node_id,
             "target_set_type": "saa",
             "name": "Leaf Sleeve Mix",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_weight": 0.6,
-                    "target_risk_share": 0.75,
+                    "target_value": 0.6,
                 },
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_weight": 0.4,
-                    "target_risk_share": 0.25,
+                    "target_value": 0.4,
                 },
             ],
         },
@@ -1531,119 +1174,21 @@ def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
         if item["target_set_id"] == target_set_response.json()["target_set_id"]
     ]
     assert {item["target_member_type"] for item in saved_lines} == {"instrument"}
-    assert sum(item["target_weight"] for item in saved_lines) == pytest.approx(1.0)
+    assert sum(item["target_value"] for item in saved_lines) == pytest.approx(1.0)
     assert sum(
-        item["target_risk_share"] for item in saved_lines
+        item["target_value"] for item in saved_lines
     ) == pytest.approx(1.0)
 
 
-def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/investment-studio/taxonomies",
-        json={
-            "name": "System Buckets Planning Axis",
-            "taxonomy_type": "custom",
-            "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-    node_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes",
-        json={
-            "node_name": "Risk Assets",
-            "node_code": "RISK",
-            "sort_order": 0,
-        },
-    )
-    assert node_response.status_code == 200
-    risk_node_id = node_response.json()["taxonomy_node_id"]
-
-    invalid_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={
-            "target_set_type": "saa",
-            "name": "Invalid System Buckets SAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
-            "lines": [
-                {
-                    "taxonomy_node_id": risk_node_id,
-                    "target_weight": 0.8,
-                    "target_risk_share": 1.0,
-                },
-                {
-                    "target_member_type": "derivative_bucket",
-                    "target_member_id": "__derivatives__",
-                    "target_weight": 0.1,
-                    "target_risk_share": 0.0,
-                },
-                {
-                    "target_member_type": "cash_bucket",
-                    "target_member_id": "__cash__",
-                    "target_weight": 0.1,
-                    "target_risk_share": None,
-                },
-            ],
-        },
-    )
-    assert invalid_response.status_code == 400
-    assert "leave target_risk_share empty" in invalid_response.json()["detail"]
-
-    target_set_response = client.post(
-        f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
-        json={
-            "target_set_type": "saa",
-            "name": "System Buckets SAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
-            "lines": [
-                {
-                    "taxonomy_node_id": risk_node_id,
-                    "target_weight": 0.75,
-                    "target_risk_share": 1.0,
-                },
-                {
-                    "target_member_type": "derivative_bucket",
-                    "target_member_id": "__derivatives__",
-                    "target_weight": 0.1,
-                    "target_risk_share": None,
-                },
-                {
-                    "target_member_type": "cash_bucket",
-                    "target_member_id": "__cash__",
-                    "target_weight": 0.15,
-                    "target_risk_share": None,
-                },
-            ],
-        },
-    )
-    assert target_set_response.status_code == 200
-
-    catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
-    assert catalog["target_set_integrity_issues"] == []
-    saved_lines = [
-        line
-        for line in catalog["target_set_lines"]
-        if line["target_set_id"] == target_set_response.json()["target_set_id"]
-    ]
-    saved_by_member_id = {line["target_member_id"]: line for line in saved_lines}
-    assert saved_by_member_id["__derivatives__"]["target_weight"] == pytest.approx(0.1)
-    assert saved_by_member_id["__derivatives__"]["target_risk_share"] is None
-    assert saved_by_member_id["__cash__"]["target_weight"] == pytest.approx(0.15)
-    assert saved_by_member_id["__cash__"]["target_risk_share"] is None
 
 
-def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
+def test_target_set_requires_full_scope_and_preserves_other_budgets_on_node_move(client):
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
         json={
             "name": "Scoped Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight",
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
@@ -1676,12 +1221,10 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "saa",
             "name": "Incomplete Scope",
-            "weight_enabled": True,
-            "risk_budget_enabled": False,
             "lines": [
                 {
                     "taxonomy_node_id": growth_node_id,
-                    "target_weight": 1.0,
+                    "target_value": 1.0,
                 }
             ],
         },
@@ -1695,16 +1238,14 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "saa",
             "name": "Core Scope",
-            "weight_enabled": True,
-            "risk_budget_enabled": False,
             "lines": [
                 {
                     "taxonomy_node_id": growth_node_id,
-                    "target_weight": 0.6,
+                    "target_value": 0.6,
                 },
                 {
                     "taxonomy_node_id": income_node_id,
-                    "target_weight": 0.4,
+                    "target_value": 0.4,
                 },
             ],
         },
@@ -1715,5 +1256,10 @@ def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/nodes/{growth_node_id}",
         json={"parent_taxonomy_node_id": other_root_node_id},
     )
-    assert move_response.status_code == 400
-    assert "target-set configuration" in move_response.json()["detail"]
+    assert move_response.status_code == 200, move_response.text
+    catalog = client.get("/api/portfolios/investment-studio/taxonomies").json()
+    lines = [line for line in catalog["target_set_lines"]
+             if line["target_set_id"] == valid_response.json()["target_set_id"]]
+    assert [(line["target_member_id"], line["target_value"]) for line in lines] == [(income_node_id, .4)]
+    assert any(issue["target_set_id"] == valid_response.json()["target_set_id"]
+               for issue in catalog["target_set_integrity_issues"])

@@ -10,11 +10,8 @@ from sqlalchemy import select
 
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.analytics_scope import (
-    _serialize_policy,
-    current_analytics_policies_by_node,
+from portfolio_app.services.taxonomy_configuration import (
     current_taxonomy_configuration_in_session,
-    resolve_configuration_analytics_scopes,
 )
 from portfolio_app.services.research_eligibility import contract_only_instrument_ids
 from portfolio_app.services.valuation_clock import portfolio_valuation_today
@@ -44,14 +41,6 @@ def capture_current_target_configuration(
         if configuration is None:
             raise ValueError("Planning taxonomy not found.")
         configuration["base_currency"] = portfolio.base_currency
-        policies = current_analytics_policies_by_node(
-            reader, portfolio_id=portfolio_id, taxonomy_id=taxonomy_id,
-        )
-        instrument_ids = sorted({
-            str(item["target_entity_id"])
-            for item in configuration["taxonomy_assignments"]
-            if item.get("status") == "active" and item.get("target_scope") == "instrument"
-        })
         active_target_ids = {
             item["target_set_id"] for item in configuration["target_sets"]
             if item.get("status") == "active"
@@ -70,12 +59,8 @@ def capture_current_target_configuration(
             explicitly_selected=explicit_members,
             session=reader,
         ))
-        configuration["analytics_scope_policies"] = [_serialize_policy(policies[key]) for key in sorted(policies)]
-        configuration["instrument_analytics_scopes"] = resolve_configuration_analytics_scopes(
-            configuration, policies, instrument_ids=instrument_ids, taxonomy_id=taxonomy_id,
-        )
         configuration["target_configuration"] = CURRENT_TARGET_CONFIGURATION
-        configuration["snapshot_schema_version"] = 1
+        configuration["snapshot_schema_version"] = 3
         canonical = json.dumps(configuration, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         configuration["target_snapshot_fingerprint"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
         # Capture time is evidence, not configuration identity.

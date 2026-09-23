@@ -33,7 +33,7 @@ def test_local_owner_reads_unclaimed_conversations_files_and_corrects_without_ch
     tid = create_topic(cloud, instrument_ids=["fund-us-agg"], portfolio_id="B")
     file = cloud.post(f"/api/research/topics/{tid}/files", files={"file": ("old.txt", b"old private holdings", "text/plain")}).json()
     path = "/api/instruments/fund-us-agg/research/notes"
-    note = cloud.post(path, json={"note": {"note_date": "2026-09-08", "title": "乙的原判断"}}).json()["notes"][0]
+    note = cloud.post(path, json={"note": {"note_date": "2026-09-08", "title": "乙的原判断", "research_context": {"background": "原始研究讨论"}}}).json()["notes"][0]
     with get_session_factory()() as session:
         topic = session.get(ResearchTopic, tid)
         topic.created_by_user_id = None

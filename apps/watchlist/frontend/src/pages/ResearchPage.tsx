@@ -9,7 +9,7 @@ import type { ResearchReference } from '../lib/researchDossierApi'
 import { announceResearchPublication } from '../lib/researchUpdates'
 import { readWorkbench, writeWorkbench, uploadTopicFile, today } from '../lib/workbenchApi'
 
-function saveNote({ instrumentId, entryId, topicId, title, body, reference }: ResearchAssistantNote) {
+function saveNote({ instrumentId, entryId, topicId, title, body, background, reference }: ResearchAssistantNote) {
   return createInstrumentResearchNote(instrumentId, {
     source_entry_id: entryId,
     note: {
@@ -24,17 +24,21 @@ function saveNote({ instrumentId, entryId, topicId, title, body, reference }: Re
       people: '',
       author: '',
       follow_up_date: null,
-      research_context: reference?.instrument_id === instrumentId ? {
+      research_context: { background, ...(reference?.instrument_id === instrumentId ? {
         theme_id: reference.theme_id,
         research_update_id: reference.research_update_id,
         event_case_id: reference.event_case_id,
         event_version_id: reference.event_version_id,
+        notebook_version_id: reference.notebook_version_id,
+        theme_version_id: reference.theme_version_id,
+        investment_view_version_id: reference.investment_view_version_id,
+        source_ids: reference.source_ids,
         ...(reference.pm_note_id && reference.pm_note_revision ? {
           relationship: 'update',
           related_note_id: reference.pm_note_id,
           related_revision: reference.pm_note_revision,
         } : {}),
-      } : undefined,
+      } : {}) },
     },
   })
 }

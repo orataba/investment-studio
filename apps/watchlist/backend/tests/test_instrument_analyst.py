@@ -127,8 +127,10 @@ def test_daily_notebook_material_and_assistant_share_the_same_instrument_evidenc
             {'instrument_id': 'sxv264', 'change_kind': 'none', 'summary': '', 'coverage': [], 'events': []}]}))
         paper = {'modules': [{'key': 'fund-strategy', 'summary': '策略来自管理人说明，底层敞口仍待核实。', 'analysis': '暂没有可比估值资料。'}], 'key_drivers': [],
             'questions': [{'key': 'exposure', 'question': '底层敞口是什么？', 'assessment': '尚未披露。', 'next_check': '取得持仓说明。',
-                          'status': 'open', 'source_ids': [sid]}], 'source_ids': [sid]}
+                          'status': 'open', 'theme_id': 'fund-exposure', 'source_ids': [sid]}], 'source_ids': [sid]}
         sector_research.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'sxv264', 'summary': '继续核实敞口。',
+              'themes': [{'theme_key': 'fund-exposure', 'title': '底层敞口核实', 'question': '管理人的实际投资敞口是什么？',
+                          'priority_reason': '未披露敞口限制策略与组合风险判断，需继续核对管理人原始说明。'}],
               'coverage': [], 'events': [], 'research': paper}]}))
         session.commit()
     dossier = client.get('/api/research/instruments/sxv264/dossier').json()
@@ -190,11 +192,14 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
         from watchlist_app.services.research_notebook import research_sources
         assert computed["source_id"] in research_sources(run.context_json, run_id)
         draft = sector_research.ReviewResult.model_validate({"reviews": [{"instrument_id": "sxv264", "change_kind": "knowledge",
+            "themes": [{"theme_key": "fund-performance", "kind": "quantitative", "title": "共同样本表现来源",
+                "question": "共同样本超额表现能否由已披露策略解释？",
+                "priority_reason": "净值差异已观察到，但未披露敞口使收益来源仍需验证。"}],
             "research": {"modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
             "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
                 "title": "共同样本表现待解释", "body": "共同样本超额收益5个百分点，底层敞口仍未知。",
                 "next_watch": "核实策略来源及更长区间表现。", "confidence": "confirmed", "information_type": "fact",
-                "recording_type": "new", "source_ids": [computed["source_id"]]}]}]})
+                "recording_type": "new", "theme_ids": ["fund-performance"], "source_ids": [computed["source_id"]]}]}]})
         sector_research.validate_result(session, run, draft)
     assert automatic_evidence["frequency"] == "weekly"
     comparison = automatic_evidence["comparisons"][0]["comparison"]

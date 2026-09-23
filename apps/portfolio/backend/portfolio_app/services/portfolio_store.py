@@ -25,13 +25,11 @@ from investment_studio_instrument_core.db_models import InstrumentMarketData
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     AccountRecordModel,
-    AnalyticsScopePolicyRecordModel,
-    AnalyticsTaxonomySelectionRecordModel,
     ConcentrationPolicyRevisionModel,
     DerivativeContractRecordModel,
     OptionDeliveryLinkModel,
     PortfolioCalculationStateModel,
-    PortfolioAnalyticsPolicyStateModel,
+    PortfolioTaxonomyStateModel,
     PortfolioDailyContributionSliceModel,
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
@@ -56,13 +54,8 @@ from portfolio_app.services.ledger import (
     build_position_lots,
     validate_transaction_position_history,
 )
-from portfolio_app.services.analytics_scope import (
-    _ensure_default_scope_policies_in_session,
+from portfolio_app.services.taxonomy_configuration import (
     _record_taxonomy_configuration_revision_in_session,
-    set_analytics_taxonomy_selection_in_session,
-    current_taxonomy_configuration_in_session,
-    _create_scope_policy_in_session,
-    current_analytics_policies_by_node,
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 from portfolio_app.services.transaction_dates import (
@@ -92,7 +85,7 @@ EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
 }
 
 UNSET = object()
-TARGET_SET_EPSILON = 0.0005
+TARGET_SET_EPSILON = 1e-6
 TARGET_MEMBER_NODE = "taxonomy_node"
 TARGET_MEMBER_CASH = "cash_bucket"
 TARGET_MEMBER_DERIVATIVE = "derivative_bucket"
@@ -304,7 +297,6 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
         if isinstance(portfolio, dict):
             portfolio.setdefault("valuation_timezone", "Asia/Shanghai")
             portfolio.setdefault("valuation_cutoff_policy", "latest_complete_eod")
-            portfolio.setdefault("default_planning_taxonomy_id", None)
     for account in normalized["accounts"]:
         if not isinstance(account, dict):
             continue
@@ -589,7 +581,6 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "day_change_pct": item.day_change_pct,
                 "securities_count": item.securities_count,
                 "sort_order": item.sort_order,
-                "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
             }
             for item in portfolios
         ],
@@ -685,8 +676,6 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "taxonomy_type": item.taxonomy_type,
                 "purpose": item.purpose,
                 "primary_assignment_scope": item.primary_assignment_scope,
-                "planning_enabled": item.planning_enabled,
-                "budgeting_level": item.budgeting_level,
                 "status": item.status,
                 "source_template_ref": item.source_template_ref,
             }
@@ -701,7 +690,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "node_code": item.node_code,
                 "sort_order": item.sort_order,
                 "is_terminal": item.is_terminal,
-                "default_target_dimension": item.default_target_dimension,
+                "allocation_basis": item.allocation_basis,
                 "status": item.status,
             }
             for item in taxonomy_nodes
@@ -728,8 +717,6 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
                 "target_set_type": item.target_set_type,
                 "name": item.name,
-                "weight_enabled": item.weight_enabled,
-                "risk_budget_enabled": item.risk_budget_enabled,
                 "status": item.status,
                 "notes": item.notes,
             }
@@ -742,8 +729,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "target_member_type": item.target_member_type,
                 "target_member_id": item.target_member_id,
                 "taxonomy_node_id": item.taxonomy_node_id,
-                "target_weight": item.target_weight,
-                "target_risk_share": item.target_risk_share,
+                "target_value": item.target_value,
                 "notes": item.notes,
             }
             for item in target_set_lines
@@ -795,12 +781,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     session.execute(delete(PortfolioInstrumentUniverseRecordModel))
     if TaxonomyConfigurationRevisionModel.__tablename__ in existing_tables:
         session.execute(delete(TaxonomyConfigurationRevisionModel))
-    if AnalyticsTaxonomySelectionRecordModel.__tablename__ in existing_tables:
-        session.execute(delete(AnalyticsTaxonomySelectionRecordModel))
-    if AnalyticsScopePolicyRecordModel.__tablename__ in existing_tables:
-        session.execute(delete(AnalyticsScopePolicyRecordModel))
-    if PortfolioAnalyticsPolicyStateModel.__tablename__ in existing_tables:
-        session.execute(delete(PortfolioAnalyticsPolicyStateModel))
+    if PortfolioTaxonomyStateModel.__tablename__ in existing_tables:
+        session.execute(delete(PortfolioTaxonomyStateModel))
     session.execute(delete(TargetSetLineRecordModel))
     session.execute(delete(TargetSetRecordModel))
     session.execute(delete(TaxonomyAssignmentRecordModel))
@@ -841,11 +823,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 day_change_pct=float(raw_portfolio.get("day_change_pct") or 0.0),
                 securities_count=int(raw_portfolio.get("securities_count") or 0),
                 sort_order=int(raw_portfolio.get("sort_order") or 0),
-                default_planning_taxonomy_id=(
-                    str(raw_portfolio.get("default_planning_taxonomy_id")).strip()
-                    if raw_portfolio.get("default_planning_taxonomy_id")
-                    else None
-                ),
                 risk_policy_json=(
                     deepcopy(raw_portfolio.get("risk_policy_json"))
                     if isinstance(raw_portfolio.get("risk_policy_json"), dict)
@@ -930,12 +907,8 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 taxonomy_type=str(raw_taxonomy.get("taxonomy_type") or "custom").strip() or "custom",
                 purpose=(str(raw_taxonomy.get("purpose")).strip() if raw_taxonomy.get("purpose") else None),
                 primary_assignment_scope="instrument",
-                planning_enabled=bool(raw_taxonomy.get("planning_enabled")),
-                budgeting_level=(
-                    str(raw_taxonomy.get("budgeting_level")).strip() if raw_taxonomy.get("budgeting_level") else None
-                ),
-                root_default_target_dimension=(
-                    str(raw_taxonomy.get("root_default_target_dimension") or "weight").strip() or "weight"
+                root_allocation_basis=(
+                    str(raw_taxonomy.get("root_allocation_basis") or "weight").strip() or "weight"
                 ),
                 status=str(raw_taxonomy.get("status") or "active").strip() or "active",
                 source_template_ref=(
@@ -962,7 +935,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 node_code=str(raw_node.get("node_code")).strip() if raw_node.get("node_code") else None,
                 sort_order=int(raw_node.get("sort_order") or 0),
                 is_terminal=bool(raw_node.get("is_terminal", True)),
-                default_target_dimension=str(raw_node.get("default_target_dimension") or "weight").strip()
+                allocation_basis=str(raw_node.get("allocation_basis") or "weight").strip()
                 or "weight",
                 status=str(raw_node.get("status") or "active").strip() or "active",
             )
@@ -1012,8 +985,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 ),
                 target_set_type=str(raw_target_set.get("target_set_type") or "saa").strip() or "saa",
                 name=str(raw_target_set.get("name") or "").strip(),
-                weight_enabled=bool(raw_target_set.get("weight_enabled")),
-                risk_budget_enabled=bool(raw_target_set.get("risk_budget_enabled")),
                 status=str(raw_target_set.get("status") or "active").strip() or "active",
                 notes=str(raw_target_set.get("notes")).strip() if raw_target_set.get("notes") else None,
             )
@@ -1037,14 +1008,9 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 target_member_id=(
                     str(raw_target_line.get("target_member_id") or raw_target_line.get("taxonomy_node_id") or "").strip()
                 ),
-                target_weight=(
-                    float(raw_target_line["target_weight"])
-                    if raw_target_line.get("target_weight") is not None
-                    else None
-                ),
-                target_risk_share=(
-                    float(raw_target_line["target_risk_share"])
-                    if raw_target_line.get("target_risk_share") is not None
+                target_value=(
+                    float(raw_target_line["target_value"])
+                    if raw_target_line.get("target_value") is not None
                     else None
                 ),
                 notes=str(raw_target_line.get("notes")).strip() if raw_target_line.get("notes") else None,
@@ -1279,7 +1245,6 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
         "day_change_pct": item.day_change_pct,
         "securities_count": item.securities_count,
         "sort_order": item.sort_order,
-        "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
         "risk_policy_json": deepcopy(item.risk_policy_json) if isinstance(item.risk_policy_json, dict) else None,
     }
 
@@ -2000,9 +1965,7 @@ def _serialize_taxonomy_row(item: TaxonomyRecordModel) -> dict[str, object]:
         "taxonomy_type": item.taxonomy_type,
         "purpose": item.purpose,
         "primary_assignment_scope": item.primary_assignment_scope,
-        "planning_enabled": item.planning_enabled,
-        "budgeting_level": item.budgeting_level,
-        "root_default_target_dimension": item.root_default_target_dimension,
+        "root_allocation_basis": item.root_allocation_basis,
         "status": item.status,
         "source_template_ref": item.source_template_ref,
     }
@@ -2017,7 +1980,7 @@ def _serialize_taxonomy_node_row(item: TaxonomyNodeRecordModel) -> dict[str, obj
         "node_code": item.node_code,
         "sort_order": item.sort_order,
         "is_terminal": item.is_terminal,
-        "default_target_dimension": item.default_target_dimension,
+        "allocation_basis": item.allocation_basis,
         "status": item.status,
     }
 
@@ -2040,8 +2003,6 @@ def _serialize_target_set_row(item: TargetSetRecordModel) -> dict[str, object]:
         "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
         "target_set_type": item.target_set_type,
         "name": item.name,
-        "weight_enabled": item.weight_enabled,
-        "risk_budget_enabled": item.risk_budget_enabled,
         "status": item.status,
         "notes": item.notes,
     }
@@ -2054,8 +2015,7 @@ def _serialize_target_set_line_row(item: TargetSetLineRecordModel) -> dict[str, 
         "target_member_type": item.target_member_type,
         "target_member_id": item.target_member_id,
         "taxonomy_node_id": item.taxonomy_node_id,
-        "target_weight": item.target_weight,
-        "target_risk_share": item.target_risk_share,
+        "target_value": item.target_value,
         "notes": item.notes,
     }
 
@@ -2221,66 +2181,6 @@ def _next_account_id(existing_ids: list[str], account_name: str, account_type: s
     return candidate
 
 
-def _next_taxonomy_id(session, name: str) -> str:
-    base = f"tax-{_slugify(name)}"
-    candidate = base
-    suffix = 2
-    existing_ids = set(
-        session.scalars(
-            select(TaxonomyRecordModel.taxonomy_id).where(TaxonomyRecordModel.taxonomy_id.like(f"{base}%"))
-        ).all()
-    )
-    while candidate in existing_ids:
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _next_taxonomy_node_id(session, taxonomy_id: str, node_name: str) -> str:
-    base = f"{taxonomy_id}-{_slugify(node_name)}"
-    candidate = base
-    suffix = 2
-    existing_ids = set(
-        session.scalars(
-            select(TaxonomyNodeRecordModel.taxonomy_node_id).where(
-                TaxonomyNodeRecordModel.taxonomy_node_id.like(f"{base}%")
-            )
-        ).all()
-    )
-    while candidate in existing_ids:
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _next_taxonomy_assignment_id(session) -> str:
-    # Imported/bootstrap assignments may use descriptive identifiers such as
-    # ``assign-tax-portfolio-010737-of``.  Casting every value after the shared
-    # prefix to an integer makes one such identifier poison all future creates
-    # on PostgreSQL.  Only canonical numeric identifiers participate in the
-    # sequence; descriptive identifiers remain valid records but are ignored by
-    # the allocator.
-    existing_ids = {
-        str(assignment_id)
-        for assignment_id in session.scalars(
-            select(TaxonomyAssignmentRecordModel.assignment_id).where(
-                TaxonomyAssignmentRecordModel.assignment_id.like("assign-%")
-            )
-        ).all()
-    }
-    numeric_suffixes = [
-        int(match.group(1))
-        for assignment_id in existing_ids
-        if (match := re.fullmatch(r"assign-(\d+)", assignment_id)) is not None
-    ]
-    next_number = max(numeric_suffixes, default=0) + 1
-    candidate = f"assign-{next_number:04d}"
-    while candidate in existing_ids:
-        next_number += 1
-        candidate = f"assign-{next_number:04d}"
-    return candidate
-
-
 def _next_target_set_id(session, taxonomy_id: str, target_set_type: str, name: str) -> str:
     base = f"{taxonomy_id}-{target_set_type}-{_slugify(name)}"
     candidate = base
@@ -2294,16 +2194,6 @@ def _next_target_set_id(session, taxonomy_id: str, target_set_type: str, name: s
         candidate = f"{base}-{suffix}"
         suffix += 1
     return candidate
-
-
-def _next_target_line_id(session) -> str:
-    max_suffix = session.scalar(
-        select(func.max(cast(func.substr(TargetSetLineRecordModel.target_line_id, 7), Integer))).where(
-            TargetSetLineRecordModel.target_line_id.like("tline-%")
-        )
-    )
-    next_number = int(max_suffix or 0) + 1
-    return f"tline-{next_number:04d}"
 
 
 def _taxonomy_node_assignment_count(session, taxonomy_node_id: str) -> int:
@@ -2351,14 +2241,6 @@ def _refresh_parent_terminal_state(session, taxonomy_node_id: str | None) -> Non
     parent_record.is_terminal = _taxonomy_node_child_count(session, taxonomy_node_id) == 0
 
 
-def _budgeting_dimensions(budgeting_level: str | None) -> set[str]:
-    if budgeting_level == "weight":
-        return {"weight"}
-    if budgeting_level == "risk_budget":
-        return {"risk_budget"}
-    if budgeting_level == "weight_and_risk_budget":
-        return {"weight", "risk_budget"}
-    return set()
 
 
 def _is_reserved_cash_label(node_name: str | None, node_code: str | None) -> bool:
@@ -2495,122 +2377,78 @@ def _scope_target_members(
 
 
 def _validate_target_set_lines(
-    session,
-    *,
-    taxonomy: TaxonomyRecordModel,
-    comparator_taxonomy_node_id: str | None,
-    target_set_type: str,
-    weight_enabled: bool,
-    risk_budget_enabled: bool,
-    status: str,
-    lines: list[dict[str, object]],
+    session, *, taxonomy: TaxonomyRecordModel,
+    comparator_taxonomy_node_id: str | None, target_set_type: str,
+    status: str, lines: list[dict[str, object]],
     exclude_target_set_id: str | None = None,
-) -> tuple[TaxonomyNodeRecordModel | None, list[TaxonomyNodeRecordModel]]:
-    if not taxonomy.planning_enabled:
-        raise ValueError("Target sets require a planning-enabled taxonomy.")
-    if not weight_enabled and not risk_budget_enabled:
-        raise ValueError("At least one target dimension must be enabled.")
-
-    allowed_dimensions = _budgeting_dimensions(taxonomy.budgeting_level)
-    if not allowed_dimensions:
-        raise ValueError("Taxonomy budgeting_level must be configured before adding target sets.")
-    if weight_enabled and "weight" not in allowed_dimensions:
-        raise ValueError("Taxonomy budgeting_level does not permit weight targets.")
-    if risk_budget_enabled and "risk_budget" not in allowed_dimensions:
-        raise ValueError("Taxonomy budgeting_level does not permit risk-budget targets.")
-
-    parent_node, scope_members = _scope_target_members(
-        session,
-        taxonomy=taxonomy,
-        comparator_taxonomy_node_id=comparator_taxonomy_node_id,
-    )
-    if not lines:
-        raise ValueError("Target set lines are required.")
-
-    expected_member_keys = {
-        (str(item["target_member_type"]), str(item["target_member_id"]))
-        for item in scope_members
-    }
-    optional_member_keys: set[tuple[str, str]] = set()
-    if comparator_taxonomy_node_id is None:
-        optional_member_keys.add((TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID))
-        optional_member_keys.add((TARGET_MEMBER_DERIVATIVE, SYSTEM_DERIVATIVE_TARGET_MEMBER_ID))
-    seen_member_keys: set[tuple[str, str]] = set()
-    risk_excluded_member_keys = {
-        member_key
-        for member_key in expected_member_keys | optional_member_keys
-        if member_key[0] in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}
-    }
-    risk_eligible_member_keys = expected_member_keys - risk_excluded_member_keys
-    if risk_budget_enabled and not risk_eligible_member_keys:
-        raise ValueError("Risk-budget target sets require at least one risk-eligible member.")
-    weight_total = 0.0
-    risk_share_total = 0.0
-
-    for raw_line in lines:
-        member_type, member_id, _ = _normalize_target_line_member(raw_line)
-        member_key = (member_type, member_id)
-        if member_key not in expected_member_keys and member_key not in optional_member_keys:
-            raise ValueError("Target set lines must match the direct members of the selected scope.")
-        if member_key in seen_member_keys:
+) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
+    parent, members = _scope_target_members(session, taxonomy=taxonomy,
+        comparator_taxonomy_node_id=comparator_taxonomy_node_id)
+    basis = parent.allocation_basis if parent else taxonomy.root_allocation_basis
+    if basis not in {"weight", "risk_budget"}:
+        raise ValueError("Unsupported allocation basis.")
+    expected = {(str(m["target_member_type"]), str(m["target_member_id"])) for m in members}
+    cash_key = (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID)
+    allowed = expected | ({cash_key} if parent is None else set())
+    seen: set[tuple[str, str]] = set()
+    total = 0.0
+    cash_reserve = 0.0
+    for line in lines:
+        member_type, member_id, _ = _normalize_target_line_member(line)
+        key = (member_type, member_id)
+        if key not in allowed:
+            raise ValueError("Target set lines must match the direct members of the selected scope; derivative capital is not a target.")
+        if key in seen:
             raise ValueError("Duplicate scope member in target set lines.")
-        seen_member_keys.add(member_key)
-        excludes_risk = member_key in risk_excluded_member_keys
-
-        target_weight = raw_line.get("target_weight")
-        target_risk_share = raw_line.get("target_risk_share")
-        if weight_enabled:
-            if target_weight is None:
-                raise ValueError("Every scope member needs a target_weight when weight is enabled.")
-            resolved_weight = float(target_weight)
-            if not isfinite(resolved_weight) or resolved_weight < 0:
-                raise ValueError("target_weight must be finite and zero or greater.")
-            weight_total += resolved_weight
-        elif target_weight is not None:
-            raise ValueError("target_weight must be empty when weight is disabled.")
-
-        if excludes_risk and target_risk_share is not None:
-            raise ValueError("Cash and derivative members must leave target_risk_share empty.")
-
-        if risk_budget_enabled:
-            if excludes_risk:
-                if not weight_enabled:
-                    raise ValueError("Cash and derivative members are not part of risk-budget-only target sets.")
-            elif target_risk_share is None:
-                raise ValueError("Every scope member needs a target_risk_share when risk_budget is enabled.")
-            else:
-                resolved_risk_share = float(target_risk_share)
-                if not isfinite(resolved_risk_share) or resolved_risk_share < 0:
-                    raise ValueError("target_risk_share must be finite and zero or greater.")
-                risk_share_total += resolved_risk_share
-        elif target_risk_share is not None:
-            raise ValueError("target_risk_share must be empty when risk_budget is disabled.")
-
-    required_member_keys = expected_member_keys if weight_enabled else risk_eligible_member_keys
-    if not required_member_keys.issubset(seen_member_keys):
+        seen.add(key)
+        value = line.get("target_value")
+        if value is None or not isfinite(float(value)) or not 0 <= float(value) <= 1:
+            raise ValueError("Every scope member needs a finite target_value between 0% and 100%.")
+        if key == cash_key:
+            cash_reserve = float(value)
+            if cash_reserve > 1:
+                raise ValueError("Cash reserve must be between 0% and 100% of portfolio NAV.")
+        else:
+            total += float(value)
+    if not expected.issubset(seen):
         raise ValueError("Target set lines must cover every direct member in the selected scope.")
-    if weight_enabled and abs(weight_total - 1.0) > TARGET_SET_EPSILON:
-        raise ValueError("target_weight values must sum to 100%.")
-    if risk_budget_enabled and abs(risk_share_total - 1.0) > TARGET_SET_EPSILON:
-        raise ValueError("Risk-eligible target_risk_share values must sum to 100%.")
-
+    all_cash = parent is None and basis == "weight" and cash_reserve == 1 and abs(total) <= 1e-12
+    if abs(total - 1) > TARGET_SET_EPSILON and not all_cash:
+        raise ValueError("Security member target_value values must sum to 100%; cash reserve is separate.")
     if status == "active":
-        overlapping_target_sets = session.scalars(
-            select(TargetSetRecordModel).where(
-                TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
-                TargetSetRecordModel.target_set_type == target_set_type,
-                TargetSetRecordModel.status == "active",
-                TargetSetRecordModel.comparator_taxonomy_node_id == comparator_taxonomy_node_id,
-            )
-        ).all()
-        for existing in overlapping_target_sets:
-            if exclude_target_set_id and existing.target_set_id == exclude_target_set_id:
-                continue
-            if target_set_type == "saa":
-                raise ValueError("An active SAA target set already exists for this scope.")
-            raise ValueError("An active TAA target set already exists for this scope.")
+        other = session.scalars(select(TargetSetRecordModel).where(
+            TargetSetRecordModel.taxonomy_id == taxonomy.taxonomy_id,
+            TargetSetRecordModel.target_set_type == target_set_type,
+            TargetSetRecordModel.status == "active",
+            TargetSetRecordModel.comparator_taxonomy_node_id == comparator_taxonomy_node_id)).all()
+        if any(item.target_set_id != exclude_target_set_id for item in other):
+            raise ValueError(f"An active {target_set_type.upper()} target set already exists for this scope.")
+    return parent, members
 
-    return parent_node, scope_members
+
+def _remove_scope_target_member(session, *, taxonomy_id: str, scope_node_id: str | None,
+        member_type: str, member_id: str) -> None:
+    """Remove departed members without inventing budgets for the survivors."""
+    has_children = session.scalar(select(TaxonomyNodeRecordModel.taxonomy_node_id).where(
+        TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id,
+        TaxonomyNodeRecordModel.parent_taxonomy_node_id == scope_node_id,
+        TaxonomyNodeRecordModel.status == "active").limit(1))
+    has_assignments = None if scope_node_id is None else session.scalar(
+        select(TaxonomyAssignmentRecordModel.assignment_id).where(
+            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+            TaxonomyAssignmentRecordModel.taxonomy_node_id == scope_node_id,
+            TaxonomyAssignmentRecordModel.status == "active").limit(1))
+    for target_set in session.scalars(select(TargetSetRecordModel).options(
+            selectinload(TargetSetRecordModel.lines)).where(
+            TargetSetRecordModel.taxonomy_id == taxonomy_id,
+            TargetSetRecordModel.comparator_taxonomy_node_id == scope_node_id)):
+        if has_children is None and has_assignments is None:
+            session.delete(target_set)
+        else:
+            for line in list(target_set.lines):
+                if line.target_member_type == member_type and line.target_member_id == member_id:
+                    target_set.lines.remove(line)
+    session.flush()
 
 
 def list_portfolios(*, portfolio_ids: list[str] | None = None) -> list[dict[str, object]]:
@@ -2710,33 +2548,26 @@ def create_taxonomy(
     taxonomy_type: str,
     purpose: str | None,
     primary_assignment_scope: str,
-    planning_enabled: bool,
-    budgeting_level: str | None,
-    root_default_target_dimension: str,
+    root_allocation_basis: str,
     status: str,
     source_template_ref: str | None,
 ) -> dict[str, object]:
     with _taxonomy_write_session(portfolio_id) as session:
         record = TaxonomyRecordModel(
-            taxonomy_id=_next_taxonomy_id(session, name),
+            # Saved policy and Research references outlive deletion; a reused
+            # name must never bind those references to a new classification.
+            taxonomy_id=f"tax-{uuid4().hex}",
             portfolio_id=portfolio_id,
             name=name.strip(),
             taxonomy_type=(taxonomy_type or "custom").strip() or "custom",
             purpose=(purpose or "").strip() or None,
             primary_assignment_scope=primary_assignment_scope,
-            planning_enabled=planning_enabled,
-            budgeting_level=(budgeting_level or "").strip() or None,
-            root_default_target_dimension=(root_default_target_dimension or "weight").strip() or "weight",
+            root_allocation_basis=(root_allocation_basis or "weight").strip() or "weight",
             status=(status or "active").strip() or "active",
             source_template_ref=(source_template_ref or "").strip() or None,
         )
         session.add(record)
         session.flush()
-        _ensure_default_scope_policies_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=record.taxonomy_id,
-        )
         _record_taxonomy_configuration_revision_in_session(
             session,
             portfolio_id=portfolio_id,
@@ -2759,9 +2590,7 @@ def update_taxonomy(
     name: str | None = UNSET,
     taxonomy_type: str | None = UNSET,
     purpose: str | None = UNSET,
-    planning_enabled: bool | None = UNSET,
-    budgeting_level: str | None = UNSET,
-    root_default_target_dimension: str | None = UNSET,
+    root_allocation_basis: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
     with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
@@ -2777,32 +2606,18 @@ def update_taxonomy(
         if record is None:
             raise ValueError("Taxonomy not found.")
 
-        resolved_planning_enabled = record.planning_enabled if planning_enabled is UNSET else bool(planning_enabled)
-        resolved_budgeting_level = record.budgeting_level if budgeting_level is UNSET else budgeting_level
-        if resolved_budgeting_level and not resolved_planning_enabled:
-            raise ValueError("budgeting_level requires planning_enabled.")
         if name is not UNSET and name is not None:
             record.name = name.strip()
         if taxonomy_type is not UNSET and taxonomy_type is not None:
             record.taxonomy_type = taxonomy_type.strip() or "custom"
         if purpose is not UNSET:
             record.purpose = (purpose or "").strip() or None
-        if planning_enabled is not UNSET:
-            record.planning_enabled = resolved_planning_enabled
-        if budgeting_level is not UNSET:
-            record.budgeting_level = (resolved_budgeting_level or "").strip() or None
-        if root_default_target_dimension is not UNSET and root_default_target_dimension is not None:
-            record.root_default_target_dimension = root_default_target_dimension.strip() or "weight"
+        if root_allocation_basis is not UNSET and root_allocation_basis is not None:
+            record.root_allocation_basis = root_allocation_basis.strip() or "weight"
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
 
-        if not record.planning_enabled or record.status != "active":
-            if portfolio.default_planning_taxonomy_id == taxonomy_id:
-                set_analytics_taxonomy_selection_in_session(
-                    session,
-                    portfolio_id=portfolio_id,
-                    taxonomy_id=None,
-                )
+        if record.status != "active":
             research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
             if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
                 research_settings.planning_taxonomy_id = None
@@ -2858,7 +2673,7 @@ def create_taxonomy_node(
     node_code: str | None,
     sort_order: int | None,
     is_terminal: bool,
-    default_target_dimension: str,
+    allocation_basis: str,
     status: str,
 ) -> dict[str, object]:
     with _taxonomy_write_session(portfolio_id) as session:
@@ -2883,14 +2698,14 @@ def create_taxonomy_node(
         )
         resolved_sort_order = int(sort_order) if sort_order is not None else int(max_sort_order or -1) + 1
         record = TaxonomyNodeRecordModel(
-            taxonomy_node_id=_next_taxonomy_node_id(session, taxonomy_id, node_name),
+            taxonomy_node_id=f"tax-node-{uuid4().hex}",
             taxonomy_id=taxonomy_id,
             parent_taxonomy_node_id=parent_taxonomy_node_id,
             node_name=node_name.strip(),
             node_code=(node_code or "").strip() or None,
             sort_order=resolved_sort_order,
             is_terminal=is_terminal,
-            default_target_dimension=(default_target_dimension or "weight").strip() or "weight",
+            allocation_basis=(allocation_basis or "weight").strip() or "weight",
             status=(status or "active").strip() or "active",
         )
         session.add(record)
@@ -2919,7 +2734,7 @@ def update_taxonomy_node(
     node_code: str | None = UNSET,
     parent_taxonomy_node_id: str | None = UNSET,
     sort_order: int | None = UNSET,
-    default_target_dimension: str | None = UNSET,
+    allocation_basis: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
     with nullcontext(_session) if _session is not None else _taxonomy_write_session(portfolio_id) as session:
@@ -2954,8 +2769,8 @@ def update_taxonomy_node(
             record.node_code = (node_code or "").strip() or None
         if sort_order is not UNSET and sort_order is not None:
             record.sort_order = int(sort_order)
-        if default_target_dimension is not UNSET and default_target_dimension is not None:
-            record.default_target_dimension = default_target_dimension.strip() or "weight"
+        if allocation_basis is not UNSET and allocation_basis is not None:
+            record.allocation_basis = allocation_basis.strip() or "weight"
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
 
@@ -2964,25 +2779,6 @@ def update_taxonomy_node(
             old_parent_id = record.parent_taxonomy_node_id
             if resolved_parent_id == taxonomy_node_id:
                 raise ValueError("A taxonomy node cannot become its own parent.")
-            if resolved_parent_id != old_parent_id:
-                referenced_target_line_count = int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(TargetSetLineRecordModel)
-                        .where(TargetSetLineRecordModel.taxonomy_node_id == taxonomy_node_id)
-                    )
-                    or 0
-                )
-                referenced_scope_count = int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(TargetSetRecordModel)
-                        .where(TargetSetRecordModel.comparator_taxonomy_node_id == taxonomy_node_id)
-                    )
-                    or 0
-                )
-                if referenced_target_line_count or referenced_scope_count:
-                    raise ValueError("Cannot move a taxonomy node while it is referenced by target-set configuration.")
 
             if resolved_parent_id is not None:
                 ancestor_id = resolved_parent_id
@@ -2998,6 +2794,9 @@ def update_taxonomy_node(
 
             record.parent_taxonomy_node_id = resolved_parent_id
             session.flush()
+            if resolved_parent_id != old_parent_id:
+                _remove_scope_target_member(session, taxonomy_id=taxonomy_id, scope_node_id=old_parent_id,
+                    member_type=TARGET_MEMBER_NODE, member_id=taxonomy_node_id)
             _refresh_parent_terminal_state(session, old_parent_id)
             _refresh_parent_terminal_state(session, resolved_parent_id)
 
@@ -3051,9 +2850,8 @@ def list_taxonomy_assignments(
         return [_serialize_taxonomy_assignment_row(item) for item in current_assignments_by_entity.values()]
 
 
-def list_portfolio_instrument_universe(portfolio_id: str) -> list[dict[str, object]]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
+def list_portfolio_instrument_universe(portfolio_id: str, *, _session: Session | None = None) -> list[dict[str, object]]:
+    with nullcontext(_session) if _session is not None else get_session_factory()() as session:
         records = session.scalars(
             select(PortfolioInstrumentUniverseRecordModel)
             .where(
@@ -3085,8 +2883,7 @@ def upsert_portfolio_instrument_universe_record(
             expected_instrument_id=normalized_instrument_id,
         )
 
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(normalized_portfolio_id) as session:
         if session.get(PortfolioRecordModel, normalized_portfolio_id) is None:
             return None
 
@@ -3145,8 +2942,7 @@ def set_portfolio_instrument_research_pm_approval(
     if not normalized_portfolio_id or not normalized_instrument_id:
         raise ValueError("portfolio_id and instrument_id are required.")
 
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(normalized_portfolio_id) as session:
         record = session.scalar(
             select(PortfolioInstrumentUniverseRecordModel).where(
                 PortfolioInstrumentUniverseRecordModel.portfolio_id
@@ -3183,8 +2979,7 @@ def delete_portfolio_instrument_universe_record(
     if not normalized_portfolio_id or not normalized_instrument_id:
         raise ValueError("portfolio_id and instrument_id are required.")
 
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with _taxonomy_write_session(normalized_portfolio_id) as session:
         record = session.scalar(
             select(PortfolioInstrumentUniverseRecordModel).where(
                 PortfolioInstrumentUniverseRecordModel.portfolio_id
@@ -3275,6 +3070,7 @@ def list_target_set_integrity_issues(
     portfolio_id: str,
     *,
     taxonomy_id: str | None = None,
+    _session: Session | None = None,
 ) -> list[dict[str, object]]:
     """Report active planning targets that no longer match their live scope.
 
@@ -3286,8 +3082,7 @@ def list_target_set_integrity_issues(
     to Edit Targets before attempting a run.
     """
 
-    session_factory = get_session_factory()
-    with session_factory() as session:
+    with nullcontext(_session) if _session is not None else get_session_factory()() as session:
         taxonomy_statement = select(TaxonomyRecordModel).where(
             TaxonomyRecordModel.portfolio_id == portfolio_id,
         )
@@ -3351,8 +3146,7 @@ def list_target_set_integrity_issues(
                     "target_member_type": line.target_member_type,
                     "target_member_id": line.target_member_id,
                     "taxonomy_node_id": line.taxonomy_node_id,
-                    "target_weight": line.target_weight,
-                    "target_risk_share": line.target_risk_share,
+                    "target_value": line.target_value,
                     "notes": line.notes,
                 }
                 for line in target_lines_by_set_id.get(target_set.target_set_id, [])
@@ -3363,8 +3157,6 @@ def list_target_set_integrity_issues(
                     taxonomy=taxonomy,
                     comparator_taxonomy_node_id=target_set.comparator_taxonomy_node_id,
                     target_set_type=target_set.target_set_type,
-                    weight_enabled=target_set.weight_enabled,
-                    risk_budget_enabled=target_set.risk_budget_enabled,
                     status=target_set.status,
                     lines=lines,
                     exclude_target_set_id=target_set.target_set_id,
@@ -3430,7 +3222,7 @@ def create_taxonomy_assignment(
             raise ValueError("An assignment for this entity already exists.")
 
         record = TaxonomyAssignmentRecordModel(
-            assignment_id=_next_taxonomy_assignment_id(session),
+            assignment_id=f"tax-assignment-{uuid4().hex}",
             taxonomy_id=taxonomy_id,
             target_scope=target_scope,
             target_entity_id=target_entity_id.strip(),
@@ -3484,6 +3276,7 @@ def update_taxonomy_assignment(
         )
         if record is None:
             raise ValueError("Taxonomy assignment not found.")
+        previous_node_id = record.taxonomy_node_id
         if taxonomy_node_id is not UNSET and taxonomy_node_id is not None:
             node = session.scalar(
                 select(TaxonomyNodeRecordModel).where(
@@ -3512,6 +3305,9 @@ def update_taxonomy_assignment(
             raise ValueError("An assignment for this entity already exists.")
 
         session.flush()
+        if record.taxonomy_node_id != previous_node_id or record.status != "active":
+            _remove_scope_target_member(session, taxonomy_id=taxonomy_id, scope_node_id=previous_node_id,
+                member_type="instrument", member_id=record.target_entity_id)
         _refresh_portfolio_instrument_universe_records(
             session,
             portfolio_id,
@@ -3539,8 +3335,6 @@ def create_target_set(
     comparator_taxonomy_node_id: str | None,
     target_set_type: str,
     name: str,
-    weight_enabled: bool,
-    risk_budget_enabled: bool,
     status: str,
     notes: str | None,
     lines: list[dict[str, object]],
@@ -3560,8 +3354,6 @@ def create_target_set(
             taxonomy=taxonomy,
             comparator_taxonomy_node_id=comparator_taxonomy_node_id,
             target_set_type=target_set_type,
-            weight_enabled=weight_enabled,
-            risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
             lines=lines,
         )
@@ -3572,8 +3364,6 @@ def create_target_set(
             comparator_taxonomy_node_id=comparator_taxonomy_node_id,
             target_set_type=target_set_type,
             name=name.strip(),
-            weight_enabled=weight_enabled,
-            risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
             notes=(notes or "").strip() or None,
         )
@@ -3589,14 +3379,9 @@ def create_target_set(
                     taxonomy_node_id=taxonomy_node_id,
                     target_member_type=target_member_type,
                     target_member_id=target_member_id,
-                    target_weight=(
-                        float(raw_line["target_weight"])
-                        if raw_line.get("target_weight") is not None
-                        else None
-                    ),
-                    target_risk_share=(
-                        float(raw_line["target_risk_share"])
-                        if raw_line.get("target_risk_share") is not None
+                    target_value=(
+                        float(raw_line["target_value"])
+                        if raw_line.get("target_value") is not None
                         else None
                     ),
                     notes=(str(raw_line.get("notes")).strip() if raw_line.get("notes") else None),
@@ -3626,8 +3411,6 @@ def update_target_set(
     *,
     _session: Session | None = None,
     name: str | None = UNSET,
-    weight_enabled: bool | None = UNSET,
-    risk_budget_enabled: bool | None = UNSET,
     status: str | None = UNSET,
     notes: str | None = UNSET,
     lines: list[dict[str, object]] | None = UNSET,
@@ -3654,18 +3437,13 @@ def update_target_set(
         existing_lines = session.scalars(
             select(TargetSetLineRecordModel).where(TargetSetLineRecordModel.target_set_id == target_set_id)
         ).all()
-        resolved_weight_enabled = record.weight_enabled if weight_enabled is UNSET else bool(weight_enabled)
-        resolved_risk_budget_enabled = (
-            record.risk_budget_enabled if risk_budget_enabled is UNSET else bool(risk_budget_enabled)
-        )
         resolved_lines = (
             [
                 {
                     "target_member_type": item.target_member_type,
                     "target_member_id": item.target_member_id,
                     "taxonomy_node_id": item.taxonomy_node_id,
-                    "target_weight": item.target_weight,
-                    "target_risk_share": item.target_risk_share,
+                    "target_value": item.target_value,
                     "notes": item.notes,
                 }
                 for item in existing_lines
@@ -3679,8 +3457,6 @@ def update_target_set(
             taxonomy=taxonomy,
             comparator_taxonomy_node_id=record.comparator_taxonomy_node_id,
             target_set_type=record.target_set_type,
-            weight_enabled=resolved_weight_enabled,
-            risk_budget_enabled=resolved_risk_budget_enabled,
             status=(record.status if status is UNSET else ((status or "active").strip() or "active")),
             lines=resolved_lines,
             exclude_target_set_id=target_set_id,
@@ -3688,10 +3464,6 @@ def update_target_set(
 
         if name is not UNSET and name is not None:
             record.name = name.strip()
-        if weight_enabled is not UNSET:
-            record.weight_enabled = resolved_weight_enabled
-        if risk_budget_enabled is not UNSET:
-            record.risk_budget_enabled = resolved_risk_budget_enabled
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
         if notes is not UNSET:
@@ -3709,14 +3481,9 @@ def update_target_set(
                         taxonomy_node_id=taxonomy_node_id,
                         target_member_type=target_member_type,
                         target_member_id=target_member_id,
-                        target_weight=(
-                            float(raw_line["target_weight"])
-                            if raw_line.get("target_weight") is not None
-                            else None
-                        ),
-                        target_risk_share=(
-                            float(raw_line["target_risk_share"])
-                            if raw_line.get("target_risk_share") is not None
+                        target_value=(
+                            float(raw_line["target_value"])
+                            if raw_line.get("target_value") is not None
                             else None
                         ),
                         notes=(str(raw_line.get("notes")).strip() if raw_line.get("notes") else None),
@@ -3740,51 +3507,81 @@ def update_target_set(
 
 
 def save_taxonomy_target_configuration(
-    portfolio_id: str,
-    taxonomy_id: str,
-    *,
-    node_defaults: dict[str, str],
-    target_sets: list[dict[str, object]],
+    portfolio_id: str, taxonomy_id: str, *,
+    expected_configuration_version: int,
+    node_allocation_bases: dict[str, str], target_sets: list[dict[str, object]],
+    root_allocation_basis: str | None = None, concentration=None,
 ) -> dict[str, object]:
-    """Save the complete user action as one revision and one calculation request."""
+    """One editor action commits together; limit-only saves do not change targets."""
     with _taxonomy_write_session(portfolio_id) as session:
         taxonomy = session.get(TaxonomyRecordModel, taxonomy_id)
         if taxonomy is None or taxonomy.portfolio_id != portfolio_id:
             raise ValueError("Taxonomy not found.")
-        if any(item.get("weight_enabled") or item.get("risk_budget_enabled") for item in target_sets):
-            update_taxonomy(portfolio_id, taxonomy_id,
-                planning_enabled=True, budgeting_level="weight_and_risk_budget", _session=session)
-        for node_id, dimension in node_defaults.items():
-            update_taxonomy_node(portfolio_id, taxonomy_id, node_id,
-                default_target_dimension=dimension, _session=session)
+        state = session.get(PortfolioTaxonomyStateModel, portfolio_id)
+        if expected_configuration_version != (state.current_version if state else 0):
+            from fastapi import HTTPException
+            raise HTTPException(409, "Taxonomy configuration changed. Reload before saving.")
+        changed_basis_scopes: set[str | None] = set()
+        if root_allocation_basis is not None and root_allocation_basis != taxonomy.root_allocation_basis:
+            if root_allocation_basis not in {"weight", "risk_budget"}:
+                raise ValueError("Unsupported root allocation basis.")
+            taxonomy.root_allocation_basis = root_allocation_basis
+            changed_basis_scopes.add(None)
+        for node_id, basis in node_allocation_bases.items():
+            node = session.get(TaxonomyNodeRecordModel, node_id)
+            if node is None or node.taxonomy_id != taxonomy_id:
+                raise ValueError("Taxonomy node not found.")
+            if basis not in {"weight", "risk_budget"}:
+                raise ValueError("Unsupported allocation basis.")
+            if node.allocation_basis != basis:
+                node.allocation_basis = basis
+                changed_basis_scopes.add(node_id)
+        session.flush()
         for item in target_sets:
+            scope = item.get("comparator_taxonomy_node_id")
+            stage = str(item["target_set_type"])
             target_set_id = item.get("target_set_id")
-            enabled = bool(item.get("weight_enabled") or item.get("risk_budget_enabled"))
-            if not enabled:
-                if target_set_id:
-                    update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
-                        status="inactive", _session=session)
+            existing = session.get(TargetSetRecordModel, str(target_set_id)) if target_set_id else session.scalar(
+                select(TargetSetRecordModel).where(TargetSetRecordModel.taxonomy_id == taxonomy_id,
+                    TargetSetRecordModel.comparator_taxonomy_node_id == scope,
+                    TargetSetRecordModel.target_set_type == stage, TargetSetRecordModel.status == "active"))
+            if target_set_id and (existing is None or existing.taxonomy_id != taxonomy_id):
+                raise ValueError("Target set not found.")
+            if existing is not None and (existing.comparator_taxonomy_node_id != scope or existing.target_set_type != stage):
+                raise ValueError("Target set scope changed; reload the taxonomy before saving.")
+            if not item.get("lines"):
+                if existing is not None:
+                    session.delete(existing)
+                    session.flush()
                 continue
-            values = {key: item[key] for key in (
-                "name", "weight_enabled", "risk_budget_enabled", "status", "notes", "lines",
-            )}
-            if target_set_id:
-                existing = session.get(TargetSetRecordModel, str(target_set_id))
-                if existing is None or existing.taxonomy_id != taxonomy_id:
-                    raise ValueError("Target set not found.")
-                if (existing.comparator_taxonomy_node_id != item.get("comparator_taxonomy_node_id")
-                        or existing.target_set_type != item["target_set_type"]):
-                    raise ValueError("Target set scope changed; reload the taxonomy before saving.")
-                update_target_set(portfolio_id, taxonomy_id, str(target_set_id),
-                    _session=session, **values)
+            values = {key: item.get(key) for key in ("name", "status", "notes", "lines")}
+            values["name"] = values["name"] or stage.upper()
+            values["status"] = values["status"] or "active"
+            if existing is not None:
+                update_target_set(portfolio_id, taxonomy_id, existing.target_set_id, _session=session, **values)
             else:
                 create_target_set(portfolio_id, taxonomy_id=taxonomy_id,
-                    comparator_taxonomy_node_id=item.get("comparator_taxonomy_node_id"),
-                    target_set_type=str(item["target_set_type"]), _session=session, **values)
+                    comparator_taxonomy_node_id=scope, target_set_type=stage, _session=session, **values)
         session.flush()
-        _record_taxonomy_configuration_revision_in_session(session,
-            portfolio_id=portfolio_id, taxonomy_id=taxonomy_id)
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=None, session=session)
+        # A changed basis cannot leave the other stage valid under an obsolete meaning.
+        for target_set in session.scalars(select(TargetSetRecordModel).where(
+                TargetSetRecordModel.taxonomy_id == taxonomy_id, TargetSetRecordModel.status == "active")):
+            if target_set.comparator_taxonomy_node_id in changed_basis_scopes:
+                _validate_target_set_lines(session, taxonomy=taxonomy,
+                    comparator_taxonomy_node_id=target_set.comparator_taxonomy_node_id,
+                    target_set_type=target_set.target_set_type, status=target_set.status,
+                    lines=[_serialize_target_set_line_row(line) for line in target_set.lines],
+                    exclude_target_set_id=target_set.target_set_id)
+        if concentration is not None:
+            from portfolio_app.api.concentration_contracts import ConcentrationSettingsUpdate
+            from portfolio_app.services.concentration_settings import save_concentration_settings_in_session
+            save_concentration_settings_in_session(session, portfolio_id,
+                concentration if isinstance(concentration, ConcentrationSettingsUpdate)
+                else ConcentrationSettingsUpdate.model_validate(concentration))
+        if changed_basis_scopes or target_sets:
+            _record_taxonomy_configuration_revision_in_session(session,
+                portfolio_id=portfolio_id, taxonomy_id=taxonomy_id)
+            _mark_daily_snapshots_stale(portfolio_id, dirty_from=None, session=session)
         session.commit()
         return _serialize_taxonomy_row(taxonomy)
 
@@ -3844,12 +3641,6 @@ def delete_taxonomy(
         )
         if record is None:
             return False
-        if portfolio.default_planning_taxonomy_id == taxonomy_id:
-            set_analytics_taxonomy_selection_in_session(
-                session,
-                portfolio_id=portfolio_id,
-                taxonomy_id=None,
-            )
         research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
         if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
             research_settings.planning_taxonomy_id = None
@@ -3945,13 +3736,6 @@ def delete_taxonomy_node(
                 ):
                     target_set.lines.remove(line)
 
-        # The name-based allocator can reuse deleted IDs for a new node.
-        # Old node policies must not attach to that new node.
-        # Research runs retain their own immutable policy/configuration snapshot.
-        session.execute(delete(AnalyticsScopePolicyRecordModel).where(
-            AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id,
-            AnalyticsScopePolicyRecordModel.taxonomy_id == taxonomy_id,
-            AnalyticsScopePolicyRecordModel.taxonomy_node_id.in_(deleted_node_ids)))
         research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
         if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
             if research_settings.comparator_taxonomy_node_id in deleted_node_ids:
@@ -3968,33 +3752,9 @@ def delete_taxonomy_node(
             if node.taxonomy_node_id in deleted_node_ids:
                 session.delete(node)
         session.flush()
-        if parent_taxonomy_node_id:
-            remaining_child_count = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(TaxonomyNodeRecordModel)
-                    .where(TaxonomyNodeRecordModel.parent_taxonomy_node_id == parent_taxonomy_node_id)
-                )
-                or 0
-            )
-            if remaining_child_count == 0:
-                parent_record = session.get(TaxonomyNodeRecordModel, parent_taxonomy_node_id)
-                if parent_record is not None:
-                    parent_record.is_terminal = True
-            active_child = session.scalar(select(TaxonomyNodeRecordModel.taxonomy_node_id).where(
-                TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id,
-                TaxonomyNodeRecordModel.parent_taxonomy_node_id == parent_taxonomy_node_id,
-                TaxonomyNodeRecordModel.status == "active").limit(1))
-            active_assignment = session.scalar(select(TaxonomyAssignmentRecordModel.assignment_id).where(
-                TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
-                TaxonomyAssignmentRecordModel.taxonomy_node_id == parent_taxonomy_node_id,
-                TaxonomyAssignmentRecordModel.status == "active").limit(1))
-            if active_child is None and active_assignment is None:
-                # An empty scope has no target editor or valid allocation; do
-                # not leave an active, unrepairable zero-member target behind.
-                for target_set in target_sets:
-                    if target_set.comparator_taxonomy_node_id == parent_taxonomy_node_id:
-                        session.delete(target_set)
+        _refresh_parent_terminal_state(session, parent_taxonomy_node_id)
+        _remove_scope_target_member(session, taxonomy_id=taxonomy_id, scope_node_id=parent_taxonomy_node_id,
+            member_type=TARGET_MEMBER_NODE, member_id=taxonomy_node_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         session.flush()
         _record_taxonomy_configuration_revision_in_session(
@@ -4035,8 +3795,11 @@ def delete_taxonomy_assignment(
         if record is None:
             return False
         target_entity_id = record.target_entity_id
+        previous_node_id = record.taxonomy_node_id
         session.delete(record)
         session.flush()
+        _remove_scope_target_member(session, taxonomy_id=taxonomy_id, scope_node_id=previous_node_id,
+            member_type="instrument", member_id=target_entity_id)
         _refresh_portfolio_instrument_universe_records(
             session,
             portfolio_id,
@@ -4056,42 +3819,6 @@ def delete_taxonomy_assignment(
         return True
 
 
-def set_default_planning_taxonomy(
-    portfolio_id: str,
-    taxonomy_id: str | None,
-) -> dict[str, object] | None:
-    with _taxonomy_write_session(portfolio_id) as session:
-        portfolio = session.get(PortfolioRecordModel, portfolio_id)
-        if portfolio is None:
-            return None
-
-        selection = set_analytics_taxonomy_selection_in_session(
-            session,
-            portfolio_id=portfolio_id,
-            taxonomy_id=taxonomy_id,
-        )
-        if selection.taxonomy_id is not None:
-            _ensure_default_scope_policies_in_session(
-                session,
-                portfolio_id=portfolio_id,
-                taxonomy_id=selection.taxonomy_id,
-            )
-            configuration = current_taxonomy_configuration_in_session(
-                session, portfolio_id, selection.taxonomy_id,
-            )
-            if configuration is not None and configuration["configuration_version"] is None:
-                _record_taxonomy_configuration_revision_in_session(
-                    session,
-                    portfolio_id=portfolio_id,
-                    taxonomy_id=selection.taxonomy_id,
-                )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=None,
-            session=session,
-        )
-        session.commit()
-        return _serialize_portfolio_row(portfolio)
 
 
 def _initialize_created_portfolio_access(session, portfolio_id: str) -> None:
@@ -4144,7 +3871,6 @@ def create_portfolio(
             day_change_pct=0.0,
             securities_count=0,
             sort_order=len(portfolios),
-            default_planning_taxonomy_id=None,
             risk_policy_json=None,
         )
         session.add(record)
@@ -4228,10 +3954,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         if source is None:
             return None
 
-        if session.scalar(select(func.count()).select_from(ConcentrationPolicyRevisionModel).where(
-                ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id)):
-            raise ValueError("Portfolio copy requires explicit remapping of concentration policy references.")
-
         copied_name = f"{source.portfolio_name} Copy"
         base_id = _slugify(copied_name)
         candidate = base_id
@@ -4254,7 +3976,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             day_change_pct=source.day_change_pct,
             securities_count=source.securities_count,
             sort_order=len(portfolios),
-            default_planning_taxonomy_id=None,
             risk_policy_json=deepcopy(source.risk_policy_json) if isinstance(source.risk_policy_json, dict) else None,
         )
         session.add(copied)
@@ -4321,7 +4042,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         ).all()
         taxonomy_id_map: dict[str, str] = {}
         for taxonomy in source_taxonomies:
-            taxonomy_id_map[taxonomy.taxonomy_id] = f"{taxonomy.taxonomy_id}-{candidate}"
+            taxonomy_id_map[taxonomy.taxonomy_id] = f"tax-{uuid4().hex}"
 
         for taxonomy in source_taxonomies:
             session.add(
@@ -4332,16 +4053,11 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     taxonomy_type=taxonomy.taxonomy_type,
                     purpose=taxonomy.purpose,
                     primary_assignment_scope=taxonomy.primary_assignment_scope,
-                    planning_enabled=taxonomy.planning_enabled,
-                    budgeting_level=taxonomy.budgeting_level,
-                    root_default_target_dimension=taxonomy.root_default_target_dimension,
+                    root_allocation_basis=taxonomy.root_allocation_basis,
                     status=taxonomy.status,
                     source_template_ref=taxonomy.source_template_ref,
                 )
             )
-
-        if source.default_planning_taxonomy_id:
-            copied.default_planning_taxonomy_id = taxonomy_id_map.get(source.default_planning_taxonomy_id)
 
         source_taxonomy_nodes = session.scalars(
             select(TaxonomyNodeRecordModel).where(
@@ -4350,7 +4066,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         ).all()
         taxonomy_node_id_map: dict[str, str] = {}
         for node in source_taxonomy_nodes:
-            taxonomy_node_id_map[node.taxonomy_node_id] = f"{node.taxonomy_node_id}-{candidate}"
+            taxonomy_node_id_map[node.taxonomy_node_id] = f"tax-node-{uuid4().hex}"
 
         for node in source_taxonomy_nodes:
             session.add(
@@ -4366,7 +4082,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     node_code=node.node_code,
                     sort_order=node.sort_order,
                     is_terminal=node.is_terminal,
-                    default_target_dimension=node.default_target_dimension,
+                    allocation_basis=node.allocation_basis,
                     status=node.status,
                 )
             )
@@ -4407,8 +4123,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     ),
                     target_set_type=target_set.target_set_type,
                     name=target_set.name,
-                    weight_enabled=target_set.weight_enabled,
-                    risk_budget_enabled=target_set.risk_budget_enabled,
                     status=target_set.status,
                     notes=target_set.notes,
                 )
@@ -4430,26 +4144,49 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     taxonomy_node_id=taxonomy_node_id,
                     target_member_type=line.target_member_type,
                     target_member_id=target_member_id,
-                    target_weight=line.target_weight,
-                    target_risk_share=line.target_risk_share,
+                    target_value=line.target_value,
                     notes=line.notes,
                 )
             )
 
         session.flush()
-        for source_taxonomy_id, copied_taxonomy_id in taxonomy_id_map.items():
-            for policy in current_analytics_policies_by_node(session, portfolio_id=portfolio_id,
-                    taxonomy_id=source_taxonomy_id).values():
-                _create_scope_policy_in_session(session, portfolio_id=candidate,
-                    taxonomy_id=copied_taxonomy_id,
-                    taxonomy_node_id=taxonomy_node_id_map.get(policy.taxonomy_node_id, policy.taxonomy_node_id),
-                    risk_eligible=policy.risk_eligible, risk_budget_eligible=policy.risk_budget_eligible,
-                    performance_scope=policy.performance_scope, valuation_basis=policy.valuation_basis,
-                    exclusion_reason=policy.exclusion_reason)
-            _ensure_default_scope_policies_in_session(session, portfolio_id=candidate, taxonomy_id=copied_taxonomy_id)
-            _record_taxonomy_configuration_revision_in_session(session, portfolio_id=candidate, taxonomy_id=copied_taxonomy_id)
-        set_analytics_taxonomy_selection_in_session(session, portfolio_id=candidate,
-            taxonomy_id=copied.default_planning_taxonomy_id)
+        for copied_taxonomy_id in taxonomy_id_map.values():
+            _record_taxonomy_configuration_revision_in_session(
+                session, portfolio_id=candidate, taxonomy_id=copied_taxonomy_id,
+            )
+
+        # Limits are dated portfolio configuration. Keep the full schedule and
+        # remap deleted identities too, consistently across every revision.
+        concentration_taxonomy_ids = dict(taxonomy_id_map)
+        concentration_node_ids = dict(taxonomy_node_id_map)
+        for revision in session.scalars(select(ConcentrationPolicyRevisionModel).where(
+                ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id).order_by(
+                ConcentrationPolicyRevisionModel.revision)):
+            settings = deepcopy(revision.settings_json)
+            # Original migration evidence belongs to the source portfolio and
+            # cannot be replayed as a downgrade of these remapped identities.
+            settings["copied_from_portfolio_id"] = portfolio_id
+            settings["enabled_taxonomy_ids"] = [
+                concentration_taxonomy_ids.setdefault(taxonomy_id, f"tax-{uuid4().hex}")
+                for taxonomy_id in settings.get("enabled_taxonomy_ids", [])
+            ]
+            for limit in settings.get("limits", []):
+                if limit["scope"] == "taxonomy":
+                    limit["taxonomy_id"] = concentration_taxonomy_ids.setdefault(
+                        limit["taxonomy_id"], f"tax-{uuid4().hex}")
+                    limit["entity_id"] = concentration_node_ids.setdefault(
+                        limit["entity_id"], f"tax-node-{uuid4().hex}")
+                elif limit["scope"] == "fcn":
+                    # Contract identities are portfolio-local and currently
+                    # retained by the copy, but use the same explicit mapping.
+                    limit["entity_id"] = derivative_contract_id_map.get(limit["entity_id"], limit["entity_id"])
+            for allocation in settings.get("fcn_allocations", []):
+                allocation["contract_id"] = derivative_contract_id_map.get(allocation["contract_id"], allocation["contract_id"])
+            session.add(ConcentrationPolicyRevisionModel(
+                portfolio_id=candidate, revision=revision.revision,
+                effective_from=revision.effective_from, settings_json=settings,
+                created_by=revision.created_by, created_at=revision.created_at,
+            ))
 
         source_transactions = [
             _serialize_transaction_row(item)
@@ -4676,6 +4413,19 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             )
 
+        # Rebuilding from transactions/assignments alone loses manually added
+        # candidates and changes FCN-underlying eligibility in the copied tree.
+        for member in session.scalars(select(PortfolioInstrumentUniverseRecordModel).where(
+                PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id)):
+            session.add(PortfolioInstrumentUniverseRecordModel(
+                portfolio_id=candidate, instrument_id=member.instrument_id,
+                instrument_ref_json=deepcopy(member.instrument_ref_json), source=member.source,
+                holding_state=member.holding_state, first_transaction_date=member.first_transaction_date,
+                last_transaction_date=member.last_transaction_date, transaction_count=member.transaction_count,
+                research_pm_approved=member.research_pm_approved,
+                research_pm_approved_at=member.research_pm_approved_at, status=member.status,
+                created_at=member.created_at, updated_at=member.updated_at,
+            ))
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, candidate)
         _initialize_created_portfolio_access(session, candidate)

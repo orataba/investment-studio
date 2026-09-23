@@ -168,7 +168,7 @@ it('continues an existing conversation and saves a reply as a note only after ed
         source_entry_id: 'reply-1',
         note: expect.objectContaining({
           note_type: 'thesis_update',
-          research_context: { theme_id: 'theme-original', relationship: 'update', related_note_id: 'pm-original', related_revision: 2, research_update_id: 'event:1:2', event_case_id: 'event-1', event_version_id: 'event-1:2' },
+          research_context: expect.objectContaining({ background: '当时讨论的问题：这只基金的主要风险是什么？', theme_id: 'theme-original', relationship: 'update', related_note_id: 'pm-original', related_revision: 2, research_update_id: 'event:1:2', event_case_id: 'event-1', event_version_id: 'event-1:2' }),
           body: '人工核查后仍待补充底层敞口。',
           source_refs: 'Watchlist 助手对话 chat-1 / 回复 reply-1',
         }),

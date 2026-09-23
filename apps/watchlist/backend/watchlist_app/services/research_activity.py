@@ -48,6 +48,7 @@ def _event_updates(session, iid):
                          "watch" if row.get("trigger_active", event["trigger_active"]) else "none")
             update = _base(iid, identifier, "event", row.get("title") or event["title"], row.get("body", ""),
                 row.get("recorded_at") or recorded_at, theme_ids=row.get("theme_ids", []),
+                author=row.get("recorded_by") or "研究员", author_role=row.get("recorded_by_role") or "researcher",
                 sources=row.get("sources", []), occurred_at=row.get("occurred_at"), published_at=row.get("published_at"),
                 next_check=row.get("next_watch", ""), follow_up=follow_up,
                 analysis_depth=row.get("analysis_depth", "analysis"), direction=row.get("direction", "uncertain"),
@@ -78,6 +79,7 @@ def _notebook_updates(session, iid, events):
     for run, notebook in reversed(list(_research_records(session, iid))):
         sources = {source["source_id"]: source for source in notebook.get("sources", [])}
         correction = (run.context_json.get("citation_correction") or {}) if run.context_json.get("recordkeeping_only") else {}
+        organization = (run.context_json.get("organization_revision") or {}) if run.context_json.get("recordkeeping_only") else {}
         for field, (kind, title_key, body_key) in definitions.items():
             if field == "investment_view" and not notebook.get(field):
                 chain = (field, "investment-view")
@@ -125,6 +127,11 @@ def _notebook_updates(session, iid, events):
                     update.update(change="citation_corrected", author="系统", author_role="system",
                         recorded_at=_time(correction["corrected_at"]),
                         citation_correction={**{key: value for key, value in correction.items() if key != "updates"}, **corrected})
+                organized = organization.get("updates", {}).get(f"{field}:{row['key']}")
+                if organized:
+                    update.update(change="organized", author="系统", author_role="system",
+                        recorded_at=_time(organization["organized_at"]),
+                        organization_revision={**{key: value for key, value in organization.items() if key != "updates"}, **organized})
                 if row.get("theme_id"):
                     update["reference"]["theme_id"] = row["theme_id"]
                 if row.get("pm_note_id"):
@@ -153,6 +160,7 @@ def _notebook_updates(session, iid, events):
 
 def _theme_updates(session, iid, actor):
     from watchlist_app.services.research_themes import theme_index
+    from watchlist_app.services.sector_research import _source_views
     updates = []
     for theme in theme_index(session, iid, actor=actor):
         versions = [*theme.get("versions", []), theme]
@@ -163,10 +171,12 @@ def _theme_updates(session, iid, actor):
             update = _base(iid, identifier, "theme", row.get("title", theme["title"]), row.get("question", ""),
                 row.get("updated_at") or row.get("created_at") or theme["created_at"], theme_ids=[theme["theme_id"]],
                 author="研究员" if origin == "researcher" else row.get("updated_by") or row.get("author") or theme.get("author") or "未标注作者",
-                author_role="researcher" if origin == "researcher" else "user", change="new" if index == 1 else row.get("status"),
-                details=_details(**{"主题背景": row.get("background"), "结束原因": row.get("close_reason")}),
-                superseded=index != len(versions), run_id=row.get("source_run_id"))
-            update["reference"]["theme_id"] = theme["theme_id"]
+                author_role=origin if origin in {"researcher", "system"} else "user", change="new" if index == 1 else row.get("status"),
+                details=_details(**{"主题背景": row.get("background"), "当前认识": row.get("synthesis"),
+                    "最新进展": row.get("latest_development"), "下一检查": row.get("next_check"),
+                    "重要原因": row.get("priority_reason"), "结束原因": row.get("close_reason")}),
+                superseded=index != len(versions), run_id=row.get("source_run_id"), sources=_source_views(row.get("sources", [])))
+            update["reference"].update(theme_id=theme["theme_id"], theme_version_id=identifier)
             updates.append(update)
     return updates
 
@@ -203,7 +213,7 @@ def _opinion_updates(session, iid, actor):
     return updates
 
 
-def research_activity(session, instrument_id, *, actor=None, include_followups=False):
+def research_activity(session, instrument_id, *, actor=None, include_recent_events=False):
     actor = actor or research_identity()
     events = _event_updates(session, instrument_id)
     updates = [*events, *_notebook_updates(session, instrument_id, events),
@@ -219,8 +229,9 @@ def research_activity(session, instrument_id, *, actor=None, include_followups=F
                 row["reference"]["theme_id"] = linked["reference"]["theme_id"]
     result = {"instrument_id": instrument_id,
         "updates": sorted(by_id.values(), key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)}
-    if include_followups:
-        result["current_followups"] = current_followups(session, instrument_id, result["updates"], actor=actor)
+    if include_recent_events:
+        result["recent_events"] = [row for row in result["updates"] if row["kind"] == "event"
+            and not row.get("superseded") and not row.get("withdrawn") and row.get("follow_up") == "none"]
     return serialize_payload(result)
 
 
@@ -261,53 +272,12 @@ def review_receipts(session, instrument_id):
 
 
 def judgment_changed_at(update):
-    return (update.get("citation_correction") or {}).get("original_recorded_at") or update["recorded_at"]
+    return (update.get("citation_correction") or update.get("organization_revision") or {}).get("original_recorded_at") or update["recorded_at"]
 
 
 def judgment_review_receipt(update, receipts):
-    original = (update.get("citation_correction") or {}).get("source_update_id")
+    original = (update.get("citation_correction") or update.get("organization_revision") or {}).get("source_update_id")
     return receipts.get(update["update_id"]) or receipts.get(original, {})
-
-
-def current_followups(session, instrument_id, updates, *, actor=None):
-    """Current work is a projection of the same records, independent of timeline filters."""
-    from watchlist_app.services.research_themes import theme_index
-    themes = {row["theme_id"]: row["status"] for row in theme_index(session, instrument_id, actor=actor)}
-    active = {identifier for identifier, status in themes.items() if status == "active"}
-    receipts = review_receipts(session, instrument_id)
-    pending = []
-    for row in updates:
-        if row.get("superseded") or row.get("withdrawn"):
-            continue
-        if not ((row["kind"] == "event" and row.get("follow_up") == "watch")
-                or (row["kind"] == "question" and (row.get("tracking_status") or "active") == "active")
-                or (row["kind"] == "forecast" and row.get("status") == "active")
-                or (row["kind"] == "schedule" and row.get("status") == "scheduled")):
-            continue
-        dedicated = row["reference"].get("theme_id")
-        if dedicated in themes and themes[dedicated] != "active":
-            continue
-        if active.intersection(row["theme_ids"]):
-            continue
-        pending.append(row)
-    events = {row["reference"]["event_case_id"]: row for row in pending if row["kind"] == "event"}
-    children = {}
-    for row in pending:
-        case_id = row["reference"].get("event_case_id")
-        if row["kind"] != "event" and case_id in events:
-            children.setdefault(case_id, []).append(row)
-    result = []
-    for row in pending:
-        case_id = row["reference"].get("event_case_id")
-        if row["kind"] != "event" and case_id in events:
-            continue
-        related = children.get(case_id, []) if row["kind"] == "event" else []
-        result.append({"followup_id": row["update_id"], "kind": row["kind"], "title": row["title"],
-            "assessment": row["body"], "next_check": row.get("next_check", ""),
-            "theme_ids": row["theme_ids"], "latest_update": row, "related_updates": related,
-            "last_changed_at": max(judgment_changed_at(item) for item in [row, *related]),
-            "last_reviewed_at": None, **judgment_review_receipt(row, receipts)})
-    return sorted(result, key=lambda row: (row["last_changed_at"], row["followup_id"]), reverse=True)
 
 
 def resolve_research_update(session, instrument_id, update_id, *, actor=None):
@@ -328,7 +298,7 @@ def resolve_event_reference(session, instrument_id, case_id, version_id):
     return result
 
 
-def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None):
+def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None, themes=None):
     """Point to existing judgments; these are questions to check, not new evidence."""
     from watchlist_app.services.research_themes import theme_index
     inactive_themes = {theme["theme_id"] for theme in theme_index(session, instrument_id, actor=actor)
@@ -337,13 +307,20 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None):
     assignments = {row["update_id"]: row["reference"].get("theme_id") for row in updates}
     current = [row for row in updates
                if not row.get("superseded") and not row.get("withdrawn")
-               and not (row["kind"] in {"question", "forecast", "lesson"}
+               and not (row["kind"] in {"question", "forecast", "lesson", "schedule"}
                         and row["reference"].get("theme_id") in inactive_themes)]
     notebook = notebook or {}
     forecasts = {f"research:{row.get('version_id')}": row for row in notebook.get("forecasts", [])}
-    return {"pending_events": [{"update_id": row["update_id"], "title": row["title"],
+    from watchlist_app.services.research_themes import themes_view
+    active_themes = [row for row in (themes if themes is not None else themes_view(session, instrument_id, actor=actor)["themes"])
+                     if row["status"] == "active"]
+    return {"focus_themes": active_themes, "focus_policy": {
+            "target_count": 5, "active_limit": 10,
+            "instruction": "每轮逐一回顾所有重点主题、当时判断、时间线与相关投资观点；决定保留、更新、合并替换或关闭。无变化只提交主题标识作为复核回执。人工创建不表示固定，仅pinned主题的核心与生命周期保留人工控制。"},
+        "pending_events": [{"update_id": row["update_id"], "title": row["title"],
                 "next_check": row.get("next_check"), "reference": row["reference"]}
-            for row in current if row["kind"] == "event" and row.get("follow_up") == "watch"],
+            for row in current if row["kind"] == "event" and row.get("follow_up") == "watch"
+            and any(identifier not in inactive_themes for identifier in row.get("theme_ids", []))],
         "active_forecasts": [{"update_id": row["update_id"], **{key: forecast.get(key)
                 for key in ("key", "version_id", "claim", "horizon", "observation_condition", "review_on", "invalidation")}}
             for row in current if row["kind"] == "forecast" and (forecast := forecasts.get(row["update_id"], {})).get("status") == "active"],

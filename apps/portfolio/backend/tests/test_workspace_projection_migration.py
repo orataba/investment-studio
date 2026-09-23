@@ -8,7 +8,7 @@ import sqlalchemy as sa
 
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_engine, get_session_factory
-from .test_postgres_instrument_registry_constraints import postgres_portfolio_env
+from .test_postgres_schema_reconciliation import postgres_reconciliation_database
 
 
 def _config():
@@ -58,8 +58,8 @@ def test_projection_migration_invalidates_all_existing_results_without_changing_
 
 
 @pytest.mark.postgresql_integration
-def test_postgres_projection_migration_rebuilds_existing_and_missing_states(postgres_portfolio_env):
-    command.downgrade(_config(), "20260920_0064")
+def test_postgres_projection_migration_rebuilds_existing_and_missing_states(postgres_reconciliation_database):
+    command.upgrade(_config(), "20260920_0064")
     with get_session_factory()() as session:
         session.add(PortfolioRecordModel(
             portfolio_id="migration-existing", portfolio_name="Previous calculation",

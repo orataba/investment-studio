@@ -5,7 +5,6 @@ Run from the repository root with its venv and Portfolio runtime environment.
 `run ID` saves the existing run before the product's latest-run retention replaces it.
 `scenarios ID` only reads the database and writes evidence files.
 `verify ID` independently values saved execution quantities against canonical prices.
-`solver-stress` deterministically probes unconstrained and bounded SPD problems.
 """
 from __future__ import annotations
 
@@ -103,29 +102,25 @@ def setup():
 def configure_test(receipt):
     pid = receipt["portfolio"]["portfolio_id"]
     prefix = f"/portfolios/{pid}"
-    effective = {"effective_from": "2026-08-03"}
-    tax = api(prefix + "/taxonomies", {**effective, "name": "Research QA allocation", "planning_enabled": True,
-        "budgeting_level": "weight_and_risk_budget", "root_default_target_dimension": "risk_budget",
-        "purpose": "Synthetic effective-dated policy for functional QA, not historical investment evidence."})
+    tax = api(prefix + "/taxonomies", {"name": "Research QA allocation", "root_allocation_basis": "risk_budget",
+        "purpose": "Synthetic current-target configuration for functional QA, not historical investment evidence."})
     tid = tax["taxonomy_id"]
     nodes = []
     for name, instrument in (("Stock", "600519-sh"), ("Gold", "518880-sh")):
-        node = api(prefix + f"/taxonomies/{tid}/nodes", {**effective, "node_name": name, "default_target_dimension": "weight"})
+        node = api(prefix + f"/taxonomies/{tid}/nodes", {"node_name": name, "allocation_basis": "weight"})
         nodes.append(node)
-        api(prefix + f"/taxonomies/{tid}/assignments", {**effective, "target_scope": "instrument",
+        api(prefix + f"/taxonomies/{tid}/assignments", {"target_scope": "instrument",
             "target_entity_id": instrument, "taxonomy_node_id": node["taxonomy_node_id"]})
-    targets = api(prefix + f"/taxonomies/{tid}/target-sets", {**effective, "target_set_type": "saa", "name": "QA risk and capital",
-        "weight_enabled": True, "risk_budget_enabled": True, "lines": [
-            {"target_member_type": "taxonomy_node", "target_member_id": node["taxonomy_node_id"], "target_weight": 0.3, "target_risk_share": 0.5}
+    targets = api(prefix + f"/taxonomies/{tid}/target-sets", {"target_set_type": "saa", "name": "QA risk and capital",
+        "lines": [
+            {"target_member_type": "taxonomy_node", "target_member_id": node["taxonomy_node_id"], "target_value": 0.5}
             for node in nodes
         ] + [
-            {"target_member_type": "derivative_bucket", "target_member_id": "__derivatives__", "target_weight": 0.3, "target_risk_share": None},
-            {"target_member_type": "cash_bucket", "target_member_id": "__cash__", "target_weight": 0.1, "target_risk_share": None},
+            {"target_member_type": "cash_bucket", "target_member_id": "__cash__", "target_value": 0.1},
         ]})
-    api(prefix + "/taxonomies/default-planning", {**effective, "taxonomy_id": tid}, "PUT")
     settings = api(prefix + "/research/settings", {"planning_taxonomy_id": tid, "as_of_mode": "pinned", "as_of_date": "2026-09-03",
         "lookback_days": 30, "calculation_frequency": "daily", "missing_return_policy": "complete_case_drop",
-        "covariance_model_id": "ewma_vol_shrinkage_corr_covariance", "contribution_mode": "signed", "target_dimension": "scope_default",
+        "covariance_model_id": "ewma_vol_shrinkage_corr_covariance", "contribution_mode": "signed",
         "capital_mode": "volatility_cap", "target_volatility": 0.15, "backtest_rebalance_frequency": "1w",
         "backtest_cash_yield_annual": 0.02, "backtest_commission_bps": 2, "backtest_tax_bps": 0, "backtest_slippage_bps": 5,
         "notes": "Synthetic QA. Securities risk budgets 50/50; derivative capital 30%, cash 10%. Not real orders or historical strategy evidence."}, "PUT")
@@ -163,7 +158,7 @@ def scenarios(pid):
     s = wb["settings"]
     base = {key: deepcopy(s.get(key)) for key in (
         "planning_taxonomy_id", "comparator_taxonomy_node_id", "lookback_days", "calculation_frequency", "missing_return_policy",
-        "target_dimension", "capital_mode", "gross_exposure", "target_volatility", "max_gross_exposure", "frozen_taxonomy_node_ids", "top_sleeve_weight_bounds",
+        "capital_mode", "gross_exposure", "target_volatility", "max_gross_exposure", "frozen_taxonomy_node_ids", "top_sleeve_weight_bounds",
     )}
     base.update(as_of_date=date.fromisoformat(s["as_of_date"]), risk_model_config=wb["risk_policy"], _instrument_detail_cache={})
     results = []
@@ -257,112 +252,12 @@ def verify(pid):
           max(abs(row["difference"]) for row in evidence), flush=True)
 
 
-def solver_stress() -> None:
-    from time import perf_counter
-
-    import numpy as np
-
-    from portfolio_app.services.research_solver import RiskBudgetProblem, _solve_risk_budget_problem
-
-    rng = np.random.default_rng(20260905)
-    evidence: dict[str, object] = {
-        "seed": 20260905,
-        "unbounded": {"problems": 0, "failures": [], "max_risk_share_gap": 0.0, "slowest_seconds": 0.0},
-        "bounded": {
-            "problems": 0,
-            "ready": 0,
-            "constrained_target_miss": 0,
-            "failures": [],
-            "slowest_seconds": 0.0,
-        },
-    }
-
-    for index in range(200):
-        size = int(rng.integers(2, 9))
-        loading = rng.normal(size=(size, size))
-        covariance = loading @ loading.T + np.eye(size) * 0.05
-        target = rng.uniform(0.05, 1.0, size=size)
-        target /= target.sum()
-        problem = RiskBudgetProblem(
-            bucket_ids=[f"u{index}_{member}" for member in range(size)],
-            covariance=covariance,
-            target_risk_shares=target,
-            lower_bounds=np.zeros(size),
-            upper_bounds=np.ones(size),
-            reference_weights=np.full(size, 1.0 / size),
-            contribution_mode="signed" if index % 2 == 0 else "abs",
-        )
-        started = perf_counter()
-        try:
-            solution = _solve_risk_budget_problem(problem)
-            elapsed = perf_counter() - started
-            evidence["unbounded"]["slowest_seconds"] = max(
-                evidence["unbounded"]["slowest_seconds"], elapsed
-            )
-            evidence["unbounded"]["max_risk_share_gap"] = max(
-                evidence["unbounded"]["max_risk_share_gap"], solution.max_abs_share_gap
-            )
-        except Exception as error:  # evidence collection must retain the exact failing case
-            evidence["unbounded"]["failures"].append({"index": index, "error": str(error)})
-        evidence["unbounded"]["problems"] += 1
-
-    for index in range(45):
-        size = int(rng.integers(2, 9))
-        loading = rng.normal(size=(size, size))
-        covariance = loading @ loading.T + np.eye(size) * 0.05
-        target = rng.uniform(0.05, 1.0, size=size)
-        target /= target.sum()
-        feasible = rng.dirichlet(np.ones(size))
-        width = rng.uniform(0.0, 0.20, size=size)
-        lower = np.maximum(0.0, feasible - width)
-        upper = np.minimum(1.0, feasible + width)
-        if index == 0:
-            lower = feasible.copy()
-            upper = feasible.copy()
-        problem = RiskBudgetProblem(
-            bucket_ids=[f"b{index}_{member}" for member in range(size)],
-            covariance=covariance,
-            target_risk_shares=target,
-            lower_bounds=lower,
-            upper_bounds=upper,
-            reference_weights=feasible,
-            contribution_mode="signed" if index % 2 == 0 else "abs",
-        )
-        started = perf_counter()
-        try:
-            solution = _solve_risk_budget_problem(problem, enforce_tolerance=False)
-            elapsed = perf_counter() - started
-            evidence["bounded"]["slowest_seconds"] = max(
-                evidence["bounded"]["slowest_seconds"], elapsed
-            )
-            weights = np.asarray(solution.weights, dtype="float64")
-            if (
-                not np.isfinite(weights).all()
-                or abs(float(weights.sum()) - 1.0) > 1e-8
-                or np.any(weights < lower - 1e-8)
-                or np.any(weights > upper + 1e-8)
-            ):
-                raise AssertionError("solver returned an invalid bounded allocation")
-            key = "ready" if solution.execution_ready else "constrained_target_miss"
-            evidence["bounded"][key] += 1
-        except Exception as error:  # evidence collection must retain the exact failing case
-            evidence["bounded"]["failures"].append({"index": index, "error": str(error)})
-        evidence["bounded"]["problems"] += 1
-
-    save("solver-stress", evidence)
-    if evidence["unbounded"]["failures"] or evidence["bounded"]["failures"]:
-        raise AssertionError("Solver stress found failures; inspect solver-stress.json.")
-    print(json.dumps(evidence, ensure_ascii=False), flush=True)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("setup", "run", "scenarios", "verify", "solver-stress"))
+    parser.add_argument("mode", choices=("setup", "run", "scenarios", "verify"))
     parser.add_argument("portfolio_id", nargs="?")
     args = parser.parse_args()
-    if args.mode == "solver-stress":
-        solver_stress()
-    elif args.mode == "setup":
+    if args.mode == "setup":
         setup()
     elif not args.portfolio_id:
         parser.error("run/scenarios require a portfolio ID")

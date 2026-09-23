@@ -24,6 +24,7 @@ def _migration_config():
     return config
 
 
+@pytest.mark.parametrize("client", ["20260908_0057"], indirect=True)
 def test_crypto_scope_migration_is_reversible_without_registered_crypto(client):
     command.downgrade(_migration_config(), "20260908_0056")
     definitions = client.get("/api/instrument-attributes/definitions").json()
@@ -123,8 +124,18 @@ def test_registered_crypto_has_native_detail_status_and_price_return_series(clie
     risk = client.get("/api/instruments/btcusd/risk")
     assert risk.status_code == 200, risk.text
     assert risk.json()["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(365.25)
-    with pytest.raises(RuntimeError, match="Crypto research or taxonomy assignments exist"):
-        command.downgrade(_migration_config(), "20260908_0056")
+    # Exercise the crypto migration's own preservation guard; an unrelated later
+    # irreversible research migration must not intercept this boundary test.
+    import importlib.util
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/20260908_0057_crypto_watchlist_scope.py"
+    spec = importlib.util.spec_from_file_location("crypto_scope_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with get_session_factory()() as session, Operations.context(MigrationContext.configure(session.connection())):
+        with pytest.raises(RuntimeError, match="Crypto research or taxonomy assignments exist"):
+            migration.downgrade()
 
 
 def test_tiny_spot_prices_keep_precision_and_chart_returns_match_canonical_performance(client):

@@ -20,6 +20,7 @@ from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgre
 pytestmark = pytest.mark.postgresql_integration
 
 
+@pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
 def test_screener_projection_migration_backfill_and_downgrade_preserve_chart(postgres_watchlist_env):
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))

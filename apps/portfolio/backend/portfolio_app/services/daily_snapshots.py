@@ -14,7 +14,7 @@ from studio_runtime import emit, operation
 
 from portfolio_app.db.models import (
     AccountRecordModel,
-    PortfolioAnalyticsPolicyStateModel,
+    PortfolioTaxonomyStateModel,
     PortfolioCalculationStateModel,
     PortfolioDailyContributionSliceModel,
     PortfolioDailyHoldingSnapshotModel,
@@ -57,7 +57,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-portfolio-instrument-total-return-windows-v2-gips-funded-segment-boundaries-v4"
     "-position-effective-recognition-bridge-v1"
     "-pending-monetary-holdings-v1"
-    "-current-analytics-scope-policy-v2"
+    "-taxonomy-independent-model-coverage-v1"
     "-option-cash-settlement-v1"
     "-market-risk-zero-return-cash-derivatives-v2"
     "-daily-mark-to-last-risk-observations-v1"
@@ -79,14 +79,14 @@ class _SnapshotSourceGeneration:
     refresh_request_id: str | None
     market_data_updated_at: str | None
     calculation_inputs_updated_at: str | None
-    analytics_policy_version: int
+    taxonomy_configuration_version: int
 
     def as_payload(self) -> dict[str, object]:
         return {
             "refresh_request_id": self.refresh_request_id,
             "market_data_updated_at": self.market_data_updated_at,
             "calculation_inputs_updated_at": self.calculation_inputs_updated_at,
-            "analytics_policy_version": self.analytics_policy_version,
+            "taxonomy_configuration_version": self.taxonomy_configuration_version,
         }
 
 
@@ -298,7 +298,7 @@ def _snapshot_source_generation(
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None:
         return None
-    analytics_state = session.get(PortfolioAnalyticsPolicyStateModel, portfolio_id)
+    taxonomy_state = session.get(PortfolioTaxonomyStateModel, portfolio_id)
     return _SnapshotSourceGeneration(
         refresh_request_id=state.refresh_request_id,
         market_data_updated_at=_source_market_data_watermark(session, portfolio_id),
@@ -306,9 +306,9 @@ def _snapshot_source_generation(
             session,
             portfolio_id,
         ),
-        analytics_policy_version=(
-            int(analytics_state.current_version)
-            if analytics_state is not None
+        taxonomy_configuration_version=(
+            int(taxonomy_state.current_version)
+            if taxonomy_state is not None
             else 0
         ),
     )
@@ -427,12 +427,12 @@ def _incremental_snapshot_seed(
         return reject("source_generation_unavailable")
     # A transaction changes the request identity and the dirty suffix, while
     # its published prefix can remain valid. An independently changed market,
-    # instrument configuration or analytics policy can also change that prefix.
+    # instrument or taxonomy configuration can also change that prefix.
     # The during-build source fence alone cannot detect a change committed
     # before this attempt (including a missed registry notification).
     current_sources = source_generation.as_payload()
     for field in (
-        "market_data_updated_at", "calculation_inputs_updated_at", "analytics_policy_version",
+        "market_data_updated_at", "calculation_inputs_updated_at", "taxonomy_configuration_version",
     ):
         if field not in prior_generation:
             return reject("source_generation_incomplete", source_field=field)
@@ -987,8 +987,8 @@ def _recalculate_portfolio_daily_snapshots_once(
             source_calculation_inputs_updated_at = (
                 _source_calculation_inputs_watermark(session, portfolio_id)
             )
-            analytics_state = session.get(
-                PortfolioAnalyticsPolicyStateModel,
+            taxonomy_state = session.get(
+                PortfolioTaxonomyStateModel,
                 portfolio_id,
             )
             source_generation_before = _SnapshotSourceGeneration(
@@ -997,9 +997,9 @@ def _recalculate_portfolio_daily_snapshots_once(
                 calculation_inputs_updated_at=(
                     source_calculation_inputs_updated_at
                 ),
-                analytics_policy_version=(
-                    int(analytics_state.current_version)
-                    if analytics_state is not None
+                taxonomy_configuration_version=(
+                    int(taxonomy_state.current_version)
+                    if taxonomy_state is not None
                     else 0
                 ),
             )

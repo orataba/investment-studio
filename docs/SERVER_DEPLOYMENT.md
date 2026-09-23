@@ -288,6 +288,12 @@ workspace. Research uses the same portfolio permissions as other portfolio APIs;
 enabling it does not grant users access to additional portfolios. An operator may
 explicitly set false to disable the routes and UI while retaining saved runs.
 
+Research results record their solver version. The global leaf-covariance solver
+marks earlier solver outputs stale while preserving their saved method and
+artifacts; a fresh run is required for a current result. Deployment does not
+rewrite historical Research outputs or turn a selected-scope run into
+full-portfolio attribution.
+
 ## Cross-app research and instrument risk
 
 Set these non-secret endpoints in the existing external environment files. The
@@ -317,6 +323,17 @@ the same installed CLI directly; research requests never run a package manager
 or download dependencies. Missing credentials or
 runtime disables assistant execution while saved research and risk records remain
 available. Do not copy local secrets over the server configuration during a release.
+
+Watchlist's retained-data Python analysis also requires the separately provisioned
+[quantitative execution image](../infra/research-quant/README.md). Build that image
+from the staged release before switching services, and verify the kernel-boundary
+tests under the actual Watchlist service identity. The service identity needs
+access to the local Docker daemon; generated analysis containers receive neither
+that socket nor service credentials. A skipped Linux sandbox test or a running
+Docker daemon does not establish readiness. Confirm the authenticated run's
+`quant-availability` endpoint reports available before accepting this capability.
+Research requests never build or pull the image, and a missing sandbox remains an
+explicit unavailable state.
 
 ## Network and access-control boundary
 
@@ -512,21 +529,29 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   "$PWD/.venv/bin/python" infra/scripts/audit_live_data.py --fail-on-warning --json
 ```
 
-The audit is deliberately fail-closed for schema and data integrity. It also
-warns when a configured portfolio has no current analytics taxonomy selection or
-when its current taxonomy configuration/root/unassigned policies are
-incomplete; `--fail-on-warning` turns that operational warning into a release
-gate. Do not create a default selection in runtime code or by an unreviewed
-SQL backfill. Configure the selection and scope policies through the Portfolio
-Taxonomies API, retain the automatic revision and operator audit, then rerun the audit.
+The audit is fail-closed for schema and data integrity. It checks current taxonomy identities, parent allocation bases and scalar target
+configuration. There is no global default-planning selection, planning gate,
+separate analytics taxonomy selection or node eligibility policy to configure.
+Manage classifications, assignments and targets through the Portfolio Taxonomies
+API and retain its automatic revisions and operator audit. Missing assignment or
+target coverage makes the relevant Research solve unavailable; it does not remove
+actual holdings from market-risk analysis. Actual model coverage is derived from
+asset and contract identity, valuation and the requested return/FX window.
+
 Taxonomy configuration has no effective-date scheduling. Its migration and every
 subsequent edit invalidate affected analytics from the start of portfolio history;
-complete the resulting snapshot rebuild before release acceptance.
+complete the resulting snapshot rebuild before release acceptance. A passed audit
+establishes data integrity, not complete market-model coverage. Before accepting
+Risk output, verify its reported modeled and uncovered exposures and reasons;
+unavailable market data must never be represented as zero risk.
 
-An audit result of `passed` is therefore the data-integrity gate. An audit result
-of `warning` may still allow market-data refresh and ordinary operational pages,
-but Risk and Risk Budget must be labelled unavailable until the analytics scope
-warnings are cleared.
+Concentration migration 0068 converts all existing policy revisions to explicit
+limits, retaining original JSON audit evidence and all dates/actors. Future-dated
+revisions must not be skipped. Verify displayed-date settings and the latest
+optimistic revision separately. Concentration switches and limits do not trigger
+Research staleness; combined target/limit saves must either commit both or neither.
+The current Research method is `global_leaf_scalar_targets_v3`; target snapshot
+schema 3 and planning fingerprint 7 keep earlier saved results visibly stale.
 
 Install all five data schedules as the service user, using the same installer:
 

@@ -134,88 +134,66 @@ def test_security_only_taxonomy_migration_rejects_legacy_scope_and_enforces_head
 
     command.upgrade(config, "head")
 
-    with pytest.raises(IntegrityError), engine.begin() as connection:
-        connection.execute(
-            sa.text(
-                "INSERT INTO taxonomy_record ("
-                "taxonomy_id, portfolio_id, name, taxonomy_type, purpose, "
-                "primary_assignment_scope, planning_enabled, budgeting_level, "
-                "root_default_target_dimension, status, source_template_ref"
-                ") VALUES ("
-                ":taxonomy_id, :portfolio_id, :name, :taxonomy_type, :purpose, "
-                ":primary_assignment_scope, :planning_enabled, :budgeting_level, "
-                ":root_default_target_dimension, :status, :source_template_ref"
-                ")"
-            ),
-            _taxonomy_values("rejected-cash-scope", "cash_bucket"),
-        )
-
-    with engine.begin() as connection:
-        connection.execute(
-            sa.text(
-                "INSERT INTO taxonomy_record ("
-                "taxonomy_id, portfolio_id, name, taxonomy_type, purpose, "
-                "primary_assignment_scope, planning_enabled, budgeting_level, "
-                "root_default_target_dimension, status, source_template_ref"
-                ") VALUES ("
-                ":taxonomy_id, :portfolio_id, :name, :taxonomy_type, :purpose, "
-                ":primary_assignment_scope, :planning_enabled, :budgeting_level, "
-                ":root_default_target_dimension, :status, :source_template_ref"
-                ")"
-            ),
-            _taxonomy_values("security-scope", "instrument"),
-        )
-        connection.execute(
-            sa.text(
-                "INSERT INTO taxonomy_node_record ("
-                "taxonomy_node_id, taxonomy_id, parent_taxonomy_node_id, "
-                "node_name, node_code, sort_order, is_terminal, "
-                "default_target_dimension, status"
-                ") VALUES ("
-                "'security-node', 'security-scope', NULL, 'Security', NULL, 0, "
-                "1, 'weight', 'active'"
-                ")"
-            )
-        )
+    # Legacy fixtures above exercise the 0047 schema. Once upgraded, use the
+    # current models to verify those security-only constraints still hold.
+    from portfolio_app.db.models import (
+        TargetSetLineRecordModel,
+        TargetSetRecordModel,
+        TaxonomyAssignmentRecordModel,
+        TaxonomyNodeRecordModel,
+        TaxonomyRecordModel,
+    )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
-            sa.text(
-                "INSERT INTO taxonomy_assignment_record ("
-                "assignment_id, taxonomy_id, target_scope, target_entity_id, "
-                "taxonomy_node_id, status"
-                ") VALUES ("
-                "'rejected-account-assignment', 'security-scope', 'account', "
-                "'broker-us-core', 'security-node', 'active'"
-                ")"
+            sa.insert(TaxonomyRecordModel).values(
+                taxonomy_id="rejected-cash-scope", portfolio_id="investment-studio",
+                name="Rejected Cash Scope", taxonomy_type="custom",
+                primary_assignment_scope="cash_bucket", root_allocation_basis="weight",
+                status="active",
             )
         )
 
     with engine.begin() as connection:
         connection.execute(
-            sa.text(
-                "INSERT INTO target_set_record ("
-                "target_set_id, taxonomy_id, comparator_taxonomy_node_id, "
-                "target_set_type, name, weight_enabled, risk_budget_enabled, "
-                "status, notes"
-                ") VALUES ("
-                "'security-targets', 'security-scope', NULL, 'saa', "
-                "'Security Targets', 1, 1, 'active', NULL"
-                ")"
+            sa.insert(TaxonomyRecordModel).values(
+                taxonomy_id="security-scope", portfolio_id="investment-studio",
+                name="Security Scope", taxonomy_type="custom",
+                primary_assignment_scope="instrument", root_allocation_basis="weight",
+                status="active",
+            )
+        )
+        connection.execute(
+            sa.insert(TaxonomyNodeRecordModel).values(
+                taxonomy_node_id="security-node", taxonomy_id="security-scope",
+                node_name="Security", sort_order=0, is_terminal=True,
+                allocation_basis="weight", status="active",
             )
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
-            sa.text(
-                "INSERT INTO target_set_line_record ("
-                "target_line_id, target_set_id, taxonomy_node_id, "
-                "target_member_type, target_member_id, target_weight, "
-                "target_risk_share, notes"
-                ") VALUES ("
-                "'rejected-account-target', 'security-targets', NULL, "
-                "'account', 'broker-us-core', 0.1, 0.1, NULL"
-                ")"
+            sa.insert(TaxonomyAssignmentRecordModel).values(
+                assignment_id="rejected-account-assignment", taxonomy_id="security-scope",
+                target_scope="account", target_entity_id="broker-us-core",
+                taxonomy_node_id="security-node", status="active",
+            )
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(TargetSetRecordModel).values(
+                target_set_id="security-targets", taxonomy_id="security-scope",
+                target_set_type="saa", name="Security Targets", status="active",
+            )
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            sa.insert(TargetSetLineRecordModel).values(
+                target_line_id="rejected-account-target", target_set_id="security-targets",
+                target_member_type="account", target_member_id="broker-us-core",
+                target_value=0.1,
             )
         )
 

@@ -18,12 +18,12 @@ from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgre
 pytestmark = pytest.mark.postgresql_integration
 
 
+@pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
 def test_retained_scope_migration_preserves_originals_and_indexes_generic_plans(postgres_watchlist_env):
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     factory = get_session_factory()
     get_engine().dispose()
-    command.downgrade(config, "20260920_0059")
     contexts = {
         "plain": {"instrument_ids": ["xlk", "spy"], "original": "retained"},
         "nul": {"instrument_ids": ["xlk"], "original": "a\x00b", "selected": "c\x00d"},

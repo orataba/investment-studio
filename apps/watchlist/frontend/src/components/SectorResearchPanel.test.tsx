@@ -19,7 +19,7 @@ it('uses sector responses only for status while reading the canonical dossier', 
   render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   expect(screen.getByTestId('canonical-dossier').textContent).toContain('xlk-us')
-  expect(screen.getByRole('heading', { name: '投资研究' })).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '研究概览' })).toBeTruthy()
   expect(screen.queryByText(review('completed').summary)).toBeNull()
   expect(screen.queryByText(event().title)).toBeNull()
   expect(request.mock.calls.some(([path]) => path.includes('/context'))).toBe(false)
@@ -93,7 +93,7 @@ it('shows reflection only for a completed check, without making it a conclusion'
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: { ...review('completed'), reflection: { status: 'insufficient_evidence', summary: '本轮未能核实费用变化', reviewed_update_ids: [] } } }] })
   const { rerender } = render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
-  const coverage = screen.getByText(/^本轮检查与覆盖/).closest('details')!
+  const coverage = screen.getByText(/^检查记录与覆盖/).closest('details')!
   expect(coverage.open).toBe(false)
   expect(within(coverage).getByText(/复核证据不足/)).toBeTruthy()
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: { ...review('failed'), reflection: { status: 'reviewed', summary: '未发布的复核', reviewed_update_ids: [] } } }] })

@@ -39,6 +39,9 @@ def instrument(client):
 
 
 def apply(session, run, **delta):
+    bound = next((d for d in run.context_json.get('research_dossiers', []) if d['instrument_id'] == 'gold-test'), {})
+    delta.setdefault('themes', [{'theme_id': item['theme_id'], 'theme_key': item['theme_key'] or item['theme_id']}
+                                for item in bound.get('themes', []) if item['status'] == 'active'])
     service.apply_result(session, run, json.dumps({'reviews': [{'instrument_id': 'gold-test', **delta}]}))
     if not run.context_json['sector_run']:
         run.status = 'draft'
@@ -49,10 +52,13 @@ def apply(session, run, **delta):
 def test_chat_publication_quiet_check_and_risk_only_update_share_the_same_view(instrument):
     with get_session_factory()() as session:
         chat = run_for(session, 'chat-1', conversation=True)
-        apply(session, chat, change_kind='investment', summary='中期偏多；短期方向尚无新增判断。', research={
+        apply(session, chat, change_kind='investment', summary='中期偏多；短期方向尚无新增判断。',
+            themes=[{'theme_key': 'gold-demand', 'title': '黄金需求持续性', 'question': '储备需求能否持续支持价格？',
+                     'priority_reason': '需求持续性是中期判断的关键未决条件，需要跟踪后续原始披露。'}], research={
             'investment_view': {'direction': '中期偏多', 'horizon': '未来一季度', 'attractiveness': '仍需比较当前风险补偿',
                 'risk': '观察波动变化', 'source_ids': ['original']},
-            'forecasts': [{'key': 'demand', 'claim': '需求支持有望延续', 'horizon': '未来一季度', 'source_ids': ['original']}]})
+            'forecasts': [{'key': 'demand', 'claim': '需求支持有望延续', 'horizon': '未来一季度',
+                           'theme_id': 'gold-demand', 'source_ids': ['original']}]})
         original = read_dossier(session, 'gold-test')['notebook']
         first_review = service.latest_reviews(session, completed_only=True)['gold-test']
         quiet = run_for(session, 'quiet')
@@ -95,10 +101,12 @@ def test_computed_volatility_can_support_risk_without_an_external_news_story(ins
             'methodology': {'half_life_sessions': 21}, 'data': {'status': 'available', 'current': {'volatility_pct': 25}},
         }]}
         session.commit()
-        apply(session, run, events=[{'event_key': 'volatility', 'action': 'new', 'direction': 'risk',
+        apply(session, run, themes=[{'theme_key': 'gold-volatility', 'kind': 'quantitative', 'title': '黄金波动风险',
+            'question': '当前波动变化是否持续影响风险承受水平？', 'priority_reason': '实际波动变化会改变风险敞口，需继续观察持续性。'}],
+            events=[{'event_key': 'volatility', 'action': 'new', 'direction': 'risk',
             'title': '波动风险上升', 'body': '已计算的波动观察需要重新评估风险承受水平，不代表未来必然下跌。',
             'next_watch': '观察波动持续性', 'confidence': 'confirmed', 'information_type': 'fact',
-            'recording_type': 'new', 'source_ids': ['computed:risk']}])
+            'recording_type': 'new', 'theme_ids': ['gold-volatility'], 'source_ids': ['computed:risk']}])
         assert service.events_for_instruments(session, ['gold-test'])[0]['direction'] == 'risk'
 
 
@@ -107,7 +115,7 @@ def test_repeated_metric_read_is_quiet_but_changed_measurement_updates_same_risk
     from sqlalchemy import select
     event = {'event_key': 'volatility', 'action': 'new', 'direction': 'risk', 'title': '波动风险上升',
         'body': '波动风险仍需跟踪。', 'next_watch': '观察持续性', 'confidence': 'confirmed',
-        'information_type': 'fact', 'recording_type': 'new', 'source_ids': ['computed:risk']}
+        'information_type': 'fact', 'recording_type': 'new', 'theme_ids': ['gold-volatility'], 'source_ids': ['computed:risk']}
     with get_session_factory()() as session:
         for index, value in enumerate([25, 25, 30]):
             run = run_for(session, f'metric-{index}')
@@ -118,7 +126,10 @@ def test_repeated_metric_read_is_quiet_but_changed_measurement_updates_same_risk
                 'data': {'status': 'available', 'current': {'date': '2026-09-07', 'volatility_pct': value}},
             }]}
             session.commit()
-            apply(session, run, events=[{**event, 'action': 'new' if index == 0 else 'updated'}])
+            theme = {'themes': [{'theme_key': 'gold-volatility', 'kind': 'quantitative', 'title': '黄金波动风险',
+                'question': '波动上升是否持续并需要重新评估风险承受水平？',
+                'priority_reason': '同口径波动观察直接影响风险判断，应保留持续性验证。'}]} if index == 0 else {}
+            apply(session, run, events=[{**event, 'action': 'new' if index == 0 else 'updated'}], **theme)
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == 'gold-test'))
             assert len(case.history_json) == (2 if index == 2 else 1)
             if index == 1:

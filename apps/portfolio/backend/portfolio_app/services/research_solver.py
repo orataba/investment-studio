@@ -4,15 +4,15 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from itertools import combinations
 from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import brentq, minimize
+from scipy.optimize import brentq, linprog, minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.research_inputs import capture_current_target_configuration
+from portfolio_app.services.taxonomy_targets import resolve_taxonomy_targets
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
@@ -46,7 +46,6 @@ from portfolio_app.services.transaction_dates import transaction_performance_eff
 
 ROOT_SCOPE_MEMBER_ID = "__portfolio_root__"
 ROOT_SCOPE_LABEL = "Top Level"
-TARGET_DIMENSION_SCOPE_DEFAULT = "scope_default"
 TARGET_DIMENSION_WEIGHT = "weight"
 TARGET_DIMENSION_RISK_BUDGET = "risk_budget"
 TARGET_MEMBER_NODE = "taxonomy_node"
@@ -83,10 +82,9 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v3"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
-RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION = 0.25
-RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR = 0.05
 MISSING_RETURN_POLICY_STRICT = "strict"
 MISSING_RETURN_POLICY_COMPLETE_CASE_DROP = "complete_case_drop"
 RESEARCH_DEFAULT_MISSING_RETURN_POLICY = MISSING_RETURN_POLICY_STRICT
@@ -97,6 +95,7 @@ RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequen
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
 RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
     "Every rebalance uses the same current taxonomy membership, targets and eligibility captured for this run.",
+    "Every allocation uses one covariance across all modeled leaves in the selected research scope; every sleeve risk budget includes cross-sleeve covariance.",
     "Current instrument selection introduces hindsight and survivorship effects; this is a model comparison, not a reconstruction of historical decisions.",
     "An instrument becomes usable after its first usable market-data observation and the required trailing risk window, regardless of assignment creation date.",
     "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
@@ -114,7 +113,7 @@ class ScopeMemberRecord:
     member_id: str
     label: str
     taxonomy_node_id: str | None = None
-    default_target_dimension: str | None = None
+    allocation_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,7 +130,7 @@ class ScopeTargetSolveResult:
     scope_node_id: str | None
     scope_label: str
     scope_path: str
-    default_target_dimension: str
+    allocation_basis: str
     scope_depth: int
     member_source: str
     return_series: pd.Series
@@ -143,57 +142,7 @@ class ScopeTargetSolveResult:
     warnings: list[str]
     resolved_target_rows: list[dict[str, object]]
     top_sleeve_bound_weight_by_id: dict[str, float]
-
-
-@dataclass(frozen=True)
-class RiskBudgetProblem:
-    bucket_ids: list[str]
-    covariance: np.ndarray
-    target_risk_shares: np.ndarray
-    lower_bounds: np.ndarray
-    upper_bounds: np.ndarray
-    reference_weights: np.ndarray
-    contribution_mode: str = RESEARCH_RISK_CONTRIBUTION_MODE
-
-
-@dataclass(frozen=True)
-class RiskBudgetSolution:
-    bucket_ids: list[str]
-    weights: np.ndarray
-    achieved_risk_shares: np.ndarray
-    objective_value: float
-    max_abs_share_gap: float
-    iterations: int
-    message: str
-    solver_kind: str
-    contribution_mode: str
-    target_status: str = "satisfied"
-    execution_ready: bool = True
-
-
-@dataclass(frozen=True)
-class LocalRiskBudgetSolve:
-    weights: np.ndarray
-    max_abs_share_gap: float | None
-    solver_kind: str
-    solver_detail: str | None
-    covariance_model: str | None
-    covariance_observations: int
-    risk_contribution_mode: str | None
-    message: str | None = None
-    missing_return_policy: str | None = None
-    return_rows_before_policy: int | None = None
-    return_rows_after_policy: int | None = None
-    missing_return_row_count: int | None = None
-    missing_return_row_fraction: float | None = None
-    leading_incomplete_return_row_count: int | None = None
-    post_warmup_missing_return_row_count: int | None = None
-    post_warmup_missing_return_row_fraction: float | None = None
-    dropped_return_rows: list[dict[str, object]] | None = None
-    latest_complete_return_date: str | None = None
-    trailing_complete_return_staleness_days: int | None = None
-    target_status: str = "satisfied"
-    execution_ready: bool = True
+    forward_risk_contribution_by_key: dict[str, float | None]
 
 
 @dataclass(frozen=True)
@@ -225,7 +174,7 @@ class TaxonomyResearchState(ResearchMarketState):
     portfolio_id: str
     planning_taxonomy_id: str
     taxonomy_name: str
-    root_default_target_dimension: str
+    root_allocation_basis: str
     node_by_id: dict[str, dict[str, object]]
     children_by_parent: dict[str | None, list[str]]
     node_path_by_id: dict[str, str]
@@ -239,8 +188,7 @@ class TaxonomyResearchState(ResearchMarketState):
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
     configuration_version: int | None = None
     target_snapshot_fingerprint: str | None = None
-    instrument_analytics_scopes: dict[str, dict[str, object]] = field(default_factory=dict)
-    # A current-target solve walks the taxonomy recursively.  Current holdings
+    # A current-target solve compiles the entire taxonomy tree. Current holdings
     # and account values are portfolio-level inputs, so rebuilding both ledgers
     # once per scope is redundant and can make deep taxonomies disproportionately
     # expensive.  Keep the lazy valuation snapshot on the per-solve state; a new
@@ -437,17 +385,6 @@ def _build_instrument_nav_series(
     return visible, warnings
 
 
-def _build_cash_nav_series(
-    *,
-    start_date: date,
-    end_date: date,
-) -> pd.Series:
-    calendar = pd.date_range(start=start_date, end=end_date, freq="D").date
-    if len(calendar) == 0:
-        calendar = [start_date]
-    return pd.Series(1.0, index=pd.Index(calendar, dtype="object"), dtype="float64")
-
-
 def _node_has_research_members(
     state: TaxonomyResearchState,
     node_id: str,
@@ -465,7 +402,10 @@ def _member_is_fixed_capital(member: ScopeMemberRecord) -> bool:
 def _scope_is_frozen(state: TaxonomyResearchState, scope_node_id: str | None) -> bool:
     if scope_node_id is None:
         return False
-    return scope_node_id in state.frozen_taxonomy_node_ids
+    return any(
+        scope_node_id in state.node_subtree_by_id.get(frozen_id, {frozen_id})
+        for frozen_id in state.frozen_taxonomy_node_ids
+    )
 
 
 def _member_is_frozen(
@@ -503,45 +443,6 @@ def _member_risk_model_status(member: ScopeMemberRecord) -> str:
         if member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}
         else "modeled"
     )
-
-
-def _annualized_portfolio_volatility(
-    return_window: pd.DataFrame,
-    weights: pd.Series,
-    *,
-    as_of_date: date,
-    lookback_days: int,
-    calculation_frequency: CalculationFrequency,
-    missing_return_policy: str,
-    risk_model_config: dict[str, object] | None = None,
-) -> float:
-    if return_window.empty or weights.empty:
-        raise ValueError("Target-volatility overlay requires non-empty aligned risky return history.")
-    missing_columns = [str(column) for column in weights.index if column not in return_window.columns]
-    if missing_columns:
-        raise ValueError(
-            "Target-volatility overlay is missing risky return columns: "
-            f"{', '.join(missing_columns[:8])}."
-        )
-    aligned = return_window.reindex(columns=weights.index).dropna(how="all")
-    if aligned.shape[0] < 2:
-        raise ValueError("Target-volatility overlay requires at least two aligned risky return observations.")
-    covariance = _estimate_covariance(
-        aligned,
-        model_id=_risk_model_covariance_model_id(risk_model_config),
-        lookback_days=lookback_days,
-        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
-        missing_return_policy=missing_return_policy,
-        calculation_frequency=calculation_frequency,
-        as_of_date=as_of_date,
-    )
-    ordered_weights = weights.reindex(covariance.index, fill_value=0.0).astype("float64")
-    matrix = covariance.to_numpy(dtype="float64")
-    vector = ordered_weights.to_numpy(dtype="float64")
-    variance = float(vector @ matrix @ vector)
-    if variance <= 1e-12:
-        return 0.0
-    return float(sqrt(max(variance, 0.0)))
 
 
 def _allocate_fixed_capital_weights(
@@ -1247,1024 +1148,37 @@ def risk_contribution_shares(
     return _risk_contribution_shares(covariance, weights, contribution_mode=contribution_mode)
 
 
-def _project_to_bounded_simplex(
-    weights: np.ndarray,
-    lower: np.ndarray,
-    upper: np.ndarray,
-) -> np.ndarray:
-    projected = np.clip(np.asarray(weights, dtype="float64"), lower, upper)
-    total = float(projected.sum())
-    if abs(total - 1.0) <= 1e-10:
-        return projected
-    if total < 1.0:
-        deficit = 1.0 - total
-        capacity = upper - projected
-        available = float(capacity.sum())
-        if available + 1e-12 < deficit:
-            raise ValueError("Risk budget bounds are infeasible: cannot reach total weight 1.")
-        if available > 0:
-            projected = projected + deficit * capacity / available
-    else:
-        excess = total - 1.0
-        reducible = projected - lower
-        available = float(reducible.sum())
-        if available + 1e-12 < excess:
-            raise ValueError("Risk budget bounds are infeasible: cannot reduce total weight to 1.")
-        if available > 0:
-            projected = projected - excess * reducible / available
-    if abs(float(projected.sum()) - 1.0) > 1e-8:
-        raise ValueError("Failed to project risk budget weights to bounded simplex.")
-    return projected
+def _global_risk_budget_seed(covariance: np.ndarray, budgets: np.ndarray) -> np.ndarray | None:
+    """Positive global risk-budget seed, not a separate allocation pipeline.
 
-
-def _validate_risk_budget_problem(problem: RiskBudgetProblem) -> None:
-    count = len(problem.bucket_ids)
-    if count == 0:
-        raise ValueError("Risk budget problem must contain at least one bucket.")
-    if problem.covariance.shape != (count, count):
-        raise ValueError("Risk budget covariance shape does not match bucket dimension.")
-    if problem.target_risk_shares.shape != (count,):
-        raise ValueError("Risk budget target shares shape is invalid.")
-    if problem.lower_bounds.shape != (count,) or problem.upper_bounds.shape != (count,):
-        raise ValueError("Risk budget bounds shape is invalid.")
-    if problem.reference_weights.shape != (count,):
-        raise ValueError("Risk budget reference weights shape is invalid.")
-    if len(set(problem.bucket_ids)) != count:
-        raise ValueError("Risk budget bucket identifiers must be unique.")
-    arrays = {
-        "covariance": problem.covariance,
-        "target shares": problem.target_risk_shares,
-        "lower bounds": problem.lower_bounds,
-        "upper bounds": problem.upper_bounds,
-        "reference weights": problem.reference_weights,
-    }
-    for label, values in arrays.items():
-        if not np.isfinite(values).all():
-            raise ValueError(f"Risk budget {label} must contain only finite values.")
-    if not np.allclose(problem.covariance, problem.covariance.T, rtol=1e-10, atol=1e-12):
-        raise ValueError("Risk budget covariance must be symmetric.")
-    eigenvalues = np.linalg.eigvalsh(0.5 * (problem.covariance + problem.covariance.T))
-    covariance_scale = max(float(np.max(np.abs(eigenvalues))), 1.0)
-    if float(eigenvalues.min()) < -RESEARCH_COVARIANCE_PSD_TOLERANCE * covariance_scale:
-        raise ValueError("Risk budget covariance must be positive semidefinite.")
-    if np.any(problem.target_risk_shares < -1e-12):
-        raise ValueError("Risk budget target shares cannot be negative.")
-    if np.any(problem.lower_bounds < -1e-12) or np.any(problem.upper_bounds > 1.0 + 1e-12):
-        raise ValueError("Risk budget bounds must be between 0 and 1.")
-    if np.any(problem.upper_bounds < problem.lower_bounds):
-        raise ValueError("Risk budget upper bounds cannot be smaller than lower bounds.")
-    if float(problem.lower_bounds.sum()) > 1.0 + 1e-10:
-        raise ValueError("Risk budget lower bounds are infeasible: their sum exceeds 1.")
-    if float(problem.upper_bounds.sum()) < 1.0 - 1e-10:
-        raise ValueError("Risk budget upper bounds are infeasible: their sum is below 1.")
-    if abs(float(problem.target_risk_shares.sum()) - 1.0) > 1e-8:
-        raise ValueError("Risk budget target shares must sum to 1.")
-
-
-def _solve_convex_risk_budget(
-    problem: RiskBudgetProblem,
-    *,
-    max_iterations: int,
-) -> RiskBudgetSolution | None:
-    """Solve the canonical unconstrained risk-budget problem.
-
-    For positive budgets and a PSD covariance matrix, minimizing
-    ``0.5 * y'Σy - Σ b_i log(y_i)`` over positive ``y`` is convex. Its
-    first-order condition gives ``y_i(Σy)_i=b_i``; normalizing ``y`` then
-    produces positive signed risk contributions in the requested proportions.
-    The same solution therefore also satisfies absolute-contribution budgets,
-    while avoiding their non-convex extra branches. Box/frozen constraints use
-    the explicit minimax formulation below because their best feasible target
-    miss must remain observable.
+    The convex objective 0.5*y'Sigma*y - sum(b_i*log(y_i)) gives
+    y_i*(Sigma*y)_i=b_i. Normalization preserves Euler contribution ratios.
+    All actual hard constraints and conditional targets are checked by the
+    global solver, including candidates from non-success termination.
     """
-
-    if problem.contribution_mode not in {"signed", "abs"} or _risk_budget_problem_has_binding_bounds(problem):
+    target = _normalize_positive_vector(budgets)
+    if np.any(target <= 0.0):
         return None
-    if np.any(problem.target_risk_shares <= 0.0):
-        return None
-
-    diagonal_volatility = np.sqrt(np.maximum(np.diag(problem.covariance), 1e-12))
-    initial = problem.target_risk_shares / diagonal_volatility
-    initial_variance = float(initial @ problem.covariance @ initial)
-    if initial_variance > 1e-12:
-        initial = initial / sqrt(initial_variance)
-    initial = np.maximum(initial, 1e-10)
-
-    def objective(scale_weights: np.ndarray) -> float:
-        return float(
-            0.5 * scale_weights @ problem.covariance @ scale_weights
-            - problem.target_risk_shares @ np.log(scale_weights)
-        )
-
-    def gradient(scale_weights: np.ndarray) -> np.ndarray:
-        return problem.covariance @ scale_weights - problem.target_risk_shares / scale_weights
-
+    matrix = covariance / max(float(np.max(np.diag(covariance))), 1e-30)
+    initial = target / np.sqrt(np.maximum(np.diag(matrix), 1e-12))
+    variance = float(initial @ matrix @ initial)
+    if variance > 1e-20:
+        initial /= sqrt(variance)
     result = minimize(
-        objective,
-        x0=initial,
-        jac=gradient,
-        method="L-BFGS-B",
-        bounds=[(1e-12, None)] * len(problem.bucket_ids),
-        options={"ftol": 1e-15, "gtol": 1e-10, "maxiter": max(max_iterations, 500)},
+        lambda y: float(0.5 * y @ matrix @ y - target @ np.log(y)),
+        x0=np.maximum(initial, 1e-10),
+        jac=lambda y: matrix @ y - target / y,
+        method="L-BFGS-B", bounds=[(1e-12, None)] * len(target),
+        options={"ftol": 1e-15, "gtol": 1e-10, "maxiter": 1000},
     )
-    if (
-        not np.isfinite(result.x).all()
-        or not np.isfinite(float(result.fun))
-        or np.any(np.asarray(result.x, dtype="float64") <= 0.0)
-    ):
+    if not np.isfinite(result.x).all() or np.any(result.x <= 0.0):
         return None
-    weights = np.asarray(result.x, dtype="float64")
-    weights = weights / float(weights.sum())
-    shares = _risk_contribution_shares(
-        problem.covariance,
-        weights,
-        contribution_mode=problem.contribution_mode,
-    )
-    gap = shares - problem.target_risk_shares
-    return RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=weights,
-        achieved_risk_shares=shares,
-        objective_value=_normalized_share_gap_l2(problem, shares),
-        max_abs_share_gap=float(np.max(np.abs(gap))),
-        iterations=int(getattr(result, "nit", 0)),
-        message=(
-            f"{result.message} (convex log-barrier risk-budget solve"
-            + (
-                ")"
-                if result.success
-                else "; non-success termination candidate remains subject to independent risk-budget checks)"
-            )
-        ),
-        solver_kind="convex_log_barrier",
-        contribution_mode=problem.contribution_mode,
-    )
-
-
-def _build_risk_budget_initial_guesses(
-    problem: RiskBudgetProblem,
-    reference_weights: np.ndarray,
-) -> list[np.ndarray]:
-    diagonal = np.diag(problem.covariance)
-    vol = np.sqrt(np.maximum(diagonal, 1e-12))
-    candidates = [
-        reference_weights,
-        problem.target_risk_shares,
-        np.ones(len(problem.bucket_ids), dtype="float64"),
-        problem.target_risk_shares / vol,
-        problem.target_risk_shares / np.maximum(diagonal, 1e-12),
-        0.5 * reference_weights + 0.5 * (problem.target_risk_shares / vol),
-    ]
-    candidates.extend(_build_risk_budget_boundary_seed_candidates(problem, reference_weights))
-    rng = np.random.default_rng(0)
-    for _ in range(8):
-        candidates.append(rng.dirichlet(np.ones(len(problem.bucket_ids), dtype="float64")))
-
-    guesses: list[np.ndarray] = []
-    seen: set[tuple[float, ...]] = set()
-    for candidate in candidates:
-        vector = np.asarray(candidate, dtype="float64")
-        total = float(vector.sum())
-        if total <= 1e-12:
-            vector = np.ones(len(problem.bucket_ids), dtype="float64") / float(len(problem.bucket_ids))
-        else:
-            vector = vector / total
-        projected = _project_to_bounded_simplex(vector, problem.lower_bounds, problem.upper_bounds)
-        key = tuple(np.round(projected, 12))
-        if key in seen:
-            continue
-        seen.add(key)
-        guesses.append(projected)
-    return guesses
-
-
-def _allocate_bounded_mass(
-    *,
-    total_mass: float,
-    lower: np.ndarray,
-    upper: np.ndarray,
-    preferred: np.ndarray,
-) -> np.ndarray:
-    weights = np.asarray(lower, dtype="float64").copy()
-    lower_total = float(weights.sum())
-    upper_total = float(np.asarray(upper, dtype="float64").sum())
-    if total_mass < lower_total - 1e-10 or total_mass > upper_total + 1e-10:
-        raise ValueError("Risk budget fixed-bound seed is infeasible.")
-    remaining = float(total_mass - lower_total)
-    free_indices = list(range(len(weights)))
-    preferred = np.clip(np.asarray(preferred, dtype="float64"), 0.0, None)
-    while remaining > 1e-12 and free_indices:
-        active_indices = np.asarray(free_indices, dtype=int)
-        active_preferred = preferred[active_indices]
-        preferred_total = float(active_preferred.sum())
-        if preferred_total <= 1e-12:
-            active_preferred = np.ones(len(active_indices), dtype="float64")
-            preferred_total = float(active_preferred.sum())
-        proposal = weights[active_indices] + remaining * active_preferred / preferred_total
-        active_upper = np.asarray(upper, dtype="float64")[active_indices]
-        over_mask = proposal > active_upper + 1e-12
-        if not np.any(over_mask):
-            weights[active_indices] = proposal
-            remaining = float(total_mass - float(weights.sum()))
-            break
-        for index in active_indices[over_mask]:
-            weights[index] = float(np.asarray(upper, dtype="float64")[index])
-            free_indices.remove(int(index))
-        remaining = float(total_mass - float(weights.sum()))
-    if abs(float(weights.sum()) - total_mass) > 1e-8:
-        raise ValueError("Risk budget fixed-bound seed failed to allocate remaining mass.")
-    return weights
-
-
-def _build_fixed_upper_seed(
-    problem: RiskBudgetProblem,
-    reference_weights: np.ndarray,
-    active_indices: list[int],
-) -> np.ndarray | None:
-    weights = np.asarray(problem.lower_bounds, dtype="float64").copy()
-    active_mask = np.zeros(len(weights), dtype=bool)
-    active_mask[active_indices] = True
-    weights[active_mask] = problem.upper_bounds[active_mask]
-    remaining_mass = float(1.0 - float(weights.sum()))
-    if remaining_mass < -1e-10:
-        return None
-    free_mask = ~active_mask
-    if not np.any(free_mask):
-        return weights if abs(remaining_mass) <= 1e-8 else None
-    try:
-        weights[free_mask] = _allocate_bounded_mass(
-            total_mass=remaining_mass,
-            lower=problem.lower_bounds[free_mask],
-            upper=problem.upper_bounds[free_mask],
-            preferred=reference_weights[free_mask],
-        )
-    except ValueError:
-        return None
-    return weights
-
-
-def _build_risk_budget_boundary_seed_candidates(
-    problem: RiskBudgetProblem,
-    reference_weights: np.ndarray,
-) -> list[np.ndarray]:
-    bounded_indices = [
-        index
-        for index, (lower, upper) in enumerate(zip(problem.lower_bounds, problem.upper_bounds, strict=True))
-        if lower > 1e-12 or upper < 1.0 - 1e-12
-    ]
-    if not bounded_indices:
-        return []
-    candidates: list[np.ndarray] = []
-    for size in (1, 2):
-        for active_indices in combinations(bounded_indices, size):
-            candidate = _build_fixed_upper_seed(problem, reference_weights, list(active_indices))
-            if candidate is not None:
-                candidates.append(candidate)
-    return candidates
-
-
-def _risk_budget_problem_has_binding_bounds(problem: RiskBudgetProblem) -> bool:
-    return bool(np.any(problem.lower_bounds > 1e-12) or np.any(problem.upper_bounds < 1.0 - 1e-12))
-
-
-def _risk_share_gap_scales(target_risk_shares: np.ndarray) -> np.ndarray:
-    count = max(len(target_risk_shares), 1)
-    floor = min(
-        RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR,
-        RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION / float(count),
-    )
-    return np.maximum(np.asarray(target_risk_shares, dtype="float64"), floor)
-
-
-def _normalized_risk_share_gap(problem: RiskBudgetProblem, achieved_risk_shares: np.ndarray) -> np.ndarray:
-    gap = np.asarray(achieved_risk_shares, dtype="float64") - problem.target_risk_shares
-    return gap / _risk_share_gap_scales(problem.target_risk_shares)
-
-
-def _solution_max_normalized_share_gap(problem: RiskBudgetProblem, solution: RiskBudgetSolution) -> float:
-    normalized_gap = _normalized_risk_share_gap(problem, solution.achieved_risk_shares)
-    return float(np.max(np.abs(normalized_gap)))
-
-
-def _normalized_share_gap_l2(problem: RiskBudgetProblem, achieved_risk_shares: np.ndarray) -> float:
-    normalized_gap = _normalized_risk_share_gap(problem, achieved_risk_shares)
-    return float(normalized_gap @ normalized_gap)
-
-
-def _is_better_risk_budget_solution(
-    problem: RiskBudgetProblem,
-    candidate: RiskBudgetSolution,
-    incumbent: RiskBudgetSolution,
-) -> bool:
-    candidate_normalized_gap = _solution_max_normalized_share_gap(problem, candidate)
-    incumbent_normalized_gap = _solution_max_normalized_share_gap(problem, incumbent)
-    if candidate_normalized_gap < incumbent_normalized_gap - 1e-9:
-        return True
-    if abs(candidate_normalized_gap - incumbent_normalized_gap) > 1e-9:
-        return False
-    candidate_l2 = _normalized_share_gap_l2(problem, candidate.achieved_risk_shares)
-    incumbent_l2 = _normalized_share_gap_l2(problem, incumbent.achieved_risk_shares)
-    if candidate_l2 < incumbent_l2 - 1e-12:
-        return True
-    if abs(candidate_l2 - incumbent_l2) > 1e-12:
-        return False
-    return candidate.max_abs_share_gap < incumbent.max_abs_share_gap - 1e-12
-
-
-def _solve_regularized_risk_budget_slsqp(
-    problem: RiskBudgetProblem,
-    *,
-    reference_weights: np.ndarray,
-    initial_guesses: list[np.ndarray],
-    max_iterations: int,
-) -> RiskBudgetSolution:
-    def objective(weights: np.ndarray) -> float:
-        shares = _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
-        normalized_gap = _normalized_risk_share_gap(problem, shares)
-        reference_gap = weights - reference_weights
-        return (
-            float(np.max(np.abs(normalized_gap)) ** 2)
-            + 1e-2 * float(normalized_gap @ normalized_gap)
-            + 1e-4 * float(reference_gap @ reference_gap)
-        )
-
-    constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
-    bounds = list(
-        zip(
-            problem.lower_bounds.tolist(),
-            problem.upper_bounds.tolist(),
-            strict=True,
-        )
-    )
-    best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
-    failures: list[str] = []
-    for x0 in initial_guesses:
-        result = minimize(
-            objective,
-            x0=x0,
-            method="SLSQP",
-            bounds=bounds,
-            constraints=constraints,
-            options={"ftol": 1e-12, "maxiter": max_iterations, "disp": False},
-        )
-        if not result.success:
-            failures.append(str(result.message))
-            continue
-        weights = np.asarray(result.x, dtype="float64")
-        shares = _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
-        share_gap = shares - problem.target_risk_shares
-        normalized_gap = _normalized_risk_share_gap(problem, shares)
-        candidate = (
-            weights,
-            shares,
-            float(np.max(np.abs(share_gap))),
-            float(np.max(np.abs(normalized_gap))),
-            int(getattr(result, "nit", 0)),
-            str(result.message),
-        )
-        if best_solution is None or candidate[3] < best_solution[3] - 1e-12:
-            best_solution = candidate
-        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-12:
-            if objective(candidate[0]) < objective(best_solution[0]) - 1e-18:
-                best_solution = candidate
-
-    if best_solution is None:
-        detail = "" if not failures else f": {'; '.join(sorted(set(failures)))}"
-        raise ValueError(f"Risk budget solver failed{detail}")
-
-    weights, shares, max_abs_share_gap, _max_normalized_share_gap, iterations, message = best_solution
-    return RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=weights,
-        achieved_risk_shares=shares,
-        objective_value=float(objective(weights)),
-        max_abs_share_gap=max_abs_share_gap,
-        iterations=iterations,
-        message=message,
-        solver_kind="slsqp",
-        contribution_mode=problem.contribution_mode,
-    )
-
-
-def _solve_minimax_risk_budget_slsqp(
-    problem: RiskBudgetProblem,
-    *,
-    reference_weights: np.ndarray,
-    initial_guesses: list[np.ndarray],
-    max_iterations: int,
-) -> RiskBudgetSolution | None:
-    def achieved_shares(weights: np.ndarray) -> np.ndarray:
-        return _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
-
-    def normalized_share_gap(weights: np.ndarray) -> np.ndarray:
-        return _normalized_risk_share_gap(problem, achieved_shares(weights))
-
-    constraints = [{"type": "eq", "fun": lambda variables: float(np.sum(variables[:-1]) - 1.0)}]
-    for index in range(len(problem.bucket_ids)):
-        constraints.append(
-            {
-                "type": "ineq",
-                "fun": lambda variables, index=index: float(
-                    variables[-1] - normalized_share_gap(variables[:-1])[index]
-                ),
-            }
-        )
-        constraints.append(
-            {
-                "type": "ineq",
-                "fun": lambda variables, index=index: float(
-                    variables[-1] + normalized_share_gap(variables[:-1])[index]
-                ),
-            }
-        )
-
-    bounds = list(
-        zip(
-            problem.lower_bounds.tolist(),
-            problem.upper_bounds.tolist(),
-            strict=True,
-        )
-    ) + [(0.0, None)]
-    best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
-    for guess in initial_guesses:
-        initial_gap = float(np.max(np.abs(normalized_share_gap(guess))))
-        result = minimize(
-            lambda variables: float(variables[-1]),
-            x0=np.concatenate([guess, [initial_gap]]),
-            method="SLSQP",
-            bounds=bounds,
-            constraints=constraints,
-            options={"ftol": 1e-15, "maxiter": max_iterations, "disp": False},
-        )
-        if not result.success:
-            continue
-        weights = np.asarray(result.x[:-1], dtype="float64")
-        shares = achieved_shares(weights)
-        gap = shares - problem.target_risk_shares
-        normalized_gap = _normalized_risk_share_gap(problem, shares)
-        reference_gap = weights - reference_weights
-        secondary_score = float(normalized_gap @ normalized_gap) + 1e-4 * float(reference_gap @ reference_gap)
-        candidate = (
-            weights,
-            shares,
-            float(np.max(np.abs(gap))),
-            float(np.max(np.abs(normalized_gap))),
-            secondary_score,
-            int(getattr(result, "nit", 0)),
-            str(result.message),
-        )
-        if best_solution is None or candidate[3] < best_solution[3] - 1e-9:
-            best_solution = candidate
-        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-9:
-            if candidate[4] < best_solution[4] - 1e-12:
-                best_solution = candidate
-
-    if best_solution is None:
-        return None
-
-    weights, shares, max_abs_share_gap, max_normalized_share_gap, objective_value, iterations, message = best_solution
-    solution = RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=weights,
-        achieved_risk_shares=shares,
-        objective_value=objective_value,
-        max_abs_share_gap=max_abs_share_gap,
-        iterations=iterations,
-        message=f"{message} (minimax refinement)",
-        solver_kind="slsqp_minimax",
-        contribution_mode=problem.contribution_mode,
-    )
-    refined = _refine_balanced_risk_budget_solution(
-        problem,
-        reference_weights=reference_weights,
-        # The primary minimax solution is already feasible at the optimal
-        # maximum-gap ceiling.  Re-running the secondary tie-break from every
-        # exploratory seed adds substantial pathological SLSQP work without
-        # improving the primary objective.
-        initial_guesses=[solution.weights],
-        max_normalized_gap_ceiling=max_normalized_share_gap,
-        max_iterations=min(max_iterations, 500),
-    )
-    if refined is not None and _is_better_risk_budget_solution(problem, refined, solution):
-        return refined
-    return solution
-
-
-def _refine_balanced_risk_budget_solution(
-    problem: RiskBudgetProblem,
-    *,
-    reference_weights: np.ndarray,
-    initial_guesses: list[np.ndarray],
-    max_normalized_gap_ceiling: float,
-    max_iterations: int,
-) -> RiskBudgetSolution | None:
-    tolerance = max(1e-6, max_normalized_gap_ceiling * 1e-6)
-
-    def achieved_shares(weights: np.ndarray) -> np.ndarray:
-        return _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
-
-    def normalized_share_gap(weights: np.ndarray) -> np.ndarray:
-        return _normalized_risk_share_gap(problem, achieved_shares(weights))
-
-    def objective(weights: np.ndarray) -> float:
-        normalized_gap = normalized_share_gap(weights)
-        reference_gap = weights - reference_weights
-        return float(normalized_gap @ normalized_gap) + 1e-4 * float(reference_gap @ reference_gap)
-
-    constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
-    for index in range(len(problem.bucket_ids)):
-        constraints.append(
-            {
-                "type": "ineq",
-                "fun": lambda weights, index=index: float(
-                    (max_normalized_gap_ceiling + tolerance) - normalized_share_gap(weights)[index]
-                ),
-            }
-        )
-        constraints.append(
-            {
-                "type": "ineq",
-                "fun": lambda weights, index=index: float(
-                    (max_normalized_gap_ceiling + tolerance) + normalized_share_gap(weights)[index]
-                ),
-            }
-        )
-    bounds = list(
-        zip(
-            problem.lower_bounds.tolist(),
-            problem.upper_bounds.tolist(),
-            strict=True,
-        )
-    )
-    best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
-    for guess in initial_guesses:
-        result = minimize(
-            objective,
-            x0=guess,
-            method="SLSQP",
-            bounds=bounds,
-            constraints=constraints,
-            options={"ftol": 1e-15, "maxiter": max_iterations, "disp": False},
-        )
-        if not result.success:
-            continue
-        weights = np.asarray(result.x, dtype="float64")
-        shares = achieved_shares(weights)
-        gap = shares - problem.target_risk_shares
-        normalized_gap = _normalized_risk_share_gap(problem, shares)
-        candidate = (
-            weights,
-            shares,
-            float(np.max(np.abs(gap))),
-            float(np.max(np.abs(normalized_gap))),
-            float(normalized_gap @ normalized_gap),
-            int(getattr(result, "nit", 0)),
-            str(result.message),
-        )
-        if best_solution is None or candidate[3] < best_solution[3] - 1e-9:
-            best_solution = candidate
-        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-9:
-            if candidate[4] < best_solution[4] - 1e-12:
-                best_solution = candidate
-    if best_solution is None:
-        return None
-    weights, shares, max_abs_share_gap, _max_normalized_share_gap, l2_gap, iterations, message = best_solution
-    return RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=weights,
-        achieved_risk_shares=shares,
-        objective_value=l2_gap,
-        max_abs_share_gap=max_abs_share_gap,
-        iterations=iterations,
-        message=f"{message} (balanced minimax refinement)",
-        solver_kind="slsqp_minimax_balanced",
-        contribution_mode=problem.contribution_mode,
-    )
-
-
-def _solve_risk_budget_problem(
-    problem: RiskBudgetProblem,
-    *,
-    max_iterations: int = 500,
-    enforce_tolerance: bool = True,
-) -> RiskBudgetSolution:
-    _validate_risk_budget_problem(problem)
-    reference_weights = _project_to_bounded_simplex(
-        problem.reference_weights,
-        problem.lower_bounds,
-        problem.upper_bounds,
-    )
-    initial_guesses = _build_risk_budget_initial_guesses(problem, reference_weights)
-    has_binding_bounds = _risk_budget_problem_has_binding_bounds(problem)
-    all_weights_fixed = bool(
-        has_binding_bounds
-        and np.all(np.abs(problem.upper_bounds - problem.lower_bounds) <= 1e-12)
-    )
-    convex_seed_problem = (
-        replace(
-            problem,
-            lower_bounds=np.zeros(len(problem.bucket_ids), dtype="float64"),
-            upper_bounds=np.ones(len(problem.bucket_ids), dtype="float64"),
-        )
-        if has_binding_bounds
-        else problem
-    )
-    convex_solution = _solve_convex_risk_budget(
-        convex_seed_problem,
-        max_iterations=max_iterations,
-    )
-    if convex_solution is not None:
-        convex_seed = _project_to_bounded_simplex(
-            convex_solution.weights,
-            problem.lower_bounds,
-            problem.upper_bounds,
-        )
-        initial_guesses = [convex_seed, *initial_guesses]
-    else:
-        convex_seed = None
-    if all_weights_fixed:
-        fixed_weights = _project_to_bounded_simplex(
-            problem.lower_bounds,
-            problem.lower_bounds,
-            problem.upper_bounds,
-        )
-        fixed_shares = _risk_contribution_shares(
-            problem.covariance,
-            fixed_weights,
-            contribution_mode=problem.contribution_mode,
-        )
-        fixed_gap = fixed_shares - problem.target_risk_shares
-        best = RiskBudgetSolution(
-            bucket_ids=problem.bucket_ids,
-            weights=fixed_weights,
-            achieved_risk_shares=fixed_shares,
-            objective_value=_normalized_share_gap_l2(problem, fixed_shares),
-            max_abs_share_gap=float(np.max(np.abs(fixed_gap))),
-            iterations=0,
-            message="All risk-sleeve weights are fixed; evaluated the unique feasible allocation.",
-            solver_kind="fixed_bounds_evaluation",
-            contribution_mode=problem.contribution_mode,
-        )
-    elif has_binding_bounds and convex_seed is not None:
-        convex_seed_shares = _risk_contribution_shares(
-            problem.covariance,
-            convex_seed,
-            contribution_mode=problem.contribution_mode,
-        )
-        convex_seed_gap = convex_seed_shares - problem.target_risk_shares
-        if (
-            float(np.max(np.abs(convex_seed_gap))) <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
-            and (
-                problem.contribution_mode != "signed"
-                or float(convex_seed_shares.min()) >= -1e-12
-            )
-        ):
-            best = RiskBudgetSolution(
-                bucket_ids=problem.bucket_ids,
-                weights=convex_seed,
-                achieved_risk_shares=convex_seed_shares,
-                objective_value=_normalized_share_gap_l2(problem, convex_seed_shares),
-                max_abs_share_gap=float(np.max(np.abs(convex_seed_gap))),
-                iterations=convex_solution.iterations,
-                message=(
-                    "The canonical convex risk-budget solution satisfies the configured bounds."
-                ),
-                solver_kind="convex_log_barrier_bounded_feasible",
-                contribution_mode=problem.contribution_mode,
-            )
-        else:
-            best = None
-    else:
-        best = None
-
-    if has_binding_bounds and best is not None:
-        pass
-    elif has_binding_bounds and not all_weights_fixed:
-        minimax = _solve_minimax_risk_budget_slsqp(
-            problem,
-            reference_weights=reference_weights,
-            initial_guesses=initial_guesses,
-            max_iterations=max(max_iterations * 4, 1500),
-        )
-        if minimax is None:
-            try:
-                minimax = _solve_regularized_risk_budget_slsqp(
-                    problem,
-                    reference_weights=reference_weights,
-                    initial_guesses=initial_guesses,
-                    max_iterations=max_iterations,
-                )
-                minimax = replace(
-                    minimax,
-                    message=(
-                        f"{minimax.message}; bounded minimax did not converge, so this is the "
-                        "best regularized feasible candidate and remains subject to the target-gap check."
-                    ),
-                    solver_kind="slsqp_bounded_feasible_fallback",
-                )
-            except ValueError:
-                feasible_candidates: list[RiskBudgetSolution] = []
-                for candidate_weights in initial_guesses:
-                    try:
-                        candidate_shares = _risk_contribution_shares(
-                            problem.covariance,
-                            candidate_weights,
-                            contribution_mode=problem.contribution_mode,
-                        )
-                    except ValueError:
-                        continue
-                    candidate_gap = candidate_shares - problem.target_risk_shares
-                    feasible_candidates.append(
-                        RiskBudgetSolution(
-                            bucket_ids=problem.bucket_ids,
-                            weights=candidate_weights,
-                            achieved_risk_shares=candidate_shares,
-                            objective_value=_normalized_share_gap_l2(problem, candidate_shares),
-                            max_abs_share_gap=float(np.max(np.abs(candidate_gap))),
-                            iterations=0,
-                            message=(
-                                "Bounded numerical optimizers did not converge; returned the best "
-                                "deterministic feasible seed, subject to the target-gap check."
-                            ),
-                            solver_kind="deterministic_bounded_feasible_fallback",
-                            contribution_mode=problem.contribution_mode,
-                        )
-                    )
-                if not feasible_candidates:
-                    raise ValueError(
-                        "Risk budget constraints are feasible, but no positive-variance feasible candidate could be evaluated."
-                    )
-                minimax = min(
-                    feasible_candidates,
-                    key=lambda item: (
-                        _solution_max_normalized_share_gap(problem, item),
-                        _normalized_share_gap_l2(problem, item.achieved_risk_shares),
-                    ),
-                )
-        best = minimax
-    elif not has_binding_bounds and (
-        convex_solution is not None
-        and convex_solution.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP
-        and float(convex_solution.achieved_risk_shares.min()) >= -1e-12
-    ):
-        best = convex_solution
-    else:
-        primary = _solve_regularized_risk_budget_slsqp(
-            problem,
-            reference_weights=reference_weights,
-            initial_guesses=initial_guesses,
-            max_iterations=max_iterations,
-        )
-        if primary.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:
-            best = primary
-        else:
-            minimax = _solve_minimax_risk_budget_slsqp(
-                problem,
-                reference_weights=reference_weights,
-                initial_guesses=[*initial_guesses, primary.weights],
-                max_iterations=max(max_iterations * 4, 1500),
-            )
-            best = (
-                minimax
-                if minimax is not None and _is_better_risk_budget_solution(problem, minimax, primary)
-                else primary
-            )
-    target_gap_missed = best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12
-    if enforce_tolerance and target_gap_missed:
-        raise ValueError(
-            "Risk budget solver could not satisfy target risk shares within "
-            f"{RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%}; achieved max gap {best.max_abs_share_gap:.2%}."
-        )
-    achieved = np.asarray(best.achieved_risk_shares, dtype="float64")
-    negative_signed_share = best.contribution_mode == "signed" and float(achieved.min()) < -1e-12
-    if enforce_tolerance and negative_signed_share:
-        raise ValueError("Risk budget solver produced a negative signed risk share.")
-    if target_gap_missed or negative_signed_share:
-        reasons: list[str] = []
-        if target_gap_missed:
-            reasons.append(
-                f"maximum target-share gap is {best.max_abs_share_gap:.2%} "
-                f"(tolerance {RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%})"
-            )
-        if negative_signed_share:
-            reasons.append(f"minimum signed risk share is {float(achieved.min()):.2%}")
-        constrained = _risk_budget_problem_has_binding_bounds(problem)
-        verified_constrained_optimum = bool(
-            constrained
-            and target_gap_missed
-            and not negative_signed_share
-            and "fallback" not in best.solver_kind
-        )
-        if verified_constrained_optimum:
-            return replace(
-                best,
-                target_status="constrained_optimum",
-                execution_ready=True,
-                message=(
-                    f"{best.message}; verified hard-constraint optimum is execution-ready, "
-                    "but it cannot exactly match the requested risk shares: "
-                    + "; ".join(reasons)
-                    + "."
-                ),
-            )
-        return replace(
-            best,
-            target_status="constrained_target_miss" if constrained else "target_miss",
-            execution_ready=False,
-            message=(
-                f"{best.message}; best feasible result is not execution-ready: "
-                + "; ".join(reasons)
-                + "."
-            ),
-        )
-    return best
-
-
-def _solve_risk_budget_weights(
-    *,
-    target_shares: np.ndarray,
-    return_window: pd.DataFrame,
-    reference_weights: np.ndarray | None,
-    as_of_date: date,
-    lookback_days: int,
-    calculation_frequency: CalculationFrequency,
-    missing_return_policy: str,
-    risk_model_config: dict[str, object] | None = None,
-    lower_bounds: np.ndarray | None = None,
-    upper_bounds: np.ndarray | None = None,
-) -> LocalRiskBudgetSolve:
-    raw_target = np.asarray(target_shares, dtype="float64")
-    if raw_target.ndim != 1:
-        raise ValueError("Risk budget target shares must be a one-dimensional vector.")
-    count = len(raw_target)
-    if count == 0:
-        raise ValueError("Risk budget target shares cannot be empty.")
-    target = _normalize_positive_vector(raw_target)
-    normalized_missing_return_policy = _normalize_missing_return_policy(missing_return_policy)
-    if lower_bounds is not None and len(lower_bounds) != count:
-        raise ValueError("Risk budget lower-bound dimension does not match target shares.")
-    if upper_bounds is not None and len(upper_bounds) != count:
-        raise ValueError("Risk budget upper-bound dimension does not match target shares.")
-    resolved_lower_bounds = (
-        np.asarray(lower_bounds, dtype="float64")
-        if lower_bounds is not None
-        else np.zeros(count, dtype="float64")
-    )
-    resolved_upper_bounds = (
-        np.asarray(upper_bounds, dtype="float64")
-        if upper_bounds is not None
-        else np.ones(count, dtype="float64")
-    )
-    if not np.isfinite(resolved_lower_bounds).all() or not np.isfinite(resolved_upper_bounds).all():
-        raise ValueError("Risk budget bounds must contain only finite values.")
-    if np.any(resolved_lower_bounds < -1e-12) or np.any(resolved_upper_bounds > 1.0 + 1e-12):
-        raise ValueError("Risk budget bounds must be between 0 and 1.")
-    if np.any(resolved_upper_bounds < resolved_lower_bounds - 1e-12):
-        raise ValueError("Risk budget upper bounds cannot be smaller than lower bounds.")
-    if float(resolved_lower_bounds.sum()) > 1.0 + 1e-10 or float(resolved_upper_bounds.sum()) < 1.0 - 1e-10:
-        raise ValueError("Risk budget bounds do not contain a fully invested solution.")
-    has_binding_bounds = bool(
-        np.any(resolved_lower_bounds > 1e-12) or np.any(resolved_upper_bounds < 1.0 - 1e-12)
-    )
-    if count == 1:
-        if resolved_lower_bounds[0] > 1.0 + 1e-12 or resolved_upper_bounds[0] < 1.0 - 1e-12:
-            raise ValueError("Single-member risk budget bounds are infeasible.")
-        return LocalRiskBudgetSolve(
-            weights=np.asarray([1.0], dtype="float64"),
-            max_abs_share_gap=0.0,
-            solver_kind="bounded-single-member" if has_binding_bounds else "single-member",
-            solver_detail=None,
-            covariance_model=None,
-            covariance_observations=0,
-            risk_contribution_mode=None,
-            missing_return_policy=normalized_missing_return_policy,
-        )
-
-    cleaned_returns = _clean_return_frame(return_window)
-    complete_observation_count = int(len(cleaned_returns.dropna(how="any")))
-    if complete_observation_count < 2:
-        raise ValueError(
-            "Risk budget solve requires at least two aligned return observations; "
-            f"got {complete_observation_count}."
-        )
-    covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
-    covariance_model_id = _risk_model_covariance_model_id(risk_model_config)
-    contribution_mode = _risk_model_contribution_mode(risk_model_config)
-    coverage = _prepare_return_window_for_covariance(
-        return_window,
-        lookback_days=lookback_days,
-        min_observations=int(covariance_parameters.get("min_observations", 2)),
-        label="Risk budget solve",
-        missing_return_policy=normalized_missing_return_policy,
-        calculation_frequency=calculation_frequency,
-        as_of_date=as_of_date,
-        max_trailing_staleness_days=int(
-            covariance_parameters.get(
-                "max_period_staleness_days",
-                _max_complete_case_drop_staleness_days(calculation_frequency),
-            )
-        ),
-    )
-    covariance_window = coverage.returns
-
-    reference = (
-        np.asarray(reference_weights, dtype="float64")
-        if reference_weights is not None and len(reference_weights) == count
-        else target
-    )
-    if not np.isfinite(reference).all() or float(np.clip(reference, 0.0, None).sum()) <= 1e-12:
-        reference = target
-    reference = _normalize_positive_vector(reference)
-    covariance = _estimate_covariance(
-        covariance_window,
-        model_id=covariance_model_id,
-        lookback_days=lookback_days,
-        parameters=covariance_parameters,
-        missing_return_policy=MISSING_RETURN_POLICY_STRICT,
-        calculation_frequency=calculation_frequency,
-        as_of_date=as_of_date,
-    )
-    if covariance.shape != (count, count):
-        raise ValueError("Risk covariance dimension does not match selected scope members.")
-    primary_problem = RiskBudgetProblem(
-        bucket_ids=list(return_window.columns),
-        covariance=covariance.to_numpy(dtype="float64"),
-        target_risk_shares=target,
-        lower_bounds=resolved_lower_bounds,
-        upper_bounds=resolved_upper_bounds,
-        reference_weights=reference,
-        contribution_mode=contribution_mode,
-    )
-    solution = _solve_risk_budget_problem(primary_problem, enforce_tolerance=not has_binding_bounds)
-
-    return LocalRiskBudgetSolve(
-        weights=_normalize_positive_vector(solution.weights),
-        max_abs_share_gap=float(solution.max_abs_share_gap),
-        solver_kind="risk-budget",
-        solver_detail=solution.solver_kind,
-        covariance_model=covariance_model_id,
-        covariance_observations=int(len(covariance_window)),
-        risk_contribution_mode=solution.contribution_mode,
-        message=solution.message,
-        missing_return_policy=coverage.policy,
-        return_rows_before_policy=coverage.rows_before,
-        return_rows_after_policy=coverage.rows_after,
-        missing_return_row_count=coverage.missing_row_count,
-        missing_return_row_fraction=coverage.missing_row_fraction,
-        leading_incomplete_return_row_count=coverage.leading_incomplete_row_count,
-        post_warmup_missing_return_row_count=coverage.post_warmup_missing_row_count,
-        post_warmup_missing_return_row_fraction=coverage.post_warmup_missing_row_fraction,
-        dropped_return_rows=coverage.dropped_rows,
-        latest_complete_return_date=coverage.latest_complete_date.isoformat() if coverage.latest_complete_date else None,
-        trailing_complete_return_staleness_days=coverage.trailing_staleness_days,
-        target_status=solution.target_status,
-        execution_ready=solution.execution_ready,
-    )
-
-
-def _resolve_volatility_overlay_gross_exposure(
-    *,
-    capital_mode: str,
-    estimated_volatility: float | None,
-    target_volatility: float | None,
-    max_gross_exposure: float | None,
-) -> float:
-    if target_volatility is None or target_volatility <= 0:
-        raise ValueError("Volatility overlay requires positive target volatility.")
-    if estimated_volatility is None or estimated_volatility <= 0:
-        raise ValueError("Volatility overlay requires positive estimated risky-sleeve volatility.")
-    target_gross = float(target_volatility) / float(estimated_volatility)
-    if capital_mode == CAPITAL_MODE_VOLATILITY_CAP:
-        return min(target_gross, 1.0)
-    max_gross = 1.0 if max_gross_exposure is None else float(max_gross_exposure)
-    if target_gross > max_gross + 1e-12:
-        raise ValueError(
-            f"Target volatility requires {target_gross:.6f} gross exposure, "
-            f"above the configured maximum {max_gross:.6f}."
-        )
-    return target_gross
+    return np.asarray(result.x, dtype="float64") / float(np.sum(result.x))
 
 
 def _validate_research_solve_configuration(
     *,
     calculation_frequency: str,
-    target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
@@ -2272,12 +1186,6 @@ def _validate_research_solve_configuration(
 ) -> None:
     if str(calculation_frequency).strip().lower() != "daily":
         raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.")
-    if target_dimension not in {
-        TARGET_DIMENSION_SCOPE_DEFAULT,
-        TARGET_DIMENSION_WEIGHT,
-        TARGET_DIMENSION_RISK_BUDGET,
-    }:
-        raise ValueError(f"Unsupported Research target dimension: {target_dimension}.")
     if capital_mode not in {
         CAPITAL_MODE_UNIT_NOTIONAL,
         CAPITAL_MODE_FIXED_GROSS,
@@ -2442,187 +1350,71 @@ def _align_member_series(
     return rendered, calendar, warnings
 
 
-def _scope_target_sets(
-    state: TaxonomyResearchState,
-    *,
-    scope_node_id: str | None,
-    target_set_type: str,
-    as_of_date: date,
-) -> dict[str, object] | None:
-    candidates = state.target_sets_by_scope_type.get((scope_node_id, target_set_type), [])
-    configured = [item for item in candidates if str(item.get("status") or "active") == "active"]
-    if not configured:
-        return None
-    configured.sort(key=lambda item: str(item.get("target_set_id") or ""), reverse=True)
-    return configured[0]
+def _target_resolution(state: TaxonomyResearchState, scope_node_id: str | None = None) -> dict[str, object]:
+    parent_by_id = {node_id: parent for parent, children in state.children_by_parent.items() for node_id in children}
+    return resolve_taxonomy_targets({
+        "taxonomy": {"taxonomy_id": state.planning_taxonomy_id, "name": state.taxonomy_name,
+                     "root_allocation_basis": state.root_allocation_basis},
+        "instrument_labels": {instrument_id: detail.get("instrument_name") for instrument_id, detail in state.instrument_detail_cache.items() if detail},
+        "taxonomy_nodes": [{**node, "taxonomy_node_id": node_id, "parent_taxonomy_node_id": parent_by_id.get(node_id)}
+                           for node_id, node in state.node_by_id.items() if node_id in parent_by_id],
+        "taxonomy_assignments": [{**row, "taxonomy_node_id": node_id}
+                                 for node_id, rows in state.direct_assignments_by_node.items() for row in rows],
+        "target_sets": [{**row, "comparator_taxonomy_node_id": parent, "target_set_type": stage}
+                        for (parent, stage), rows in state.target_sets_by_scope_type.items() for row in rows],
+        "target_set_lines": [{**line, "target_set_id": set_id, "target_member_type": member_type, "target_member_id": member_id}
+                             for set_id, lines in state.target_lines_by_set_id.items()
+                             for (member_type, member_id), line in lines.items()],
+    }, scope_node_id=scope_node_id)
 
 
-def _resolve_dimension_target_rows(
+def _resolve_scope_target_rows(
     state: TaxonomyResearchState,
     *,
     scope_node_id: str | None,
     scope_members: list[ScopeMemberRecord],
-    as_of_date: date,
-    selected_dimension: str,
+    resolution: dict[str, object] | None = None,
+    require_complete: bool = True,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    warnings: list[str] = []
-
-    resolved_dimension = (
-        _scope_default_target_dimension(state, scope_node_id)
-        if selected_dimension == TARGET_DIMENSION_SCOPE_DEFAULT
-        else selected_dimension
-    )
-
-    candidate_types = ["taa", "saa"]
-    fixed_capital_members = [
-        member for member in scope_members if _member_is_fixed_capital(member)
-    ]
-    dimension_members = (
-        [member for member in scope_members if not _member_is_fixed_capital(member)]
-        if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
-        else scope_members
-    )
-    scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
-    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET and not dimension_members:
-        raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
-    line_keys = [(member.member_type, member.member_id) for member in dimension_members]
-
-    enabled_field = "weight_enabled" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "risk_budget_enabled"
-    value_field = "target_weight" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "target_risk_share"
-    saw_enabled_target_set = False
-    incomplete_target_sets: list[tuple[dict[str, object], list[str]]] = []
-    for target_set_type in candidate_types:
-        target_set = _scope_target_sets(
-            state,
-            scope_node_id=scope_node_id,
-            target_set_type=target_set_type,
-            as_of_date=as_of_date,
-        )
-        if target_set is None or not bool(target_set.get(enabled_field)):
-            continue
-        saw_enabled_target_set = True
-        line_map = state.target_lines_by_set_id.get(str(target_set.get("target_set_id") or ""), {})
-        rendered_rows: list[dict[str, object]] = []
-        complete = True
-        missing_member_labels: list[str] = []
-        for member in dimension_members:
-            line = line_map.get((member.member_type, member.member_id))
-            if line is None or line.get(value_field) is None:
-                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_is_fixed_capital(member):
-                    selected_value = 0.0
-                    target_weight = 0.0
-                    target_risk_share = None
-                else:
-                    missing_member_labels.append(member.label)
-                    complete = False
-                    break
-            else:
-                selected_value = float(line.get(value_field))
-                target_weight = _safe_float(line.get("target_weight"))
-                target_risk_share = (
-                    None
-                    if _member_is_fixed_capital(member)
-                    else _safe_float(line.get("target_risk_share"))
-                )
-            rendered_rows.append(
-                {
-                    "member_type": member.member_type,
-                    "member_id": member.member_id,
-                    "label": member.label,
-                    "taxonomy_node_id": member.taxonomy_node_id,
-                    "default_target_dimension": member.default_target_dimension,
-                    "selected_dimension": resolved_dimension,
-                    "selected_value": selected_value,
-                    "target_weight": target_weight,
-                    "target_risk_share": target_risk_share,
-                    "source_target_set_id": target_set.get("target_set_id"),
-                    "source_target_set_type": target_set_type,
-                }
-            )
-        if complete and len(rendered_rows) == len(line_keys):
-            selected_total = sum(float(row["selected_value"]) for row in rendered_rows)
-            expected_total = 1.0
-            if any(float(row["selected_value"]) < -1e-12 for row in rendered_rows):
-                raise ValueError(f"{target_set.get('name') or target_set_type} has negative {resolved_dimension} targets.")
-            if abs(selected_total - expected_total) > 1e-6:
-                raise ValueError(
-                    f"{target_set.get('name') or target_set_type} {resolved_dimension} targets must sum to "
-                    f"{expected_total:.6f}; got {selected_total:.6f}."
-                )
-            if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
-                for member in fixed_capital_members:
-                    line = line_map.get((member.member_type, member.member_id)) or {}
-                    rendered_rows.append(
-                        {
-                            "member_type": member.member_type,
-                            "member_id": member.member_id,
-                            "label": member.label,
-                            "taxonomy_node_id": member.taxonomy_node_id,
-                            "default_target_dimension": member.default_target_dimension,
-                            "selected_dimension": resolved_dimension,
-                            "selected_value": None,
-                            "target_weight": _safe_float(line.get("target_weight")),
-                            "target_risk_share": None,
-                            "source_target_set_id": target_set.get("target_set_id"),
-                            "source_target_set_type": target_set_type,
-                        }
-                    )
-            return rendered_rows, warnings
-        if not complete:
-            incomplete_target_sets.append((target_set, missing_member_labels))
-
-    if saw_enabled_target_set and incomplete_target_sets:
-        target_set, missing_member_labels = incomplete_target_sets[0]
-        missing_label = ", ".join(missing_member_labels[:8]) or "one or more active taxonomy members"
-        if len(missing_member_labels) > 8:
-            missing_label += f", +{len(missing_member_labels) - 8} more"
-        raise ValueError(
-            f"{scope_label} {resolved_dimension} target set is incomplete; "
-            f"missing target lines for active members: {missing_label}."
-        )
-
-    if len(dimension_members) == 1:
-        member = dimension_members[0]
-        selected_value = 1.0
-        rendered_rows = [
-            {
-                "member_type": member.member_type,
-                "member_id": member.member_id,
-                "label": member.label,
-                "taxonomy_node_id": member.taxonomy_node_id,
-                "default_target_dimension": member.default_target_dimension,
-                "selected_dimension": resolved_dimension,
-                "selected_value": selected_value,
-                "target_weight": 1.0 if resolved_dimension == TARGET_DIMENSION_WEIGHT else None,
-                "target_risk_share": selected_value if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET else None,
-                "source_target_set_id": None,
-                "source_target_set_type": None,
-                "source_label_override": "Single Member",
-            }
-        ]
-        if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
-            rendered_rows.extend(
-                {
-                    "member_type": fixed_capital_member.member_type,
-                    "member_id": fixed_capital_member.member_id,
-                    "label": fixed_capital_member.label,
-                    "taxonomy_node_id": fixed_capital_member.taxonomy_node_id,
-                    "default_target_dimension": fixed_capital_member.default_target_dimension,
-                    "selected_dimension": resolved_dimension,
-                    "selected_value": None,
-                    "target_weight": None,
-                    "target_risk_share": None,
-                    "source_target_set_id": None,
-                    "source_target_set_type": None,
-                    "source_label_override": "Fixed Capital Context",
-                }
-                for fixed_capital_member in fixed_capital_members
-            )
-        return rendered_rows, warnings
-
-    raise ValueError(
-        f"{scope_label} has no active complete {resolved_dimension} target set for the requested scope members."
-    )
+    resolved = resolution if resolution is not None else _target_resolution(state)
+    scope = next((row for row in resolved["scope_targets"] if row["scope_node_id"] == scope_node_id), None)
+    label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
+    if scope is None:
+        raise ValueError(f"{label} has no active allocation scope.")
+    stage = scope["taa"]
+    if require_complete and stage["status"] != "complete":
+        raise ValueError(" ".join(stage["errors"]) or f"{label} has no active complete allocation target vector.")
+    line_map = {(row["member_type"], row["member_id"]): row for row in stage["rows"]}
+    static_map = {(row["member_type"], row["member_id"]): row for row in resolved["member_targets"]
+                  if row["scope_node_id"] == scope_node_id}
+    member_keys = {(member.member_type, member.member_id) for member in scope_members}
+    if require_complete:
+        unavailable = [row["label"] for key, row in line_map.items()
+                       if key not in member_keys and float(row.get("target_value") or 0.0) > 0.0]
+        if unavailable:
+            raise ValueError(f"{label} has positive targets without research members: {', '.join(unavailable)}.")
+    rows = []
+    for member in scope_members:
+        key = (member.member_type, member.member_id)
+        line = line_map.get(key, {})
+        basis = "weight" if _member_is_fixed_capital(member) else str(scope["allocation_basis"])
+        value = _safe_float(line.get("target_value"))
+        rows.append({
+            "member_type": member.member_type, "member_id": member.member_id, "label": member.label,
+            "taxonomy_node_id": member.taxonomy_node_id, "allocation_basis": member.allocation_basis,
+            "selected_dimension": basis, "selected_value": None if _member_is_fixed_capital(member) else value,
+            "target_value": value, "target_basis": basis,
+            "target_weight": value if basis == "weight" else None,
+            "target_risk_share": value if basis == "risk_budget" else None,
+            "global_target_risk_share": static_map.get(key, {}).get("tactical_global_risk_target"),
+            "source_target_set_id": stage["source_target_set_id"],
+            "source_target_set_type": stage["source_stage"] if stage["source_stage"] in {"saa", "taa"} else None,
+            "source_label_override": "Single Member" if stage["source_stage"] == "single_member" else None,
+        })
+        if member.member_type == TARGET_MEMBER_DERIVATIVE:
+            rows[-1].update(source_target_set_id=None, source_target_set_type=None,
+                            source_label_override="Fixed Capital Context")
+    return rows, []
 
 
 def _scope_members(
@@ -2642,7 +1434,7 @@ def _scope_members(
                 member_id=node_id,
                 label=str(state.node_by_id[node_id]["node_name"]),
                 taxonomy_node_id=node_id,
-                default_target_dimension=str(state.node_by_id[node_id].get("default_target_dimension") or TARGET_DIMENSION_WEIGHT),
+                allocation_basis=str(state.node_by_id[node_id].get("allocation_basis") or TARGET_DIMENSION_WEIGHT),
             )
             for node_id in child_node_ids
         ]
@@ -2653,7 +1445,7 @@ def _scope_members(
                     member_id=SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
                     label=SYSTEM_DERIVATIVE_TARGET_LABEL,
                     taxonomy_node_id=None,
-                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                    allocation_basis=TARGET_DIMENSION_WEIGHT,
                 )
             )
             members.append(
@@ -2662,7 +1454,7 @@ def _scope_members(
                     member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
                     label=SYSTEM_CASH_TARGET_LABEL,
                     taxonomy_node_id=None,
-                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                    allocation_basis=TARGET_DIMENSION_WEIGHT,
                 )
             )
         return members, "child_sleeves"
@@ -2675,14 +1467,14 @@ def _scope_members(
                     member_id=SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
                     label=SYSTEM_DERIVATIVE_TARGET_LABEL,
                     taxonomy_node_id=None,
-                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                    allocation_basis=TARGET_DIMENSION_WEIGHT,
                 ),
                 ScopeMemberRecord(
                     member_type=TARGET_MEMBER_CASH,
                     member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
                     label=SYSTEM_CASH_TARGET_LABEL,
                     taxonomy_node_id=None,
-                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                    allocation_basis=TARGET_DIMENSION_WEIGHT,
                 )
             ],
             "child_sleeves",
@@ -2706,8 +1498,8 @@ def _scope_members(
                 member_id=target_entity_id,
                 label=label,
                 taxonomy_node_id=scope_node_id,
-                default_target_dimension=str(
-                    state.node_by_id.get(scope_node_id, {}).get("default_target_dimension") or TARGET_DIMENSION_WEIGHT
+                allocation_basis=str(
+                    state.node_by_id.get(scope_node_id, {}).get("allocation_basis") or TARGET_DIMENSION_WEIGHT
                 ),
             )
         )
@@ -2748,10 +1540,10 @@ def _scope_instrument_count(
     return len(seen_instrument_ids)
 
 
-def _scope_default_target_dimension(state: TaxonomyResearchState, scope_node_id: str | None) -> str:
+def _scope_allocation_basis(state: TaxonomyResearchState, scope_node_id: str | None) -> str:
     if scope_node_id:
-        return str(state.node_by_id.get(scope_node_id, {}).get("default_target_dimension") or TARGET_DIMENSION_WEIGHT)
-    return str(state.root_default_target_dimension or TARGET_DIMENSION_WEIGHT)
+        return str(state.node_by_id.get(scope_node_id, {}).get("allocation_basis") or TARGET_DIMENSION_WEIGHT)
+    return str(state.root_allocation_basis or TARGET_DIMENSION_WEIGHT)
 
 
 def _solver_return_window(
@@ -2781,21 +1573,6 @@ def _solver_return_window(
     return frame.astype("float64")
 
 
-def _series_to_nav(return_series: pd.Series, *, as_of_date: date) -> pd.Series:
-    if return_series.empty:
-        return pd.Series({as_of_date: 1.0}, dtype="float64")
-    cleaned = return_series.astype("float64").replace([np.inf, -np.inf], np.nan).sort_index()
-    gross_returns = 1.0 + cleaned
-    if len(gross_returns) and pd.isna(gross_returns.iloc[0]):
-        gross_returns.iloc[0] = 1.0
-    # Keep the missing NAV at the broken period, but resume the cumulative
-    # level once a later return is available. The parent-level pct_change then
-    # also leaves the first observation after the gap missing and resumes only
-    # after two consecutive valid NAV levels. This preserves period identity
-    # without allowing one finite child gap to poison every later parent period.
-    return gross_returns.cumprod(skipna=True)
-
-
 def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Series) -> pd.Series:
     if return_window.empty or weights.empty:
         return pd.Series(dtype="float64")
@@ -2819,65 +1596,6 @@ def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Se
     return result.astype("float64")
 
 
-def _estimate_scope_risk_share_map(
-    *,
-    members: list[ScopeMemberRecord],
-    nav_series_by_member: dict[tuple[str, str], pd.Series],
-    risk_keys: list[str],
-    weights_by_key: pd.Series,
-    as_of_date: date,
-    lookback_days: int,
-    calculation_frequency: CalculationFrequency,
-    missing_return_policy: str,
-    contribution_mode: str,
-    risk_model_config: dict[str, object] | None = None,
-) -> tuple[dict[str, float], list[str]]:
-    if not risk_keys:
-        return {}, []
-    risky_weights = weights_by_key.reindex(risk_keys, fill_value=0.0).astype("float64")
-    active_risk_keys = [key for key in risk_keys if abs(float(risky_weights.get(key, 0.0))) > 1e-12]
-    if not active_risk_keys:
-        return {key: 0.0 for key in risk_keys}, []
-    if len(active_risk_keys) == 1:
-        return {
-            key: 1.0 if key == active_risk_keys[0] else 0.0
-            for key in risk_keys
-        }, []
-    member_by_key = {f"{member.member_type}::{member.member_id}": member for member in members}
-    solver_members = [member_by_key[key] for key in active_risk_keys if key in member_by_key]
-    if len(solver_members) != len(active_risk_keys):
-        return {}, ["Current risk-share estimate skipped because scope member keys could not be resolved."]
-    try:
-        return_window = _solver_return_window(
-            members=solver_members,
-            nav_series_by_member=nav_series_by_member,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-        )
-        if return_window.empty:
-            return {}, ["Current risk-share estimate skipped because aligned return history is empty."]
-        covariance = _estimate_covariance(
-            return_window.reindex(columns=active_risk_keys),
-            model_id=_risk_model_covariance_model_id(risk_model_config),
-            lookback_days=lookback_days,
-            parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
-            missing_return_policy=missing_return_policy,
-            calculation_frequency=calculation_frequency,
-            as_of_date=as_of_date,
-        )
-        shares = _risk_contribution_shares(
-            covariance.reindex(index=active_risk_keys, columns=active_risk_keys).to_numpy(dtype="float64"),
-            risky_weights.reindex(active_risk_keys).to_numpy(dtype="float64"),
-            contribution_mode=contribution_mode,
-        )
-    except ValueError as error:
-        return {}, [f"Current risk-share estimate skipped: {error}"]
-    rendered = {key: 0.0 for key in risk_keys}
-    rendered.update({key: float(shares[index]) for index, key in enumerate(active_risk_keys)})
-    return rendered, []
-
-
 def _root_top_sleeve_bounds_by_key(
     state: TaxonomyResearchState,
     *,
@@ -2898,105 +1616,20 @@ def _root_top_sleeve_bounds_by_key(
     return bounds_by_key
 
 
-def _validate_fixed_top_sleeve_bounds(
-    *,
-    scope_label: str,
-    fixed_weight_targets: pd.Series,
-    bounds_by_key: dict[str, dict[str, float | None]],
-    member_by_key: dict[str, ScopeMemberRecord],
-) -> None:
-    for key, bounds in bounds_by_key.items():
-        if key not in fixed_weight_targets.index:
-            continue
-        weight = float(fixed_weight_targets.get(key, 0.0))
-        member_label = member_by_key[key].label
-        min_weight = _safe_float(bounds.get("min_weight"))
-        max_weight = _safe_float(bounds.get("max_weight"))
-        if min_weight is not None and weight < min_weight - 1e-8:
-            raise ValueError(
-                f"{scope_label} frozen sleeve {member_label} weight {weight:.2%} is below its minimum {min_weight:.2%}."
-            )
-        if max_weight is not None and weight > max_weight + 1e-8:
-            raise ValueError(
-                f"{scope_label} frozen sleeve {member_label} weight {weight:.2%} exceeds its maximum {max_weight:.2%}."
-            )
-
-
-def _validate_final_top_sleeve_bounds(
-    *,
-    scope_label: str,
-    implementation_weights: pd.Series,
-    bounds_by_key: dict[str, dict[str, float | None]],
-    member_by_key: dict[str, ScopeMemberRecord],
-) -> None:
-    for key, bounds in bounds_by_key.items():
-        weight = float(implementation_weights.get(key, 0.0))
-        member_label = member_by_key[key].label
-        min_weight = _safe_float(bounds.get("min_weight"))
-        max_weight = _safe_float(bounds.get("max_weight"))
-        if min_weight is not None and weight < min_weight - 1e-8:
-            raise ValueError(
-                f"{scope_label} top sleeve {member_label} final weight {weight:.2%} is below its minimum {min_weight:.2%}."
-            )
-        if max_weight is not None and weight > max_weight + 1e-8:
-            raise ValueError(
-                f"{scope_label} top sleeve {member_label} final weight {weight:.2%} exceeds its maximum {max_weight:.2%}."
-            )
-
-
-def _resolve_active_top_sleeve_bound_vectors(
-    *,
-    scope_label: str,
-    active_keys: list[str],
-    active_budget: float,
-    bounds_by_key: dict[str, dict[str, float | None]],
-    member_by_key: dict[str, ScopeMemberRecord],
-    allow_upper_shortfall: bool = True,
-) -> tuple[float, np.ndarray | None, np.ndarray | None]:
-    if not active_keys or not bounds_by_key:
-        return active_budget, None, None
-    lower_final = []
-    upper_final = []
-    for key in active_keys:
-        bounds = bounds_by_key.get(key) or {}
-        min_weight = _safe_float(bounds.get("min_weight")) or 0.0
-        max_weight = _safe_float(bounds.get("max_weight"))
-        lower_final.append(float(min_weight))
-        upper_final.append(float(active_budget if max_weight is None else max_weight))
-    lower = np.asarray(lower_final, dtype="float64")
-    upper = np.asarray(upper_final, dtype="float64")
-    if np.any(upper < lower - 1e-12):
-        offenders = [
-            member_by_key[key].label
-            for index, key in enumerate(active_keys)
-            if upper[index] < lower[index] - 1e-12
-        ]
-        raise ValueError(f"{scope_label} top sleeve bounds are infeasible for {', '.join(offenders)}.")
-    lower_total = float(lower.sum())
-    upper_total = float(upper.sum())
-    if active_budget < lower_total - 1e-12:
-        raise ValueError(
-            f"{scope_label} top sleeve minimum weights require {lower_total:.2%}, "
-            f"but only {active_budget:.2%} active risky budget is available."
-        )
-    if active_budget > upper_total + 1e-12 and not allow_upper_shortfall:
-        raise ValueError(
-            f"{scope_label} top sleeve maximum weights allow only {upper_total:.2%}, "
-            f"below the requested {active_budget:.2%} active risky budget."
-        )
-    constrained_active_budget = min(float(active_budget), upper_total)
-    if constrained_active_budget < lower_total - 1e-12:
-        raise ValueError(
-            f"{scope_label} top sleeve bounds leave only {constrained_active_budget:.2%} active risky budget, "
-            f"below the required minimum {lower_total:.2%}."
-        )
-    if constrained_active_budget <= 1e-12:
-        raise ValueError(f"{scope_label} top sleeve bounds leave no active risky allocation.")
-    lower_local = np.clip(lower / constrained_active_budget, 0.0, 1.0)
-    upper_local = np.clip(upper / constrained_active_budget, 0.0, 1.0)
-    if float(lower_local.sum()) > 1.0 + 1e-10 or float(upper_local.sum()) < 1.0 - 1e-10:
-        raise ValueError(f"{scope_label} top sleeve bounds are infeasible for the active risky allocation.")
-    return constrained_active_budget, lower_local, upper_local
+@dataclass
+class CompiledTargetScope:
+    node_id: str | None
+    label: str
+    path: str
+    depth: int
+    dimension: str
+    member_source: str
+    members: list[ScopeMemberRecord]
+    target_by_key: dict[str, dict[str, object]]
+    leaf_indices_by_key: dict[str, list[int]]
+    actual_by_key: dict[str, dict[str, object]]
+    no_trade_keys: set[str]
+    excluded: bool
 
 
 def _solve_current_scope(
@@ -3006,7 +1639,6 @@ def _solve_current_scope(
     as_of_date: date,
     lookback_days: int,
     calculation_frequency: CalculationFrequency,
-    target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
@@ -3019,881 +1651,540 @@ def _solve_current_scope(
     fixed_derivative_weight_override: float | None = None,
     inherited_no_trade: bool = False,
 ) -> ScopeTargetSolveResult:
-    scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
-    scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
-    scope_depth = int(state.node_depth_by_id.get(scope_node_id, 0))
-    default_target_dimension = _scope_default_target_dimension(state, scope_node_id)
+    """Compile the chosen tree, then solve all leaf weights against one covariance.
+
+    A scope is only an aggregation mask: W_n=sum(w_i), Q_n=sum(w_i*(Sigma w)_i).
+    Capital targets compare W_child/W_parent; risk targets compare Q_child/Q_parent.
+    No child is optimized in isolation, and reporting never estimates another Sigma.
+    """
     start_day = research_window_start_date(as_of_date, lookback_days)
-
-    members, member_source = _scope_members(state, scope_node_id=scope_node_id)
+    attribution_scope = "portfolio" if scope_node_id is None else "selected_research_scope"
+    contribution_mode = _risk_model_contribution_mode(risk_model_config)
+    if contribution_mode not in {"signed", "abs"}:
+        raise ValueError(f"Unsupported risk contribution mode: {contribution_mode}.")
     warnings: list[str] = []
-    resolved_rows, resolution_warnings = _resolve_dimension_target_rows(
-        state,
-        scope_node_id=scope_node_id,
-        scope_members=members,
-        as_of_date=as_of_date,
-        selected_dimension=target_dimension,
-    )
-    warnings.extend(resolution_warnings)
+    plans: list[CompiledTargetScope] = []
+    leaves: list[dict[str, object]] = []
+    leaf_members: list[ScopeMemberRecord] = []
+    leaf_actual_weights: list[float] = []
+    leaf_frozen: list[bool] = []
+    leaf_excluded: list[bool] = []
+    seen_instruments: set[str] = set()
+    target_resolution = _target_resolution(state, scope_node_id)
 
-    nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
-    current_nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
-    member_by_key = {
-        f"{member.member_type}::{member.member_id}": member
-        for member in members
-    }
-    member_keys = list(member_by_key)
-    frozen_keys = [
-        key
-        for key in member_keys
-        if _member_is_frozen(
-            state,
-            scope_node_id=scope_node_id,
-            member=member_by_key[key],
-            inherited_no_trade=inherited_no_trade,
+    def compile_scope(
+        node_id: str | None, actual_parent_weight: float,
+        no_trade: bool, excluded: bool,
+    ) -> CompiledTargetScope:
+        members, member_source = _scope_members(state, scope_node_id=node_id)
+        label = str(state.node_by_id.get(node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
+        path = state.node_path_by_id.get(node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
+        dimension = _scope_allocation_basis(state, node_id)
+        resolved_rows, target_warnings = _resolve_scope_target_rows(
+            state, scope_node_id=node_id, scope_members=members,
+            resolution=target_resolution, require_complete=not excluded,
         )
-    ]
-    target_dimension_used = str(resolved_rows[0]["selected_dimension"]) if resolved_rows else TARGET_DIMENSION_WEIGHT
-    top_sleeve_bounds_by_key = _root_top_sleeve_bounds_by_key(
-        state,
-        scope_node_id=scope_node_id,
-        member_by_key=member_by_key,
-        member_keys=member_keys,
-    )
-    child_results_by_key: dict[str, ScopeTargetSolveResult] = {}
-    child_scope_solve_events: list[dict[str, object]] = []
-    zero_target_keys = {
-        f"{row['member_type']}::{row['member_id']}"
-        for row in resolved_rows
-        if str(row.get("selected_dimension") or "") in {TARGET_DIMENSION_WEIGHT, TARGET_DIMENSION_RISK_BUDGET}
-        and abs(float(_safe_float(row.get("selected_value")) or 0.0)) <= 1e-12
-        and not _member_is_fixed_capital(
-            member_by_key[f"{row['member_type']}::{row['member_id']}"],
-        )
-        and not _member_is_frozen(
-            state,
-            scope_node_id=scope_node_id,
-            member=member_by_key[f"{row['member_type']}::{row['member_id']}"],
-            inherited_no_trade=inherited_no_trade,
-        )
-        and float(
-            _safe_float(
-                (top_sleeve_bounds_by_key.get(f"{row['member_type']}::{row['member_id']}") or {}).get(
-                    "min_weight"
-                )
-            )
-            or 0.0
-        )
-        <= 1e-12
-    }
-    if zero_target_keys:
-        excluded_labels = ", ".join(member_by_key[key].label for key in sorted(zero_target_keys))
-        warnings.append(
-            f"{scope_label} excludes 0% {target_dimension_used.replace('_', ' ')} members from target history, covariance, and return coverage: {excluded_labels}."
-        )
-
-    for member in members:
-        member_key = f"{member.member_type}::{member.member_id}"
-        if member.member_type == TARGET_MEMBER_NODE:
-            if member_key in zero_target_keys:
-                zero_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
-                nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
-                current_nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
-                continue
-            child_path = state.node_path_by_id.get(member.member_id, member.label)
-            try:
-                child_result = _solve_current_scope(
-                    state,
-                    scope_node_id=member.member_id,
-                    as_of_date=as_of_date,
-                    lookback_days=lookback_days,
-                    calculation_frequency=calculation_frequency,
-                    target_dimension=TARGET_DIMENSION_SCOPE_DEFAULT,
-                    capital_mode=capital_mode,
-                    gross_exposure=gross_exposure,
-                    target_volatility=target_volatility,
-                    max_gross_exposure=max_gross_exposure,
-                    missing_return_policy=missing_return_policy,
-                    apply_capital_overlay=False,
-                    risk_model_config=risk_model_config,
-                    include_actuals=include_actuals,
-                    resolve_frozen_actuals=resolve_frozen_actuals,
-                    fixed_derivative_weight_override=fixed_derivative_weight_override,
-                    inherited_no_trade=_member_has_no_trade_constraint(
-                        state,
-                        scope_node_id=scope_node_id,
-                        member=member,
-                        inherited_no_trade=inherited_no_trade,
-                    ),
-                )
-            except ValueError as error:
-                raise ValueError(f"{child_path} solve failed: {error}") from error
-            child_results_by_key[member_key] = child_result
-            child_scope_solve_events.extend(child_result.scope_solve_events)
-            nav_series_by_member[(member.member_type, member.member_id)] = _series_to_nav(
-                child_result.return_series,
-                as_of_date=as_of_date,
-            )
-            current_nav_series_by_member[(member.member_type, member.member_id)] = _series_to_nav(
-                child_result.current_return_series,
-                as_of_date=as_of_date,
-            )
-            warnings.extend(child_result.warnings)
-        elif member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
-            fixed_capital_nav = _build_cash_nav_series(
-                start_date=start_day,
-                end_date=as_of_date,
-            )
-            nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
-            current_nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
-        else:
-            analytics_scope = state.instrument_analytics_scopes.get(member.member_id)
-            if analytics_scope is not None and not (
-                analytics_scope.get("risk_eligible")
-                and analytics_scope.get("risk_budget_eligible")
-            ) and member_key not in zero_target_keys:
-                raise ValueError(
-                    f"{member.label} is not eligible for Research risk allocation under its captured analytics policy: "
-                    f"{analytics_scope.get('exclusion_reason') or 'risk/risk-budget eligibility is disabled'}."
-                )
-            try:
-                instrument_nav, instrument_warnings = _build_instrument_nav_series(
-                    state,
-                    instrument_id=member.member_id,
-                    start_date=start_day,
-                    end_date=as_of_date,
-                )
-            except ValueError as error:
-                if member_key not in zero_target_keys:
-                    raise
-                instrument_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
-                instrument_warnings = [
-                    f"{member.label} has a 0% {target_dimension_used.replace('_', ' ')} target and was excluded from target history/covariance/return coverage: {error}"
-                ]
-            nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
-            current_nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
-            warnings.extend(instrument_warnings)
-
-    if include_actuals or (resolve_frozen_actuals and frozen_keys):
-        current_actual_rows, current_actual_warnings = _current_scope_actuals(
-            state,
-            scope_node_id=scope_node_id,
-            as_of_date=as_of_date,
-        )
-        warnings.extend(current_actual_warnings)
-        current_actual_weight_by_key = {
-            f"{item['member_type']}::{item['member_id']}": float(_safe_float(item.get("current_weight")) or 0.0)
-            for item in current_actual_rows
-            if item.get("member_type") in {
-                TARGET_MEMBER_NODE,
-                TARGET_MEMBER_INSTRUMENT,
-                TARGET_MEMBER_CASH,
-                TARGET_MEMBER_DERIVATIVE,
-            }
-        }
-        current_actual_value_by_key = {
-            f"{item['member_type']}::{item['member_id']}": _safe_float(item.get("current_value_base"))
-            for item in current_actual_rows
-            if item.get("member_type") in {
-                TARGET_MEMBER_NODE,
-                TARGET_MEMBER_INSTRUMENT,
-                TARGET_MEMBER_CASH,
-                TARGET_MEMBER_DERIVATIVE,
-            }
-        }
-    else:
-        current_actual_rows = []
-        current_actual_weight_by_key = {}
-        current_actual_value_by_key = {}
-
-    target_values = pd.Series(
-        {
-            f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("selected_value")) or 0.0)
-            for row in resolved_rows
-        },
-        dtype="float64",
-    ).reindex(member_keys, fill_value=0.0)
-    fixed_capital_keys = [
-        key for key in member_keys if _member_is_fixed_capital(member_by_key[key])
-    ]
-    risk_bearing_keys = [key for key in member_keys if key not in fixed_capital_keys]
-    if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not risk_bearing_keys:
-        raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
-    missing_frozen_actual_keys = [
-        key for key in frozen_keys if key not in current_actual_weight_by_key
-    ]
-    if missing_frozen_actual_keys:
-        missing_labels = ", ".join(
-            member_by_key[key].label for key in missing_frozen_actual_keys
-        )
-        raise ValueError(
-            f"{scope_label} cannot apply a no-trade constraint without as-of holdings: "
-            f"{missing_labels}."
-        )
-    fixed_weight_targets = pd.Series(
-        {
-            key: current_actual_weight_by_key[key]
-            for key in frozen_keys
-        },
-        dtype="float64",
-    ).clip(lower=0.0)
-    risk_keys = [
-        key
-        for key in member_keys
-        if key not in fixed_capital_keys and key not in frozen_keys and key not in zero_target_keys
-    ]
-    solver_risk_keys = [
-        key
-        for key in member_keys
-        if key not in fixed_capital_keys and key not in zero_target_keys
-    ]
-    preferred_fixed_capital_weights = pd.Series(
-        {
-            f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
-            for row in resolved_rows
-            if f"{row['member_type']}::{row['member_id']}" in fixed_capital_keys
-        },
-        dtype="float64",
-    ).reindex(fixed_capital_keys, fill_value=0.0)
-    derivative_key = (
-        f"{TARGET_MEMBER_DERIVATIVE}::{SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
-    )
-    if derivative_key in fixed_capital_keys:
-        configured_derivative_weight = float(
-            preferred_fixed_capital_weights.get(derivative_key, 0.0)
-        )
-        if fixed_derivative_weight_override is not None:
-            frozen_derivative_weight = float(fixed_derivative_weight_override)
-        elif include_actuals:
-            frozen_derivative_weight = float(
-                current_actual_weight_by_key.get(derivative_key, 0.0)
-            )
-        else:
-            frozen_derivative_weight = 0.0
-        if not np.isfinite(frozen_derivative_weight):
-            raise ValueError("Derivative no-trade weight must be finite.")
-        preferred_fixed_capital_weights.loc[derivative_key] = frozen_derivative_weight
-        if abs(configured_derivative_weight - frozen_derivative_weight) > 1e-10:
-            warnings.append(
-                f"{scope_label} treats the configured Derivatives weight as informational only: "
-                "FCN/options are no-trade, so actual signed carrying capital was preserved."
-            )
-    fixed_total = max(float(fixed_weight_targets.sum()), 0.0)
-    overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
-        CAPITAL_MODE_FIXED_GROSS,
-        CAPITAL_MODE_TARGET_VOLATILITY,
-        CAPITAL_MODE_VOLATILITY_CAP,
-    }
-    fixed_gross_overlay = overlay_applies_to_risk_sleeves and capital_mode == CAPITAL_MODE_FIXED_GROSS
-    target_risk_bearing_total = float(gross_exposure or 1.0) if fixed_gross_overlay else None
-
-    if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET:
-        base_fixed_capital_total = (
-            0.0
-            if fixed_gross_overlay
-            else min(max(float(preferred_fixed_capital_weights.sum()), 0.0), 1.0)
-        )
-        available_risk_bearing_total = (
-            float(target_risk_bearing_total)
-            if target_risk_bearing_total is not None
-            else max(1.0 - base_fixed_capital_total, 0.0)
-        )
-        if fixed_total > available_risk_bearing_total + 1e-12:
-            raise ValueError(
-                f"{scope_label} frozen sleeve weights require {fixed_total:.2%}, "
-                f"above the available {available_risk_bearing_total:.2%} risk-bearing budget."
-            )
-        fixed_total = min(fixed_total, available_risk_bearing_total)
-        _validate_fixed_top_sleeve_bounds(
-            scope_label=scope_label,
-            fixed_weight_targets=fixed_weight_targets,
-            bounds_by_key=top_sleeve_bounds_by_key,
-            member_by_key=member_by_key,
-        )
-        requested_active_budget = max(available_risk_bearing_total - fixed_total, 0.0)
-        if risk_keys:
-            active_budget, active_lower_bounds, active_upper_bounds = _resolve_active_top_sleeve_bound_vectors(
-                scope_label=scope_label,
-                active_keys=risk_keys,
-                active_budget=requested_active_budget,
-                bounds_by_key=top_sleeve_bounds_by_key,
-                member_by_key=member_by_key,
-                allow_upper_shortfall=not fixed_gross_overlay,
-            )
-        else:
-            if fixed_gross_overlay and requested_active_budget > 1e-12:
-                raise ValueError(
-                    f"{scope_label} fixed gross requires {available_risk_bearing_total:.2%} risky exposure, "
-                    f"but frozen sleeves supply only {fixed_total:.2%} and no sleeve is adjustable."
-                )
-            active_budget = 0.0
-            active_lower_bounds = None
-            active_upper_bounds = None
-
-        solver_risk_total = fixed_total + active_budget
-        if solver_risk_total <= 1e-12 or not solver_risk_keys:
-            raise ValueError(f"{scope_label} risk budget is unavailable: no positive risk-bearing allocation.")
-
-        lower_bounds = np.zeros(len(solver_risk_keys), dtype="float64")
-        upper_bounds = np.ones(len(solver_risk_keys), dtype="float64")
-        for index, key in enumerate(solver_risk_keys):
-            if key in frozen_keys:
-                fixed_local_weight = float(fixed_weight_targets.get(key, 0.0)) / solver_risk_total
-                lower_bounds[index] = fixed_local_weight
-                upper_bounds[index] = fixed_local_weight
-                continue
-            if active_lower_bounds is not None and active_upper_bounds is not None:
-                active_index = risk_keys.index(key)
-                lower_bounds[index] = float(active_lower_bounds[active_index]) * active_budget / solver_risk_total
-                upper_bounds[index] = float(active_upper_bounds[active_index]) * active_budget / solver_risk_total
-
-        if len(solver_risk_keys) > 1:
-            solver_members = [member_by_key[key] for key in solver_risk_keys]
-            return_window = _solver_return_window(
-                members=solver_members,
-                nav_series_by_member=nav_series_by_member,
-                as_of_date=as_of_date,
-                lookback_days=lookback_days,
-                calculation_frequency=calculation_frequency,
-            )
-        else:
-            return_window = pd.DataFrame()
-        risk_solve = _solve_risk_budget_weights(
-            target_shares=target_values.reindex(solver_risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
-            return_window=return_window,
-            reference_weights=None,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-            missing_return_policy=missing_return_policy,
-            risk_model_config=risk_model_config,
-            lower_bounds=lower_bounds,
-            upper_bounds=upper_bounds,
-        )
-        if not risk_solve.execution_ready:
-            warnings.append(
-                f"{scope_label} risk-budget target was not achieved under the configured constraints; "
-                "the constrained result is for research comparison only and is not execution-ready."
-            )
-        elif risk_solve.target_status == "constrained_optimum":
-            warnings.append(
-                f"{scope_label} uses the verified optimum under hard no-trade/weight constraints; "
-                f"the requested risk budget remains off by up to {float(risk_solve.max_abs_share_gap or 0.0):.2%}."
-            )
-        risk_gap = risk_solve.max_abs_share_gap
-        solver_kind = risk_solve.solver_kind
-        implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
-        implementation_weights.loc[solver_risk_keys] = risk_solve.weights * solver_risk_total
-        implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
-            member_index=fixed_capital_keys,
-            preferred_weights=preferred_fixed_capital_weights,
-            total_weight=1.0 - float(implementation_weights.loc[solver_risk_keys].sum()),
-        )
-    else:
-        risk_solve = LocalRiskBudgetSolve(
-            weights=np.asarray([], dtype="float64"),
-            max_abs_share_gap=None,
-            solver_kind="weight-fixed-members" if frozen_keys else "weight",
-            solver_detail=None,
-            covariance_model=None,
-            covariance_observations=0,
-            risk_contribution_mode=None,
-        )
-        implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
-        implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-        active_weight_keys = [
-            key
-            for key in member_keys
-            if key not in fixed_capital_keys and key not in frozen_keys and key not in zero_target_keys
-        ]
-        active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
-        active_weight_total = float(active_weight_targets.sum())
-        available_risk_bearing_total = (
-            float(target_risk_bearing_total)
-            if target_risk_bearing_total is not None
-            else max(1.0 - float(preferred_fixed_capital_weights.sum()), 0.0)
-        )
-        if float(implementation_weights.loc[frozen_keys].sum()) > available_risk_bearing_total + 1e-12:
-            raise ValueError(
-                f"{scope_label} frozen sleeve weights require {float(implementation_weights.loc[frozen_keys].sum()):.2%}, "
-                f"above the available {available_risk_bearing_total:.2%} risk-bearing budget."
-            )
-        requested_active_budget = max(
-            available_risk_bearing_total - float(implementation_weights.loc[frozen_keys].sum()),
-            0.0,
-        )
-        _validate_fixed_top_sleeve_bounds(
-            scope_label=scope_label,
-            fixed_weight_targets=fixed_weight_targets,
-            bounds_by_key=top_sleeve_bounds_by_key,
-            member_by_key=member_by_key,
-        )
-        if fixed_gross_overlay and not active_weight_keys and requested_active_budget > 1e-12:
-            raise ValueError(
-                f"{scope_label} fixed gross requires {available_risk_bearing_total:.2%} risky exposure, "
-                f"but frozen sleeves supply only {float(implementation_weights.loc[frozen_keys].sum()):.2%} "
-                "and no sleeve is adjustable."
-            )
-        active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
-            scope_label=scope_label,
-            active_keys=active_weight_keys,
-            active_budget=requested_active_budget,
-            bounds_by_key=top_sleeve_bounds_by_key,
-            member_by_key=member_by_key,
-            allow_upper_shortfall=not fixed_gross_overlay,
-        )
-        if active_weight_keys:
-            if lower_bounds is not None and upper_bounds is not None:
-                preferred = (
-                    active_weight_targets.to_numpy(dtype="float64")
-                    if active_weight_total > 1e-12
-                    else np.ones(len(active_weight_keys), dtype="float64")
-                )
-                implementation_weights.loc[active_weight_keys] = _allocate_bounded_mass(
-                    total_mass=active_budget,
-                    lower=lower_bounds * active_budget,
-                    upper=upper_bounds * active_budget,
-                    preferred=preferred,
-                )
-            elif active_weight_total > 1e-12:
-                implementation_weights.loc[active_weight_keys] = active_weight_targets / active_weight_total * active_budget
-            else:
-                implementation_weights.loc[active_weight_keys] = active_budget / float(len(active_weight_keys))
-        implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
-            member_index=fixed_capital_keys,
-            preferred_weights=preferred_fixed_capital_weights,
-            total_weight=1.0
-            - float(implementation_weights.loc[active_weight_keys].sum())
-            - float(implementation_weights.loc[frozen_keys].sum()),
-        )
-        risk_gap = None
-        solver_kind = "weight-fixed-members" if frozen_keys else "weight"
-
-    if (
-        overlay_applies_to_risk_sleeves
-        and capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
-        and risk_bearing_keys
-        and not frozen_keys
-    ):
-        risk_bearing_total = float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
-        if risk_bearing_total <= 1e-12:
-            raise ValueError(
-                f"{scope_label} capital overlay is unavailable: no positive risky target weight."
-            )
-        implementation_weights.loc[risk_bearing_keys] = (
-            implementation_weights.reindex(risk_bearing_keys, fill_value=0.0) / risk_bearing_total
-        )
-        implementation_weights.loc[fixed_capital_keys] = 0.0
-
-    estimated_risk_sleeve_volatility = None
-    effective_gross_exposure = None
-    risky_allocation_scaling_factor = None
-    if overlay_applies_to_risk_sleeves and risk_bearing_keys:
-        risky_weights = implementation_weights.reindex(risk_bearing_keys, fill_value=0.0)
-        if capital_mode == CAPITAL_MODE_FIXED_GROSS:
-            effective_gross_exposure = float(risky_weights.sum())
-            risky_allocation_scaling_factor = 1.0
-        elif capital_mode in {CAPITAL_MODE_TARGET_VOLATILITY, CAPITAL_MODE_VOLATILITY_CAP}:
-            active_risky_weights = risky_weights.loc[risky_weights.abs() > 1e-12]
-            if active_risky_weights.empty:
-                raise ValueError(
-                    f"{scope_label} capital overlay is unavailable: no positive risky target weight."
-                )
-            solver_members = [member_by_key[key] for key in active_risky_weights.index]
-            return_window = _solver_return_window(
-                members=solver_members,
-                nav_series_by_member=nav_series_by_member,
-                as_of_date=as_of_date,
-                lookback_days=lookback_days,
-                calculation_frequency=calculation_frequency,
-            )
-            estimated_risk_sleeve_volatility = _annualized_portfolio_volatility(
-                return_window,
-                active_risky_weights,
-                as_of_date=as_of_date,
-                lookback_days=lookback_days,
-                calculation_frequency=calculation_frequency,
-                missing_return_policy=missing_return_policy,
-                risk_model_config=risk_model_config,
-            )
-            try:
-                if frozen_keys:
-                    covariance = _estimate_covariance(
-                        return_window,
-                        model_id=_risk_model_covariance_model_id(risk_model_config),
-                        lookback_days=lookback_days,
-                        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
-                        missing_return_policy=missing_return_policy,
-                        calculation_frequency=calculation_frequency,
-                        as_of_date=as_of_date,
-                    )
-                    frozen = active_risky_weights.reindex(covariance.index, fill_value=0.0)
-                    frozen.loc[~frozen.index.isin(frozen_keys)] = 0.0
-                    adjustable = active_risky_weights.reindex(covariance.index, fill_value=0.0) - frozen
-                    matrix = covariance.to_numpy(dtype="float64")
-                    fixed_vector = frozen.to_numpy(dtype="float64")
-                    adjustable_vector = adjustable.to_numpy(dtype="float64")
-                    gross_limit = (
-                        float(risky_weights.sum())
-                        if capital_mode == CAPITAL_MODE_VOLATILITY_CAP
-                        else float(max_gross_exposure if max_gross_exposure is not None else 1.0)
-                    )
-                    adjustable_total = float(adjustable.sum())
-                    if float(frozen.sum()) > gross_limit + 1e-12:
-                        raise ValueError("Frozen sleeve weights exceed the permitted gross exposure.")
-                    scale = max(gross_limit - float(frozen.sum()), 0.0) / adjustable_total if adjustable_total > 1e-12 else 0.0
-                    a = float(adjustable_vector @ matrix @ adjustable_vector)
-                    b = float(2.0 * fixed_vector @ matrix @ adjustable_vector)
-                    c = float(fixed_vector @ matrix @ fixed_vector) - float(target_volatility or 0.0) ** 2
-                    if a * scale * scale + b * scale + c > 1e-12:
-                        discriminant = b * b - 4.0 * a * c
-                        if a <= 1e-12 or discriminant < 0.0:
-                            raise ValueError("Frozen sleeve weights make the volatility constraint infeasible.")
-                        scale = min(scale, (-b + sqrt(discriminant)) / (2.0 * a))
-                    if scale < 0.0 or a * scale * scale + b * scale + c > 1e-12:
-                        raise ValueError("Frozen sleeve weights make the volatility constraint infeasible.")
-                    achieved_variance = max(
-                        a * scale * scale
-                        + b * scale
-                        + c
-                        + float(target_volatility or 0.0) ** 2,
-                        0.0,
-                    )
-                    achieved_volatility = sqrt(achieved_variance)
-                    target_volatility_tolerance = max(
-                        1e-10,
-                        float(target_volatility or 0.0) * 1e-8,
-                    )
-                    if (
-                        capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
-                        and abs(achieved_volatility - float(target_volatility or 0.0))
-                        > target_volatility_tolerance
-                    ):
-                        raise ValueError(
-                            "Target volatility cannot be reached with the frozen sleeve weights "
-                            "and configured maximum gross exposure."
-                        )
-                    implementation_weights.loc[risk_bearing_keys] = (
-                        frozen + adjustable * scale
-                    ).reindex(risk_bearing_keys, fill_value=0.0)
-                    effective_gross_exposure = float(implementation_weights.loc[risk_bearing_keys].sum())
-                    risky_allocation_scaling_factor = scale
-                else:
-                    exposure_scale = _resolve_volatility_overlay_gross_exposure(
-                        capital_mode=capital_mode,
-                        estimated_volatility=estimated_risk_sleeve_volatility,
-                        target_volatility=target_volatility,
-                        max_gross_exposure=max_gross_exposure,
-                    )
-                    implementation_weights.loc[risk_bearing_keys] = risky_weights * exposure_scale
-                    effective_gross_exposure = float(implementation_weights.loc[risk_bearing_keys].sum())
-                    risky_allocation_scaling_factor = exposure_scale
-            except ValueError as error:
-                raise ValueError(
-                    f"{scope_label} {str(error).removeprefix('Volatility overlay ')}"
-                ) from error
-        if effective_gross_exposure is not None and not fixed_gross_overlay:
-            if fixed_capital_keys:
-                implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
-                    member_index=fixed_capital_keys,
-                    preferred_weights=preferred_fixed_capital_weights,
-                    total_weight=1.0
-                    - float(implementation_weights.loc[risk_bearing_keys].sum()),
-                )
-            else:
-                residual_weight = 1.0 - float(implementation_weights.loc[risk_bearing_keys].sum())
-                if abs(residual_weight) > 1e-9:
-                    raise ValueError(
-                        f"{scope_label} capital overlay leaves a {residual_weight:.2%} residual but the scope has no fixed-capital member."
-                    )
-
-    _validate_final_top_sleeve_bounds(
-        scope_label=scope_label,
-        implementation_weights=implementation_weights,
-        bounds_by_key=top_sleeve_bounds_by_key,
-        member_by_key=member_by_key,
-    )
-    if fixed_gross_overlay and not fixed_capital_keys:
-        residual_weight = 1.0 - float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
-        if abs(residual_weight) > 1e-9:
-            raise ValueError(
-                f"{scope_label} fixed gross leaves a {residual_weight:.2%} residual but the scope has no fixed-capital member."
-            )
-
-    for row in resolved_rows:
-        member_key = f"{row['member_type']}::{row['member_id']}"
-        row["implementation_weight"] = float(implementation_weights.get(member_key, 0.0))
-    top_sleeve_bound_weight_by_id = {
-        member_by_key[key].member_id: float(implementation_weights.get(key, 0.0))
-        for key in top_sleeve_bounds_by_key
-        if key in member_by_key
-    }
-
-    current_weights = pd.Series(current_actual_weight_by_key, dtype="float64").reindex(member_keys, fill_value=0.0)
-    if include_actuals:
-        current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
-            members=members,
-            nav_series_by_member=current_nav_series_by_member,
-            risk_keys=risk_bearing_keys,
-            weights_by_key=current_weights,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-            missing_return_policy=missing_return_policy,
-            contribution_mode=_risk_model_contribution_mode(risk_model_config),
-            risk_model_config=risk_model_config,
-        )
-        warnings.extend(current_risk_share_warnings)
-    else:
-        current_risk_share_by_key = {}
-    gap_turnover = float(0.5 * np.abs(implementation_weights - current_weights).sum())
-    max_weight_gap = float(np.max(np.abs(current_weights - implementation_weights))) if len(member_keys) else 0.0
-    solve_event = {
-        "as_of_date": as_of_date.isoformat(),
-        "scope_node_id": scope_node_id,
-        "scope_label": scope_label,
-        "scope_path": scope_path,
-        "scope_depth": scope_depth,
-        "requested_target_dimension": target_dimension,
-        "taxonomy_default_target_dimension": default_target_dimension,
-        "target_dimension": target_dimension_used,
-        "solver_kind": solver_kind,
-        "solver_detail": risk_solve.solver_detail,
-        "solver_message": risk_solve.message,
-        "target_status": risk_solve.target_status,
-        "execution_ready": risk_solve.execution_ready,
-        "covariance_model": risk_solve.covariance_model,
-        "covariance_observations": risk_solve.covariance_observations,
-        "risk_contribution_mode": risk_solve.risk_contribution_mode,
-        "missing_return_policy": risk_solve.missing_return_policy or _normalize_missing_return_policy(missing_return_policy),
-        "return_rows_before_policy": risk_solve.return_rows_before_policy,
-        "return_rows_after_policy": risk_solve.return_rows_after_policy,
-        "missing_return_row_count": risk_solve.missing_return_row_count,
-        "missing_return_row_fraction": risk_solve.missing_return_row_fraction,
-        "leading_incomplete_return_row_count": risk_solve.leading_incomplete_return_row_count,
-        "post_warmup_missing_return_row_count": risk_solve.post_warmup_missing_return_row_count,
-        "post_warmup_missing_return_row_fraction": risk_solve.post_warmup_missing_return_row_fraction,
-        "dropped_return_rows": deepcopy(risk_solve.dropped_return_rows or []),
-        "latest_complete_return_date": risk_solve.latest_complete_return_date,
-        "trailing_complete_return_staleness_days": risk_solve.trailing_complete_return_staleness_days,
-        "calculation_frequency": calculation_frequency,
-        "gap_turnover": gap_turnover,
-        "current_weight_total": float(current_weights.sum()),
-        "target_weight_total": float(implementation_weights.sum()),
-        "max_weight_gap": max_weight_gap,
-        "max_risk_share_gap": risk_gap,
-        "estimated_risk_sleeve_volatility": estimated_risk_sleeve_volatility,
-        "target_volatility": target_volatility if apply_capital_overlay else None,
-        "gross_exposure": effective_gross_exposure,
-        "risky_allocation_scaling_factor": risky_allocation_scaling_factor,
-        "member_count": len(members),
-        "no_trade_member_count": sum(
-            1
-            for member in members
+        warnings.extend(target_warnings)
+        target_by_key = {_target_key(row): row for row in resolved_rows}
+        no_trade_keys = {
+            f"{member.member_type}::{member.member_id}" for member in members
             if _member_has_no_trade_constraint(
-                state,
-                scope_node_id=scope_node_id,
-                member=member,
-                inherited_no_trade=inherited_no_trade,
+                state, scope_node_id=node_id, member=member, inherited_no_trade=no_trade,
             )
-        ),
-        "risk_model_excluded_member_count": sum(
-            1
-            for member in members
-            if _member_risk_model_status(member) == "excluded"
-        ),
-        "scope_solve_count": len(child_scope_solve_events) + 1,
-    }
+        }
+        actual_by_key: dict[str, dict[str, object]] = {}
+        if include_actuals or resolve_frozen_actuals or no_trade:
+            actual_rows, actual_warnings = _current_scope_actuals(state, scope_node_id=node_id, as_of_date=as_of_date)
+            actual_by_key = {_target_key(row): row for row in actual_rows}
+            warnings.extend(actual_warnings)
+        plan = CompiledTargetScope(
+            node_id=node_id, label=label, path=path,
+            depth=int(state.node_depth_by_id.get(node_id, 0)),
+            dimension=dimension, member_source=member_source, members=members,
+            target_by_key=target_by_key, leaf_indices_by_key={}, actual_by_key=actual_by_key,
+            no_trade_keys=no_trade_keys, excluded=excluded,
+        )
+        plans.append(plan)
+        zero_labels: list[str] = []
+        for member in members:
+            key = f"{member.member_type}::{member.member_id}"
+            if _member_is_fixed_capital(member):
+                plan.leaf_indices_by_key[key] = []
+                continue
+            fixed = key in no_trade_keys
+            if fixed and key not in actual_by_key:
+                raise ValueError(f"{label} cannot apply a no-trade constraint without as-of holdings: {member.label}.")
+            target = target_by_key.get(key, {})
+            value = float(_safe_float(target.get("selected_value")) or 0.0)
+            root_minimum = float((state.top_sleeve_weight_bounds.get(member.member_id) or {}).get("min_weight") or 0.0) if node_id is None else 0.0
+            child_excluded = excluded or (abs(value) <= 1e-12 and not fixed and root_minimum <= 1e-12)
+            if child_excluded and not excluded:
+                zero_labels.append(member.label)
+            actual = actual_by_key.get(key, {})
+            current_weight = actual_parent_weight * float(_safe_float(actual.get("current_weight")) or 0.0)
+            child_global_risk_target = target.get("global_target_risk_share")
+            if member.member_type == TARGET_MEMBER_NODE:
+                child = compile_scope(member.member_id, current_weight, fixed, child_excluded)
+                plan.leaf_indices_by_key[key] = [index for indices in child.leaf_indices_by_key.values() for index in indices]
+            else:
+                if member.member_id in seen_instruments:
+                    raise ValueError(f"An instrument cannot occur more than once in the research tree: {member.label}.")
+                seen_instruments.add(member.member_id)
+                index = len(leaves)
+                plan.leaf_indices_by_key[key] = [index]
+                leaves.append({
+                    "member_type": member.member_type, "member_id": member.member_id, "label": member.label,
+                    "scope_path": path, "member_path": f"{path} / {member.label}",
+                    "allocation_basis": member.allocation_basis,
+                    "selected_target_dimension": dimension if not excluded else None,
+                    "source_target_set_type": target.get("source_target_set_type"),
+                    "configured_weight": _safe_float(target.get("target_weight")),
+                    "configured_risk_share": _safe_float(target.get("target_risk_share")),
+                    "selected_target_value": _safe_float(target.get("selected_value")),
+                    "global_target_risk_share": child_global_risk_target,
+                    "current_value_base": actual.get("current_value_base"),
+                    "trade_constraint": "no_trade" if fixed else "adjustable", "risk_model_status": "modeled",
+                })
+                leaf_members.append(member)
+                leaf_actual_weights.append(current_weight)
+                leaf_frozen.append(fixed)
+                leaf_excluded.append(child_excluded)
+        if zero_labels:
+            warnings.append(f"{label} excludes 0% {dimension.replace('_', ' ')} members from target history, covariance, and return coverage: {', '.join(zero_labels)}.")
+        return plan
 
-    summary_rows: list[dict[str, object]] = []
-    leaf_rows: list[dict[str, object]] = []
-    for member_key in member_keys:
-        member = member_by_key[member_key]
-        resolved_target = next(
-            (
-                row
-                for row in resolved_rows
-                if row["member_type"] == member.member_type and row["member_id"] == member.member_id
-            ),
-            None,
-        )
-        current_weight = _safe_float(current_weights.get(member_key))
-        implementation_weight = _safe_float(implementation_weights.get(member_key))
-        current_risk_share = _safe_float(current_risk_share_by_key.get(member_key))
-        summary_rows.append(
-            {
-                "member_type": member.member_type,
-                "member_id": member.member_id,
-                "label": member.label,
-                "default_target_dimension": member.default_target_dimension,
-                "selected_target_dimension": resolved_target.get("selected_dimension") if resolved_target else None,
-                "source_target_set_type": resolved_target.get("source_target_set_type") if resolved_target else None,
-                "current_weight": current_weight,
-                "current_value_base": current_actual_value_by_key.get(member_key),
-                "current_risk_share": current_risk_share,
-                "target_weight": implementation_weight,
-                "weight_change": (
-                    float(implementation_weight - current_weight)
-                    if implementation_weight is not None and current_weight is not None
-                    else None
-                ),
-                "configured_weight": _safe_float(resolved_target.get("target_weight")) if resolved_target else None,
-                "configured_risk_share": _safe_float(resolved_target.get("target_risk_share")) if resolved_target else None,
-                "selected_target_value": _safe_float(resolved_target.get("selected_value")) if resolved_target else None,
-                "trade_constraint": (
-                    "no_trade"
-                    if _member_has_no_trade_constraint(
-                        state,
-                        scope_node_id=scope_node_id,
-                        member=member,
-                        inherited_no_trade=inherited_no_trade,
-                    )
-                    else "adjustable"
-                ),
-                "risk_model_status": _member_risk_model_status(member),
-            }
-        )
-        child_result = child_results_by_key.get(member_key)
-        if child_result is not None:
-            for child_leaf in child_result.leaf_target_rows:
-                child_current_weight = _safe_float(child_leaf.get("current_weight"))
-                child_target_weight = _safe_float(child_leaf.get("target_weight"))
-                child_current_risk_share = _safe_float(child_leaf.get("current_risk_share"))
-                child_risk_target = _safe_float(child_leaf.get("configured_risk_share"))
-                target_weight = (
-                    None
-                    if implementation_weight is None or child_target_weight is None
-                    else float(implementation_weight * child_target_weight)
-                )
-                current_leaf_weight = (
-                    None
-                    if current_weight is None or child_current_weight is None
-                    else float(current_weight * child_current_weight)
-                )
-                leaf_rows.append(
-                    {
-                        "member_type": child_leaf.get("member_type"),
-                        "member_id": child_leaf.get("member_id"),
-                        "label": child_leaf.get("label"),
-                        "scope_path": child_leaf.get("scope_path") or child_result.scope_path,
-                        "member_path": child_leaf.get("member_path"),
-                        "default_target_dimension": child_leaf.get("default_target_dimension"),
-                        "selected_target_dimension": child_leaf.get("selected_target_dimension"),
-                        "source_target_set_type": child_leaf.get("source_target_set_type"),
-                        "current_weight": current_leaf_weight,
-                        "current_value_base": child_leaf.get("current_value_base"),
-                        "current_risk_share": child_current_risk_share,
-                        "target_weight": target_weight,
-                        "weight_change": (
-                            float(target_weight - current_leaf_weight)
-                            if target_weight is not None and current_leaf_weight is not None
-                            else None
-                        ),
-                        "configured_weight": child_leaf.get("configured_weight"),
-                        "configured_risk_share": child_risk_target,
-                        "selected_target_value": child_leaf.get("selected_target_value"),
-                        "trade_constraint": child_leaf.get("trade_constraint"),
-                        "risk_model_status": child_leaf.get("risk_model_status"),
-                    }
-                )
+    root = compile_scope(scope_node_id, 1.0, inherited_no_trade, False)
+    count = len(leaves)
+    current = np.asarray(leaf_actual_weights, dtype="float64")
+    frozen = np.asarray(leaf_frozen, dtype=bool)
+    excluded = np.asarray(leaf_excluded, dtype=bool)
+    if np.any(current[frozen] < -1e-12):
+        raise ValueError("A negative frozen instrument weight cannot be preserved by the long-only research solver.")
+    cash_key = f"{TARGET_MEMBER_CASH}::{SYSTEM_CASH_TARGET_MEMBER_ID}"
+    derivative_key = f"{TARGET_MEMBER_DERIVATIVE}::{SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
+    fixed_capital_keys = [f"{member.member_type}::{member.member_id}" for member in root.members if _member_is_fixed_capital(member)]
+    derivative_weight = 0.0
+    if derivative_key in fixed_capital_keys:
+        derivative_weight = float(fixed_derivative_weight_override) if fixed_derivative_weight_override is not None else float(_safe_float(root.actual_by_key.get(derivative_key, {}).get("current_weight")) or 0.0) if include_actuals else 0.0
+        if not np.isfinite(derivative_weight):
+            raise ValueError("Derivative no-trade weight must be finite.")
+    cash_reserve = float(_safe_float(root.target_by_key.get(cash_key, {}).get("target_weight")) or 0.0)
+    overlay = apply_capital_overlay and capital_mode != CAPITAL_MODE_UNIT_NOTIONAL
+    volatility_overlay = overlay and capital_mode in {CAPITAL_MODE_TARGET_VOLATILITY, CAPITAL_MODE_VOLATILITY_CAP}
+    fixed_gross = overlay and capital_mode == CAPITAL_MODE_FIXED_GROSS
+    if fixed_capital_keys and capital_mode in {CAPITAL_MODE_UNIT_NOTIONAL, CAPITAL_MODE_VOLATILITY_CAP} and derivative_weight + cash_reserve > 1.0 + 1e-12:
+        raise ValueError("Fixed derivative carrying capital and the configured cash reserve exceed total NAV.")
+    available_gross = float(gross_exposure or 1.0) if fixed_gross else max(1.0 - derivative_weight - cash_reserve, 0.0)
+    if overlay and capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
+        available_gross = float(max_gross_exposure if max_gross_exposure is not None else 1.0)
+    cash_borrowing_allowed = overlay and (
+        fixed_gross and float(gross_exposure or 1.0) > 1.0 + 1e-12
+        or capital_mode == CAPITAL_MODE_TARGET_VOLATILITY
+        and float(max_gross_exposure if max_gross_exposure is not None else 1.0) > 1.0 + 1e-12
+    )
+    if fixed_capital_keys and not cash_borrowing_allowed:
+        funded_capacity = 1.0 - derivative_weight
+        if funded_capacity < -1e-12 or fixed_gross and available_gross > funded_capacity + 1e-12:
+            raise ValueError("Fixed derivative carrying capital leaves insufficient funded capital for the requested gross exposure; this mode does not permit cash borrowing.")
+        available_gross = min(available_gross, max(funded_capacity, 0.0))
+    if not fixed_capital_keys:
+        available_gross = 1.0
+    if count == 0 and (root.dimension == TARGET_DIMENSION_RISK_BUDGET or overlay):
+        raise ValueError(f"{root.label} capital overlay is unavailable: no positive risky target weight.")
+    if float(current[frozen].sum()) > available_gross + 1e-10:
+        raise ValueError(f"{root.label} frozen sleeve weights exceed the available risk-bearing budget.")
+
+    # All masks refer to the same leaf coordinates, including zero/frozen leaves.
+    masks: dict[tuple[str | None, str], np.ndarray] = {}
+    for plan in plans:
+        for key, indices in plan.leaf_indices_by_key.items():
+            mask = np.zeros(count, dtype="float64")
+            mask[indices] = 1.0
+            masks[(plan.node_id, key)] = mask
+    lower = np.where(frozen, current, 0.0)
+    upper = np.where(frozen, current, np.where(excluded, 0.0, available_gross))
+    upper = np.maximum(upper, lower)
+    root_bound_rows: list[np.ndarray] = []
+    root_bound_limits: list[float] = []
+    bounds_by_key = _root_top_sleeve_bounds_by_key(state, scope_node_id=scope_node_id, member_by_key={f"{m.member_type}::{m.member_id}": m for m in root.members}, member_keys=list(root.leaf_indices_by_key))
+    for key, bounds in bounds_by_key.items():
+        mask = masks[(root.node_id, key)]
+        if bounds.get("max_weight") is not None:
+            # Long-only leaves cannot exceed their group's maximum. In
+            # particular a hard zero must be exact, not a near-zero portfolio
+            # that exploits a numerical feasibility tolerance.
+            upper[mask > 0.0] = np.minimum(upper[mask > 0.0], float(bounds["max_weight"]))
+            root_bound_rows.append(mask)
+            root_bound_limits.append(float(bounds["max_weight"]))
+        if bounds.get("min_weight") is not None:
+            root_bound_rows.append(-mask)
+            root_bound_limits.append(-float(bounds["min_weight"]))
+    linear_matrix = np.asarray([*root_bound_rows, np.ones(count)], dtype="float64")
+    linear_limits = np.asarray([*root_bound_limits, available_gross], dtype="float64")
+    if np.any(upper < lower - 1e-12):
+        raise ValueError(f"{root.label} frozen sleeve weights exceed their top sleeve maximum weights.")
+    scipy_bounds = list(zip(lower, upper))
+    gross_limit = available_gross
+    feasible = None
+    if count:
+        feasible = linprog(-np.ones(count), A_ub=linear_matrix, b_ub=linear_limits, bounds=scipy_bounds, method="highs")
+        if not feasible.success:
+            raise ValueError(f"{root.label} frozen sleeve weights / top sleeve bounds are infeasible for the available risky budget.")
+        gross_limit = float(np.sum(feasible.x))
+        if fixed_gross and gross_limit < available_gross - 1e-8:
+            raise ValueError(f"{root.label} top sleeve maximum weights cannot supply the requested fixed gross exposure.")
+    fixed_mass = not volatility_overlay
+    if not fixed_capital_keys:
+        fixed_mass = True
+        if gross_limit < 1.0 - 1e-8:
+            raise ValueError(f"{root.label} bounds leave unallocated capital but the scope has no cash member.")
+
+    nav_by_member: dict[tuple[str, str], pd.Series] = {}
+    active_indices = [index for index in range(count) if upper[index] > 1e-12]
+    for index, member in enumerate(leaf_members):
+        if index not in active_indices and (not include_actuals or abs(current[index]) <= 1e-12):
             continue
-        member_path = f"{scope_path} / {member.label}" if scope_path else member.label
-        leaf_rows.append(
-            {
-                "member_type": member.member_type,
-                "member_id": member.member_id,
-                "label": member.label,
-                "scope_path": scope_path,
-                "member_path": member_path,
-                "default_target_dimension": member.default_target_dimension,
-                "selected_target_dimension": resolved_target.get("selected_dimension") if resolved_target else None,
-                "source_target_set_type": resolved_target.get("source_target_set_type") if resolved_target else None,
-                "current_weight": current_weight,
-                "current_value_base": current_actual_value_by_key.get(member_key),
-                "current_risk_share": current_risk_share,
-                "target_weight": implementation_weight,
-                "weight_change": (
-                    float(implementation_weight - current_weight)
-                    if implementation_weight is not None and current_weight is not None
-                    else None
-                ),
-                "configured_weight": _safe_float(resolved_target.get("target_weight")) if resolved_target else None,
-                "configured_risk_share": _safe_float(resolved_target.get("target_risk_share")) if resolved_target else None,
-                "selected_target_value": _safe_float(resolved_target.get("selected_value")) if resolved_target else None,
-                "trade_constraint": (
-                    "no_trade"
-                    if _member_has_no_trade_constraint(
-                        state,
-                        scope_node_id=scope_node_id,
-                        member=member,
-                        inherited_no_trade=inherited_no_trade,
-                    )
-                    else "adjustable"
-                ),
-                "risk_model_status": _member_risk_model_status(member),
-            }
-        )
-
-    target_return_members = [
-        member
-        for member in members
-        if abs(float(implementation_weights.get(f"{member.member_type}::{member.member_id}", 0.0))) > 1e-12
-    ]
-    try:
-        scope_return_window = _solver_return_window(
-            members=target_return_members,
-            nav_series_by_member=nav_series_by_member,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-        )
-    except ValueError as error:
-        scope_return_window = pd.DataFrame()
-        warnings.append(f"{scope_label} target return series unavailable: {error}")
-    if scope_return_window.empty:
-        scope_returns = pd.Series(dtype="float64")
-    else:
-        scope_returns = _weighted_complete_return_series(scope_return_window, implementation_weights)
-    if include_actuals:
-        current_return_members = [
-            member
-            for member in members
-            if abs(float(current_weights.get(f"{member.member_type}::{member.member_id}", 0.0))) > 1e-12
-        ]
         try:
-            current_scope_return_window = _solver_return_window(
-                members=current_return_members,
-                nav_series_by_member=current_nav_series_by_member,
-                as_of_date=as_of_date,
-                lookback_days=lookback_days,
-                calculation_frequency=calculation_frequency,
-            )
+            nav, member_warnings = _build_instrument_nav_series(state, instrument_id=member.member_id, start_date=start_day, end_date=as_of_date)
+            nav_by_member[(member.member_type, member.member_id)] = nav
+            warnings.extend(member_warnings)
         except ValueError as error:
-            current_scope_return_window = pd.DataFrame()
-            warnings.append(f"{scope_label} current return series unavailable: {error}")
-    else:
-        current_scope_return_window = pd.DataFrame()
-    if current_scope_return_window.empty:
-        current_scope_returns = pd.Series(dtype="float64")
-    else:
-        current_scope_returns = _weighted_complete_return_series(current_scope_return_window, current_weights)
+            if index in active_indices:
+                raise
+            warnings.append(f"{member.label} current return/risk attribution unavailable: {error}")
+    active_members = [leaf_members[index] for index in active_indices]
+    return_window = _solver_return_window(members=active_members, nav_series_by_member=nav_by_member, as_of_date=as_of_date, lookback_days=lookback_days, calculation_frequency=calculation_frequency) if active_members else pd.DataFrame()
+    risk_required = any(
+        not plan.excluded
+        and plan.dimension == TARGET_DIMENSION_RISK_BUDGET
+        and sum(
+            bool(indices) and (
+                float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0) > 0.0
+                or bool(np.any(upper[indices] > 1e-12))
+            )
+            for key, indices in plan.leaf_indices_by_key.items()
+        ) > 1
+        for plan in plans
+    )
+    covariance: np.ndarray | None = None
+    covariance_model: str | None = None
+    coverage: ReturnCoveragePolicyResult | None = None
+    if active_members:
+        parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
+        try:
+            coverage = _prepare_return_window_for_covariance(
+                return_window, lookback_days=lookback_days, min_observations=int(parameters.get("min_observations", 2)),
+                label="Global leaf covariance", missing_return_policy=missing_return_policy,
+                calculation_frequency=calculation_frequency, as_of_date=as_of_date,
+                max_trailing_staleness_days=int(parameters.get("max_period_staleness_days", _max_complete_case_drop_staleness_days(calculation_frequency))),
+            )
+            covariance_model = _risk_model_covariance_model_id(risk_model_config)
+            estimated = _estimate_covariance(coverage.returns, model_id=covariance_model, lookback_days=lookback_days, parameters=parameters, missing_return_policy=MISSING_RETURN_POLICY_STRICT, calculation_frequency=calculation_frequency, as_of_date=as_of_date)
+            expected_keys = [f"{member.member_type}::{member.member_id}" for member in active_members]
+            estimated = estimated.reindex(index=expected_keys, columns=expected_keys)
+            if estimated.shape != (len(active_indices), len(active_indices)) or not np.isfinite(estimated.to_numpy()).all():
+                raise ValueError("Global covariance does not cover every active leaf instrument.")
+            covariance = np.zeros((count, count), dtype="float64")
+            covariance[np.ix_(active_indices, active_indices)] = estimated.to_numpy(dtype="float64")
+        except ValueError as error:
+            covariance_model = None
+            coverage = None
+            if risk_required or volatility_overlay:
+                raise ValueError(f"{root.label} global leaf risk model unavailable: {error}") from error
+            warnings.append(f"Global leaf risk attribution unavailable: {error}")
+    if volatility_overlay and (not active_indices or gross_limit <= 1e-12):
+        raise ValueError(f"{root.label} capital overlay is unavailable: no positive risky target weight.")
 
+    # Each residual is a conditional ratio; scaling by total portfolio variance
+    # would hide arbitrarily large errors in a small nested sleeve.
+    equations: list[tuple[CompiledTargetScope, str, np.ndarray, np.ndarray, float]] = []
+    for plan in plans:
+        if plan.excluded:
+            continue
+        keys = [key for key, indices in plan.leaf_indices_by_key.items() if indices]
+        if plan.dimension == TARGET_DIMENSION_WEIGHT:
+            # No-trade positions are fixed in capital, with remaining adjustable
+            # children sharing the remaining capital in their configured ratios.
+            keys = [key for key in keys if key not in plan.no_trade_keys]
+        if not keys:
+            continue
+        target_total = sum(float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0) for key in keys)
+        parent_mask = sum((masks[(plan.node_id, key)] for key in keys), np.zeros(count))
+        for key in keys:
+            target = float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0)
+            if plan.dimension == TARGET_DIMENSION_WEIGHT:
+                target = target / target_total if target_total > 1e-12 else 0.0
+            equations.append((plan, key, masks[(plan.node_id, key)], parent_mask, target))
+
+    # Rescale only the matrix's unit for numerical conditioning. Euler shares
+    # are homogeneous in covariance, and volatility constraints use the original.
+    scaled_covariance = covariance / max(float(np.max(np.diag(covariance))), 1e-30) if covariance is not None and count else None
+    def leaf_contributions(weights: np.ndarray, *, scaled: bool = False) -> np.ndarray:
+        matrix = scaled_covariance if scaled else covariance
+        if matrix is None:
+            return np.zeros(count)
+        q = weights * (matrix @ weights)
+        return np.abs(q) if contribution_mode == "abs" else q
+
+    def residuals(weights: np.ndarray) -> np.ndarray:
+        q = leaf_contributions(weights, scaled=True)
+        values: list[float] = []
+        for plan, _key, child_mask, parent_mask, target in equations:
+            if float(parent_mask @ weights) <= 1e-12:
+                # A positive risk budget cannot be achieved by deleting its
+                # parent allocation. Only configured zero branches were excluded
+                # during compilation; capital-free candidates are not solutions.
+                values.append(target if plan.dimension == TARGET_DIMENSION_RISK_BUDGET or plan is root else 0.0)
+                continue
+            if plan.dimension == TARGET_DIMENSION_RISK_BUDGET and scaled_covariance is not None:
+                denominator = float(parent_mask @ q)
+                # A non-positive parent cannot represent positive conditional
+                # budgets. Keep its sign; a positive denominator is verified below.
+                scale = max(abs(denominator), float(np.abs(q).sum()) * 1e-10, 1e-20)
+                values.append(float((child_mask @ q - target * denominator) / scale))
+            elif plan.dimension == TARGET_DIMENSION_RISK_BUDGET:
+                values.append(0.0)  # Only tautological single-member budgets reach here.
+            else:
+                denominator = float(parent_mask @ weights)
+                values.append(float(child_mask @ weights / denominator - target))
+        return np.asarray(values, dtype="float64")
+
+    weights = np.zeros(count)
+    solver_message = "No risky capital allocation."
+    solver_detail = "global_leaf_conditional_targets"
+    optimizer_converged = False
+    if count:
+        # Do not duplicate the funding equality as an active inequality: that
+        # gives SLSQP a rank-deficient constraint Jacobian at a simplex vertex.
+        optimizer_matrix = linear_matrix[:-1] if fixed_mass else linear_matrix
+        optimizer_limits = linear_limits[:-1] if fixed_mass else linear_limits
+        if fixed_mass and len(optimizer_limits):
+            independent_rows = np.asarray([
+                not np.all(row == row[0]) for row in optimizer_matrix
+            ], dtype=bool)
+            optimizer_matrix = optimizer_matrix[independent_rows]
+            optimizer_limits = optimizer_limits[independent_rows]
+        constraints: list[dict[str, object]] = []
+        if len(optimizer_limits):
+            constraints.append({"type": "ineq", "fun": lambda w: optimizer_limits - optimizer_matrix @ w})
+        if fixed_mass:
+            constraints.append({"type": "eq", "fun": lambda w: float(w.sum()) - gross_limit})
+        linear_constraints = list(constraints)
+        volatility_variance = float(target_volatility or 0.0) ** 2
+        if volatility_overlay:
+            assert covariance is not None
+            volatility_constraint = lambda w: float(w @ covariance @ w) / volatility_variance - 1.0
+            constraints.append({"type": "eq" if capital_mode == CAPITAL_MODE_TARGET_VOLATILITY else "ineq", "fun": volatility_constraint if capital_mode == CAPITAL_MODE_TARGET_VOLATILITY else lambda w: -volatility_constraint(w)})
+        reference = np.asarray([max(float(row.get("global_target_risk_share") or 0.0), 0.0) for row in leaves])
+        if float(reference.sum()) <= 1e-12:
+            reference = np.where(upper > lower + 1e-12, 1.0, 0.0)
+        reference = reference / max(float(reference.sum()), 1e-12) * gross_limit
+        reference = np.clip(reference, lower, upper)
+        projection = minimize(lambda w: float(np.sum((w - reference) ** 2)), x0=np.asarray(feasible.x), method="SLSQP", bounds=scipy_bounds, constraints=linear_constraints, options={"ftol": 1e-13, "maxiter": 500})
+        seeds = [np.asarray(projection.x), np.asarray(feasible.x)]
+        # The canonical positive risk-budget solution is an efficient exact seed
+        # when every branching edge is a risk budget; it still uses this Sigma.
+        budgets = np.asarray([float(row.get("global_target_risk_share") or 0.0) for row in leaves])
+        if covariance is not None and active_indices and all(leaves[i].get("global_target_risk_share") is not None and budgets[i] > 0.0 for i in active_indices):
+            active_covariance = covariance[np.ix_(active_indices, active_indices)]
+            seed_weights = _global_risk_budget_seed(active_covariance, budgets[active_indices])
+            if seed_weights is not None:
+                seed = np.zeros(count)
+                seed[active_indices] = seed_weights * gross_limit
+                seeds.insert(0, np.clip(seed, lower, upper))
+        if volatility_overlay:
+            # A convex minimum-variance check detects genuinely infeasible hard
+            # constraints, including frozen holdings and hedging correlations.
+            minimum_variance = minimize(lambda w: float(w @ scaled_covariance @ w), x0=np.asarray(feasible.x), jac=lambda w: 2.0 * scaled_covariance @ w, method="SLSQP", bounds=scipy_bounds, constraints=linear_constraints, options={"ftol": 1e-12, "maxiter": 1000})
+            if not minimum_variance.success or not np.isfinite(minimum_variance.x).all() or np.any(minimum_variance.x < lower - 1e-7) or np.any(minimum_variance.x > upper + 1e-7) or np.any(linear_matrix @ minimum_variance.x > linear_limits + 1e-7):
+                raise ValueError("The volatility feasibility check did not converge to a feasible allocation.")
+            if float(minimum_variance.x @ covariance @ minimum_variance.x) > volatility_variance * (1.0 + 1e-7):
+                prefix = "Frozen sleeve weights make the volatility constraint infeasible" if np.any(frozen) else "Top sleeve minimum weights make the volatility constraint infeasible"
+                raise ValueError(f"{prefix}.")
+            seeds.append(np.asarray(minimum_variance.x))
+            # Preserve an already correct homogeneous allocation when merely
+            # changing its scale; frozen weights instead stay in the full solve.
+            if not np.any(frozen):
+                for seed in list(seeds):
+                    variance = float(seed @ covariance @ seed)
+                    if variance > 1e-20:
+                        scale = sqrt(volatility_variance / variance)
+                        if capital_mode == CAPITAL_MODE_VOLATILITY_CAP:
+                            scale = min(scale, 1.0)
+                        seeds.insert(0, seed * scale)
+        def objective(w: np.ndarray) -> float:
+            errors = residuals(w)
+            # Capital use breaks the scale indeterminacy under a volatility cap;
+            # the coefficient is below the reported conditional-target tolerance.
+            return float(errors @ errors - (1e-8 * w.sum() / max(gross_limit, 1e-12) if not fixed_mass else 0.0))
+        def hard_feasible(w: np.ndarray) -> bool:
+            if not np.isfinite(w).all() or np.any(w < lower - 1e-7) or np.any(w > upper + 1e-7) or np.any(linear_matrix @ w > linear_limits + 1e-7):
+                return False
+            if fixed_mass and abs(float(w.sum()) - gross_limit) > 1e-7:
+                return False
+            if volatility_overlay:
+                relative = float(w @ covariance @ w) / volatility_variance - 1.0
+                volatility_failed = abs(relative) > 1e-6 if capital_mode == CAPITAL_MODE_TARGET_VOLATILITY else relative > 1e-6
+                if volatility_failed:
+                    return False
+            return True
+        candidates: list[tuple[float, np.ndarray, str, bool]] = []
+        for seed in seeds:
+            if hard_feasible(seed):
+                candidates.append((objective(seed), seed, "Feasible global leaf allocation; conditional targets independently checked.", False))
+            result = minimize(objective, x0=np.clip(seed, lower, upper), method="SLSQP", bounds=scipy_bounds, constraints=constraints, options={"ftol": 1e-14, "maxiter": 1500})
+            if hard_feasible(result.x):
+                candidates.append((objective(result.x), np.asarray(result.x), str(result.message), bool(result.success)))
+            if candidates and min(item[0] for item in candidates) <= 1e-15 and fixed_mass:
+                break
+        if not candidates:
+            if volatility_overlay and capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
+                raise ValueError("Target volatility cannot be reached with the frozen sleeve weights, top sleeve bounds and configured maximum gross exposure.")
+            raise ValueError("Global leaf optimization did not find a feasible allocation under the hard constraints.")
+        best_objective = min(item[0] for item in candidates)
+        # Prefer a converged candidate when the objective difference is below
+        # numerical precision. An exact verified target can also be accepted
+        # from a non-success termination without pretending it converged.
+        equivalent = [item for item in candidates if item[0] <= best_objective + 1e-12]
+        _, weights, solver_message, optimizer_converged = min(equivalent, key=lambda item: (not item[3], item[0]))
+        weights = np.asarray(weights, dtype="float64")
+
+    errors = residuals(weights)
+    q = leaf_contributions(weights)
+    q_total = float(q.sum())
+    forward_by_key: dict[str, float | None] = {
+        _target_key(row): float(q[index] / q_total) if covariance is not None and q_total > 1e-20 else None
+        for index, row in enumerate(leaves)
+    }
+    current_shares: np.ndarray | None = None
+    if include_actuals and covariance is not None:
+        missing_current = [leaf_members[i].label for i in range(count) if abs(current[i]) > 1e-12 and i not in active_indices]
+        if missing_current:
+            warnings.append("Current risk attribution unavailable: held zero-target instruments are outside this solve's covariance universe: " + ", ".join(missing_current) + ".")
+        else:
+            try:
+                current_shares = _risk_contribution_shares(covariance, current, contribution_mode=contribution_mode)
+            except ValueError as error:
+                warnings.append(f"Current global risk attribution unavailable: {error}")
+    risk_gap_by_scope: dict[str | None, float] = {}
+    invalid_risk_scopes: set[str | None] = set()
+    for index, (plan, _key, _child_mask, parent_mask, _target) in enumerate(equations):
+        if plan.dimension == TARGET_DIMENSION_RISK_BUDGET:
+            risk_gap_by_scope[plan.node_id] = max(risk_gap_by_scope.get(plan.node_id, 0.0), abs(float(errors[index])))
+            if float(parent_mask @ weights) <= 1e-12 or covariance is not None and float(parent_mask @ q) <= max(float(np.abs(q).sum()) * 1e-12, 1e-24):
+                invalid_risk_scopes.add(plan.node_id)
+    max_gap = float(np.max(np.abs(errors))) if len(errors) else 0.0
+    satisfied = max_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP and not invalid_risk_scopes
+    # Fixed mass plus at most one free leaf is a genuinely unique feasible
+    # portfolio. A generic numerical optimum is never a proof of target feasibility.
+    unique_feasible = fixed_mass and int(np.sum(upper > lower + 1e-10)) <= 1
+    execution_ready = satisfied or (not invalid_risk_scopes and (unique_feasible or optimizer_converged))
+    status = (
+        "satisfied" if satisfied
+        else "constrained_optimum" if unique_feasible and not invalid_risk_scopes
+        else "constrained_solution" if execution_ready
+        else "constrained_target_miss"
+    )
+    if invalid_risk_scopes:
+        labels = [plan.path for plan in plans if plan.node_id in invalid_risk_scopes]
+        warnings.append("Conditional risk budgets require a positive parent Euler contribution; zero or negative parent contribution in " + ", ".join(labels) + ".")
+    if not satisfied:
+        explanation = (
+            "The hard constraints leave a unique feasible allocation." if unique_feasible and not invalid_risk_scopes
+            else "The constrained solve converged and is usable for research simulation; it is not a proof of a global optimum." if execution_ready
+            else "This candidate is not execution-ready because convergence or a well-defined conditional risk budget was not established."
+        )
+        warnings.append(f"Global conditional targets remain off by up to {max_gap:.2%} under the hard constraints. " + explanation)
+    if contribution_mode == "signed" and covariance is not None and np.any(q < -max(float(np.abs(q).sum()) * 1e-12, 1e-24)):
+        warnings.append("Signed Euler attribution includes negative hedging contributions; they were preserved and were not converted to absolute risk.")
+    fixed_weights = _allocate_fixed_capital_weights(member_index=fixed_capital_keys, preferred_weights=pd.Series({derivative_key: derivative_weight, cash_key: cash_reserve}, dtype="float64"), total_weight=1.0 - float(weights.sum()))
+
+    for index, leaf in enumerate(leaves):
+        leaf["current_weight"] = float(current[index])
+        leaf["target_weight"] = float(weights[index])
+        leaf["weight_change"] = float(weights[index] - current[index])
+        leaf["current_risk_share"] = float(current_shares[index]) if current_shares is not None else None
+    root_rows: list[dict[str, object]] = []
+    events: list[dict[str, object]] = []
+    for plan in plans:
+        plan_rows: list[dict[str, object]] = []
+        scope_indices = [index for indices in plan.leaf_indices_by_key.values() for index in indices]
+        scope_mass = float(weights[scope_indices].sum()) if plan is not root else 1.0
+        for member in plan.members:
+            key = f"{member.member_type}::{member.member_id}"
+            target = plan.target_by_key.get(key, {})
+            mask = masks[(plan.node_id, key)]
+            actual = plan.actual_by_key.get(key, {})
+            actual_weight = float(_safe_float(actual.get("current_weight")) or 0.0)
+            solved_weight = float(fixed_weights.get(key, 0.0)) if _member_is_fixed_capital(member) else float(mask @ weights) / scope_mass if scope_mass > 1e-12 else 0.0
+            target["implementation_weight"] = solved_weight
+            row = {
+                "member_type": member.member_type, "member_id": member.member_id, "label": member.label,
+                "allocation_basis": member.allocation_basis,
+                "selected_target_dimension": plan.dimension if not plan.excluded else None,
+                "source_target_set_type": target.get("source_target_set_type"),
+                "current_weight": actual_weight, "current_value_base": actual.get("current_value_base"),
+                "current_risk_share": float(mask @ current_shares) if current_shares is not None and not _member_is_fixed_capital(member) else None,
+                "target_weight": solved_weight, "weight_change": solved_weight - actual_weight,
+                "configured_weight": _safe_float(target.get("target_weight")), "configured_risk_share": _safe_float(target.get("target_risk_share")),
+                "selected_target_value": _safe_float(target.get("selected_value")), "global_target_risk_share": target.get("global_target_risk_share"),
+                "trade_constraint": "no_trade" if key in plan.no_trade_keys else "adjustable", "risk_model_status": _member_risk_model_status(member),
+            }
+            plan_rows.append(row)
+            if plan is root and _member_is_fixed_capital(member):
+                leaves.append({**row, "scope_path": plan.path, "member_path": f"{plan.path} / {member.label}"})
+                forward_by_key[key] = None
+        if plan is root:
+            root_rows = plan_rows
+        event = {
+            "solver_version": RESEARCH_TARGET_SOLVER_VERSION, "risk_attribution_scope": attribution_scope,
+            "global_leaf_count": len(active_indices), "global_leaf_ids": [leaf_members[index].member_id for index in active_indices],
+            "as_of_date": as_of_date.isoformat(), "scope_node_id": plan.node_id, "scope_label": plan.label,
+            "scope_path": plan.path, "scope_depth": plan.depth,
+            "taxonomy_allocation_basis": plan.dimension,
+            "target_dimension": plan.dimension, "solver_kind": "global-leaf", "solver_detail": solver_detail,
+            "solver_message": solver_message, "target_status": status, "execution_ready": execution_ready,
+            "covariance_model": covariance_model, "covariance_observations": len(coverage.returns) if coverage else 0,
+            "risk_contribution_mode": contribution_mode if covariance is not None else None,
+            "missing_return_policy": missing_return_policy, "return_rows_before_policy": coverage.rows_before if coverage else None,
+            "return_rows_after_policy": coverage.rows_after if coverage else None,
+            "missing_return_row_count": coverage.missing_row_count if coverage else None,
+            "missing_return_row_fraction": coverage.missing_row_fraction if coverage else None,
+            "leading_incomplete_return_row_count": coverage.leading_incomplete_row_count if coverage else None,
+            "post_warmup_missing_return_row_count": coverage.post_warmup_missing_row_count if coverage else None,
+            "post_warmup_missing_return_row_fraction": coverage.post_warmup_missing_row_fraction if coverage else None,
+            "dropped_return_rows": deepcopy(coverage.dropped_rows) if coverage else [],
+            "latest_complete_return_date": coverage.latest_complete_date.isoformat() if coverage and coverage.latest_complete_date else None,
+            "trailing_complete_return_staleness_days": coverage.trailing_staleness_days if coverage else None,
+            "calculation_frequency": calculation_frequency,
+            "gap_turnover": 0.5 * sum(abs(float(row["weight_change"])) for row in plan_rows),
+            "current_weight_total": sum(float(row["current_weight"]) for row in plan_rows),
+            "target_weight_total": sum(float(row["target_weight"]) for row in plan_rows),
+            "max_weight_gap": max((abs(float(row["weight_change"])) for row in plan_rows), default=0.0),
+            "max_risk_share_gap": max(risk_gap_by_scope.values(), default=0.0) if plan is root and risk_gap_by_scope else risk_gap_by_scope.get(plan.node_id),
+            "estimated_risk_sleeve_volatility": sqrt(max(float(weights @ covariance @ weights), 0.0)) if covariance is not None and plan is root else None,
+            "target_volatility": target_volatility if plan is root and apply_capital_overlay else None,
+            "gross_exposure": float(weights.sum()) if plan is root and overlay else None,
+            "risky_allocation_scaling_factor": None, "member_count": len(plan.members),
+            "no_trade_member_count": len(plan.no_trade_keys),
+            "risk_model_excluded_member_count": sum(_member_is_fixed_capital(member) for member in plan.members),
+            "scope_solve_count": len(plans),
+        }
+        events.append(event)
+    target_returns = _weighted_complete_return_series(return_window, pd.Series({f"{member.member_type}::{member.member_id}": float(weights[index]) for index, member in enumerate(leaf_members)}, dtype="float64")) if not return_window.empty else pd.Series(dtype="float64")
+    current_returns = pd.Series(dtype="float64")
+    if include_actuals:
+        held_members = [member for index, member in enumerate(leaf_members) if abs(current[index]) > 1e-12]
+        if held_members and all((member.member_type, member.member_id) in nav_by_member for member in held_members):
+            current_window = _solver_return_window(members=held_members, nav_series_by_member=nav_by_member, as_of_date=as_of_date, lookback_days=lookback_days, calculation_frequency=calculation_frequency)
+            current_returns = _weighted_complete_return_series(current_window, pd.Series({f"{member.member_type}::{member.member_id}": float(current[index]) for index, member in enumerate(leaf_members)}, dtype="float64"))
     return ScopeTargetSolveResult(
-        scope_node_id=scope_node_id,
-        scope_label=scope_label,
-        scope_path=scope_path,
-        default_target_dimension=default_target_dimension,
-        scope_depth=scope_depth,
-        member_source=member_source,
-        return_series=scope_returns.astype("float64"),
-        current_return_series=current_scope_returns.astype("float64"),
-        member_target_rows=summary_rows,
-        leaf_target_rows=leaf_rows,
-        solve_event=solve_event,
-        scope_solve_events=[*child_scope_solve_events, deepcopy(solve_event)],
-        warnings=list(dict.fromkeys(item for item in warnings if item)),
-        resolved_target_rows=deepcopy(resolved_rows),
-        top_sleeve_bound_weight_by_id=top_sleeve_bound_weight_by_id,
+        scope_node_id=scope_node_id, scope_label=root.label, scope_path=root.path, allocation_basis=root.dimension,
+        scope_depth=root.depth, member_source=root.member_source, return_series=target_returns, current_return_series=current_returns,
+        member_target_rows=root_rows, leaf_target_rows=leaves, solve_event=events[0], scope_solve_events=events,
+        warnings=list(dict.fromkeys(warnings)), resolved_target_rows=deepcopy(list(root.target_by_key.values())),
+        top_sleeve_bound_weight_by_id={key.split("::", 1)[1]: float(masks[(root.node_id, key)] @ weights) for key in bounds_by_key},
+        forward_risk_contribution_by_key=forward_by_key,
     )
 
 
@@ -4192,7 +2483,6 @@ def _build_taxonomy_state(
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     direct_fx_instruments: dict[tuple[str, str], str] | None = None,
-    require_planning_enabled: bool = True,
 ) -> TaxonomyResearchState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -4213,8 +2503,6 @@ def _build_taxonomy_state(
         raise ValueError("The current target configuration is incomplete.")
     if str(taxonomy.get("status") or "") != "active":
         raise ValueError("The current target configuration is inactive or deleted.")
-    if require_planning_enabled and not bool(taxonomy.get("planning_enabled")):
-        raise ValueError("The current target configuration is not planning-enabled.")
     node_rows = [
         item
         for item in list(configuration.get("taxonomy_nodes") or [])
@@ -4313,7 +2601,7 @@ def _build_taxonomy_state(
         portfolio_id=portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         taxonomy_name=str(taxonomy.get("name") or planning_taxonomy_id),
-        root_default_target_dimension=str(taxonomy.get("root_default_target_dimension") or TARGET_DIMENSION_WEIGHT),
+        root_allocation_basis=str(taxonomy.get("root_allocation_basis") or TARGET_DIMENSION_WEIGHT),
         base_currency=valuation_fx.required_currency(
             configuration.get("base_currency") or portfolio.get("base_currency"), field_name="portfolio base currency"
         ),
@@ -4343,7 +2631,6 @@ def _build_taxonomy_state(
             else None
         ),
         target_snapshot_fingerprint=configuration.get("target_snapshot_fingerprint"),
-        instrument_analytics_scopes=deepcopy(configuration.get("instrument_analytics_scopes") or {}),
     )
 
 
@@ -4363,7 +2650,6 @@ def build_research_scope_options(
         target_configuration=target_configuration,
         # Scope labels/membership do not perform valuation or FX conversion.
         direct_fx_instruments={},
-        require_planning_enabled=False,
     )
     options: list[dict[str, object]] = [
         {
@@ -4371,7 +2657,7 @@ def build_research_scope_options(
             "label": ROOT_SCOPE_LABEL,
             "path": ROOT_SCOPE_LABEL,
             "depth": 0,
-            "default_target_dimension": state.root_default_target_dimension,
+            "allocation_basis": state.root_allocation_basis,
             "has_children": any(
                 _node_has_research_members(state, node_id)
                 for node_id in state.children_by_parent.get(None, [])
@@ -4388,7 +2674,7 @@ def build_research_scope_options(
                 "label": str(node.get("node_name") or node_id),
                 "path": state.node_path_by_id.get(node_id, str(node.get("node_name") or node_id)),
                 "depth": state.node_depth_by_id.get(node_id, 0),
-                "default_target_dimension": str(node.get("default_target_dimension") or TARGET_DIMENSION_WEIGHT),
+                "allocation_basis": str(node.get("allocation_basis") or TARGET_DIMENSION_WEIGHT),
                 "has_children": bool(state.children_by_parent.get(node_id)),
             }
             )
@@ -4416,7 +2702,6 @@ def build_research_calculation_frequency_profile(
         instrument_detail_cache=_instrument_detail_cache,
         # Daily observation availability checks local price points only.
         direct_fx_instruments=_direct_fx_instruments if _direct_fx_instruments is not None else {},
-        require_planning_enabled=False,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
@@ -4525,95 +2810,8 @@ def _top_sleeve_bound_status(
     return "within"
 
 
-def _estimate_forward_risk_contribution_by_key(
-    state: TaxonomyResearchState,
-    *,
-    leaf_rows: list[dict[str, object]],
-    as_of_date: date,
-    lookback_days: int,
-    calculation_frequency: CalculationFrequency,
-    missing_return_policy: str,
-    risk_model_config: dict[str, object] | None,
-) -> tuple[dict[str, float | None], list[str]]:
-    risk_rows = [
-        row
-        for row in leaf_rows
-        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
-        and abs(_safe_float(row.get("target_weight")) or 0.0) > 1e-12
-    ]
-    if len(risk_rows) == 1:
-        return ({_target_key(risk_rows[0]): 1.0}, [])
-
-    start_day = research_window_start_date(as_of_date, lookback_days)
-    members: list[ScopeMemberRecord] = []
-    nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
-    usable_rows: list[dict[str, object]] = []
-    warnings: list[str] = []
-    for row in risk_rows:
-        instrument_id = str(row.get("member_id") or "")
-        try:
-            nav_series, row_warnings = _build_instrument_nav_series(
-                state,
-                instrument_id=instrument_id,
-                start_date=start_day,
-                end_date=as_of_date,
-            )
-        except ValueError as error:
-            warnings.append(f"{row.get('label') or instrument_id} forward RC unavailable: {error}")
-            continue
-        member = ScopeMemberRecord(
-            member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id=instrument_id,
-            label=str(row.get("label") or instrument_id),
-        )
-        members.append(member)
-        nav_series_by_member[(member.member_type, member.member_id)] = nav_series
-        usable_rows.append(row)
-        warnings.extend(row_warnings)
-
-    if len(usable_rows) == 1:
-        return ({_target_key(usable_rows[0]): 1.0}, list(dict.fromkeys(warnings)))
-    if not usable_rows:
-        return {}, list(dict.fromkeys(warnings))
-
-    try:
-        return_window = _solver_return_window(
-            members=members,
-            nav_series_by_member=nav_series_by_member,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-        )
-        covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
-        covariance = _estimate_covariance(
-            return_window,
-            model_id=_risk_model_covariance_model_id(risk_model_config),
-            lookback_days=lookback_days,
-            parameters=covariance_parameters,
-            missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
-            calculation_frequency=calculation_frequency,
-            as_of_date=as_of_date,
-        )
-        weights = np.asarray([_safe_float(row.get("target_weight")) or 0.0 for row in usable_rows], dtype="float64")
-        shares = _risk_contribution_shares(
-            covariance.to_numpy(dtype="float64"),
-            weights,
-            contribution_mode=_risk_model_contribution_mode(risk_model_config),
-        )
-    except ValueError as error:
-        warnings.append(f"Forward RC unavailable: {error}")
-        return ({_target_key(row): None for row in usable_rows}, list(dict.fromkeys(warnings)))
-
-    return (
-        {_target_key(row): float(shares[index]) for index, row in enumerate(usable_rows)},
-        list(dict.fromkeys(warnings)),
-    )
-
-
 def _selected_target_risk_share(row: dict[str, object]) -> float | None:
-    if str(row.get("selected_target_dimension") or "") != TARGET_DIMENSION_RISK_BUDGET:
-        return None
-    return _safe_float(row.get("configured_risk_share"))
+    return _safe_float(row.get("global_target_risk_share"))
 
 
 def _build_solved_result_groups(
@@ -4622,22 +2820,11 @@ def _build_solved_result_groups(
     leaf_rows: list[dict[str, object]],
     member_rows: list[dict[str, object]],
     scope_value_base: float | None,
+    forward_rc_by_key: dict[str, float | None],
     top_sleeve_bound_weight_by_id: dict[str, float] | None = None,
-    as_of_date: date,
-    lookback_days: int,
-    calculation_frequency: CalculationFrequency,
-    missing_return_policy: str,
-    risk_model_config: dict[str, object] | None,
+    scope_node_id: str | None = None,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    forward_rc_by_key, warnings = _estimate_forward_risk_contribution_by_key(
-        state,
-        leaf_rows=leaf_rows,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-        missing_return_policy=missing_return_policy,
-        risk_model_config=risk_model_config,
-    )
+    warnings: list[str] = []
     group_target_risk_by_id = {
         str(row.get("member_id") or ""): _selected_target_risk_share(row)
         for row in member_rows
@@ -4653,7 +2840,10 @@ def _build_solved_result_groups(
             member_id=member_id,
         )
         group_key = top_sleeve_id or "__unassigned__"
-        group_bounds = state.top_sleeve_weight_bounds.get(top_sleeve_id or "")
+        group_bounds = (
+            state.top_sleeve_weight_bounds.get(top_sleeve_id or "")
+            if scope_node_id is None else None
+        )
         group = groups.setdefault(
             group_key,
             {
@@ -4731,7 +2921,7 @@ def _build_solved_result_groups(
             if len(risk_model_statuses) == 1
             else "mixed"
         )
-        if abs(float(group.get("forward_risk_contribution") or 0.0)) <= 1e-12:
+        if not any(row.get("forward_risk_contribution") is not None for row in rows):
             group["forward_risk_contribution"] = None
         bound_status_weight = _safe_float(
             (top_sleeve_bound_weight_by_id or {}).get(str(group.get("top_sleeve_id") or ""))
@@ -5468,6 +3658,7 @@ def _derivative_backtest_state_on(
     context: dict[str, object],
     *,
     point_date: date,
+    simulation_nav: float,
 ) -> tuple[float, float]:
     events = [
         item
@@ -5479,23 +3670,13 @@ def _derivative_backtest_state_on(
         return 0.0, 0.0
     latest_event = events[-1]
     target_value = float(_safe_float(latest_event.get("target_value")) or 0.0)
-    actual_value_base = float(
-        _safe_float(latest_event.get("actual_value_base")) or 0.0
-    )
-    nav_points = [
-        (parsed_date, float(nav))
-        for item in list(context.get("nav_points") or [])
-        if isinstance(item, dict)
-        and (parsed_date := _parse_iso_date(item.get("date"))) is not None
-        and parsed_date <= point_date
-        and (nav := _safe_float(item.get("nav"))) is not None
-        and nav > 1e-12
-    ]
-    if not nav_points:
+    if not np.isfinite(simulation_nav) or simulation_nav <= 1e-12:
         raise ValueError(
-            f"{point_date.isoformat()} derivative capital reference lacks positive actual NAV."
+            f"{point_date.isoformat()} derivative capital requires positive simulation NAV."
         )
-    return target_value, actual_value_base / nav_points[-1][1]
+    # The fixed leg and the simulated book are both in starting-NAV units.
+    # The actual portfolio's later NAV is a different investment path.
+    return target_value, target_value / simulation_nav
 
 
 def _first_common_return_date_on_or_after(
@@ -5534,6 +3715,9 @@ def _replay_backtest_decisions(
     implementation_delay_days: int,
     derivative_capital_events: list[dict[str, object]] | None = None,
     cash_borrowing_allowed: bool = False,
+    capital_mode: str = CAPITAL_MODE_UNIT_NOTIONAL,
+    _allow_pending_funding_at_cutoff: bool = False,
+    _superseding_execution_date: date | None = None,
 ) -> dict[str, object]:
     _validate_backtest_assumptions(
         cash_yield_annual=cash_yield_annual,
@@ -5648,6 +3832,12 @@ def _replay_backtest_decisions(
             ),
             None,
         )
+        if superseding is None and _superseding_execution_date is not None and (
+            _superseding_execution_date <= date.fromisoformat(str(decision["actual_execution_date"]))
+        ):
+            # A valuation requested for the next decision must not first
+            # charge a pending trade that this same decision will supersede.
+            superseding = {"decision_date": as_of_date.isoformat()}
         if superseding is not None:
             reason = (
                 f"{decision['decision_date']} pending target was superseded by the "
@@ -5925,11 +4115,36 @@ def _replay_backtest_decisions(
                 or 0.0
             )
             all_instruments = set(risky_values).union(target_weight_map)
+            target_gross = sum(target_weight_map.values())
+            cash_reserve_weight = float(
+                decision.get("cash_reserve_weight")
+                if decision.get("cash_reserve_weight") is not None
+                else 1.0 - target_gross - derivative_reference_weight
+            )
+            fills_available_capital = abs(
+                target_gross + cash_reserve_weight + derivative_reference_weight - 1.0
+            ) <= 1e-7
+
+            def target_values_at_nav(target_nav: float) -> dict[str, float]:
+                risky_capital = target_gross * target_nav
+                if capital_mode in {CAPITAL_MODE_UNIT_NOTIONAL, CAPITAL_MODE_VOLATILITY_CAP}:
+                    # Cash is a NAV reserve, while the no-trade derivative is
+                    # an absolute amount. Size only the adjustable security
+                    # book after both are funded, including execution fees.
+                    funded_capital = max((1.0 - cash_reserve_weight) * target_nav - derivative_value, 0.0)
+                    risky_capital = (
+                        funded_capital if capital_mode == CAPITAL_MODE_UNIT_NOTIONAL and fills_available_capital
+                        else min(risky_capital, funded_capital)
+                    )
+                return {
+                    instrument_id: weight / target_gross * risky_capital
+                    for instrument_id, weight in target_weight_map.items()
+                } if target_gross > 1e-12 else {}
 
             def cost_at_nav(target_nav: float) -> float:
+                sized_targets = target_values_at_nav(target_nav)
                 amounts = [
-                    float(target_weight_map.get(instrument_id, 0.0)) * target_nav
-                    - risky_values.get(instrument_id, 0.0)
+                    sized_targets.get(instrument_id, 0.0) - risky_values.get(instrument_id, 0.0)
                     for instrument_id in all_instruments
                 ]
                 return (
@@ -5947,10 +4162,26 @@ def _replay_backtest_decisions(
                 nav_before_trade,
                 xtol=1e-14,
             )
-            target_values = {
-                instrument_id: float(weight) * investable_nav
-                for instrument_id, weight in target_weight_map.items()
+            target_values = target_values_at_nav(investable_nav)
+            implemented_weights = {
+                instrument_id: value / investable_nav
+                for instrument_id, value in target_values.items()
             }
+            for bound in decision.get("top_sleeve_weight_bounds") or []:
+                node_id = bound["taxonomy_node_id"]
+                weight = sum(
+                    implemented_weights.get(str(row.get("instrument_id") or ""), 0.0)
+                    for row in decision.get("target_weights") or []
+                    if row.get("top_sleeve_id") == node_id
+                )
+                if (
+                    bound.get("min_weight") is not None and weight < float(bound["min_weight"]) - 1e-7
+                    or bound.get("max_weight") is not None and weight > float(bound["max_weight"]) + 1e-7
+                ):
+                    raise ValueError(
+                        f"{event_date.isoformat()} fixed-capital funding and execution costs violate "
+                        f"the hard weight bounds for {node_id}; the rebalance is not executable."
+                    )
             trades = {
                 instrument_id: target_values.get(instrument_id, 0.0)
                 - risky_values.get(instrument_id, 0.0)
@@ -5968,6 +4199,11 @@ def _replay_backtest_decisions(
                 investable_nav - sum(target_values.values()) - derivative_target_value
             )
             target_cash_weight = target_cash_value / investable_nav
+            if capital_mode in {CAPITAL_MODE_UNIT_NOTIONAL, CAPITAL_MODE_VOLATILITY_CAP} and target_cash_weight < cash_reserve_weight - 1e-10:
+                raise ValueError(
+                    f"{event_date.isoformat()} fixed derivative capital and execution costs leave "
+                    "insufficient capital for the configured cash reserve; the rebalance is not executable."
+                )
             derivative_leg = 0.0
             cash_leg = abs(target_cash_value - cash_value) / nav_before_trade
             buy_turnover = buy_amount / nav_before_trade
@@ -6014,7 +4250,10 @@ def _replay_backtest_decisions(
                     "taxonomy_configuration_version": decision.get(
                         "taxonomy_configuration_version"
                     ),
-                    "target_weights": deepcopy(decision.get("target_weights") or []),
+                    "target_weights": [
+                        {**deepcopy(row), "target_weight": implemented_weights.get(str(row.get("instrument_id") or ""), 0.0)}
+                        for row in decision.get("target_weights") or []
+                    ],
                     "cash_target_weight": target_cash_weight,
                     "derivative_target_weight": derivative_target_weight,
                     "derivative_reference_weight": derivative_reference_weight,
@@ -6033,7 +4272,9 @@ def _replay_backtest_decisions(
                     "nav_after_execution": nav_after_trade,
                 }
             )
-        if cash_value < -1e-10 and not cash_borrowing_allowed:
+        if cash_value < -1e-10 and not cash_borrowing_allowed and not (
+            _allow_pending_funding_at_cutoff and event_date == as_of_date and due_derivative_events
+        ):
             event_label = ", ".join(
                 str(item.get("effective_date") or event_date.isoformat())
                 for item in due_derivative_events
@@ -6357,7 +4598,6 @@ def build_current_target_backtest(
     target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     calculation_frequency: str = "daily",
-    target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
@@ -6382,7 +4622,6 @@ def build_current_target_backtest(
 ) -> dict[str, object]:
     _validate_research_solve_configuration(
         calculation_frequency=calculation_frequency,
-        target_dimension=target_dimension,
         capital_mode=capital_mode,
         gross_exposure=gross_exposure,
         target_volatility=target_volatility,
@@ -6398,6 +4637,8 @@ def build_current_target_backtest(
     )
     warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
     methodology = {
+        "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
+        "risk_attribution_scope": "portfolio" if comparator_taxonomy_node_id is None else "selected_research_scope",
         "name": "Current-target historical simulation",
         "point_in_time_universe": False,
         "point_in_time_taxonomy": False,
@@ -6430,7 +4671,9 @@ def build_current_target_backtest(
         ),
         "cost_rule": (
             "Commission and slippage apply to risky buys and sells; tax applies to risky sells. "
-            "Target amounts use post-cost NAV so an unlevered allocation does not borrow to fund its fees."
+            "Fees and security amounts are solved together against post-cost NAV. Fixed derivative capital "
+            "is funded first; unit-notional and volatility-cap executions preserve the solved relative "
+            "security allocation while sizing within the cash reserve and final hard weight bounds."
         ),
         "contribution_linking": (
             "Daily component profit is accumulated in starting-NAV units; cash and execution costs "
@@ -6585,10 +4828,35 @@ def build_current_target_backtest(
     skipped_rebalance_dates: list[dict[str, str]] = []
     for rebalance_date in rebal_dates:
         try:
+            simulation_nav = 1.0
+            if decisions and derivative_context.get("events"):
+                prior_replay = _replay_backtest_decisions(
+                    decisions,
+                    returns_by_instrument=returns_by_instrument,
+                    as_of_date=rebalance_date,
+                    cash_yield_annual=cash_yield_annual,
+                    commission_bps=commission_bps,
+                    tax_bps=tax_bps,
+                    slippage_bps=slippage_bps,
+                    implementation_delay_days=implementation_delay_days,
+                    derivative_capital_events=list(derivative_context.get("events") or []),
+                    cash_borrowing_allowed=bool(methodology["assumptions"]["cash_borrowing_allowed"]),
+                    capital_mode=capital_mode,
+                    # This solve supplies funding for today's recorded fixed
+                    # leg. Intermediate NAV may include that not-yet-funded
+                    # transfer; the final replay never grants this exception.
+                    _allow_pending_funding_at_cutoff=True,
+                    _superseding_execution_date=rebalance_date + timedelta(
+                        days=0 if rebalance_date in derivative_trigger_dates else implementation_delay_days
+                    ),
+                )
+                if prior_replay["points"]:
+                    simulation_nav = float(prior_replay["points"][-1]["value"])
             derivative_target_value, derivative_reference_weight = (
                 _derivative_backtest_state_on(
                     derivative_context,
                     point_date=rebalance_date,
+                    simulation_nav=simulation_nav,
                 )
                 if comparator_taxonomy_node_id is None
                 else (0.0, 0.0)
@@ -6609,7 +4877,6 @@ def build_current_target_backtest(
                 target_configuration=configuration,
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
-                target_dimension=target_dimension,
                 capital_mode=capital_mode,
                 gross_exposure=gross_exposure,
                 target_volatility=target_volatility,
@@ -6658,6 +4925,14 @@ def build_current_target_backtest(
             warnings.append(f"{rebalance_date.isoformat()} rebalance skipped: {reason}")
             continue
 
+        # A constrained solution is useful research, but the saved simulation
+        # must retain the dated target miss instead of silently discarding it.
+        warnings.extend(
+            f"{rebalance_date.isoformat()} rebalance: {warning}"
+            for warning in period_solution.get("warnings", [])
+            if str(warning).startswith("Global conditional targets remain off")
+        )
+
         target_weight_map = _backtest_target_weights(period_solution)
         missing_history = sorted(
             instrument_id
@@ -6700,6 +4975,12 @@ def build_current_target_backtest(
                     "taxonomy_configuration_version"
                 ),
                 "target_weights": target_weights,
+                "cash_reserve_weight": sum(
+                    float(row.get("target_weight") or 0.0)
+                    for row in period_solution.get("resolved_target_rows", [])
+                    if row.get("member_type") == TARGET_MEMBER_CASH
+                ),
+                "top_sleeve_weight_bounds": deepcopy(top_sleeve_weight_bounds or []) if comparator_taxonomy_node_id is None else [],
                 "derivative_target_value": derivative_target_value,
                 "derivative_reference_weight": derivative_reference_weight,
                 "derivative_target_weight": sum(
@@ -6744,6 +5025,7 @@ def build_current_target_backtest(
         cash_borrowing_allowed=bool(
             methodology["assumptions"]["cash_borrowing_allowed"]
         ),
+        capital_mode=capital_mode,
     )
     warnings.extend(list(base_replay.get("warnings") or []))
     skipped_rebalance_dates.extend(
@@ -6793,6 +5075,7 @@ def build_current_target_backtest(
             cash_borrowing_allowed=bool(
                 methodology["assumptions"]["cash_borrowing_allowed"]
             ),
+            capital_mode=capital_mode,
             **scenario_inputs,
         )
         scenario_points = list(scenario_replay.get("points") or [])
@@ -6902,7 +5185,6 @@ def solve_current_target_weights(
     target_configuration: dict[str, object] | None = None,
     lookback_days: int,
     calculation_frequency: str = "daily",
-    target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
@@ -6920,7 +5202,6 @@ def solve_current_target_weights(
 ) -> dict[str, object]:
     _validate_research_solve_configuration(
         calculation_frequency=calculation_frequency,
-        target_dimension=target_dimension,
         capital_mode=capital_mode,
         gross_exposure=gross_exposure,
         target_volatility=target_volatility,
@@ -6956,7 +5237,6 @@ def solve_current_target_weights(
         as_of_date=as_of_date,
         lookback_days=lookback_days,
         calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
-        target_dimension=target_dimension,
         capital_mode=capital_mode,
         gross_exposure=gross_exposure,
         target_volatility=target_volatility,
@@ -6983,12 +5263,9 @@ def solve_current_target_weights(
             leaf_rows=scope_result.leaf_target_rows,
             member_rows=scope_result.member_target_rows,
             scope_value_base=scope_value_base,
+            forward_rc_by_key=scope_result.forward_risk_contribution_by_key,
             top_sleeve_bound_weight_by_id=scope_result.top_sleeve_bound_weight_by_id,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
-            missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
-            risk_model_config=risk_model_config,
+            scope_node_id=comparator_taxonomy_node_id,
         )
         warnings = list(dict.fromkeys([*warnings, *solved_result_warnings]))
         target_weight_gaps = _build_leaf_target_weight_gaps(
@@ -7008,6 +5285,8 @@ def solve_current_target_weights(
         solved_result_groups = []
         target_weight_gaps = []
     return {
+        "solver_version": RESEARCH_TARGET_SOLVER_VERSION,
+        "risk_attribution_scope": "portfolio" if comparator_taxonomy_node_id is None else "selected_research_scope",
         "portfolio_id": portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
         "planning_taxonomy_name": state.taxonomy_name,
@@ -7019,7 +5298,7 @@ def solve_current_target_weights(
             "label": scope_result.scope_label,
             "path": scope_result.scope_path,
             "depth": scope_result.scope_depth,
-            "default_target_dimension": scope_result.default_target_dimension,
+            "allocation_basis": scope_result.allocation_basis,
             "member_source": scope_result.member_source,
         },
         "member_targets": deepcopy(scope_result.member_target_rows),

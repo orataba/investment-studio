@@ -53,8 +53,8 @@ def test_flat_table_profile_accepts_only_final_heads(
         "identity": "20260919_0002",
         "instrument_data": "20260920_0036",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260920_0065",
-        "watchlist": "20260920_0060",
+        "portfolio": "20260923_0068",
+        "watchlist": "20260923_0062",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",
     }
@@ -151,10 +151,10 @@ def test_audit_contract_names_cover_registry_0019(
     assert "price_bar_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "holding_valuation_basis_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
-        "analytics_scope_missing_current_selection"
-        in audit_module.AUDIT_CHECK_NAMES
+        "taxonomy_default_planning_invalid"
+        not in audit_module.AUDIT_CHECK_NAMES
     )
-    assert "analytics_scope_incomplete_configuration" in audit_module.AUDIT_CHECK_NAMES
+    assert "taxonomy_configuration_state_incomplete" in audit_module.AUDIT_CHECK_NAMES
     assert "cash_cumulative_nav_in_return_policy" not in audit_module.AUDIT_CHECK_NAMES
     assert not hasattr(audit_module, "CASH_CUMULATIVE_NAV_BASES_SQL")
     assert "fx-usd-hkd" in audit_module.MAINTAINED_FX_IDENTITIES_SQL
@@ -297,7 +297,8 @@ def test_twr_audit_cte_projects_daily_twr(
     monkeypatch.setattr(audit_module, "_scalar", capture_scalar)
 
     database_url = "postgresql+psycopg://" + "user:" + "secret" + "@localhost/audit_db"
-    audit_module._run_flat_table_audit(database_url)
+    checks = audit_module._run_flat_table_audit(database_url)
+    assert {check.name for check in checks} == set(audit_module.AUDIT_CHECK_NAMES)
 
     nav_query = next(
         query
@@ -360,15 +361,11 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "stock_source_price IS DISTINCT FROM" in option_delivery_query
     assert "stock_settlement_cash_account_id IS NULL" in option_delivery_query
 
-    analytics_selection_query = next(
-        query
-        for query in queries
-        if "analytics_taxonomy_selection_record" in query
-        and "default_planning_taxonomy_id" in query
-    )
-    assert "portfolio.default_planning_taxonomy_id IS NOT NULL" in (
-        analytics_selection_query
-    )
+    assert not any("default_planning_taxonomy_id" in query for query in queries)
+    target_query = next(query for query in queries if "WITH target_totals AS" in query)
+    assert "line.target_value" in target_query
+    assert "cash_reserve" in target_query
+    assert "target_set.weight_enabled" not in target_query
 
     twr_query = next(query for query in queries if "AS recomputed_twr" in query)
     linked_projection = re.search(
@@ -459,18 +456,13 @@ def test_twr_audit_cte_projects_daily_twr(
     )
     assert "catalog.exchange_code IN ('XASE', 'ARCX')" in etf_catalog_query
     assert "'XASE', 'ARCX', 'BATS'" in etf_catalog_query
-    missing_selection_query = next(
-        query
-        for query in queries
-        if "analytics_taxonomy_selection_record" in query
-        and "taxonomy_configuration_revision" not in query
+    configuration_state_query = next(
+        query for query in queries
+        if "portfolio.portfolio_taxonomy_state state" in query
     )
-    assert "superseded_by_selection_id IS NULL" in missing_selection_query
-    incomplete_configuration_query = next(
-        query for query in queries if "WITH current_selection AS" in query
-    )
-    assert "taxonomy_node_id = '__root__'" in incomplete_configuration_query
-    assert "taxonomy_node_id = '__unassigned__'" in incomplete_configuration_query
+    assert "state.current_version < revision.configuration_version" in configuration_state_query
+    assert not any("analytics_scope_policy_record" in query or "analytics_taxonomy_selection_record" in query
+        for query in queries)
 
 
 @pytest.mark.parametrize(
@@ -649,8 +641,8 @@ def test_unassigned_readiness_is_disclosed_without_bypassing_integrity_gate(
     assert 'not ready' in readiness.detail
     checks = [readiness]
     if other_status:
-        checks.append(audit_module.AuditCheck(name='analytics_scope_incomplete_configuration',
-            status=other_status, value=1, limit=0, detail='Missing required scope policy.'))
+        checks.append(audit_module.AuditCheck(name='taxonomy_configuration_state_incomplete',
+            status=other_status, value=1, limit=0, detail='Missing taxonomy configuration version.'))
     profile = audit_module.SchemaProfile(family='flat-table', status='supported',
         versions={}, reason='fixture', capabilities={})
     monkeypatch.setattr(audit_module, 'run_audit_report', lambda _url: (profile, checks))

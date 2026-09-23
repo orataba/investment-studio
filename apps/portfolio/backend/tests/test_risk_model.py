@@ -11,6 +11,7 @@ from portfolio_app.services.research_solver import (
     risk_contribution_shares,
 )
 from portfolio_app.services.risk_model import enrich_holdings_forward_risk
+from portfolio_app.services.holdings_workspace import _enrich_holdings_model_coverage
 
 
 AS_OF_DATE = date(2026, 7, 24)
@@ -47,7 +48,6 @@ def _holding(
         "allocation": weight,
         "market_value_base": weight * 1_000_000,
         "risk_eligible": True,
-        "risk_budget_eligible": True,
         "instrument_return_series_all": {
             "points": points if points is not None else _return_points(),
         },
@@ -74,7 +74,7 @@ def _workspace(
     return {
         "base_currency": "CNY",
         "rows": rows,
-        "analytics_scope_summary": {"total_nav": total_nav},
+        "risk_coverage_summary": {"total_nav": total_nav},
         **overrides,
     }
 
@@ -104,6 +104,9 @@ def test_forward_risk_uses_one_canonical_leaf_model_and_reports_coverage() -> No
     )
 
     assert result["forward_risk"]["status"] == "ok"
+    assert result["forward_risk"]["model_name"] == "Market risk model"
+    assert "scope_policy_versions" not in result["forward_risk"]
+    assert "configuration_versions" not in result["forward_risk"]
     coverage = result["forward_risk"]["coverage"]
     assert coverage == {
         "policy": "strict",
@@ -164,14 +167,13 @@ def test_forward_risk_uses_total_nav_weights_and_discloses_derivative_exclusion(
         "derivative_contract_id": "fcn",
         "derivative_contract": {"contract_type": "fcn"},
         "risk_eligible": False,
-        "risk_budget_eligible": False,
         "market_value_base": 600_000.0,
     }
     workspace = {
         "base_currency": "CNY",
         "rows": [eligible, ineligible],
-        "analytics_scope_summary": {
-            "scope_name": "Modeled Market Sleeve",
+        "risk_coverage_summary": {
+            "model_name": "Market risk model",
             "total_nav": 1_000_000.0,
             "modeled_net_exposure": 400_000.0,
             "modeled_gross_exposure": 400_000.0,
@@ -213,7 +215,7 @@ def test_forward_risk_uses_total_nav_weights_and_discloses_derivative_exclusion(
     assert result["rows"][1]["forward_annualized_volatility"] is None
 
 
-def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() -> None:
+def test_forward_risk_is_unavailable_when_every_exposure_is_an_unsupported_derivative() -> None:
     excluded = {
         **_holding("fcn", 1.0),
         "holding_kind": "derivative_contract",
@@ -222,7 +224,6 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
         "derivative_contract_id": "fcn",
         "derivative_contract": {"contract_type": "fcn"},
         "risk_eligible": False,
-        "risk_budget_eligible": False,
     }
 
     result = enrich_holdings_forward_risk(
@@ -238,6 +239,32 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
     ]
     assert result["rows"][0]["forward_risk_status"] == "excluded"
     assert result["rows"][0]["forward_risk_share"] is None
+
+
+@pytest.mark.parametrize("missing_data", [{"last_price": None}, {"fair_value_coverage_status": "partial"}])
+def test_forward_risk_does_not_treat_missing_market_valuation_as_zero_risk(missing_data) -> None:
+    rows = [
+        {**_holding("known", 0.6), "holding_kind": "position", "valuation_basis": "market_quote", "fair_value_coverage_status": "complete", "last_price": 10.0},
+        {**_holding("missing", 0.4), "holding_kind": "position", "valuation_basis": "market_quote", "fair_value_coverage_status": "complete", "last_price": 10.0, **missing_data},
+    ]
+    workspace = _enrich_holdings_model_coverage({"base_currency": "CNY", "totals": {"nav": 1_000_000.0}, "rows": rows})
+
+    result = enrich_holdings_forward_risk(
+        workspace,
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "unavailable"
+    assert result["forward_risk"]["errors"] == [
+        "Forward RC cannot treat unmodeled market exposure missing as zero risk."
+    ]
+    assert result["forward_risk"]["coverage_ratio"] == pytest.approx(0.6)
+    assert result["forward_risk"]["excluded_carrying_value"] == pytest.approx(400_000.0)
+    assert rows[1]["modeling_status"] == "unavailable"
+    assert rows[1]["forward_risk_status"] == "valuation_unavailable"
+    assert rows[1]["forward_risk_share"] is None
 
 
 def test_forward_risk_models_base_currency_monetary_rows_as_zero_return_capital() -> None:
@@ -258,7 +285,6 @@ def test_forward_risk_models_base_currency_monetary_rows_as_zero_return_capital(
             },
             "market_value_base": 100_000.0,
             "risk_eligible": False,
-            "risk_budget_eligible": False,
         }
 
     result = enrich_holdings_forward_risk(
@@ -290,6 +316,34 @@ def test_forward_risk_models_base_currency_monetary_rows_as_zero_return_capital(
     )
 
 
+@pytest.mark.parametrize("eligible", [False, True])
+@pytest.mark.parametrize("quantity", [100, -100, None])
+def test_forward_risk_does_not_treat_missing_valuation_as_zero_exposure(eligible, quantity) -> None:
+    missing = {**_holding("missing", .5), "quantity": quantity, "market_value_base": None,
+        "risk_eligible": eligible}
+    result = enrich_holdings_forward_risk(
+        _workspace([_holding("known", .5), missing]), as_of_date=AS_OF_DATE,
+        calculation_frequency="daily", risk_policy=_risk_policy(),
+    )
+    assert result["forward_risk"]["status"] == "unavailable"
+    assert result["forward_risk"]["errors"] == [
+        "Forward RC cannot treat unmodeled market exposure missing as zero risk."]
+    assert missing["forward_risk_status"] == "valuation_unavailable"
+    assert missing["forward_risk_share"] is None
+    assert result["rows"][0]["forward_risk_share"] is None
+
+
+def test_forward_risk_does_not_require_a_value_for_a_known_zero_quantity() -> None:
+    closed = {**_holding("closed", 0), "quantity": 0, "market_value_base": None}
+    result = enrich_holdings_forward_risk(
+        _workspace([_holding("known", 1), closed]), as_of_date=AS_OF_DATE,
+        calculation_frequency="daily", risk_policy=_risk_policy(),
+    )
+    assert result["forward_risk"]["status"] == "ok"
+    assert closed["forward_risk_status"] == "no_exposure"
+    assert closed["forward_risk_share"] is None
+
+
 def test_forward_risk_is_unavailable_for_non_base_monetary_exposure_without_fx_returns() -> None:
     non_base_cash = {
         "line_id": "cash:USD",
@@ -302,7 +356,6 @@ def test_forward_risk_is_unavailable_for_non_base_monetary_exposure_without_fx_r
         },
         "market_value_base": 100_000.0,
         "risk_eligible": False,
-        "risk_budget_eligible": False,
     }
     result = enrich_holdings_forward_risk(
         _workspace([_holding("equity", 0.9), non_base_cash]),

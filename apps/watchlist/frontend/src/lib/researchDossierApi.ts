@@ -140,18 +140,25 @@ export type ResearchDossier = {
 }
 export type ResearchMaterialInput = { title: string; body: string; source: string; published_at?: string; effective_date?: string }
 
+export type ResearchThemeKind = 'fundamental' | 'event' | 'quantitative' | 'valuation' | 'risk' | 'other'
 export type ResearchThemeInput = {
-  title: string; question: string; background?: string; status?: 'active' | 'paused' | 'closed'; responsible_user_id?: string | null; close_reason?: string
+  title: string; question?: string; background?: string; status?: 'active' | 'paused' | 'closed'; responsible_user_id?: string | null; close_reason?: string
+  kind?: ResearchThemeKind; priority?: 'core' | 'important'; priority_reason?: string; pinned?: boolean
+  reference?: { research_update_id?: string; event_case_id?: string; event_version_id?: string; notebook_version_id?: string; investment_view_version_id?: string; theme_version_id?: string; source_ids?: string[] }
 }
 export type ResearchThemeProgress = {
   run_id: string; recorded_at: string; assessment: string; next_check: string; status: string; source_ids: string[]
 }
 export type ResearchTheme = ResearchThemeInput & {
+  question: string
   theme_id: string; instrument_id: string; status: 'active' | 'paused' | 'closed'; author_user_id: string; author: string
   created_at: string; updated_at: string; revision_number: number
   notes: InstrumentResearchNote[]; research_progress: ResearchThemeProgress[]
   origin?: 'user' | 'researcher'; close_reason?: string; theme_key?: string; updates?: ResearchUpdate[]
   last_changed_at?: string | null
+  synthesis?: string; latest_development?: string; next_check?: string; last_reviewed_at?: string | null
+  baseline_status?: 'pending' | 'ready'; research_run_id?: string | null; research_status?: string | null; research_message?: string
+  figure_source_ids?: string[]; sources?: NotebookSource[]; source_version_id: string
   current_questions?: Array<ResearchUpdate & {
     last_reviewed_at?: string | null; last_changed_at?: string | null
     last_review_status?: 'reviewed' | 'insufficient_evidence' | null
@@ -160,6 +167,7 @@ export type ResearchTheme = ResearchThemeInput & {
 export type ResearchThemesResponse = {
   identity: { user_id: string; display_name: string; mode: 'account'; local_unrestricted?: boolean; team_id?: string; team_role?: 'admin' | 'member' | 'reader' }
   themes: ResearchTheme[]
+  active_limit?: number; target_count?: number
 }
 const themesPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/themes`
 export function getResearchThemes(instrumentId: string, signal?: AbortSignal) {
@@ -189,10 +197,14 @@ export type SavedComparison = {
     correlation_to_target?: number | null; excess_return_pp?: number | null; return_kind?: string; quote_basis?: string }>
 }
 
+export type ResearchQuantTable = { key: string; title: string; columns: Array<{ key: string; label: string; unit?: string }>; rows: Array<Record<string, string | number | boolean | null>> }
+export type ResearchQuantChart = { key: string; title: string; kind: 'line' | 'bar'; table_key: string; x_key: string; series: Array<{ key: string; label: string }>; x_label?: string; y_label?: string }
+
 export type SavedResearchSource = NotebookSource & EventSource & {
   text?: string; body?: string
   snapshot?: Record<string, unknown>; company?: Record<string, unknown>
   data?: SavedComparison & Record<string, unknown> & {
+    analysis_kind?: string; summary?: string; metrics?: Record<string, unknown>; tables?: ResearchQuantTable[]; charts?: ResearchQuantChart[]
     current?: { date: string; volatility_pct: number } | null
     previous?: { date: string; volatility_pct: number } | null
     change_pp?: number | null; five_session_change_pp?: number | null
@@ -235,17 +247,10 @@ export type ResearchUpdate = {
     source_run_id: string; source_notebook_version_id: string; source_update_id: string
     reason: string; corrected_at: string; original_recorded_at: string
   }
-}
-export type CurrentResearchFollowup = {
-  followup_id: string; kind: 'event' | 'question' | 'forecast' | 'schedule'
-  title: string; assessment: string; next_check: string; theme_ids: string[]
-  latest_update: ResearchUpdate; related_updates: ResearchUpdate[]
-  last_changed_at: string; last_reviewed_at?: string | null
-  last_review_status?: 'reviewed' | 'insufficient_evidence' | null
-  last_review_summary?: string
+  organization_revision?: { original_recorded_at?: string; source_update_id?: string; organized_at?: string }
 }
 export type ResearchActivityResponse = {
-  instrument_id: string; updates: ResearchUpdate[]; current_followups: CurrentResearchFollowup[]
+  instrument_id: string; updates: ResearchUpdate[]; recent_events: ResearchUpdate[]
 }
 export function getResearchActivity(instrumentId: string, signal?: AbortSignal) {
   return fetchJson<ResearchActivityResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })

@@ -53,7 +53,7 @@ def test_holdings_cache_builder_reads_transactions_after_generation_boundary(mon
     monkeypatch.setattr(workspace, "_require_portfolio", lambda *_a, **_k: {"portfolio_id": "p", "as_of_date": "2026-09-06"})
     monkeypatch.setattr(workspace, "list_transactions", lambda *_a, **_k: [{"generation": source["generation"]}])
     monkeypatch.setattr(workspace, "get_portfolio_risk_policy", lambda _pid: {})
-    monkeypatch.setattr(workspace, "analytics_policy_version", lambda _pid: 1)
+    monkeypatch.setattr(workspace, "taxonomy_configuration_version", lambda _pid: 1)
     monkeypatch.setattr(workspace, "_build_holdings_analytics_workspace", lambda _p, **kw: {"generation": kw["transactions"][0]["generation"]})
     monkeypatch.setattr(workspace, "_compact_holdings_workspace", lambda value: value)
     monkeypatch.setattr(workspace, "_public_holdings_workspace_response", lambda value, **_kw: value)
@@ -74,7 +74,7 @@ def test_risk_basis_cache_builder_reads_observations_after_generation_boundary(m
     monkeypatch.setattr(workspace, "calculation_frequency_profile_for_instruments", lambda ids, **kw: {"generation": kw["detail_loader"](ids[0])["generation"]})
     monkeypatch.setattr(workspace, "_holdings_workspace_has_market_profile", lambda *_a, **_kw: True)
     monkeypatch.setattr(workspace, "_materialized_holdings_workspace_response", lambda _value, **kw: kw["risk_basis_profile"])
-    monkeypatch.setattr(workspace, "_enrich_holdings_analytics_scope", lambda value, **_kw: value)
+    monkeypatch.setattr(workspace, "_enrich_holdings_model_coverage", lambda value, **_kw: value)
     monkeypatch.setattr(workspace, "enrich_holdings_forward_risk", lambda value, **_kw: value)
 
     def cache(_pid, **kwargs):

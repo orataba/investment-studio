@@ -24,8 +24,6 @@ from portfolio_app.services.research_solver import (
     CAPITAL_MODE_TARGET_VOLATILITY,
     CAPITAL_MODE_VOLATILITY_CAP,
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
-    RiskBudgetProblem,
-    RiskBudgetSolution,
     SYSTEM_CASH_TARGET_MEMBER_ID,
     SYSTEM_CASH_TARGET_LABEL,
     SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
@@ -47,18 +45,12 @@ from portfolio_app.services.research_solver import (
     _build_taxonomy_state,
     _estimate_covariance,
     _infer_periods_per_year,
-    _is_better_risk_budget_solution,
     _rebalance_schedule,
-    _resolve_active_top_sleeve_bound_vectors,
     _selected_price_points,
     _selected_target_risk_share,
     _current_scope_actuals,
-    _series_to_nav,
-    _resolve_volatility_overlay_gross_exposure,
     _replay_backtest_decisions,
     _solve_current_scope,
-    _solve_risk_budget_problem,
-    _solve_risk_budget_weights,
     _top_sleeve_for_member,
     _build_walk_forward_validation,
     build_current_target_backtest,
@@ -91,16 +83,14 @@ def test_fixed_capital_residual_defaults_to_cash_without_configured_targets() ->
     assert configured[cash_key] == pytest.approx(0.1)
 
 
-def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
+def _create_planning_taxonomy(client, *, root_allocation_basis: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
         "/api/portfolios/investment-studio/taxonomies",
         json={"name": "Research Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "weight_and_risk_budget",
-            "root_default_target_dimension": root_default_target_dimension,
-            "purpose": "Research recursive sleeve test",
+            "root_allocation_basis": root_allocation_basis,
+            "purpose": "Research global hierarchy test",
         },
     )
     assert taxonomy_response.status_code == 200
@@ -123,13 +113,13 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
             "node_name": "Defensive Equity",
             "node_code": "DEF",
             "parent_taxonomy_node_id": node_ids["Risk Assets"],
-            "default_target_dimension": "weight",
+            "allocation_basis": "weight",
         },
         {
             "node_name": "Hong Kong Beta",
             "node_code": "HKB",
             "parent_taxonomy_node_id": node_ids["Risk Assets"],
-            "default_target_dimension": "risk_budget",
+            "allocation_basis": "risk_budget",
         },
     ]:
         node_response = client.post(
@@ -153,85 +143,21 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         )
         assert assignment_response.status_code == 200
 
-    default_response = client.put(
-        "/api/portfolios/investment-studio/taxonomies/default-planning",
-        json={"taxonomy_id": taxonomy_id},
-    )
-    assert default_response.status_code == 200
     return taxonomy_id, node_ids
 
 
 def test_risk_target_resolution_excludes_cash_but_preserves_capital_context() -> None:
-    state = TaxonomyResearchState(
-        portfolio_id="portfolio-cash-contract",
-        planning_taxonomy_id="taxonomy-cash-contract",
-        taxonomy_name="Planning",
-        root_default_target_dimension="risk_budget",
-        base_currency="USD",
-        as_of_date=date(2026, 1, 2),
-        node_by_id={},
-        children_by_parent={},
-        node_path_by_id={},
-        node_depth_by_id={},
-        node_subtree_by_id={},
-        direct_assignments_by_node={},
-        target_sets_by_scope_type={
-            (None, "taa"): [
-                {
-                    "target_set_id": "target-cash-contract",
-                    "target_set_type": "taa",
-                    "name": "Combined Target",
-                    "weight_enabled": True,
-                    "risk_budget_enabled": True,
-                    "status": "active",
-                }
-            ]
-        },
-        target_lines_by_set_id={
-            "target-cash-contract": {
-                (TARGET_MEMBER_INSTRUMENT, "asset-a"): {
-                    "target_weight": 0.8,
-                    "target_risk_share": 1.0,
-                },
-                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {
-                    "target_weight": 0.2,
-                    "target_risk_share": None,
-                },
-            }
-        },
-        account_name_by_id={},
-        instrument_detail_cache={},
-        direct_fx_instruments={},
-        frozen_taxonomy_node_ids=frozenset(),
-        top_sleeve_weight_bounds={},
-    )
-    members = [
-        ScopeMemberRecord(
-            member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="asset-a",
-            label="Asset A",
-        ),
-        ScopeMemberRecord(
-            member_type=TARGET_MEMBER_CASH,
-            member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
-            label=SYSTEM_CASH_TARGET_LABEL,
-        ),
-    ]
-
-    rows, warnings = research_solver_service._resolve_dimension_target_rows(
-        state,
-        scope_node_id=None,
-        scope_members=members,
-        as_of_date=date(2026, 1, 2),
-        selected_dimension="risk_budget",
-    )
-
+    from .test_global_research_solver import tree
+    state = tree()
+    state.target_lines_by_set_id["root"][(TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID)]["target_value"] = .2
+    members, _ = research_solver_service._scope_members(state, scope_node_id=None)
+    rows, warnings = research_solver_service._resolve_scope_target_rows(state, scope_node_id=None, scope_members=members)
     assert warnings == []
-    risky_row = next(row for row in rows if row["member_type"] == TARGET_MEMBER_INSTRUMENT)
+    risky_row = next(row for row in rows if row["member_id"] == "a")
     cash_row = next(row for row in rows if row["member_type"] == TARGET_MEMBER_CASH)
-    assert risky_row["selected_value"] == pytest.approx(1.0)
-    assert risky_row["target_risk_share"] == pytest.approx(1.0)
-    assert cash_row["target_weight"] == pytest.approx(0.2)
+    assert risky_row["selected_value"] == pytest.approx(.5)
+    assert risky_row["target_risk_share"] == pytest.approx(.5)
+    assert cash_row["target_weight"] == pytest.approx(.2)
     assert cash_row["selected_value"] is None
     assert cash_row["target_risk_share"] is None
 
@@ -241,7 +167,7 @@ def test_cash_is_rendered_as_cash_instead_of_unassigned() -> None:
         portfolio_id="portfolio-cash-label",
         planning_taxonomy_id="taxonomy-cash-label",
         taxonomy_name="Planning",
-        root_default_target_dimension="risk_budget",
+        root_allocation_basis="risk_budget",
         base_currency="USD",
         as_of_date=date(2026, 1, 2),
         node_by_id={},
@@ -267,104 +193,22 @@ def test_cash_is_rendered_as_cash_instead_of_unassigned() -> None:
 
 
 def test_risk_target_resolution_is_unavailable_for_cash_only_scope() -> None:
-    state = TaxonomyResearchState(
-        portfolio_id="portfolio-cash-only",
-        planning_taxonomy_id="taxonomy-cash-only",
-        taxonomy_name="Planning",
-        root_default_target_dimension="risk_budget",
-        base_currency="USD",
-        as_of_date=date(2026, 1, 2),
-        node_by_id={},
-        children_by_parent={},
-        node_path_by_id={},
-        node_depth_by_id={},
-        node_subtree_by_id={},
-        direct_assignments_by_node={},
-        target_sets_by_scope_type={},
-        target_lines_by_set_id={},
-        account_name_by_id={},
-        instrument_detail_cache={},
-        direct_fx_instruments={},
-        frozen_taxonomy_node_ids=frozenset(),
-        top_sleeve_weight_bounds={},
-    )
-
-    with pytest.raises(ValueError, match="risk budget is unavailable: no risky members"):
-        research_solver_service._resolve_dimension_target_rows(
-            state,
-            scope_node_id=None,
-            scope_members=[
-                ScopeMemberRecord(
-                    member_type=TARGET_MEMBER_CASH,
-                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
-                    label=SYSTEM_CASH_TARGET_LABEL,
-                )
-            ],
-            as_of_date=date(2026, 1, 2),
-            selected_dimension="risk_budget",
-        )
+    from dataclasses import replace
+    from .test_global_research_solver import tree
+    state = replace(tree(), node_by_id={}, children_by_parent={}, direct_assignments_by_node={}, target_sets_by_scope_type={}, target_lines_by_set_id={})
+    members, _ = research_solver_service._scope_members(state, scope_node_id=None)
+    with pytest.raises(ValueError, match="no active complete allocation target"):
+        research_solver_service._resolve_scope_target_rows(state, scope_node_id=None, scope_members=members)
 
 
-def test_single_risky_member_with_cash_does_not_bypass_incomplete_enabled_target_set() -> None:
-    state = TaxonomyResearchState(
-        portfolio_id="portfolio-incomplete-single-risky",
-        planning_taxonomy_id="taxonomy-incomplete-single-risky",
-        taxonomy_name="Planning",
-        root_default_target_dimension="risk_budget",
-        base_currency="USD",
-        as_of_date=date(2026, 1, 2),
-        node_by_id={},
-        children_by_parent={},
-        node_path_by_id={},
-        node_depth_by_id={},
-        node_subtree_by_id={},
-        direct_assignments_by_node={},
-        target_sets_by_scope_type={
-            (None, "taa"): [
-                {
-                    "target_set_id": "target-incomplete-single-risky",
-                    "target_set_type": "taa",
-                    "name": "Incomplete Combined Target",
-                    "weight_enabled": True,
-                    "risk_budget_enabled": True,
-                    "status": "active",
-                }
-            ]
-        },
-        target_lines_by_set_id={
-            "target-incomplete-single-risky": {
-                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {
-                    "target_weight": 0.2,
-                    "target_risk_share": None,
-                }
-            }
-        },
-        account_name_by_id={},
-        instrument_detail_cache={},
-        direct_fx_instruments={},
-        frozen_taxonomy_node_ids=frozenset(),
-        top_sleeve_weight_bounds={},
-    )
-
-    with pytest.raises(ValueError, match="target set is incomplete.*Asset A"):
-        research_solver_service._resolve_dimension_target_rows(
-            state,
-            scope_node_id=None,
-            scope_members=[
-                ScopeMemberRecord(
-                    member_type=TARGET_MEMBER_INSTRUMENT,
-                    member_id="asset-a",
-                    label="Asset A",
-                ),
-                ScopeMemberRecord(
-                    member_type=TARGET_MEMBER_CASH,
-                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
-                    label=SYSTEM_CASH_TARGET_LABEL,
-                ),
-            ],
-            as_of_date=date(2026, 1, 2),
-            selected_dimension="risk_budget",
-        )
+def test_cash_only_tactical_does_not_bypass_incomplete_security_targets() -> None:
+    from .test_global_research_solver import tree
+    state = tree()
+    state.target_sets_by_scope_type[(None, "taa")] = [{"target_set_id": "tactical"}]
+    state.target_lines_by_set_id["tactical"] = {(TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {"target_value": .2}}
+    members, _ = research_solver_service._scope_members(state, scope_node_id=None)
+    with pytest.raises(ValueError, match="target set is incomplete"):
+        research_solver_service._resolve_scope_target_rows(state, scope_node_id=None, scope_members=members)
 
 
 @pytest.mark.parametrize('unassigned_values', [[100.0], [100.0, -100.0], [0.0]])
@@ -373,14 +217,14 @@ def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monke
         portfolio_id="portfolio-unassigned-test",
         planning_taxonomy_id="taxonomy-test",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="USD",
         as_of_date=date(2026, 1, 2),
         node_by_id={
             "node-risk": {
                 "node_name": "Risk",
                 "parent_taxonomy_node_id": None,
-                "default_target_dimension": "weight",
+                "allocation_basis": "weight",
             }
         },
         children_by_parent={None: ["node-risk"]},
@@ -435,14 +279,14 @@ def test_current_scope_actuals_keeps_derivatives_and_all_account_liquidity_as_ze
         portfolio_id="portfolio-derivative-boundary",
         planning_taxonomy_id="taxonomy-test",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="USD",
         as_of_date=date(2026, 1, 2),
         node_by_id={
             "node-risk": {
                 "node_name": "Risk",
                 "parent_taxonomy_node_id": None,
-                "default_target_dimension": "weight",
+                "allocation_basis": "weight",
             }
         },
         children_by_parent={None: ["node-risk"]},
@@ -592,9 +436,8 @@ def test_taxonomy_state_uses_registry_instruments_only(monkeypatch) -> None:
             "taxonomy": {
                 "taxonomy_id": "taxonomy",
                 "name": "Planning",
-                "root_default_target_dimension": "weight",
+                "root_allocation_basis": "weight",
                 "primary_assignment_scope": "instrument",
-                "planning_enabled": True,
                 "status": "active",
             },
             "taxonomy_nodes": [
@@ -645,14 +488,14 @@ def test_current_scope_actuals_reuses_one_portfolio_valuation_across_scopes(monk
         portfolio_id="portfolio-cache-test",
         planning_taxonomy_id="taxonomy-test",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="USD",
         as_of_date=date(2026, 1, 2),
         node_by_id={
             "node-risk": {
                 "node_name": "Risk",
                 "parent_taxonomy_node_id": None,
-                "default_target_dimension": "weight",
+                "allocation_basis": "weight",
             }
         },
         children_by_parent={None: ["node-risk"]},
@@ -736,9 +579,8 @@ def test_taxonomy_state_reuses_seeded_market_data_caches(monkeypatch) -> None:
             "taxonomy": {
                 "taxonomy_id": "taxonomy-cache-test",
                 "name": "Planning",
-                "root_default_target_dimension": "risk_budget",
+                "root_allocation_basis": "risk_budget",
                 "primary_assignment_scope": "instrument",
-                "planning_enabled": True,
                 "status": "active",
             },
             "taxonomy_nodes": [],
@@ -804,14 +646,14 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
         portfolio_id="portfolio-zero-budget",
         planning_taxonomy_id="taxonomy-zero-budget",
         taxonomy_name="Planning",
-        root_default_target_dimension="risk_budget",
+        root_allocation_basis="risk_budget",
         base_currency="USD",
         as_of_date=long_dates[-1],
         node_by_id={
             "scope": {
                 "node_name": "Risk Sleeve",
                 "parent_taxonomy_node_id": None,
-                "default_target_dimension": "risk_budget",
+                "allocation_basis": "risk_budget",
             }
         },
         children_by_parent={None: ["scope"]},
@@ -831,17 +673,15 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
                     "target_set_id": "target-zero-budget",
                     "target_set_type": "taa",
                     "name": "Zero budget exclusion",
-                    "weight_enabled": False,
-                    "risk_budget_enabled": True,
                     "status": "active",
                 }
             ]
         },
         target_lines_by_set_id={
             "target-zero-budget": {
-                ("instrument", "asset-a"): {"target_risk_share": 0.5},
-                ("instrument", "asset-b"): {"target_risk_share": 0.5},
-                ("instrument", "asset-short"): {"target_risk_share": 0.0},
+                ("instrument", "asset-a"): {"target_value": 0.5},
+                ("instrument", "asset-b"): {"target_value": 0.5},
+                ("instrument", "asset-short"): {"target_value": 0.0},
             }
         },
         account_name_by_id={},
@@ -861,7 +701,6 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
         as_of_date=long_dates[-1],
         lookback_days=30,
         calculation_frequency="daily",
-        target_dimension="risk_budget",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
@@ -918,14 +757,14 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         portfolio_id="portfolio-zero-weight",
         planning_taxonomy_id="taxonomy-zero-weight",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="USD",
         as_of_date=date(2026, 7, 9),
         node_by_id={
             "scope": {
                 "node_name": "Low Correlation",
                 "parent_taxonomy_node_id": None,
-                "default_target_dimension": "weight",
+                "allocation_basis": "weight",
             }
         },
         children_by_parent={None: ["scope"]},
@@ -944,16 +783,14 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
                     "target_set_id": "target-zero-weight",
                     "target_set_type": "taa",
                     "name": "Zero weight exclusion",
-                    "weight_enabled": True,
-                    "risk_budget_enabled": False,
                     "status": "active",
                 }
             ]
         },
         target_lines_by_set_id={
             "target-zero-weight": {
-                ("instrument", "active"): {"target_weight": 1.0},
-                ("instrument", "late-zero"): {"target_weight": 0.0},
+                ("instrument", "active"): {"target_value": 1.0},
+                ("instrument", "late-zero"): {"target_value": 0.0},
             }
         },
         account_name_by_id={},
@@ -991,7 +828,6 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         as_of_date=date(2026, 7, 9),
         lookback_days=30,
         calculation_frequency="daily",
-        target_dimension="scope_default",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
@@ -1042,12 +878,12 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
         portfolio_id="portfolio-bound-zero",
         planning_taxonomy_id="taxonomy-bound-zero",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="USD",
         as_of_date=dates[-1],
         node_by_id={
-            "node-a": {"node_name": "A", "parent_taxonomy_node_id": None, "default_target_dimension": "weight"},
-            "node-b": {"node_name": "B", "parent_taxonomy_node_id": None, "default_target_dimension": "weight"},
+            "node-a": {"node_name": "A", "parent_taxonomy_node_id": None, "allocation_basis": "weight"},
+            "node-b": {"node_name": "B", "parent_taxonomy_node_id": None, "allocation_basis": "weight"},
         },
         children_by_parent={None: ["node-a", "node-b"]},
         node_path_by_id={"node-a": "Top Level / A", "node-b": "Top Level / B"},
@@ -1063,16 +899,14 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
                     "target_set_id": "root-zero-with-min",
                     "target_set_type": "taa",
                     "name": "Root weights",
-                    "weight_enabled": True,
-                    "risk_budget_enabled": False,
                     "status": "active",
                 }
             ]
         },
         target_lines_by_set_id={
             "root-zero-with-min": {
-                ("taxonomy_node", "node-a"): {"target_weight": 1.0},
-                ("taxonomy_node", "node-b"): {"target_weight": 0.0},
+                ("taxonomy_node", "node-a"): {"target_value": 1.0},
+                ("taxonomy_node", "node-b"): {"target_value": 0.0},
             }
         },
         account_name_by_id={},
@@ -1088,7 +922,6 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
         as_of_date=dates[-1],
         lookback_days=30,
         calculation_frequency="daily",
-        target_dimension="weight",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
@@ -1146,7 +979,6 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
         as_of_date=dates[-1],
         lookback_days=30,
         calculation_frequency="daily",
-        target_dimension="weight",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
@@ -1160,14 +992,13 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
     assert frozen_row_by_id["node-b"]["target_weight"] == pytest.approx(0.35)
     assert frozen_row_by_id["node-a"]["target_weight"] == pytest.approx(0.65)
 
-    with pytest.raises(ValueError, match=r"B final weight .* is below its minimum"):
+    with pytest.raises(ValueError, match="Top sleeve minimum weights make the volatility constraint infeasible"):
         _solve_current_scope(
             state,
             scope_node_id=None,
             as_of_date=dates[-1],
             lookback_days=30,
             calculation_frequency="daily",
-            target_dimension="weight",
             capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
             gross_exposure=None,
             target_volatility=0.000001,
@@ -1189,18 +1020,15 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
                     "target_set_id": "root-all-fixed-capital",
                     "target_set_type": "taa",
                     "name": "Root all fixed capital",
-                    "weight_enabled": True,
-                    "risk_budget_enabled": False,
                     "status": "active",
                 }
             ]
         },
         target_lines_by_set_id={
             "root-all-fixed-capital": {
-                (TARGET_MEMBER_NODE, "node-a"): {"target_weight": 0.0},
-                (TARGET_MEMBER_NODE, "node-b"): {"target_weight": 0.0},
-                (TARGET_MEMBER_DERIVATIVE, SYSTEM_DERIVATIVE_TARGET_MEMBER_ID): {"target_weight": 0.0},
-                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {"target_weight": 1.0},
+                (TARGET_MEMBER_NODE, "node-a"): {"target_value": 0.0},
+                (TARGET_MEMBER_NODE, "node-b"): {"target_value": 0.0},
+                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {"target_value": 1.0},
             }
         },
         top_sleeve_weight_bounds={},
@@ -1212,7 +1040,6 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
             as_of_date=dates[-1],
             lookback_days=30,
             calculation_frequency="daily",
-            target_dimension="weight",
             capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
             gross_exposure=None,
             target_volatility=0.08,
@@ -1517,14 +1344,12 @@ def test_walk_forward_only_publishes_points_after_each_test_window_starts() -> N
 def test_research_assumptions_do_not_truncate_volatility_cap_or_backtest_caveats() -> None:
     assumptions = research_service._build_target_assumptions(
         settings_payload={
-            "target_dimension": "scope_default",
             "calculation_frequency": "daily",
             "missing_return_policy": "strict",
             "capital_mode": "volatility_cap",
         },
         target_rows=[],
         solve_event={
-            "target_dimension": "risk_budget",
             "calculation_frequency": "daily",
             "missing_return_policy": "strict",
             "covariance_model": "sample_covariance",
@@ -1536,7 +1361,8 @@ def test_research_assumptions_do_not_truncate_volatility_cap_or_backtest_caveats
     assert any("only scales risky exposure down" in assumption for assumption in assumptions)
     assert any("same current taxonomy membership" in assumption for assumption in assumptions)
     assert any("commission" in assumption for assumption in assumptions)
-    assert any("Look-through forward RC" in assumption for assumption in assumptions)
+    assert any("computed once at leaf level" in assumption for assumption in assumptions)
+    assert any("aggregate that same global solution" in assumption for assumption in assumptions)
 
 
 def test_planning_group_snapshot_does_not_count_system_cash_as_unassigned(monkeypatch):
@@ -1579,98 +1405,85 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
         {
             "target_set_type": "saa",
             "name": "Root SAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Risk Assets"],
-                    "target_weight": 0.55,
-                    "target_risk_share": 0.6,
-                },
+                    "target_value": 0.55,
+                    },
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Rates"],
-                    "target_weight": 0.3,
-                    "target_risk_share": 0.4,
-                },
+                    "target_value": 0.3,
+                    },
                 {
                     "target_member_type": TARGET_MEMBER_CASH,
                     "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
-                    "target_weight": 0.15,
-                    "target_risk_share": None,
-                },
+                    "target_value": 0.15,
+                    },
             ],
         },
         {
             "target_set_type": "taa",
             "name": "Root TAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Risk Assets"],
-                    "target_weight": 0.6,
-                    "target_risk_share": 0.62,
-                },
+                    "target_value": 0.6,
+                    },
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Rates"],
-                    "target_weight": 0.25,
-                    "target_risk_share": 0.38,
-                },
+                    "target_value": 0.25,
+                    },
                 {
                     "target_member_type": TARGET_MEMBER_CASH,
                     "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
-                    "target_weight": 0.15,
-                    "target_risk_share": None,
-                },
+                    "target_value": 0.15,
+                    },
             ],
         },
         {
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "target_set_type": "saa",
             "name": "Risk Assets SAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Defensive Equity"],
-                    "target_weight": 0.58,
-                    "target_risk_share": 0.52,
-                },
+                    "target_value": 0.58,
+                    },
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Hong Kong Beta"],
-                    "target_weight": 0.42,
-                    "target_risk_share": 0.48,
-                },
+                    "target_value": 0.42,
+                    },
             ],
         },
         {
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "target_set_type": "taa",
             "name": "Risk Assets TAA",
-            "weight_enabled": True,
-            "risk_budget_enabled": True,
             "lines": [
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Defensive Equity"],
-                    "target_weight": 0.5,
-                    "target_risk_share": 0.45,
-                },
+                    "target_value": 0.5,
+                    },
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Hong Kong Beta"],
-                    "target_weight": 0.5,
-                    "target_risk_share": 0.55,
-                },
+                    "target_value": 0.5,
+                    },
             ],
         },
     ]:
+        if not payload.get("comparator_taxonomy_node_id"):
+            security_lines = [line for line in payload["lines"] if line["target_member_type"] == "taxonomy_node"]
+            total = sum(line["target_value"] for line in security_lines)
+            for line in security_lines:
+                line["target_value"] /= total
         target_set_response = client.post(
             f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
             json=payload,
@@ -1685,7 +1498,7 @@ def test_research_workbench_returns_target_solve_defaults(client):
     payload = response.json()
     assert payload["portfolio_id"] == "investment-studio"
     assert payload["settings"]["planning_taxonomy_id"] is None
-    assert payload["settings"]["target_dimension"] == "scope_default"
+    assert "target_dimension" not in payload["settings"]
     assert payload["settings"]["capital_mode"] == "unit_notional"
     assert payload["settings"]["calculation_frequency"] == "daily"
     assert payload["settings"]["missing_return_policy"] == "strict"
@@ -1919,34 +1732,6 @@ def test_research_backtest_metrics_require_ytd_anchor_and_use_arithmetic_mean_sh
     assert stale_anchor_metrics["ytd_return"] is None
 
 
-def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
-    member_by_key = {
-        "taxonomy_node::cta": ScopeMemberRecord(
-            member_type=TARGET_MEMBER_NODE,
-            member_id="cta",
-            label="CTA",
-        ),
-        "taxonomy_node::macro": ScopeMemberRecord(
-            member_type=TARGET_MEMBER_NODE,
-            member_id="macro",
-            label="Macro",
-        ),
-    }
-
-    with pytest.raises(ValueError, match="maximum weights allow only 70.00%"):
-        _resolve_active_top_sleeve_bound_vectors(
-            scope_label="Top Level",
-            active_keys=list(member_by_key),
-            active_budget=0.8,
-            bounds_by_key={
-                "taxonomy_node::cta": {"min_weight": None, "max_weight": 0.35},
-                "taxonomy_node::macro": {"min_weight": None, "max_weight": 0.35},
-            },
-            member_by_key=member_by_key,
-            allow_upper_shortfall=False,
-        )
-
-
 def test_research_settings_only_accepts_daily_production_risk_frequency(client):
     settings_payload = {
         "planning_taxonomy_id": None,
@@ -1956,7 +1741,6 @@ def test_research_settings_only_accepts_daily_production_risk_frequency(client):
         "missing_return_policy": "complete_case_drop",
         "covariance_model_id": "sample_covariance",
         "contribution_mode": "abs",
-        "target_dimension": "scope_default",
         "capital_mode": "unit_notional",
     }
     for unsupported_frequency in ("auto", "weekly", "monthly"):
@@ -2011,7 +1795,6 @@ def test_research_settings_updates_backtest_controls(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "backtest_rebalance_frequency": "1w",
             "backtest_benchmark_instrument_id": "fund-us-agg",
@@ -2037,7 +1820,6 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "backtest_rebalance_frequency": "3m",
             "backtest_benchmark_instrument_id": "fund-us-agg",
@@ -2068,7 +1850,6 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
         json={
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "notes": "Only notes changed",
         },
@@ -2096,7 +1877,6 @@ def test_research_settings_accepts_volatility_cap_mode(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "volatility_cap",
             "target_volatility": 0.08,
         },
@@ -2121,7 +1901,6 @@ def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "target_volatility",
             "target_volatility": 0.08,
         },
@@ -2130,34 +1909,6 @@ def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
     settings_payload = settings_response.json()
     assert settings_payload["capital_mode"] == "target_volatility"
     assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
-
-
-def test_volatility_overlay_gross_exposure_separates_target_and_cap_modes() -> None:
-    with pytest.raises(ValueError, match="above the configured maximum"):
-        _resolve_volatility_overlay_gross_exposure(
-            capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
-            estimated_volatility=0.05,
-            target_volatility=0.10,
-            max_gross_exposure=None,
-        )
-    assert _resolve_volatility_overlay_gross_exposure(
-        capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
-        estimated_volatility=0.05,
-        target_volatility=0.10,
-        max_gross_exposure=2.0,
-    ) == pytest.approx(2.0)
-    assert _resolve_volatility_overlay_gross_exposure(
-        capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
-        estimated_volatility=0.05,
-        target_volatility=0.10,
-        max_gross_exposure=None,
-    ) == pytest.approx(1.0)
-    assert _resolve_volatility_overlay_gross_exposure(
-        capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
-        estimated_volatility=0.20,
-        target_volatility=0.10,
-        max_gross_exposure=None,
-    ) == pytest.approx(0.5)
 
 
 def test_research_workbench_reads_canonical_run_top_holdings(client):
@@ -2264,7 +2015,6 @@ def test_research_pinned_as_of_requires_explicit_mode(client):
             "lookback_days": settings["lookback_days"],
             "calculation_frequency": settings["calculation_frequency"],
             "missing_return_policy": settings["missing_return_policy"],
-            "target_dimension": settings["target_dimension"],
             "capital_mode": settings["capital_mode"],
             "backtest_rebalance_frequency": settings["backtest_rebalance_frequency"],
         },
@@ -2705,40 +2455,6 @@ def test_research_daily_alignment_carries_last_valid_marks_between_source_update
     assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 6 * 365.25)
 
 
-def test_recursive_child_nav_preserves_first_valid_return_without_filling_internal_gaps() -> None:
-    child_returns = pd.Series(
-        {
-            date(2026, 1, 1): np.nan,
-            date(2026, 1, 2): 0.10,
-            date(2026, 1, 3): np.nan,
-            date(2026, 1, 4): 0.20,
-            date(2026, 1, 5): 0.10,
-        },
-        dtype="float64",
-    )
-    child_nav = _series_to_nav(child_returns, as_of_date=date(2026, 1, 5))
-
-    assert child_nav.loc[date(2026, 1, 1)] == pytest.approx(1.0)
-    assert child_nav.loc[date(2026, 1, 2)] == pytest.approx(1.1)
-    assert pd.isna(child_nav.loc[date(2026, 1, 3)])
-    assert child_nav.loc[date(2026, 1, 4)] == pytest.approx(1.32)
-    assert child_nav.loc[date(2026, 1, 5)] == pytest.approx(1.452)
-
-    aligned_members, _calendar, _warnings = _align_member_series(
-        [ScopeMemberRecord(member_type=TARGET_MEMBER_NODE, member_id="child", label="Child")],
-        {(TARGET_MEMBER_NODE, "child"): child_nav},
-        start_date=date(2026, 1, 1),
-        end_date=date(2026, 1, 5),
-        calculation_frequency="daily",
-    )
-
-    parent_returns = aligned_members[0].returns
-    assert parent_returns.loc[date(2026, 1, 2)] == pytest.approx(0.1)
-    assert pd.isna(parent_returns.loc[date(2026, 1, 3)])
-    assert pd.isna(parent_returns.loc[date(2026, 1, 4)])
-    assert parent_returns.loc[date(2026, 1, 5)] == pytest.approx(0.1)
-
-
 def test_research_covariance_annualizes_complete_aligned_dates() -> None:
     returns = pd.DataFrame(
         {
@@ -2891,131 +2607,7 @@ def test_research_covariance_complete_case_drop_rejects_stale_latest_complete_ro
         )
 
 
-def test_research_risk_budget_solver_matches_tight_tolerance() -> None:
-    problem = RiskBudgetProblem(
-        bucket_ids=["asset_a", "asset_b", "asset_c"],
-        covariance=np.array(
-            [
-                [0.04, 0.01, 0.002],
-                [0.01, 0.01, 0.001],
-                [0.002, 0.001, 0.0225],
-            ],
-            dtype="float64",
-        ),
-        target_risk_shares=np.array([0.4, 0.35, 0.25], dtype="float64"),
-        lower_bounds=np.zeros(3, dtype="float64"),
-        upper_bounds=np.ones(3, dtype="float64"),
-        reference_weights=np.array([0.33, 0.34, 0.33], dtype="float64"),
-    )
-
-    solution = _solve_risk_budget_problem(problem)
-
-    assert solution.max_abs_share_gap <= 1e-4
-    assert solution.weights.sum() == pytest.approx(1.0)
-
-
-def test_research_risk_budget_solve_allows_empty_current_reference_weights() -> None:
-    returns = pd.DataFrame(
-        {
-            "asset_a": [0.01, -0.01, 0.0, 0.0, 0.012, -0.012],
-            "asset_b": [0.0, 0.0, 0.02, -0.02, -0.004, 0.004],
-        },
-        index=[date(2026, 1, day) for day in range(1, 7)],
-        dtype="float64",
-    )
-
-    solution = _solve_risk_budget_weights(
-        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
-        return_window=returns,
-        reference_weights=np.asarray([0.0, 0.0], dtype="float64"),
-        as_of_date=date(2026, 1, 6),
-        lookback_days=30,
-        calculation_frequency="daily",
-        missing_return_policy="strict",
-        risk_model_config={
-            "covariance_model_id": "sample_covariance",
-            "contribution_mode": "signed",
-            "parameters": {"min_observations": 2, "max_period_staleness_days": 0},
-        },
-    )
-
-    assert solution.weights.sum() == pytest.approx(1.0)
-    assert all(weight > 0 for weight in solution.weights)
-    assert solution.max_abs_share_gap <= 1e-4
-
-
-def test_research_risk_budget_default_model_uses_calendar_window_observation_floor() -> None:
-    dates = [item.date() for item in pd.bdate_range(end="2026-05-29", periods=48)]
-    returns = pd.DataFrame(
-        {
-            "asset_a": [0.004 if index % 2 == 0 else -0.002 for index in range(len(dates))],
-            "asset_b": [-0.001 if index % 3 == 0 else 0.003 for index in range(len(dates))],
-        },
-        index=dates,
-        dtype="float64",
-    )
-
-    solution = _solve_risk_budget_weights(
-        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
-        return_window=returns,
-        reference_weights=None,
-        as_of_date=date(2026, 5, 29),
-        lookback_days=90,
-        calculation_frequency="daily",
-        missing_return_policy="strict",
-        risk_model_config=None,
-    )
-
-    assert solution.covariance_observations == 48
-    assert solution.weights.sum() == pytest.approx(1.0)
-    assert solution.max_abs_share_gap <= 1e-4
-
-
-def test_risk_budget_solution_selection_prioritizes_normalized_max_gap() -> None:
-    problem = RiskBudgetProblem(
-        bucket_ids=["large", "small_a", "small_b"],
-        covariance=np.eye(3, dtype="float64"),
-        target_risk_shares=np.array([0.8, 0.1, 0.1], dtype="float64"),
-        lower_bounds=np.zeros(3, dtype="float64"),
-        upper_bounds=np.ones(3, dtype="float64"),
-        reference_weights=np.array([0.8, 0.1, 0.1], dtype="float64"),
-    )
-    smaller_absolute_gap_but_less_fair = RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=np.array([0.8, 0.05, 0.15], dtype="float64"),
-        achieved_risk_shares=np.array([0.8, 0.05, 0.15], dtype="float64"),
-        objective_value=0.0,
-        max_abs_share_gap=0.05,
-        iterations=1,
-        message="candidate",
-        solver_kind="test",
-        contribution_mode="signed",
-    )
-    larger_absolute_gap_but_more_fair = RiskBudgetSolution(
-        bucket_ids=problem.bucket_ids,
-        weights=np.array([0.74, 0.13, 0.13], dtype="float64"),
-        achieved_risk_shares=np.array([0.74, 0.13, 0.13], dtype="float64"),
-        objective_value=0.0,
-        max_abs_share_gap=0.06,
-        iterations=1,
-        message="candidate",
-        solver_kind="test",
-        contribution_mode="signed",
-    )
-
-    assert _is_better_risk_budget_solution(
-        problem,
-        larger_absolute_gap_but_more_fair,
-        smaller_absolute_gap_but_less_fair,
-    )
-    assert not _is_better_risk_budget_solution(
-        problem,
-        smaller_absolute_gap_but_less_fair,
-        larger_absolute_gap_but_more_fair,
-    )
-
-
-def test_selected_target_risk_share_only_applies_to_active_risk_budget_dimension() -> None:
+def test_result_risk_share_uses_global_target_instead_of_conditional_configuration() -> None:
     assert _selected_target_risk_share(
         {
             "selected_target_dimension": "weight",
@@ -3025,7 +2617,7 @@ def test_selected_target_risk_share_only_applies_to_active_risk_budget_dimension
     assert _selected_target_risk_share(
         {
             "selected_target_dimension": "risk_budget",
-            "configured_risk_share": 0.5,
+            "global_target_risk_share": 0.5,
         }
     ) == pytest.approx(0.5)
 
@@ -3099,7 +2691,6 @@ def test_research_run_creates_current_target_weight_outputs(client):
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "lookback_days": 30,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "notes": "Research regression test",
         },
@@ -3108,7 +2699,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     settings_payload = settings_response.json()
     assert settings_payload["planning_taxonomy_id"] == taxonomy_id
     assert settings_payload["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
-    assert settings_payload["target_dimension"] == "scope_default"
+    assert "target_dimension" not in settings_payload
 
     workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
@@ -3184,13 +2775,17 @@ def test_research_run_creates_current_target_weight_outputs(client):
     solved_rows_by_member = {item["member_id"]: item for item in solved_group["rows"]}
     assert set(solved_rows_by_member) == {"equity-us-abbv", "fund-hk-2800"}
     assert solved_rows_by_member["equity-us-abbv"]["target_risk_share"] is None
-    assert solved_rows_by_member["fund-hk-2800"]["target_risk_share"] == pytest.approx(1.0)
+    # The research root allocates capital, so the child's conditional 100%
+    # budget is not a 100% global risk target.
+    assert solved_rows_by_member["fund-hk-2800"]["target_risk_share"] is None
     assert all(item["current_weight"] is not None for item in solved_rows_by_member.values())
     assert all(item["current_value_base"] is not None for item in solved_rows_by_member.values())
     assert all(item["target_value_base"] is not None for item in solved_rows_by_member.values())
     member_targets_by_label = {item["label"]: item for item in run_payload["detail"]["member_targets"]}
-    assert member_targets_by_label["Defensive Equity"]["configured_risk_share"] == pytest.approx(0.45)
-    assert member_targets_by_label["Hong Kong Beta"]["configured_risk_share"] == pytest.approx(0.55)
+    assert member_targets_by_label["Defensive Equity"]["configured_risk_share"] is None
+    assert member_targets_by_label["Defensive Equity"]["configured_weight"] == pytest.approx(0.5)
+    assert member_targets_by_label["Hong Kong Beta"]["configured_risk_share"] is None
+    assert member_targets_by_label["Hong Kong Beta"]["configured_weight"] == pytest.approx(0.5)
     leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
     assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None
     assert leaf_targets_by_member["fund-hk-2800"]["configured_risk_share"] == pytest.approx(1.0)
@@ -3204,11 +2799,22 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert any(item["label"] == "Hong Kong Beta" for item in run_payload["detail"]["member_targets"])
     assert all(item["source_label"] in {"TAA", "SAA", "Single Member"} for item in run_payload["detail"]["target_rows"])
     assert run_payload["detail"]["solve_event"]["as_of_date"] == "2026-04-15"
+    assert run_payload["detail"]["solver_version"] == research_solver_service.RESEARCH_TARGET_SOLVER_VERSION
+    assert run_payload["detail"]["risk_attribution_scope"] == "selected_research_scope"
+    assert backtest["methodology"]["solver_version"] == research_solver_service.RESEARCH_TARGET_SOLVER_VERSION
+    assert backtest["methodology"]["risk_attribution_scope"] == "selected_research_scope"
+    assert run_payload["detail"]["scope_solve_events"]
+    for event in run_payload["detail"]["scope_solve_events"]:
+        assert event["solver_version"] == research_solver_service.RESEARCH_TARGET_SOLVER_VERSION
+        assert event["risk_attribution_scope"] == "selected_research_scope"
+        assert event["global_leaf_count"] == 2
+        assert set(event["global_leaf_ids"]) == {"equity-us-abbv", "fund-hk-2800"}
     assert len(run_payload["detail"]["target_weight_gaps"]) >= 1
     assert all(item["current_value_base"] is not None for item in run_payload["detail"]["target_weight_gaps"])
     assert all(item["target_value_base"] is not None for item in run_payload["detail"]["target_weight_gaps"])
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
-    assert "Scope Default" in signal_labels
+    assert "Allocation Basis" in signal_labels
+    assert "Target Dimension" not in signal_labels
     assert "Solver" in signal_labels
     assert "Missing Returns" in signal_labels
     assert "Estimated Volatility" in signal_labels
@@ -3253,7 +2859,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     with session_factory() as session:
         stored_run = session.get(ResearchRunRecordModel, run_payload["research_run_id"])
         assert stored_run is not None
-        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 5
+        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == research_service.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION
         assert stored_run.request_payload_json["planning_state_fingerprint"].startswith("sha256:")
 
 
@@ -3266,7 +2872,7 @@ def test_pinned_research_run_is_current_for_its_selected_date(client, monkeypatc
         "planning_taxonomy_id": taxonomy_id,
         "comparator_taxonomy_node_id": node_ids["Risk Assets"],
         "as_of_mode": "pinned", "as_of_date": "2026-04-15", "lookback_days": 30,
-        "target_dimension": "scope_default", "capital_mode": "unit_notional",
+        "capital_mode": "unit_notional",
     })
     assert response.status_code == 200, response.json()
     result = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
@@ -3290,7 +2896,6 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "lookback_days": 30,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3327,8 +2932,7 @@ def test_research_run_becomes_stale_after_target_line_change(client) -> None:
                 {
                     "target_member_type": item["target_member_type"],
                     "target_member_id": item["target_member_id"],
-                    "target_weight": changed_weight_by_member_id[item["target_member_id"]],
-                    "target_risk_share": item["target_risk_share"],
+                    "target_value": changed_weight_by_member_id[item["target_member_id"]],
                     "notes": item["notes"],
                 }
                 for item in selected_taa_lines
@@ -3450,7 +3054,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
         portfolio_id="portfolio-benchmark-semantics",
         planning_taxonomy_id="taxonomy-benchmark-semantics",
         taxonomy_name="Planning",
-        root_default_target_dimension="weight",
+        root_allocation_basis="weight",
         base_currency="CNY",
         as_of_date=date(2026, 4, 10),
         node_by_id={},
@@ -3555,7 +3159,6 @@ def test_research_run_replaces_previous_run(client):
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "lookback_days": 30,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3593,7 +3196,6 @@ def test_failed_research_run_keeps_previous_completed_run(client):
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "lookback_days": 30,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3615,7 +3217,7 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     failed_response = client.post("/api/portfolios/investment-studio/research/runs", json={"requested_by": "pytest"})
     assert failed_response.status_code == 400, failed_response.json()
     assert "Defensive Equity" in failed_response.json()["detail"]
-    assert "weight target set" in failed_response.json()["detail"]
+    assert "complete allocation target vector" in failed_response.json()["detail"]
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -3646,7 +3248,6 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
             "missing_return_policy": "complete_case_drop",
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "notes": "Delayed settlement actuals regression",
         },
@@ -3706,13 +3307,11 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
         json={"comparator_taxonomy_node_id": node_ids["Defensive Equity"],
             "target_set_type": "taa",
             "name": "Defensive Equity Direct Weights",
-            "weight_enabled": True,
-            "risk_budget_enabled": False,
             "lines": [
                 {
                     "target_member_type": TARGET_MEMBER_INSTRUMENT,
                     "target_member_id": "equity-us-abbv",
-                    "target_weight": 1.0,
+                    "target_value": 1.0,
                 },
             ],
         },
@@ -3735,7 +3334,6 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
             "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
             "as_of_date": "2026-04-15",
             "lookback_days": 30,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3747,12 +3345,12 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     )
     assert run_response.status_code == 400, run_response.json()
     error_detail = run_response.json()["detail"]
-    assert "Defensive Equity weight target set is incomplete" in error_detail
+    assert "Defensive Equity TAA target set is incomplete" in error_detail
     assert "Watchlist Fund" in error_detail
 
 
-def test_research_scope_default_respects_taxonomy_root_default_dimension(client):
-    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+def test_research_scope_reports_taxonomy_allocation_basis(client):
+    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_allocation_basis="risk_budget")
 
     settings_response = client.put(
         "/api/portfolios/investment-studio/research/settings",
@@ -3762,7 +3360,6 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
             "missing_return_policy": "complete_case_drop",
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3773,58 +3370,37 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     top_level_scope = next(
         item for item in workbench_response.json()["planning_scope_options"] if item["taxonomy_node_id"] is None
     )
-    assert top_level_scope["default_target_dimension"] == "risk_budget"
+    assert top_level_scope["allocation_basis"] == "risk_budget"
 
 
-def test_research_scope_default_requires_configured_dimension_target_set(client):
-    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+def test_root_cash_reserve_does_not_complete_security_budget(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_allocation_basis="risk_budget")
     target_set_response = client.post(
         f"/api/portfolios/investment-studio/taxonomies/{taxonomy_id}/target-sets",
         json={
             "target_set_type": "taa",
             "name": "Root Weight Only",
-            "weight_enabled": True,
-            "risk_budget_enabled": False,
             "lines": [
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Risk Assets"],
-                    "target_weight": 0.7,
+                    "target_value": 0.7,
                 },
                 {
                     "target_member_type": "taxonomy_node",
                     "target_member_id": node_ids["Rates"],
-                    "target_weight": 0.2,
+                    "target_value": 0.2,
                 },
                 {
                     "target_member_type": TARGET_MEMBER_CASH,
                     "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
-                    "target_weight": 0.1,
+                    "target_value": 0.1,
                 },
             ],
         },
     )
-    assert target_set_response.status_code == 200
-    settings_response = client.put(
-        "/api/portfolios/investment-studio/research/settings",
-        json={
-            "planning_taxonomy_id": taxonomy_id,
-            "comparator_taxonomy_node_id": None,
-            "as_of_date": "2026-04-15",
-            "lookback_days": 180,
-            "target_dimension": "scope_default",
-            "capital_mode": "unit_notional",
-        },
-    )
-    assert settings_response.status_code == 200
-
-    run_response = client.post(
-        "/api/portfolios/investment-studio/research/runs",
-        json={"requested_by": "pytest"},
-    )
-    assert run_response.status_code == 400, run_response.json()
-    assert "has no active complete" in run_response.json()["detail"]
-    assert "target set" in run_response.json()["detail"]
+    assert target_set_response.status_code == 400, target_set_response.json()
+    assert "sum" in target_set_response.json()["detail"].lower()
 
 
 def test_deleting_selected_research_taxonomy_clears_settings(client):
@@ -3837,7 +3413,6 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )
@@ -3849,7 +3424,7 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
-    assert workbench_payload["default_planning_taxonomy_id"] is None
+    assert "default_planning_taxonomy_id" not in workbench_payload
     assert workbench_payload["settings"]["planning_taxonomy_id"] is None
     assert workbench_payload["settings"]["comparator_taxonomy_node_id"] is None
 
@@ -3862,7 +3437,6 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
         "as_of_date": "2026-04-15",
         "lookback_days": 90,
         "missing_return_policy": "complete_case_drop",
-        "target_dimension": "scope_default",
         "capital_mode": "unit_notional",
         "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
         "top_sleeve_weight_bounds": [
@@ -3907,7 +3481,6 @@ def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
             "as_of_date": "2026-04-15",
             "lookback_days": 90,
             "missing_return_policy": "complete_case_drop",
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "top_sleeve_weight_bounds": [
                 {"taxonomy_node_id": node_ids["Defensive Equity"], "max_weight": 0.3},
@@ -3918,68 +3491,8 @@ def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
     assert "top-level nodes" in response.json()["detail"]
 
 
-def test_research_risk_budget_solver_accepts_binding_weight_bounds():
-    dates = pd.date_range(end="2026-05-29", periods=60, freq="B")
-    factor = np.sin(np.linspace(0.0, 8.0 * np.pi, len(dates)))
-    returns = pd.DataFrame(
-        {
-            "low_vol": 0.0003 + 0.002 * factor,
-            "high_vol": 0.0005 + 0.018 * factor + 0.001 * np.cos(np.linspace(0.0, 4.0 * np.pi, len(dates))),
-        },
-        index=[item.date() for item in dates],
-    )
-
-    bounded = _solve_risk_budget_weights(
-        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
-        return_window=returns,
-        reference_weights=None,
-        as_of_date=date(2026, 5, 29),
-        lookback_days=90,
-        calculation_frequency="daily",
-        missing_return_policy="strict",
-        risk_model_config=None,
-        lower_bounds=np.asarray([0.0, 0.0], dtype="float64"),
-        upper_bounds=np.asarray([0.3, 1.0], dtype="float64"),
-    )
-
-    assert bounded.weights[0] == pytest.approx(0.3, abs=1e-6)
-    assert bounded.weights.sum() == pytest.approx(1.0)
-    assert bounded.solver_detail in {"slsqp_minimax", "slsqp_minimax_balanced"}
-    assert bounded.max_abs_share_gap is not None
-    assert bounded.max_abs_share_gap > 1e-4
-    assert bounded.target_status == "constrained_optimum"
-    assert bounded.execution_ready is True
-
-
-def test_research_risk_budget_solver_returns_binding_signed_negative_constrained_solution():
-    problem = RiskBudgetProblem(
-        bucket_ids=["diversifier", "risk_asset"],
-        covariance=np.array(
-            [
-                [0.01, -0.09],
-                [-0.09, 1.0],
-            ],
-            dtype="float64",
-        ),
-        target_risk_shares=np.array([0.5, 0.5], dtype="float64"),
-        lower_bounds=np.array([0.3, 0.0], dtype="float64"),
-        upper_bounds=np.array([0.6, 1.0], dtype="float64"),
-        reference_weights=np.array([0.5, 0.5], dtype="float64"),
-        contribution_mode="signed",
-    )
-
-    solution = _solve_risk_budget_problem(problem, enforce_tolerance=False)
-
-    assert solution.weights.sum() == pytest.approx(1.0)
-    assert solution.solver_kind in {"slsqp_minimax", "slsqp_minimax_balanced"}
-    assert solution.max_abs_share_gap > 1e-4
-    assert float(solution.achieved_risk_shares.min()) < 0.0
-    assert solution.target_status == "constrained_target_miss"
-    assert solution.execution_ready is False
-
-
 def test_research_target_volatility_rejects_too_few_aligned_observations(client):
-    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_allocation_basis="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
@@ -3989,7 +3502,6 @@ def test_research_target_volatility_rejects_too_few_aligned_observations(client)
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 180,
-            "target_dimension": "weight",
             "capital_mode": "target_volatility",
             "target_volatility": 0.0001,
             "max_gross_exposure": 1.0,
@@ -4010,7 +3522,7 @@ def test_research_target_volatility_rejects_too_few_aligned_observations(client)
 
 
 def test_research_target_volatility_rejects_insufficient_child_sleeve_history(client):
-    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="weight")
+    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_allocation_basis="weight")
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
@@ -4020,7 +3532,6 @@ def test_research_target_volatility_rejects_insufficient_child_sleeve_history(cl
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 180,
-            "target_dimension": "weight",
             "capital_mode": "target_volatility",
             "target_volatility": 1.0,
             "max_gross_exposure": 1.0,
@@ -4037,7 +3548,7 @@ def test_research_target_volatility_rejects_insufficient_child_sleeve_history(cl
 
 
 def test_research_run_rejects_insufficient_aligned_history(client):
-    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_allocation_basis="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
@@ -4047,7 +3558,6 @@ def test_research_run_rejects_insufficient_aligned_history(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "lookback_days": 180,
-            "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
     )

@@ -1,123 +1,138 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
-import { createResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemesResponse } from '../lib/researchDossierApi'
+import { createResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemeKind, type ResearchThemesResponse } from '../lib/researchDossierApi'
 import ResearchUpdateCard from './ResearchUpdateCard'
 import { dateLabel, SourceList } from './ResearchEvidence'
-import './research-themes.css'
-import { fetchJson } from '../lib/api'
+import { SavedFigure } from './ResearchModules'
+import ResearchOpinionComposer from './ResearchOpinionComposer'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
-import ResearchFollowupClocks from './ResearchFollowupClocks'
-import ResearchQuestionTracking from './ResearchQuestionTracking'
+import './research-themes.css'
 
 const statusLabel = { active: '持续关注', paused: '已暂停', closed: '已结束' }
+export const themeKindLabels: Record<ResearchThemeKind, string> = { fundamental: '基本面', event: '事件', quantitative: '量化', valuation: '估值', risk: '风险', other: '综合' }
 type ThemeDraft = ResearchThemeInput & { theme_id?: string }
-export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, onThemesLoaded, readOnly = false }: { instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; onThemesLoaded?: (themes: ResearchTheme[]) => void; readOnly?: boolean }) {
+
+type ThemeRecordProps = {
+  theme: ResearchTheme; instrumentId: string; canWrite: boolean; saving: boolean
+  onAskAssistant?: AskResearchAssistant; onEdit: () => void; onStatus: (status: ResearchTheme['status'], reason?: string) => void
+}
+function ThemeRecord({ theme, instrumentId, canWrite, saving, onAskAssistant, onEdit, onStatus }: ThemeRecordProps) {
+  const [closing, setClosing] = useState(false)
+  const [closeReason, setCloseReason] = useState('')
+  const [writing, setWriting] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [notice, setNotice] = useState('')
+  const updates = [...(theme.updates || [])].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
+  const evidence = theme.sources || []
+  const figures = evidence.filter(source => theme.figure_source_ids?.includes(source.source_id))
+  const versionId = theme.source_version_id
+  const reference = { instrument_id: instrumentId, theme_id: theme.theme_id, theme_version_id: versionId, source_ids: evidence.map(source => source.source_id) }
+  const background = `${theme.title}\n核心问题：${theme.question}\n当前认识：${theme.synthesis || '尚未形成'}\n最近进展：${theme.latest_development || ''}\n记录时间：${theme.last_changed_at || theme.updated_at}`
+  return <article id={`research-theme-${encodeURIComponent(theme.theme_id)}`} className="research-theme-record">
+    <header className="research-theme-heading"><div><span className="research-theme-kind">{themeKindLabels[theme.kind || 'other']}</span><h3 translate="no">{theme.title}</h3><span className={theme.priority === 'core' ? 'research-theme-priority' : 'sector-research-note'}>{theme.status !== 'active' ? statusLabel[theme.status] : theme.priority === 'core' ? '核心' : '重要'}</span>{theme.pinned && <span className="research-theme-kind">已固定</span>}</div><div className="research-theme-actions">
+      {onAskAssistant && <button type="button" onClick={() => onAskAssistant(`请继续研究主题“${theme.title}”。\n${background}\n先读取关联原始证据和主题历史，检查反证、定价含义与下一观察；区分研究员和投资经理的判断。`, reference)}>讨论主题</button>}
+      {canWrite && <button type="button" onClick={() => setWriting(value => !value)}>写投资观点</button>}
+    </div></header>
+    {theme.synthesis ? <p className="research-theme-synthesis research-theme-excerpt" translate="no">{theme.synthesis}</p> : <p className="sector-research-note">{theme.research_status === 'running' ? '研究员正在建立主题基线。' : theme.research_status === 'queued' ? '已排队，等待研究员建立基线。' : theme.baseline_status === 'pending' ? '待补充研究基线。' : '尚未形成主题认识。'}</p>}
+    <div className="research-theme-observations">{theme.latest_development && <p className="research-theme-development research-theme-excerpt"><strong>最近变化</strong><span translate="no">{theme.latest_development}</span></p>}
+    {theme.next_check && <p className="research-theme-next research-theme-excerpt"><strong>下一观察</strong><span translate="no">{theme.next_check}</span></p>}
+    </div>
+    <details className="research-theme-expanded" onToggle={event => setExpanded(event.currentTarget.open)}><summary>分析与时间线 <span>· {updates.length}</span></summary>
+    {expanded && <>
+    {theme.priority_reason && <p className="research-theme-reason"><strong>为什么重要</strong> <span translate="no">{theme.priority_reason}</span></p>}
+    <div className="research-theme-clock"><span>最近记录 {dateLabel(theme.last_changed_at || theme.updated_at)}</span>{theme.last_reviewed_at && <span>最近检查 {dateLabel(theme.last_reviewed_at)}</span>}</div>
+    <section className="research-theme-analysis" aria-label="完整主题分析">
+      {theme.question && <p><strong>核心问题</strong> <span translate="no">{theme.question}</span></p>}
+      {theme.synthesis && <p translate="no">{theme.synthesis}</p>}
+      {theme.background && <p className="sector-research-note" translate="no">{theme.background}</p>}
+      {figures.map(source => <SavedFigure key={`${source.source_id}:${versionId}`} {...{ instrumentId, source, onAskAssistant }} themeVersionId={versionId} themeId={theme.theme_id} />)}
+      {Boolean(theme.sources?.length) && <SourceList instrumentId={instrumentId} versionId={versionId} sources={theme.sources!} />}
+    </section>
+    <section className="research-theme-thread" aria-label="主题时间线"><h4>{`主题时间线 · ${updates.length}`}</h4>
+      {updates.length ? <ol className="research-timeline">{updates.map(update => <li key={update.update_id}><ResearchUpdateCard update={update} onAskAssistant={onAskAssistant} inTheme /></li>)}</ol> : <p className="sector-research-note">尚无主题更新。</p>}
+    </section>
+    {canWrite && <details className="research-theme-settings"><summary>管理主题</summary><p className="sector-research-note">{theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <span translate="no">{theme.author || '未标注作者'}</span>{theme.close_reason && ` · ${theme.close_reason}`}</p>
+      <div className="research-theme-actions"><button type="button" disabled={saving} onClick={onEdit}>编辑主题</button><button type="button" disabled={saving} onClick={() => onStatus(theme.status === 'active' ? 'paused' : 'active')}>{theme.status === 'active' ? '暂停关注' : '恢复关注'}</button>{theme.status !== 'closed' && <button type="button" disabled={saving} onClick={() => setClosing(true)}>结束主题</button>}</div>
+      {closing && <form className="research-theme-editor" onSubmit={event => { event.preventDefault(); if (closeReason.trim()) onStatus('closed', closeReason.trim()) }}><label>结束原因<textarea required value={closeReason} onChange={event => setCloseReason(event.target.value)} /></label><div className="research-theme-actions"><button type="submit" disabled={saving || !closeReason.trim()}>保存并结束</button><button type="button" disabled={saving} onClick={() => setClosing(false)}>取消</button></div></form>}
+    </details>}
+    </>}
+    </details>
+    {writing && <ResearchOpinionComposer instrumentId={instrumentId} title={`关于${theme.title}的观点`} context={{ theme_id: theme.theme_id, theme_version_id: versionId, background, source_ids: evidence.map(source => source.source_id) }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
+    {notice && <p role="status">{notice}</p>}
+  </article>
+}
+
+export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewStatus, onAskAssistant, readOnly = false }: {
+  instrumentId: string; reviewRunId?: string; reviewStatus?: string; onAskAssistant?: AskResearchAssistant; readOnly?: boolean
+}) {
   const [data, setData] = useState<ResearchThemesResponse | null>(null)
   const [draft, setDraft] = useState<ThemeDraft | null>(null)
-  const [closing, setClosing] = useState<{ themeId: string; reason: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [refresh, setRefresh] = useState(0)
-  const [members, setMembers] = useState<Array<{ user_id: string; display_name: string; active: boolean }>>([])
+  const mutationScope = useRef<object | null>(null)
   const canWrite = Boolean(data && data.identity.team_role !== 'reader' && !readOnly)
-  useEffect(() => { void fetchJson<typeof members>('/api/research/members').then(setMembers).catch(() => setMembers([])) }, [])
-  useEffect(() => { setData(null); setDraft(null); setNotice(null) }, [instrumentId])
   useEffect(() => {
-    const updated = (event: Event) => {
-      if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1)
-    }
+    mutationScope.current = {}
+    setData(null); setDraft(null); setNotice(null); setSaving(false)
+    return () => { mutationScope.current = null }
+  }, [instrumentId])
+  useEffect(() => {
+    const updated = (event: Event) => { if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1) }
     window.addEventListener(RESEARCH_UPDATED, updated)
     return () => window.removeEventListener(RESEARCH_UPDATED, updated)
   }, [instrumentId])
   useEffect(() => {
     const controller = new AbortController()
     setError('')
-    void getResearchThemes(instrumentId, controller.signal).then(value => { if (!controller.signal.aborted) { setData(value); onThemesLoaded?.(value.themes) } })
-      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '关注主题读取失败') })
+    void getResearchThemes(instrumentId, controller.signal).then(value => { if (!controller.signal.aborted) setData(value) })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '主题读取失败') })
     return () => controller.abort()
-  }, [instrumentId, reviewRunId, reviewStatus, refresh, onThemesLoaded])
-
+  }, [instrumentId, reviewRunId, reviewStatus, refresh])
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!draft) return
+    if (!draft || !canWrite || saving) return
+    const scope = mutationScope.current
     setSaving(true); setError(''); setNotice(null)
     try {
-      const input: ResearchThemeInput = { title: draft.title.trim(), question: draft.question.trim(), background: draft.background?.trim() || '', responsible_user_id: draft.responsible_user_id ?? null }
-      if (draft.theme_id) await updateResearchTheme(instrumentId, draft.theme_id, input)
-      else await createResearchTheme(instrumentId, input)
+      const input: ResearchThemeInput = { title: draft.title.trim(), question: draft.question?.trim() || '', background: draft.background?.trim() || '', kind: draft.kind || 'other', priority: draft.priority || 'important', priority_reason: draft.priority_reason?.trim() || '', pinned: draft.pinned || false, responsible_user_id: draft.responsible_user_id ?? data?.identity.user_id }
+      const result = draft.theme_id ? await updateResearchTheme(instrumentId, draft.theme_id, input) : await createResearchTheme(instrumentId, input)
+      announceResearchPublication([instrumentId])
+      if (scope !== mutationScope.current) return
+      setNotice({ id: Date.now(), message: result.research_message || (draft.theme_id ? '主题已保存。' : '主题已建立。'), tone: 'success' })
       setDraft(null)
-      setNotice({ id: Date.now(), message: '关注主题已保存。后续研究会持续跟进，有实质变化时更新。', tone: 'success' })
-      setClosing(null)
-      announceResearchPublication([instrumentId])
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '关注主题保存失败') }
-    finally { setSaving(false) }
+    } catch (reason) { if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : '主题保存失败') }
+    finally { if (scope === mutationScope.current) setSaving(false) }
   }
-
-  async function changeStatus(theme: ResearchTheme, status: ResearchTheme['status']) {
-    setSaving(true); setError(''); setNotice(null)
+  async function changeStatus(theme: ResearchTheme, status: ResearchTheme['status'], reason?: string) {
+    if (!canWrite || saving) return
+    const scope = mutationScope.current
+    setSaving(true); setError('')
     try {
-      await updateResearchTheme(instrumentId, theme.theme_id, { status, ...(status === 'closed' ? { close_reason: closing?.reason.trim() } : {}) })
-      setNotice({ id: Date.now(), message: `“${theme.title}”${statusLabel[status]}。既有观点和研究进展继续保留。`, tone: 'success' })
-      setClosing(null)
+      await updateResearchTheme(instrumentId, theme.theme_id, { status, ...(status === 'closed' ? { close_reason: reason } : {}) })
       announceResearchPublication([instrumentId])
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '主题状态更新失败') }
-    finally { setSaving(false) }
+      if (scope === mutationScope.current) setNotice({ id: Date.now(), message: `“${theme.title}”${statusLabel[status]}。`, tone: 'success' })
+    } catch (reason) { if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : '主题状态更新失败') }
+    finally { if (scope === mutationScope.current) setSaving(false) }
   }
-
-  function themeCard(theme: ResearchTheme) {
-    const updates = [...(theme.updates || [])].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
-    const latest = updates.find(update => !update.superseded && !update.withdrawn && update.kind !== 'theme')
-    const questions = theme.current_questions || []
-    return <article id={`research-theme-${encodeURIComponent(theme.theme_id)}`} key={theme.theme_id} className="research-theme-record">
-      <div className="research-notebook-question-heading"><h4 translate="no">{theme.title}</h4><span>{statusLabel[theme.status]}</span></div>
-      <p className="research-theme-question" translate="no">{theme.question}</p>
-      <p className="sector-research-note"><span translate="no">{theme.author || '未标注作者'}</span> · {theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <time dateTime={theme.created_at}>{dateLabel(theme.created_at)}</time></p>
-      {questions.length ? questions.map(question => <div key={question.update_id} className="research-current-followup" data-question-id={question.update_id}>
-        <h5 translate="no">{question.title}</h5>
-        {question.body && <p className="research-theme-assessment"><strong>当前判断</strong> <span translate="no">{question.body}</span></p>}
-        {question.next_check && <p className="research-notebook-next"><strong>下一步观察</strong> <span translate="no">{question.next_check}</span></p>}
-        <ResearchFollowupClocks changedAt={question.last_changed_at} reviewedAt={question.last_reviewed_at} reviewStatus={question.last_review_status} />
-        {question.sources.length > 0 && <details><summary>当前判断依据</summary><SourceList instrumentId={instrumentId} versionId={question.reference.notebook_version_id} sources={question.sources.flatMap(source => source.source_id ? [{ ...source, source_id: source.source_id }] : [])} /></details>}
-        <ResearchQuestionTracking update={question} onAskAssistant={onAskAssistant} />
-      </div>) : <p className="sector-research-note">当前没有单独安排跟进的研究问题。</p>}
-      {latest && <p className="research-theme-latest"><strong>最近研究记录</strong> <span translate="no">{latest.title}</span></p>}
-      {theme.close_reason && <p className="sector-research-note"><strong>结束原因</strong> <span translate="no">{theme.close_reason}</span></p>}
-      <details className="research-theme-thread"><summary>主题研究时间线 · {updates.length}</summary>
-        {updates.length ? updates.map(update => <ResearchUpdateCard key={update.update_id} update={update} onAskAssistant={onAskAssistant} inTheme />) : <p className="sector-research-note">尚无主题更新。后续事件、判断和复盘会保留在这里。</p>}
-      </details>
-      <details className="research-theme-settings"><summary>背景与主题管理</summary>
-        {theme.background && <p translate="no">{theme.background}</p>}
-        {theme.responsible_user_id && <p className="sector-research-note">负责人：<span translate="no">{members.find(member => member.user_id === theme.responsible_user_id)?.display_name || (theme.responsible_user_id === theme.author_user_id ? theme.author : '已指定团队成员')}</span></p>}
-        {canWrite && <div className="research-theme-actions">
-          <button type="button" disabled={saving || Boolean(draft)} onClick={() => { setDraft({ theme_id: theme.theme_id, title: theme.title, question: theme.question, background: theme.background, responsible_user_id: theme.responsible_user_id }); setNotice(null); setError('') }}>编辑主题</button>
-          {theme.status === 'active' ? <button type="button" disabled={saving} onClick={() => void changeStatus(theme, 'paused')}>暂停关注</button> : <button type="button" disabled={saving} onClick={() => void changeStatus(theme, 'active')}>恢复关注</button>}
-          {theme.status !== 'closed' && <button type="button" disabled={saving} onClick={() => setClosing({ themeId: theme.theme_id, reason: '' })}>结束主题</button>}
-        </div>}
-        {closing?.themeId === theme.theme_id && <form className="research-theme-editor" onSubmit={event => { event.preventDefault(); void changeStatus(theme, 'closed') }}>
-          <label>结束原因<textarea required value={closing.reason} onChange={event => setClosing({ ...closing, reason: event.target.value })} /></label>
-          <div className="research-theme-actions"><button type="submit" disabled={saving || !closing.reason.trim()}>保存并结束</button><button type="button" disabled={saving} onClick={() => setClosing(null)}>取消</button></div>
-        </form>}
-      </details>
-      {onAskAssistant && <div className="research-theme-actions"><button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请围绕持续关注主题“${theme.title}”继续研究和讨论，读取主题下的投资经理观点与研究员进展，区分双方判断。核实新证据，复核此前判断与观察条件；有价值时补充复盘或修订经验。我的新判断只有在我明确要求保存时才记为投资观点。`, { instrument_id: instrumentId, theme_id: theme.theme_id })}>讨论这个主题</button></div>}
-    </article>
-  }
-
   const active = data?.themes.filter(theme => theme.status === 'active') || []
   const inactive = data?.themes.filter(theme => theme.status !== 'active') || []
-  return <section className="research-themes" aria-label="长期主题">
-    <div className="research-dossier-section-heading"><h4>长期主题{active.length > 0 && <span> · {active.length}</span>}</h4><button type="button" disabled={!canWrite || saving || Boolean(draft)} onClick={() => { setDraft({ title: '', question: '', background: '', responsible_user_id: data?.identity.user_id }); setError(''); setNotice(null) }}>建立主题</button></div>
+  const record = (theme: ResearchTheme) => <ThemeRecord key={theme.theme_id} {...{ theme, instrumentId, canWrite, saving, onAskAssistant }} onEdit={() => setDraft({ ...theme })} onStatus={(status, reason) => void changeStatus(theme, status, reason)} />
+  return <section className="research-themes" aria-label="重点主题">
+    <div className="research-dossier-section-heading"><div><h2>重点主题{active.length > 0 && <span> · {active.length}</span>}</h2><span className="sector-research-note">{`按投资重要性持续研究 · 最多 ${data?.active_limit || 10} 个`}</span></div>{!readOnly && <button type="button" disabled={!canWrite || saving || Boolean(draft) || active.length >= (data?.active_limit || 10)} onClick={() => { setDraft({ title: '', kind: 'other', priority: 'important', responsible_user_id: data?.identity.user_id }); setError('') }}>建立主题</button>}</div>
     {error && <p role="alert">{error}</p>}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
+    {!data && !error && <p role="status" className="sector-research-note">Loading</p>}
     {draft && canWrite && <form className="research-theme-editor" onSubmit={event => void save(event)}>
-      <label><span>主题名称</span><input required disabled={saving} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
-      <label><span>持续关注的问题</span><textarea required rows={3} disabled={saving} value={draft.question} onChange={event => setDraft({ ...draft, question: event.target.value })} /></label>
-      <label><span>背景（可选）</span><textarea rows={2} disabled={saving} value={draft.background || ''} onChange={event => setDraft({ ...draft, background: event.target.value })} /></label>
-      {data?.identity && <p className="sector-research-note">团队共享 · 记录人：{data.identity.display_name}</p>}
-      <label><span>负责人</span><select disabled={saving} value={draft.responsible_user_id || ''} onChange={event => setDraft({ ...draft, responsible_user_id: event.target.value || null })}><option value="">暂不指定</option>{members.filter(member => member.active).map(member => <option key={member.user_id} value={member.user_id}>{member.display_name}</option>)}</select></label>
-      <div className="research-theme-actions"><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button><button type="submit" disabled={saving}>{saving ? '保存中…' : '保存主题'}</button></div>
+      <label>主题名称<input required autoFocus disabled={saving} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
+      <div className="research-theme-form-row"><label>研究类型<select value={draft.kind || 'other'} disabled={saving} onChange={event => setDraft({ ...draft, kind: event.target.value as ResearchThemeKind })}>{Object.entries(themeKindLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label>重要性<select value={draft.priority || 'important'} disabled={saving} onChange={event => setDraft({ ...draft, priority: event.target.value as 'core' | 'important' })}><option value="core">核心</option><option value="important">重要</option></select></label></div>
+      <label>为什么重要<input value={draft.priority_reason || ''} disabled={saving} onChange={event => setDraft({ ...draft, priority_reason: event.target.value })} /></label>
+      <details><summary>补充问题与背景</summary><label>研究问题（可选）<textarea rows={2} disabled={saving} value={draft.question || ''} onChange={event => setDraft({ ...draft, question: event.target.value })} /></label><label>背景（可选）<textarea rows={3} disabled={saving} value={draft.background || ''} onChange={event => setDraft({ ...draft, background: event.target.value })} /></label></details>
+      <label className="research-theme-pin"><input type="checkbox" checked={draft.pinned || false} disabled={saving} onChange={event => setDraft({ ...draft, pinned: event.target.checked })} />固定此主题</label>
+      <div className="research-theme-actions"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : draft.theme_id ? '保存主题' : '创建并开始研究'}</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button></div>
     </form>}
-    {active.map(themeCard)}
-    {data && !active.length && <p className="sector-research-note">暂无正在跟踪的长期主题。独立事项见下方。</p>}
-    {inactive.length > 0 && <details className="research-theme-archive"><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(themeCard)}</details>}
+    <div className="research-theme-list">{active.map(record)}</div>
+    {data && !active.length && <p className="sector-research-note">尚无重点主题。建立主题后，研究员将补充分析并持续更新。</p>}
+    {inactive.length > 0 && <details className="research-theme-archive"><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(record)}</details>}
   </section>
 }

@@ -35,8 +35,7 @@ def _theme(client, iid="fund-us-agg"):
 
 def _note(client, context=None, iid="fund-us-agg", **overrides):
     payload = {"note_date": "2026-09-08", "title": "信用担忧值得关注", "body": "这是中期判断，短期方向尚不明确", **overrides}
-    if context is not None:
-        payload["research_context"] = context
+    payload["research_context"] = {"background": "当时的信用与利率研究背景", **(context or {})}
     response = client.post(_notes(iid), json={"note": payload, "updated_by": "forged-updater"})
     assert response.status_code == 200, response.text
     return next(item for item in response.json()["notes"] if item["title"] == payload["title"])
@@ -79,7 +78,7 @@ def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
     from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme, theme_index
     with get_session_factory()() as session:
         theme = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
-            theme_key="term-premium", title="期限溢价变化", question="期限溢价上升是否持续？", background="区分实际利率与期限溢价"))
+            theme_key="term-premium", title="期限溢价变化", question="期限溢价上升是否持续？", background="区分实际利率与期限溢价", priority_reason="期限溢价影响中期风险补偿"))
         assert theme["origin"] == theme["managed_by"] == "researcher" and theme["author"] == "研究员"
         revised = save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", background="补充主导机制的假设"))
         assert revised["theme_id"] == theme["theme_id"] and revised["question"] == theme["question"]
@@ -93,12 +92,12 @@ def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
         assert paused["close_reason"] == "" and paused["status"] == "paused"
         session.commit()
     # Even repeating an already-paused status is an explicit human control decision.
-    response = research_client.patch(f"{_themes()}/{theme['theme_id']}", json={"status": "paused"})
+    response = research_client.patch(f"{_themes()}/{theme['theme_id']}", json={"status": "paused", "pinned": True})
     assert response.status_code == 200, response.text
     manual = response.json()
     assert manual["origin"] == "researcher" and manual["managed_by"] == "user"
     with get_session_factory()() as session:
-        with pytest.raises(ValueError, match="人工维护"):
+        with pytest.raises(ValueError, match="已固定"):
             save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(theme_key="term-premium", status="active"))
         assert theme_index(session, "fund-us-agg")[0]["status"] == "paused"
     # A person can resume the paused topic; its creator and original history remain intact.
@@ -112,10 +111,11 @@ def test_analyst_cannot_rewrite_user_theme_or_use_foreign_instrument_key(researc
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme
     user_theme = _theme(research_client)
+    research_client.patch(f"{_themes()}/{user_theme['theme_id']}", json={"pinned": True})
     with get_session_factory()() as session:
-        with pytest.raises(ValueError, match="人工维护"):
+        with pytest.raises(ValueError, match="已固定"):
             save_analyst_theme(session, "fund-us-agg", AnalystThemeUpdate(
-                theme_key="credit", theme_id=user_theme["theme_id"], question="改为研究员的新问题"))
+                theme_key=user_theme["theme_key"], theme_id=user_theme["theme_id"], question="改为研究员的新问题"))
         with pytest.raises(LookupError, match="主题"):
             save_analyst_theme(session, "sxv264", AnalystThemeUpdate(
                 theme_key="credit", theme_id=user_theme["theme_id"], question="错误标的下的新问题"))
@@ -268,7 +268,8 @@ def test_analyst_uses_bound_theme_and_original_pm_revision_without_rewriting_pm(
         question = {"key": "credit-confidence", "question": theme["question"], "theme_id": theme["theme_id"],
             "pm_note_id": original["note_id"], "pm_note_revision": 1,
             "assessment": "研究员认为仍缺乏独立信用证据，保留与PM不同的判断", "next_check": "查核期限溢价和美元表现"}
-        payload = {"reviews": [{"instrument_id": "fund-us-agg", "change_kind": "knowledge", "research": {"questions": [question]}}]}
+        payload = {"reviews": [{"instrument_id": "fund-us-agg", "change_kind": "knowledge", "research": {"questions": [question]},
+            "themes": [{"theme_key": theme["theme_key"], "theme_id": theme["theme_id"]}]}]}
         sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate(payload))
         for change, message in [({"theme_id": "unread-theme"}, "未读取"),
                                 ({"pm_note_id": "another-pm-note"}, "原始版本"),
@@ -281,12 +282,13 @@ def test_analyst_uses_bound_theme_and_original_pm_revision_without_rewriting_pm(
         session.commit()
         paused_context = deepcopy(context)
         paused_context["research_dossiers"][0]["themes"][0]["status"] = "paused"
+        payload["reviews"][0]["themes"] = []
         run.context_json = paused_context
         with pytest.raises(ValueError, match="暂停"):
             sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate(payload))
         pm_only = deepcopy(payload)
         pm_only["reviews"][0]["research"]["questions"][0].pop("theme_id")
-        with pytest.raises(ValueError, match="暂停"):
+        with pytest.raises(ValueError, match="暂停|重点主题"):
             sector_research.validate_result(session, run, sector_research.ReviewResult.model_validate(pm_only))
         session.rollback()
     projected = client.get(_themes()).json()["themes"][0]
@@ -310,7 +312,7 @@ def test_adopting_edited_assistant_answer_retains_its_original_context(research_
                 "cutoff": "2026-09-07T00:00:00+00:00", "research_dossiers": [{"instrument_id": "fund-us-agg",
                     "notebook": {"version_id": "notebook-at-answer"}, "mandate": {"version_id": "mandate-at-answer"}}]}))
         session.commit()
-    payload = {"source_entry_id": "answer-adopt", "note": {"note_date": "2026-09-08", "title": "我采纳的判断", "body": "由我核改后的判断"}}
+    payload = {"source_entry_id": "answer-adopt", "note": {"note_date": "2026-09-08", "title": "我采纳的判断", "body": "由我核改后的判断", "research_context": {"background": "当时讨论的长债压力"}}}
     response = research_client.post(_notes(), json=payload)
     assert response.status_code == 200, response.text
     note = response.json()["notes"][0]

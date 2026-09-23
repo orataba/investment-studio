@@ -12,6 +12,7 @@
 - id: session-title-llm
   disabled: true
 - id: code-runtime
+  # Python research runs only through run_quant_analysis's source-bound sandbox.
   disabled: true
 - id: agent-instructions
   disabled: true

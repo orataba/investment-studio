@@ -36,7 +36,7 @@ def test_holdings_analytics_cache_keys_policy_date_and_version_and_isolates_edit
     args = {
         "as_of_date": date(2026, 9, 6),
         "risk_policy": {"lookback": 252, "weights": {"b": 0.4, "a": 0.6}},
-        "analytics_policy_version": 1,
+        "taxonomy_configuration_version": 1,
         "builder": build,
     }
     first = workspace_cache.get_cached_holdings_analytics_workspace("p", **args)
@@ -49,7 +49,7 @@ def test_holdings_analytics_cache_keys_policy_date_and_version_and_isolates_edit
 
     for override in (
         {"as_of_date": date(2026, 9, 5)},
-        {"analytics_policy_version": 2},
+        {"taxonomy_configuration_version": 2},
         {"risk_policy": {"lookback": 126}},
     ):
         workspace_cache.get_cached_holdings_analytics_workspace("p", **{**args, **override})
@@ -76,7 +76,7 @@ def test_full_and_compact_holdings_share_complete_analytics_but_refresh_live_sta
     overlays = []
     monkeypatch.setattr(workspace, "_require_portfolio", lambda *_a, **_k: {"portfolio_id": "p", "as_of_date": as_of.isoformat()})
     monkeypatch.setattr(workspace, "get_portfolio_risk_policy", lambda _pid: {})
-    monkeypatch.setattr(workspace, "analytics_policy_version", lambda _pid: 1)
+    monkeypatch.setattr(workspace, "taxonomy_configuration_version", lambda _pid: 1)
     monkeypatch.setattr(workspace, "list_transactions", lambda _pid: list(live_transactions))
     monkeypatch.setattr(workspace, "corporate_action_quality_warnings", lambda *_a, **_k: [])
     monkeypatch.setattr(workspace, "instrument_event_task_quality_warnings", lambda _pid: list(overlays))
@@ -153,7 +153,7 @@ def test_compact_projection_does_not_copy_discarded_histories(cache_context):
         **{field: history for field in workspace._HOLDINGS_CHART_FIELD_NAMES},
     }]}
     response = workspace_cache.get_cached_holdings_analytics_workspace(
-        "p", as_of_date=date(2026, 9, 6), risk_policy={}, analytics_policy_version=1,
+        "p", as_of_date=date(2026, 9, 6), risk_policy={}, taxonomy_configuration_version=1,
         builder=lambda: analytics, response_projection=workspace._compact_holdings_workspace_projection,
     )
     sparkline = response["rows"][0]["price_chart_6m"]
@@ -182,7 +182,7 @@ def test_tail_projection_copies_only_required_financial_inputs(cache_context):
         {"derivative_contract_id": "written-option", "market_value_base": -50,
          "holding_category": "derivatives", "derivative_contract": {"contract_name": "Option"}},
     ]}
-    args = {"as_of_date": date(2026, 9, 6), "risk_policy": {}, "analytics_policy_version": 1,
+    args = {"as_of_date": date(2026, 9, 6), "risk_policy": {}, "taxonomy_configuration_version": 1,
             "builder": lambda: analytics, "response_projection": _tail_risk_workspace_projection}
     first = workspace_cache.get_cached_holdings_analytics_workspace("p", **args)
     assert len(first["rows"]) == 2
@@ -245,7 +245,7 @@ def test_cached_risk_basis_reuses_unchanged_generation_with_value_size_budget(ca
 
 def test_complete_large_holdings_fit_the_shared_total_budget(cache_context):
     payload = {"series": "x" * 4_300_000}
-    args = {"as_of_date": date(2026, 9, 6), "risk_policy": {}, "analytics_policy_version": 1}
+    args = {"as_of_date": date(2026, 9, 6), "risk_policy": {}, "taxonomy_configuration_version": 1}
     assert workspace_cache.get_cached_holdings_analytics_workspace("p", **args, builder=lambda: payload) == payload
     assert workspace_cache.get_cached_holdings_analytics_workspace(
         "p", **args, builder=lambda: pytest.fail("real complete holdings above 2 MiB must remain reusable")

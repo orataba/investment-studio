@@ -9,7 +9,6 @@ import BenchmarkSearchBox, {
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import usePerformanceResource from '../hooks/usePerformanceResource'
-import ConcentrationPanel from '../components/ConcentrationPanel'
 import PortfolioTailRiskPanel from '../components/PortfolioTailRiskPanel'
 import InfoHint from '../components/InfoHint'
 import RiskWindowDiagnostics from '../components/RiskWindowDiagnostics'
@@ -34,8 +33,8 @@ import {
   type PortfolioInstrumentPriceChartResponse,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
-  type PortfolioTargetSetLineRecord,
-  type PortfolioTargetSetRecord,
+  type PortfolioResolvedMemberTarget,
+  type PortfolioTargetMemberType,
   type SharedInstrumentRecord,
   type TaxonomyAssignmentScope,
 } from '../lib/api'
@@ -488,7 +487,7 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
       row.risk_eligible !== true
     ) {
       errors.push(
-        `Current risk cannot model policy-excluded market exposure ${holdingRiskLabel(row)} as zero risk.`,
+        `Current risk cannot treat unmodeled market exposure ${holdingRiskLabel(row)} as zero risk.`,
       )
     }
   })
@@ -938,13 +937,11 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   catalog,
   taxonomy,
   referenceDate,
-  eligibility = 'risk',
 }: {
   holdingsWorkspace: HoldingsWorkspaceResponse | null
   catalog: PortfolioTaxonomyCatalogResponse | null
   taxonomy: PortfolioTaxonomyRecord | null
   referenceDate: string | null
-  eligibility?: 'risk' | 'risk_budget'
 }) {
   if (!holdingsWorkspace || !catalog || !taxonomy || !referenceDate) {
     return riskFail(
@@ -967,9 +964,6 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   holdingsWorkspace.rows
     .filter(isRiskBearingHoldingRow)
     .filter((row) => {
-      if (eligibility === 'risk_budget' && row.risk_budget_eligible !== true) {
-        return false
-      }
       return (
         Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
         Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9 ||
@@ -1031,20 +1025,13 @@ export function buildCanonicalTaxonomyRiskContributionRows({
       left.groupLabel.localeCompare(right.groupLabel),
   )
   const totalRiskShare = rows.reduce((total, row) => total + (row.riskShare ?? 0), 0)
-  if (eligibility === 'risk_budget' && !rows.length) {
-    return riskOk([] satisfies RiskContributionRow[])
-  }
   if (!rows.length || Math.abs(totalRiskShare) <= 1e-12) {
     return riskFail(
-      `Production forward risk shares cannot be normalized for the ${eligibility === 'risk_budget' ? 'eligible risk-budget sleeve' : 'modeled risk sleeve'}; got ${formatPercent(totalRiskShare)}.`,
+      `Production forward risk shares cannot be normalized for the modeled risk sleeve; got ${formatPercent(totalRiskShare)}.`,
       [] satisfies RiskContributionRow[],
     )
   }
-  if (eligibility === 'risk_budget') {
-    rows.forEach((row) => {
-      row.riskShare = (row.riskShare ?? 0) / totalRiskShare
-    })
-  } else if (Math.abs(totalRiskShare - 1) > 1e-6) {
+  if (Math.abs(totalRiskShare - 1) > 1e-6) {
     return riskFail(
       `Production forward risk shares must aggregate to 100% before taxonomy grouping; got ${formatPercent(totalRiskShare)}.`,
       [] satisfies RiskContributionRow[],
@@ -1071,51 +1058,6 @@ function buildNodePath(nodeId: string | null | undefined, nodeById: Map<string, 
     guard += 1
   }
   return path
-}
-
-export function buildRiskBudgetEligibleNodeIds({
-  catalog,
-  taxonomy,
-}: {
-  catalog: PortfolioTaxonomyCatalogResponse | null
-  taxonomy: PortfolioTaxonomyRecord | null
-}) {
-  const eligibleNodeIds = new Set<string>()
-  if (!catalog || !taxonomy) {
-    return eligibleNodeIds
-  }
-  const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
-  const policyByNodeId = new Map<string, PortfolioTaxonomyCatalogResponse['analytics_scope_policies'][number]>()
-  catalog.analytics_scope_policies
-    .filter(
-      (policy) =>
-        policy.taxonomy_id === taxonomy.taxonomy_id &&
-        !policy.superseded_by_policy_id,
-    )
-    .sort((left, right) => left.policy_version - right.policy_version)
-    .forEach((policy) => policyByNodeId.set(policy.taxonomy_node_id, policy))
-
-  nodeById.forEach((node) => {
-    let candidateNodeId: string | null = node.taxonomy_node_id
-    const visited = new Set<string>()
-    let policy: PortfolioTaxonomyCatalogResponse['analytics_scope_policies'][number] | null = null
-    while (candidateNodeId && !visited.has(candidateNodeId)) {
-      visited.add(candidateNodeId)
-      policy = policyByNodeId.get(candidateNodeId) ?? null
-      if (policy) {
-        break
-      }
-      candidateNodeId = nodeById.get(candidateNodeId)?.parent_taxonomy_node_id ?? '__root__'
-    }
-    policy ??= policyByNodeId.get('__root__') ?? null
-    if (!policy?.risk_budget_eligible) {
-      return
-    }
-    buildNodePath(node.taxonomy_node_id, nodeById).forEach((pathNode) => {
-      eligibleNodeIds.add(pathNode.taxonomy_node_id)
-    })
-  })
-  return eligibleNodeIds
 }
 
 function resolveActiveAssignment(
@@ -1331,181 +1273,59 @@ export function buildCurrentPlanningGroups({
   return riskOk(rows)
 }
 
-function targetMemberKey(memberType: PortfolioTargetSetLineRecord['target_member_type'], memberId: string) {
+function targetMemberKey(memberType: PortfolioTargetMemberType, memberId: string) {
   return `${memberType}:${memberId}`
 }
 
-function lineDisplayKey(line: PortfolioTargetSetLineRecord) {
-  if (line.target_member_type === 'taxonomy_node') {
-    return line.target_member_id
+export function riskTargetComparisonErrors(
+  workspace: HoldingsWorkspaceResponse | null,
+  contributions: RiskContributionRow[],
+  taxonomyId?: string,
+) {
+  const errors: string[] = []
+  if (taxonomyId && contributions.some((row) => row.groupKey === `unassigned:${taxonomyId}`)) {
+    errors.push('Portfolio risk targets cannot be compared while modeled holdings remain unclassified. The classified subset is not renormalized.')
   }
-  return targetMemberKey(line.target_member_type, line.target_member_id)
-}
-
-function lineDisplayLabel(line: PortfolioTargetSetLineRecord, nodeById: Map<string, PortfolioTaxonomyNodeRecord>) {
-  if (line.target_member_type === 'taxonomy_node') {
-    return nodeById.get(line.target_member_id)?.node_name ?? line.target_member_id
+  if (workspace?.rows.some((row) => isSecurityHoldingRow(row) && row.risk_eligible !== true && (
+    Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9 ||
+    Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9 ||
+    Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9
+  ))) {
+    errors.push('Portfolio risk targets cannot be compared while held securities are outside the production risk model. Missing risk is not zero.')
   }
-  if (
-    line.target_member_type === 'cash_bucket' &&
-    line.target_member_id === SYSTEM_CASH_TARGET_MEMBER_ID
-  ) {
-    return 'Cash'
-  }
-  if (
-    line.target_member_type === 'derivative_bucket' &&
-    line.target_member_id === SYSTEM_DERIVATIVE_TARGET_MEMBER_ID
-  ) {
-    return 'Derivatives'
-  }
-  return `${formatLabel(line.target_member_type)} ${line.target_member_id}`
+  return errors
 }
 
 export function buildTargetGapRows({
-  targetSet,
-  targetLines,
-  currentGroups,
-  riskSharesByGroup,
-  riskShareErrors = [],
-  nodeById,
-  riskBudgetEligibleNodeIds,
-  dimension,
-  baseCurrency,
+  resolvedTargets, stage, currentGroups, riskSharesByGroup, riskShareErrors = [], nodeById, baseCurrency,
 }: {
-  targetSet: PortfolioTargetSetRecord | null
-  targetLines: PortfolioTargetSetLineRecord[]
+  resolvedTargets: PortfolioResolvedMemberTarget[]
+  stage: 'saa' | 'taa'
   currentGroups: CurrentPlanningGroup[]
   riskSharesByGroup: Map<string, number | null>
   riskShareErrors?: string[]
   nodeById: Map<string, PortfolioTaxonomyNodeRecord>
-  riskBudgetEligibleNodeIds: ReadonlySet<string>
-  dimension: 'weight' | 'risk_budget'
   baseCurrency: string
 }) {
-  if (!targetSet) {
-    return riskOk([] satisfies TargetGapComparatorRow[])
-  }
-  if (dimension === 'weight' && !targetSet.weight_enabled) {
-    return riskOk([] satisfies TargetGapComparatorRow[])
-  }
-  if (dimension === 'risk_budget' && !targetSet.risk_budget_enabled) {
-    return riskOk([] satisfies TargetGapComparatorRow[])
-  }
-  const eligibleTargetLines =
-    dimension === 'risk_budget'
-      ? targetLines.filter(
-          (line) =>
-            line.target_member_type === 'taxonomy_node' &&
-            riskBudgetEligibleNodeIds.has(line.target_member_id),
-        )
-      : targetLines
-  const eligibleCurrentGroups =
-    dimension === 'risk_budget'
-      ? currentGroups.filter((group) => riskSharesByGroup.has(group.groupKey))
-      : currentGroups
-  if (!eligibleTargetLines.length) {
-    if (dimension === 'risk_budget' && !eligibleCurrentGroups.length) {
-      return riskOk([] satisfies TargetGapComparatorRow[])
-    }
-    return riskFail(
-      dimension === 'risk_budget'
-        ? `${targetSet.name} is active but has no risk-bearing target lines.`
-        : `${targetSet.name} is active but has no target lines.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
-  const unsupportedDirectLines = eligibleTargetLines.filter(
-    (line) =>
-      line.target_member_type !== 'taxonomy_node' &&
-      line.target_member_type !== 'cash_bucket' &&
-      line.target_member_type !== 'derivative_bucket',
-  )
-  if (unsupportedDirectLines.length) {
-    return riskFail(
-      `${targetSet.name} root target drift must use taxonomy nodes plus the fixed Derivatives and Cash members; unsupported direct members: ${unsupportedDirectLines
-        .map((line) => `${line.target_member_type}:${line.target_member_id}`)
-        .join(', ')}.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
-  const missingTargetNodes = eligibleTargetLines.filter(
-    (line) => line.target_member_type === 'taxonomy_node' && !nodeById.has(line.target_member_id),
-  )
-  if (missingTargetNodes.length) {
-    return riskFail(
-      `${targetSet.name} references missing taxonomy nodes: ${missingTargetNodes.map((line) => line.target_member_id).join(', ')}.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
-  if (dimension === 'risk_budget' && riskShareErrors.length) {
-    return riskFail(riskShareErrors, [] satisfies TargetGapComparatorRow[])
-  }
-  const targetLineErrors = eligibleTargetLines
-    .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
-    .map((line) => `${targetSet.name} is missing ${dimension === 'weight' ? 'target_weight' : 'target_risk_share'} for ${lineDisplayLabel(line, nodeById)}.`)
-  if (targetLineErrors.length) {
-    return riskFail(targetLineErrors, [] satisfies TargetGapComparatorRow[])
-  }
-  const targetTotal = eligibleTargetLines.reduce(
-    (total, line) => total + ((dimension === 'weight' ? line.target_weight : line.target_risk_share) ?? 0),
-    0,
-  )
-  if (Math.abs(targetTotal - 1) > 1e-6) {
-    return riskFail(
-      `${targetSet.name} ${dimension === 'weight' ? 'target weights' : 'risk targets'} must sum to 100%; got ${formatPercent(targetTotal)}.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
-
-  const normalizedBaseCurrency = baseCurrency.trim().toUpperCase()
-  if (!normalizedBaseCurrency && eligibleCurrentGroups.some((group) => group.currentValueBase != null)) {
-    return riskFail(
-      `${targetSet.name} target drift requires the portfolio base currency before value details can be rendered.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
-
-  const currentGroupByKey = new Map(eligibleCurrentGroups.map((group) => [group.groupKey, group] as const))
-  const lineByKey = new Map(eligibleTargetLines.map((line) => [lineDisplayKey(line), line] as const))
-  const allKeys = new Set([...currentGroupByKey.keys(), ...lineByKey.keys()])
+  const targets = resolvedTargets.filter((row) => row.scope_node_id == null && row.member_type === 'taxonomy_node'
+    && (stage === 'saa' ? row.strategic_global_risk_target : row.tactical_global_risk_target) != null)
+  if (!targets.length) return riskOk([] satisfies TargetGapComparatorRow[])
+  if (riskShareErrors.length) return riskFail(riskShareErrors, [] satisfies TargetGapComparatorRow[])
+  const currentByKey = new Map(currentGroups.map((group) => [group.groupKey, group]))
   const rows: TargetGapComparatorRow[] = []
   const errors: string[] = []
-
-  allKeys.forEach((key) => {
-    const currentGroup = currentGroupByKey.get(key) ?? null
-    const line = lineByKey.get(key) ?? null
-    const current =
-      dimension === 'weight'
-        ? currentGroup?.currentWeight ?? 0
-        : riskSharesByGroup.has(key)
-          ? riskSharesByGroup.get(key) ?? 0
-          : currentGroup
-            ? null
-            : 0
-    if (dimension === 'risk_budget' && current == null && currentGroup) {
-      errors.push(`${targetSet.name} risk target gap is missing current risk share for ${currentGroup.label}.`)
-      return
-    }
-    const target = line ? ((dimension === 'weight' ? line.target_weight : line.target_risk_share) ?? 0) : 0
-    if (Math.abs(current ?? 0) <= 1e-12 && Math.abs(target) <= 1e-12) {
-      return
-    }
-    rows.push({
-      key,
-      id: `${targetSet.target_set_id}:${dimension}:${key}`,
-      label: currentGroup?.label ?? (line ? lineDisplayLabel(line, nodeById) : key),
-      current,
-      target,
-      gap: current != null && target != null ? current - target : null,
-      detail: currentGroup?.currentValueBase != null ? formatCurrency(currentGroup.currentValueBase, normalizedBaseCurrency) : undefined,
-    })
-  })
-
-  if (errors.length) {
-    return riskFail(errors, [] satisfies TargetGapComparatorRow[])
+  for (const row of targets) {
+    const key = row.member_id
+    const group = currentByKey.get(key)
+    const target = stage === 'saa' ? row.strategic_global_risk_target! : row.tactical_global_risk_target!
+    const current = riskSharesByGroup.has(key) ? riskSharesByGroup.get(key) : group ? null : 0
+    const label = nodeById.get(key)?.node_name ?? group?.label ?? key
+    if (current == null) { errors.push(`${stage.toUpperCase()} risk target gap is missing current risk share for ${label}.`); continue }
+    if (Math.abs(current) <= 1e-12 && Math.abs(target) <= 1e-12) continue
+    rows.push({ key, id: `${stage}:${key}`, label, current, target, gap: current - target,
+      detail: group?.currentValueBase != null && baseCurrency ? formatCurrency(group.currentValueBase, baseCurrency) : undefined })
   }
-
-  return riskOk(rows.sort((left, right) => Math.abs(right.gap ?? 0) - Math.abs(left.gap ?? 0)))
+  return errors.length ? riskFail(errors, [] satisfies TargetGapComparatorRow[]) : riskOk(rows.sort((a, b) => Math.abs(b.gap ?? 0) - Math.abs(a.gap ?? 0)))
 }
 
 function combineTargetGapRows(
@@ -1538,17 +1358,6 @@ function combineTargetGapRows(
       const rightGap = Math.max(Math.abs(right.saaGap ?? 0), Math.abs(right.taaGap ?? 0))
       return rightGap - leftGap || left.label.localeCompare(right.label)
     })
-}
-
-function selectUniqueTargetSet(targetSets: PortfolioTargetSetRecord[], targetSetType: 'saa' | 'taa') {
-  const matches = targetSets.filter((targetSet) => targetSet.target_set_type === targetSetType)
-  if (matches.length > 1) {
-    return riskFail(
-      `Multiple active root ${targetSetType.toUpperCase()} target sets are configured; Risk cannot choose one implicitly.`,
-      null as PortfolioTargetSetRecord | null,
-    )
-  }
-  return riskOk(matches[0] ?? null)
 }
 
 function heatmapCellStyle(value: number | null | undefined, maxAbs: number): CSSProperties {
@@ -1938,40 +1747,11 @@ export default function RiskPage() {
     return () => { cancelled = true; controller.abort() }
   }, [portfolioId, riskWindowEndDate, riskPolicyRevision])
 
-  const planningTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.planning_enabled) ?? []
-  const defaultPlanningTaxonomy =
-    planningTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === taxonomyCatalog?.default_planning_taxonomy_id) ?? null
   const targetTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.status === 'active') ?? []
-  const targetTaxonomy = targetTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === targetTaxonomyId)
-    ?? targetTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === taxonomyCatalog?.default_planning_taxonomy_id)
-    ?? targetTaxonomies[0] ?? null
-  const targetTaxonomyNodeById = useMemo(
-    () => buildNodeLookup(taxonomyCatalog, targetTaxonomy?.taxonomy_id),
-    [targetTaxonomy?.taxonomy_id, taxonomyCatalog],
-  )
-  const activeRootTargetSets = useMemo(
-    () =>
-      (taxonomyCatalog?.target_sets ?? []).filter(
-        (targetSet) =>
-          targetSet.taxonomy_id === targetTaxonomy?.taxonomy_id &&
-          !targetSet.comparator_taxonomy_node_id &&
-          targetSet.status === 'active',
-      ),
-    [targetTaxonomy?.taxonomy_id, taxonomyCatalog?.target_sets],
-  )
-  const activeRootSaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'saa'), [activeRootTargetSets])
-  const activeRootTaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'taa'), [activeRootTargetSets])
-  const activeRootSaaTargetSet = activeRootSaaTargetSetResult.value
-  const activeRootTaaTargetSet = activeRootTaaTargetSetResult.value
-  const targetLinesByTargetSetId = useMemo(() => {
-    const lookup = new Map<string, PortfolioTargetSetLineRecord[]>()
-    ;(taxonomyCatalog?.target_set_lines ?? []).forEach((line) => {
-      const rows = lookup.get(line.target_set_id) ?? []
-      rows.push(line)
-      lookup.set(line.target_set_id, rows)
-    })
-    return lookup
-  }, [taxonomyCatalog?.target_set_lines])
+  const targetTaxonomy = targetTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === targetTaxonomyId) ?? targetTaxonomies[0] ?? null
+  const matrixTaxonomy = targetTaxonomy
+  const targetTaxonomyNodeById = useMemo(() => buildNodeLookup(taxonomyCatalog, targetTaxonomy?.taxonomy_id), [targetTaxonomy?.taxonomy_id, taxonomyCatalog])
+  const targetResolution = taxonomyCatalog?.target_resolution?.find((item) => item.taxonomy_id === targetTaxonomy?.taxonomy_id)
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
@@ -2089,8 +1869,8 @@ export default function RiskPage() {
   const benchmarkRollingSharpePoints = benchmarkRollingRisk.sharpePoints
 
   const matrixTaxonomyScopeOptions = useMemo(
-    () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
-    [defaultPlanningTaxonomy, taxonomyCatalog],
+    () => taxonomyScopeOptions(matrixTaxonomy, taxonomyCatalog),
+    [matrixTaxonomy, taxonomyCatalog],
   )
   const matrixScopeOptions = useMemo(
     () => [
@@ -2117,17 +1897,17 @@ export default function RiskPage() {
       setMatrixScopeNodeId(MATRIX_SCOPE_CURRENT_HOLDINGS)
     }
   }, [matrixScopeNodeId, matrixScopeOptions])
-  const matrixScopeIsLeaf = Boolean(matrixTaxonomyScopeNodeId && defaultPlanningTaxonomy &&
-    !(taxonomyCatalog?.taxonomy_nodes ?? []).some((node) => node.taxonomy_id === defaultPlanningTaxonomy.taxonomy_id && node.parent_taxonomy_node_id === matrixTaxonomyScopeNodeId))
+  const matrixScopeIsLeaf = Boolean(matrixTaxonomyScopeNodeId && matrixTaxonomy &&
+    !(taxonomyCatalog?.taxonomy_nodes ?? []).some((node) => node.taxonomy_id === matrixTaxonomy.taxonomy_id && node.parent_taxonomy_node_id === matrixTaxonomyScopeNodeId))
   const scopedTaxonomyInstruments = useMemo<CorrelationMatrixScope>(() => {
-    if (!matrixTaxonomyScopeNodeId || !defaultPlanningTaxonomy || !taxonomyCatalog) return currentHoldingsMatrixScope
-    const nodeById = buildNodeLookup(taxonomyCatalog, defaultPlanningTaxonomy.taxonomy_id)
+    if (!matrixTaxonomyScopeNodeId || !matrixTaxonomy || !taxonomyCatalog) return currentHoldingsMatrixScope
+    const nodeById = buildNodeLookup(taxonomyCatalog, matrixTaxonomy.taxonomy_id)
     const selected = new Set<string>()
     const selectionIssues: CorrelationMatrixCoverageIssue[] = []
     for (const row of holdingsWorkspace?.rows ?? []) {
       if (!isActiveRiskBearingHoldingRow(row)) continue
       const memberKey = row.instrument_core.instrument_id
-      const matches = taxonomyCatalog.taxonomy_assignments.filter((assignment) => assignment.taxonomy_id === defaultPlanningTaxonomy.taxonomy_id && assignment.target_scope === 'instrument' && assignment.target_entity_id === memberKey && assignment.status === 'active')
+      const matches = taxonomyCatalog.taxonomy_assignments.filter((assignment) => assignment.taxonomy_id === matrixTaxonomy.taxonomy_id && assignment.target_scope === 'instrument' && assignment.target_entity_id === memberKey && assignment.status === 'active')
       if (!matches.some((assignment) => resolveScopedTaxonomyNode(assignment.taxonomy_node_id, nodeById, matrixTaxonomyScopeNodeId))) continue
       selected.add(memberKey)
       if (matches.length > 1) selectionIssues.push(windowIssue(memberKey, holdingRiskLabel(row), 'scope_unavailable', 'The selected member has multiple active taxonomy assignments.'))
@@ -2136,7 +1916,7 @@ export default function RiskPage() {
       series: currentHoldingsMatrixScope.series.filter((item) => selected.has(item.groupKey)),
       issues: [...currentHoldingsMatrixScope.issues.filter((issue) => selected.has(issue.memberKey) || issue.memberKey === 'current-holdings'), ...selectionIssues],
     }
-  }, [currentHoldingsMatrixScope, defaultPlanningTaxonomy, holdingsWorkspace?.rows, matrixTaxonomyScopeNodeId, taxonomyCatalog])
+  }, [currentHoldingsMatrixScope, matrixTaxonomy, holdingsWorkspace?.rows, matrixTaxonomyScopeNodeId, taxonomyCatalog])
   const selectedMatrixScopeDescription = matrixUsesTaxonomy && !matrixScopeIsLeaf
     ? (zh ? '比较所选分类下各直接子分类的当前权重篮子。' : 'Compare current-weight baskets for the direct child classifications.')
     : (zh ? '比较所选范围内各资产的本位币收益。' : 'Compare base-currency returns of the assets in the selected scope.')
@@ -2156,12 +1936,12 @@ export default function RiskPage() {
         : buildCurrentTaxonomyReturnSeries({
             instrumentSeries: scopedTaxonomyInstruments.series,
             catalog: taxonomyCatalog,
-            taxonomy: defaultPlanningTaxonomy,
+            taxonomy: matrixTaxonomy,
             scopeNodeId: matrixTaxonomyScopeNodeId,
             referenceDate: holdingsWorkspace?.as_of_date ?? null,
           }),
     [
-      defaultPlanningTaxonomy,
+      matrixTaxonomy,
       holdingsWorkspace?.as_of_date,
       scopedTaxonomyInstruments,
       matrixTaxonomyScopeNodeId,
@@ -2191,7 +1971,7 @@ export default function RiskPage() {
     const issues = matrixTaxonomySeriesResult.errors.map((coverageReason) =>
       correlationCoverageIssue({
         memberKey: matrixTaxonomyScopeNodeId || 'taxonomy-root',
-        memberLabel: defaultPlanningTaxonomy?.name || 'Planning taxonomy',
+        memberLabel: matrixTaxonomy?.name || 'Taxonomy',
         reason: 'scope_unavailable',
         coverageReason,
       }),
@@ -2205,7 +1985,7 @@ export default function RiskPage() {
     alignedMatrixTaxonomySeries,
     matrixScopeIsLeaf,
     scopedTaxonomyInstruments.memberCount,
-    defaultPlanningTaxonomy?.name,
+    matrixTaxonomy?.name,
     matrixTaxonomyScopeNodeId,
     matrixTaxonomySeriesResult.errors,
   ])
@@ -2242,17 +2022,17 @@ export default function RiskPage() {
       ),
     [effectiveMatrixAsOfDate, matrixRiskFrequency.frequency, matrixSettings.lookbackDays, selectedMatrixScope],
   )
-  const selectedMatrixEmptyLabel = matrixUsesTaxonomy && !defaultPlanningTaxonomy ? 'No taxonomy.' : 'No matrix.'
+  const selectedMatrixEmptyLabel = matrixUsesTaxonomy && !matrixTaxonomy ? 'No taxonomy.' : 'No matrix.'
   const topLevelRiskContributionResult = useMemo(
     () =>
       buildCanonicalTaxonomyRiskContributionRows({
         holdingsWorkspace,
         catalog: taxonomyCatalog,
-        taxonomy: defaultPlanningTaxonomy,
+        taxonomy: matrixTaxonomy,
         referenceDate: holdingsWorkspace?.as_of_date ?? null,
       }),
     [
-      defaultPlanningTaxonomy,
+      matrixTaxonomy,
       holdingsWorkspace?.as_of_date,
       holdingsWorkspace,
       taxonomyCatalog,
@@ -2266,7 +2046,6 @@ export default function RiskPage() {
         catalog: taxonomyCatalog,
         taxonomy: targetTaxonomy,
         referenceDate: holdingsWorkspace?.as_of_date ?? null,
-        eligibility: 'risk_budget',
       }),
     [
       targetTaxonomy,
@@ -2284,23 +2063,10 @@ export default function RiskPage() {
       ),
     [topLevelRiskBudgetContributionResult.value],
   )
-  const riskBudgetEligibleNodeIds = useMemo(
-    () => {
-      if (targetTaxonomy?.taxonomy_id !== defaultPlanningTaxonomy?.taxonomy_id) {
-        // Browsing another classification must not apply a second analytics scope.
-        // Include configured targets even when their current production exposure is zero.
-        const activeTargetSetIds = new Set(activeRootTargetSets.map((targetSet) => targetSet.target_set_id))
-        return new Set((taxonomyCatalog?.target_set_lines ?? [])
-          .filter((line) => activeTargetSetIds.has(line.target_set_id) && line.target_member_type === 'taxonomy_node')
-          .map((line) => line.target_member_id))
-      }
-      return buildRiskBudgetEligibleNodeIds({
-        catalog: taxonomyCatalog,
-        taxonomy: targetTaxonomy,
-      })
-    },
-    [targetTaxonomy, defaultPlanningTaxonomy?.taxonomy_id, activeRootTargetSets, taxonomyCatalog],
-  )
+  const targetComparisonErrors = useMemo(() => [
+    ...topLevelRiskBudgetContributionResult.errors,
+    ...riskTargetComparisonErrors(holdingsWorkspace, topLevelRiskBudgetContributionResult.value, targetTaxonomy?.taxonomy_id),
+  ], [holdingsWorkspace, topLevelRiskBudgetContributionResult, targetTaxonomy?.taxonomy_id])
   const currentPlanningGroupsResult = useMemo(
     () =>
       buildCurrentPlanningGroups({
@@ -2315,124 +2081,20 @@ export default function RiskPage() {
   const currentPlanningGroups = currentPlanningGroupsResult.value
   const portfolioBaseCurrency = holdingsWorkspace?.base_currency ?? ''
 
-  const saaWeightGapResult = useMemo(
-    () =>
-      buildTargetGapRows({
-        targetSet: activeRootSaaTargetSet,
-        targetLines: targetLinesByTargetSetId.get(activeRootSaaTargetSet?.target_set_id ?? '') ?? [],
-        currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
-        nodeById: targetTaxonomyNodeById,
-        riskBudgetEligibleNodeIds,
-        dimension: 'weight',
-        baseCurrency: portfolioBaseCurrency,
-      }),
-    [
-      activeRootSaaTargetSet,
-      currentPlanningGroups,
-      targetTaxonomyNodeById,
-      portfolioBaseCurrency,
-      riskBudgetEligibleNodeIds,
-      riskBudgetSharesByTopLevelGroup,
-      targetLinesByTargetSetId,
-    ],
-  )
-  const saaWeightGapRows = saaWeightGapResult.value
-  const taaWeightGapResult = useMemo(
-    () =>
-      buildTargetGapRows({
-        targetSet: activeRootTaaTargetSet,
-        targetLines: targetLinesByTargetSetId.get(activeRootTaaTargetSet?.target_set_id ?? '') ?? [],
-        currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
-        nodeById: targetTaxonomyNodeById,
-        riskBudgetEligibleNodeIds,
-        dimension: 'weight',
-        baseCurrency: portfolioBaseCurrency,
-      }),
-    [
-      activeRootTaaTargetSet,
-      currentPlanningGroups,
-      targetTaxonomyNodeById,
-      portfolioBaseCurrency,
-      riskBudgetEligibleNodeIds,
-      riskBudgetSharesByTopLevelGroup,
-      targetLinesByTargetSetId,
-    ],
-  )
-  const taaWeightGapRows = taaWeightGapResult.value
-  const saaRiskGapResult = useMemo(
-    () =>
-      buildTargetGapRows({
-        targetSet: activeRootSaaTargetSet,
-        targetLines: targetLinesByTargetSetId.get(activeRootSaaTargetSet?.target_set_id ?? '') ?? [],
-        currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
-        riskShareErrors: topLevelRiskBudgetContributionResult.errors,
-        nodeById: targetTaxonomyNodeById,
-        riskBudgetEligibleNodeIds,
-        dimension: 'risk_budget',
-        baseCurrency: portfolioBaseCurrency,
-      }),
-    [
-      activeRootSaaTargetSet,
-      currentPlanningGroups,
-      targetTaxonomyNodeById,
-      portfolioBaseCurrency,
-      riskBudgetEligibleNodeIds,
-      riskBudgetSharesByTopLevelGroup,
-      topLevelRiskBudgetContributionResult.errors,
-      targetLinesByTargetSetId,
-    ],
-  )
+  const saaRiskGapResult = useMemo(() => buildTargetGapRows({
+    resolvedTargets: targetResolution?.member_targets ?? [], stage: 'saa', currentGroups: currentPlanningGroups,
+    riskSharesByGroup: riskBudgetSharesByTopLevelGroup, riskShareErrors: targetComparisonErrors,
+    nodeById: targetTaxonomyNodeById, baseCurrency: portfolioBaseCurrency,
+  }), [targetResolution, currentPlanningGroups, riskBudgetSharesByTopLevelGroup, targetComparisonErrors, targetTaxonomyNodeById, portfolioBaseCurrency])
+  const taaRiskGapResult = useMemo(() => buildTargetGapRows({
+    resolvedTargets: targetResolution?.member_targets ?? [], stage: 'taa', currentGroups: currentPlanningGroups,
+    riskSharesByGroup: riskBudgetSharesByTopLevelGroup, riskShareErrors: targetComparisonErrors,
+    nodeById: targetTaxonomyNodeById, baseCurrency: portfolioBaseCurrency,
+  }), [targetResolution, currentPlanningGroups, riskBudgetSharesByTopLevelGroup, targetComparisonErrors, targetTaxonomyNodeById, portfolioBaseCurrency])
   const saaRiskGapRows = saaRiskGapResult.value
-  const taaRiskGapResult = useMemo(
-    () =>
-      buildTargetGapRows({
-        targetSet: activeRootTaaTargetSet,
-        targetLines: targetLinesByTargetSetId.get(activeRootTaaTargetSet?.target_set_id ?? '') ?? [],
-        currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
-        riskShareErrors: topLevelRiskBudgetContributionResult.errors,
-        nodeById: targetTaxonomyNodeById,
-        riskBudgetEligibleNodeIds,
-        dimension: 'risk_budget',
-        baseCurrency: portfolioBaseCurrency,
-      }),
-    [
-      activeRootTaaTargetSet,
-      currentPlanningGroups,
-      targetTaxonomyNodeById,
-      portfolioBaseCurrency,
-      riskBudgetEligibleNodeIds,
-      riskBudgetSharesByTopLevelGroup,
-      topLevelRiskBudgetContributionResult.errors,
-      targetLinesByTargetSetId,
-    ],
-  )
   const taaRiskGapRows = taaRiskGapResult.value
-  const weightTargetGapRows = useMemo(
-    () => combineTargetGapRows(saaWeightGapRows, taaWeightGapRows),
-    [saaWeightGapRows, taaWeightGapRows],
-  )
-  const riskTargetGapRows = useMemo(
-    () => combineTargetGapRows(saaRiskGapRows, taaRiskGapRows),
-    [saaRiskGapRows, taaRiskGapRows],
-  )
-  const weightTargetGapErrors = useMemo(
-    () => [...saaWeightGapResult.errors, ...taaWeightGapResult.errors],
-    [saaWeightGapResult.errors, taaWeightGapResult.errors],
-  )
-  const riskTargetGapErrors = useMemo(
-    () => [...saaRiskGapResult.errors, ...taaRiskGapResult.errors],
-    [saaRiskGapResult.errors, taaRiskGapResult.errors],
-  )
-  const hasWeightTargets = Boolean(activeRootSaaTargetSet?.weight_enabled || activeRootTaaTargetSet?.weight_enabled)
-  const hasRiskTargets = Boolean(activeRootSaaTargetSet?.risk_budget_enabled || activeRootTaaTargetSet?.risk_budget_enabled)
-  const actualWeightRows: RiskTargetGapChartRow[] = currentPlanningGroups.map((group) => ({
-    id: group.groupKey, label: group.label, current: group.currentWeight,
-    detail: formatCurrency(group.currentValueBase, portfolioBaseCurrency), saaTarget: null, taaTarget: null, saaGap: null, taaGap: null,
-  }))
+  const riskTargetGapRows = useMemo(() => combineTargetGapRows(saaRiskGapRows, taaRiskGapRows), [saaRiskGapRows, taaRiskGapRows])
+  const riskTargetGapErrors = [...saaRiskGapResult.errors, ...taaRiskGapResult.errors]
   const concentrationMetrics = useMemo(() => {
     const activeRows = (holdingsWorkspace?.rows ?? []).filter((row) => {
       if (!isRiskBearingHoldingRow(row)) {
@@ -2462,11 +2124,11 @@ export default function RiskPage() {
     }
   }, [holdingsWorkspace?.rows])
   const saaTotalRiskGap =
-    activeRootSaaTargetSet?.risk_budget_enabled && saaRiskGapRows.length && !saaRiskGapResult.errors.length
+    saaRiskGapRows.length && !saaRiskGapResult.errors.length
       ? saaRiskGapRows.reduce((total, row) => total + Math.abs(row.gap ?? 0), 0)
       : null
   const taaTotalRiskGap =
-    activeRootTaaTargetSet?.risk_budget_enabled && taaRiskGapRows.length && !taaRiskGapResult.errors.length
+    taaRiskGapRows.length && !taaRiskGapResult.errors.length
       ? taaRiskGapRows.reduce((total, row) => total + Math.abs(row.gap ?? 0), 0)
       : null
   const riskGapSummary = [
@@ -2482,22 +2144,16 @@ export default function RiskPage() {
         forwardRiskCoverage.missing_row_fraction,
       )} missing; latest ${forwardRiskCoverage.latest_complete_date ?? '—'}`
     : 'Coverage unavailable'
-  const analyticsScope = holdingsWorkspace?.analytics_scope_summary ?? null
-  const excludedExposure = analyticsScope
-    ? analyticsScope.excluded_carrying_value + analyticsScope.excluded_liability
+  const riskCoverage = holdingsWorkspace?.risk_coverage_summary ?? null
+  const excludedExposure = riskCoverage
+    ? riskCoverage.excluded_carrying_value + riskCoverage.excluded_liability
     : null
-  const analyticsVersionLabel = analyticsScope
-    ? `Policy ${analyticsScope.scope_policy_versions.join(', ') || 'none'}; configuration ${
-        analyticsScope.configuration_versions.join(', ') || 'none'
-      }; selection ${analyticsScope.taxonomy_selection_versions.join(', ') || 'none'}`
-    : 'Analytics scope identity unavailable'
   const riskHealthDetail = [
     productionRiskMeta,
     ...currentRiskInputErrors,
     ...(holdingsWorkspace?.forward_risk?.errors ?? []),
-    ...(defaultPlanningTaxonomy ? topLevelRiskContributionResult.errors : []),
+    ...(matrixTaxonomy ? topLevelRiskContributionResult.errors : []),
     forwardRiskCoverageLabel,
-    analyticsVersionLabel,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -2648,6 +2304,16 @@ export default function RiskPage() {
                     {holdingsWorkspace.as_of_date} · {holdingsWorkspace.forward_risk?.status === 'ok' ? (zh ? '模型可用' : 'Model available') : (zh ? '模型不可用' : 'Model unavailable')} · {productionRiskDescription}
                   </div>
                 </div>
+                {targetTaxonomy ? <>
+                  <label className="concentration-toolbar-actions">{zh ? '分类' : 'Taxonomy'}
+                    <select aria-label={zh ? '风险分类' : 'Risk taxonomy'} value={targetTaxonomy.taxonomy_id} onChange={(event) => {
+                      setTargetTaxonomyId(event.target.value)
+                      try { localStorage.setItem(targetTaxonomyStorageKey, event.target.value) } catch { /* View selection is optional persistence. */ }
+                    }}>
+                      {targetTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}</option>)}
+                    </select>
+                  </label>
+                </> : null}
               </div>
               <div className="portfolio-summary-strip risk-health-strip">
                 <article
@@ -2676,21 +2342,21 @@ export default function RiskPage() {
                 >
                   <span className="summary-card-label">Model Coverage</span>
                   <strong className="summary-card-value">
-                    {analyticsScope?.coverage_ratio != null
-                      ? formatPercent(analyticsScope.coverage_ratio)
+                    {riskCoverage?.coverage_ratio != null
+                      ? formatPercent(riskCoverage.coverage_ratio)
                       : 'Unavailable'}
                   </strong>
                 </article>
                 <article className="summary-card">
                   <span className="summary-card-label">Modeled Gross Exposure</span>
                   <strong className="summary-card-value">
-                    {analyticsScope
-                      ? formatCurrency(analyticsScope.modeled_gross_exposure, holdingsWorkspace.base_currency)
+                    {riskCoverage
+                      ? formatCurrency(riskCoverage.modeled_gross_exposure, holdingsWorkspace.base_currency)
                       : '—'}
                   </strong>
                   <span className="portfolio-detail-meta">
-                    {analyticsScope
-                      ? `Net ${formatCurrency(analyticsScope.modeled_net_exposure, holdingsWorkspace.base_currency)}`
+                    {riskCoverage
+                      ? `Net ${formatCurrency(riskCoverage.modeled_net_exposure, holdingsWorkspace.base_currency)}`
                       : 'Modeled exposure unavailable'}
                   </span>
                 </article>
@@ -2698,10 +2364,10 @@ export default function RiskPage() {
                   <article
                     className="summary-card"
                     title={`Assets ${formatCurrency(
-                      analyticsScope?.excluded_carrying_value,
+                      riskCoverage?.excluded_carrying_value,
                       holdingsWorkspace.base_currency,
                     )}; liabilities ${formatCurrency(
-                      analyticsScope?.excluded_liability,
+                      riskCoverage?.excluded_liability,
                       holdingsWorkspace.base_currency,
                     )}`}
                   >
@@ -2714,8 +2380,8 @@ export default function RiskPage() {
                 <article className="summary-card" title="Disclosed exposure outside the covariance model.">
                   <span className="summary-card-label">Cash / Unallocated</span>
                   <strong className="summary-card-value">
-                    {analyticsScope
-                      ? formatCurrency(analyticsScope.cash_unallocated_exposure, holdingsWorkspace.base_currency)
+                    {riskCoverage
+                      ? formatCurrency(riskCoverage.cash_unallocated_exposure, holdingsWorkspace.base_currency)
                       : '—'}
                   </strong>
                 </article>
@@ -2734,7 +2400,7 @@ export default function RiskPage() {
                 </article>
               </div>
               <RiskSourceCoverage workspace={holdingsWorkspace} />
-              {analyticsScope?.excluded_rows.length ? (
+              {riskCoverage?.excluded_rows.length ? (
                 <HorizontalTableScroll className="table-shell risk-scope-table-shell">
                   <table className="transactions-table risk-scope-table">
                     <thead>
@@ -2746,7 +2412,7 @@ export default function RiskPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {analyticsScope.excluded_rows.map((row) => (
+                      {riskCoverage.excluded_rows.map((row) => (
                         <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_category}`}>
                           <td translate="no">{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
                           <td>{formatLabel(row.holding_category)}</td>
@@ -2928,15 +2594,14 @@ export default function RiskPage() {
               )}
             </section>
             <PortfolioTailRiskPanel key={`tail:${portfolioId}:${holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />
-            <ConcentrationPanel key={`concentration:${portfolioId}:${holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={holdingsWorkspace.as_of_date} />
             {targetTaxonomy ? (
               <section className="portfolio-section-block" aria-label="Current drift">
                 <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                   <div>
                     <div className="panel-title portfolio-title-with-hint"><span>Current Drift</span>
                       <InfoHint label={zh ? '目标偏移风险口径' : 'Target drift risk basis'} detail={zh
-                        ? '风险贡献复用生产模型已纳入的持仓结果。切换其他分类仅重新分组，不应用该分类的分析排除规则；没有当前持仓的有效目标仍保留。'
-                        : 'Risk contributions reuse the published production scope. Switching to another taxonomy only regroups those contributions; its analytics exclusion rules are not applied again. Configured targets remain visible even without current holdings.'} />
+                        ? '风险贡献使用统一的生产模型，切换分类只改变贡献分组。即使当前未持有，已配置目标仍会显示。'
+                        : 'Risk contributions use the same production model for all taxonomies. Switching taxonomy regroups those contributions. Configured targets remain visible even without current holdings.'} />
                     </div>
                     <div
                       className="portfolio-detail-meta"
@@ -2948,43 +2613,13 @@ export default function RiskPage() {
                       {zh ? '风险预算偏移合计' : 'Eligible Risk Budget Gap'} · <span>{riskGapSummary}</span>
                     </div> : null}
                   </div>
-                  <label className="concentration-toolbar-actions">{zh ? '分类' : 'Taxonomy'}
-                    <select aria-label={zh ? '目标偏移分类' : 'Target drift taxonomy'} value={targetTaxonomy.taxonomy_id} onChange={(event) => {
-                      setTargetTaxonomyId(event.target.value)
-                      try { localStorage.setItem(targetTaxonomyStorageKey, event.target.value) } catch { /* View selection is optional persistence. */ }
-                    }}>
-                      {targetTaxonomies.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>{taxonomy.name}</option>)}
-                    </select>
-                  </label>
+
                 </div>
-                {renderRiskErrors([
-                  ...activeRootSaaTargetSetResult.errors,
-                  ...activeRootTaaTargetSetResult.errors,
-                  ...currentPlanningGroupsResult.errors,
-                ])}
-                <div className="risk-target-grid" style={!hasRiskTargets ? { gridTemplateColumns: '1fr' } : undefined}>
-                  <div className="risk-target-panel" style={!hasWeightTargets ? { gridTemplateRows: 'auto auto minmax(84px, 1fr)' } : undefined}>
-                    <div className="risk-matrix-panel-title">{hasWeightTargets ? 'Weight Target Gap' : zh ? '当前权重' : 'Current Weight'}</div>
-                    {!hasWeightTargets ? <div className="portfolio-detail-meta">{zh ? '此分类尚未配置权重目标。' : 'No weight target configured for this taxonomy.'}</div> : null}
-                    {renderTargetGapPanel({
-                      rows: hasWeightTargets ? weightTargetGapRows : actualWeightRows,
-                      errors: weightTargetGapErrors,
-                      ariaLabel: 'Weight target drift',
-                      emptyLabel: 'No weight target.',
-                      showTargets: hasWeightTargets,
-                      currentLabel: zh ? '当前' : 'Current',
-                    })}
-                  </div>
-                  {hasRiskTargets ? <div className="risk-target-panel">
-                    <div className="risk-matrix-panel-title">Risk Target Gap</div>
-                    {renderTargetGapPanel({
-                      rows: riskTargetGapRows,
-                      errors: riskTargetGapErrors,
-                      ariaLabel: 'Risk budget target gap',
-                      emptyLabel: 'No risk target.',
-                      currentLabel: 'Risk Share',
-                    })}
-                  </div> : null}
+                {renderRiskErrors([...(targetResolution?.errors ?? []), ...currentPlanningGroupsResult.errors])}
+                <div className="risk-target-panel">
+                  <div className="risk-matrix-panel-title">{zh ? '全组合风险目标偏移' : 'Portfolio risk target gap'}</div>
+                  {renderTargetGapPanel({ rows: riskTargetGapRows, errors: riskTargetGapErrors, ariaLabel: 'Risk budget target gap',
+                    emptyLabel: zh ? '此分类暂无可直接推导的全组合风险目标。' : 'No directly derived portfolio risk target for this taxonomy.', currentLabel: 'Risk Share' })}
                 </div>
               </section>
             ) : null}

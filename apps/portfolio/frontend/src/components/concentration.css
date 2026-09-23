@@ -14,10 +14,8 @@
 .concentration-fill-security { height: 7px; background: #4d8790; border-radius: 3px; }
 .concentration-fill-fcn { height: 7px; background: #b09564; border-radius: 3px; }
 .concentration-limit-marker { position: absolute; width: 2px; height: 13px; top: -3px; background: #924b4b; }
-.concentration-watch-marker { position: absolute; width: 1px; height: 11px; top: -2px; background: #b08941; }
 .concentration-status { display: inline-block; font-size: 12px; border-radius: 4px; padding: 3px 7px; background: #f0f3f5; color: #657582; }
 .concentration-status-within { color: #336d65; background: #edf5f1; }
-.concentration-status-watch { color: #916f28; background: #faf4e5; }
 .concentration-status-breached { color: #a24444; background: #faeeee; }
 .concentration-status-unavailable { color: #946325; background: #fbf2e8; }
 .concentration-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 9px 0; font-size: 12px; color: #6c7d88; }
@@ -28,17 +26,18 @@
 .concentration-source-list { list-style: none; padding: 0; }
 .concentration-source-list li { padding: 14px 0; border-bottom: 1px solid #e4e9ed; display: flex; flex-direction: column; gap: 5px; }
 .concentration-field { display: flex; flex-direction: column; align-items: stretch; gap: 7px; margin: 10px 0; min-width: 0; font-size: 13px; }
-.concentration-settings-drawer .concentration-field select { width: 100%; max-width: 360px; }
-.concentration-settings-drawer .concentration-field input[type="date"] { max-width: 200px; }
 .concentration-percent-input { display: flex; align-items: center; gap: 5px; }
 .concentration-percent-input input { width: 100%; }
-.concentration-rule-editor { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(110px, 1fr) minmax(110px, 1fr); gap: 12px; align-items: center; border-bottom: 1px solid #e2e8ec; padding: 12px 0; }
 .concentration-settings-fields { border: 0; padding: 0; margin: 16px 0; }
 .concentration-settings-fields:disabled { opacity: .75; }
-.concentration-settings-actions { display: flex; justify-content: flex-end; padding: 12px 0; }
-.concentration-toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; }
 .concentration-allocation-settings { border-top: 1px solid #e2e8ec; margin-top: 24px; padding-top: 16px; }
 .concentration-allocation-contract { padding: 10px 0; }
 .concentration-allocation-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
-.concentration-settings-drawer .inline-notice button { margin: 10px 0 0; display: block; }
-@media(max-width: 650px) { .concentration-rule-editor { grid-template-columns: 1fr 1fr; } .concentration-rule-editor > strong { grid-column: 1/-1; } .concentration-allocation-inputs { grid-template-columns: 1fr; } }
+.concentration-view-tabs { display: flex; gap: 4px; }
+.concentration-view-tabs button { font: inherit; background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; }
+.concentration-view-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: #4d8790; }
+.concentration-alerts { margin-bottom: 16px; }
+.concentration-alerts p, .concentration-alerts ul { margin: 6px 0 0; }
+@media(max-width: 650px) {
+  .concentration-allocation-inputs { grid-template-columns: 1fr; }
+}

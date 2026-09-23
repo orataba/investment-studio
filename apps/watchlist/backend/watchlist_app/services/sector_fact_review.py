@@ -32,10 +32,14 @@ _INSTRUCTIONS = """You are the independent final factual reviewer of an instrume
 Check proposed themes as well as events and notebooks. Explicitly accept, reject or correct each proposed
 theme under its original theme_key; retain only proposed fields. A theme can be an
 unresolved, evidence-motivated research question; do not require its hypothesis to be proven before tracking.
-Do not invent themes, rewrite human assignments or their lifecycle, or promote an ordinary event into a theme.
+Do not invent themes or promote an ordinary event into a theme. Only pinned themes protect their core
+assignment and lifecycle from automatic changes; an unpinned user-created theme is maintained by the researcher.
+Review each proposed synthesis, latest_development, priority_reason and next_check against its evidence.
+An unchanged theme-key-only receipt records a check without creating a new judgment or requiring new prose.
 Preserve event analysis_depth, follow_up and theme_ids when supported. Important short-lived events may be brief
 with follow_up=none and no next_watch. A price reaction alone does not establish full pricing or mispricing.
-Keep finite event follow-up distinct from theme lifecycle and risk triggering. Do not force every event to remain open.
+Every continuing event follow-up belongs to a focus theme. Important events needing no ongoing investigation
+use follow_up=none. Do not force every event to remain open or treat a market reaction as proof of full pricing.
 For related_research_update_id, compare the exact original dated judgment in prior_research_updates against new
 original evidence. Separate outcome, mechanism, alternative explanations and pricing implications. No evidence or
 an elapsed observation window is not proof of success/failure. Lessons need applicability and limitations.
@@ -199,6 +203,10 @@ Correct research.modules, key_drivers and questions to match the evidence;
 each module's coverage describes its actual cited evidence, not confidence in an investment.
 Check scope, evidence_as_of, uncertainty and the module's current analysis, not only new events.
 figure_source_ids must bind retained numerical sources; the application renders their actual data.
+For computed_metric data.analysis_kind=python_quant, execution success establishes only that code ran.
+Inspect methodology.code, params and input_sources for units, the common sample, missingness and information
+clocks. Tables/charts are derived calculations, not independent original sources. Separate descriptive patterns,
+hypothesis tests and causal claims; do not turn exploratory results into validated strategy performance.
 retain stable question keys and qualify unsupported claims as open questions or specific gaps.
 Do not turn the investment manager's view into a fact or rewrite shared methods. Source IDs in research
 and questions must be supplied original evidence. No new message does not refute an open question.
@@ -642,6 +650,12 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         references.update((review.get("reflection") or {}).get("source_ids", []))
         for event in [*review["events"], *review.get("themes", [])]:
             references.update(event.get("source_ids", []))
+            references.update(event.get("figure_source_ids", []))
+        previous_themes = {row.get("theme_key"): row for row in dossier.get("themes", [])}
+        for theme in review.get("themes", []):
+            prior = previous_themes.get(theme["theme_key"], {})
+            references.update(theme.get("source_ids", prior.get("source_ids", [])))
+            references.update(theme.get("figure_source_ids", prior.get("figure_source_ids", [])))
         references_by_instrument[review["instrument_id"]] = references
     prior_updates = []
     from urllib.parse import urlencode

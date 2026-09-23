@@ -8,7 +8,6 @@ from fastapi import HTTPException
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.services.transaction_cash import resolve_transaction_net_cash_effect
 from portfolio_app.services.daily_snapshots import (
     build_materialized_position_holding_projection,
     ensure_portfolio_daily_snapshots,
@@ -17,10 +16,7 @@ from portfolio_app.services.daily_snapshots import (
 from portfolio_app.services.derivative_holding_risk import (
     enrich_derivative_holding_risk,
 )
-from portfolio_app.services.analytics_scope import (
-    analytics_policy_version,
-    resolve_instrument_analytics_scopes,
-)
+from portfolio_app.services.taxonomy_configuration import taxonomy_configuration_version
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
     build_instrument_holdings_market_profile_from_detail,
@@ -63,7 +59,6 @@ from portfolio_app.services.portfolio_store import (
     list_transactions,
 )
 from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
-from portfolio_app.services.transaction_dates import transaction_cash_activity_date
 
 _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_trend_as_of_date",
@@ -107,10 +102,10 @@ _HOLDINGS_CHART_FIELD_NAMES = tuple(
 )
 _COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT = 24
 _EVENT_VALUATION_BASES = frozenset({"carried_cost", "premium_liability"})
-_CASH_SCOPE_SYSTEM_EXCLUSION_REASON = (
+_CASH_MODEL_EXCLUSION_REASON = (
     "Cash and settlement exposure is disclosed outside covariance risk."
 )
-_DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON = (
+_DERIVATIVE_MODEL_EXCLUSION_REASON = (
     "Derivative contracts are recorded operationally and excluded from market analytics."
 )
 
@@ -133,21 +128,17 @@ def _holding_is_derivative(row: dict[str, object]) -> bool:
 
 
 def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str | None:
-    """Explain why a policy-eligible row cannot enter modeled market exposure.
-
-    Taxonomy policy is an administrative eligibility assertion.  The holding
-    read model still has to satisfy the valuation contract before that
-    assertion can affect covariance, risk budget, or ordinary performance.
-    Keeping this gate here prevents a generic ``__root__`` policy from
-    accidentally re-enabling carried-cost FCN rows or premium liabilities.
-    """
+    """Derive model coverage from the actual holding and valuation contract."""
 
     if _holding_is_derivative(row):
-        return _DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON
+        return _DERIVATIVE_MODEL_EXCLUSION_REASON
 
     holding_kind = str(row.get("holding_kind") or "position").strip().lower()
     if holding_kind != "position":
         return f"holding_kind={holding_kind or 'unknown'} is not a market position"
+    core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
+    if not str(core.get("instrument_id") or row.get("instrument_id") or "").strip():
+        return "instrument identity is unavailable"
     valuation_basis = str(row.get("valuation_basis") or "").strip().lower()
     if valuation_basis != "market_quote":
         return f"valuation_basis={valuation_basis or 'unknown'} is not market_quote"
@@ -159,307 +150,95 @@ def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str 
         )
     if row.get("last_price") is None:
         return "last_price is unavailable"
+    if row.get("market_value_base") is None:
+        return "market_value_base is unavailable"
     return None
 
 
-def _holding_registry_instrument_id(row: dict[str, object]) -> str:
-    if _holding_is_derivative(row) or is_pending_monetary_holding(row):
-        return ""
-    instrument_core = (
-        row.get("instrument_core")
-        if isinstance(row.get("instrument_core"), dict)
-        else {}
-    )
-    instrument_type = str(instrument_core.get("instrument_type") or "").lower()
-    if instrument_type == "cash":
-        return ""
-    return str(
-        instrument_core.get("instrument_id") or row.get("instrument_id") or ""
-    ).strip()
+def _enrich_holdings_model_coverage(workspace: dict[str, object]) -> dict[str, object]:
+    """Describe market model coverage independently of classifications and targets.
 
-
-def _transaction_has_derivative_contract(
-    transaction: dict[str, object],
-) -> bool:
-    return is_derivative_contract(
-        transaction.get("derivative_contract")
-    )
-
-
-def _enrich_holdings_analytics_scope(
-    workspace: dict[str, object],
-    *,
-    portfolio_id: str,
-    as_of_date: date,
-    transactions: list[dict[str, object]],
-) -> dict[str, object]:
+    These are derived capabilities, never user permissions. Return-series and FX
+    completeness are validated by the risk model for its actual chosen window.
+    """
     rows = workspace.get("rows")
     if not isinstance(rows, list):
         return workspace
-    scope_instrument_ids = [
-        instrument_id
-        for row in rows
-        if isinstance(row, dict)
-        and (instrument_id := _holding_registry_instrument_id(row))
-    ]
-    transaction_instrument_ids = [
-        str(transaction.get("instrument_id") or "").strip()
-        for transaction in transactions
-        if str(transaction.get("instrument_id") or "").strip()
-    ]
-    scopes = resolve_instrument_analytics_scopes(
-        portfolio_id,
-        instrument_ids=[*scope_instrument_ids, *transaction_instrument_ids],
-    )
-
     excluded_rows: list[dict[str, object]] = []
-    modeled_net_exposure = 0.0
-    modeled_gross_exposure = 0.0
-    excluded_carrying_value = 0.0
-    excluded_liability = 0.0
-    cash_unallocated_exposure = 0.0
-    policy_versions: set[int] = set()
-    configuration_versions: set[int] = set()
-    taxonomy_selection_versions: set[int] = set()
-
+    modeled_net_exposure = modeled_gross_exposure = 0.0
+    excluded_carrying_value = excluded_liability = cash_unallocated_exposure = 0.0
+    unknown_exposure = False
     for row in rows:
         if not isinstance(row, dict):
             continue
-        instrument_core = (
-            row.get("instrument_core")
-            if isinstance(row.get("instrument_core"), dict)
-            else {}
-        )
-        instrument_type = str(instrument_core.get("instrument_type") or "").lower()
-        instrument_id = _holding_registry_instrument_id(row)
+        core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         is_derivative = _holding_is_derivative(row)
         is_cash_or_settlement = (
-            instrument_type == "cash"
+            str(core.get("instrument_type") or "").lower() == "cash"
             or is_pending_monetary_holding(row)
-            or is_cash_holding_instrument_id(
-                instrument_core.get("instrument_id") or row.get("line_id")
-            )
+            or is_cash_holding_instrument_id(core.get("instrument_id") or row.get("line_id"))
         )
-        scope = scopes.get(instrument_id) if instrument_id else None
-        if is_derivative:
-            scope = {
-                "scope_status": "system_excluded",
-                "taxonomy_id": None,
-                "taxonomy_node_id": None,
-                "resolved_policy_node_id": None,
-                "inherited_from_node_id": None,
-                "analytics_scope_policy_id": None,
-                "scope_policy_version": None,
-                "configuration_version": None,
-                "taxonomy_selection_version": None,
-                "risk_eligible": False,
-                "risk_budget_eligible": False,
-                "performance_scope": "derivative_lifecycle",
-                "valuation_basis_policy": "event_accounting",
-                "exclusion_reason": _DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON,
-            }
-        elif scope is None:
-            scope = {
-                "scope_status": "cash_or_settlement" if is_cash_or_settlement else "missing",
-                "taxonomy_id": None,
-                "taxonomy_node_id": None,
-                "resolved_policy_node_id": None,
-                "inherited_from_node_id": None,
-                "analytics_scope_policy_id": None,
-                "scope_policy_version": None,
-                "configuration_version": None,
-                "taxonomy_selection_version": None,
-                "risk_eligible": False,
-                "risk_budget_eligible": False,
-                "performance_scope": "unallocated",
-                "valuation_basis_policy": "cash" if is_cash_or_settlement else "unknown",
-                "exclusion_reason": (
-                    _CASH_SCOPE_SYSTEM_EXCLUSION_REASON
-                    if is_cash_or_settlement
-                    else "No current analytics scope assignment or policy."
-                ),
-            }
-        row.update(
-            {
-                field_name: field_value
-                for field_name, field_value in scope.items()
-                if field_name != "instrument_id"
-            }
+        reason = (_CASH_MODEL_EXCLUSION_REASON if is_cash_or_settlement
+                  else _market_analytics_valuation_exclusion_reason(row))
+        row["risk_eligible"] = reason is None
+        row["performance_eligible"] = reason is None
+        row["exclusion_reason"] = reason
+        row["modeling_status"] = (
+            "cash_or_settlement" if is_cash_or_settlement else "unsupported" if is_derivative
+            else "unavailable" if reason else "eligible"
         )
-        policy_performance_scope = str(scope.get("performance_scope") or "unallocated")
-        policy_performance_eligible = policy_performance_scope == "ordinary"
-        policy_risk_eligible = bool(scope.get("risk_eligible"))
-        policy_risk_budget_eligible = bool(scope.get("risk_budget_eligible"))
-        valuation_exclusion_reason = (
-            _CASH_SCOPE_SYSTEM_EXCLUSION_REASON
-            if is_cash_or_settlement
-            else _market_analytics_valuation_exclusion_reason(row)
+        row["holding_category"] = (
+            "cash_and_settlement" if is_cash_or_settlement else "derivatives" if is_derivative else "securities"
         )
-        valuation_contract_eligible = valuation_exclusion_reason is None
-
-        # Preserve the resolved policy separately from the effective runtime
-        # scope.  A policy may say ``ordinary`` while the system valuation
-        # contract still excludes this particular row.
-        row["analytics_scope_policy"] = policy_performance_scope
-        row["analytics_scope_valuation_eligible"] = valuation_contract_eligible
-        row["analytics_scope_system_exclusion_reason"] = valuation_exclusion_reason
-        if (
-            valuation_exclusion_reason is not None
-            and policy_performance_scope == "ordinary"
-            and not is_cash_or_settlement
-        ):
-            row["exclusion_reason"] = (
-                "System valuation gate: " + valuation_exclusion_reason + "."
-            )
-            effective_performance_scope = "operational_only"
-        else:
-            effective_performance_scope = policy_performance_scope
-        row["analytics_scope"] = effective_performance_scope
-        row["performance_scope"] = effective_performance_scope
-        row["performance_eligible"] = (
-            policy_performance_eligible
-            and valuation_contract_eligible
-            and not is_cash_or_settlement
-        )
-        row["risk_eligible"] = (
-            policy_risk_eligible
-            and valuation_contract_eligible
-            and not is_cash_or_settlement
-        )
-        row["risk_budget_eligible"] = (
-            policy_risk_budget_eligible
-            and valuation_contract_eligible
-            and not is_cash_or_settlement
-        )
-
-        policy_version = scope.get("scope_policy_version")
-        if isinstance(policy_version, int):
-            policy_versions.add(policy_version)
-        configuration_version = scope.get("configuration_version")
-        if isinstance(configuration_version, int):
-            configuration_versions.add(configuration_version)
-        taxonomy_selection_version = scope.get("taxonomy_selection_version")
-        if isinstance(taxonomy_selection_version, int):
-            taxonomy_selection_versions.add(taxonomy_selection_version)
-
-        if is_cash_or_settlement:
-            holding_category = "cash_and_settlement"
-        elif is_derivative:
-            holding_category = "derivatives"
-        else:
-            holding_category = "securities"
-        row["holding_category"] = holding_category
-
-        exposure = (
-            float(row["market_value_base"])
-            if row.get("market_value_base") is not None
-            else float(row["carrying_value_base"])
-            if row.get("carrying_value_base") is not None
-            else float(row["liability_value_base"])
-            if row.get("liability_value_base") is not None
-            else 0.0
-        )
+        exposure = next((float(row[key]) for key in
+                         ("market_value_base", "carrying_value_base", "liability_value_base")
+                         if row.get(key) is not None), None)
+        if exposure is None and _safe_float(row.get("quantity")) == 0:
+            exposure = 0.0
+        if exposure is None:
+            unknown_exposure = True
+            excluded_rows.append({
+                "line_id": row.get("line_id"),
+                "instrument_id": core.get("instrument_id"),
+                "instrument_name": core.get("instrument_name"),
+                "holding_category": row["holding_category"],
+                "exposure_base": None,
+                "exclusion_reason": reason,
+                "modeling_status": row["modeling_status"],
+            })
+            continue
         if is_cash_or_settlement:
             cash_unallocated_exposure += exposure
         elif row["risk_eligible"]:
             modeled_net_exposure += exposure
             modeled_gross_exposure += abs(exposure)
         else:
-            is_liability = bool(row.get("is_liability")) or exposure < 0
-            if is_liability:
+            if bool(row.get("is_liability")) or exposure < 0:
                 excluded_liability += abs(exposure)
             else:
                 excluded_carrying_value += max(exposure, 0.0)
             if abs(exposure) > 1e-9:
-                excluded_rows.append(
-                    {
-                        "line_id": row.get("line_id"),
-                        "instrument_id": instrument_core.get("instrument_id"),
-                        "instrument_name": instrument_core.get("instrument_name"),
-                        "holding_category": holding_category,
-                        "exposure_base": exposure,
-                        "exclusion_reason": row.get("exclusion_reason"),
-                        "scope_status": row.get("scope_status"),
-                    }
-                )
-
-    # Transaction cash effects are denominated in each transaction's local
-    # currency.  Never add those amounts across currencies; this disclosure
-    # is intentionally local-currency activity, not a base-currency ledger.
-    cash_scope_breakdown: dict[tuple[str, str], dict[str, float]] = {}
-    for transaction in transactions:
-        transaction_date = transaction_cash_activity_date(transaction)
-        if transaction_date is not None and transaction_date > as_of_date:
-            continue
-        cash_effect = resolve_transaction_net_cash_effect(transaction)
-        if cash_effect is None or abs(cash_effect) <= 1e-12:
-            continue
-        transaction_instrument_id = str(transaction.get("instrument_id") or "").strip()
-        transaction_scope = scopes.get(transaction_instrument_id, {})
-        performance_scope = (
-            "derivative_lifecycle"
-            if _transaction_has_derivative_contract(transaction)
-            else str(transaction_scope.get("performance_scope") or "unallocated")
-        )
-        transaction_currency = str(
-            transaction.get("currency") or ""
-        ).strip().upper()
-        if not transaction_currency:
-            # Canonical transactions require currency.  Should an imported or
-            # historical row violate that contract, keep it isolated instead
-            # of silently mixing it with a real currency bucket.
-            transaction_currency = "UNKNOWN"
-        bucket = cash_scope_breakdown.setdefault(
-            (performance_scope, transaction_currency),
-            {"net_cash_effect": 0.0, "absolute_cash_activity": 0.0},
-        )
-        bucket["net_cash_effect"] += float(cash_effect)
-        bucket["absolute_cash_activity"] += abs(float(cash_effect))
-
+                excluded_rows.append({
+                    "line_id": row.get("line_id"),
+                    "instrument_id": core.get("instrument_id"),
+                    "instrument_name": core.get("instrument_name"),
+                    "holding_category": row["holding_category"],
+                    "exposure_base": exposure,
+                    "exclusion_reason": reason,
+                    "modeling_status": row["modeling_status"],
+                })
     totals = workspace.get("totals") if isinstance(workspace.get("totals"), dict) else {}
-    total_nav = (
-        float(totals["nav"])
-        if totals.get("nav") is not None
-        else None
-    )
-    coverage_denominator = (
-        modeled_gross_exposure
-        + excluded_carrying_value
-        + excluded_liability
-        + abs(cash_unallocated_exposure)
-    )
-    workspace["analytics_scope_summary"] = {
-        "scope_name": "Modeled Market Sleeve",
-        "scope_policy_versions": sorted(policy_versions),
-        "configuration_versions": sorted(configuration_versions),
-        "taxonomy_selection_versions": sorted(taxonomy_selection_versions),
-        "total_nav": total_nav,
+    denominator = modeled_gross_exposure + excluded_carrying_value + excluded_liability + abs(cash_unallocated_exposure)
+    workspace["risk_coverage_summary"] = {
+        "model_name": "Market risk model",
+        "total_nav": float(totals["nav"]) if totals.get("nav") is not None else None,
         "modeled_net_exposure": modeled_net_exposure,
         "modeled_gross_exposure": modeled_gross_exposure,
         "excluded_carrying_value": excluded_carrying_value,
         "excluded_liability": excluded_liability,
         "cash_unallocated_exposure": cash_unallocated_exposure,
-        "coverage_ratio": (
-            modeled_gross_exposure / coverage_denominator
-            if coverage_denominator > 1e-12
-            else None
-        ),
+        "coverage_ratio": modeled_gross_exposure / denominator if denominator > 1e-12 and not unknown_exposure else None,
         "excluded_rows": excluded_rows,
-        "cash_scope_breakdown": [
-            {
-                "performance_scope": performance_scope,
-                "currency": transaction_currency,
-                **value,
-            }
-            for (
-                performance_scope,
-                transaction_currency,
-            ), value in sorted(cash_scope_breakdown.items())
-        ],
-        "ordinary_sleeve_twr_status": "unavailable",
-        "ordinary_sleeve_twr_reason": (
-            "Sleeve boundary cash flows are not yet maintained as a cash subledger."
-        ),
     }
     return workspace
 
@@ -921,7 +700,6 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
         "nav": resolved_portfolio.get("nav", 0.0),
         "day_change_value": resolved_portfolio.get("day_change_value", 0.0),
         "day_change_pct": resolved_portfolio.get("day_change_pct", 0.0),
-        "default_planning_taxonomy_id": resolved_portfolio.get("default_planning_taxonomy_id"),
         "toolbar_label": "View: Portfolio Summary",
         "badges": [
             calculation_frequency_status,
@@ -1007,7 +785,7 @@ def read_holdings_analysis(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
         risk_policy=risk_policy or {},
-        analytics_policy_version=analytics_policy_version(resolved_portfolio_id),
+        taxonomy_configuration_version=taxonomy_configuration_version(resolved_portfolio_id),
         builder=build_analytics_workspace,
         response_projection=(response_projection if response_projection is not None
                              else None if include_details else _compact_holdings_workspace_projection),
@@ -1063,14 +841,9 @@ def _build_holdings_analytics_workspace(
                     risk_basis_profile=risk_basis_profile,
                     instrument_details=instrument_details,
                 )
-                scoped_response = _enrich_holdings_analytics_scope(
-                    response,
-                    portfolio_id=resolved_portfolio_id,
-                    as_of_date=resolved_as_of_date,
-                    transactions=transactions,
-                )
+                covered_response = _enrich_holdings_model_coverage(response)
                 enriched_response = enrich_holdings_forward_risk(
-                    scoped_response,
+                    covered_response,
                     as_of_date=resolved_as_of_date,
                     calculation_frequency=calculation_frequency,
                     risk_policy=risk_policy or {},
@@ -1098,14 +871,9 @@ def _build_holdings_analytics_workspace(
                 instrument_details=instrument_details,
                 include_details=include_details,
             )
-            scoped_response = _enrich_holdings_analytics_scope(
-                response,
-                portfolio_id=resolved_portfolio_id,
-                as_of_date=resolved_as_of_date,
-                transactions=transactions,
-            )
+            covered_response = _enrich_holdings_model_coverage(response)
             enriched_response = enrich_holdings_forward_risk(
-                scoped_response,
+                covered_response,
                 as_of_date=resolved_as_of_date,
                 calculation_frequency=calculation_frequency,
                 risk_policy=risk_policy or {},
@@ -1423,14 +1191,9 @@ def _build_holdings_analytics_workspace(
             ),
         },
     }
-    scoped_response = _enrich_holdings_analytics_scope(
-        response,
-        portfolio_id=resolved_portfolio_id,
-        as_of_date=resolved_as_of_date,
-        transactions=transactions,
-    )
+    covered_response = _enrich_holdings_model_coverage(response)
     enriched_response = enrich_holdings_forward_risk(
-        scoped_response,
+        covered_response,
         as_of_date=resolved_as_of_date,
         calculation_frequency=calculation_frequency,
         risk_policy=risk_policy or {},

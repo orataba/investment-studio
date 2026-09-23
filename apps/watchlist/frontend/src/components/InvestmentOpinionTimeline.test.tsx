@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import InvestmentOpinionTimeline, { latestInvestmentOpinion } from './InvestmentOpinionTimeline'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import InvestmentOpinionTimeline, { currentInvestmentOpinion } from './InvestmentOpinionTimeline'
 import { emptyInstrumentResearchResponse, type InstrumentResearchNote, type InstrumentResearchResponse } from '../lib/api'
 import { announceResearchPublication } from '../lib/researchUpdates'
 
-const api = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn(), get: vi.fn(), themes: vi.fn() }))
+const api = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn(), themes: vi.fn(), stance: vi.fn() }))
 vi.mock('../lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/api')>(),
   createInstrumentResearchNote: api.create,
   updateInstrumentResearchNote: api.update,
   deleteInstrumentResearchNote: api.remove,
-  getInstrumentResearch: api.get,
+  selectInvestmentStance: api.stance,
 }))
 vi.mock('../lib/researchDossierApi', async importOriginal => ({ ...await importOriginal<typeof import('../lib/researchDossierApi')>(), getResearchThemes: api.themes }))
 
@@ -28,10 +28,23 @@ function note(overrides: Partial<InstrumentResearchNote> = {}): InstrumentResear
 beforeEach(() => {
   vi.resetAllMocks()
   api.themes.mockResolvedValue({ identity: { user_id: 'user-shaw', display_name: 'Shaw', mode: 'account', team_role: 'member' }, themes: [] })
-  // Publication refresh runs after the same canonical write; keep it pending unless a test supplies a response.
-  api.get.mockImplementation(() => new Promise(() => {}))
 })
 afterEach(cleanup)
+
+it('does not publish a late overall-view response into a different instrument', async () => {
+  let finish!: (value: InstrumentResearchResponse) => void
+  api.stance.mockReturnValue(new Promise<InstrumentResearchResponse>(resolve => { finish = resolve }))
+  const research = { ...emptyInstrumentResearchResponse(), notes: [note()] }
+  const onChange = vi.fn()
+  const { rerender } = render(<InvestmentOpinionTimeline instrumentId="xlk" research={research} onChange={onChange} />)
+  await waitFor(() => expect(screen.getByRole('button', { name: '设为当前总体观点' })).toHaveProperty('disabled', false))
+  fireEvent.click(screen.getByRole('button', { name: '设为当前总体观点' }))
+  rerender(<InvestmentOpinionTimeline instrumentId="gold" research={emptyInstrumentResearchResponse()} onChange={onChange} />)
+  await act(async () => finish(research))
+  expect(onChange).not.toHaveBeenCalled()
+  expect(screen.queryByText(note().body)).toBeNull()
+  expect(screen.getByRole('button', { name: '新增观点' })).toHaveProperty('disabled', false)
+})
 
 it('adds a new dated view without requiring a title or fixed research fields and leaves previous views intact', async () => {
   const research = { ...emptyInstrumentResearchResponse(), notes: [note()] }
@@ -46,6 +59,7 @@ it('adds a new dated view without requiring a title or fixed research fields and
   fireEvent.click(screen.getByRole('button', { name: '新增观点' }))
   fireEvent.change(screen.getByLabelText('日期'), { target: { value: '2026-09-06' } })
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '订单开始改善，继续观察现金流。' } })
+  fireEvent.change(screen.getByLabelText('当时背景与依据'), { target: { value: '季度订单披露已发布。' } })
   fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
   await waitFor(() => expect(api.create).toHaveBeenCalledWith('xlk', expect.objectContaining({
     note: expect.objectContaining({ note_date: '2026-09-06', title: '投资观点', body: '订单开始改善，继续观察现金流。', note_type: 'thesis_update', source_refs: '' }),
@@ -73,8 +87,8 @@ it('orders views by their stated date and keeps existing profile text available 
   expect(screen.getByText(research.profile.current_view)).toBeTruthy()
   expect(screen.getByText(research.profile.key_risks)).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
-  expect(latestInvestmentOpinion(research)).toEqual({ title: '等待需求验证', body: '盈利改善尚需订单确认。', noteDate: '2026-09-06' })
-  expect(latestInvestmentOpinion({ ...research, notes: [] })?.body).toBe(research.profile.current_view)
+  expect(currentInvestmentOpinion(research)).toBeNull()
+  expect(currentInvestmentOpinion({ ...research, notes: [] })).toBeNull()
   expect(api.create).not.toHaveBeenCalled()
 })
 
@@ -113,6 +127,7 @@ it('retains the draft and shows an error when saving fails', async () => {
   await waitFor(() => expect(screen.getByRole('button', { name: '新增观点' })).toHaveProperty('disabled', false))
   fireEvent.click(screen.getByRole('button', { name: '新增观点' }))
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '等待新的订单数据。' } })
+  fireEvent.change(screen.getByLabelText('当时背景与依据'), { target: { value: '季度披露前的判断。' } })
   fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', '暂时无法保存')
   expect(screen.getByRole('textbox', { name: '观点' })).toHaveProperty('value', '等待新的订单数据。')
@@ -168,17 +183,33 @@ it('adds a related judgment as a new record and binds assistant review to the or
   fireEvent.click(screen.getByRole('button', { name: '补充判断' }))
   fireEvent.change(screen.getByRole('textbox', { name: '观点' }), { target: { value: '新证据使我调整原判断。' } })
   fireEvent.click(screen.getByRole('button', { name: '保存观点' }))
-  await waitFor(() => expect(api.create).toHaveBeenCalledWith('xlk', expect.objectContaining({ note: expect.objectContaining({ research_context: { relationship: 'update', related_note_id: 'view-1', related_revision: 3, theme_id: 'demand' } }) })))
+  await waitFor(() => expect(api.create).toHaveBeenCalledWith('xlk', expect.objectContaining({ note: expect.objectContaining({ research_context: expect.objectContaining({ relationship: 'update', related_note_id: 'view-1', related_revision: 3, theme_id: 'demand', background: expect.stringContaining('盈利改善尚需订单确认。') }) }) })))
   expect(api.update).not.toHaveBeenCalled()
 })
 
-it('refreshes canonical PM notes after the assistant publishes to this instrument', async () => {
-  const next = { ...emptyInstrumentResearchResponse(), notes: [note({ body: '助手按我的明确要求记录的新判断。' })] }
-  api.get.mockResolvedValue(next)
+it('refreshes its theme catalogue after an update to this instrument', async () => {
   const change = vi.fn()
   render(<InvestmentOpinionTimeline instrumentId="xlk" research={emptyInstrumentResearchResponse()} onChange={change} />)
+  await waitFor(() => expect(api.themes).toHaveBeenCalledTimes(1))
   announceResearchPublication(['gold'])
-  expect(api.get).not.toHaveBeenCalled()
+  expect(api.themes).toHaveBeenCalledTimes(1)
   announceResearchPublication(['xlk'])
-  await waitFor(() => expect(change).toHaveBeenCalledWith(next))
+  await waitFor(() => expect(api.themes).toHaveBeenCalledTimes(2))
+  expect(change).not.toHaveBeenCalled()
+})
+
+
+it('selects an explicit overall view and never replaces it with a later note or review', async () => {
+  const selected = note()
+  const review = note({ note_id: 'review', note_type: 'review', title: '事后复盘', note_date: '2026-09-20' })
+  const research = { ...emptyInstrumentResearchResponse(), notes: [review, selected] }
+  const response = { ...research, current_stance: { selection_id: 'selection', selected_at: '2026-09-23T00:00:00Z', selected_by: 'user-shaw', selected_by_name: 'Shaw', note: selected, has_later_revision: false } }
+  api.stance.mockResolvedValue(response)
+  const onChange = vi.fn()
+  render(<InvestmentOpinionTimeline instrumentId="xlk" research={research} onChange={onChange} />)
+  await waitFor(() => expect(screen.getByRole('button', { name: '设为当前总体观点' })).toHaveProperty('disabled', false))
+  fireEvent.click(screen.getByRole('button', { name: '设为当前总体观点' }))
+  await waitFor(() => expect(api.stance).toHaveBeenCalledWith('xlk', selected))
+  expect(currentInvestmentOpinion(response)?.body).toBe(selected.body)
+  expect(currentInvestmentOpinion({ ...research, notes: [review] })).toBeNull()
 })

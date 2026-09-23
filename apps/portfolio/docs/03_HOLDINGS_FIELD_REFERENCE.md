@@ -184,7 +184,7 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 | `instrument_volatility_3m` | 3M Vol | 同上，3M 窗口 | 从风险 scope 排除衍生品后，用 3M 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
 | `instrument_volatility_6m` | 6M Vol | 同上，6M 窗口 | 从风险 scope 排除衍生品后，用 6M 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
 | `instrument_volatility_1y` | 1Y Vol | 同上，1Y 窗口 | 从风险 scope 排除衍生品后，用 1Y 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
-| `forward_risk_share` | Forward RC | eligible 普通证券相对于同一 total-portfolio variance 的 contribution share；衍生品为 N/A，modeled-zero monetary row 为 0；其他 policy-excluded rows 为 N/A | eligible 风险模型完整时加总，衍生品不进入合计；纯 modeled-zero monetary group 的行级贡献为 0；excluded exposure 仍保留在 scope disclosure | `portfolio_risk_contribution` |
+| `forward_risk_share` | Forward RC | eligible 普通证券相对于同一 total-portfolio variance 的 contribution share；衍生品为 N/A，modeled-zero monetary row 为 0；缺少可用估值的普通证券为 N/A | eligible 风险模型完整时加总，衍生品不进入合计；纯 modeled-zero monetary group 的行级贡献为 0；未覆盖敞口仍保留在风险覆盖摘要 | `portfolio_risk_contribution` |
 | `price_chart_1m` | Chart 1M | 1M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
 | `price_chart_3m` | Chart 3M | 3M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
 | `price_chart_6m` | Chart 6M | 6M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
@@ -214,9 +214,11 @@ CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 
 
 ### 4.3 Forward RC
 
-所有 eligible 市场成员必须来自同一个完整 Production Risk Model 和同一 leaf covariance matrix，权重为 signed base exposure / total NAV。`risk_eligible` 来自当前 analytics taxonomy selection、分类配置与 scope policy，自动版本用于审计和计算失效，历史持仓也按当前配置重述：exact node 优先，其次最近祖先，再到 taxonomy root；`__unassigned__` 只使用自身 policy。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal 只能加总成员相对于同一 total-portfolio variance 的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
+所有 eligible 市场成员必须来自同一个完整 Production Risk Model 和同一 leaf covariance matrix，权重为 signed base exposure / total NAV。`risk_eligible` 由正式证券身份、持仓类型、实际 `market_quote` 估值、完整覆盖和可用价格派生；页面所选分类、assignment 和目标不控制实际持仓风险。未分类或零目标的持仓仍参与能够支持的风险计算。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal 只能加总成员相对于同一 total-portfolio variance 的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
 
-Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Forward-risk summary 仍必须返回 policy/configuration versions、total NAV、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。没有 eligible risky holding、total NAV 无效、存在无法建模的非本币 monetary 或 policy-excluded 市场敞口，或者 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 forward risk 失败关闭。modeled-zero monetary row 的行级贡献可以明确为 0，但它本身不能使纯现金组合得到可观测组合风险。
+行级 `modeling_status` 明确区分 `eligible`（可交给风险模型验证收益窗口）、`unavailable`（缺少可用估值／身份）、`unsupported`（当前不支持的衍生品模型）和 `cash_or_settlement`；`exclusion_reason` 为系统生成的实际原因，`excluded_rows` 保留相同状态。风险覆盖 payload 不携带分类政策／配置版本，也没有独立子组合 TWR 占位字段。
+
+Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Holdings `risk_coverage_summary` 和 Forward-risk summary 必须返回 `model_name=Market risk model`、total NAV、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。没有 eligible risky holding、total NAV 无效、存在无法建模的非本币 monetary 或估值不可用的普通证券敞口，或者 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 forward risk 失败关闭。modeled-zero monetary row 的行级贡献可以明确为 0，但它本身不能使纯现金组合得到可观测组合风险。
 
 ## 5. 不可用与排查顺序
 
@@ -227,4 +229,12 @@ Event-valued asset 和 derivative liability 不进入 covariance matrix，行级
 3. 市值或权重：检查 valuation quote、quote basis、price scale、FX 和 snapshot freshness；
 4. Return / Vol / Drawdown：检查 Registry total-return semantics、窗口锚点、历史覆盖和 risk frequency；
 5. group 指标：检查每个当前成员是否 100% 覆盖、return currency 是否一致；
-6. Forward RC：先检查当前 analytics taxonomy/policy、total NAV 与 excluded-row disclosure，再检查 eligible members、Production Risk Model、完整对齐收益矩阵、base-currency return、total-portfolio variance 和 workspace status。
+6. Forward RC：先检查真实持仓／估值覆盖、total NAV 与未覆盖敞口和原因，再检查 eligible members、Production Risk Model、完整对齐收益矩阵、base-currency return、total-portfolio variance 和 workspace status。
+
+## 集中度视图
+
+Holdings 的“敞口与集中度”独立于账面持仓表：直接证券按账户绝对市值求和，FCN 按剩余名义本金并在每套分类中分配一次；期权、现金和待结算不进入分子，组合账面 NAV 仍为分母。不得使用已跨账户净额合并的 `allocation` 替代 gross 敞口。期权未具备可靠 delta，不能将权利金、账面负债或执行价名义额作为 delta 敞口。
+
+投影行包括 `exposure_base`、`known_exposure_base`、`weight`、`lower_bound_weight`、`limit_weight`、`headroom_weight`、`status`、来源和覆盖说明。缺数据时完整金额/权重为空，保留已知下界；下界已超过上限仍可标超限，否则不能宣称限额内。`scope.enabled` 只控制对应 taxonomy 节点提醒，关闭时保留上限。单证券/FCN 上限全组合唯一，空白不限制，0 禁止正敞口，等于上限不算超限。
+
+父节点汇总全部后代，父子行及不同分类树不可重复相加。限额从所展示估值日生效；编辑读取区分当日生效 revision 与最新写入 revision，后者用于并发校验。Overview 只显示同一投影中的超限和无法判断摘要，完整明细与 FCN 分配编辑留在 Holdings。

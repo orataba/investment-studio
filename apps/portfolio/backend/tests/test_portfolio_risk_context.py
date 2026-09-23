@@ -20,14 +20,14 @@ def workspace(*, previous=False):
 
 
 def catalog():
-    return {"default_planning_taxonomy_id": "tax", "taxonomy_nodes": [
+    return {"taxonomies": [{"taxonomy_id": "tax", "name": "Risk", "root_allocation_basis": "risk_budget", "status": "active"}], "taxonomy_nodes": [
         {"taxonomy_id": "tax", "taxonomy_node_id": key, "node_name": key, "parent_taxonomy_node_id": None, "status": "active"}
         for key in ["macro", "gold"]], "taxonomy_assignments": [
         {"taxonomy_id": "tax", "taxonomy_node_id": key, "target_scope": "instrument", "target_entity_id": iid, "status": "active"}
         for key, iid in [("macro", "alpha"), ("gold", "beta")]], "target_sets": [
         {"target_set_id": "saa", "taxonomy_id": "tax", "target_set_type": "saa", "name": "SAA", "status": "active",
-         "comparator_taxonomy_node_id": None, "weight_enabled": True, "risk_budget_enabled": True}], "target_set_lines": [
-        {"target_set_id": "saa", "target_member_type": "taxonomy_node", "target_member_id": key, "target_weight": 0.5, "target_risk_share": 0.5}
+         "comparator_taxonomy_node_id": None}], "target_set_lines": [
+        {"target_set_id": "saa", "target_member_type": "taxonomy_node", "target_member_id": key, "target_value": 0.5}
         for key in ["macro", "gold"]]}
 
 
@@ -109,7 +109,7 @@ def test_historical_risk_context_uses_requested_holding_date(monkeypatch):
     assert result['concentration']['as_of_date'] == result['tail_risk']['as_of_date'] == selected.isoformat()
     assert all(source['end_date'] == selected.isoformat() for source in result['sources'])
     assert "planning_as_of_date" not in result
-    assert {row["group_id"] for row in result["targets"]["rows"]} == {"macro", "gold"}
+    assert {row["group_id"] for row in result["targets"]["rows"]} == {"macro", "gold", "instrument:alpha", "instrument:beta"}
     target_source = next(source for source in result["sources"] if source["source_id"].endswith(":targets"))
     assert "当前保存配置" in target_source["date_basis"]
 
@@ -139,6 +139,61 @@ def test_unavailable_model_and_missing_targets_stay_explicit_without_zero_risk_c
     assert all(row["risk_share"] is None for row in result["portfolio_metrics"]["groups"]["rows"])
     assert result["targets"]["status"] == "unavailable" and result["targets"]["rows"] == []
     assert result["comparisons"]["status"] == "unavailable" and result["comparisons"]["limitations"]
+
+
+def test_only_global_rc_targets_are_compared_and_effective_tactical_keeps_source():
+    result = service.project_portfolio_risk(workspace(), catalog())
+    targets = result["targets"]["rows"]
+    assert targets and all(row["dimension"] == "risk_budget" for row in targets)
+    assert all(row["risk_attribution_scope"] == "portfolio" for row in targets)
+    tactical = [row for row in targets if row["target_set_type"] == "taa"]
+    assert tactical and all(row["source_stage"] in {"saa", "single_member"} for row in tactical)
+    assert all(row["source_stage"] == "saa" for row in tactical if row["scope_node_id"] is None)
+    config = catalog()
+    config["taxonomies"][0]["root_allocation_basis"] = "weight"
+    capital_root = service.project_portfolio_risk(workspace(), config)
+    assert capital_root["targets"]["rows"] == []
+
+
+def test_unassigned_exposure_prevents_partial_denominator_target_comparison():
+    config = catalog()
+    config["taxonomy_assignments"] = config["taxonomy_assignments"][:1]
+    result = service.project_portfolio_risk(workspace(), config)
+    groups = result["portfolio_metrics"]["groups"]
+    assert groups["status"] == "ok"
+    assert sum(row["risk_share"] or 0. for row in groups["rows"]) == pytest.approx(1.)
+    assert groups["target_comparison_available"] is False
+    assert result["targets"]["rows"]
+    assert all(row["current"] is None and row["gap_pp"] is None for row in result["targets"]["rows"])
+
+
+def test_known_zero_security_exposure_does_not_disable_other_members_risk_targets():
+    current = workspace()
+    current["rows"][1]["market_value_base"] = 0.0
+    enrich_holdings_forward_risk(current, as_of_date=AS_OF_DATE, calculation_frequency="daily", risk_policy=_risk_policy())
+    assert current["forward_risk"]["status"] == "ok"
+    assert current["rows"][1]["forward_risk_status"] == "no_exposure"
+    result = service.project_portfolio_risk(current, catalog())
+    groups = result["portfolio_metrics"]["groups"]
+    assert groups["target_comparison_available"] is True
+    assert next(row for row in groups["rows"] if row["group_id"] == "gold")["risk_share"] == 0.0
+    assert next(row for row in result["targets"]["rows"] if row["group_id"] == "gold")["current"] == 0.0
+    assert next(row for row in result["targets"]["rows"] if row["group_id"] == "macro")["current"] == pytest.approx(1.0)
+
+
+def test_held_unmodeled_member_is_not_zero_and_multiple_taxonomies_require_explicit_context():
+    current = workspace()
+    current["rows"][0].update(risk_eligible=False, forward_risk_status="outside_model", forward_risk_share=None)
+    result = service.project_portfolio_risk(current, catalog())
+    assert all(row["current"] is None for row in result["targets"]["rows"])
+    config = catalog()
+    config["taxonomies"].append({"taxonomy_id": "other", "name": "Other", "status": "active"})
+    unspecified = service.project_portfolio_risk(workspace(), config)
+    assert unspecified["portfolio_metrics"]["groups"]["taxonomy_id"] is None
+    assert unspecified["targets"]["rows"] == []
+    selected = service.project_portfolio_risk(workspace(), config, taxonomy_id="tax")
+    assert selected["portfolio_metrics"]["groups"]["taxonomy_id"] == "tax"
+    assert selected["targets"]["rows"]
 
 
 def test_groups_outside_market_risk_model_are_not_reported_as_zero_risk():

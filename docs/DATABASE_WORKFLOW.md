@@ -84,17 +84,32 @@ schema shape cannot reconstruct the original business facts. Recovery for such
 migrations uses the retained pre-migration eight-schema backup, not a forced
 downgrade.
 
-Portfolio taxonomy upgrades collapse dated configuration into current state: the
-latest saved automatic version for each scope becomes current, including changes
-previously scheduled for a future date. A selection pointing to a subsequently
-deleted, disabled or foreign taxonomy is explicitly unassigned, preserving its
-original audit record. An existing valid legacy default retains that selection.
-Older version payloads remain audit
-records, while effective-date columns and runtime date selection are removed.
-All affected historical analytics are marked for a full rebuild. Financial fact
-dates and saved Research result snapshots are preserved. Recovery uses the
-pre-migration backup because removed effective-date intervals cannot be recreated
-by a schema downgrade.
+Portfolio taxonomy uses current classifications, assignments and scalar targets.
+Migration 0066 removes manual analytics-scope policies; 0067 removes global default
+selection and planning/dimension gates. Each parent owns one allocation basis;
+SAA/TAA store scalar target values, root cash is a separate NAV reserve, and
+fixed derivatives have no target. Ambiguous old target vectors are rejected for
+explicit correction rather than choosing a different dimension silently. The
+selected dimension's disabled stages remain absent, including their cash
+reserve, so a disabled TAA continues to inherit SAA. Complete vectors within the
+old rounding tolerance are normalized proportionally; original values and
+disabled stages remain in the migration audit. The monotonic counter remains in
+`portfolio_taxonomy_state`.
+
+Migration 0068 expands every dated concentration revision to explicit member
+limits and taxonomy switches. Current and archived identities participate,
+future-dated revisions are included, and the original policy JSON remains in
+`migration_audit.original_settings`; policy revision, date, author and time are
+unchanged. Runtime only reads the new format. After a native new-format write,
+old-rule recovery requires the retained backup. Do not run these migrations
+against a real business database merely to validate source changes.
+
+Classification and target changes rebuild affected historical analytics;
+concentration-only saves do not invalidate valuation or Research. Financial fact
+dates and saved Research outputs stay unchanged. Research method
+`global_leaf_scalar_targets_v3`, target snapshot schema 3 and planning fingerprint
+version 7 participate in run/cache identity; earlier results remain immutable
+and explicitly stale until rerun. Upgrades never relabel archived results.
 
 The destructive dump restore wrapper performs a checksum/archive/target
 preflight, stops managed local services, retains a pre-restore schema backup,
