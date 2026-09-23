@@ -4,7 +4,8 @@ import json
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import JSON, Text, select, text, true
+from sqlalchemy import JSON, Text, create_engine, event, select, text, true
+from sqlalchemy.orm import Session
 
 from watchlist_app.db.models.workbench import ResearchEntry
 from watchlist_app.db.research_scope import RESEARCH_SCOPE_INDEX
@@ -16,6 +17,52 @@ from watchlist_app.services.research_access import (
 from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgres_watchlist_env
 
 pytestmark = pytest.mark.postgresql_integration
+
+
+def test_monitoring_scope_streams_only_matching_history_and_preserves_originals(postgres_watchlist_env):
+    from datetime import UTC, datetime, timedelta
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.research_triggers import _monitoring_context
+    iid = postgres_watchlist_env["instrument_id"]
+    stamp = datetime.now(UTC)
+    current = {"research_run": True, "instrument_ids": [iid], "cutoff": stamp.isoformat(),
+        "market_queries": [{"instrument_id": iid, "query": "Exact issuer disclosure", "entities": []}],
+        "source": "original\x00text"}
+    with get_session_factory()() as session:
+        for topic in ("monitor-public", "monitor-private", "monitor-other"):
+            session.add(ResearchTopic(topic_id=topic, title=topic, visibility="team"))
+        session.flush()
+        fixtures = [
+            ("old-poison", "monitor-public", -1, {**current, "source": "unneeded-monitor-history"}),
+            ("current-scope", "monitor-public", 0, current),
+            ("newer-private", "monitor-private", 1, {**current, "market_queries": [
+                {"instrument_id": iid, "query": "Private retained query", "entities": []}]}),
+            ("newer-unrelated", "monitor-other", 2, {**current, "instrument_ids": [iid + "-other"],
+                "source": "unneeded-monitor-history"}),
+        ]
+        for key, topic, offset, context in fixtures:
+            session.add(ResearchEntry(entry_id=key, topic_id=topic, kind="analysis", title=key,
+                created_at=stamp + timedelta(seconds=offset), context_json=context))
+        session.add(ResearchEntry(entry_id="original-private-boundary", topic_id="monitor-private", kind="note",
+            title="Retained portfolio", context_json={"portfolio_id": "original-private-portfolio"}))
+        session.commit()
+
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        assert "unneeded-monitor-history" not in value, "Unrelated or unneeded older run was decoded"
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
+    cursors = []
+    event.listen(engine, "after_cursor_execute", lambda _conn, cursor, *_: cursors.append(cursor) if getattr(cursor, "name", None) else None)
+    try:
+        with Session(engine) as session:
+            actual = _monitoring_context(session, iid, {"instrument_ids": [iid], "research_actor": {"team_id": "default"}})
+            assert actual == current
+            assert cursors and all(cursor.closed for cursor in cursors)
+    finally:
+        engine.dispose()
 
 
 def test_streamed_current_states_and_notebook_keep_exact_sources_and_private_history(postgres_watchlist_env):

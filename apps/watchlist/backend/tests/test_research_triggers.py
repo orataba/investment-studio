@@ -29,7 +29,8 @@ def capture(store, body, *, observed=1, received=1, url="https://example.com/gol
 
 
 def session(cases=(), calendar="XNYS"):
-    return SimpleNamespace(scalars=lambda statement: cases,
+    return SimpleNamespace(scalars=lambda statement: (row for row in cases),
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
         get=lambda model, iid: SimpleNamespace(instrument_type="etf", source_settings_json={"market_calendar": calendar}, exchange_code=calendar))
 
 
@@ -273,8 +274,8 @@ def test_inactive_theme_forecast_does_not_restart_its_research_when_due(store, t
 
 
 def test_fund_observation_date_uses_the_same_nav_check_clock_as_daily_research(store):
-    fund_session = SimpleNamespace(scalars=lambda statement: [], get=lambda model, iid:
-        SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None))
+    fund_session = session()
+    fund_session.get = lambda model, iid: SimpleNamespace(instrument_type="private_fund", source_settings_json={}, exchange_code=None)
     prior = {"cutoff": "2026-09-02T15:00:00+00:00", "instrument_ids": ["private-fund"],
         "research_dossiers": [{"instrument_id": "private-fund", "notebook": {"forecasts": [
             {"key": "review", "claim": "复核月度净值", "review_on": "2026-09-03", "status": "active"}]}}]}

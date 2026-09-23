@@ -1,4 +1,5 @@
 """Supplement a daily review only for new information in its actual research scope."""
+from contextlib import closing
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -47,22 +48,27 @@ def _monitoring_context(session, instrument_id, context):
     # most recent actual research scope, rather than silently ending monitoring.
     # A private query is itself private information even when it searched public
     # documents. Only shared, non-portfolio research establishes automatic scope.
+    from watchlist_app.services.research_access import instrument_run_scope, topic_portfolio_ids
     query = select(ResearchEntry).join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
         ResearchEntry.kind == "analysis", ResearchTopic.visibility == "team", ResearchTopic.portfolio_id.is_(None),
-    ).order_by(ResearchEntry.created_at.desc())
+        instrument_run_scope(session, instrument_id),
+    ).order_by(ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())
     team_id = (context.get("research_actor") or {}).get("team_id")
     if team_id:
         query = query.where(ResearchEntry.team_id == team_id, ResearchTopic.team_id == team_id)
-    for entry in session.scalars(query):
-        prior = getattr(entry, "context_json", None) or {}
-        if (prior.get("sector_run") or prior.get("research_run")) and instrument_id in prior.get("instrument_ids", []):
-            from watchlist_app.services.research_access import topic_portfolio_ids
-            topic = session.get(ResearchTopic, entry.topic_id)
-            if (prior.get("portfolio_id") or (prior.get("risk_scope") or {}).get("portfolio_id")
-                    or topic_portfolio_ids(session, topic)):
-                continue
-            if _queries(prior, instrument_id):
-                return prior
+    # A follow-up without its own query scope must not hydrate the whole team's
+    # archived inputs. Read only this instrument, stopping at its first usable
+    # retained scope; historical portfolio restrictions still apply to the topic.
+    with closing(session.scalars(query.execution_options(yield_per=1))) as entries:
+        for entry in entries:
+            prior = getattr(entry, "context_json", None) or {}
+            if (prior.get("sector_run") or prior.get("research_run")) and instrument_id in prior.get("instrument_ids", []):
+                topic = session.get(ResearchTopic, entry.topic_id)
+                if (prior.get("portfolio_id") or (prior.get("risk_scope") or {}).get("portfolio_id")
+                        or topic_portfolio_ids(session, topic)):
+                    continue
+                if _queries(prior, instrument_id):
+                    return prior
     return context
 
 

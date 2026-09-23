@@ -152,3 +152,40 @@ def test_startup_recovery_updates_status_without_loading_retained_inputs(client)
         assert run.status == "failed" and run.completed_at is not None
         assert run.context_json["retained_input"] == "Original data " * 80000
         assert session.get(ResearchEntry, "memory-old").status == "completed"
+
+
+def test_incremental_monitoring_skips_unrelated_history_and_closes_after_usable_scope(client, monkeypatch):
+    from watchlist_app.services import research_triggers
+    seed_history()
+    with get_session_factory()() as session:
+        current = session.get(ResearchEntry, "memory-current")
+        current.context_json = {**current.context_json, "market_queries": [
+            {"instrument_id": IID, "query": "Retained issuer disclosure", "entities": []}]}
+        session.add(ResearchTopic(topic_id="unrelated-monitor", title="Unrelated", visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="newer-unrelated-monitor", topic_id="unrelated-monitor", kind="analysis",
+            title="Unrelated history", created_at=datetime.now(UTC) + timedelta(days=1),
+            context_json={"sector_run": True, "instrument_ids": [IID + "-other"],
+                "retained_input": "poisoned-history-must-not-decode"}))
+        session.commit()
+    engine = guarded_engine()
+    closed = []
+    try:
+        with Session(engine) as session:
+            scalars = session.scalars
+            class Result:
+                def __init__(self, result):
+                    self.result = result
+                def __iter__(self):
+                    return iter(self.result)
+                def close(self):
+                    self.result.close()
+                    closed.append(self.result.closed)
+            monkeypatch.setattr(session, "scalars", lambda *args, **kwargs: Result(scalars(*args, **kwargs)))
+            result = research_triggers._monitoring_context(session, IID,
+                {"instrument_ids": [IID], "research_actor": {"team_id": "default"}})
+            assert result["market_queries"][0]["query"] == "Retained issuer disclosure"
+            assert result["retained_input"] == "Original data " * 80000
+            assert closed == [True]
+    finally:
+        engine.dispose()
