@@ -410,11 +410,12 @@ def _document_materials(session: Session, instrument_id: str) -> list[dict]:
     return result
 
 
-def _research_records(session: Session, instrument_id: str):
+def _research_records(session: Session, instrument_id: str, *, oldest_first: bool = False):
+    from contextlib import closing
     from sqlalchemy import Boolean, JSON, String, true
     from types import SimpleNamespace
     from studio_identity import current_principal
-    from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
+    from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, iter_research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
     team_id = principal.team_id
     relation, context = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
@@ -431,49 +432,57 @@ def _research_records(session: Session, instrument_id: str):
     ).select_from(ResearchEntry).join(ResearchTopic)
     if relation is not None:
         query = query.join(relation, true())
-    records = research_projection_rows(session, query.where(
+    query = query.where(
         ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
         True if principal.local_unrestricted else ResearchEntry.team_id == team_id,
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
         instrument_run_scope(session, instrument_id), review["research"].as_string().is_not(None),
-    ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+    )
+    topics = session.execute(query.with_only_columns(
+        ResearchEntry.topic_id, ResearchTopic.portfolio_id, maintain_column_froms=True).distinct()).all()
+    portfolios = topic_portfolio_ids_by_topic(session, topics)
+    stamp = func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at)
+    records = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(
+        [topic_id for topic_id, ids in portfolios.items() if not ids]))
+        .order_by(stamp.asc() if oldest_first else stamp.desc()),
         {**{name: (name,) for name in ("sector_run", "research_run", "cutoff", "recordkeeping_only", "citation_correction", "organization_revision")},
          "review_status": ("reviews", instrument_id, "status"), "research": ("reviews", instrument_id, "research")})
-    topics = {row.topic_id: SimpleNamespace(topic_id=row.topic_id, portfolio_id=row.portfolio_id) for row in records}
-    portfolios = topic_portfolio_ids_by_topic(session, topics.values())
-    for row in records:
-        research = row.research
-        if (not (row.sector_run or row.research_run)
-                or (not row.research_run and (row.status != "completed" or row.topic_id not in {
-                    "us-sector-daily-review", f"instrument-events:{instrument_id}"}))
-                or row.review_status not in {"completed", "limited"} or not isinstance(research, dict) or not research
-                or portfolios[row.topic_id]):
-            continue
-        # Do not overwrite an ORM identity's full context with an abbreviated one:
-        # PM source/version reads may legitimately fetch that original run later.
-        record = SimpleNamespace(**{key: getattr(row, key) for key in
-            ("entry_id", "team_id", "topic_id", "status", "created_at", "completed_at")},
-            context_json={"cutoff": row.cutoff, "recordkeeping_only": row.recordkeeping_only,
-                          "citation_correction": row.citation_correction, "organization_revision": row.organization_revision})
-        yield record, research
+    with closing(records):
+        for row in records:
+            research = row.research
+            if (not (row.sector_run or row.research_run)
+                    or (not row.research_run and (row.status != "completed" or row.topic_id not in {
+                        "us-sector-daily-review", f"instrument-events:{instrument_id}"}))
+                    or row.review_status not in {"completed", "limited"} or not isinstance(research, dict) or not research
+                    or portfolios[row.topic_id]):
+                continue
+            # Do not overwrite an ORM identity's full context with an abbreviated one:
+            # PM source/version reads may legitimately fetch that original run later.
+            record = SimpleNamespace(**{key: getattr(row, key) for key in
+                ("entry_id", "team_id", "topic_id", "status", "created_at", "completed_at")},
+                context_json={"cutoff": row.cutoff, "recordkeeping_only": row.recordkeeping_only,
+                              "citation_correction": row.citation_correction, "organization_revision": row.organization_revision})
+            yield record, research
 
 
 def _notebooks(session: Session, instrument_id: str, include_history: bool):
+    from contextlib import closing
     from watchlist_app.services.research_notebook import notebook_current_view
     notebook, history = None, {}
-    for record, research in _research_records(session, instrument_id):
-        stamp = {"run_id": record.entry_id, "checked_at": research.get("checked_at") if record.context_json.get("recordkeeping_only") else record.context_json.get("cutoff"),
-                 "version_id": research.get("version_id", record.entry_id),
-                 "created_at": research.get("created_at") or record.completed_at or record.created_at,
-                 "updated_at": research.get("updated_at") or record.completed_at or record.created_at}
-        if notebook is None:
-            notebook = notebook_current_view({**deepcopy(research), **stamp})
-        if not include_history:
-            break
-        # Preserve the original saved snapshot of each actual revision; later quiet
-        # checks still supply the current notebook's checked_at above.
-        history[stamp["version_id"]] = {**stamp, "important_changes": research.get("important_changes", []),
-                                      "notebook": notebook_current_view({**deepcopy(research), **stamp})}
+    with closing(_research_records(session, instrument_id)) as records:
+        for record, research in records:
+            stamp = {"run_id": record.entry_id, "checked_at": research.get("checked_at") if record.context_json.get("recordkeeping_only") else record.context_json.get("cutoff"),
+                     "version_id": research.get("version_id", record.entry_id),
+                     "created_at": research.get("created_at") or record.completed_at or record.created_at,
+                     "updated_at": research.get("updated_at") or record.completed_at or record.created_at}
+            if notebook is None:
+                notebook = notebook_current_view({**deepcopy(research), **stamp})
+            if not include_history:
+                break
+            # Preserve the original saved snapshot of each actual revision; later quiet
+            # checks still supply the current notebook's checked_at above.
+            history[stamp["version_id"]] = {**stamp, "important_changes": research.get("important_changes", []),
+                                          "notebook": notebook_current_view({**deepcopy(research), **stamp})}
     return notebook, list(history.values())
 
 
@@ -512,27 +521,28 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
                 "recorded_at": value["recorded_at"], "sources": note_sources(session, instrument_id, value.get("research_context") or {}),
                 "usage_note": "投资经理当时保存的观点及出处；结果与机制需分别验证，不能作为已经核实的事实。"}
     # Read oldest first: a quiet later run may retain the same version and add newer sources.
-    records = list(_research_records(session, instrument_id))
-    for record, research in reversed(records):
-        candidates = [("notebook", {**research, "version_id": research.get("version_id", record.entry_id)})]
-        view = research.get("investment_view")
-        if view:
-            candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
-        for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
-            for item in research.get(field, []):
-                candidates += [(field, version) for version in [*item.get("versions", []), item]]
-        for kind, value in candidates:
-            if value.get("version_id") != version_id:
-                continue
-            value = {key: deepcopy(item) for key, item in value.items() if key != "versions"}
-            refs = notebook_source_ids(value)
-            cutoff = record.context_json.get("cutoff")
-            sources = [hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None)
-                       for source in research.get("sources", []) if source.get("source_id") in refs]
-            return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": kind,
-                "value": value, "sources": sources, "information_cutoff": cutoff,
-                "recorded_at": record.completed_at or record.created_at,
-                "usage_note": "这是当时保存的研究及其引用依据，不补入后来资料；预测与复盘均不是独立原始事实证据。"})
+    from contextlib import closing
+    with closing(_research_records(session, instrument_id, oldest_first=True)) as records:
+        for record, research in records:
+            candidates = [("notebook", {**research, "version_id": research.get("version_id", record.entry_id)})]
+            view = research.get("investment_view")
+            if view:
+                candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
+            for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+                for item in research.get(field, []):
+                    candidates += [(field, version) for version in [*item.get("versions", []), item]]
+            for kind, value in candidates:
+                if value.get("version_id") != version_id:
+                    continue
+                value = {key: deepcopy(item) for key, item in value.items() if key != "versions"}
+                refs = notebook_source_ids(value)
+                cutoff = record.context_json.get("cutoff")
+                sources = [hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None)
+                           for source in research.get("sources", []) if source.get("source_id") in refs]
+                return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": kind,
+                    "value": value, "sources": sources, "information_cutoff": cutoff,
+                    "recorded_at": record.completed_at or record.created_at,
+                    "usage_note": "这是当时保存的研究及其引用依据，不补入后来资料；预测与复盘均不是独立原始事实证据。"})
     mandate = read_mandate(session, instrument_id)
     for value in [*mandate.get("versions", []), mandate]:
         if value.get("version_id") == version_id:

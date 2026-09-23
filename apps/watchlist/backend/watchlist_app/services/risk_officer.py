@@ -276,7 +276,8 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
-    previous = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc()))
+    previous = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
+        .order_by(ResearchEntry.created_at.desc()).limit(1))
     now = datetime.now(UTC)
     if previous:
         if previous.status in {"queued", "running"}:
@@ -303,7 +304,8 @@ def prepare_run(run_id):
             raise ValueError("已结束的风控记录不能重新准备输入。")
         snapshot = read_snapshot(session, **run.context_json["risk_scope"])
         prior = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == run.topic_id,
-            ResearchEntry.status == "completed", ResearchEntry.entry_id != run.entry_id).order_by(ResearchEntry.created_at.desc()))
+            ResearchEntry.status == "completed", ResearchEntry.entry_id != run.entry_id)
+            .order_by(ResearchEntry.created_at.desc()).limit(1))
         topic = session.get(ResearchTopic, run.topic_id)
         topic.instrument_ids = snapshot["instrument_ids"]
         run.context_json = {**run.context_json, "risk_inputs": snapshot, "prepared_at": datetime.now(UTC).isoformat(),
@@ -416,9 +418,16 @@ def review_workspace(session, **scope):
         from watchlist_app.services.research_access import require_portfolio
         require_portfolio(scope["portfolio_id"])
     snapshot = read_snapshot(session, **scope)
-    runs = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == _topic_id(scope)).order_by(ResearchEntry.created_at.desc())))
-    latest = runs[0] if runs else None
-    completed = next((run for run in runs if run.status == "completed" and (run.context_json or {}).get("result")), None)
+    from contextlib import closing
+    latest = completed = None
+    with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == _topic_id(scope))
+        .order_by(ResearchEntry.created_at.desc()).execution_options(yield_per=1))) as runs:
+        for run in runs:
+            if latest is None:
+                latest = run
+            if run.status == "completed" and (run.context_json or {}).get("result"):
+                completed = run
+                break
     saved = None
     if completed:
         old_inputs = completed.context_json["risk_inputs"]

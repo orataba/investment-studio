@@ -18,6 +18,39 @@ from .test_postgres_instrument_registry_constraints import BACKEND_ROOT, postgre
 pytestmark = pytest.mark.postgresql_integration
 
 
+def test_streamed_current_states_and_notebook_keep_exact_sources_and_private_history(postgres_watchlist_env):
+    from datetime import UTC, datetime, timedelta
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.research_dossier import _notebooks
+    from watchlist_app.services.sector_research import review_states
+
+    iid = postgres_watchlist_env["instrument_id"]
+    stamp = datetime.now(UTC)
+    with get_session_factory()() as session:
+        for topic_id in ("current-public", "retained-private"):
+            session.add(ResearchTopic(topic_id=topic_id, title=topic_id, visibility="team"))
+        session.flush()
+        for topic_id, offset in (("current-public", 0), ("retained-private", 1)):
+            session.add(ResearchEntry(entry_id=topic_id, topic_id=topic_id, kind="analysis", title=topic_id,
+                status="completed", created_at=stamp + timedelta(seconds=offset),
+                context_json={"research_run": True, "instrument_ids": [iid], "cutoff": stamp.isoformat(),
+                    "reviews": {iid: {"status": "completed", "research": {
+                        "investment_view": {"direction": "exact\x00direction"},
+                        "sources": [{"source_id": "original", "text": "exact\x00source"}]}}}}))
+        session.add(ResearchEntry(entry_id="original-private-scope", topic_id="retained-private",
+            kind="note", title="Old permission", context_json={"portfolio_id": "private"}))
+        session.commit()
+    with get_session_factory()() as session:
+        state = review_states(session, instrument_ids=[iid])["latest"][iid]
+        assert state["run_id"] == "current-public"
+        assert state["current_summary"] == "exact\x00direction"
+        notebook, history = _notebooks(session, iid, include_history=False)
+        assert notebook["run_id"] == "current-public"
+        assert notebook["sources"][0]["text"] == "exact\x00source"
+        assert history == []
+        assert not session.identity_map
+
+
 @pytest.mark.parametrize("postgres_watchlist_env", ["20260920_0059"], indirect=True)
 def test_retained_scope_migration_preserves_originals_and_indexes_generic_plans(postgres_watchlist_env):
     config = Config(str(BACKEND_ROOT / "alembic.ini"))

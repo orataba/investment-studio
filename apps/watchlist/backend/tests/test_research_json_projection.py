@@ -12,6 +12,37 @@ from watchlist_app.services import research_access as access
 
 
 @pytest.mark.postgresql_integration
+def test_streamed_projection_closes_server_cursor_before_decoding_old_originals(monkeypatch):
+    url = os.environ.get("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured")
+    original = {"selected": "exact\x00original", "literal": r"\u0000"}
+    old = {"selected": "unneeded-history-must-not-decode", "retained_source": "old source " * 80000}
+    table = select(literal(1).label("rank"), cast(literal(json.dumps(original)), JSON).label("context_json"))
+    table = table.union_all(select(literal(2), cast(literal(json.dumps(old)), JSON))).cte("retained_fixture")
+    monkeypatch.setattr(access, "ResearchEntry", SimpleNamespace(context_json=table.c.context_json))
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        assert "unneeded-history-must-not-decode" not in value
+        return json.loads(value)
+    engine = create_engine(url, json_deserializer=deserialize,
+        connect_args={"options": "-c default_transaction_read_only=on"})
+    cursors = []
+    event.listen(engine, "after_cursor_execute", lambda _conn, cursor, *_: cursors.append(cursor))
+    try:
+        with Session(engine) as session:
+            relation, values = access.research_context_projection(session, {"selected": String})
+            query = select(values["selected"].label("selected")).select_from(table).join(relation, true()).order_by(table.c.rank)
+            rows = access.iter_research_projection_rows(session, query, {"selected": ("selected",)})
+            assert next(rows).selected == original["selected"]
+            rows.close()
+            assert cursors[-1].name and cursors[-1].closed
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.postgresql_integration
 def test_projection_preserves_nul_originals_and_literal_escapes_with_one_select(monkeypatch):
     url = os.environ.get("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
     if not url:

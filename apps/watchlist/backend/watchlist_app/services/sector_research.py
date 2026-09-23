@@ -1,5 +1,6 @@
 """Source-bound event reviews and daily sector checks in the existing workbench."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, date, datetime
 import logging
 import json
@@ -73,7 +74,7 @@ def review_states(session, *, instrument_ids=None):
     """Build current and last-published states from one authorized history read."""
     from studio_identity import current_principal
     from watchlist_app.services.research_access import (
-        instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic,
+        instrument_run_scope, research_context_projection, iter_research_projection_rows, topic_portfolio_ids_by_topic,
     )
     latest, completed, current_research = {}, {}, {}
     requested_ids = set(instrument_ids) if instrument_ids is not None else None
@@ -100,49 +101,55 @@ def review_states(session, *, instrument_ids=None):
         # Failed/queued checks may not yet contain a review. The saved run scope,
         # rather than the result or today's topic membership, determines inclusion.
         query = query.where(instrument_run_scope(session, sorted(requested_ids)))
-    runs = research_projection_rows(session,
-        query.order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
-        {name: (name,) for name in values})
-    topic_ids = {run.topic_id for run in runs if run.instrument_ids}
-    topics = session.execute(select(ResearchTopic.topic_id, ResearchTopic.portfolio_id).where(
-        ResearchTopic.topic_id.in_(topic_ids),
+    # Authorize using IDs before fetching any notebooks. A status lookup used to
+    # decode every historical review (and NUL-bearing original) into one list.
+    topics = session.execute(query.with_only_columns(
+        ResearchTopic.topic_id, ResearchTopic.portfolio_id, maintain_column_froms=True)
+        .join(ResearchTopic, ResearchTopic.topic_id == ResearchEntry.topic_id).where(
         True if principal.local_unrestricted else ResearchTopic.team_id == team_id,
-    )).all() if topic_ids else []
+    ).distinct()).all()
     # Include all entries, including older notes and risk conversations, when
     # excluding portfolio-bound history from team-level research states.
     portfolio_scopes = topic_portfolio_ids_by_topic(session, topics)
     allowed_topics = {topic_id for topic_id, portfolios in portfolio_scopes.items() if not portfolios}
-    for run in runs:
-        context = run._mapping
-        if not (context.get("sector_run") or context.get("research_run")):
-            continue
-        published = run.status in {"completed", "draft"}
-        if not context.get("instrument_ids") or run.topic_id not in allowed_topics:
-            continue
-        for iid in context.get("instrument_ids", []):
-            if requested_ids is not None and iid not in requested_ids:
+    runs = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(allowed_topics))
+        .order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc()),
+        {name: (name,) for name in values})
+    with closing(runs):
+        for run in runs:
+            context = run._mapping
+            if not (context.get("sector_run") or context.get("research_run")):
                 continue
-            review = (context.get("reviews") or {}).get(iid, {})
-            accepted = published and review.get("status") in {"completed", "limited"}
-            # A conversation is not a daily check until it actually publishes research.
-            if not context.get("sector_run") and not accepted:
+            published = run.status in {"completed", "draft"}
+            if not context.get("instrument_ids") or run.topic_id not in allowed_topics:
                 continue
-            if accepted and iid not in current_research and review.get("research"):
-                current_research[iid] = review["research"]
-            # Restoring citations changes the current notebook, not the fact or
-            # time of a research check or the original investment judgment.
-            if context.get("recordkeeping_only"):
-                continue
-            if iid in latest and (not accepted or iid in completed):
-                continue
-            state = {"run_id": run.entry_id, "status": review.get("status", run.status),
-                "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
-                "view_updated_at": review.get("view_updated_at"),
-                "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),
-                "coverage": review.get("coverage", []), "research": review.get("research"), "reflection": review.get("reflection")}
-            latest.setdefault(iid, state)
-            if accepted:
-                completed.setdefault(iid, state.copy())
+            for iid in context.get("instrument_ids", []):
+                if requested_ids is not None and iid not in requested_ids:
+                    continue
+                review = (context.get("reviews") or {}).get(iid, {})
+                accepted = published and review.get("status") in {"completed", "limited"}
+                # A conversation is not a daily check until it actually publishes research.
+                if not context.get("sector_run") and not accepted:
+                    continue
+                if accepted and iid not in current_research and review.get("research"):
+                    current_research[iid] = review["research"]
+                # Restoring citations changes the current notebook, not the fact or
+                # time of a research check or the original investment judgment.
+                if context.get("recordkeeping_only"):
+                    continue
+                if iid in latest and (not accepted or iid in completed):
+                    continue
+                state = {"run_id": run.entry_id, "status": review.get("status", run.status),
+                    "checked_at": context.get("cutoff"), "summary": review.get("summary", run.body if run.status == "failed" else ""),
+                    "view_updated_at": review.get("view_updated_at"),
+                    "change_kind": review.get("change_kind", "investment" if review.get("summary") else "none"),
+                    "coverage": review.get("coverage", []), "research": review.get("research"), "reflection": review.get("reflection")}
+                latest.setdefault(iid, state)
+                if accepted:
+                    completed.setdefault(iid, state.copy())
+            if requested_ids is not None and all(requested_ids <= result.keys()
+                                                 for result in (latest, completed, current_research)):
+                break
     for result in (latest, completed):
         for iid, review in result.items():
             # The versioned analyst view is the only current investment judgment.
@@ -209,6 +216,7 @@ def sector_snapshot(iid, session, *, as_of=None):
 
 
 def begin_run(session, ids, *, scheduled=False, question: str | None = None):
+    from watchlist_app.services.research_access import instrument_run_scope
     from watchlist_app.services.research_identity import research_identity
     if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
         raise ValueError("每次研究请选择一个已登记且有效的股票、基金、ETF、指数或加密资产")
@@ -216,13 +224,15 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
     # Manual and scheduled research share the same instrument's publication lock.
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
-    for active in session.scalars(select(ResearchEntry).where(
-            ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["queued", "running"]))):
-        context = active.context_json or {}
-        if context.get("sector_run") and set(ids).intersection(context.get("instrument_ids", [])):
-            if ids == context["instrument_ids"]:
-                return active, False
-            raise ReviewInProgress("当前标的的研究追踪正在运行，请完成后再更新")
+    with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis",
+        ResearchEntry.status.in_(["queued", "running"]), instrument_run_scope(session, ids))
+        .execution_options(yield_per=1))) as active_runs:
+        for active in active_runs:
+            context = active.context_json or {}
+            if context.get("sector_run") and set(ids).intersection(context.get("instrument_ids", [])):
+                if ids == context["instrument_ids"]:
+                    return active, False
+                raise ReviewInProgress("当前标的的研究追踪正在运行，请完成后再更新")
     topic_id = f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}"
     title = f"{instrument_label(session, ids[0])} · 研究追踪"
     topic = session.get(ResearchTopic, topic_id)
@@ -231,33 +241,36 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
-    latest = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc()))
+    latest = session.scalar(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
+        .order_by(ResearchEntry.created_at.desc()).limit(1))
     if latest and latest.status in {"queued", "running"}:
         return latest, False
     cutoff = datetime.now(UTC)
     incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
-        for prior in session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id).order_by(ResearchEntry.created_at.desc())):
-            if not prior.context_json.get("sector_run") or prior.context_json.get("recordkeeping_only"):
-                continue
-            checked = datetime.fromisoformat(prior.context_json["cutoff"])
-            if _research_dates(session, ids, checked) != research_dates:
-                continue
-            if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
-                from watchlist_app.services.research_triggers import research_trigger
-                from watchlist_app.services.research_dossier import read_dossier
-                # A later conversation may have added a forecast or observation date.
-                trigger_context = {**prior.context_json, "reviews": {},
-                    "research_dossiers": [read_dossier(session, iid) for iid in ids],
-                    "attempted_theme_baselines": prior.context_json.get("attempted_theme_baselines", {
-                        theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
-                        for dossier in prior.context_json.get("research_dossiers", []) for theme in dossier.get("themes", [])})}
-                incremental_trigger = {iid: trigger for iid in ids if (
-                    trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
-                if not incremental_trigger:
-                    return prior, False
-                break
+        with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
+            .order_by(ResearchEntry.created_at.desc()).execution_options(yield_per=1))) as priors:
+            for prior in priors:
+                if not prior.context_json.get("sector_run") or prior.context_json.get("recordkeeping_only"):
+                    continue
+                checked = datetime.fromisoformat(prior.context_json["cutoff"])
+                if _research_dates(session, ids, checked) != research_dates:
+                    continue
+                if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
+                    from watchlist_app.services.research_triggers import research_trigger
+                    from watchlist_app.services.research_dossier import read_dossier
+                    # A later conversation may have added a forecast or observation date.
+                    trigger_context = {**prior.context_json, "reviews": {},
+                        "research_dossiers": [read_dossier(session, iid) for iid in ids],
+                        "attempted_theme_baselines": prior.context_json.get("attempted_theme_baselines", {
+                            theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
+                            for dossier in prior.context_json.get("research_dossiers", []) for theme in dossier.get("themes", [])})}
+                    incremental_trigger = {iid: trigger for iid in ids if (
+                        trigger := research_trigger(session, iid, trigger_context, now=cutoff))}
+                    if not incremental_trigger:
+                        return prior, False
+                    break
     from watchlist_app.services.research_themes import theme_index
     attempted_baselines = {theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
                           for theme in theme_index(session, ids[0])}

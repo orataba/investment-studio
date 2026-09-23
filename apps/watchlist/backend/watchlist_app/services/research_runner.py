@@ -11,7 +11,7 @@ import subprocess
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from studio_identity import (IdentityError, current_principal, issue_delegation, principal_context,
                              resolve_token, revoke_delegation, service_principal)
 from watchlist_app.db.models.workbench import ResearchEntry
@@ -46,10 +46,12 @@ def harness_available():
 
 def interrupt_incomplete_runs():
     with get_session_factory()() as session:
-        for run in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["queued", "running"]))):
-            run.status = "failed"
-            run.body = "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
-            run.completed_at = datetime.now(UTC)
+        # Recovery changes status only; retained inputs can be many megabytes
+        # per interrupted run and must not be hydrated during API startup.
+        session.execute(update(ResearchEntry).where(ResearchEntry.kind == "analysis",
+            ResearchEntry.status.in_(["queued", "running"])).values(status="failed",
+            body="服务重新启动，本次分析未完成。输入快照已保留，可重新发起。",
+            completed_at=datetime.now(UTC)))
         session.commit()
 
 

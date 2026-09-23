@@ -35,7 +35,7 @@ def _add_run(session, key, *, scope=None, visibility="team", topic_team="default
 
 
 @pytest.mark.parametrize("run_count", [1, 30])
-def test_scoped_archive_reads_use_two_queries_and_never_materialize_complete_runs(client, run_count):
+def test_scoped_archive_reads_use_constant_queries_and_never_materialize_complete_runs(client, run_count):
     with get_session_factory()() as session:
         for index in range(run_count):
             _add_run(session, f"target-{index}")
@@ -47,7 +47,10 @@ def test_scoped_archive_reads_use_two_queries_and_never_materialize_complete_run
             queries.append(state.statement)
         event.listen(session, "do_orm_execute", capture)
         rows = list(_research_records(session, "xlk"))
-        assert len(rows) == run_count and len(queries) == 2
+        # Read candidate topic IDs, batch-check every historical private scope,
+        # then stream authorized notebooks. This extra scalar query prevents
+        # collecting all historical payloads before the authorization check.
+        assert len(rows) == run_count and len(queries) == 3
         assert not session.identity_map  # No ORM run/context or per-topic lazy loads.
         assert all(not column.compare(ResearchEntry.__table__.c.context_json)
                    for statement in queries for column in statement.selected_columns)

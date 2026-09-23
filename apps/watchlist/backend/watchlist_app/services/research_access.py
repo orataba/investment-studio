@@ -68,11 +68,16 @@ def research_context_projection(session, fields):
 
 
 def research_projection_rows(session, query, fields):
-    """One SQL read; only NUL-bearing matched rows return their original context.
+    return list(iter_research_projection_rows(session, query, fields))
+
+
+def iter_research_projection_rows(session, query, fields):
+    """Stream one retained context at a time, including PostgreSQL's wire buffer.
 
     fields maps selected labels to their paths in that original JSON. This keeps
     raw sources, literal backslash-u text and permission fields exact without
     hydrating healthy contexts or changing the ORM identity map/storage.
+    Callers that stop early must close this iterator to release its server cursor.
     """
     from types import SimpleNamespace
     from sqlalchemy import case
@@ -80,18 +85,20 @@ def research_projection_rows(session, query, fields):
     if postgres:
         affected, _ = _postgres_projection_context()
         query = query.add_columns(case((affected, ResearchEntry.context_json)).label("_original_context"))
-    records = []
-    for row in session.execute(query).mappings():
-        data = dict(row)
-        original = data.pop("_original_context", None)
-        if original is not None:
-            for name, path in fields.items():
-                value = original
-                for key in path:
-                    value = value.get(key) if isinstance(value, dict) else None
-                data[name] = value
-        records.append(SimpleNamespace(**data, _mapping=data))
-    return records
+    result = session.execute(query.execution_options(yield_per=1))
+    try:
+        for row in result.mappings():
+            data = dict(row)
+            original = data.pop("_original_context", None)
+            if original is not None:
+                for name, path in fields.items():
+                    value = original
+                    for key in path:
+                        value = value.get(key) if isinstance(value, dict) else None
+                    data[name] = value
+            yield SimpleNamespace(**data, _mapping=data)
+    finally:
+        result.close()
 
 
 def instrument_run_scope(session, instrument_id):
@@ -122,7 +129,7 @@ def topic_portfolio_ids_by_topic(session, topics):
                    values["risk_scope"]["portfolio_id"].as_string().label("risk_portfolio_id")).select_from(ResearchEntry)
     if relation is not None:
         query = query.join(relation, true())
-    scopes = research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(portfolio_ids)),
+    scopes = iter_research_projection_rows(session, query.where(ResearchEntry.topic_id.in_(portfolio_ids)),
         {"portfolio_id": ("portfolio_id",), "risk_portfolio_id": ("risk_scope", "portfolio_id")})
     for row in scopes:
         portfolio_ids[row.topic_id].update(value for value in (row.portfolio_id, row.risk_portfolio_id) if value)
