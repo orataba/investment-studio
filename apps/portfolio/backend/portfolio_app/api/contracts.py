@@ -1844,21 +1844,6 @@ class ResearchTopSleeveWeightBoundRecord(BaseModel):
         return self
 
 
-class ResearchBacktestRobustnessScenarioRecord(BaseModel):
-    scenario_id: str = Field(min_length=1, max_length=80)
-    label: str = Field(min_length=1, max_length=120)
-    cash_yield_annual: float = Field(ge=-1, le=1)
-    commission_bps: float = Field(ge=0, le=1000)
-    tax_bps: float = Field(ge=0, le=1000)
-    slippage_bps: float = Field(ge=0, le=1000)
-    implementation_delay_days: int = Field(ge=0, le=30)
-
-    @field_validator("scenario_id", "label", mode="before")
-    @classmethod
-    def validate_required_text(cls, value: object) -> object:
-        return _normalize_required_text(value)
-
-
 class ResearchSettingsRecord(BaseModel):
     portfolio_id: str
     planning_taxonomy_id: str | None = None
@@ -1884,9 +1869,6 @@ class ResearchSettingsRecord(BaseModel):
     backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
     backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
     backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
-    backtest_robustness_scenarios: list[
-        ResearchBacktestRobustnessScenarioRecord
-    ] = Field(default_factory=list)
     backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
     backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
@@ -1921,9 +1903,6 @@ class ResearchSettingsUpdateRequest(BaseModel):
     backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
     backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
     backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
-    backtest_robustness_scenarios: list[
-        ResearchBacktestRobustnessScenarioRecord
-    ] | None = None
     backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
     backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
@@ -1953,11 +1932,6 @@ class ResearchSettingsUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
-        scenario_ids = [
-            scenario.scenario_id for scenario in self.backtest_robustness_scenarios or []
-        ]
-        if len(scenario_ids) != len(set(scenario_ids)):
-            raise ValueError("backtest robustness scenario_id values must be unique.")
         if self.as_of_mode == "pinned" and self.as_of_date is None:
             raise ValueError("pinned research mode requires as_of_date.")
         if self.capital_mode == "unit_notional":
@@ -2434,9 +2408,33 @@ class ResearchBacktestWalkForwardRecord(BaseModel):
     oos_metrics: ResearchBacktestMetricsRecord | None = None
 
 
+class ResearchBacktestInitialSecurityRecord(BaseModel):
+    instrument_id: str
+    label: str
+    market_value_base: float
+    initial_weight: float
+    top_sleeve_id: str | None = None
+    top_sleeve_label: str
+
+
+class ResearchBacktestInitialStateRecord(BaseModel):
+    source: Literal["portfolio_inception_eod_holdings"]
+    status: Literal["available", "unavailable"]
+    as_of_date: str
+    base_currency: str
+    scope_node_id: str | None = None
+    portfolio_nav_base: float | None = None
+    scope_nav_base: float | None = None
+    cash_value_base: float | None = None
+    derivative_value_base: float | None = None
+    securities: list[ResearchBacktestInitialSecurityRecord] = Field(default_factory=list)
+    unavailable_reason: str | None = None
+
+
 class ResearchBacktestRecord(BaseModel):
     rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
     requested_start_date: str | None = None
+    initial_state: ResearchBacktestInitialStateRecord | None = None
     common_history_start_date: str | None = None
     start_date: str | None = None
     end_date: str | None = None

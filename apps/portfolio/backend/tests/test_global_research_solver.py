@@ -99,6 +99,49 @@ def test_mixed_capital_and_risk_targets_are_solved_simultaneously(monkeypatch, r
     assert result.solve_event["execution_ready"] is True
 
 
+def test_fixed_weight_basket_ratios_remain_exact_when_risk_budget_is_unreachable(monkeypatch):
+    covariance = np.diag([100.0, 1.0, 1.0])
+    market(monkeypatch, covariance)
+    result = solve(tree(a_mode="weight", bounds={"a": {"min_weight": 0.1, "max_weight": 0.1}}))
+    weights = risky_weights(result)
+    assert weights == pytest.approx([0.05, 0.05, 0.9], abs=1e-9)
+    q = weights * (covariance @ weights)
+    assert q[:2].sum() / q.sum() == pytest.approx(0.2525 / 1.0625)
+    assert result.solve_event["target_status"] == "constrained_solution"
+    assert result.solve_event["execution_ready"] is True
+
+
+@pytest.mark.parametrize("correlated", [False, True])
+def test_fixed_weight_sleeve_matches_synthetic_basket_in_global_risk_solve(monkeypatch, correlated):
+    state = tree()
+    keys = ("x", "y", "z", "u", "v")
+    state.direct_assignments_by_node["b"] = [{"target_scope": "instrument", "target_entity_id": key} for key in keys[2:]]
+    state.instrument_detail_cache.update({key: {"instrument_name": key} for key in keys})
+    state.target_sets_by_scope_type[("b", "saa")] = [{"target_set_id": "b"}]
+    state.target_lines_by_set_id["b"] = {("instrument", key): {"target_value": value} for key, value in zip(keys[2:], (0.5, 0.1, 0.4))}
+    loadings = np.asarray([[1, 0, .5], [0, 2, .2], [.7, .2, 1], [.1, .7, .2], [.4, .1, .8]])
+    covariance = loadings @ loadings.T + np.diag([.2, .1, .4, .3, .2]) if correlated else np.eye(5)
+    days = [day.date() for day in pd.bdate_range("2026-05-01", "2026-06-30")]
+    monkeypatch.setattr(solver, "_build_instrument_nav_series", lambda state, *, instrument_id, **kwargs: (pd.Series(np.cumprod(1 + .01 * np.sin(np.arange(len(days)) + keys.index(instrument_id))), index=days), []))
+    monkeypatch.setattr(solver, "_estimate_covariance", lambda frame, **kwargs: pd.DataFrame(covariance, index=frame.columns, columns=frame.columns))
+    result = solve(state)
+    weights = np.asarray([next(row["target_weight"] for row in result.leaf_target_rows if row["member_id"] == key) for key in keys])
+    basket_weight = weights[2:].sum()
+    assert weights[2:] / basket_weight == pytest.approx([.5, .1, .4], abs=1e-9)
+    # Collapse B into its fixed basket. Cross-covariances with both A leaves
+    # remain in the transformed covariance, so this independently checks the
+    # user's three-risk-unit formulation against the five-leaf result.
+    transform = np.asarray([[1, 0, 0], [0, 1, 0], [0, 0, .5], [0, 0, .1], [0, 0, .4]])
+    composite_covariance = transform.T @ covariance @ transform
+    composite_weights = np.asarray([weights[0], weights[1], basket_weight])
+    composite_q = composite_weights * (composite_covariance @ composite_weights)
+    assert composite_q / composite_q.sum() == pytest.approx([.25, .25, .5], abs=1e-6)
+    leaf_q = weights * (covariance @ weights)
+    assert leaf_q[2:].sum() == pytest.approx(composite_q[2])
+    assert leaf_q[2:] / leaf_q[2:].sum() != pytest.approx([.5, .1, .4], abs=1e-3)
+    assert result.solve_event["execution_ready"] is True
+
+
 def test_selected_subtree_has_its_own_explicit_global_scope(monkeypatch):
     calls, _ = market(monkeypatch)
     result = solve(tree(), scope_node_id="a", apply_capital_overlay=False)
@@ -237,16 +280,14 @@ def test_positive_risk_budget_cannot_be_satisfied_by_zero_parent_capital(monkeyp
     assert any("zero or negative parent" in warning for warning in result.warnings)
 
 
-def test_zero_weight_target_overridden_by_hard_minimum_is_reported(monkeypatch):
+def test_zero_fixed_weight_conflicting_with_hard_minimum_is_rejected(monkeypatch):
     market(monkeypatch)
     state = tree(root_mode="weight", a_mode="weight", frozen=("a",), bounds={"b": {"min_weight": 0.2}})
     state.target_lines_by_set_id["root"][("taxonomy_node", "a")]["target_value"] = 1.0
     state.target_lines_by_set_id["root"][("taxonomy_node", "b")]["target_value"] = 0.0
     set_actuals(state, x=0.4, y=0.4, z=0.2)
-    result = solve(state, include_actuals=True)
-    assert risky_weights(result)[2] == pytest.approx(0.2)
-    assert result.solve_event["target_status"] != "satisfied"
-    assert any("conditional targets remain off" in warning for warning in result.warnings)
+    with pytest.raises(ValueError, match="fixed weight ratios.*infeasible"):
+        solve(state, include_actuals=True)
 
 
 def test_exactly_offsetting_signed_group_risk_is_zero_not_missing(monkeypatch):

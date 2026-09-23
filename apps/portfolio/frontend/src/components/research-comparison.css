@@ -19,10 +19,17 @@
 .research-performance-panel .research-metric-table th, .research-performance-panel .research-metric-table td { padding: 7px 8px; white-space: nowrap; }
 .research-performance-panel .research-metric-period-row td { font-size: 11px; }
 .research-monthly-section { margin-top: 24px; border-top: 1px solid var(--border-color, #e2e8f0); padding-top: 18px; }
-.research-monthly-scroll { max-height: 360px; overflow-y: auto; }
-.research-monthly-table { width: 100%; table-layout: fixed; }
-.research-monthly-table th:not(:first-child), .research-monthly-table td { text-align: right; font-variant-numeric: tabular-nums; }
-.research-monthly-table tbody th { font-weight: 400; }
-.research-monthly-table .investment-studio-info-hint { margin-left: 7px; vertical-align: middle; }
-.research-monthly-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface, #fff); }
+.research-monthly-table { width: 100%; min-width: 1200px; table-layout: fixed; font-size: 12px; }
+.research-matrix-year-col { width: 60px; }
+.research-matrix-series-col { width: 86px; }
+.research-matrix-annual-col { width: 100px; }
+.research-monthly-table th, .research-monthly-table td { padding: 9px 7px; white-space: nowrap; }
+.research-monthly-table thead th:nth-child(n+3), .research-monthly-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.research-monthly-table tbody th[scope='row'] { font-weight: 400; text-align: left; }
+.research-monthly-table tbody th[scope='rowgroup'] { font-weight: 600; vertical-align: top; padding-top: 10px; }
+.research-monthly-table .research-matrix-annual { font-weight: 600; border-left: 1px solid var(--border-color, #e2e8f0); }
+.research-monthly-table .investment-studio-info-hint { margin-left: 3px; vertical-align: middle; width: 12px; height: 12px; min-width: 12px; font-size: 9px; }
+.research-monthly-table thead th { background: var(--surface-muted, #f7f9fb); }
+.research-matrix-year + .research-matrix-year tr:first-child > * { border-top: 1px solid var(--portfolio-line-strong); }
+.research-matrix-difference { background: var(--surface-muted, #f7f9fb); }
 @media (max-width: 1200px) { .research-performance-main { grid-template-columns: 1fr; } }

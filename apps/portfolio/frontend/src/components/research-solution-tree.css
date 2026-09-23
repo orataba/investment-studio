@@ -13,8 +13,7 @@
 .research-solution-toggle { display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; }
 .research-solution-arrow { width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid var(--portfolio-muted); transform: rotate(90deg); }
 .research-solution-arrow-collapsed { transform: rotate(0deg); }
-.research-solution-constraint, .research-solution-direction { font-size: 11px; font-weight: 400; color: var(--portfolio-muted); }
-.research-solution-direction { margin-left: 6px; }
+.research-solution-constraint { font-size: 11px; font-weight: 400; color: var(--portfolio-muted); }
 .research-solution-constraint { overflow: hidden; text-overflow: ellipsis; }
 .research-result-panel > .inline-notice { padding: 10px 0; margin: 0; }
 .research-result-panel .panel-title + .portfolio-detail-meta { margin-top: 6px; }

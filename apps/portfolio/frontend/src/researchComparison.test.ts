@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildResearchComparison, reliableResearchPoints, researchChartSeries, researchMonthlyReturns, summarizeResearchSeries } from './lib/researchComparison'
+import { buildResearchComparison, reliableResearchPoints, researchChartSeries, buildResearchReturnMatrix, summarizeResearchSeries } from './lib/researchComparison'
 
 describe('research comparison measurement boundaries', () => {
   it('compares common closes without importing saved whole-period metrics or shortening for a benchmark', () => {
@@ -54,16 +54,52 @@ describe('research comparison measurement boundaries', () => {
     expect(result.backtestPoints[1].value).toBeCloseTo(1.155)
   })
 
-  it('compounds monthly returns from the previous close and marks partial boundaries', () => {
-    const series = [{ date: '2024-02-15', value: 1 }, { date: '2024-02-29', value: 1.1 }, { date: '2024-03-28', value: 1.21 }, { date: '2024-04-15', value: 1.331 }]
-    const monthly = researchMonthlyReturns(buildResearchComparison(series, series)!)
-    expect(monthly.map((row) => row.partial)).toEqual([true, false, true])
-    monthly.forEach((row) => expect(row.actual).toBeCloseTo(.1))
-    expect(monthly[1].startDate).toBe('2024-02-29')
+  it('shows twelve months plus a compounded annual return, preserving actual history before a saved backtest', () => {
+    const actual = [{ date: '2025-12-31', value: 1 }, { date: '2026-01-30', value: 1.1 }, { date: '2026-02-27', value: .99 }]
+    const backtest = [{ date: '2026-01-30', value: 1 }, { date: '2026-02-27', value: 1.2 }]
+    const [year] = buildResearchReturnMatrix(actual, backtest)
+    expect(year.year).toBe('2026')
+    expect(year.months).toHaveLength(12)
+    expect(year.months[0].actual?.value).toBeCloseTo(.1)
+    expect(year.months[0].backtest).toBeNull()
+    expect(year.months[1].actual?.value).toBeCloseTo(-.1)
+    expect(year.months[1].difference?.value).toBeCloseTo(-.3)
+    expect(year.annual.actual?.value).toBeCloseTo(-.01)
+    expect(year.annual.backtest?.value).toBeCloseTo(.2)
+    expect(year.annual.difference).toBeNull()
   })
 
-  it('does not label a sparse multi-month return as a single calendar month', () => {
-    const series = [{ date: '2026-01-15', value: 1 }, { date: '2026-03-15', value: 2 }]
-    expect(researchMonthlyReturns(buildResearchComparison(series, series)!)).toEqual([])
+  it('marks inception and current periods, including annual totals, without manufacturing missing months', () => {
+    const series = [{ date: '2026-03-30', value: 1, is_start_anchor: true }, { date: '2026-03-31', value: 1.01 }, { date: '2026-04-30', value: 1.111 }, { date: '2026-05-15', value: 1.2221 }]
+    const [year] = buildResearchReturnMatrix(series, series)
+    expect(year.months[2].actual?.partial).toBe(true)
+    expect(year.months[3].actual?.partial).toBe(false)
+    expect(year.months[4].actual?.partial).toBe(true)
+    expect(year.months[3].actual?.value).toBeCloseTo(.1)
+    expect(year.annual.actual?.value).toBeCloseTo(.2221)
+    expect(year.annual.actual?.partial).toBe(true)
+    expect(year.months[0].actual).toBeNull()
+    expect(year.months[5].actual).toBeNull()
+  })
+
+  it('does not attribute a sparse cross-month return to one month or subtract mismatched intervals', () => {
+    const actual = [{ date: '2026-01-15', value: 1 }, { date: '2026-03-15', value: 2 }, { date: '2026-03-31', value: 2.2 }]
+    const backtest = [{ date: '2026-02-27', value: 1 }, { date: '2026-03-15', value: 1.1 }, { date: '2026-03-31', value: 1.2 }]
+    const [year] = buildResearchReturnMatrix(actual, backtest)
+    expect(year.months[1].actual).toBeNull()
+    expect(year.months[2].actual).toMatchObject({ startDate: '2026-03-15', endDate: '2026-03-31', partial: true })
+    expect(year.months[2].actual?.value).toBeCloseTo(.1)
+    expect(year.months[2].backtest?.value).toBeCloseTo(.2)
+    expect(year.months[2].difference).toBeNull()
+  })
+
+  it('computes each year from its own closing boundary and stops at known return gaps', () => {
+    const series = [{ date: '2024-12-31', value: 1 }, { date: '2025-12-31', value: 1.1 }, { date: '2026-01-30', value: 1.21 }, { date: '2026-02-02', value: null }, { date: '2026-02-27', value: 1.5 }]
+    const matrix = buildResearchReturnMatrix(series, series)
+    expect(matrix.map((row) => row.year)).toEqual(['2026', '2025'])
+    expect(matrix[0].annual.actual?.value).toBeCloseTo(.1)
+    expect(matrix[1].annual.actual).toMatchObject({ value: expect.any(Number), partial: false })
+    expect(matrix[1].annual.actual?.value).toBeCloseTo(.1)
+    expect(matrix[0].months[1].actual).toBeNull()
   })
 })

@@ -111,10 +111,12 @@ against a real business database merely to validate source changes.
 Classification and target changes rebuild affected historical analytics;
 concentration-only saves do not invalidate valuation or Research. Financial fact
 dates and saved Research outputs stay unchanged. Research method
-`global_leaf_scalar_targets_v4`, target snapshot schema 3 and planning fingerprint
+`global_leaf_scalar_targets_v5`, target snapshot schema 3 and planning fingerprint
 version 7 participate in run/cache identity; earlier results remain immutable
-and explicitly stale until rerun. Simulation starts at portfolio inception;
-earlier prices only warm the risk-estimation window. Upgrades never relabel
+and explicitly stale until rerun. Simulation starts with actual inception EOD
+holdings, cash and signed derivative capital; risk warm-up postpones rebalancing
+without replacing the initial book. Missing initial valuations remain unavailable.
+Earlier prices only warm the risk-estimation window. Upgrades never relabel
 archived results.
 
 The destructive dump restore wrapper performs a checksum/archive/target

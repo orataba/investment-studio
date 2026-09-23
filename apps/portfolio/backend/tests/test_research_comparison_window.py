@@ -6,6 +6,7 @@ import pytest
 
 from portfolio_app.services import research, research_solver as solver
 from tests.test_research_review_regressions import risk_budget_state
+from tests.research_backtest_fixtures import stub_inception_statement
 
 
 def _actual_point(day, twr, *, eligible=True, continuous=True, nav=100.0):
@@ -83,7 +84,7 @@ def _historical_simulation(monkeypatch, *, inception, history_start=None, delay=
         ],
     }
     monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": inception})
-    monkeypatch.setattr(solver, "list_transactions", lambda _: [])
+    stub_inception_statement(monkeypatch, solver, day=inception, securities={"a": 60.0, "b": 40.0}, cash=0.0)
     return solver.build_current_target_backtest(
         "review",
         planning_taxonomy_id="review-taxonomy",
@@ -118,27 +119,29 @@ def test_backtest_starts_at_inception_and_uses_pre_inception_market_warmup(monke
     assert backtest["points"][0]["is_start_anchor"] is True
     assert backtest["execution_records"]
     assert all(row["decision_date"] >= "2026-05-15" for row in backtest["execution_records"])
-    assert all(row["actual_execution_date"] >= "2026-05-15" for row in backtest["execution_records"])
+    assert all(row["actual_execution_date"] > "2026-05-15" for row in backtest["execution_records"])
     assert backtest["methodology"]["point_in_time_taxonomy"] is False
     assert backtest["methodology"]["target_configuration"] == "current_snapshot"
 
 
-def test_insufficient_history_postpones_simulation_without_fabricating_inception_returns(monkeypatch):
+def test_missing_initial_history_does_not_restart_from_later_observations(monkeypatch):
     backtest = _historical_simulation(monkeypatch, inception="2026-01-02", history_start="2026-03-02")
 
     assert backtest["requested_start_date"] == "2026-01-02"
-    assert backtest["point_in_time_coverage"]["status"] == "partial"
-    assert backtest["point_in_time_coverage"]["first_decision_date"] > "2026-03-02"
-    assert backtest["start_date"] > "2026-03-02"
+    assert backtest["point_in_time_coverage"]["status"] == "unavailable"
+    assert backtest["point_in_time_coverage"]["first_decision_date"] is None
+    assert backtest["start_date"] == "2026-01-02"
     assert backtest["point_in_time_coverage"]["skipped_rebalances"][0]["date"] == "2026-01-02"
-    assert not any(point["date"] < backtest["start_date"] for point in backtest["points"])
+    assert backtest["points"] == [{"date": "2026-01-02", "value": 1.0, "is_start_anchor": True}]
+    assert "inception-anchored return history" in backtest["point_in_time_coverage"]["unavailable_reason"]
+    assert not backtest["execution_records"]
 
 
-def test_zero_delay_keeps_marked_cost_anchor_without_pre_inception_trading(monkeypatch):
+def test_zero_delay_preserves_actual_inception_closing_book_before_first_trade(monkeypatch):
     backtest = _historical_simulation(monkeypatch, inception="2026-05-15", delay=0)
 
-    assert backtest["points"][0] == {"date": "2026-05-14", "value": 1.0, "is_start_anchor": True}
-    assert backtest["execution_records"][0]["actual_execution_date"] == "2026-05-15"
+    assert backtest["points"][0] == {"date": "2026-05-15", "value": 1.0, "is_start_anchor": True}
+    assert backtest["execution_records"][0]["actual_execution_date"] == "2026-05-18"
     assert backtest["execution_records"][0]["total_cost"] > 0.0
-    assert backtest["points"][1]["value"] < 1.0
+    assert backtest["execution_records"][0]["nav_after_execution"] < backtest["execution_records"][0]["nav_before_execution"]
     assert all(point["date"] >= "2026-05-15" for point in backtest["points"][1:])

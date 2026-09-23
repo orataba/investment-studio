@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
-import type { PortfolioResearchBacktestPointRecord as Point, PortfolioResearchCurrentContextRecord } from '../lib/api'
-import { buildResearchComparison, reliableResearchPoints, researchChartSeries, researchMonthlyReturns, type ResearchSeriesSummary } from '../lib/researchComparison'
+import type { PortfolioResearchBacktestPointRecord as Point, PortfolioResearchBacktestRecord, PortfolioResearchCurrentContextRecord } from '../lib/api'
+import { buildResearchComparison, reliableResearchPoints, researchChartSeries, buildResearchReturnMatrix, type ResearchCalendarReturn, type ResearchSeriesSummary } from '../lib/researchComparison'
 import { formatNumber, formatPercent } from '../lib/format'
+import { MONTH_LABELS } from '../lib/monthlyReturns'
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import InfoHint from './InfoHint'
 import './research-comparison.css'
@@ -85,10 +86,11 @@ type Props = {
   benchmarkLoading: boolean
   benchmarkError: string | null
   currentTargets: boolean
+  initialState?: PortfolioResearchBacktestRecord['initial_state']
   selectedScope?: string | null
 }
 
-export default function ResearchComparisonPanel({ context, points, endDate, benchmarkPoints, benchmarkLabel, benchmarkLoading, benchmarkError, currentTargets, selectedScope }: Props) {
+export default function ResearchComparisonPanel({ context, points, endDate, benchmarkPoints, benchmarkLabel, benchmarkLoading, benchmarkError, currentTargets, initialState, selectedScope }: Props) {
   const zh = useLanguage().language === 'zh-Hans'
   const inception = context.portfolio_inception_date
   // Preserve only a declared beginning-of-day anchor before economic inception.
@@ -102,11 +104,20 @@ export default function ResearchComparisonPanel({ context, points, endDate, benc
   const benchmark = reliableResearchPoints(trim(benchmarkPoints.map((point) => sharedAnchors.has(point.date) ? { ...point, is_start_anchor: true } : point)))
   const comparison = buildResearchComparison(actual, backtest, benchmark, context.performance_valuation_basis !== 'operational_carrying_basis')
   const chart = researchChartSeries(actual, backtest, benchmark)
-  const monthly = comparison ? researchMonthlyReturns(comparison) : []
-  const [selectedYear, setSelectedYear] = useState('all')
-  const years = [...new Set(monthly.map((row) => row.month.slice(0, 4)))].reverse()
-  const effectiveYear = years.includes(selectedYear) ? selectedYear : 'all'
-  const visibleMonths = monthly.filter((row) => effectiveYear === 'all' || row.month.startsWith(effectiveYear)).reverse()
+  const matrix = buildResearchReturnMatrix(actual, backtest, benchmark)
+  const matrixSeries = [
+    { key: 'actual' as const, label: zh ? '真实组合' : 'Actual' },
+    { key: 'backtest' as const, label: zh ? '回测' : 'Backtest' },
+    { key: 'difference' as const, label: zh ? '差值' : 'Difference' },
+    ...(benchmarkPoints.length ? [{ key: 'benchmark' as const, label: benchmarkLabel ?? (zh ? '基准' : 'Benchmark') }] : []),
+  ]
+  const matrixCell = (value: ResearchCalendarReturn | null, annual = false) => <td className={[
+    annual ? 'research-matrix-annual' : '',
+    value && value.value > 0 ? 'positive-cell' : value && value.value < 0 ? 'negative-cell' : '',
+  ].filter(Boolean).join(' ')}>
+    {formatPercent(value?.value)}
+    {value?.partial ? <InfoHint label={zh ? '区间未满' : 'Partial period'} detail={`${value.startDate} – ${value.endDate}`} /> : null}
+  </td>
   const metricRows = useMemo<Array<{ key: keyof ResearchSeriesSummary; label: string; kind?: 'number' | 'days' | 'date' }>>(() => [
     { key: 'periodReturn', label: zh ? '区间收益' : 'Period Return' },
     { key: 'annualizedReturn', label: zh ? '年化收益' : 'Annual Return' },
@@ -133,13 +144,15 @@ export default function ResearchComparisonPanel({ context, points, endDate, benc
         <InfoHint label={zh ? '收益口径' : 'Return basis'} detail={[
           zh ? '真实组合采用业绩页的时间加权收益，剔除入金、出金影响。' : 'Actual uses canonical time-weighted returns, excluding external deposits and withdrawals.',
           currentTargets ? (zh ? '回测将本次保存的目标配置应用于历史，不代表当时已知这些目标与标的。' : 'The backtest applies this run’s saved current targets to history; it does not imply those targets or assets were known then.') : (zh ? '此回测保留原运行的方法与数据口径。' : 'This saved backtest retains its original methodology.'),
-          zh ? '回测从组合成立日起尝试，成立前行情仅用于风险估计。真实曲线从首个可靠锚点计为1；回测、基准在首次共同收盘与真实曲线对齐，不填补缺失历史。' : 'Simulation starts at inception; earlier prices are risk warm-up only. Actual starts at 1 at its first reliable anchor. Backtest and benchmark align to actual at their first common close, without filling missing history.',
+          initialState ? (zh ? '回测以组合成立日收盘的真实持仓与现金为期初状态，此后才模拟收益与目标调仓；数据不足只推迟首次调仓。初始持仓持续估值，不改成现金，也不复刻之后的实际证券交易与申赎。' : 'Simulation starts from actual inception end-of-day holdings and cash, then simulates returns and target rebalances. Insufficient risk data delays the first rebalance. Initial holdings retain their returns; later actual security trades and external flows are not replayed.') : (zh ? '旧回测保留保存时的起点与初始状态；重新运行才使用真实期初持仓。' : 'Saved backtests retain their original start and initial state. Rerun to use actual inception holdings.'),
+          zh ? '真实曲线从首个可靠锚点计为1；回测、基准在首次共同收盘与真实曲线对齐，不填补缺失历史。' : 'Actual starts at 1 at its first reliable anchor. Backtest and benchmark align to actual at their first common close, without filling missing history.',
           zh ? '图中回撤基于各自完整可用历史；右侧指标仅在标示的共同区间内重新计算。' : 'Chart drawdowns use each full available history; the metric table recalculates over its labeled common window.',
           zh ? 'FCN与期权在回测中按不交易、零收益账面资金处理，不模拟票息或期权损益。' : 'FCN and options are no-trade, zero-return capital in the backtest; coupons and option payoffs are not simulated.',
         ]} />
       </div>
       <span className="portfolio-detail-meta">{inception ? `${zh ? '成立' : 'Inception'} ${inception}` : ''}{endDate ? ` · ${zh ? '截至' : 'Through'} ${endDate}` : ''}</span>
     </div>
+    {initialState?.status === 'unavailable' ? <div className="inline-notice inline-notice-warning">{zh ? '真实期初持仓无法可靠估值，回测暂不可用。' : 'Actual inception holdings cannot be reliably valued; the backtest is unavailable.'}<InfoHint label={zh ? '期初状态' : 'Initial state'} detail={initialState.unavailable_reason ?? (zh ? '需要补齐成立日的持仓、现金及估值数据。' : 'Inception holdings, cash and valuation data are required.')} /></div> : null}
     {selectedScope ? <div className="inline-notice inline-notice-warning">{zh ? `回测仅覆盖“${selectedScope}”，实际收益覆盖全组合；差值不代表同一组合的配置效果。` : `Backtest covers “${selectedScope}”; actual returns cover the full portfolio. Differences are not like-for-like allocation effects.`}</div> : null}
     {lateBacktest ? <div className="inline-notice inline-notice-warning">{zh ? `可用回测从 ${backtest[0].date} 开始；成立日至此前没有模拟结果。` : `Available backtest starts ${backtest[0].date}; the earlier inception period has no simulation.`}</div> : null}
     {lateActual || shortActual ? <div className="inline-notice inline-notice-warning">{zh ? `实际收益有效区间：${context.performance_start_date ?? actual[0]?.date} 至 ${actualEnd}；其余日期不补算。` : `Available actual returns: ${context.performance_start_date ?? actual[0]?.date} to ${actualEnd}; missing dates are not filled.`}</div> : null}
@@ -174,14 +187,23 @@ export default function ResearchComparisonPanel({ context, points, endDate, benc
       </div>
     </div>
     <div className="research-monthly-section">
-      <div className="panel-header panel-header-inline"><div className="research-comparison-heading"><h3 className="panel-title">{zh ? '月度收益对比' : 'Monthly Returns'}</h3>
-        <InfoHint label={zh ? '月度口径' : 'Monthly basis'} detail={zh ? '以共同区间内的上月最后有效收盘为基准，复合计算当月收益；首尾不足整月单独标示，差值为百分点。' : 'Returns compound from the previous month’s last common close. Partial first/last months are marked; differences are percentage points.'} />
-      </div>{years.length > 1 ? <select aria-label={zh ? '月度收益年份' : 'Monthly return year'} value={effectiveYear} onChange={(event) => setSelectedYear(event.target.value)}><option value="all">{zh ? '全部年份' : 'All years'}</option>{years.map((year) => <option key={year}>{year}</option>)}</select> : null}</div>
-      <HorizontalTableScroll className="table-shell research-monthly-scroll"><table className="transactions-table research-monthly-table" aria-label={zh ? '月度收益对比' : 'Monthly returns comparison'}>
-        <thead><tr><th>{zh ? '月份' : 'Month'}</th><th>{zh ? '真实组合' : 'Actual'}</th><th>{zh ? '回测' : 'Backtest'}</th><th>{zh ? '差值' : 'Difference'}</th>{benchmarkVisible ? <th>{zh ? '基准' : 'Benchmark'}</th> : null}</tr></thead>
-        <tbody>{visibleMonths.length ? visibleMonths.map((row) => <tr key={row.month}><th scope="row">{row.month}{row.partial ? <InfoHint label={zh ? '非完整月份' : 'Partial month'} detail={`${row.startDate} – ${row.endDate}`} /> : null}</th>
-          <td>{formatPercent(row.actual)}</td><td>{formatPercent(row.backtest)}</td><td className={row.actual - row.backtest >= 0 ? 'positive-cell' : 'negative-cell'}>{formatPercent(row.actual - row.backtest)}</td>{benchmarkVisible ? <td>{fmt(row.benchmark)}</td> : null}
-        </tr>) : <tr><td colSpan={benchmarkVisible ? 5 : 4} className="empty-state-cell">{zh ? '暂无可比月度收益。' : 'No comparable monthly returns.'}</td></tr>}</tbody>
+      <div className="panel-header panel-header-inline"><div className="research-comparison-heading"><h3 className="panel-title">{zh ? '月度收益矩阵' : 'Monthly Return Matrix'}</h3>
+        <InfoHint label={zh ? '月度与年度口径' : 'Monthly and annual basis'} detail={[
+          zh ? '每年按真实组合、回测及差值排列；各自保留全部可用历史。差值为真实减回测的百分点，仅在起止日期相同时显示。' : 'Each year shows actual, backtest and difference, retaining each series’ available history. Differences are actual minus backtest in percentage points and require matching period boundaries.',
+          zh ? '年度列为该年累计收益（当年截至当前日期），按收益指数复合计算，不是月收益相加或年化收益。' : 'The annual column is the cumulative calendar-year return (year to date for the current year), compounded from the return index; it is neither a sum of monthly returns nor an annualized return.',
+          zh ? '成立不足整期或缺少完整期末观察时，用圆圈提示标明实际区间；没有月末边界的跨月收益不分配到某一个月，缺失月份留空。' : 'Partial inception or end periods show their observed dates in the info hint. A return spanning a missing month-end is not assigned to one month; unavailable months remain blank.',
+        ]} />
+      </div></div>
+      <HorizontalTableScroll className="table-shell research-monthly-scroll"><table className="transactions-table research-monthly-table" aria-label={zh ? '月度收益矩阵' : 'Monthly return matrix'}>
+        <colgroup><col className="research-matrix-year-col" /><col className="research-matrix-series-col" />{MONTH_LABELS.map((month) => <col key={month} />)}<col className="research-matrix-annual-col" /></colgroup>
+        <thead><tr><th>{zh ? '年度' : 'Year'}</th><th>{zh ? '序列' : 'Series'}</th>{MONTH_LABELS.map((month, index) => <th key={month}>{zh ? `${index + 1}月` : month}</th>)}<th>{zh ? '年度收益' : 'Year / YTD'}</th></tr></thead>
+        {matrix.length ? matrix.map((year) => <tbody key={year.year} className="research-matrix-year">
+          {matrixSeries.map((series, index) => <tr key={series.key} className={series.key === 'difference' ? 'research-matrix-difference' : undefined}>
+            {index === 0 ? <th scope="rowgroup" rowSpan={matrixSeries.length}>{year.year}</th> : null}<th scope="row">{series.label}</th>
+            {year.months.map((month, index) => <Fragment key={index}>{matrixCell(month[series.key])}</Fragment>)}
+            {matrixCell(year.annual[series.key], true)}
+          </tr>)}
+        </tbody>) : <tbody><tr><td colSpan={15} className="empty-state-cell">{zh ? '暂无有效收益区间。' : 'No eligible return periods.'}</td></tr></tbody>}
       </table></HorizontalTableScroll>
     </div>
   </section>

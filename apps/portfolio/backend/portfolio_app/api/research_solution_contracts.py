@@ -15,12 +15,10 @@ class ResearchSolutionTreeRow(BaseModel):
     target_risk_share: float | None = None
     solved_risk_share: float | None = None
     current_value_base: float | None = None
-    current_exposure_base: float | None = None
-    current_exposure_weight: float | None = None
+    current_weight: float | None = None
     target_value_base: float | None = None
     target_weight: float | None = None
     rebalance_value_base: float | None = None
-    exposure_status: Literal["complete", "unavailable", "not_applicable"]
     trade_constraint: Literal["adjustable", "no_trade", "mixed"]
     risk_model_status: Literal["modeled", "excluded", "mixed"]
     execution_status: Literal["ready", "manual_review_required", "no_trade"]
@@ -31,7 +29,7 @@ class ResearchSolutionTreeRow(BaseModel):
 
 
 class ResearchSolutionTreeRecord(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     as_of_date: str | None = None
     base_currency: str | None = None
     portfolio_nav: float | None = None

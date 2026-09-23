@@ -482,26 +482,6 @@ def setup() -> str:
             "backtest_tax_bps": 0,
             "backtest_slippage_bps": 2,
             "backtest_implementation_delay_days": 1,
-            "backtest_robustness_scenarios": [
-                {
-                    "scenario_id": "higher_friction",
-                    "label": "Higher friction and two-day delay",
-                    "cash_yield_annual": 0.02,
-                    "commission_bps": 3,
-                    "tax_bps": 0,
-                    "slippage_bps": 6,
-                    "implementation_delay_days": 2,
-                },
-                {
-                    "scenario_id": "severe_friction",
-                    "label": "Severe friction and five-day delay",
-                    "cash_yield_annual": 0.02,
-                    "commission_bps": 5,
-                    "tax_bps": 0,
-                    "slippage_bps": 10,
-                    "implementation_delay_days": 5,
-                },
-            ],
             "backtest_walk_forward_training_months": 36,
             "backtest_walk_forward_test_months": 12,
             "notes": "Synthetic global all-weather QA. Derivatives reserve capital but have zero modeled Research returns; ledger cashflows remain real facts.",
@@ -629,7 +609,6 @@ def scenarios(pid: str) -> None:
         tax_bps=0,
         slippage_bps=10,
         implementation_delay_days=5,
-        robustness_scenarios=[],
     )
     save(f"{pid}-quarterly-severe-friction", quarterly)
     results.append({"case": "quarterly_severe_friction", "backtest": summarize(quarterly)["backtest"]})

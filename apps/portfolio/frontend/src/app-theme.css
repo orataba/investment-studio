@@ -605,8 +605,7 @@
 .taxonomy-picker-trigger,
 .taxonomy-tree-toggle,
 .research-bounds-trigger,
-.research-freeze-trigger,
-.research-icon-button {
+.research-freeze-trigger {
   border-radius: 0;
 }
 

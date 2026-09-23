@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, timedelta
 from math import sqrt
@@ -9,8 +10,9 @@ import pandas as pd
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from portfolio_app.db.models import ResearchRunRecordModel
+from portfolio_app.db.models import ResearchRunRecordModel, ResearchSettingsRecordModel
 from portfolio_app.db.session import get_session_factory
+from tests.research_backtest_fixtures import initial_book, stub_inception_statement
 from portfolio_app.services import research as research_service
 from portfolio_app.services import research_solver as research_solver_service
 from portfolio_app.services.instrument_charts import (
@@ -725,6 +727,7 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
 
 def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backtest(monkeypatch) -> None:
     monkeypatch.setattr(research_solver_service, "get_portfolio", lambda _: {"inception_date": "2026-01-02"})
+    stub_inception_statement(monkeypatch, research_solver_service, day="2026-01-02", securities={"active": 100.0}, cash=0.0, currency="USD")
     active_dates = [item.date() for item in pd.bdate_range("2026-01-02", "2026-07-09")]
     late_dates = [item.date() for item in pd.bdate_range("2026-06-01", "2026-07-09")]
 
@@ -850,7 +853,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         assert row_by_id["late-zero"]["target_weight"] == pytest.approx(0.0)
 
 
-def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatch) -> None:
+def test_positive_minimum_conflicts_with_zero_fixed_weight_unless_member_is_no_trade(monkeypatch) -> None:
     dates = [item.date() for item in pd.bdate_range("2026-01-05", periods=8)]
 
     def detail(instrument_id: str, step: float) -> dict[str, object]:
@@ -917,25 +920,21 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
         top_sleeve_weight_bounds={"node-b": {"min_weight": 0.2, "max_weight": None}},
     )
 
-    result = _solve_current_scope(
-        state,
-        scope_node_id=None,
-        as_of_date=dates[-1],
-        lookback_days=30,
-        calculation_frequency="daily",
-        capital_mode="unit_notional",
-        gross_exposure=None,
-        target_volatility=None,
-        max_gross_exposure=None,
-        missing_return_policy="strict",
-        apply_capital_overlay=False,
-        include_actuals=False,
-    )
-
-    row_by_id = {str(row["member_id"]): row for row in result.member_target_rows}
-    assert row_by_id["node-b"]["configured_weight"] == pytest.approx(0.0)
-    assert row_by_id["node-b"]["target_weight"] == pytest.approx(0.2)
-    assert row_by_id["node-a"]["target_weight"] == pytest.approx(0.8)
+    with pytest.raises(ValueError, match="fixed weight ratios.*infeasible"):
+        _solve_current_scope(
+            state,
+            scope_node_id=None,
+            as_of_date=dates[-1],
+            lookback_days=30,
+            calculation_frequency="daily",
+            capital_mode="unit_notional",
+            gross_exposure=None,
+            target_volatility=None,
+            max_gross_exposure=None,
+            missing_return_policy="strict",
+            apply_capital_overlay=False,
+            include_actuals=False,
+        )
 
     frozen_state = replace(state, frozen_taxonomy_node_ids=frozenset({"node-b"}))
 
@@ -993,9 +992,14 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
     assert frozen_row_by_id["node-b"]["target_weight"] == pytest.approx(0.35)
     assert frozen_row_by_id["node-a"]["target_weight"] == pytest.approx(0.65)
 
+    # Make capital proportions feasible before isolating the volatility bound.
+    volatility_state = replace(state, target_lines_by_set_id={"root-zero-with-min": {
+        ("taxonomy_node", "node-a"): {"target_value": 0.8},
+        ("taxonomy_node", "node-b"): {"target_value": 0.2},
+    }})
     with pytest.raises(ValueError, match="Top sleeve minimum weights make the volatility constraint infeasible"):
         _solve_current_scope(
-            state,
+            volatility_state,
             scope_node_id=None,
             as_of_date=dates[-1],
             lookback_days=30,
@@ -1097,6 +1101,7 @@ def test_backtest_replay_deducts_buy_and_sell_friction_and_reconciles_contributi
 
     replay = _replay_backtest_decisions(
         decisions,
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={
             "asset-a": pd.Series([0.0, 0.0], index=return_dates, dtype="float64")
         },
@@ -1138,6 +1143,7 @@ def test_backtest_replay_compounds_cash_by_actual_calendar_days() -> None:
                 "target_weights": [],
             }
         ],
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={},
         as_of_date=date(2026, 1, 3),
         cash_yield_annual=0.10,
@@ -1169,6 +1175,7 @@ def test_backtest_eod_execution_does_not_consume_return_ending_on_execution_date
                 ],
             }
         ],
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={
             "asset-a": pd.Series(
                 [0.10, 0.05],
@@ -1204,6 +1211,7 @@ def test_backtest_eod_execution_does_not_consume_return_ending_on_execution_date
                 ],
             }
         ],
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={
             "asset-a": pd.Series(
                 [0.10, 0.05],
@@ -1249,6 +1257,7 @@ def test_backtest_skips_execution_when_pre_trade_holdings_lack_complete_eod_retu
                 ],
             },
         ],
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={
             "asset-a": pd.Series(
                 [0.0, 0.10],
@@ -1289,6 +1298,7 @@ def test_backtest_structures_skipped_execution_when_target_observations_never_al
                 ],
             }
         ],
+        initial_state=initial_book("2026-01-01"),
         returns_by_instrument={
             "asset-a": pd.Series(
                 [0.01], index=[date(2026, 1, 2)], dtype="float64"
@@ -1306,7 +1316,8 @@ def test_backtest_structures_skipped_execution_when_target_observations_never_al
     )
 
     assert replay["execution_records"] == []
-    assert replay["points"] == []
+    assert [point["date"] for point in replay["points"]] == ["2026-01-01", "2026-01-02", "2026-01-03"]
+    assert all(point["value"] == 1.0 for point in replay["points"])
     assert replay["skipped_executions"][0]["date"] == "2026-01-01"
     assert "lack a common post-delay observation" in replay["warnings"][0]
 
@@ -1855,17 +1866,6 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
             "backtest_tax_bps": 18,
             "backtest_slippage_bps": 9,
             "backtest_implementation_delay_days": 4,
-            "backtest_robustness_scenarios": [
-                {
-                    "scenario_id": "custom-stress",
-                    "label": "Custom stress",
-                    "cash_yield_annual": -0.01,
-                    "commission_bps": 8,
-                    "tax_bps": 24,
-                    "slippage_bps": 16,
-                    "implementation_delay_days": 6,
-                }
-            ],
             "backtest_walk_forward_training_months": 18,
             "backtest_walk_forward_test_months": 3,
         },
@@ -1891,7 +1891,7 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
     assert payload["backtest_tax_bps"] == pytest.approx(18)
     assert payload["backtest_slippage_bps"] == pytest.approx(9)
     assert payload["backtest_implementation_delay_days"] == 4
-    assert payload["backtest_robustness_scenarios"][0]["scenario_id"] == "custom-stress"
+    assert "backtest_robustness_scenarios" not in payload
     assert payload["backtest_walk_forward_training_months"] == 18
     assert payload["backtest_walk_forward_test_months"] == 3
 
@@ -2707,7 +2707,33 @@ def test_cash_with_zero_solved_target_is_not_mislabeled_as_a_liquidation() -> No
     assert gaps[0]["execution_note"] is None
 
 
-def test_research_run_creates_current_target_weight_outputs(client):
+def test_research_run_creates_current_target_weight_outputs(client, monkeypatch):
+    # This case exercises an executable selected-scope simulation. The shared
+    # fixture starts with cash only, so give this scope an actual inception
+    # holding and explicit matching analytical quotes instead of letting the
+    # simulator invent a cash-funded historical starting book.
+    from investment_studio_instrument_core import instrument_store as shared_store
+    from portfolio_app.services import performance
+    from tests.conftest import REGISTRY_INSTRUMENT_DETAILS
+
+    details = deepcopy(REGISTRY_INSTRUMENT_DETAILS)
+    initial_asset = next(item for item in details if item["instrument_id"] == "equity-us-abbv")
+    first_quotes = {row["quote_basis"]: row for row in initial_asset["market_data"] if row["as_of_date"] == "2026-02-10"}
+    initial_asset["market_data"].extend(
+        {**row, "as_of_date": day.date().isoformat()}
+        for day in pd.date_range("2026-01-02", "2026-02-09")
+        for row in first_quotes.values()
+    )
+    shared_store.reset_store(get_session_factory(), {"registry_name": "Initial holdings test", "instruments": details})
+    detail_by_id = {item["instrument_id"]: item for item in details}
+    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda key: deepcopy(detail_by_id.get(key)))
+    initial_buy = client.post("/api/portfolios/investment-studio/transactions", json={
+        "transaction_type": "buy", "trade_date": "2026-01-02", "settlement_date": "2026-01-02",
+        "account_id": "broker-us-core", "settlement_cash_account_id": "cash-usd-main",
+        "instrument_id": "equity-us-abbv", "quantity": 10.0, "price": 206.47,
+        "gross_amount": 2064.7, "fees": 0.0, "taxes": 0.0, "currency": "USD",
+    })
+    assert initial_buy.status_code == 200, initial_buy.json()
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -2727,6 +2753,16 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert settings_payload["planning_taxonomy_id"] == taxonomy_id
     assert settings_payload["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
     assert "target_dimension" not in settings_payload
+    # A configuration saved before scenario retirement must not make a new run
+    # replay alternative costs or carry those controls into its input identity.
+    with get_session_factory()() as session:
+        settings = session.get(ResearchSettingsRecordModel, "investment-studio")
+        settings.backtest_robustness_scenarios_json = [{
+            "scenario_id": "legacy-stress", "label": "Saved cost scenario",
+            "cash_yield_annual": 0.0, "commission_bps": 900.0, "tax_bps": 900.0,
+            "slippage_bps": 900.0, "implementation_delay_days": 30,
+        }]
+        session.commit()
 
     workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
@@ -2743,6 +2779,10 @@ def test_research_run_creates_current_target_weight_outputs(client):
 
     run_payload = run_response.json()
     assert run_payload["status"] == "completed"
+    with get_session_factory()() as session:
+        stored = session.get(ResearchRunRecordModel, run_payload["research_run_id"])
+        assert "backtest_robustness_scenarios" not in stored.request_payload_json
+        assert not stored.detail_json["backtest"].get("robustness_results")
     assert run_payload["planning_taxonomy_id"] == taxonomy_id
     assert "run_template" not in run_payload
     assert run_payload["artifact_count"] == 12
@@ -2764,13 +2804,16 @@ def test_research_run_creates_current_target_weight_outputs(client):
         for warning in run_payload["detail"]["backtest"]["warnings"]
     )
     backtest = run_payload["detail"]["backtest"]
+    assert backtest["initial_state"]["status"] == "available"
+    assert backtest["initial_state"]["as_of_date"] == "2026-01-02"
+    assert [row["instrument_id"] for row in backtest["initial_state"]["securities"]] == ["equity-us-abbv"]
     assert backtest["methodology"]["point_in_time_universe"] is False
     assert backtest["methodology"]["point_in_time_taxonomy"] is False
     assert backtest["point_in_time_coverage"]["decision_count"] >= 1
     assert backtest["point_in_time_coverage"]["configuration_versions_used"]
     assert backtest["execution_records"]
     assert backtest["total_cost"] > 0
-    assert len(backtest["robustness_results"]) == 2
+    assert backtest["robustness_results"] == []
     assert backtest["walk_forward"]["available"] is False
     assert all(
         abs(item["residual"]) < 1e-10

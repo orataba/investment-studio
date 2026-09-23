@@ -125,32 +125,65 @@ export function buildResearchComparison(actual: Point[], backtest: Point[], benc
 
 export type ResearchComparison = NonNullable<ReturnType<typeof buildResearchComparison>>
 
-export function researchMonthlyReturns(comparison: ResearchComparison) {
-  const { actualPoints, backtestPoints, benchmarkPoints } = comparison
-  const rows: Array<{ month: string; startDate: string; endDate: string; partial: boolean; actual: number; backtest: number; benchmark: number | null }> = []
-  let start = 0
-  for (let index = 1; index < actualPoints.length; index++) {
-    const point = actualPoints[index]
-    const month = point.date.slice(0, 7)
-    if (index + 1 < actualPoints.length && actualPoints[index + 1].date.slice(0, 7) === month) continue
-    const monthEnd = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0))
-    // Weekends after the final close do not make a completed calendar month partial.
-    while (monthEnd.getUTCDay() === 0 || monthEnd.getUTCDay() === 6) monthEnd.setUTCDate(monthEnd.getUTCDate() - 1)
-    const previousMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 0)).toISOString().slice(0, 7)
-    const previousMonthAnchor = actualPoints[start].date.slice(0, 7) === previousMonth
-    // A sparse saved curve cannot allocate a multi-month return to one month.
-    const firstInMonth = actualPoints.findIndex((item) => item.date.slice(0, 7) === month)
-    if (!previousMonthAnchor && actualPoints[start].date.slice(0, 7) !== month) start = firstInMonth
-    if (start === index) continue
-    rows.push({ month, startDate: actualPoints[start].date, endDate: point.date,
-      partial: !previousMonthAnchor || index === actualPoints.length - 1 && point.date < monthEnd.toISOString().slice(0, 10),
-      actual: point.value / actualPoints[start].value - 1,
-      backtest: backtestPoints[index].value / backtestPoints[start].value - 1,
-      benchmark: benchmarkPoints.length ? benchmarkPoints[index].value / benchmarkPoints[start].value - 1 : null,
-    })
-    start = index
+export type ResearchCalendarReturn = {
+  value: number
+  startDate: string
+  endDate: string
+  partial: boolean
+}
+
+type CalendarComparison = {
+  actual: ResearchCalendarReturn | null
+  backtest: ResearchCalendarReturn | null
+  benchmark: ResearchCalendarReturn | null
+  difference: ResearchCalendarReturn | null
+}
+
+function calendarReturns(points: Point[], unit: 'month' | 'year') {
+  const series = reliableResearchPoints(points)
+  const result = new Map<string, ResearchCalendarReturn>()
+  const keyOf = (date: string) => date.slice(0, unit === 'month' ? 7 : 4)
+  const boundary = (key: string) => {
+    const date = new Date(Date.UTC(Number(key.slice(0, 4)), unit === 'month' ? Number(key.slice(5, 7)) : 12, 0))
+    while (date.getUTCDay() === 0 || date.getUTCDay() === 6) date.setUTCDate(date.getUTCDate() - 1)
+    return date.toISOString().slice(0, 10)
   }
-  return rows
+  const previousKey = (key: string) => unit === 'year' ? String(Number(key) - 1)
+    : new Date(Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, 0)).toISOString().slice(0, 7)
+  for (let first = 0; first < series.length;) {
+    const key = keyOf(series[first].date)
+    let last = first
+    while (last + 1 < series.length && keyOf(series[last + 1].date) === key) last++
+    const previous = first > 0 ? series[first - 1] : null
+    const priorKey = previousKey(key)
+    // Do not allocate a sparse cross-month/year return to the next period.
+    // Without a reliable period-end close, show only the observed within-period interval.
+    const hasBoundary = previous != null && keyOf(previous.date) === priorKey && previous.date >= boundary(priorKey)
+    const anchor = hasBoundary ? first - 1 : first
+    if (anchor < last) result.set(key, {
+      value: series[last].value / series[anchor].value - 1,
+      startDate: series[anchor].date, endDate: series[last].date,
+      partial: !hasBoundary || series[last].date < boundary(key),
+    })
+    first = last + 1
+  }
+  return result
+}
+
+export function buildResearchReturnMatrix(actual: Point[], backtest: Point[], benchmark: Point[] = []) {
+  const months = [actual, backtest, benchmark].map((series) => calendarReturns(series, 'month'))
+  const annual = [actual, backtest, benchmark].map((series) => calendarReturns(series, 'year'))
+  const compare = (maps: Array<Map<string, ResearchCalendarReturn>>, key: string): CalendarComparison => {
+    const [a, b, benchmarkReturn] = maps.map((map) => map.get(key) ?? null)
+    return { actual: a, backtest: b, benchmark: benchmarkReturn,
+      difference: a && b && a.startDate === b.startDate && a.endDate === b.endDate
+        ? { ...a, value: a.value - b.value, partial: a.partial || b.partial } : null }
+  }
+  const years = new Set([...months.flatMap((map) => [...map.keys()].map((key) => key.slice(0, 4))), ...annual.flatMap((map) => [...map.keys()])])
+  return [...years].sort().reverse().map((year) => ({ year,
+    months: Array.from({ length: 12 }, (_, index) => compare(months, `${year}-${String(index + 1).padStart(2, '0')}`)),
+    annual: compare(annual, year),
+  }))
 }
 
 /** Keep inception visible while aligning comparisons at their first shared close. */

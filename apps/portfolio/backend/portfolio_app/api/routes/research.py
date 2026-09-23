@@ -132,14 +132,6 @@ def update_portfolio_research_settings(
             backtest_implementation_delay_days=optional_setting(
                 "backtest_implementation_delay_days"
             ),
-            backtest_robustness_scenarios=(
-                [item.model_dump() for item in payload.backtest_robustness_scenarios]
-                if "backtest_robustness_scenarios" in payload.model_fields_set
-                and payload.backtest_robustness_scenarios is not None
-                else None
-                if "backtest_robustness_scenarios" in payload.model_fields_set
-                else RESEARCH_SETTINGS_UNSET
-            ),
             backtest_walk_forward_training_months=optional_setting(
                 "backtest_walk_forward_training_months"
             ),

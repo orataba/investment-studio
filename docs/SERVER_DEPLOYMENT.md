@@ -550,10 +550,11 @@ limits, retaining original JSON audit evidence and all dates/actors. Future-date
 revisions must not be skipped. Verify displayed-date settings and the latest
 optimistic revision separately. Concentration switches and limits do not trigger
 Research staleness; combined target/limit saves must either commit both or neither.
-The current Research method is `global_leaf_scalar_targets_v4`; target snapshot
+The current Research method is `global_leaf_scalar_targets_v5`; target snapshot
 schema 3 and planning fingerprint 7 keep earlier saved results visibly stale.
-New runs record inception-based simulation boundaries and a frozen solution
-tree; upgrades preserve the original data and methods of archived runs.
+New runs freeze the actual inception EOD starting book and solution tree;
+risk warm-up postpones rebalancing without replacing initial holdings with cash.
+Upgrades preserve the original data and methods of archived runs.
 
 Install all five data schedules as the service user, using the same installer:
 

@@ -42,15 +42,15 @@ const shortHistoryMetrics = {
 }
 
 const solutionTreeFixture = {
-  schema_version: 1, as_of_date: '2026-07-15', base_currency: 'USD', portfolio_nav: 1000,
+  schema_version: 2, as_of_date: '2026-07-15', base_currency: 'USD', portfolio_nav: 1000,
   risk_attribution_scope: 'portfolio', capital_weight_basis: 'portfolio_nav', hierarchy_status: 'complete', configuration_captured_at: '2026-07-15',
   rows: [
     { row_id: 'root', parent_row_id: null, row_kind: 'portfolio', member_type: 'portfolio', member_id: '3', label: 'Long-Term Portfolio', depth: 0, path: ['Long-Term Portfolio'] },
     { row_id: 'category:risk-assets', parent_row_id: 'root', row_kind: 'category', member_type: 'taxonomy_node', member_id: 'risk-assets', label: 'Risk Assets', depth: 1, path: ['Long-Term Portfolio', 'Risk Assets'] },
     { row_id: 'instrument:asset-1', parent_row_id: 'category:risk-assets', row_kind: 'instrument', member_type: 'instrument', member_id: 'asset-1', label: 'Alpha Fund', depth: 2, path: ['Long-Term Portfolio', 'Risk Assets', 'Alpha Fund'] },
-  ].map((row) => ({ ...row, target_risk_share: 1, solved_risk_share: 1, current_value_base: 200, current_exposure_base: 200,
-    current_exposure_weight: .2, target_value_base: 800, target_weight: .8, rebalance_value_base: 600,
-    exposure_status: 'complete', trade_constraint: 'adjustable', risk_model_status: 'modeled', execution_status: 'ready', execution_note: null,
+  ].map((row) => ({ ...row, target_risk_share: 1, solved_risk_share: 1, current_value_base: 200,
+    current_weight: .2, target_value_base: 800, target_weight: .8, rebalance_value_base: 600,
+    trade_constraint: 'adjustable', risk_model_status: 'modeled', execution_status: 'ready', execution_note: null,
     min_weight: null, max_weight: null, bound_status: null,
   })),
 }
@@ -234,7 +234,6 @@ const workbenchFixture = {
     backtest_tax_bps: 10,
     backtest_slippage_bps: 5,
     backtest_implementation_delay_days: 1,
-    backtest_robustness_scenarios: [],
     backtest_walk_forward_training_months: 24,
     backtest_walk_forward_test_months: 6,
     notes: 'Keep this research note.',
@@ -371,7 +370,12 @@ describe('Research rendered page contract', () => {
     expect(screen.getByText(/FCN and options are no-trade, zero-return capital/)).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Frozen Derivative' })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Cash Target' })).toBeInTheDocument()
-    expect(screen.getAllByRole('columnheader', { name: 'Cash Yield (%)' })).toHaveLength(2)
+    expect(screen.getByLabelText('Cash Yield (%)')).toHaveValue(2)
+    expect(screen.getByLabelText('Commission (bps)')).toHaveValue(2)
+    expect(screen.getByLabelText('Slippage (bps)')).toHaveValue(5)
+    expect(screen.queryByText('Robustness Scenarios')).not.toBeInTheDocument()
+    expect(screen.queryByText('Robustness')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add robustness scenario' })).not.toBeInTheDocument()
     expect(screen.queryByText('Manual PM decision required.')).not.toBeInTheDocument()
 
     const annualReturnRow = screen.getByRole('row', { name: /Annual Return/ })
@@ -438,6 +442,7 @@ describe('Research rendered page contract', () => {
     await screen.findByText('Solved Result')
     fireEvent.change(screen.getByLabelText('Research taxonomy'), { target: { value: 'industry' } })
     await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalled())
+    expect(apiMocks.updatePortfolioResearchSettings.mock.calls[0][1]).not.toHaveProperty('backtest_robustness_scenarios')
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry, region],
     })
@@ -675,7 +680,10 @@ describe('Research rendered page contract', () => {
   it('renders one hierarchical solution with signed trade amounts and an Excel download', async () => {
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     const table = await screen.findByRole('table', { name: 'Research solution tree' })
-    expect(within(table).getByRole('row', { name: /Alpha Fund.*100.00%.*100.00%.*\$200.00.*20.00%.*80.00%.*\+\$600.00.*Buy/ })).toBeInTheDocument()
+    expect(within(table).getByRole('row', { name: /Alpha Fund.*100.00%.*100.00%.*\$200.00.*20.00%.*80.00%.*\+\$600.00$/ })).toBeInTheDocument()
+    expect(within(table).queryByText('Buy')).not.toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Current Weight' })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Target Weight' })).toBeInTheDocument()
     expect(screen.queryByText('Instrument-level Solution')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Export Excel' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }))

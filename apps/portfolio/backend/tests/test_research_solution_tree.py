@@ -1,4 +1,4 @@
-"""Frozen result hierarchy, capital accounting and published gross exposure."""
+"""Frozen result hierarchy, globally derived targets and signed capital weights."""
 from copy import deepcopy
 from datetime import date
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from portfolio_app.api.research_solution_contracts import ResearchSolutionTreeRecord
-from portfolio_app.services.research_solution_tree import build_research_solution_tree, read_solution_exposures
+from portfolio_app.services.research_solution_tree import build_research_solution_tree
 from portfolio_app.services import research_solver as solver
 from tests.test_global_research_solver import market, tree
 
@@ -38,21 +38,18 @@ def saved_result():
         for key, current, target, rc in values:
             kind = "cash_bucket" if key == "__cash__" else "derivative_bucket" if key == "__derivatives__" else "instrument"
             rows.append({"member_type": kind, "member_id": key, "label": key, "top_sleeve_id": sleeve,
-                         "current_value_base": current, "target_value_base": target, "solved_weight": target / 1000,
+                         "current_value_base": current, "current_weight": current / 1000, "target_value_base": target, "solved_weight": target / 1000,
                          "target_risk_share": rc, "forward_risk_contribution": rc,
                          "trade_constraint": "no_trade" if kind == "derivative_bucket" else "adjustable",
                          "risk_model_status": "modeled" if kind == "instrument" else "excluded"})
         groups.append({"top_sleeve_id": sleeve, "top_sleeve_label": sleeve, "rows": rows})
     request = {"as_of_date": "2026-06-30", "target_configuration_snapshot": config}
     detail = {"scope": {"taxonomy_node_id": None}, "risk_attribution_scope": "portfolio", "solved_result_groups": groups}
-    valuation = {"portfolio_nav": 1000, "exposure_snapshot_complete": True, "exposures": {
-        "instrument:x": {"amount_base": 300}, "instrument:y": {"amount_base": 200}, "instrument:z": {"amount_base": 400},
-        "derivative_bucket:__derivatives__": {"amount_base": 200},
-    }}
+    valuation = {"portfolio_nav": 1000}
     return detail, request, valuation
 
 
-def test_frozen_full_hierarchy_has_no_double_counting_and_keeps_capital_distinct_from_exposure():
+def test_frozen_full_hierarchy_has_no_double_counting_and_uses_signed_carrying_amount_for_weights():
     detail, request, valuation = saved_result()
     # A duplicate catalogue leaf must not duplicate its cash or risk subtotal.
     detail["solved_result_groups"].append(deepcopy(detail["solved_result_groups"][0]))
@@ -64,40 +61,46 @@ def test_frozen_full_hierarchy_has_no_double_counting_and_keeps_capital_distinct
     assert rows["root"]["current_value_base"] == 1000
     assert rows["root"]["target_value_base"] == 1000
     assert rows["root"]["target_weight"] == pytest.approx(1)
-    assert rows["root"]["current_exposure_weight"] == pytest.approx(1.1)
+    assert rows["root"]["current_weight"] == pytest.approx(1)
+    assert rows["instrument:x"]["current_weight"] == .1
     assert rows["root"]["solved_risk_share"] == pytest.approx(1)
     assert rows["node:a0"]["solved_risk_share"] == 0
     # A Weight split is not a risk-budget vector, including a 100/0 allocation.
     assert rows["node:a1"]["target_risk_share"] is None
+    assert rows["instrument:x"]["target_risk_share"] is None
+    assert rows["instrument:y"]["target_risk_share"] is None
     assert rows["node:a"]["target_risk_share"] == .6
     assert rows["derivative_bucket:__derivatives__"]["rebalance_value_base"] == 0
     assert rows["derivative_bucket:__derivatives__"]["target_value_base"] == 50
-    assert rows["cash_bucket:__cash__"]["current_exposure_weight"] is None
+    assert rows["cash_bucket:__cash__"]["current_weight"] == .25
+    assert rows["derivative_bucket:__derivatives__"]["current_weight"] == .05
+    assert "current_exposure_weight" not in rows["root"]
 
 
-def test_unknown_exposure_propagates_instead_of_summing_only_known_children():
+def test_risk_targets_multiply_from_portfolio_root_instead_of_using_saved_local_leaf_targets():
     detail, request, valuation = saved_result()
-    valuation["exposures"]["instrument:y"]["amount_base"] = None
+    request["target_configuration_snapshot"]["taxonomy_nodes"][0]["allocation_basis"] = "risk_budget"
+    detail["solved_result_groups"][0]["rows"][0]["target_risk_share"] = 1
     result = build_research_solution_tree(detail, request, valuation=valuation)
     rows = {row["row_id"]: row for row in result["rows"]}
-    assert rows["root"]["current_exposure_base"] is None
-    assert rows["node:a"]["current_exposure_base"] is None
-    assert rows["node:b"]["current_exposure_base"] == 400
-    assert rows["root"]["current_value_base"] == 1000
+    assert rows["node:a"]["target_risk_share"] == .6
+    assert rows["node:a1"]["target_risk_share"] == .6
+    assert rows["instrument:x"]["target_risk_share"] == pytest.approx(.6 * .25)
+    assert rows["instrument:y"]["target_risk_share"] == pytest.approx(.6 * .75)
 
 
-def test_old_snapshot_preserves_recorded_targets_and_scope_weights_without_inventing_nav_or_exposure():
+def test_old_snapshot_does_not_reinterpret_local_targets_with_the_current_resolver():
     detail, request, _ = saved_result()
     request["target_configuration_snapshot"]["snapshot_schema_version"] = 2
     detail["solved_result_groups"][0]["target_risk_share"] = .7
     result = build_research_solution_tree(detail, request)
     rows = {row["row_id"]: row for row in result["rows"]}
-    assert result["portfolio_nav"] is None
-    assert result["capital_weight_basis"] == "saved_scope"
-    assert rows["node:a"]["target_risk_share"] == .7
+    assert result["portfolio_nav"] == 1000
+    assert result["capital_weight_basis"] == "portfolio_nav"
+    assert rows["node:a"]["target_risk_share"] is None
     assert rows["node:a1"]["target_risk_share"] is None
     assert rows["instrument:x"]["target_weight"] == .12
-    assert rows["root"]["current_exposure_base"] is None
+    assert rows["instrument:x"]["target_risk_share"] is None
     assert rows["root"]["current_value_base"] == 1000
 
 
@@ -121,6 +124,7 @@ def test_archive_without_snapshot_only_uses_recorded_groups():
 
 def test_selected_scope_uses_total_portfolio_nav_for_capital_but_scope_risk_for_rc():
     detail, request, valuation = saved_result()
+    request["target_configuration_snapshot"]["taxonomy_nodes"][0]["allocation_basis"] = "risk_budget"
     detail["scope"]["taxonomy_node_id"] = "a1"
     detail["risk_attribution_scope"] = "selected_research_scope"
     detail["solved_result_groups"] = detail["solved_result_groups"][:1]
@@ -130,33 +134,88 @@ def test_selected_scope_uses_total_portfolio_nav_for_capital_but_scope_risk_for_
     root = result["rows"][0]
     assert root["current_value_base"] == 300
     assert root["target_weight"] == .4
+    assert root["target_risk_share"] == .6
     assert root["solved_risk_share"] == 1
+    assert next(row for row in result["rows"] if row["member_id"] == "x")["target_risk_share"] == .15
     assert all(row["label"] not in {"B", "z", "__cash__"} for row in result["rows"])
 
 
-def test_published_exposure_keeps_offsetting_accounts_and_fcn_principal(monkeypatch):
-    from portfolio_app.db import session as db_session
-    holdings = [
-        SimpleNamespace(account_id=account, position_reference_id="x", holding_kind="position", instrument_id="x", derivative_contract_id=None,
-                        quantity=quantity, market_value_base=value, holding_json={"instrument_core": {"instrument_id": "x", "instrument_type": "equity"}})
-        for account, quantity, value in [("long", 2, 200), ("short", -1, -100)]
+@pytest.mark.parametrize("member_type", ["instrument", "taxonomy_node"])
+def test_zero_weight_members_and_empty_scopes_do_not_erase_saved_global_sleeve_rc(member_type):
+    detail, request, valuation = saved_result()
+    zero = {**detail["solved_result_groups"][0]["rows"][0], "member_type": member_type, "member_id": "unused", "label": "Unused",
+            "current_value_base": 0, "current_weight": 0, "target_value_base": 0, "solved_weight": 0, "forward_risk_contribution": None}
+    detail["solved_result_groups"][0]["rows"].append(zero)
+    result = build_research_solution_tree(detail, request, valuation=valuation)
+    rows = {row["row_id"]: row for row in result["rows"]}
+    assert rows[f"{member_type}:unused"]["solved_risk_share"] == 0
+    assert rows["node:a"]["solved_risk_share"] == pytest.approx(.6)
+    assert rows["root"]["solved_risk_share"] == pytest.approx(1)
+    zero["solved_weight"] = .01
+    result = build_research_solution_tree(detail, request, valuation=valuation)
+    assert result["rows"][0]["solved_risk_share"] is None
+
+
+def test_zero_weight_without_a_saved_risk_estimate_is_not_fabricated_as_zero_risk():
+    detail, request, valuation = saved_result()
+    for group in detail["solved_result_groups"]:
+        for row in group["rows"]:
+            row["forward_risk_contribution"] = None
+            row["solved_weight"] = 0
+    result = build_research_solution_tree(detail, request, valuation=valuation)
+    assert all(row["solved_risk_share"] is None for row in result["rows"])
+
+
+@pytest.mark.parametrize("path_source", ["member_path", "scope_event"])
+def test_old_direct_risk_members_can_be_proven_but_missing_intermediate_budgets_cannot(path_source):
+    detail, _, _ = saved_result()
+    detail["member_targets"] = [
+        {"member_type": "taxonomy_node", "member_id": key, "member_path": f"Portfolio / {key}", "selected_target_dimension": "risk_budget", "configured_risk_share": value}
+        for key, value in [("a", .6), ("b", .4)]
     ]
-    holdings.append(SimpleNamespace(account_id="broker", position_reference_id="fcn", holding_kind="derivative_contract", instrument_id=None,
-        derivative_contract_id="fcn", quantity=2, market_value_base=80, holding_json={"derivative_contract": {"contract_type": "fcn", "currency": "USD", "terms": {"notional": 100}}}))
-    class Session:
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def get(self, *args): return SimpleNamespace(daily_snapshot_status="current")
-        def scalar(self, *args): return SimpleNamespace(valuation_coverage_state="complete")
-        def scalars(self, *args): return holdings
-    monkeypatch.setattr(db_session, "get_session_factory", lambda: Session)
-    result = read_solution_exposures("synthetic", as_of_date=date(2026, 6, 30), base_currency="USD", nav=1000)
-    assert result["exposures"]["instrument:x"]["amount_base"] == 300
-    assert result["exposures"]["derivative_bucket:__derivatives__"]["amount_base"] == 200
-    holdings.append(SimpleNamespace(account_id="broker", position_reference_id="option", holding_kind="option_obligation", instrument_id=None,
-        derivative_contract_id="option", quantity=1, market_value_base=5, holding_json={"derivative_contract": {"contract_type": "option"}}))
-    result = read_solution_exposures("synthetic", as_of_date=date(2026, 6, 30), base_currency="USD", nav=1000)
-    assert result["exposures"]["derivative_bucket:__derivatives__"]["amount_base"] is None
+    detail["leaf_targets"] = [
+        {"member_type": "instrument", "member_id": "x", "scope_path": "Portfolio / a / Nested", "selected_target_dimension": "risk_budget", "configured_risk_share": 1},
+        {"member_type": "instrument", "member_id": "z", "scope_path": "Portfolio / b", "selected_target_dimension": "risk_budget", "configured_risk_share": 1},
+    ]
+    if path_source == "scope_event":
+        detail["scope_solve_events"] = [
+            {"scope_node_id": row["member_id"], "scope_path": row.pop("member_path")}
+            for row in detail["member_targets"]
+        ]
+    result = build_research_solution_tree(detail, {"as_of_date": "2026-06-30"})
+    rows = {row["row_id"]: row for row in result["rows"]}
+    assert rows["node:a"]["target_risk_share"] == .6
+    assert rows["instrument:z"]["target_risk_share"] == .4
+    assert rows["instrument:x"]["target_risk_share"] is None
+
+
+@pytest.mark.parametrize("problem", ["partial_scope", "missing_value", "missing_weight", "unreconciled_weights"])
+def test_legacy_nav_recovery_requires_proven_complete_portfolio_capital(problem):
+    detail, request, _ = saved_result()
+    if problem == "partial_scope":
+        detail["scope"]["taxonomy_node_id"] = "a"
+    else:
+        row = detail["solved_result_groups"][0]["rows"][0]
+        row[{"missing_value": "current_value_base", "missing_weight": "current_weight", "unreconciled_weights": "current_weight"}[problem]] = .9 if problem == "unreconciled_weights" else None
+    result = build_research_solution_tree(detail, request)
+    assert result["portfolio_nav"] is None
+    assert all(row["current_weight"] is None for row in result["rows"])
+    assert result["capital_weight_basis"] == "saved_scope"
+
+
+def test_cached_tree_projection_upgrades_without_mutating_the_saved_run():
+    from portfolio_app.services.research import _serialize_run_row
+    detail, request, _ = saved_result()
+    detail["solution_tree"] = {"schema_version": 1, "portfolio_nav": 1000, "rows": [{"solved_risk_share": None}]}
+    saved = deepcopy(detail)
+    record = SimpleNamespace(planning_taxonomy_id="t", detail_json=detail, request_payload_json=request, artifacts_json=[],
+        research_run_id="saved", portfolio_id="p", job_type="portfolio_research", status="completed", requested_at=None,
+        started_at=None, finished_at=None, as_of_date=date(2026, 6, 30), lookback_days=90, requested_by=None, headline=None, error_message=None)
+    result = _serialize_run_row(record, {"t": "Saved taxonomy"})
+    assert result["detail"]["solution_tree"]["schema_version"] == 2
+    assert result["detail"]["solution_tree"]["rows"][0]["current_weight"] == 1
+    assert result["detail"]["solution_tree"]["rows"][0]["solved_risk_share"] == 1
+    assert detail == saved
 
 
 def test_current_solve_includes_written_option_liability_in_nav_and_keeps_it_frozen(monkeypatch):

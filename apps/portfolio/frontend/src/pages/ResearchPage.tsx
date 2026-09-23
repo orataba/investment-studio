@@ -28,7 +28,6 @@ import {
   updatePortfolioResearchSettings,
   type PortfolioResearchBacktestBenchmarkComparisonResponse,
   type PortfolioResearchBacktestRebalanceFrequency,
-  type PortfolioResearchBacktestRobustnessScenarioRecord,
   type PortfolioResearchBacktestSleevePointRecord,
   type PortfolioResearchAsOfMode,
   type PortfolioResearchCapitalMode,
@@ -80,7 +79,6 @@ type ResearchRunSetupDraft = {
   taxBps: string
   slippageBps: string
   implementationDelayDays: string
-  robustnessScenarios: PortfolioResearchBacktestRobustnessScenarioRecord[]
   walkForwardTrainingMonths: string
   walkForwardTestMonths: string
 }
@@ -475,7 +473,6 @@ export default function ResearchPage() {
     taxBps: '10',
     slippageBps: '5',
     implementationDelayDays: '1',
-    robustnessScenarios: [],
     walkForwardTrainingMonths: '24',
     walkForwardTestMonths: '6',
   })
@@ -498,7 +495,6 @@ export default function ResearchPage() {
   const [taxBps, setTaxBps] = useState('10')
   const [slippageBps, setSlippageBps] = useState('5')
   const [implementationDelayDays, setImplementationDelayDays] = useState('1')
-  const [robustnessScenarios, setRobustnessScenarios] = useState<PortfolioResearchBacktestRobustnessScenarioRecord[]>([])
   const [walkForwardTrainingMonths, setWalkForwardTrainingMonths] = useState('24')
   const [walkForwardTestMonths, setWalkForwardTestMonths] = useState('6')
 
@@ -673,7 +669,6 @@ export default function ResearchPage() {
       taxBps: String(workbench.settings.backtest_tax_bps),
       slippageBps: String(workbench.settings.backtest_slippage_bps),
       implementationDelayDays: String(workbench.settings.backtest_implementation_delay_days),
-      robustnessScenarios: workbench.settings.backtest_robustness_scenarios,
       walkForwardTrainingMonths: String(workbench.settings.backtest_walk_forward_training_months),
       walkForwardTestMonths: String(workbench.settings.backtest_walk_forward_test_months),
     }
@@ -693,7 +688,6 @@ export default function ResearchPage() {
     setTaxBps(nextDraft.taxBps)
     setSlippageBps(nextDraft.slippageBps)
     setImplementationDelayDays(nextDraft.implementationDelayDays)
-    setRobustnessScenarios(nextDraft.robustnessScenarios)
     setWalkForwardTrainingMonths(nextDraft.walkForwardTrainingMonths)
     setWalkForwardTestMonths(nextDraft.walkForwardTestMonths)
     runSetupDraftRef.current = nextDraft
@@ -960,54 +954,6 @@ export default function ResearchPage() {
     return nextDraft
   }
 
-  function updateRobustnessScenario(
-    index: number,
-    field: keyof PortfolioResearchBacktestRobustnessScenarioRecord,
-    value: string,
-  ) {
-    setRobustnessScenarios((current) => {
-      const next = current.map((scenario, scenarioIndex) => {
-        if (scenarioIndex !== index) {
-          return scenario
-        }
-        if (field === 'scenario_id' || field === 'label') {
-          return { ...scenario, [field]: value }
-        }
-        return { ...scenario, [field]: Number(value) }
-      })
-      updateRunSetupDraft({ robustnessScenarios: next })
-      return next
-    })
-  }
-
-  function addRobustnessScenario() {
-    const existingIds = new Set(robustnessScenarios.map((scenario) => scenario.scenario_id))
-    let sequence = robustnessScenarios.length + 1
-    while (existingIds.has(`stress_${sequence}`)) {
-      sequence += 1
-    }
-    const next = [
-      ...robustnessScenarios,
-      {
-        scenario_id: `stress_${sequence}`,
-        label: `Stress ${sequence}`,
-        cash_yield_annual: 0,
-        commission_bps: 4,
-        tax_bps: 20,
-        slippage_bps: 10,
-        implementation_delay_days: 2,
-      },
-    ]
-    setRobustnessScenarios(next)
-    updateRunSetupDraft({ robustnessScenarios: next })
-  }
-
-  function removeRobustnessScenario(index: number) {
-    const next = robustnessScenarios.filter((_scenario, scenarioIndex) => scenarioIndex !== index)
-    setRobustnessScenarios(next)
-    updateRunSetupDraft({ robustnessScenarios: next })
-  }
-
     function toggleFrozenNode(nodeId: string) {
       setFrozenNodeIds((current) => {
       if (current.includes(nodeId)) {
@@ -1117,7 +1063,6 @@ export default function ResearchPage() {
       backtest_tax_bps: parsedTaxBps,
       backtest_slippage_bps: parsedSlippageBps,
       backtest_implementation_delay_days: parsedImplementationDelayDays,
-      backtest_robustness_scenarios: draft.robustnessScenarios,
       backtest_walk_forward_training_months: parsedWalkForwardTrainingMonths,
       backtest_walk_forward_test_months: parsedWalkForwardTestMonths,
       notes: draft.notes,
@@ -1180,7 +1125,6 @@ export default function ResearchPage() {
   const pendingRebalances = pointInTimeCoverage?.pending_rebalances ?? []
   const configurationVersionsUsed = pointInTimeCoverage?.configuration_versions_used ?? []
   const executionRecords = backtest?.execution_records ?? []
-  const robustnessResults = backtest?.robustness_results ?? []
   const walkForward = backtest?.walk_forward ?? null
   const contributionReconciliation = backtest?.contribution_reconciliation_points ?? []
   const latestContributionReconciliation = contributionReconciliation.length
@@ -1188,7 +1132,7 @@ export default function ResearchPage() {
     : null
   const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== planningTaxonomyId)
   const staleRun = latestRun?.status === 'completed' && (latestRun.reliability_state === 'stale' || changedTaxonomy)
-  const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4'].includes(latestRun?.detail?.solver_version ?? '')
+  const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4', 'global_leaf_scalar_targets_v5'].includes(latestRun?.detail?.solver_version ?? '')
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
     ? latestRun?.detail?.scope_solve_events ?? []
     : latestRun?.detail?.solve_event
@@ -1613,111 +1557,6 @@ export default function ResearchPage() {
                   </div>
                 </div>
                 </div>
-                <div className="research-robustness-editor">
-                  <div className="research-robustness-header">
-                    <span>Robustness Scenarios</span>
-                    <button
-                      type="button"
-                      className="research-icon-button"
-                      onClick={addRobustnessScenario}
-                      aria-label="Add robustness scenario"
-                      title="Add robustness scenario"
-                    >
-                      +
-                    </button>
-                  </div>
-                  <HorizontalTableScroll className="table-shell">
-                    <table className="transactions-table research-robustness-table">
-                      <thead>
-                        <tr>
-                          <th>ID</th>
-                          <th>Label</th>
-                          <th>Cash Yield (%)</th>
-                          <th>Commission</th>
-                          <th>Tax</th>
-                          <th>Slippage</th>
-                          <th>Delay</th>
-                          <th aria-label="Actions" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!robustnessScenarios.length ? (
-                          <TableStatusRow colSpan={8} label="No robustness scenarios configured." />
-                        ) : robustnessScenarios.map((scenario, index) => (
-                          <tr key={`${scenario.scenario_id}:${index}`}>
-                            <td>
-                              <input
-                                value={scenario.scenario_id}
-                                onChange={(event) => updateRobustnessScenario(index, 'scenario_id', event.target.value)}
-                                aria-label={`Scenario ${index + 1} ID`}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                value={scenario.label}
-                                onChange={(event) => updateRobustnessScenario(index, 'label', event.target.value)}
-                                aria-label={`Scenario ${index + 1} label`}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                step="0.1"
-                                min="-100"
-                                max="100"
-                                value={scenario.cash_yield_annual * 100}
-                                onChange={(event) => updateRobustnessScenario(
-                                  index,
-                                  'cash_yield_annual',
-                                  String(Number(event.target.value) / 100),
-                                )}
-                                aria-label={`Scenario ${index + 1} cash yield percent`}
-                              />
-                            </td>
-                            {(['commission_bps', 'tax_bps', 'slippage_bps'] as const).map((field) => (
-                              <td key={field}>
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  min="0"
-                                  value={scenario[field]}
-                                  onChange={(event) => updateRobustnessScenario(index, field, event.target.value)}
-                                  aria-label={`Scenario ${index + 1} ${field.replace(/_/g, ' ')}`}
-                                />
-                              </td>
-                            ))}
-                            <td>
-                              <input
-                                type="number"
-                                step="1"
-                                min="0"
-                                max="30"
-                                value={scenario.implementation_delay_days}
-                                onChange={(event) => updateRobustnessScenario(
-                                  index,
-                                  'implementation_delay_days',
-                                  event.target.value,
-                                )}
-                                aria-label={`Scenario ${index + 1} implementation delay days`}
-                              />
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                className="research-icon-button"
-                                onClick={() => removeRobustnessScenario(index)}
-                                aria-label={`Remove ${scenario.label}`}
-                                title="Remove scenario"
-                              >
-                                x
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </HorizontalTableScroll>
-                </div>
                 {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               </fieldset>
             </form>
@@ -1807,6 +1646,7 @@ export default function ResearchPage() {
                 benchmarkLoading={benchmarkComparisonLoading}
                 benchmarkError={benchmarkComparisonError}
                 currentTargets={usesCurrentTargets}
+                initialState={backtest?.initial_state}
                 selectedScope={latestRun.detail?.selected_scope?.taxonomy_node_id || latestRun.detail?.risk_attribution_scope === 'selected_research_scope'
                   ? latestRun.detail?.selected_scope?.label ?? (zh ? '所选分类' : 'Selected category')
                   : null}
@@ -1984,48 +1824,7 @@ export default function ResearchPage() {
                 </div>
               </section>
 
-              <section className="performance-block-grid research-validation-grid">
-                <div className="portfolio-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Robustness</div></div>
-                  </div>
-                  <HorizontalTableScroll className="table-shell">
-                    <table className="transactions-table research-robustness-results-table">
-                      <thead>
-                        <tr>
-                          <th>Scenario</th>
-                          <th>Cash Yield (%)</th>
-                          <th>Commission</th>
-                          <th>Tax</th>
-                          <th>Slippage</th>
-                          <th>Delay</th>
-                          <th>Return</th>
-                          <th>Delta</th>
-                          <th>Max DD</th>
-                          <th>Cost</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!robustnessResults.length ? (
-                          <TableStatusRow colSpan={10} label="N/A" />
-                        ) : robustnessResults.map((result) => (
-                          <tr key={result.scenario_id}>
-                            <td>{result.label}</td>
-                            <td>{formatMaybePercent(result.cash_yield_annual)}</td>
-                            <td>{formatMaybeNumber(result.commission_bps, 1)}</td>
-                            <td>{formatMaybeNumber(result.tax_bps, 1)}</td>
-                            <td>{formatMaybeNumber(result.slippage_bps, 1)}</td>
-                            <td>{result.implementation_delay_days}D</td>
-                            <td>{formatMaybePercent(result.metrics?.period_return)}</td>
-                            <td>{formatMaybePercent(result.period_return_delta)}</td>
-                            <td>{formatMaybePercent(result.metrics?.max_drawdown)}</td>
-                            <td>{formatMaybePercent(result.total_cost)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </HorizontalTableScroll>
-                </div>
+              <section>
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div>

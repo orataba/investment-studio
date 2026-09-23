@@ -1,6 +1,6 @@
 from copy import deepcopy
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ import pytest
 from portfolio_app.api.contracts import ResearchSettingsUpdateRequest
 from portfolio_app.services import research_solver as solver
 from portfolio_app.services.risk_model import normalize_portfolio_risk_policy
+from tests.research_backtest_fixtures import initial_book, stub_inception_statement
 
 
 @pytest.mark.parametrize(
@@ -67,6 +68,7 @@ def replay(
 ):
     return solver._replay_backtest_decisions(
         decisions,
+        initial_state=initial_book((date.fromisoformat(min(row["decision_date"] for row in decisions)) - timedelta(days=1)).isoformat()),
         returns_by_instrument=returns,
         as_of_date=end,
         cash_yield_annual=cash_yield,
@@ -119,8 +121,11 @@ def test_derivative_capital_is_not_interest_bearing_cash():
             }
         ],
     )
-    assert result["points"][-1]["value"] == pytest.approx(0.9 + 0.1 * 1.1 ** (30 / 365.25))
-    assert result["execution_records"][0]["derivative_target_weight"] == 0.4
+    # The explicit May-31 cash book earns its first day before June-1 EOD
+    # execution; subsequently the frozen 0.4 derivative principal earns none.
+    initial_cash_growth = 1.1 ** (1 / 365.25)
+    assert result["points"][-1]["value"] == pytest.approx(0.9 * initial_cash_growth + 0.1 * initial_cash_growth * 1.1 ** (30 / 365.25))
+    assert result["execution_records"][0]["derivative_target_value"] == 0.4
     assert result["execution_records"][0]["cash_target_weight"] == pytest.approx(0.1)
     assert result["execution_records"][0]["derivative_leg_turnover"] == 0.0
     assert result["derivative_capital_events"][0]["capital_change"] == pytest.approx(0.4)
@@ -341,6 +346,7 @@ def test_unfilled_old_target_cannot_overwrite_a_newer_rebalance():
 def test_next_decision_nav_does_not_include_cost_of_its_superseded_pending_trade():
     result = solver._replay_backtest_decisions(
         [decision("2026-06-01", {"a": 0.6}, 0.4)],
+        initial_state=initial_book("2026-05-31"),
         returns_by_instrument={"a": pd.Series([0.0], index=[date(2026, 6, 3)])},
         as_of_date=date(2026, 6, 3), cash_yield_annual=0.0,
         commission_bps=100.0, tax_bps=0.0, slippage_bps=0.0, implementation_delay_days=0,
@@ -597,6 +603,7 @@ def test_research_targets_depend_on_current_members_and_data_not_legacy_scope_me
 
 def test_current_policy_uses_market_history_without_target_creation_cutoff(monkeypatch):
     monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
+    stub_inception_statement(monkeypatch, solver)
     state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({'a'}))
     graph_before = deepcopy((state.node_by_id, state.direct_assignments_by_node, state.target_lines_by_set_id))
     period_states = []
@@ -655,6 +662,7 @@ def test_current_policy_uses_market_history_without_target_creation_cutoff(monke
 
 def test_derivative_backtest_reuses_simulation_capital_with_costs_and_lifecycle_funding(monkeypatch):
     monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
+    stub_inception_statement(monkeypatch, solver, cash=60.0, derivative=40.0)
     state = replace(allocation_state(), frozen_taxonomy_node_ids=frozenset({"a"}))
     state.target_lines_by_set_id["targets"][("cash_bucket", "__cash__")]["target_value"] = 0.0
     configuration = {
@@ -759,6 +767,7 @@ def test_frozen_risk_sleeve_is_part_of_the_full_risk_budget_equation():
 
 def test_historical_simulation_uses_converged_global_solution_under_binding_constraints(monkeypatch):
     monkeypatch.setattr(solver, "get_portfolio", lambda _: {"inception_date": "2026-01-01"})
+    stub_inception_statement(monkeypatch, solver)
     state = risk_budget_state(top_bounds={"a": {"min_weight": None, "max_weight": 0.1}})
     monkeypatch.setattr(solver, "_build_taxonomy_state", lambda *args, **kwargs: state)
     monkeypatch.setattr(solver, "capture_current_target_configuration", lambda *args, **kwargs: {

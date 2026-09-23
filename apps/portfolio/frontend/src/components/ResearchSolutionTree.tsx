@@ -4,7 +4,7 @@ import { downloadXlsx } from '../../../../../packages/ui/src/tableExport'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import type { PortfolioResearchRunRecord } from '../lib/api'
 import { formatCurrency, formatNumber, formatPercent } from '../lib/format'
-import { solutionConstraintLabel, solutionRowLabel, solutionTradeLabel, solutionTreeExportRows, visibleSolutionRows, type ResearchSolutionTreeRow } from '../lib/researchSolutionTree'
+import { solutionConstraintLabel, solutionRowLabel, solutionTreeExportRows, visibleSolutionRows, type ResearchSolutionTreeRow } from '../lib/researchSolutionTree'
 import InfoHint from './InfoHint'
 import './research-solution-tree.css'
 
@@ -23,18 +23,15 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
   const money = (value: number | null) => tree.base_currency ? formatCurrency(value, tree.base_currency) : formatNumber(value, 2)
   const level = (row: ResearchSolutionTreeRow) => row.row_kind === 'portfolio' ? 'root' : row.row_kind === 'instrument' ? 'item' : row.depth === 1 ? 'primary' : 'nested'
   const amountLabel = tree.base_currency ? ` (${tree.base_currency})` : ''
-  const globalRisk = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4'].includes(run.detail?.solver_version ?? '')
-  const riskDetail = !globalRisk
-    ? (zh ? '旧研究按保存时的模型展示风险目标与贡献，局部目标不一定与全组合贡献同口径；重新运行才使用当前全局求解。' : 'This archived run retains its original risk model. Local targets may differ in scope from total portfolio contributions; rerun to use the current global solver.')
-    : tree.risk_attribution_scope === 'portfolio'
-    ? (zh ? '目标与求解风险贡献均以本次研究全组合风险为分母。现金和衍生品不进入协方差，不代表它们没有经济风险。' : 'Target and solved RC use this run’s total portfolio risk. Cash and derivatives are excluded from covariance, which does not establish zero economic risk.')
-    : (zh ? '此研究只覆盖保存的所选分类；风险贡献分母为该范围风险，不包含外部持仓。资金权重与敞口仍使用保存的全组合 NAV。' : 'RC covers only the saved selected research scope, excluding outside holdings. Capital weights and exposures still use the saved total portfolio NAV.')
-  const exposureDetail = zh
-    ? '证券使用账户级绝对敞口，FCN本金只计入衍生分支一次；不在证券分类中重复穿透分配。期权未建模敞口及旧存档未保存敞口显示 —；现金不计入敞口。父子行不可累加。'
-    : 'Securities use account-level gross exposure. FCN principal appears once in derivatives, without a second allocation to security categories. Unmodeled option exposure and unrecorded archived exposure show —; cash is excluded. Parent and child rows are not additive.'
+  const globalRisk = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4', 'global_leaf_scalar_targets_v5'].includes(run.detail?.solver_version ?? '')
+  const riskDetail = tree.risk_attribution_scope !== 'portfolio'
+    ? (zh ? '目标以保存的全组合风险预算为分母；本次只研究指定分类，求解贡献仍以该范围风险为分母，不含外部持仓，两列不能直接计算偏差。' : 'Targets use the saved total portfolio risk budget. This run solves only the selected scope, so solved RC retains that scope’s risk denominator and excludes outside holdings; the two columns cannot be directly subtracted.')
+    : !globalRisk
+    ? (zh ? '目标仅显示能够从保存的完整预算路径证明的组合风险份额。求解贡献汇总旧记录保存的成员归因，不重新估计协方差；未保存中间预算的目标留空。' : 'Targets show only portfolio risk shares provable from the saved budget path. Solved contributions aggregate archived member attribution without re-estimating covariance; targets with missing intermediate budgets remain blank.')
+    : (zh ? '目标从保存的组合根风险预算逐层相乘；资金配置分叉后的风险目标无法据此确定，留空。分类求解贡献汇总成员在同一组合协方差下的贡献。现金与衍生品不进入协方差。' : 'Target RC follows the saved portfolio-root risk-budget path; a branching capital allocation does not determine a risk target. Category solved RC sums member contributions under the same portfolio covariance. Cash and derivatives are excluded from covariance.')
   const capitalDetail = tree.capital_weight_basis === 'portfolio_nav'
-    ? (zh ? '目标资金金额除以本次估值日的全组合 NAV；调仓金额为目标资金金额减当前账面金额。不交易成员保留账面金额。' : 'Target capital divided by this valuation date’s total portfolio NAV. Rebalance amount is target capital less current carrying amount. No-trade members retain their carrying amount.')
-    : (zh ? '旧记录没有保存全组合 NAV，权重保留保存时的研究范围口径；没有重新计算。调仓金额来自保存的目标金额和账面金额。' : 'This archive did not record total portfolio NAV. Weights retain the saved research-scope basis without recalculation; rebalance amounts use the recorded target and carrying amounts.')
+    ? (zh ? '当前权重=当前账面金额/保存估值日全组合 NAV；目标权重=求解目标资金金额/NAV。调仓金额=目标金额−当前账面金额；不交易成员保持原金额。' : 'Current weight is current carrying amount / saved total portfolio NAV; target weight is solved target capital / NAV. Rebalance amount is target less current carrying amount; no-trade members retain their amount.')
+    : (zh ? '此记录无法证明全组合 NAV，当前权重留空；目标权重保留保存时的研究范围口径。调仓金额来自保存的目标金额和账面金额。' : 'Total portfolio NAV cannot be established from this archive, so current weight is unavailable. Target weights retain the saved research-scope basis; rebalance amounts use the recorded target and carrying amounts.')
   return <div className="research-solution-tree">
     <div className="research-solution-toolbar">
       <div className="research-solution-actions">
@@ -49,8 +46,8 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
         <thead><tr><th>{zh ? '分类 / 标的' : 'Category / Instrument'}</th>
           <th>{zh ? '目标风险贡献' : 'Target RC'}</th><th>{zh ? '求解风险贡献' : 'Solved RC'} <InfoHint label={zh ? '风险贡献口径' : 'Risk contribution basis'} detail={riskDetail} /></th>
           <th>{zh ? '账面金额' : 'Carrying Amount'}{amountLabel}{!tree.base_currency ? <> <InfoHint label={zh ? '报告币种未保存' : 'Reporting currency not recorded'} detail={zh ? '此存档未保存报告币种；账面及调仓金额按原始数值展示，未换算。' : 'This archive did not record its reporting currency. Carrying and rebalance amounts show their original numeric values without conversion.'} /></> : null}</th>
-          <th>{zh ? '敞口 / NAV' : 'Exposure / NAV'} <InfoHint label={zh ? '敞口口径' : 'Exposure basis'} detail={exposureDetail} /></th>
-          <th>{zh ? '目标资金权重' : 'Target Capital Weight'} <InfoHint label={zh ? '资金权重口径' : 'Capital weight basis'} detail={capitalDetail} /></th><th>{zh ? '调仓金额' : 'Rebalance amount'}{amountLabel}</th></tr></thead>
+          <th>{zh ? '当前权重' : 'Current Weight'}</th>
+          <th>{zh ? '目标权重' : 'Target Weight'} <InfoHint label={zh ? '权重口径' : 'Weight basis'} detail={capitalDetail} /></th><th>{zh ? '调仓金额' : 'Rebalance amount'}{amountLabel}</th></tr></thead>
         <tbody>{rows.map((row) => {
           const constraint = solutionConstraintLabel(row, zh)
           const children = parentIds.has(row.row_id)
@@ -61,8 +58,8 @@ export default function ResearchSolutionTree({ run }: { run: PortfolioResearchRu
               <span className="research-solution-label" title={row.path.join(' / ')} translate="no">{solutionRowLabel(row, zh)}</span>
               {constraint ? <span className="research-solution-constraint" title={row.execution_note ?? undefined}>{constraint}</span> : null}
             </div></td>
-            <td>{formatPercent(row.target_risk_share)}</td><td>{formatPercent(row.solved_risk_share)}</td><td>{money(row.current_value_base)}</td><td>{formatPercent(row.current_exposure_weight)}</td><td>{formatPercent(row.target_weight)}</td>
-            <td><span>{delta == null ? '—' : `${delta > 0.005 ? '+' : delta < -0.005 ? '−' : ''}${money(Math.abs(delta))}`}</span>{delta != null ? <span className="research-solution-direction">{solutionTradeLabel(row, zh)}</span> : null}</td>
+            <td>{formatPercent(row.target_risk_share)}</td><td>{formatPercent(row.solved_risk_share)}</td><td>{money(row.current_value_base)}</td><td>{formatPercent(row.current_weight)}</td><td>{formatPercent(row.target_weight)}</td>
+            <td>{delta == null ? '—' : `${delta > 0.005 ? '+' : delta < -0.005 ? '−' : ''}${money(Math.abs(delta))}`}</td>
           </tr>
         })}</tbody>
       </table>

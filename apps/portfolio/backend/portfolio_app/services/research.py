@@ -81,26 +81,6 @@ RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
 RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 7
 logger = logging.getLogger(__name__)
-DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
-    {
-        "scenario_id": "friction_1_5x",
-        "label": "1.5x Friction",
-        "cash_yield_annual": 0.0,
-        "commission_bps": 3.0,
-        "tax_bps": 15.0,
-        "slippage_bps": 7.5,
-        "implementation_delay_days": 2,
-    },
-    {
-        "scenario_id": "friction_2x",
-        "label": "2x Friction",
-        "cash_yield_annual": 0.0,
-        "commission_bps": 4.0,
-        "tax_bps": 20.0,
-        "slippage_bps": 10.0,
-        "implementation_delay_days": 3,
-    },
-]
 # PUT settings fields use explicit-null and omitted as different operations.
 # The route passes this sentinel for omitted optional controls so older or
 # partial clients cannot silently restore backtest defaults.
@@ -126,36 +106,6 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _normalized_backtest_robustness_scenarios(
-    scenarios: list[dict[str, object]] | None,
-) -> list[dict[str, object]]:
-    source = scenarios if scenarios is not None else DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
-    normalized: list[dict[str, object]] = []
-    seen_ids: set[str] = set()
-    for item in source:
-        scenario_id = str(item.get("scenario_id") or "").strip()
-        label = str(item.get("label") or "").strip()
-        if not scenario_id or not label or scenario_id in seen_ids:
-            raise ValueError(
-                "Backtest robustness scenarios require unique scenario_id and label values."
-            )
-        seen_ids.add(scenario_id)
-        normalized.append(
-            {
-                "scenario_id": scenario_id,
-                "label": label,
-                "cash_yield_annual": float(item.get("cash_yield_annual") or 0.0),
-                "commission_bps": float(item.get("commission_bps") or 0.0),
-                "tax_bps": float(item.get("tax_bps") or 0.0),
-                "slippage_bps": float(item.get("slippage_bps") or 0.0),
-                "implementation_delay_days": int(
-                    item.get("implementation_delay_days") or 0
-                ),
-            }
-        )
-    return normalized
 
 
 def _normalize_research_max_gross_exposure(capital_mode: object, value: object) -> float | None:
@@ -346,11 +296,6 @@ def _ensure_research_settings_record(
         if not str(getattr(record, "backtest_rebalance_frequency", "") or "").strip():
             record.backtest_rebalance_frequency = "1m"
             changed = True
-        if record.backtest_robustness_scenarios_json is None:
-            record.backtest_robustness_scenarios_json = deepcopy(
-                DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
-            )
-            changed = True
         if changed:
             record.updated_at = _utc_now_iso()
             session.commit()
@@ -378,9 +323,6 @@ def _ensure_research_settings_record(
         backtest_tax_bps=10.0,
         backtest_slippage_bps=5.0,
         backtest_implementation_delay_days=1,
-        backtest_robustness_scenarios_json=deepcopy(
-            DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
-        ),
         backtest_walk_forward_training_months=24,
         backtest_walk_forward_test_months=6,
         notes=None,
@@ -579,9 +521,6 @@ def _serialize_settings_row(
         "backtest_slippage_bps": float(row.backtest_slippage_bps),
         "backtest_implementation_delay_days": int(
             row.backtest_implementation_delay_days
-        ),
-        "backtest_robustness_scenarios": deepcopy(
-            row.backtest_robustness_scenarios_json or []
         ),
         "backtest_walk_forward_training_months": int(
             row.backtest_walk_forward_training_months
@@ -788,10 +727,6 @@ def _research_run_reliability(
             "backtest_implementation_delay_days": settings_payload.get(
                 "backtest_implementation_delay_days"
             ),
-            "backtest_robustness_scenarios": settings_payload.get(
-                "backtest_robustness_scenarios"
-            )
-            or [],
             "backtest_walk_forward_training_months": settings_payload.get(
                 "backtest_walk_forward_training_months"
             ),
@@ -826,8 +761,8 @@ def _serialize_run_row(
     detail = None
     if include_detail:
         detail = deepcopy(row.detail_json or {})
-        if detail and not detail.get("solution_tree"):
-            from portfolio_app.services.research_solution_tree import build_research_solution_tree
+        from portfolio_app.services.research_solution_tree import SOLUTION_TREE_SCHEMA_VERSION, build_research_solution_tree
+        if detail and (detail.get("solution_tree") or {}).get("schema_version") != SOLUTION_TREE_SCHEMA_VERSION:
             detail["solution_tree"] = build_research_solution_tree(detail, row.request_payload_json or {})
         if isinstance(detail.get("top_holdings"), list):
             detail["top_holdings"] = [
@@ -2005,7 +1940,6 @@ def update_research_settings(
     backtest_tax_bps: object = RESEARCH_SETTINGS_UNSET,
     backtest_slippage_bps: object = RESEARCH_SETTINGS_UNSET,
     backtest_implementation_delay_days: object = RESEARCH_SETTINGS_UNSET,
-    backtest_robustness_scenarios: object = RESEARCH_SETTINGS_UNSET,
     backtest_walk_forward_training_months: object = RESEARCH_SETTINGS_UNSET,
     backtest_walk_forward_test_months: object = RESEARCH_SETTINGS_UNSET,
     notes: str | None = None,
@@ -2149,14 +2083,6 @@ def update_research_settings(
         row.backtest_tax_bps = float(resolved_tax_bps)
         row.backtest_slippage_bps = float(resolved_slippage_bps)
         row.backtest_implementation_delay_days = int(resolved_delay_days)
-        if backtest_robustness_scenarios is not RESEARCH_SETTINGS_UNSET:
-            row.backtest_robustness_scenarios_json = (
-                _normalized_backtest_robustness_scenarios(
-                    backtest_robustness_scenarios
-                    if isinstance(backtest_robustness_scenarios, list)
-                    else None
-                )
-            )
         row.backtest_walk_forward_training_months = int(resolved_training_months)
         row.backtest_walk_forward_test_months = int(resolved_test_months)
         row.notes = notes
@@ -2305,9 +2231,6 @@ def run_portfolio_research(
                 "backtest_implementation_delay_days": int(
                     settings_row.backtest_implementation_delay_days
                 ),
-                "backtest_robustness_scenarios": deepcopy(
-                    settings_row.backtest_robustness_scenarios_json or []
-                ),
                 "backtest_walk_forward_training_months": int(
                     settings_row.backtest_walk_forward_training_months
                 ),
@@ -2388,9 +2311,6 @@ def run_portfolio_research(
                     implementation_delay_days=int(
                         settings_row.backtest_implementation_delay_days
                     ),
-                    robustness_scenarios=deepcopy(
-                        settings_row.backtest_robustness_scenarios_json or []
-                    ),
                     walk_forward_training_months=int(
                         settings_row.backtest_walk_forward_training_months
                     ),
@@ -2401,13 +2321,6 @@ def run_portfolio_research(
                     _state=state,
                 )
             solution.update(backtest_payload)
-            from portfolio_app.services.research_solution_tree import read_solution_exposures
-            solution_valuation = solution.setdefault("solution_valuation", {}) or {}
-            solution_valuation.update(read_solution_exposures(
-                portfolio_id, as_of_date=effective_as_of_date,
-                base_currency=str(configuration["base_currency"]), nav=_safe_float(solution_valuation.get("portfolio_nav")),
-            ))
-            solution["solution_valuation"] = solution_valuation
             with session_factory() as verification_session:
                 latest_fingerprint = _planning_state_fingerprint(
                     verification_session, portfolio_id=portfolio_id,

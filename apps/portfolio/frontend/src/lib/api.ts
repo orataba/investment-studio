@@ -1344,7 +1344,6 @@ export type PortfolioResearchSettingsRecord = {
   backtest_tax_bps: number
   backtest_slippage_bps: number
   backtest_implementation_delay_days: number
-  backtest_robustness_scenarios: PortfolioResearchBacktestRobustnessScenarioRecord[]
   backtest_walk_forward_training_months: number
   backtest_walk_forward_test_months: number
   notes?: string | null
@@ -1374,20 +1373,9 @@ export type PortfolioResearchSettingsUpdatePayload = {
   backtest_tax_bps?: number
   backtest_slippage_bps?: number
   backtest_implementation_delay_days?: number
-  backtest_robustness_scenarios?: PortfolioResearchBacktestRobustnessScenarioRecord[] | null
   backtest_walk_forward_training_months?: number
   backtest_walk_forward_test_months?: number
   notes?: string | null
-}
-
-export type PortfolioResearchBacktestRobustnessScenarioRecord = {
-  scenario_id: string
-  label: string
-  cash_yield_annual: number
-  commission_bps: number
-  tax_bps: number
-  slippage_bps: number
-  implementation_delay_days: number
 }
 
 export type PortfolioResearchTopSleeveWeightBoundRecord = {
@@ -1772,7 +1760,15 @@ export type PortfolioResearchBacktestMetricsRecord = {
   calmar_ratio?: number | null
 }
 
-export type PortfolioResearchBacktestRobustnessResultRecord = PortfolioResearchBacktestRobustnessScenarioRecord & {
+// Retained saved-result fields; new runs do not generate robustness scenarios.
+export type PortfolioResearchBacktestRobustnessResultRecord = {
+  scenario_id: string
+  label: string
+  cash_yield_annual: number
+  commission_bps: number
+  tax_bps: number
+  slippage_bps: number
+  implementation_delay_days: number
   metrics?: PortfolioResearchBacktestMetricsRecord | null
   period_return_delta?: number | null
   ending_value?: number | null
@@ -1807,9 +1803,33 @@ export type PortfolioResearchBacktestWalkForwardRecord = {
   oos_metrics?: PortfolioResearchBacktestMetricsRecord | null
 }
 
+export type PortfolioResearchBacktestInitialSecurityRecord = {
+  instrument_id: string
+  label: string
+  market_value_base: number
+  initial_weight: number
+  top_sleeve_id: string | null
+  top_sleeve_label: string
+}
+
+export type PortfolioResearchBacktestInitialStateRecord = {
+  source: 'portfolio_inception_eod_holdings'
+  status: 'available' | 'unavailable'
+  as_of_date: string
+  base_currency: string
+  scope_node_id: string | null
+  portfolio_nav_base: number | null
+  scope_nav_base: number | null
+  cash_value_base: number | null
+  derivative_value_base: number | null
+  securities: PortfolioResearchBacktestInitialSecurityRecord[]
+  unavailable_reason: string | null
+}
+
 export type PortfolioResearchBacktestRecord = {
   rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
   requested_start_date?: string | null
+  initial_state?: PortfolioResearchBacktestInitialStateRecord | null
   common_history_start_date?: string | null
   start_date?: string | null
   end_date?: string | null

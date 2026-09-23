@@ -7401,81 +7401,6 @@ input[type='checkbox'] {
   top: calc((var(--research-run-control-height) - 24px) / 2);
 }
 
-.research-robustness-editor {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--portfolio-line);
-}
-
-.research-robustness-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 30px;
-  color: var(--portfolio-ink);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.research-icon-button {
-  display: inline-flex;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font-size: 18px;
-  line-height: 1;
-}
-
-.research-icon-button:hover,
-.research-icon-button:focus-visible {
-  border-color: var(--portfolio-accent);
-  color: var(--portfolio-accent);
-  outline: none;
-}
-
-.research-robustness-table {
-  min-width: 900px;
-}
-
-.portfolio-workspace-page .research-robustness-table input {
-  width: 100%;
-  min-width: 72px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--portfolio-line);
-  border-radius: 0;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font-size: 12px;
-}
-
-.research-robustness-table th:first-child,
-.research-robustness-table td:first-child {
-  min-width: 130px;
-}
-
-.research-robustness-table th:nth-child(2),
-.research-robustness-table td:nth-child(2) {
-  min-width: 150px;
-}
-
-.research-robustness-table th:last-child,
-.research-robustness-table td:last-child {
-  width: 42px;
-  text-align: center;
-}
-
 .research-result-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -7552,13 +7477,8 @@ input[type='checkbox'] {
 }
 
 .research-execution-table,
-.research-robustness-results-table,
 .research-walk-forward-table {
   min-width: 680px;
-}
-
-.research-robustness-results-table {
-  min-width: 940px;
 }
 
 .research-oos-summary {

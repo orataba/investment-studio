@@ -27,6 +27,8 @@ from portfolio_app.services.instrument_registry import (
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,
     benchmark_total_return_quote_bases,
+    market_calendar_sessions,
+    quote_is_stale,
     resolve_quote_series,
 )
 from portfolio_app.services.ledger import build_account_workspace
@@ -82,7 +84,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v4"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v5"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -97,7 +99,8 @@ RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
     "Every rebalance uses the same current taxonomy membership, targets and eligibility captured for this run.",
     "Every allocation uses one covariance across all modeled leaves in the selected research scope; every sleeve risk budget includes cross-sleeve covariance.",
     "Current instrument selection introduces hindsight and survivorship effects; this is a model comparison, not a reconstruction of historical decisions.",
-    "Scheduled decisions start at portfolio inception; earlier market observations are used only for the trailing risk-estimation window, not as pre-inception portfolio performance.",
+    "Simulation starts with the actual portfolio closing holdings at inception. The initial closing book is untouched; policy executions begin on a later eligible observation. Earlier market observations only warm the risk-estimation window.",
+    "Initial securities remain invested until the first executable policy rebalance, even when they are outside the captured current target universe. Later actual security transactions and external cash flows are not replayed.",
     "An instrument becomes usable after its first usable market-data observation and the required trailing risk window, regardless of assignment creation date.",
     "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
     "Market observations are EOD period-end returns: holdings earn the return ending before an EOD execution, and newly executed targets start with the next observation.",
@@ -315,6 +318,7 @@ def _convert_price_to_base(
     point_date: date,
     value: float,
     point_currency: str,
+    require_fresh_fx: bool = False,
 ) -> float | None:
     normalized_currency = valuation_fx.required_currency(
         point_currency,
@@ -331,7 +335,7 @@ def _convert_price_to_base(
         instrument_detail_loader=get_registry_instrument_detail,
     )
     rate = _safe_float((fx or {}).get("rate"))
-    if rate is None or rate <= 0:
+    if rate is None or not np.isfinite(rate) or rate <= 0 or require_fresh_fx and (fx or {}).get("stale"):
         return None
     return float(value) * rate
 
@@ -344,6 +348,7 @@ def _build_instrument_nav_series(
     end_date: date,
     warn_on_start_clip: bool = True,
     candidate_bases: list[str] | None = None,
+    retain_missing_valuations: bool = False,
 ) -> tuple[pd.Series, list[str]]:
     detail = _instrument_detail(state, instrument_id)
     if not isinstance(detail, dict):
@@ -365,10 +370,11 @@ def _build_instrument_nav_series(
             point_date=point_date,
             value=point_value,
             point_currency=point_currency,
+            require_fresh_fx=retain_missing_valuations,
         )
-        if base_value is None:
+        if base_value is None and not retain_missing_valuations:
             continue
-        rows.append((point_date, base_value))
+        rows.append((point_date, float("nan") if base_value is None else base_value))
     if not rows:
         raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
 
@@ -1655,7 +1661,7 @@ def _solve_current_scope(
     """Compile the chosen tree, then solve all leaf weights against one covariance.
 
     A scope is only an aggregation mask: W_n=sum(w_i), Q_n=sum(w_i*(Sigma w)_i).
-    Capital targets compare W_child/W_parent; risk targets compare Q_child/Q_parent.
+    Capital targets fix W_child/W_parent; risk targets compare Q_child/Q_parent.
     No child is optimized in isolation, and reporting never estimates another Sigma.
     """
     start_day = research_window_start_date(as_of_date, lookback_days)
@@ -1802,6 +1808,30 @@ def _solve_current_scope(
             mask = np.zeros(count, dtype="float64")
             mask[indices] = 1.0
             masks[(plan.node_id, key)] = mask
+    # A fixed-weight branch is a scalable basket, including its covariance with
+    # every other leaf. Its ratios are hard linear equalities, not objectives
+    # that can be traded off against a risk-budget miss.
+    equations: list[tuple[CompiledTargetScope, str, np.ndarray, np.ndarray, float]] = []
+    weight_rows: list[np.ndarray] = []
+    for plan in plans:
+        if plan.excluded:
+            continue
+        keys = [key for key, indices in plan.leaf_indices_by_key.items() if indices]
+        if plan.dimension == TARGET_DIMENSION_WEIGHT:
+            # Preserve no-trade capital; adjustable children share the remaining
+            # capital in their configured fixed proportions.
+            keys = [key for key in keys if key not in plan.no_trade_keys]
+        if not keys:
+            continue
+        target_total = sum(float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0) for key in keys)
+        parent_mask = sum((masks[(plan.node_id, key)] for key in keys), np.zeros(count))
+        for key in keys:
+            target = float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0)
+            if plan.dimension == TARGET_DIMENSION_WEIGHT:
+                target = target / target_total if target_total > 1e-12 else 0.0
+                weight_rows.append(masks[(plan.node_id, key)] - target * parent_mask)
+            equations.append((plan, key, masks[(plan.node_id, key)], parent_mask, target))
+    weight_matrix = np.asarray(weight_rows, dtype="float64").reshape((-1, count)) if count else np.empty((0, 0))
     lower = np.where(frozen, current, 0.0)
     upper = np.where(frozen, current, np.where(excluded, 0.0, available_gross))
     upper = np.maximum(upper, lower)
@@ -1828,9 +1858,9 @@ def _solve_current_scope(
     gross_limit = available_gross
     feasible = None
     if count:
-        feasible = linprog(-np.ones(count), A_ub=linear_matrix, b_ub=linear_limits, bounds=scipy_bounds, method="highs")
+        feasible = linprog(-np.ones(count), A_ub=linear_matrix, b_ub=linear_limits, A_eq=weight_matrix if len(weight_matrix) else None, b_eq=np.zeros(len(weight_matrix)) if len(weight_matrix) else None, bounds=scipy_bounds, method="highs")
         if not feasible.success:
-            raise ValueError(f"{root.label} frozen sleeve weights / top sleeve bounds are infeasible for the available risky budget.")
+            raise ValueError(f"{root.label} fixed weight ratios / frozen sleeve weights / top sleeve bounds are infeasible for the available risky budget.")
         gross_limit = float(np.sum(feasible.x))
         if fixed_gross and gross_limit < available_gross - 1e-8:
             raise ValueError(f"{root.label} top sleeve maximum weights cannot supply the requested fixed gross exposure.")
@@ -1896,27 +1926,6 @@ def _solve_current_scope(
     if volatility_overlay and (not active_indices or gross_limit <= 1e-12):
         raise ValueError(f"{root.label} capital overlay is unavailable: no positive risky target weight.")
 
-    # Each residual is a conditional ratio; scaling by total portfolio variance
-    # would hide arbitrarily large errors in a small nested sleeve.
-    equations: list[tuple[CompiledTargetScope, str, np.ndarray, np.ndarray, float]] = []
-    for plan in plans:
-        if plan.excluded:
-            continue
-        keys = [key for key, indices in plan.leaf_indices_by_key.items() if indices]
-        if plan.dimension == TARGET_DIMENSION_WEIGHT:
-            # No-trade positions are fixed in capital, with remaining adjustable
-            # children sharing the remaining capital in their configured ratios.
-            keys = [key for key in keys if key not in plan.no_trade_keys]
-        if not keys:
-            continue
-        target_total = sum(float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0) for key in keys)
-        parent_mask = sum((masks[(plan.node_id, key)] for key in keys), np.zeros(count))
-        for key in keys:
-            target = float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0)
-            if plan.dimension == TARGET_DIMENSION_WEIGHT:
-                target = target / target_total if target_total > 1e-12 else 0.0
-            equations.append((plan, key, masks[(plan.node_id, key)], parent_mask, target))
-
     # Rescale only the matrix's unit for numerical conditioning. Euler shares
     # are homogeneous in covariance, and volatility constraints use the original.
     scaled_covariance = covariance / max(float(np.max(np.diag(covariance))), 1e-30) if covariance is not None and count else None
@@ -1968,15 +1977,36 @@ def _solve_current_scope(
         constraints: list[dict[str, object]] = []
         if len(optimizer_limits):
             constraints.append({"type": "ineq", "fun": lambda w: optimizer_limits - optimizer_matrix @ w})
-        if fixed_mass:
-            constraints.append({"type": "eq", "fun": lambda w: float(w.sum()) - gross_limit})
+        equality_matrix = np.vstack([weight_matrix, np.ones((1, count))]) if fixed_mass else weight_matrix
+        equality_limits = np.r_[np.zeros(len(weight_matrix)), gross_limit] if fixed_mass else np.zeros(len(weight_matrix))
+        free_indices = upper > lower
+        if len(equality_matrix) and np.any(free_indices):
+            # Sibling ratios sum to zero. Remove these dependent equalities,
+            # also accounting for coordinates fixed by no-trade/zero bounds,
+            # so SLSQP receives a full-row-rank equality Jacobian.
+            left, singular, _ = np.linalg.svd(equality_matrix[:, free_indices], full_matrices=False)
+            rank = int(np.sum(singular > (singular[0] * max(equality_matrix.shape) * np.finfo(float).eps))) if len(singular) else 0
+            if rank:
+                equality_basis = left[:, :rank].T
+                optimizer_equalities = equality_basis @ equality_matrix
+                optimizer_equality_limits = equality_basis @ equality_limits
+                constraints.append({"type": "eq", "fun": lambda w: optimizer_equalities @ w - optimizer_equality_limits, "jac": lambda w: optimizer_equalities})
         linear_constraints = list(constraints)
         volatility_variance = float(target_volatility or 0.0) ** 2
         if volatility_overlay:
             assert covariance is not None
             volatility_constraint = lambda w: float(w @ covariance @ w) / volatility_variance - 1.0
             constraints.append({"type": "eq" if capital_mode == CAPITAL_MODE_TARGET_VOLATILITY else "ineq", "fun": volatility_constraint if capital_mode == CAPITAL_MODE_TARGET_VOLATILITY else lambda w: -volatility_constraint(w)})
-        reference = np.asarray([max(float(row.get("global_target_risk_share") or 0.0), 0.0) for row in leaves])
+        # Build an interior reference through both kinds of branches. A basket
+        # has no leaf risk targets, but its positive parent budget must not seed
+        # it at zero: for uncorrelated assets the risk gradient is flat there.
+        reference = np.ones(count)
+        for plan in plans:
+            keys = [key for key, indices in plan.leaf_indices_by_key.items() if indices]
+            target_total = sum(float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0) for key in keys)
+            for key in keys:
+                target = float(_safe_float(plan.target_by_key.get(key, {}).get("selected_value")) or 0.0)
+                reference[plan.leaf_indices_by_key[key]] *= target / target_total if target_total > 1e-12 else 1.0 / len(keys)
         if float(reference.sum()) <= 1e-12:
             reference = np.where(upper > lower + 1e-12, 1.0, 0.0)
         reference = reference / max(float(reference.sum()), 1e-12) * gross_limit
@@ -1997,7 +2027,7 @@ def _solve_current_scope(
             # A convex minimum-variance check detects genuinely infeasible hard
             # constraints, including frozen holdings and hedging correlations.
             minimum_variance = minimize(lambda w: float(w @ scaled_covariance @ w), x0=np.asarray(feasible.x), jac=lambda w: 2.0 * scaled_covariance @ w, method="SLSQP", bounds=scipy_bounds, constraints=linear_constraints, options={"ftol": 1e-12, "maxiter": 1000})
-            if not minimum_variance.success or not np.isfinite(minimum_variance.x).all() or np.any(minimum_variance.x < lower - 1e-7) or np.any(minimum_variance.x > upper + 1e-7) or np.any(linear_matrix @ minimum_variance.x > linear_limits + 1e-7):
+            if not minimum_variance.success or not np.isfinite(minimum_variance.x).all() or np.any(minimum_variance.x < lower - 1e-7) or np.any(minimum_variance.x > upper + 1e-7) or np.any(linear_matrix @ minimum_variance.x > linear_limits + 1e-7) or np.any(np.abs(equality_matrix @ minimum_variance.x - equality_limits) > 1e-7):
                 raise ValueError("The volatility feasibility check did not converge to a feasible allocation.")
             if float(minimum_variance.x @ covariance @ minimum_variance.x) > volatility_variance * (1.0 + 1e-7):
                 prefix = "Frozen sleeve weights make the volatility constraint infeasible" if np.any(frozen) else "Top sleeve minimum weights make the volatility constraint infeasible"
@@ -2014,12 +2044,14 @@ def _solve_current_scope(
                             scale = min(scale, 1.0)
                         seeds.insert(0, seed * scale)
         def objective(w: np.ndarray) -> float:
-            errors = residuals(w)
+            errors = residuals(w)[[plan.dimension == TARGET_DIMENSION_RISK_BUDGET for plan, *_ in equations]]
             # Capital use breaks the scale indeterminacy under a volatility cap;
             # the coefficient is below the reported conditional-target tolerance.
             return float(errors @ errors - (1e-8 * w.sum() / max(gross_limit, 1e-12) if not fixed_mass else 0.0))
         def hard_feasible(w: np.ndarray) -> bool:
             if not np.isfinite(w).all() or np.any(w < lower - 1e-7) or np.any(w > upper + 1e-7) or np.any(linear_matrix @ w > linear_limits + 1e-7):
+                return False
+            if np.any(np.abs(weight_matrix @ w) > 1e-8):
                 return False
             if fixed_mass and abs(float(w.sum()) - gross_limit) > 1e-7:
                 return False
@@ -3511,6 +3543,96 @@ def _is_derivative_capital_activity(transaction: dict[str, object]) -> bool:
     return transaction_type not in {"coupon", "dividend", "interest"}
 
 
+def _initial_backtest_state(
+    state: TaxonomyResearchState,
+    *,
+    portfolio: dict[str, object],
+    inception_date: date,
+    scope_node_id: str | None,
+) -> dict[str, object]:
+    """Capture the factual inception EOD book, never today's holdings or a cash fallback."""
+    statement = build_holdings_report(
+        portfolio, list_accounts(state.portfolio_id), list_transactions(state.portfolio_id),
+        as_of_date=inception_date, include_cash_rows=True,
+        instrument_detail_cache=state.instrument_detail_cache,
+        direct_fx_instruments=state.direct_fx_instruments,
+    )
+    nav = _safe_float(statement.get("total_nav_base"))
+    cash = _safe_float(statement.get("cash_balance_base"))
+    settlements = _safe_float(statement.get("pending_settlement_base"))
+    if any(value is None or not np.isfinite(value) for value in (nav, cash, settlements)):
+        raise ValueError("Inception holdings require complete security, cash, settlement and FX valuations; no cash substitute is used.")
+    if nav <= 0:
+        raise ValueError("Inception holdings require a positive actual closing portfolio NAV; no later starting book is substituted.")
+    derivative = _derivative_carrying_value_from_statement(statement)
+    scope_ids = state.node_subtree_by_id.get(scope_node_id, {scope_node_id}) if scope_node_id else None
+    selected_ids = {
+        str(item.get("target_entity_id") or "")
+        for node_id, assignments in state.direct_assignments_by_node.items()
+        if scope_ids is None or node_id in scope_ids
+        for item in assignments if item.get("target_scope") == TARGET_MEMBER_INSTRUMENT
+    }
+    securities = []
+    all_security_value = 0.0
+    checked_currencies: set[str] = set()
+    for position in statement.get("positions") or []:
+        value = _safe_float(position.get("market_value_base"))
+        if value is None or not np.isfinite(value):
+            raise ValueError("An inception holding lacks a complete valuation; no cash substitute is used.")
+        currency = str(position.get("currency") or state.base_currency)
+        if abs(value) > 1e-12 and currency not in checked_currencies and currency != state.base_currency:
+            fx = valuation_fx.resolve_fx_rate_on(
+                as_of_date=inception_date, base_currency=currency, quote_currency=state.base_currency,
+                direct_instruments=state.direct_fx_instruments,
+                instrument_detail_cache=state.instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if not fx or fx.get("stale") or _safe_float(fx.get("rate")) is None:
+                raise ValueError("Inception holdings require fresh FX valuations; stale carrying values cannot establish the simulation book.")
+            checked_currencies.add(currency)
+        if (holdings_market_profile.is_cash_holding_instrument_id(position.get("instrument_id"))
+                or holdings_market_profile.is_pending_monetary_holding(position)):
+            continue
+        if holdings_market_profile.is_derivative_contract(position.get("derivative_contract")):
+            continue
+        instrument_id = str(position.get("instrument_id") or "")
+        if not instrument_id or value is None or not np.isfinite(value):
+            raise ValueError("An inception security lacks its identity or valuation; its initial holding cannot be replaced with cash.")
+        if abs(value) > 1e-12 and position.get("valuation_basis") != "transaction_price":
+            detail = _instrument_detail(state, instrument_id)
+            quote_date = _parse_iso_date(position.get("quote_as_of_date"))
+            if quote_date is None or not isinstance(detail, dict) or quote_is_stale(
+                detail, point_date=quote_date, as_of_date=inception_date,
+            ):
+                raise ValueError(f"{instrument_id} has no reliable inception EOD valuation; a stale quote cannot establish the initial holding book.")
+        all_security_value += value
+        if abs(value) <= 1e-12 or scope_ids is not None and instrument_id not in selected_ids:
+            continue
+        top_id, top_label, _ = _top_sleeve_for_member(state, member_type=TARGET_MEMBER_INSTRUMENT, member_id=instrument_id)
+        core = position.get("instrument_core") or position.get("instrument_ref") or {}
+        securities.append({
+            "instrument_id": instrument_id,
+            "label": str(core.get("instrument_name") or position.get("instrument_name") or instrument_id),
+            "market_value_base": value, "top_sleeve_id": top_id, "top_sleeve_label": top_label,
+        })
+    monetary = float(cash + settlements)
+    if abs(all_security_value + derivative + monetary - nav) > max(abs(nav), 1.0) * 1e-8:
+        raise ValueError("Inception holding components do not reconcile to the canonical closing NAV.")
+    scope_nav = float(nav) if scope_node_id is None else sum(row["market_value_base"] for row in securities)
+    if scope_nav <= 1e-12:
+        raise ValueError("The selected research scope has no positive actual inception holdings; no cash or later holdings are substituted.")
+    for row in securities:
+        row["initial_weight"] = row["market_value_base"] / scope_nav
+    return {
+        "source": "portfolio_inception_eod_holdings", "status": "available",
+        "as_of_date": inception_date.isoformat(), "base_currency": state.base_currency,
+        "scope_node_id": scope_node_id, "portfolio_nav_base": float(nav), "scope_nav_base": scope_nav,
+        "cash_value_base": monetary if scope_node_id is None else 0.0,
+        "derivative_value_base": derivative if scope_node_id is None else 0.0,
+        "securities": securities, "unavailable_reason": None,
+    }
+
+
 def _derivative_carrying_value_from_statement(
     statement: dict[str, object],
 ) -> float:
@@ -3521,7 +3643,7 @@ def _derivative_carrying_value_from_statement(
         ):
             continue
         value = _safe_float(position.get("market_value_base"))
-        if value is None:
+        if value is None or not np.isfinite(value):
             raise ValueError(
                 "Historical derivative carrying value is incomplete; refresh price/FX coverage before backtesting."
             )
@@ -3532,6 +3654,7 @@ def _derivative_carrying_value_from_statement(
 def _build_derivative_backtest_context(
     portfolio_id: str,
     *,
+    initial_state: dict[str, object],
     start_date: date,
     end_date: date,
     direct_fx_instruments: dict[tuple[str, str], str],
@@ -3570,18 +3693,13 @@ def _build_derivative_backtest_context(
         ],
         key=lambda item: item[0],
     )
-    if not nav_points:
-        raise ValueError(
-            "Derivative capital backtest requires a positive, materialized portfolio NAV history."
-        )
-    base_candidates = [item for item in nav_points if item[0] <= start_date]
-    base_date, base_nav = (
-        base_candidates[-1]
-        if base_candidates
-        else next((item for item in nav_points if item[0] >= start_date), nav_points[0])
-    )
+    base_date = _parse_iso_date(initial_state.get("as_of_date"))
+    base_nav = _safe_float(initial_state.get("scope_nav_base"))
+    if base_date != start_date or base_nav is None:
+        raise ValueError("Derivative capital requires the captured inception valuation.")
     if base_nav <= 1e-12:
         raise ValueError("Derivative capital backtest requires positive starting NAV.")
+    nav_points = sorted({**dict(nav_points), base_date: float(base_nav)}.items())
 
     available_dates = [item[0] for item in nav_points]
 
@@ -3697,8 +3815,9 @@ def _first_common_return_date_on_or_after(
         eligible_sets.append(
             {
                 item
-                for item in series.index
+                for item, value in series.items()
                 if isinstance(item, date) and earliest_date <= item <= end_date
+                and np.isfinite(float(value))
             }
         )
     common_dates = set.intersection(*eligible_sets) if eligible_sets else set()
@@ -3708,6 +3827,7 @@ def _first_common_return_date_on_or_after(
 def _replay_backtest_decisions(
     decisions: list[dict[str, object]],
     *,
+    initial_state: dict[str, object],
     returns_by_instrument: dict[str, pd.Series],
     as_of_date: date,
     cash_yield_annual: float,
@@ -3728,20 +3848,10 @@ def _replay_backtest_decisions(
         slippage_bps=slippage_bps,
         implementation_delay_days=implementation_delay_days,
     )
-    if not decisions:
-        return {
-            "points": [],
-            "returns": {},
-            "top_sleeve_weight_points": [],
-            "top_sleeve_contribution_points": [],
-            "contribution_reconciliation_points": [],
-            "execution_records": [],
-            "derivative_capital_events": [],
-            "skipped_executions": [],
-            "total_turnover": 0.0,
-            "total_cost": 0.0,
-            "warnings": [],
-        }
+    anchor_date = _parse_iso_date(initial_state.get("as_of_date"))
+    initial_nav = _safe_float(initial_state.get("scope_nav_base"))
+    if initial_state.get("status") != "available" or anchor_date is None or initial_nav is None or initial_nav <= 0:
+        raise ValueError("Backtest replay requires the captured, valued inception holdings.")
 
     resolved_decisions: list[dict[str, object]] = []
     replay_warnings: list[str] = []
@@ -3793,7 +3903,7 @@ def _replay_backtest_decisions(
         actual_date = _first_common_return_date_on_or_after(
             list(target_weights),
             returns_by_instrument,
-            scheduled_date,
+            max(scheduled_date, anchor_date + timedelta(days=1)),
             as_of_date,
         )
         if actual_date is None:
@@ -3851,22 +3961,6 @@ def _replay_backtest_decisions(
             retained_decisions.append(decision)
     resolved_decisions = retained_decisions
 
-    if not resolved_decisions:
-        return {
-            "points": [],
-            "returns": {},
-            "top_sleeve_weight_points": [],
-            "top_sleeve_contribution_points": [],
-            "contribution_reconciliation_points": [],
-            "execution_records": [],
-            "derivative_capital_events": [],
-            "skipped_executions": skipped_executions,
-            "pending_executions": pending_executions,
-            "total_turnover": 0.0,
-            "total_cost": 0.0,
-            "warnings": replay_warnings,
-        }
-
     resolved_decisions.sort(
         key=lambda item: (
             str(item.get("actual_execution_date") or ""),
@@ -3895,32 +3989,28 @@ def _replay_backtest_decisions(
         .union(executions_by_date)
         .union(derivative_events_by_date)
         .union({as_of_date})
+        .union(pd.date_range(anchor_date, as_of_date, freq="D").date)
     )
-    first_execution_date = min(executions_by_date)
-    first_decision_date = min(
-        _parse_iso_date(item.get("decision_date")) or first_execution_date
-        for item in resolved_decisions
-    )
-    artificial_anchor = first_execution_date <= first_decision_date
-    anchor_date = (
-        first_execution_date - timedelta(days=1)
-        if artificial_anchor
-        else first_decision_date
-    )
-
-    risky_values: dict[str, float] = {}
-    top_lookup: dict[str, tuple[str | None, str]] = {}
+    risky_values = {
+        str(row["instrument_id"]): float(row["market_value_base"]) / initial_nav
+        for row in initial_state.get("securities") or []
+        if abs(float(row["market_value_base"])) > 1e-12
+    }
+    top_lookup = {
+        str(row["instrument_id"]): (row.get("top_sleeve_id"), str(row.get("top_sleeve_label") or "Unassigned"))
+        for row in initial_state.get("securities") or []
+    }
     initial_derivative_events = [
         event
         for event in normalized_derivative_events
         if (_parse_iso_date(event.get("effective_date")) or date.max) <= anchor_date
     ]
-    derivative_value = (
-        float(initial_derivative_events[-1]["target_value"])
-        if initial_derivative_events
-        else 0.0
-    )
-    cash_value = 1.0 - derivative_value
+    derivative_value = float(initial_state["derivative_value_base"]) / initial_nav
+    cash_value = float(initial_state["cash_value_base"]) / initial_nav
+    if abs(sum(risky_values.values()) + derivative_value + cash_value - 1.0) > 1e-8:
+        raise ValueError("Captured inception holdings do not sum to their starting NAV.")
+    if initial_derivative_events and abs(float(initial_derivative_events[-1]["target_value"]) - derivative_value) > 1e-8:
+        raise ValueError("Initial derivative capital does not match the inception holding snapshot.")
     nav_value = 1.0
     previous_event_date = anchor_date
     points: list[dict[str, object]] = [{"date": anchor_date.isoformat(), "value": nav_value, "is_start_anchor": True}]
@@ -3928,8 +4018,8 @@ def _replay_backtest_decisions(
     weight_points: list[dict[str, object]] = [
         _backtest_sleeve_point(
             anchor_date,
-            {},
-            {},
+            risky_values,
+            top_lookup,
             cash_weight=cash_value,
             derivative_weight=derivative_value,
         )
@@ -3960,10 +4050,16 @@ def _replay_backtest_decisions(
     ]
     total_turnover = 0.0
     total_cost = 0.0
-    first_processed_event = True
     previous_return_boundary_date = anchor_date
+    valuation_unavailable_reason = None
+    missing_initial_returns = [instrument_id for instrument_id in risky_values if instrument_id not in returns_by_instrument]
+    if missing_initial_returns:
+        valuation_unavailable_reason = "Initial holdings lack inception-anchored return history: " + ", ".join(sorted(missing_initial_returns)) + "."
+        replay_warnings.append(valuation_unavailable_reason)
 
     for event_date in event_dates:
+        if valuation_unavailable_reason:
+            break
         if event_date <= anchor_date:
             continue
         due_executions = executions_by_date.get(event_date, [])
@@ -4007,21 +4103,32 @@ def _replay_backtest_decisions(
             for instrument_id, value in risky_values.items()
             if abs(value) > 1e-12
         ]
-        complete_return_date = bool(active_before) and all(
-            event_date in returns_by_instrument[instrument_id].index
+        invalid_instruments = [
+            instrument_id for instrument_id in active_before
+            if instrument_id in returns_by_instrument
+            and event_date in returns_by_instrument[instrument_id].index
+            and not np.isfinite(float(returns_by_instrument[instrument_id].loc[event_date]))
+        ]
+        if invalid_instruments:
+            valuation_unavailable_reason = (
+                f"{event_date.isoformat()} holding valuation is unavailable: "
+                + ", ".join(sorted(invalid_instruments))
+                + ". The simulation retains only the reliable prefix; later observations do not restart it."
+            )
+            replay_warnings.append(valuation_unavailable_reason)
+            break
+        complete_return_date = not active_before or all(
+            event_date in returns_by_instrument.get(instrument_id, pd.Series(dtype="float64")).index
             for instrument_id in active_before
         )
         if not due_executions and not due_derivative_events and not complete_return_date:
-            if not active_before and event_date == as_of_date:
-                complete_return_date = True
-            else:
-                continue
+            continue
 
         if due_executions and active_before and not complete_return_date:
             missing_instruments = sorted(
                 instrument_id
                 for instrument_id in active_before
-                if event_date not in returns_by_instrument[instrument_id].index
+                if event_date not in returns_by_instrument.get(instrument_id, pd.Series(dtype="float64")).index
             )
             missing_label = ", ".join(missing_instruments)
             for decision in due_executions:
@@ -4041,8 +4148,6 @@ def _replay_backtest_decisions(
 
         prior_nav = nav_value
         elapsed_days = max((event_date - previous_event_date).days, 0)
-        if artificial_anchor and first_processed_event:
-            elapsed_days = 0
         cash_return = (
             (1.0 + cash_yield_annual) ** (elapsed_days / 365.25) - 1.0
             if elapsed_days > 0
@@ -4274,7 +4379,7 @@ def _replay_backtest_decisions(
                     "nav_after_execution": nav_after_trade,
                 }
             )
-        if cash_value < -1e-10 and not cash_borrowing_allowed and not (
+        if cash_value < -1e-10 and not cash_borrowing_allowed and (due_executions or due_derivative_events or execution_records) and not (
             _allow_pending_funding_at_cutoff and event_date == as_of_date and due_derivative_events
         ):
             event_label = ", ".join(
@@ -4294,6 +4399,13 @@ def _replay_backtest_decisions(
             # Newly executed holdings start after this EOD boundary and must
             # not consume returns that ended on the execution date.
             previous_return_boundary_date = event_date
+
+        if active_before and not complete_return_date and not due_executions:
+            # A dated derivative transfer can update its cash/capital ledger
+            # while an unchanged security lacks today's observation. Accrue
+            # cash on its own clock, but never publish a stale portfolio NAV.
+            previous_event_date = event_date
+            continue
 
         nav_value = cash_value + derivative_value + sum(risky_values.values())
         if nav_value <= 0.0:
@@ -4343,7 +4455,6 @@ def _replay_backtest_decisions(
             }
         )
         previous_event_date = event_date
-        first_processed_event = False
 
     return {
         "points": points,
@@ -4358,6 +4469,7 @@ def _replay_backtest_decisions(
         "total_turnover": total_turnover,
         "total_cost": total_cost,
         "warnings": replay_warnings,
+        "valuation_unavailable_reason": valuation_unavailable_reason,
     }
 
 
@@ -4578,7 +4690,6 @@ def _empty_point_in_time_backtest(
             "skipped_rebalances": [],
             "unavailable_reason": unavailable_reason,
         },
-        "robustness_results": [],
         "walk_forward": {
             **_rolling_holdout_metadata(),
             "available": False,
@@ -4617,7 +4728,6 @@ def build_current_target_backtest(
     tax_bps: float = 10.0,
     slippage_bps: float = 5.0,
     implementation_delay_days: int = 1,
-    robustness_scenarios: list[dict[str, object]] | None = None,
     walk_forward_training_months: int = 24,
     walk_forward_test_months: int = 6,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
@@ -4655,10 +4765,12 @@ def build_current_target_backtest(
         "point_in_time_universe": False,
         "point_in_time_taxonomy": False,
         "simulation_start_rule": (
-            "The requested simulation begins at portfolio inception. Earlier market observations "
-            "remain available for risk estimation. Insufficient history postpones the first usable "
-            "decision, with skipped dates disclosed. A marked unit start anchor may label the "
-            "preceding EOD boundary to retain same-day execution costs; it is not historical portfolio performance."
+            "The unit anchor is the actual inception EOD holding book, including cash, settlements "
+            "and signed derivative capital. It excludes inception-day BOD returns and is not charged "
+            "a second initial acquisition cost. Initial securities earn subsequent observed returns "
+            "until the first executable policy rebalance, including securities outside current targets. "
+            "Insufficient risk history skips rebalances, not the initial holding period. "
+            "Executions must be after the inception close; missing initial valuations never become cash."
         ),
         "decision_rule": (
             "Each scheduled rebalance, plus each recorded derivative-capital lifecycle date, "
@@ -4686,6 +4798,8 @@ def build_current_target_backtest(
             "only on recorded derivative lifecycle dates; ordinary policy rebalances cannot target or resize them. "
             "A lifecycle change triggers a same-day solve of the adjustable book; unless the selected capital mode "
             "explicitly permits gross exposure above 100%, the replay fails if funding cannot preserve non-negative cash."
+            " This recorded derivative-ledger leg is an explicit fixed-capital assumption; later actual "
+            "ordinary security transactions and external cash flows are not part of the model path."
         ),
         "cost_rule": (
             "Commission and slippage apply to risky buys and sells; tax applies to risky sells. "
@@ -4725,25 +4839,6 @@ def build_current_target_backtest(
         _state.instrument_detail_cache if _state is not None
         else _instrument_detail_cache if _instrument_detail_cache is not None else {}
     )
-    historical_instrument_ids = _current_backtest_instrument_ids(configuration)
-    if not historical_instrument_ids:
-        empty_backtest = _empty_point_in_time_backtest(
-            rebalance_frequency=frequency,
-            requested_start_date=inception_date,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            warnings=warnings,
-            unavailable_reason=(
-                "Backtest requires at least one instrument assignment in the captured current target configuration."
-            ),
-            methodology=methodology,
-        )
-        return {
-            "backtest": empty_backtest,
-            "backtest_benchmark": None,
-            "backtest_relative_metrics": None,
-        }
-
     shared_fx_instruments = (
         _state.direct_fx_instruments if _state is not None
         else _direct_fx_instruments if _direct_fx_instruments is not None
@@ -4759,6 +4854,27 @@ def build_current_target_backtest(
         instrument_detail_cache=shared_detail_cache,
         direct_fx_instruments=shared_fx_instruments,
     )
+    try:
+        initial_state = _initial_backtest_state(
+            final_state, portfolio=portfolio, inception_date=inception_date,
+            scope_node_id=comparator_taxonomy_node_id,
+        )
+    except ValueError as error:
+        initial_state = {
+            "source": "portfolio_inception_eod_holdings", "status": "unavailable",
+            "as_of_date": inception_date.isoformat(), "base_currency": final_state.base_currency,
+            "scope_node_id": comparator_taxonomy_node_id, "securities": [],
+            "unavailable_reason": str(error),
+        }
+        empty = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency, requested_start_date=inception_date,
+            as_of_date=as_of_date, lookback_days=lookback_days, warnings=warnings,
+            unavailable_reason=str(error), methodology=methodology,
+        )
+        empty["initial_state"] = initial_state
+        return {"backtest": empty, "backtest_benchmark": None, "backtest_relative_metrics": None}
+    initial_instrument_ids = {str(row["instrument_id"]) for row in initial_state["securities"]}
+    historical_instrument_ids = sorted(set(_current_backtest_instrument_ids(configuration)) | initial_instrument_ids)
     nav_by_instrument: dict[str, pd.Series] = {}
     first_observation_by_instrument: dict[str, str] = {}
     for instrument_id in historical_instrument_ids:
@@ -4769,6 +4885,7 @@ def build_current_target_backtest(
                 start_date=date(1900, 1, 1),
                 end_date=as_of_date,
                 warn_on_start_clip=False,
+                retain_missing_valuations=True,
             )
         except ValueError as error:
             warnings.append(f"{instrument_id} excluded from backtest: {error}")
@@ -4783,27 +4900,48 @@ def build_current_target_backtest(
         nav_by_instrument,
         end_date=as_of_date,
     )
+    missing_initial_anchors: set[str] = set()
+    for instrument_id in initial_instrument_ids:
+        detail = _instrument_detail(final_state, instrument_id)
+        # Keep the analytical identity selected for this replay. A later
+        # adjusted series must not be spliced onto an earlier raw-close anchor.
+        observations = [
+            point for point in _selected_price_points(detail, end_date=as_of_date)
+            if point[0] <= inception_date
+        ] if isinstance(detail, dict) else []
+        anchor_value = (
+            _convert_price_to_base(final_state, point_date=inception_date,
+                                   value=observations[-1][1], point_currency=observations[-1][2],
+                                   require_fresh_fx=True)
+            if observations else None
+        )
+        if (anchor_value is None or not np.isfinite(anchor_value) or anchor_value <= 0
+                or quote_is_stale(detail, point_date=observations[-1][0], as_of_date=inception_date)):
+            missing_initial_anchors.add(instrument_id)
+            continue
+        # The initial book is valued at its EOD boundary. Revalue its observed
+        # analytical price with inception-date FX, rather than earning FX moves
+        # that occurred before inception when the last asset close was earlier.
+        series = sampled_nav_by_instrument.get(instrument_id, pd.Series(dtype="float64")).copy()
+        series.loc[inception_date] = anchor_value
+        sampled_nav_by_instrument[instrument_id] = series.sort_index()
+    for instrument_id, series in sampled_nav_by_instrument.items():
+        detail = _instrument_detail(final_state, instrument_id) or {}
+        settings = detail.get("source_settings") or {}
+        calendar_name = str(settings.get("market_calendar") or detail.get("exchange_code") or "").strip()
+        if not calendar_name or series.empty:
+            continue
+        # Missing expected exchange sessions are genuine gaps. Sparse NAV
+        # publications without a declared calendar remain sparse observations,
+        # rather than being turned into invented daily prices or returns.
+        expected = market_calendar_sessions(calendar_name, max(inception_date, series.index[0]), as_of_date)
+        if expected is not None:
+            sampled_nav_by_instrument[instrument_id] = series.reindex(sorted(set(series.index).union(expected)))
     portfolio_first_dates = [
         series.index[0]
         for series in sampled_nav_by_instrument.values()
         if not series.empty
     ]
-    if not sampled_nav_by_instrument or not portfolio_first_dates:
-        empty_backtest = _empty_point_in_time_backtest(
-            rebalance_frequency=frequency,
-            requested_start_date=inception_date,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            warnings=warnings,
-            unavailable_reason="Backtest has no usable point-in-time instrument history.",
-            methodology=methodology,
-        )
-        return {
-            "backtest": empty_backtest,
-            "backtest_benchmark": None,
-            "backtest_relative_metrics": None,
-        }
-
     # Targets are the captured current configuration, but this is a portfolio
     # simulation from inception. Pre-inception prices remain in the series so
     # the first decision can use its complete trailing risk window.
@@ -4811,6 +4949,7 @@ def build_current_target_backtest(
     derivative_context = (
         _build_derivative_backtest_context(
             portfolio_id,
+            initial_state=initial_state,
             start_date=earliest_start_date,
             end_date=as_of_date,
             instrument_detail_cache=shared_detail_cache,
@@ -4821,8 +4960,9 @@ def build_current_target_backtest(
     )
     warnings.extend(list(derivative_context.get("warnings") or []))
     returns_by_instrument = {
-        instrument_id: _nav_returns(nav)
+        instrument_id: nav.sort_index().pct_change(fill_method=None).iloc[1:].replace([np.inf, -np.inf], np.nan)
         for instrument_id, nav in sampled_nav_by_instrument.items()
+        if instrument_id not in missing_initial_anchors
     }
     scheduled_rebal_dates = _backtest_rebalance_dates(
         start_date=earliest_start_date,
@@ -4850,9 +4990,10 @@ def build_current_target_backtest(
     for rebalance_date in rebal_dates:
         try:
             simulation_nav = 1.0
-            if decisions and derivative_context.get("events"):
+            if derivative_context.get("events"):
                 prior_replay = _replay_backtest_decisions(
                     decisions,
+                    initial_state=initial_state,
                     returns_by_instrument=returns_by_instrument,
                     as_of_date=rebalance_date,
                     cash_yield_annual=cash_yield_annual,
@@ -4961,10 +5102,13 @@ def build_current_target_backtest(
             if instrument_id not in returns_by_instrument
         )
         if missing_history:
-            raise ValueError(
+            reason = (
                 f"{rebalance_date.isoformat()} rebalance targets instruments without usable point-in-time history: "
                 f"{', '.join(missing_history)}."
             )
+            skipped_rebalance_dates.append({"date": rebalance_date.isoformat(), "reason": reason})
+            warnings.append(reason)
+            continue
         target_weights: list[dict[str, object]] = []
         for instrument_id, weight in sorted(target_weight_map.items()):
             top_id, top_label, top_path = _top_sleeve_for_member(
@@ -5012,30 +5156,9 @@ def build_current_target_backtest(
             }
         )
 
-    if not decisions:
-        empty_backtest = _empty_point_in_time_backtest(
-            rebalance_frequency=frequency,
-            requested_start_date=inception_date,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            warnings=warnings,
-            unavailable_reason=(
-                "No scheduled rebalance produced an execution-ready target with sufficient "
-                "captured current targets and dated market history."
-            ),
-            methodology=methodology,
-        )
-        empty_backtest["point_in_time_coverage"]["skipped_rebalances"] = (
-            skipped_rebalance_dates
-        )
-        return {
-            "backtest": empty_backtest,
-            "backtest_benchmark": None,
-            "backtest_relative_metrics": None,
-        }
-
     base_replay = _replay_backtest_decisions(
         decisions,
+        initial_state=initial_state,
         returns_by_instrument=returns_by_instrument,
         as_of_date=as_of_date,
         cash_yield_annual=cash_yield_annual,
@@ -5063,73 +5186,7 @@ def build_current_target_backtest(
     points = list(base_replay.get("points") or [])
     portfolio_returns = dict(base_replay.get("returns") or {})
 
-    robustness_results: list[dict[str, object]] = []
     base_metrics = _build_backtest_metrics(points, portfolio_returns)
-    base_period_return = _safe_float(base_metrics.get("period_return"))
-    seen_scenario_ids: set[str] = set()
-    for scenario in robustness_scenarios or []:
-        scenario_id = str((scenario or {}).get("scenario_id") or "").strip()
-        if not scenario_id:
-            raise ValueError("Every robustness scenario requires a scenario_id.")
-        if scenario_id in seen_scenario_ids:
-            raise ValueError(f"Duplicate robustness scenario_id: {scenario_id}.")
-        seen_scenario_ids.add(scenario_id)
-        scenario_inputs = {
-            "cash_yield_annual": float(
-                _safe_float((scenario or {}).get("cash_yield_annual")) or 0.0
-            ),
-            "commission_bps": float(
-                _safe_float((scenario or {}).get("commission_bps")) or 0.0
-            ),
-            "tax_bps": float(_safe_float((scenario or {}).get("tax_bps")) or 0.0),
-            "slippage_bps": float(
-                _safe_float((scenario or {}).get("slippage_bps")) or 0.0
-            ),
-            "implementation_delay_days": int(
-                _safe_float((scenario or {}).get("implementation_delay_days")) or 0
-            ),
-        }
-        scenario_replay = _replay_backtest_decisions(
-            decisions,
-            returns_by_instrument=returns_by_instrument,
-            as_of_date=as_of_date,
-            derivative_capital_events=list(derivative_context.get("events") or []),
-            cash_borrowing_allowed=bool(
-                methodology["assumptions"]["cash_borrowing_allowed"]
-            ),
-            capital_mode=capital_mode,
-            **scenario_inputs,
-        )
-        scenario_points = list(scenario_replay.get("points") or [])
-        scenario_returns = dict(scenario_replay.get("returns") or {})
-        scenario_metrics = _build_backtest_metrics(
-            scenario_points, scenario_returns
-        )
-        scenario_period_return = _safe_float(scenario_metrics.get("period_return"))
-        robustness_results.append(
-            {
-                "scenario_id": scenario_id,
-                "label": str((scenario or {}).get("label") or scenario_id),
-                **scenario_inputs,
-                "metrics": scenario_metrics,
-                "period_return_delta": (
-                    scenario_period_return - base_period_return
-                    if scenario_period_return is not None
-                    and base_period_return is not None
-                    else None
-                ),
-                "ending_value": (
-                    _safe_float(scenario_points[-1].get("value"))
-                    if scenario_points
-                    else None
-                ),
-                "total_turnover": _safe_float(
-                    scenario_replay.get("total_turnover")
-                ),
-                "total_cost": _safe_float(scenario_replay.get("total_cost")),
-                "warnings": list(scenario_replay.get("warnings") or []),
-            }
-        )
 
     walk_forward = _build_walk_forward_validation(
         points,
@@ -5148,7 +5205,8 @@ def build_current_target_backtest(
     backtest = {
         "rebalance_frequency": frequency,
         "requested_start_date": inception_date.isoformat(),
-        "common_history_start_date": min(portfolio_first_dates).isoformat(),
+        "initial_state": initial_state,
+        "common_history_start_date": min(portfolio_first_dates).isoformat() if portfolio_first_dates else None,
         "start_date": points[0]["date"] if points else None,
         "end_date": points[-1]["date"] if points else as_of_date.isoformat(),
         "lookback_days": lookback_days,
@@ -5171,10 +5229,12 @@ def build_current_target_backtest(
         "total_cost": _safe_float(base_replay.get("total_cost")) or 0.0,
         "methodology": methodology,
         "point_in_time_coverage": {
-            "status": "unavailable" if not points else ("complete" if not skipped_rebalance_dates else "partial"),
+            "status": "unavailable" if len(points) < 2 else (
+                "partial" if skipped_rebalance_dates or base_replay.get("valuation_unavailable_reason") else "complete"
+            ),
             "decision_count": len(decisions),
-            "first_decision_date": decisions[0]["decision_date"],
-            "last_decision_date": decisions[-1]["decision_date"],
+            "first_decision_date": decisions[0]["decision_date"] if decisions else None,
+            "last_decision_date": decisions[-1]["decision_date"] if decisions else None,
             "configuration_versions_used": sorted(
                 {
                     int(item["taxonomy_configuration_version"])
@@ -5186,9 +5246,10 @@ def build_current_target_backtest(
             "first_usable_observation_by_instrument": first_observation_by_instrument,
             "skipped_rebalances": skipped_rebalance_dates,
             "pending_rebalances": list(base_replay.get("pending_executions") or []),
-            "unavailable_reason": None if points else "No target decision could execute by the backtest cutoff.",
+            "unavailable_reason": base_replay.get("valuation_unavailable_reason") or (
+                None if len(points) >= 2 else "No complete post-inception holding return observation is available."
+            ),
         },
-        "robustness_results": robustness_results,
         "walk_forward": walk_forward,
         "warnings": list(dict.fromkeys(warnings)),
     }

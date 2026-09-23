@@ -235,6 +235,7 @@ def test_research_fingerprint_tracks_current_target_market_data_without_transact
         ("recursive_local_covariance", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         ("global_leaf_scalar_targets_v2", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         ("global_leaf_scalar_targets_v3", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
+        ("global_leaf_scalar_targets_v4", research.RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION, "stale", "earlier target solver"),
         (research.RESEARCH_TARGET_SOLVER_VERSION, 5, "stale", "earlier Research input identity version"),
     ],
 )
@@ -254,7 +255,6 @@ def test_research_algorithm_version_is_required_for_current_result(solver_versio
         "missing_return_policy": research.RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         "frozen_taxonomy_node_ids": [],
         "top_sleeve_weight_bounds": [],
-        "backtest_robustness_scenarios": [],
         "planning_state_fingerprint": "sha256:unchanged-financial-inputs",
         "planning_state_fingerprint_version": identity_version,
         "solver_version": solver_version,

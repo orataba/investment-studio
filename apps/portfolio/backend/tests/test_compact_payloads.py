@@ -68,6 +68,7 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
             }
         ],
     }
+    detail["backtest"]["points"][0]["is_start_anchor"] = True
     session_factory = get_session_factory()
     with session_factory() as session:
         session.add(
@@ -120,7 +121,13 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
     assert selected_response.status_code == 200, selected_response.json()
     selected = selected_response.json()
     assert selected["detail_level"] == "selected_run"
-    assert selected["selected_run"]["detail"]["backtest"]["points"] == detail["backtest"]["points"]
+    selected_points = selected["selected_run"]["detail"]["backtest"]["points"]
+    assert [(point["date"], point["value"]) for point in selected_points] == [
+        (point["date"], point["value"]) for point in detail["backtest"]["points"]
+    ]
+    assert [point["is_start_anchor"] for point in selected_points] == [
+        True, *([False] * (len(selected_points) - 1))
+    ]
     assert selected["selected_run"]["artifacts"][0]["artifact_id"] == "summary"
     assert len(compact_response.content) < len(selected_response.content)
 
@@ -131,3 +138,5 @@ def test_research_workbench_defaults_to_compact_runs_and_expands_explicit_select
     assert explicit_full_response.status_code == 200
     assert explicit_full_response.json()["detail_level"] == "selected_run"
     assert explicit_full_response.json()["selected_run"]["detail"] is not None
+    with session_factory() as session:
+        assert session.get(ResearchRunRecordModel, run_id).detail_json == detail

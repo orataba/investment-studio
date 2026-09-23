@@ -117,7 +117,7 @@ Risk / Research 的风险统计固定使用日频估值路径：1M / 3M 等窗�
 
 Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
 
-Research 的历史结果属于 current-target historical simulation：本次运行冻结当前分类、成员、目标与求解资格，全段历史使用同一快照，市场观察截止各决策日。它不是实际客户组合绩效或 GIPS presentation，不声称当前目标在历史上已经已知。模拟现金收益、commission、sell-side tax、slippage 与 EOD implementation delay，假设首个共同 observation 完整成交。Robustness 与滚动历史测试窗口分析当前配置的摩擦敏感性和跨时期表现，不代表独立样本外验证或 walk-forward optimization。当前没有 order rejection、partial fill、流动性容量或 market-impact 模型。报告保留目标快照、历史数据覆盖、skipped rebalances、execution records 和 contribution reconciliation。
+Research 的历史结果属于 current-target historical simulation：本次运行冻结当前分类、成员、目标与求解资格，全段历史使用同一快照，市场观察截止各决策日。它不是实际客户组合绩效或 GIPS presentation，不声称当前目标在历史上已经已知。模拟以组合成立日收盘的真实持仓、现金及结算余额为起点，不重复计入成立日收益或初始买入费用；初始证券持续获得后续收益，直至首次可执行目标调仓，不能因风险样本不足改成现金。后续实际证券交易与申赎不注入模型路径，已披露的衍生品固定资金生命周期例外保留。模型包含现金收益、commission、sell-side tax、slippage 与 EOD implementation delay；目标调仓必须晚于成立日收盘，并假设在满足估值条件的执行观察日完整成交。滚动历史测试窗口分析当前配置的跨时期表现，不代表独立样本外验证或 walk-forward optimization。当前没有 order rejection、partial fill、流动性容量或 market-impact 模型。报告保留目标快照、历史数据覆盖、skipped rebalances、execution records 和 contribution reconciliation。
 
 ### 2.6 风险统计必须来自收益序列
 
@@ -167,7 +167,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 样本协方差 | Risk 页与 Research `sample_covariance` 使用 `n - 1` 样本估计 |
 | Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
 | Scoped forward risk | covariance 只纳入 当前 policy 中 `risk_eligible=true` 的市场资产，权重为 signed market exposure / total NAV；衍生品与本币 monetary rows 按 0-return capital，非本币 monetary exposure 或 eligible matrix 不完整时 unavailable |
-| Research historical simulation | 当前完整目标快照固定用于全部历史决策；行情按决策日截断，计入 cash yield、commission、sell tax、slippage 与 delay，输出 robustness、滚动历史窗口和 contribution reconciliation；不声称历史目标重放或独立样本外验证 |
+| Research historical simulation | 当前完整目标快照固定用于全部历史决策；行情按决策日截断，计入 cash yield、commission、sell tax、slippage 与 delay，输出滚动历史窗口和 contribution reconciliation；不声称历史目标重放或独立样本外验证 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | Source generation fence | snapshot 计算前、计算后与 publish 前核对源 generation；变化时丢弃并重试，不发布混合世代结果 |
@@ -210,7 +210,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - valuation / return / book-P&L / attribution coverage 是否保持分离；
 - materialized read path 和动态重建校验路径是否结果一致；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
-- Research 是否保存并全程使用同一当前目标快照，仍按决策日截断行情，并披露现金收益、交易摩擦、延迟、robustness、滚动历史窗口与尚未建模的成交限制；
+- Research 是否保存并全程使用同一当前目标快照，仍按决策日截断行情，并披露现金收益、交易摩擦、延迟、滚动历史窗口与尚未建模的成交限制；
 - scoped risk 是否披露 excluded carrying value/liability、coverage 与 excluded rows，且没有 eligible risky holding 时明确 unavailable；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

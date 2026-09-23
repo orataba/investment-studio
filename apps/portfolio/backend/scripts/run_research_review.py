@@ -167,7 +167,7 @@ def scenarios(pid):
         try:
             result = build_current_target_backtest(pid, **base, **controls, cash_yield_annual=s["backtest_cash_yield_annual"],
                 commission_bps=s["backtest_commission_bps"], tax_bps=s["backtest_tax_bps"], slippage_bps=s["backtest_slippage_bps"],
-                implementation_delay_days=s["backtest_implementation_delay_days"], robustness_scenarios=s["backtest_robustness_scenarios"])
+                implementation_delay_days=s["backtest_implementation_delay_days"])
             save(f"{pid}-{name}", result)
             summary = summarize(result)
             results.append({"case": name, "result": summary})
