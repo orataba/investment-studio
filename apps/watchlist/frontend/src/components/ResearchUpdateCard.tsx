@@ -46,9 +46,11 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const statusLabel = updateStatusLabel(update)
   const reference = { ...update.reference, research_update_id: update.update_id }
   const sourceVersion = reference.pm_note_id && reference.pm_note_revision ? `pm:${reference.pm_note_id}:${reference.pm_note_revision}` : reference.theme_version_id || reference.notebook_version_id || reference.investment_view_version_id
+  const themeLead = update.kind === 'theme' ? (update.details?.find(detail => detail.label === '最新进展' && detail.text)?.text || update.details?.find(detail => detail.label === '当前认识' && detail.text)?.text) : undefined
+  const displayBody = themeLead || update.body
   const body = <>
-    {update.body && <p className={`research-update-body${!compact && !expandedBody && update.body.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{update.body}</p>}
-    {!compact && update.body.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
+    {displayBody && (!compact || !themeLead) && <p className={`research-update-body${!compact && !expandedBody && displayBody.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{displayBody}</p>}
+    {!compact && displayBody.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
     {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
     {update.kind === 'question' && update.tracking_status && <p className="sector-research-note"><strong>当时跟踪安排</strong> <span>{questionTrackingLabels[update.tracking_status]}</span>{update.tracking_reason && <> · <span translate="no">{update.tracking_reason}</span></>}</p>}
     {update.kind === 'lesson' && update.status === 'withdrawn' && update.withdrawal_reason && <p className="sector-research-note" translate="no">{update.withdrawal_reason}</p>}
@@ -71,7 +73,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
     {writing && <ResearchOpinionComposer instrumentId={reference.instrument_id} title={`关于${update.title}的观点`} context={{
       research_update_id: update.update_id, theme_id: reference.theme_id || update.theme_ids[0], event_case_id: reference.event_case_id, event_version_id: reference.event_version_id,
       theme_version_id: reference.theme_version_id, notebook_version_id: reference.notebook_version_id, investment_view_version_id: reference.investment_view_version_id,
-      source_ids: update.sources.flatMap(source => source.source_id ? [source.source_id] : []), background: `${update.title}\n${update.body}\n研究记录时间：${update.recorded_at}`,
+      source_ids: update.sources.flatMap(source => source.source_id ? [source.source_id] : []), background: `${update.title}\n${displayBody}\n研究记录时间：${update.recorded_at}`,
     }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
     {creatingTheme && <ResearchThemeComposer instrumentId={reference.instrument_id} title={update.title} kind="event" background={`${update.title}\n${update.body}\n研究记录时间：${update.recorded_at}`} reference={{ research_update_id: update.update_id, event_case_id: reference.event_case_id, event_version_id: reference.event_version_id, source_ids: update.sources.flatMap(source => source.source_id ? [source.source_id] : []) }} onCancel={() => setCreatingTheme(false)} onSaved={(action, message) => { setCreatingTheme(false); setNotice(message || (action === 'linked' ? '已关联主题。' : '主题已建立。')) }} />}
     {notice && <p role="status">{notice}</p>}
@@ -89,6 +91,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
       {historical && <strong>{update.withdrawn ? '已撤回 · 仅供追溯' : '已修订 · 当时版本'}</strong>}
     </div>
     <h4 translate="no">{update.title}</h4>
+    {compact && themeLead && <p className="research-update-body" translate="no">{themeLead}</p>}
     {organized && update.organization_revision?.original_recorded_at && <p className="sector-research-note">原判断时间 <time dateTime={update.organization_revision.original_recorded_at}>{dateLabel(update.organization_revision.original_recorded_at)}</time></p>}
     {correction && <>
       <p className="sector-research-note">原判断时间 <time dateTime={correction.original_recorded_at}>{dateLabel(correction.original_recorded_at)}</time></p>

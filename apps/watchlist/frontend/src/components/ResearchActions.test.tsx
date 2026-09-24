@@ -13,6 +13,15 @@ const event: ResearchUpdate = { update_id: 'event:case:version', kind: 'event', 
 beforeEach(() => { vi.resetAllMocks(); api.themes.mockResolvedValue({ identity: { user_id: 'pm', display_name: 'PM', team_role: 'member' }, themes: [] }); api.source.mockResolvedValue({ source_id: 'computed:1', title: '已留存回报比较', data: { rows: [{ instrument_id: 'fund', return_pct: 2, max_drawdown_pct: -3 }] } }) })
 afterEach(cleanup)
 
+it('shows the retained development in a collapsed theme timeline and keeps it in the opinion background', async () => {
+  const development = '收入增长兑现，但现金回收仍弱于投入。'
+  render(<ResearchUpdateCard compact inTheme update={{ ...event, kind: 'theme', details: [{ label: '最新进展', text: development }] }} />)
+  expect(screen.getByText(development).closest('details')).toBeNull()
+  fireEvent.click(screen.getByText('阅读这条记录'))
+  fireEvent.click(await screen.findByRole('button', { name: '写投资观点' }))
+  expect(screen.getByLabelText('当时背景与依据')).toHaveProperty('value', expect.stringContaining(development))
+})
+
 it('shows only current one-off events rather than duplicating the research activity stream', async () => {
   api.activity.mockResolvedValue({ instrument_id: 'fund', updates: [{ ...event, title: '不应重复的主题动态' }], recent_events: [event, { ...event, update_id: 'old', superseded: true, title: '旧事件版本' }] })
   render(<ResearchRecentEvents instrumentId="fund" />)
