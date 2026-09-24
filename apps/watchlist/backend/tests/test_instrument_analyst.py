@@ -197,6 +197,7 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
                 "priority_reason": "净值差异已观察到，但未披露敞口使收益来源仍需验证。"}],
             "research": {"modules": [{"key": "fund-strategy", "summary": "基于共同周度观察日的表现仍需结合策略与敞口解释。"}], "source_ids": [computed["source_id"]]},
             "events": [{"event_key": "common-sample-review", "action": "new", "direction": "uncertain",
+                "importance_score": 3, "importance_reason": "相对表现及未知敞口影响基金判断。",
                 "title": "共同样本表现待解释", "body": "共同样本超额收益5个百分点，底层敞口仍未知。",
                 "next_watch": "核实策略来源及更长区间表现。", "confidence": "confirmed", "information_type": "fact",
                 "recording_type": "new", "theme_ids": ["fund-performance"], "source_ids": [computed["source_id"]]}]}]})
@@ -220,20 +221,24 @@ def test_fund_research_and_assistant_bind_nav_benchmark_common_sample_and_missin
 
 
 def test_public_search_preserves_original_publication_and_failed_coverage(client, monkeypatch):
+    from watchlist_app.services import market_evidence
+    monkeypatch.setattr(market_evidence, "capture_source", lambda source: {"source_id": "public:original", **source})
     register_fund(client)
     run = start_analysis(client, monkeypatch)
     path = f"/api/research/runs/{run['entry_id']}/tools"
     assert client.post(path, json={"tool": "search"}).status_code == 422
     assert client.post(path, json={"tool": "source"}).status_code == 422
     assert client.post(path, json={"tool": "search", "query": "公开基金公告"}).status_code == 422
-    search = client.post(path, json={"tool": "search", "query": "公开基金公告", "public_result": {"sources": [{"url": "https://example.com/filing", "title": "披露"}], "coverage": ["仅公开检索"]}})
+    assert client.post(path, json={"tool": "search", "query": "公开基金公告", "public_result": {"sources": []}}).status_code == 422
+    path = f"/api/research/runs/{run['entry_id']}/sector-evidence"
+    search = client.post(path, json={"operation": "search", "query": "公开基金公告", "sources": [{"url": "https://example.com/filing", "title": "披露"}], "coverage": ["仅公开检索"]})
     assert search.status_code == 200
-    source = client.post(path, json={"tool": "source", "url": "https://example.com/filing", "public_result": {"url": "https://example.com/filing", "published_at": "2026-08-20", "text": "旧公告原文", "discovered_at": datetime.now(UTC).isoformat()}}).json()
-    assert source["result"]["published_at"] == "2026-08-20"
-    assert source["result"]["published_at"] != source["retrieved_at"]
-    missing = client.post(path, json={"tool": "source", "url": "https://example.com/blocked", "public_result": {"available": False, "reason": "Original source unavailable"}}).json()
-    assert missing["result"]["available"] is False
-    saved = client.get(f"/api/research/runs/{run['entry_id']}/context").json()["tool_evidence"]
+    source = client.post(path, json={"operation": "fetch", "sources": [{"url": "https://example.com/filing", "published_at": "2026-08-20", "text": "旧公告原文", "discovered_at": datetime.now(UTC).isoformat()}]}).json()
+    assert source["sources"][0]["published_at"] == "2026-08-20"
+    assert source["sources"][0]["published_at"] != source["recorded_at"]
+    missing = client.post(path, json={"operation": "error", "query": "https://example.com/blocked", "coverage": ["Original source unavailable"]}).json()
+    assert missing["coverage"] == ["Original source unavailable"]
+    saved = client.get(f"/api/research/runs/{run['entry_id']}/context?originals=true").json()["web_evidence"]
     assert len(saved) == 3
     assert saved[1] == source
     assert saved[2] == missing

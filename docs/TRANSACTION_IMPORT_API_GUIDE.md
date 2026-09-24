@@ -204,6 +204,8 @@ JSON 中金额、价格、数量和比例字段必须发送十进制字符串，
 | `transfer_out` / `transfer_in` | Portfolio 内账户之间转移持仓，只提交一个方向 |
 | `opening_balance` | Portfolio inception date 的期初持仓 |
 
+`dividend_reinvestment` 的 `gross_amount` 是净再投金额，继续校验为 quantity × price（允许源报价精度舍入）。若确认函明确从分红代扣业绩报酬，允许 `fees > 0` 且必须指定 `fee_category = performance_fee`；毛分红收入为 `gross_amount + fees`，费用单列，现金影响为零，成本及权益日至份额生效日的应收仍为净再投金额。禁止另外建立一笔扣现金的 fee，`taxes` 仍须为零。
+
 `buy`、`sell` 需要 `instrument_id`、`quantity`、`price`、`gross_amount`。普通证券满足：
 
 ```text

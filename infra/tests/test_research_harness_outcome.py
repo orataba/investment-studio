@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize('mode,briefing_mode,budget,finish', [
-    ('sector', '', 65536, 'length'), ('review', '', 32768, 'stop'),
+    ('sector', '', 65536, 'length'), ('review', '', 65536, 'length'),
+    ('sector', '', 65536, 'content_filter'),
     ('risk', '', 32768, 'stop'), ('', '', 32768, 'stop'), ('', 'review', 65536, 'stop'),
 ])
 def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefing_mode, budget, finish):
@@ -69,6 +70,9 @@ def test_native_output_boundary_and_product_budget_scope(tmp_path, mode, briefin
         assert result.returncode == 1
         assert marker in result.stderr.splitlines()
         assert 'fixture' not in result.stderr  # No response or reasoning in the marker.
+    elif finish == 'content_filter':
+        assert result.returncode == 1
+        assert 'RESEARCH_HARNESS_END {"reason":"content-filter"}' in result.stderr.splitlines()
     else:
         assert result.returncode == 0, result.stderr
         assert marker not in result.stderr

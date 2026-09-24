@@ -6,8 +6,8 @@ import ResearchUpdateCard from './ResearchUpdateCard'
 import { SavedFigure } from './ResearchModules'
 import type { ResearchUpdate } from '../lib/researchDossierApi'
 
-const api = vi.hoisted(() => ({ activity: vi.fn(), themes: vi.fn(), create: vi.fn(), update: vi.fn(), note: vi.fn(), source: vi.fn() }))
-vi.mock('../lib/researchDossierApi', async original => ({ ...await original<typeof import('../lib/researchDossierApi')>(), getResearchActivity: api.activity, getResearchThemes: api.themes, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source }))
+const api = vi.hoisted(() => ({ activity: vi.fn(), events: vi.fn(), themes: vi.fn(), create: vi.fn(), update: vi.fn(), note: vi.fn(), source: vi.fn() }))
+vi.mock('../lib/researchDossierApi', async original => ({ ...await original<typeof import('../lib/researchDossierApi')>(), getResearchActivity: api.activity, getResearchEvents: api.events, getResearchThemes: api.themes, createResearchTheme: api.create, updateResearchTheme: api.update, getSavedResearchSource: api.source }))
 vi.mock('../lib/api', async original => ({ ...await original<typeof import('../lib/api')>(), createInstrumentResearchNote: api.note }))
 const event: ResearchUpdate = { update_id: 'event:case:version', kind: 'event', title: '配售完成', body: '资金已经取得，后续用途仍待核实。', recorded_at: '2026-09-23T00:00:00Z', author: '研究员', author_role: 'researcher', theme_ids: [], sources: [{ source_id: 'original', title: '配售原文' }], reference: { instrument_id: 'fund', event_case_id: 'case', event_version_id: 'version' }, direction: 'uncertain' }
 beforeEach(() => { vi.resetAllMocks(); api.themes.mockResolvedValue({ identity: { user_id: 'pm', display_name: 'PM', team_role: 'member' }, themes: [] }); api.source.mockResolvedValue({ source_id: 'computed:1', title: '已留存回报比较', data: { rows: [{ instrument_id: 'fund', return_pct: 2, max_drawdown_pct: -3 }] } }) })
@@ -22,26 +22,14 @@ it('shows the retained development in a collapsed theme timeline and keeps it in
   expect(screen.getByLabelText('当时背景与依据')).toHaveProperty('value', expect.stringContaining(development))
 })
 
-it('shows only current one-off events rather than duplicating the research activity stream', async () => {
-  api.activity.mockResolvedValue({ instrument_id: 'fund', updates: [{ ...event, title: '不应重复的主题动态' }], recent_events: [event, { ...event, update_id: 'old', superseded: true, title: '旧事件版本' }] })
+it('reads the server-filtered important events without downloading the activity history', async () => {
+  api.events.mockResolvedValue({ instrument_id: 'fund', events: [event], late_arrivals: [], total: 1, next_offset: null, has_more: false })
   render(<ResearchRecentEvents instrumentId="fund" />)
   expect(await screen.findByRole('heading', { name: event.title })).toBeTruthy()
-  expect(screen.queryByText('不应重复的主题动态')).toBeNull()
-  expect(screen.queryByText('旧事件版本')).toBeNull()
-  expect(screen.queryByRole('region', { name: '独立跟进事项' })).toBeNull()
-  expect(screen.queryByRole('region', { name: '研究动态' })).toBeNull()
-})
-
-it('keeps important linked events discoverable but excludes organization receipts', async () => {
-  api.activity.mockResolvedValue({ instrument_id: 'fund', recent_events: [], updates: [
-    { ...event, theme_ids: ['capital'], title: '融资完成后的现金用途' },
-    { ...event, update_id: 'organization', title: '历史记录已整理', change: 'organized' },
-  ] })
-  render(<ResearchRecentEvents instrumentId="fund" />)
-  expect(await screen.findByRole('heading', { name: '融资完成后的现金用途' })).toBeTruthy()
-  expect(screen.queryByText('历史记录已整理')).toBeNull()
+  expect(api.events).toHaveBeenCalledWith('fund', 'recent', expect.any(AbortSignal), 0)
+  expect(api.activity).not.toHaveBeenCalled()
   expect(screen.getByText(event.body).closest('details')).toBeNull()
-  expect(screen.queryByText('阅读这条记录')).toBeNull()
+  expect(screen.queryByRole('region', { name: '研究动态' })).toBeNull()
 })
 
 it('saves a PM opinion directly with the selected event version and editable background', async () => {
@@ -55,7 +43,7 @@ it('saves a PM opinion directly with the selected event version and editable bac
   fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
   await waitFor(() => expect(api.note).toHaveBeenCalledWith('fund', expect.objectContaining({ note: expect.objectContaining({ body: '关注资本回报，暂不调整立场。', research_context: expect.objectContaining({ research_update_id: event.update_id, event_case_id: 'case', event_version_id: 'version', source_ids: ['original'], background: '已读配售原文；投资用途仍待披露。' }) }) })))
   expect(ask).not.toHaveBeenCalled()
-  expect(await screen.findByRole('status')).toHaveProperty('textContent', '投资观点已保存。')
+  expect(await screen.findByText('投资观点已保存。')).toHaveProperty('role', 'status')
 })
 
 it('links an event to an existing theme without creating a duplicate theme', async () => {
@@ -109,7 +97,7 @@ it('shows the backend research availability message after creating a theme from 
   render(<ResearchUpdateCard update={event} />)
   fireEvent.click(screen.getByRole('button', { name: '转为跟踪主题' }))
   fireEvent.click(screen.getByRole('button', { name: '创建并开始研究' }))
-  expect(await screen.findByRole('status')).toHaveProperty('textContent', message)
+  expect(await screen.findByText(message)).toHaveProperty('role', 'status')
 })
 
 it('preserves the draft on a failed direct save and does not offer theme creation for linked events', async () => {
@@ -123,14 +111,15 @@ it('preserves the draft on a failed direct save and does not offer theme creatio
   expect(screen.getByLabelText('我的投资观点')).toHaveProperty('value', '等待核实。')
 })
 
-it('prioritizes an urgent material risk over a newer routine event without hiding its impact or conditions', async () => {
-  api.activity.mockResolvedValue({ instrument_id: 'fund', recent_events: [], updates: [
-    { ...event, title: '较新的常规变化', recorded_at: '2026-09-24T08:00:00Z' },
-    { ...event, update_id: 'urgent', title: '流动性约束触发', direction: 'risk', impact_level: 'major', urgency: 'immediate', impact_analysis: '赎回期延长改变资金可用性。', action_condition: '下次申赎窗口前核实管理人安排。', recorded_at: '2026-09-22T08:00:00Z' },
-  ] })
+it('keeps the server date ordering and exposes impact conditions when the event is expanded', async () => {
+  api.events.mockResolvedValue({ instrument_id: 'fund', events: [
+    { ...event, title: '较新的常规变化', timeline_date: '2026-09-24' },
+    { ...event, update_id: 'urgent', title: '流动性约束触发', importance_score: 5, direction: 'risk', impact_level: 'major', urgency: 'immediate', impact_analysis: '赎回期延长改变资金可用性。', action_condition: '下次申赎窗口前核实管理人安排。', timeline_date: '2026-09-22' },
+  ], late_arrivals: [], total: 2, has_more: false, next_offset: null })
   render(<ResearchRecentEvents instrumentId="fund" />)
   await screen.findByText('流动性约束触发')
-  expect(screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent)).toEqual(['流动性约束触发', '较新的常规变化'])
+  expect(screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent)).toEqual(['较新的常规变化', '流动性约束触发'])
   expect(screen.getByText('赎回期延长改变资金可用性。').closest('details')).toBeNull()
-  expect(screen.getByText('下次申赎窗口前核实管理人安排。').closest('details')).toBeNull()
+  fireEvent.click(screen.getAllByText('查看影响、公开观点与依据')[1])
+  expect((await screen.findAllByText('下次申赎窗口前核实管理人安排。')).length).toBeGreaterThan(0)
 })

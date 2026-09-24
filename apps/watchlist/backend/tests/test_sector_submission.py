@@ -34,6 +34,7 @@ def submission(client):
                        "source_ids": ["original"]},
         "themes": [{"theme_key": "ai-return", "title": "AI投入回报", "question": "投入能否形成持续回报？", "priority_reason": "可能改变资本回报与估值补偿判断"}],
         "coverage": [], "events": [{"event_key": "ai-investment", "theme_ids": ["ai-return"], "action": "new", "direction": "uncertain",
+            "importance_score": 3, "importance_reason": "资本投入可能改变回报，需要持续核实。",
             "title": "AI投入的回报仍需核实", "body": '公司披露 "AI investment" 计划。',
             "next_watch": "跟进兑现情况", "confidence": "reported", "information_type": "fact",
             "recording_type": "backfill", "published_at": "2026-08-01", "occurred_at": None,

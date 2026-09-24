@@ -52,7 +52,13 @@ export type ResearchChange = ResearchRevision & {
 export type ResearchReportPreferences = {
   priority_modules: string[]; hidden_modules: string[]; summary_focus: string[]; detail_level: 'concise' | 'standard' | 'detailed'
 }
+export type ResearchInsight = {
+  key: string; title: string; explanation: string; next_watch: string
+  source_ids: string[]; event_keys: string[]; theme_ids: string[]; figure_source_ids: string[]
+}
 export type InvestmentView = ResearchRevision & {
+  opportunities?: ResearchInsight[] | null; risks?: ResearchInsight[] | null
+  coverage_status?: 'assessed' | 'limited' | 'not_established' | null; coverage_note?: string
   direction: string; horizon: string; attractiveness: string; risk: string; conviction: string
   invalidation?: string; next_check?: string
   assumptions: string[]; source_ids: string[]; versions?: InvestmentView[]
@@ -188,8 +194,11 @@ export type ResearchThemesResponse = {
   active_limit?: number; target_count?: number
 }
 const themesPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/themes`
-export function getResearchThemes(instrumentId: string, signal?: AbortSignal) {
-  return fetchJson<ResearchThemesResponse>(themesPath(instrumentId), { signal })
+export function getResearchThemes(instrumentId: string, signal?: AbortSignal, includeHistory = true) {
+  return fetchJson<ResearchThemesResponse>(`${themesPath(instrumentId)}${includeHistory ? '' : '?include_history=false'}`, { signal })
+}
+export function getResearchTheme(instrumentId: string, themeId: string, signal?: AbortSignal) {
+  return fetchJson<ResearchTheme>(`${themesPath(instrumentId)}/${encodeURIComponent(themeId)}`, { signal })
 }
 export function createResearchTheme(instrumentId: string, theme: ResearchThemeInput) {
   return fetchJson<ResearchTheme>(themesPath(instrumentId), { method: 'POST', body: JSON.stringify(theme) })
@@ -201,7 +210,7 @@ export function updateResearchTheme(instrumentId: string, themeId: string, theme
 const dossierPath = (instrumentId: string) => `/api/research/instruments/${encodeURIComponent(instrumentId)}/dossier`
 
 export function getResearchDossier(instrumentId: string, signal?: AbortSignal, includeHistory = true) {
-  return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=${includeHistory}`, { signal })
+  return fetchJson<ResearchDossier>(`${dossierPath(instrumentId)}?include_history=${includeHistory}${includeHistory ? '' : '&current_only=true'}`, { signal })
 }
 
 export function getSavedResearchSource(instrumentId: string, sourceId: string, signal?: AbortSignal, versionId?: string) {
@@ -253,6 +262,13 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
 }
 
 export type ResearchUpdate = {
+  risk_assessment?: { status: string; issue_key?: string; reason?: string }
+  event_key?: string; importance_score?: number | null; importance_reason?: string
+  market_views?: Array<{ publisher: string; published_at: string | null; view: string; source_ids: string[] }>
+  market_reaction?: { status: 'available' | 'partial' | 'unavailable' | 'pending'; figure_source_ids: string[]; explanation: string } | null
+  follow_up_until?: string | null; follow_up_reason?: string; next_observation_on?: string | null
+  follow_up_pinned?: boolean; follow_up_review_status?: 'active' | 'due' | 'ended'
+  checked_at?: string | null; material_progress_at?: string | null; timeline_date?: string | null; late_arrival?: boolean
   impact_level?: 'limited' | 'material' | 'major'; urgency?: 'monitor' | 'review_soon' | 'immediate'
   risk_channels?: string[]; impact_analysis?: string; action_condition?: string
   update_id: string; kind: 'event' | 'question' | 'forecast' | 'review' | 'lesson' | 'theme' | 'opinion' | 'judgment' | 'schedule'
@@ -275,4 +291,19 @@ export type ResearchActivityResponse = {
 }
 export function getResearchActivity(instrumentId: string, signal?: AbortSignal) {
   return fetchJson<ResearchActivityResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/activity`, { signal })
+}
+
+export type ResearchEventScope = 'recent' | 'watch' | 'history'
+export type ResearchEventsResponse = {
+  instrument_id: string; events: ResearchUpdate[]; late_arrivals: ResearchUpdate[]; late_arrival_count?: number
+  total: number; next_offset: number | null; has_more: boolean
+}
+export function getResearchEvents(instrumentId: string, scope: ResearchEventScope, signal?: AbortSignal, offset = 0, eventKey?: string, includeHistory = false) {
+  const query = new URLSearchParams({ scope, display_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: String(offset), limit: '20' })
+  if (eventKey) query.set('event_key', eventKey)
+  if (includeHistory) query.set('include_history', 'true')
+  return fetchJson<ResearchEventsResponse>(`/api/research/instruments/${encodeURIComponent(instrumentId)}/events?${query}`, { signal })
+}
+export function pinResearchEvent(caseId: string, versionId: string, pinned: boolean) {
+  return fetchJson<{ event_version_id: string; follow_up_pinned: boolean }>(`/api/sector-research/events/${encodeURIComponent(caseId)}/follow-up`, { method: 'PATCH', body: JSON.stringify({ follow_up_pinned: pinned, event_version_id: versionId }) })
 }

@@ -269,10 +269,12 @@ class NumericStore:
             query=query.where(batches.c.id==batch_id)
         if batch_ids is not None:
             query=query.where(batches.c.id.in_(batch_ids))
-        if name == "financial_statements" and symbols is not None:
+        if name in {"financial_statements", "financial_facts"} and symbols is not None:
             # These three Collector.financials endpoints normalize against the
             # singleton requested symbol before publication (including original
-            # captures). Bulk/imported/unknown batches have no such guarantee.
+            # captures). Both the statement and its line-item facts are
+            # published from that same normalized response. Bulk/imported/
+            # unknown batches have no such guarantee.
             # Read JSON scalars, not their text casts, so malformed metadata is
             # retained on both PostgreSQL and SQLite rather than hiding history.
             query = query.add_columns(batches.c.source, batches.c.details["endpoint"],

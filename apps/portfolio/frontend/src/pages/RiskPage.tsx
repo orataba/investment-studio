@@ -1,6 +1,6 @@
 import HorizontalTableScroll from '../../../../../packages/ui/src/HorizontalTableScroll'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useParams } from 'react-router'
+import { useLocation, useParams, useSearchParams } from 'react-router'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
 import BenchmarkSearchBox, {
@@ -8,6 +8,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import ConcentrationPanel from '../components/ConcentrationPanel'
 import usePerformanceResource from '../hooks/usePerformanceResource'
 import PortfolioTailRiskPanel from '../components/PortfolioTailRiskPanel'
 import InfoHint from '../components/InfoHint'
@@ -1533,6 +1534,9 @@ function RiskDateTimeline({ dates, value, onChange, label }: {
 
 export default function RiskPage() {
   const { portfolioId = '' } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const concentrationDate = searchParams.get('concentration_date') || undefined
+  const { hash } = useLocation()
   const { language } = useLanguage()
   const zh = language === 'zh-Hans'
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
@@ -1565,6 +1569,10 @@ export default function RiskPage() {
   const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(() => loadRiskPageSettings().matrix)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_CURRENT_HOLDINGS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
+
+  useEffect(() => {
+    if (holdingsWorkspace && hash === '#concentration') document.getElementById('concentration')?.scrollIntoView({ block: 'start' })
+  }, [Boolean(holdingsWorkspace), portfolioId, hash])
 
   const riskWindowEndDate = holdingsWorkspace?.portfolio_id === portfolioId ? holdingsWorkspace.as_of_date : ''
   const matrixUsesCurrentHoldings = matrixScopeNodeId === MATRIX_SCOPE_CURRENT_HOLDINGS
@@ -2402,15 +2410,11 @@ export default function RiskPage() {
                       : '—'}
                   </strong>
                 </article>
-                <article
-                  className="summary-card"
-                  title={
-                    concentrationMetrics.hhi != null
-                      ? `${zh ? '模型内按账面金额绝对值归一，不以组合 NAV 为分母；HHI' : 'Normalized by absolute modeled carrying amounts, not portfolio NAV; HHI'} ${formatNumber(concentrationMetrics.hhi, 3)}`
-                      : undefined
-                  }
-                >
-                  <span className="summary-card-label">Top 3 Modeled Concentration</span>
+                <article className="summary-card">
+                  <span className="summary-card-label portfolio-title-with-hint">Top 3 Modeled Concentration<InfoHint
+                    label={zh ? '建模内集中度口径' : 'Modeled concentration basis'}
+                    detail={`${zh ? '仅在建模证券内按账面金额绝对值归一；不以组合 NAV 为分母，不用于敞口上限判断。' : 'Normalized within modeled securities by absolute carrying amounts; not divided by portfolio NAV and not used for exposure limit checks.'}${concentrationMetrics.hhi != null ? ` HHI ${formatNumber(concentrationMetrics.hhi, 3)}` : ''}`}
+                  /></span>
                   <strong className="summary-card-value">
                     {concentrationMetrics.topThree != null ? formatPercent(concentrationMetrics.topThree) : '—'}
                   </strong>
@@ -2474,6 +2478,14 @@ export default function RiskPage() {
                 </details>
               ) : null}
             </section>
+            <ConcentrationPanel key={`${portfolioId}:${concentrationDate || holdingsWorkspace.as_of_date}`} portfolioId={portfolioId} asOfDate={concentrationDate || holdingsWorkspace.as_of_date} onAsOfDateChange={date => {
+              setSearchParams(current => {
+                const next = new URLSearchParams(current)
+                if (date) next.set('concentration_date', date)
+                else next.delete('concentration_date')
+                return next
+              }, { replace: true })
+            }} />
             <section className="portfolio-section-block risk-rolling-section" aria-label="Rolling risk">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-rolling-toolbar">
                 <div className="risk-toolbar-primary risk-rolling-toolbar-primary">

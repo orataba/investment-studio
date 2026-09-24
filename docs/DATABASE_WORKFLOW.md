@@ -111,7 +111,7 @@ against a real business database merely to validate source changes.
 Classification and target changes rebuild affected historical analytics;
 concentration-only saves do not invalidate valuation or Research. Financial fact
 dates and saved Research outputs stay unchanged. Research method
-`global_leaf_scalar_targets_v5`, target snapshot schema 3 and planning fingerprint
+`global_leaf_scalar_targets_v6`, target snapshot schema 3 and planning fingerprint
 version 7 participate in run/cache identity; earlier results remain immutable
 and explicitly stale until rerun. Simulation starts with actual inception EOD
 holdings, cash and signed derivative capital; risk warm-up postpones rebalancing

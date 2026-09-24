@@ -10,7 +10,7 @@ const questionTrackingLabels = { active: '跟进中', paused: '已暂停', close
 export const updateKindLabels: Record<ResearchUpdate['kind'], string> = {
   event: '事件', question: '问题进展', judgment: '研究判断', schedule: '观察日程', forecast: '预测', review: '复盘', lesson: '研究经验', theme: '主题', opinion: '投资观点',
 }
-const followUpLabels = { none: '当时无需跟进', watch: '当时安排跟进', resolved: '已结束跟进' }
+const followUpLabels = { none: '不再主动跟进', watch: '跟进中', resolved: '不再主动跟进' }
 
 export function updateStatusLabel(update: ResearchUpdate) {
   if (!update.status) return ''
@@ -46,7 +46,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const organized = update.change === 'organized'
   const statusLabel = updateStatusLabel(update)
   const reference = { ...update.reference, research_update_id: update.update_id }
-  const sourceVersion = reference.pm_note_id && reference.pm_note_revision ? `pm:${reference.pm_note_id}:${reference.pm_note_revision}` : reference.theme_version_id || reference.notebook_version_id || reference.investment_view_version_id
+  const sourceVersion = reference.pm_note_id && reference.pm_note_revision ? `pm:${reference.pm_note_id}:${reference.pm_note_revision}` : reference.event_version_id || reference.theme_version_id || reference.notebook_version_id || reference.investment_view_version_id
   const themeLead = update.kind === 'theme' ? (update.details?.find(detail => detail.label === '最新进展' && detail.text)?.text || update.details?.find(detail => detail.label === '当前认识' && detail.text)?.text) : undefined
   const displayBody = themeLead || update.body
   const body = <>
@@ -86,7 +86,7 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   return <article className={`research-update-card${historical ? ' research-update-historical' : ''}${readable ? ' research-update-readable' : ''}`} data-update-id={update.update_id}>
     <div className="research-update-meta"><span>{updateKindLabels[update.kind]}{update.analysis_depth === 'brief' && <> · <span>简讯</span></>}</span>
       <span translate={update.author === '研究员' || update.author_role === 'system' || !update.author ? undefined : 'no'}>{update.author || (update.author_role === 'researcher' ? '研究员' : '未标注作者')}</span>
-      <span>{citationCorrected ? '引用修正' : organized ? '纳入主题' : update.author_role === 'system' ? '系统记录修订' : update.author_role === 'user' ? '人工判断' : '研究员记录'}</span>
+      <span>{update.change === 'follow_up_pinned' ? 'PM 跟进设置' : citationCorrected ? '引用修正' : organized ? '纳入主题' : update.author_role === 'system' ? '系统记录修订' : update.author_role === 'user' ? '人工判断' : '研究员记录'}</span>
       <span>{citationCorrected && <>修正时间 </>}<time dateTime={update.recorded_at}>{dateLabel(update.recorded_at)}</time></span>
       {update.information_type === 'rumor' && <span className="sector-research-limitation">传闻 · 待证实</span>}
       {update.information_type === 'opinion' && <span>来源观点</span>}

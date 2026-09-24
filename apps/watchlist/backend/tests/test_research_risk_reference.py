@@ -95,3 +95,40 @@ def test_legacy_sector_risk_exposes_its_existing_event_version_instead_of_invent
     assert context["referenced_risk_case"] is None
     assert context["referenced_research_update"]["reference"]["event_version_id"] == version
     assert context["referenced_research_update"]["body"] == "当前完整判断"
+
+
+def test_assistant_pm_discussion_binds_selected_revision_before_later_changes(client, monkeypatch):
+    topic, _, request = setup_reference(client, monkeypatch)
+    path = '/api/instruments/risk-reference/research/notes'
+    original = {'note_date': '2026-09-10', 'title': '原始投资观点', 'body': '当时判断及反证条件',
+                'research_context': {'background': '当时观察到的经营变化'}}
+    response = client.post(path, json={'note': original})
+    assert response.status_code == 200, response.text
+    note = response.json()['notes'][0]
+    updated = client.put(path + '/' + note['note_id'], json={'note': {**original, 'body': '后来第二版判断'}})
+    assert updated.status_code == 200, updated.text
+    request['page_context']['research_reference'] = {'instrument_id': 'risk-reference',
+        'pm_note_id': note['note_id'], 'pm_note_revision': 1}
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json=request)
+    assert response.status_code == 202, response.text
+    run = response.json()
+    bound = run['context_json']['referenced_research_versions'][0]
+    assert bound['kind'] == 'pm_view' and bound['version_id'] == f"pm:{note['note_id']}:1"
+    assert bound['value']['body'] == original['body']
+    assert client.put(path + '/' + note['note_id'], json={'note': {**original, 'body': '第三版判断'}}).status_code == 200
+    stored = client.get(f"/api/research/runs/{run['entry_id']}/context").json()['referenced_research_versions']
+    assert stored == [bound]
+
+
+@pytest.mark.parametrize('reference', [
+    {'pm_note_id': 'unknown'}, {'pm_note_revision': 1},
+    {'pm_note_id': 'unknown', 'pm_note_revision': 1},
+    {'investment_view_version_id': 'missing-version'},
+])
+def test_invalid_selected_judgment_never_queues_an_unbound_discussion(client, monkeypatch, reference):
+    topic, _, request = setup_reference(client, monkeypatch)
+    request['page_context']['research_reference'] = {'instrument_id': 'risk-reference', **reference}
+    response = client.post(f"/api/research/topics/{topic['topic_id']}/analysis", json=request)
+    assert response.status_code == 422, response.text
+    with get_session_factory()() as session:
+        assert not session.scalar(select(ResearchEntry.entry_id).where(ResearchEntry.topic_id == topic['topic_id']))

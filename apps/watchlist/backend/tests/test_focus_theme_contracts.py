@@ -112,7 +112,9 @@ def test_attach_brief_event_to_existing_theme_preserves_original_and_requests_re
     assert calls == [updated["research_run_id"]]
     with get_session_factory()() as session:
         activity = research_activity(session, "xlk", include_recent_events=True)
-        assert activity["recent_events"] == []
+        assert len(activity["recent_events"]) == 1
+        assert activity["recent_events"][0]["follow_up"] == "none"
+        assert activity["recent_events"][0]["follow_up_reason"] == "由主题继续跟踪"
         events = [row for row in activity["updates"] if row["kind"] == "event"]
         assert len(events) == 2 and events[0]["theme_ids"] == [theme["theme_id"]]
         assert events[1]["update_id"] == original["update_id"] and events[1]["superseded"]

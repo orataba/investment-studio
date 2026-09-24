@@ -3,13 +3,14 @@ from datetime import UTC, date, datetime
 import math
 from urllib.parse import quote
 from uuid import uuid4
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from watchlist_app.db.models import InstrumentDetail, Watchlist, WatchlistItem
-from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic, RiskCase
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services.read_models import serialize_payload
 from watchlist_app.services.research_workbench import external_json
@@ -244,9 +245,11 @@ def read_snapshot(session, **scope):
             summary["duration_note"] = "最长水下期是全样本统计，不是 peak_date 至 valley_date 的最大回撤区间时长，也不是当前回撤持续时间。"
             item["risk"] = {**risk, "drawdown_summary": summary}
         item["performance_evidence"] = performance_evidence(session, item["instrument_id"], context=performance_inputs)
-    cases = sorted((case for case in workspace["cases"] if case["trigger_active"]
+    cases = sorted((case for case in workspace["cases"] if ((case["trigger_active"]
                     and case["status"] not in {"handled", "resolved"}
-                    and (case.get("evidence_json") or {}).get("direction") != "opportunity"
+                    and ((case.get("evidence_json") or {}).get("direction") != "opportunity"
+                         or (case.get("evidence_json") or {}).get("risk_assessment")))
+                    or ((case.get("evidence_json") or {}).get("risk_assessment") or {}).get("status") == "pending")
                     and case["severity"] in {"attention", "coverage"}), key=lambda item: (
                         {"immediate": 0, "review_soon": 1, "monitor": 2}.get((item.get("evidence_json") or {}).get("urgency"), 3),
                         {"major": 0, "material": 1, "limited": 2}.get((item.get("evidence_json") or {}).get("impact_level"), 3),
@@ -317,6 +320,11 @@ def begin_run(session, *, instrument_id=None, watchlist_id=None, portfolio_id=No
                                            for iid, day in scheduled_dates.items())
         if same_days and (previous.status == "failed" or
                 (previous.status == "completed" and previous.context_json.get("risk_inputs") == read_snapshot(session, **scope))):
+            if previous.status == "failed":
+                from watchlist_app.services.research_runner import queue_retry
+                if queue_retry(session, previous, now=now):
+                    session.commit()
+                    return previous, True
             return previous, False
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title="风险研判", source="已留存风险与组合持仓", status="queued", body="", created_at=now,
         context_json={"research_actor": research_identity(), "risk_run": True, "risk_scope": scope, "cutoff": now.isoformat(),
@@ -339,7 +347,10 @@ def prepare_run(run_id):
             .order_by(ResearchEntry.created_at.desc()).limit(1))
         topic = session.get(ResearchTopic, run.topic_id)
         topic.instrument_ids = snapshot["instrument_ids"]
-        run.context_json = {**run.context_json, "risk_inputs": snapshot, "prepared_at": datetime.now(UTC).isoformat(),
+        prepared_at = datetime.now(UTC).isoformat()
+        run.context_json = {**run.context_json, "risk_inputs": snapshot, "prepared_at": prepared_at,
+            "cutoff": prepared_at,
+            **({"input_snapshot_cutoff": prepared_at} if snapshot["scope_available"] else {}),
             "prior_inputs": (prior.context_json or {}).get("risk_inputs") if prior else None,
             "risk_delivered_pages": [],
             "catalogue": [{"instrument_id": item["instrument_id"], "name": item["name"]} for item in snapshot["instruments"]]}
@@ -360,11 +371,20 @@ class Priority(BaseModel):
     next_watch: str = Field(min_length=1, max_length=2000)
 
 
+class CaseAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str
+    event_version_id: str
+    status: Literal["active", "resolved", "dismissed", "pending"]
+    reason: str = Field(min_length=1, max_length=3000)
+
+
 class RiskReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     summary: str = Field(min_length=1, max_length=8000)
     priorities: list[Priority]
     limitations: list[str]
+    case_assessments: list[CaseAssessment] = Field(default_factory=list)
 
 
 def validate_result(run, result: RiskReview):
@@ -374,6 +394,16 @@ def validate_result(run, result: RiskReview):
     sources = evidence_sources(snapshot)
     portfolio = snapshot.get("portfolio") or {}
     holdings = {row["holding_id"] for row in portfolio.get("risk_context", {}).get("holdings", [])}
+    seen = set()
+    for assessment in result.case_assessments:
+        case = cases.get(assessment.case_id)
+        if not case or not case["signal"].startswith("sector:") or assessment.case_id in seen:
+            raise ValueError("风险评估须引用本次快照内唯一研究事件")
+        seen.add(assessment.case_id)
+        if assessment.event_version_id != (case.get("evidence_json") or {}).get("event_version_id"):
+            raise ValueError("风险评估必须绑定实际复核的事件版本")
+        if snapshot["scope"]["kind"] == "portfolio":
+            raise ValueError("组合私有风险判断不能写入团队共享事件，请仅保留在本组合研判中")
     for priority in result.priorities:
         if (not set(priority.instrument_ids).issubset(ids) or not set(priority.case_ids).issubset(cases)
                 or not set(priority.holding_ids).issubset(holdings)):
@@ -404,6 +434,36 @@ def apply_result(session, run, payload):
     result = RiskReview.model_validate(payload)
     validate_result(run, result)
     snapshot = run.context_json["risk_inputs"]
+    # Recheck the live publishing authority after model execution. A scope may
+    # still be readable after its user or service loses shared research writes.
+    from watchlist_app.services.research_access import require_portfolio, require_team_write
+    if snapshot["scope"]["kind"] == "portfolio":
+        require_portfolio(snapshot["scope"]["id"])
+    else:
+        require_team_write()
+    assessed = []
+    bound_cases = {case["case_id"]: case for key in ("research", "quantitative", "coverage") for case in snapshot[key]}
+    for assessment in sorted(result.case_assessments, key=lambda item: item.case_id):
+        case = session.get(RiskCase, assessment.case_id, with_for_update=True, populate_existing=True)
+        from watchlist_app.services.sector_research import event_record
+        if case is None or event_record(case)["event_version_id"] != assessment.event_version_id:
+            raise ValueError("研究事件在风险复核期间已有更新，请重新读取当前版本")
+        bound = bound_cases[assessment.case_id]
+        if (any(field in bound and getattr(case, field) != bound[field] for field in ("status", "trigger_active"))
+                or (case.evidence_json or {}).get("risk_assessment") != (bound.get("evidence_json") or {}).get("risk_assessment")):
+            raise ValueError("风险状态在本轮复核期间已有更新，请基于当前风险状态重新评估")
+        assessed.append((case, assessment))
+    for case, assessment in assessed:
+        timestamp = datetime.now(UTC)
+        value = {**assessment.model_dump(), "reviewed_at": timestamp.isoformat(), "run_id": run.entry_id}
+        case.evidence_json = {**case.evidence_json, "risk_assessment": {
+            **(case.evidence_json.get("risk_assessment") or {}), **value}}
+        if assessment.status != "pending":
+            case.trigger_active = assessment.status == "active"
+            case.status = "open" if case.trigger_active else "resolved"
+            case.resolved_at = None if case.trigger_active else timestamp
+        case.history_json = [*(case.history_json or []), {"at": timestamp.isoformat(),
+            "action": "risk_assessed", "detail": assessment.reason, "risk_assessment": value}]
     saved = result.model_dump()
     saved["limitations"] = list(dict.fromkeys([*snapshot["limitations"], *saved["limitations"]]))
     run.context_json = {**run.context_json, "result": saved}

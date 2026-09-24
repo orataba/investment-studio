@@ -174,10 +174,19 @@ describe('independent detail loading', () => {
       <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
     </MemoryRouter></LanguageProvider>)
     expect(screen.getByTestId('sector-panel').getAttribute('data-variant')).toBe('timeline')
+    expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
+    expect(apiMocks.getInstrumentRisk).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
     expect(screen.getByRole('status').textContent).toContain('Investment views')
     expect(screen.queryByText(/No overall view selected/)).toBeNull()
     expect(screen.queryByText(/No source data is available/)).toBeNull()
+    expect(apiMocks.getInstrumentPerformance).not.toHaveBeenCalled()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    await waitFor(() => expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1))
+    expect(apiMocks.getInstrumentRisk).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Research' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    expect(apiMocks.getInstrumentPerformance).toHaveBeenCalledTimes(1)
   })
 
   it('shows price and summary before statistics, then updates each ready section', async () => {

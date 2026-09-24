@@ -24,13 +24,18 @@ def run_review_agent(packet, schema, instructions, record):
         input_path, output_path, reads_path = (directory / name for name in ("packet.json", "result.json", "reads.jsonl"))
         input_path.write_text(json.dumps({"packet": packet, "response_schema": schema}, ensure_ascii=False))
         input_path.chmod(0o600)
+        outcome_patch = directory / "outcome.patch.json"
+        outcome_patch.write_text(json.dumps([{"insert": [{"id": "research-harness-outcome",
+            "name": str(root / "apps/watchlist/backend/scripts/research_harness_outcome.mjs")}]}]))
         env = {**os.environ, "INVESTMENT_STUDIO_RESEARCH_PROJECT_ROOT": str(root),
+            "INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE": "review",
             "INVESTMENT_STUDIO_REVIEW_PACKET": str(input_path), "INVESTMENT_STUDIO_REVIEW_RESULT": str(output_path),
             "INVESTMENT_STUDIO_REVIEW_READS": str(reads_path), "INVESTMENT_STUDIO_REVIEW_INSTRUCTIONS": instructions}
         command = [str(root / "infra/harness/run.sh"), "--profile", "headless",
             "--patch", str(root / "infra/config/deepseek_harness.patch.yml"),
             "--patch", str(root / "apps/watchlist/backend/config/sector_harness.patch.yml"),
             "--patch", str(root / "apps/watchlist/backend/config/review_harness.patch.yml"),
+            "--patch", str(outcome_patch),
             "Start with read_review_context overview. Read the draft and its bound response_schema, acquisition limits, "
             "applicable previous judgments and relevant complete originals through paged tools. Check all proposed "
             "objects, numerical units and information clocks, plus contradictions across objects. Work iteratively "
@@ -47,7 +52,7 @@ def run_review_agent(packet, schema, instructions, record):
                 from watchlist_app.services.research_runner import _provider_failure
                 classified = _provider_failure(process.stderr)
                 metadata["error_type"] = classified["type"] if classified else "HarnessProcessExit"
-                raise ReviewAgentError("独立核证代理未完成，原草稿及证据已保留。", metadata,
+                raise ReviewAgentError(classified["summary"] if classified else "独立核证代理未完成，原草稿及证据已保留。", metadata,
                                        retryable=bool(classified and classified.get("retryable")))
             if not output_path.exists():
                 metadata["error_type"] = "MissingReviewReceipt"

@@ -76,6 +76,9 @@ position；组合 NAV 在等待期间仍必须对平。
 
 红利再投资若权益日早于新份额生效日，权益日先确认收入和原证券账户的应收，新份额到 `position_effective_date` 才进入持仓并以再投资金额形成成本。它不经过现金账户，不填写一笔虚构现金收付，也不能在份额确认时再确认一次收入；确认前应核对「原持仓市值 + 再投资应收」，而不是只核对原持仓市值。
 
+确认函若从毛分红中代扣业绩报酬，再投交易的 `gross_amount` 仍填写实际净再投金额（份额 × 确认净值），`fees` 填代扣额，`fee_category = performance_fee`。毛分红收入为净再投金额加代扣额，费用单独归因到原权益份额；份额成本和待确认应收均为净再投金额，现金影响仍为零。不要另录现金费用；`taxes` 和其他再投附加费用仍不支持。基金层面的每份分红及总回报复权使用毛分红，不扣除投资者专属业绩报酬。
+
+
 外币 monetary value 第一次进入账本时按 `monetary_recognition_date` 建立 historical base
 basis。pending balance 转成 settled cash 只改变状态，不重置 basis；同币种内部现金转账也继承
 来源账户 basis。换汇的目标币种 basis 使用实际 source consideration，不使用行情反推成交金额。

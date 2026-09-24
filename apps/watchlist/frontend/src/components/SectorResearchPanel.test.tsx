@@ -25,6 +25,13 @@ it('uses sector responses only for status while reading the canonical dossier', 
   expect(request.mock.calls.some(([path]) => path.includes('/context'))).toBe(false)
 })
 
+it.each(['timeline', 'summary', 'status'] as const)('excludes events from the %s status request', async variant => {
+  request.mockResolvedValue(payload())
+  render(<SectorResearchPanel instrumentId="xlk-us" variant={variant} />)
+  await load()
+  expect(request).toHaveBeenCalledWith('/api/sector-research?instrument_id=xlk-us&include_events=false', { signal: expect.any(AbortSignal) })
+})
+
 it.each(['failed', 'running'])('keeps saved research readable when the latest update is %s', async status => {
   request.mockResolvedValue(payload(status))
   render(<SectorResearchPanel instrumentId="xlk-us" />)

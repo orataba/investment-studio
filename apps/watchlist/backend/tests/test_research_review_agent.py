@@ -83,6 +83,14 @@ def test_methodology_is_not_numerical_evidence():
     assert review_mcp._evidence_read(source, reads)
 
 
+def test_missing_review_receipt_names_required_fields_without_echoing_values(monkeypatch, tmp_path):
+    _bound(monkeypatch, tmp_path, {'draft_reviews': [{'instrument_id': 'asset', 'summary': '', 'events': [], 'coverage': []}], 'sources': []})
+    with pytest.raises(ValueError, match='missing fields:') as rejected:
+        review_mcp.submit_review_receipts({'reviews': [{'instrument_id': 'asset', 'summary': {'decision': 'accept'}}]})
+    assert 'change_kind' in str(rejected.value)
+    assert 'accept' not in str(rejected.value)
+
+
 def test_harness_receipt_is_revalidated_and_originals_never_enter_initial_prompt(monkeypatch):
     packet = {"run_id": "bound", "cutoff": "2026-09-24T00:00:00Z", "draft_reviews": [],
         "sources": [{"source_id": "large", "text": "original-sentinel" * 100000}]}
@@ -90,6 +98,10 @@ def test_harness_receipt_is_revalidated_and_originals_never_enter_initial_prompt
     def run(command, **kwargs):
         assert "original-sentinel" not in str(command)
         assert "review_harness.patch.yml" in " ".join(command)
+        assert kwargs["env"]["INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE"] == "review"
+        outcome_patch = Path(command[-2])
+        assert outcome_patch.name == "outcome.patch.json"
+        assert json.loads(outcome_patch.read_text())[0]["insert"][0]["name"].endswith("research_harness_outcome.mjs")
         path = Path(kwargs["env"]["INVESTMENT_STUDIO_REVIEW_PACKET"])
         assert path.stat().st_mode & 0o777 == 0o600
         assert json.loads(path.read_text())["packet"] == packet
@@ -110,3 +122,16 @@ def test_agent_error_classification_does_not_leak_stderr(monkeypatch, stderr, re
     assert failure.value.retryable is retryable
     assert stderr not in json.dumps(captures)
     assert review._safe_failure(failure.value)["retryable"] is retryable
+
+
+@pytest.mark.parametrize('reason,error_type', [('max-tokens', 'OutputLimitExceeded'),
+                                              ('content-filter', 'ProviderContentFilter')])
+def test_reviewer_retains_native_terminal_failure_without_retry(monkeypatch, reason, error_type):
+    stderr = 'private provider material\nRESEARCH_HARNESS_END ' + json.dumps({'reason': reason}, separators=(',', ':')) + '\n'
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr=stderr))
+    captures = []
+    with pytest.raises(agent.ReviewAgentError) as failure:
+        agent.run_review_agent({'sources': [], 'draft_reviews': []}, {}, 'rules', captures.append)
+    assert not failure.value.retryable
+    assert captures[0]['agent_metadata']['error_type'] == error_type
+    assert 'private provider' not in str(failure.value) + json.dumps(captures)

@@ -32,8 +32,8 @@ Review each proposed synthesis, latest_development, priority_reason and next_che
 An unchanged theme-key-only receipt records a check without creating a new judgment or requiring new prose.
 Preserve event analysis_depth, follow_up and theme_ids when supported. Important short-lived events may be brief
 with follow_up=none and no next_watch. A price reaction alone does not establish full pricing or mispricing.
-Every continuing event follow-up belongs to a focus theme. Important events needing no ongoing investigation
-use follow_up=none. Do not force every event to remain open or treat a market reaction as proof of full pricing.
+Continuing finite events may use follow_up=watch and theme_ids=[] with a concrete next_watch. Do not invent
+a theme to satisfy validation. Important events needing no ongoing investigation use follow_up=none. Do not force every event to remain open or treat a market reaction as proof of full pricing.
 For related_research_update_id, compare the exact original dated judgment in prior_research_updates against new
 original evidence. Separate outcome, mechanism, alternative explanations and pricing implications. No evidence or
 an elapsed observation window is not proof of success/failure. Lessons need applicability and limitations.
@@ -254,7 +254,18 @@ Submit the compact receipt protocol through submit_review_receipts, not rewritte
 Treat automatic context summaries as working memory only; reread exact source IDs, dates, units and values.
 Every checkpoint must preserve run/cutoff and original source/version IDs, checked and unchecked claims,
 important numbers with units, counterevidence, pending tools, and the bound draft/schema and validation state.
-Review decision_brief and changes against their cited baseline and evidence; preserve sparse corrections.
+Review decision_brief only when supplied; it is optional context for the single InvestmentView. Check each
+opportunities/risks item and coverage_status/coverage_note against its linked event/theme/original/numeric
+sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's
+explicit basis. Empty lists do not establish no risk, and partial coverage cannot become a full quiet check.
+The current synthesis is derived last from the same research, not an independent recommendation.
+Check progress_kind=editorial is limited to wording, scoring or research arrangements, not new facts or
+material analysis; it must not refresh the factual timeline. Check importance_score (1–5) and its substantive reason separately from confidence/impact/urgency. Public
+market_views require attribution, dates and actual originals; issuer statements alone are not consensus.
+market_reaction only references retained computed results; never invent returns or causation from prices.
+Follow-up dates are research arrangements, never risk resolution. Extensions/endings require reasons; missing
+sources or a failed closing check preserve watch. PM pins, future nodes and unresolved major risk are protected.
+Review changes against their cited baseline and evidence; preserve sparse corrections.
 Event impact_level, urgency and risk_channels describe investment consequence, never confidence.
 Review conditional recommendations separately from evidence certainty and from PM-authored instructions.
 Every instrument needs summary, change_kind, coverage, decisions, research, themes and reflection inside
@@ -447,13 +458,32 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             references.update(notebook_source_ids({**previous, **module, "versions": []}))
         references.update((review.get("reflection") or {}).get("source_ids", []))
         for event in [*review["events"], *review.get("themes", [])]:
-            references.update(event.get("source_ids", []))
-            references.update(event.get("figure_source_ids", []))
+            references.update(notebook_source_ids(event))
         previous_themes = {row.get("theme_key"): row for row in dossier.get("themes", [])}
         for theme in review.get("themes", []):
             prior = previous_themes.get(theme["theme_key"], {})
             references.update(theme.get("source_ids", prior.get("source_ids", [])))
             references.update(theme.get("figure_source_ids", prior.get("figure_source_ids", [])))
+        proposed_view = (review.get("research") or {}).get("investment_view")
+        if isinstance(proposed_view, dict):
+            # The synthesis can cite the event/theme identity instead of
+            # repeating every source. Deliver its real underlying evidence to
+            # the independent reviewer, including retained sparse fields.
+            effective_view = {**((dossier.get("notebook") or {}).get("investment_view") or {}), **proposed_view}
+            references.update(notebook_source_ids(effective_view))
+            events = {row["event_key"]: row for row in context.get("prior_events", [])
+                      if row.get("instrument_id") == review["instrument_id"] and row.get("event_key")}
+            for event in review["events"]:
+                events[event["event_key"]] = {**events.get(event["event_key"], {}), **event}
+            themes = {row["theme_key"]: row for row in dossier.get("themes", [])}
+            for theme in review.get("themes", []):
+                themes[theme["theme_key"]] = {**themes.get(theme["theme_key"], {}), **theme}
+            by_id = {row["theme_id"]: row for row in themes.values() if row.get("theme_id")}
+            for item in [*(effective_view.get("opportunities") or []), *(effective_view.get("risks") or [])]:
+                for key in item.get("event_keys", []):
+                    references.update(notebook_source_ids(events.get(key, {})))
+                for key in item.get("theme_ids", []):
+                    references.update(notebook_source_ids(by_id.get(key) or themes.get(key, {})))
         references_by_instrument[review["instrument_id"]] = references
     prior_updates, prior_judgment_versions = [], []
     from urllib.parse import urlencode
@@ -570,6 +600,18 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
         if isinstance(value.get(field), dict):
             if isinstance(proposed.get(field), dict):
                 value[field] = corrected_item(value[field], proposed[field])
+                if field == "investment_view":
+                    for attention in ("opportunities", "risks"):
+                        if not isinstance(value[field].get(attention), list):
+                            continue
+                        original_items = {item["key"]: item for item in proposed[field].get(attention) or []}
+                        if any(item["key"] not in original_items for item in value[field][attention]):
+                            raise ValueError("Fact review cannot invent an opportunity or risk item")
+                        for item in value[field][attention]:
+                            original = original_items[item["key"]]
+                            for reference in ("event_keys", "theme_ids"):
+                                if item.get(reference, []) != original.get(reference, []):
+                                    raise ValueError("Fact review cannot retarget opportunity or risk references")
             else:
                 value.pop(field)
         elif value.get(field) is None and proposed.get(field) is not None:

@@ -9,6 +9,7 @@ import ResearchThemeComposer from './ResearchThemeComposer'
 import { useStudioAccount } from './AccountBoundary'
 import ResearchReadingAside from './ResearchReadingAside'
 
+const quantAnalysis = (kind?: string) => ['python_quant', 'watchlist_observations', 'event_market_reaction'].includes(kind || '')
 const coverageLabels = { supported: '依据较充分', partial: '部分覆盖', insufficient: '证据不足' }
 const moduleTitles: Record<string, string> = {
   'identity-structure': '范围与结构', 'business-fundamentals': '经营与现金流', 'equity-aggregation': '成份与整体基本面',
@@ -39,7 +40,7 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   const maximum = Math.max(1, ...rows.map(row => Math.abs(row.return_pct!)))
   return <figure className="research-evidence-figure">
     <figcaption>{source.title || '留存数值依据'}</figcaption>
-    {source.data?.analysis_kind === 'python_quant' && <ResearchQuantFigure source={source} captioned />}
+    {quantAnalysis(source.data?.analysis_kind) && <ResearchQuantFigure source={source} captioned />}
     {rows.length > 0 && <div className="research-return-chart" role="img" aria-label="共同样本区间收益对比">
       {rows.map(row => <div className="research-return-row" key={row.instrument_id}>
         <span translate="no">{row.name || row.instrument_id}</span>
@@ -56,22 +57,22 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
       <p className="sector-research-note">快照采集：{dateLabel(source.previous_snapshot?.collected_at)} → {dateLabel(source.current_snapshot?.collected_at)}。仅为采集区间内的同财期共识变化，不能确定精确调整日期。</p>
       {source.changes?.length ? <table><thead><tr><th>公司 / 预测财期</th><th>指标</th><th>前次 → 本次</th><th>变化</th></tr></thead><tbody>{source.changes.map((change, index) => <tr key={index}><td>{change.symbol}<small>{change.frequency} · {change.target_period_end}</small></td><td>{change.metric === 'revenue_avg' ? '平均营收预期' : change.metric === 'eps_avg' ? '平均每股收益预期' : change.metric}</td><td>{change.previous_value.toLocaleString()} → {change.current_value.toLocaleString()} {change.currency || '币种待核实'}{change.metric === 'eps_avg' && '/股'}{change.current_currency_status === 'inferred_from_reporting_currency' && <small>币种按财报币种推定</small>}</td><td>{change.delta_pct === null ? '未取得' : `${change.delta_pct.toFixed(2)}%`}{change.analyst_count_changed && <small>分析师样本有变化</small>}</td></tr>)}</tbody></table> : <p className="sector-research-note">本份快照未保存可比变化。</p>}
     </div>}
-    {source.data ? source.data.analysis_kind === 'python_quant' ? <>
+    {source.data ? quantAnalysis(source.data.analysis_kind) ? <>
       {Boolean(source.data.limitations?.length) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
       <ResearchReadingAside label="计算口径与输入依据"><ComputedEvidence source={source} /></ResearchReadingAside>
     </> : <ComputedEvidence source={source} /> : !holdings.length && source.source_type !== 'analyst_estimate_changes' ? <p className="sector-research-note">此记录未包含支持当前图形的数值结构，可在模块来源中查看已保存依据。</p> : null}
   </figure>
 }
 
-export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, source, themeId, onAskAssistant }: { instrumentId: string; notebookVersionId?: string; themeVersionId?: string; source: NotebookSource; themeId?: string; onAskAssistant?: AskResearchAssistant }) {
+export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, eventVersionId, source, themeId, onAskAssistant }: { instrumentId: string; notebookVersionId?: string; themeVersionId?: string; eventVersionId?: string; source: NotebookSource; themeId?: string; onAskAssistant?: AskResearchAssistant }) {
   const [saved, setSaved] = useState<SavedResearchSource | null>(null)
   const [error, setError] = useState('')
   const [writing, setWriting] = useState(false)
   const [creatingTheme, setCreatingTheme] = useState(false)
   const [notice, setNotice] = useState('')
   const canWrite = useStudioAccount()?.team_role !== 'reader'
-  const versionId = themeVersionId || notebookVersionId
-  const versionReference = themeVersionId ? { theme_version_id: themeVersionId } : { notebook_version_id: notebookVersionId }
+  const versionId = eventVersionId || themeVersionId || notebookVersionId
+  const versionReference = eventVersionId ? { event_version_id: eventVersionId } : themeVersionId ? { theme_version_id: themeVersionId } : { notebook_version_id: notebookVersionId }
   useEffect(() => {
     const controller = new AbortController()
     setSaved(null); setError('')

@@ -82,7 +82,7 @@ def test_missing_page_blocks_submission_until_exact_bound_next_pages_delivered(c
         assert len(response.content) <= 48000
     assert missing_required_reads(state(rid)) == []
     assert client.post(f"/api/research/runs/{rid}/risk-draft", json=RESULT).status_code == 200
-    assert state(rid)["submitted_risk_review"] == RESULT
+    assert state(rid)["submitted_risk_review"] == {**RESULT, "case_assessments": []}
 
 
 def test_batch_overview_delivers_every_member_and_repeat_does_not_rewrite_context(client):

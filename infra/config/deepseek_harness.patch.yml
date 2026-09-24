@@ -12,7 +12,7 @@
         baseURL: !!js process.env.DEEPSEEK_BASE_URL || 'https://gateway.hzxxf.cn/v1'
         reasoning: high
         defaultContextWindow: 1000000
-        defaultMaxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' || process.env.INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE === 'sector' ? 65536 : 32768"
+        defaultMaxTokens: !!js "process.env.INVESTMENT_STUDIO_BRIEFING_HARNESS_MODE === 'review' || ['sector', 'review'].includes(process.env.INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE) ? 65536 : 32768"
         compat:
           thinkingFormat: deepseek
           supportsReasoningEffort: true

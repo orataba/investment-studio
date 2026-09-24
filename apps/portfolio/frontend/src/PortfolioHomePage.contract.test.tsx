@@ -308,21 +308,13 @@ describe('Holdings rendered page contract', () => {
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
   })
 
-  it('opens concentration from Holdings and preserves the separate book-value view', async () => {
-    const user = userEvent.setup()
-    const workspace = holdingsWorkspaceFixture()
-    apiMocks.getConcentration.mockResolvedValue({ portfolio_id: '3', as_of_date: workspace.as_of_date, base_currency: 'USD', nav: 1000,
-      weight_basis: 'portfolio_nav', valuation_basis: 'operating_book', excluded_option_positions: 0, status: 'complete', settings_revision: 0,
-      scopes: [{ scope: 'security', taxonomy_id: null, name: 'Securities', enabled: true, rows: [], status: 'complete', coverage: [] }], coverage: [], sources: [], fcn_contracts: [] })
-    renderHoldings(workspace)
+  it('keeps Holdings focused on carrying amounts without fetching concentration', async () => {
+    renderHoldings()
     await waitForHoldings()
-    await user.click(screen.getByRole('tab', { name: 'Exposure and concentration' }))
-    expect(await screen.findByRole('region', { name: 'Concentration' })).toBeInTheDocument()
-    expect(apiMocks.getConcentration).toHaveBeenCalledWith('3', workspace.as_of_date)
-    expect(screen.queryByRole('region', { name: 'Securities' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('tab', { name: 'Holdings' }))
-    await waitForHoldings()
+    expect(screen.queryByRole('tab', { name: 'Exposure and concentration' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Concentration' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
+    expect(apiMocks.getConcentration).not.toHaveBeenCalled()
   })
 
   it('keeps signed carrying weights distinct from concentration exposure and uses the reporting currency', async () => {

@@ -598,6 +598,15 @@ def _validate_processed_transactions(
                 source_field="source_gross_amount",
                 projection_field="gross_amount",
             )
+            + (
+                _transaction_decimal(
+                    transaction,
+                    source_field="source_fees",
+                    projection_field="fees",
+                )
+                if transaction.transaction_type == "dividend_reinvestment"
+                else Decimal("0")
+            )
             for transaction in income_transactions
         ),
         start=Decimal("0"),

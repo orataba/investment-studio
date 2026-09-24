@@ -84,7 +84,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
     "daily": 20.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v5"
+RESEARCH_TARGET_SOLVER_VERSION = "global_leaf_scalar_targets_v6"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 MISSING_RETURN_POLICY_STRICT = "strict"
@@ -163,6 +163,7 @@ class ReturnCoveragePolicyResult:
     dropped_rows: list[dict[str, object]]
     latest_complete_date: date | None
     trailing_staleness_days: int | None
+    freshness_as_of_date: date | None
 
 
 @dataclass(frozen=True)
@@ -699,6 +700,7 @@ def _apply_missing_return_policy(
     calculation_frequency: CalculationFrequency,
     as_of_date: date | None,
     max_trailing_staleness_days: int | None = None,
+    freshness_as_of_date: date | None = None,
 ) -> ReturnCoveragePolicyResult:
     policy = _normalize_missing_return_policy(missing_return_policy)
     required = max(int(min_observations), 2)
@@ -756,7 +758,7 @@ def _apply_missing_return_policy(
             )
     if as_of_date is not None and len(complete):
         latest_date = pd.Timestamp(max(complete.index)).date()
-        staleness_days = int((as_of_date - latest_date).days)
+        staleness_days = int(((freshness_as_of_date or as_of_date) - latest_date).days)
         max_staleness_days = (
             _max_complete_case_drop_staleness_days(calculation_frequency)
             if max_trailing_staleness_days is None
@@ -793,6 +795,7 @@ def _apply_missing_return_policy(
         dropped_rows=dropped_rows,
         latest_complete_date=latest_complete_date,
         trailing_staleness_days=trailing_staleness_days,
+        freshness_as_of_date=freshness_as_of_date or as_of_date,
     )
 
 
@@ -806,6 +809,7 @@ def _prepare_return_window_for_covariance(
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
     max_trailing_staleness_days: int | None = None,
+    freshness_as_of_date: date | None = None,
 ) -> ReturnCoveragePolicyResult:
     window = _return_window_for_lookback(
         returns,
@@ -820,6 +824,7 @@ def _prepare_return_window_for_covariance(
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
         max_trailing_staleness_days=max_trailing_staleness_days,
+        freshness_as_of_date=freshness_as_of_date,
     )
 
 
@@ -965,6 +970,7 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
+    freshness_as_of_date: date | None = None,
 ) -> pd.DataFrame:
     vol_min_observations = int(parameters.get("min_observations", 2))
     vol_coverage = _prepare_return_window_for_covariance(
@@ -975,6 +981,7 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        freshness_as_of_date=freshness_as_of_date,
         max_trailing_staleness_days=int(
             parameters.get(
                 "max_period_staleness_days",
@@ -1001,6 +1008,7 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
+        freshness_as_of_date=freshness_as_of_date,
         max_trailing_staleness_days=int(
             parameters.get(
                 "max_period_staleness_days",
@@ -1038,6 +1046,7 @@ def _estimate_covariance(
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
+    freshness_as_of_date: date | None = None,
 ) -> pd.DataFrame:
     parameters = dict(parameters or {})
     min_observations = int(parameters.get("min_observations", 2))
@@ -1050,6 +1059,7 @@ def _estimate_covariance(
             missing_return_policy=missing_return_policy,
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
+            freshness_as_of_date=freshness_as_of_date,
             max_trailing_staleness_days=int(
                 parameters.get(
                     "max_period_staleness_days",
@@ -1079,6 +1089,7 @@ def _estimate_covariance(
             missing_return_policy=missing_return_policy,
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
+            freshness_as_of_date=freshness_as_of_date,
         )
     else:
         raise ValueError(f"Unsupported covariance model: {model_id}.")
@@ -1580,6 +1591,68 @@ def _solver_return_window(
     return frame.astype("float64")
 
 
+def _return_freshness_date(
+    state: ResearchMarketState, *, members: list[ScopeMemberRecord],
+    return_window: pd.DataFrame, as_of_date: date,
+) -> date:
+    """Keep the window clock, but do not age observations during a proved closure."""
+    complete = return_window.dropna(how="any")
+    if complete.empty:
+        return as_of_date
+    latest = pd.Timestamp(complete.index[-1]).date()
+    if latest >= as_of_date:
+        return as_of_date
+    for member in members:
+        detail = state.instrument_detail_cache.get(member.member_id) or {}
+        settings = dict(detail.get("source_settings") or {})
+        if str(settings.get("expected_frequency") or "daily") != "daily":
+            return as_of_date
+        if quote_is_stale(detail, point_date=latest, as_of_date=as_of_date):
+            return as_of_date
+    return latest
+
+
+def _missing_member_return_diagnostics(
+    state: ResearchMarketState,
+    *,
+    members: list[ScopeMemberRecord],
+    return_window: pd.DataFrame,
+    as_of_date: date,
+    lookback_days: int,
+) -> str:
+    """Explain the actual failed input without changing coverage or quote selection."""
+    window = return_window.loc[
+        (return_window.index > research_window_start_date(as_of_date, lookback_days))
+        & (return_window.index <= as_of_date)
+    ]
+    diagnostics: list[str] = []
+    for member in members:
+        key = f"{member.member_type}::{member.member_id}"
+        if key not in window or not window[key].isna().any():
+            continue
+        missing = window.index[window[key].isna()]
+        detail = state.instrument_detail_cache.get(member.member_id) or {}
+        bases = _candidate_quote_bases(detail)
+        selected = resolve_quote_series(detail, candidate_bases=bases, end_date=as_of_date)
+        latest = str(selected.points[-1]["as_of_date"]) if selected.available else "unavailable"
+        observation = f"{selected.quote_basis or '/'.join(bases)} latest {latest}"
+        if "total_return_nav" in bases:
+            unit = resolve_quote_series(detail, candidate_bases=["official_nav"], end_date=as_of_date)
+            unit_latest = str(unit.points[-1]["as_of_date"]) if unit.available else "unavailable"
+            observation += f"; unit NAV latest {unit_latest}"
+        diagnostics.append(
+            f"{member.label} [{member.member_id}]: {observation}; "
+            f"{len(missing)} missing return(s), period ends {_format_index_sample(missing)}"
+        )
+    if not diagnostics:
+        return ""
+    return (
+        " Missing member inputs: " + ". ".join(diagnostics) + ". "
+        "Check historical return coverage and, for funds, dividend/reinvestment evidence; "
+        "a current unit NAV does not establish a complete total-return history."
+    )
+
+
 def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Series) -> pd.Series:
     if return_window.empty or weights.empty:
         return pd.Series(dtype="float64")
@@ -1902,15 +1975,19 @@ def _solve_current_scope(
     coverage: ReturnCoveragePolicyResult | None = None
     if active_members:
         parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
+        freshness_date = _return_freshness_date(
+            state, members=active_members, return_window=return_window, as_of_date=as_of_date,
+        )
         try:
             coverage = _prepare_return_window_for_covariance(
                 return_window, lookback_days=lookback_days, min_observations=int(parameters.get("min_observations", 2)),
                 label="Global leaf covariance", missing_return_policy=missing_return_policy,
                 calculation_frequency=calculation_frequency, as_of_date=as_of_date,
+                freshness_as_of_date=freshness_date,
                 max_trailing_staleness_days=int(parameters.get("max_period_staleness_days", _max_complete_case_drop_staleness_days(calculation_frequency))),
             )
             covariance_model = _risk_model_covariance_model_id(risk_model_config)
-            estimated = _estimate_covariance(coverage.returns, model_id=covariance_model, lookback_days=lookback_days, parameters=parameters, missing_return_policy=MISSING_RETURN_POLICY_STRICT, calculation_frequency=calculation_frequency, as_of_date=as_of_date)
+            estimated = _estimate_covariance(coverage.returns, model_id=covariance_model, lookback_days=lookback_days, parameters=parameters, missing_return_policy=MISSING_RETURN_POLICY_STRICT, calculation_frequency=calculation_frequency, as_of_date=as_of_date, freshness_as_of_date=freshness_date)
             expected_keys = [f"{member.member_type}::{member.member_id}" for member in active_members]
             estimated = estimated.reindex(index=expected_keys, columns=expected_keys)
             if estimated.shape != (len(active_indices), len(active_indices)) or not np.isfinite(estimated.to_numpy()).all():
@@ -1921,7 +1998,11 @@ def _solve_current_scope(
             covariance_model = None
             coverage = None
             if risk_required or volatility_overlay:
-                raise ValueError(f"{root.label} global leaf risk model unavailable: {error}") from error
+                diagnostics = _missing_member_return_diagnostics(
+                    state, members=active_members, return_window=return_window,
+                    as_of_date=as_of_date, lookback_days=lookback_days,
+                )
+                raise ValueError(f"{root.label} global leaf risk model unavailable: {error}{diagnostics}") from error
             warnings.append(f"Global leaf risk attribution unavailable: {error}")
     if volatility_overlay and (not active_indices or gross_limit <= 1e-12):
         raise ValueError(f"{root.label} capital overlay is unavailable: no positive risky target weight.")
@@ -2189,6 +2270,7 @@ def _solve_current_scope(
             "dropped_return_rows": deepcopy(coverage.dropped_rows) if coverage else [],
             "latest_complete_return_date": coverage.latest_complete_date.isoformat() if coverage and coverage.latest_complete_date else None,
             "trailing_complete_return_staleness_days": coverage.trailing_staleness_days if coverage else None,
+            "return_freshness_as_of_date": coverage.freshness_as_of_date.isoformat() if coverage and coverage.freshness_as_of_date else None,
             "calculation_frequency": calculation_frequency,
             "gap_turnover": 0.5 * sum(abs(float(row["weight_change"])) for row in plan_rows),
             "current_weight_total": sum(float(row["current_weight"]) for row in plan_rows),
@@ -3164,6 +3246,7 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
         or "return observations" in message
         or "complete aligned return observations" in message
         or "complete-case drop would remove" in message
+        or "latest complete return observation" in message
         or "has no active complete" in message
         or "does not have usable market history" in message
     )
@@ -4870,7 +4953,7 @@ def build_current_target_backtest(
                 {"date": rebalance_date.isoformat(), "reason": str(error)}
             )
             warnings.append(
-                f"{rebalance_date.isoformat()} rebalance skipped during point-in-time warm-up: {error}"
+                f"{rebalance_date.isoformat()} rebalance skipped because point-in-time return coverage is unavailable: {error}"
             )
             continue
 

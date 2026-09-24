@@ -3889,8 +3889,12 @@ class TransactionCreateRequest(BaseModel):
             if self.price is not None:
                 if self.price <= 0:
                     raise ValueError("Dividend reinvestment price must be positive when provided.")
-            if self.fees != 0 or self.taxes != 0:
-                raise ValueError("Dividend reinvestment must not carry fees or taxes.")
+            if self.taxes != 0:
+                raise ValueError("Dividend reinvestment must not carry taxes.")
+            if self.fees > 0 and self.fee_category != "performance_fee":
+                raise ValueError(
+                    "Dividend reinvestment attached fees must be withheld performance_fee."
+                )
 
         if self.transaction_type == "maturity_redemption":
             if not has_asset_reference:

@@ -29,14 +29,15 @@ def store(tmp_path):
 def statement(symbol, day, value=1):
     return dict(symbol=symbol, statement_type='income', period_end=date(2026, 6, 30),
                 fiscal_year=2026, fiscal_period='Q2', reported_currency='USD',
-                value=value, observed_at=stamp(day), available_at=stamp(day))
+                line_item='revenue', value=value, observed_at=stamp(day), available_at=stamp(day))
 
 
-def test_financial_pruning_retains_uncertain_scope_and_every_revision(store, monkeypatch):
+@pytest.mark.parametrize('dataset', ['financial_statements', 'financial_facts'])
+def test_financial_pruning_retains_uncertain_scope_and_every_revision(store, monkeypatch, dataset):
     single = {'endpoint': 'income-statement', 'parameters': {'symbol': 'AAPL'}}
     for day in (1, 3):
-        store.ingest('financial_statements', [[statement('AAPL', day, day)]], source='fmp', details=single)
-    unrelated = store.ingest('financial_statements', [[statement('MSFT', 2)]], source='fmp',
+        store.ingest(dataset, [[statement('AAPL', day, day)]], source='fmp', details=single)
+    unrelated = store.ingest(dataset, [[statement('MSFT', 2)]], source='fmp',
                              details={'endpoint': 'income-statement', 'parameters': {'symbol': 'MSFT'}})
     uncertain = [
         ('imported_market_archive', single), ('another_provider', single),
@@ -49,13 +50,13 @@ def test_financial_pruning_retains_uncertain_scope_and_every_revision(store, mon
     for index, (source, details) in enumerate(uncertain):
         row = statement('AAPL', 2, 10 + index)
         row['period_end'] = date(2026, 5, index + 1)
-        store.ingest('financial_statements', [[row]], source=source, details=details)
+        store.ingest(dataset, [[row]], source=source, details=details)
     original_paths = store._paths
-    unrestricted = original_paths('financial_statements')
-    retained = original_paths('financial_statements', symbols=['AAPL'])
+    unrestricted = original_paths(dataset)
+    retained = original_paths(dataset, symbols=['AAPL'])
     assert len(retained) == len(unrestricted) - 1
     assert not any(unrelated['batch_id'] in path for path in retained)
-    assert original_paths('financial_statements', symbols=None) == unrestricted
+    assert original_paths(dataset, symbols=None) == unrestricted
     # The reference reads all files but retains the same canonical row filters,
     # ranking, pagination and lineage. It is independent of metadata pruning.
     cases = [dict(symbols=['AAPL']), dict(symbols=['AAPL'], versions=True),
@@ -65,13 +66,14 @@ def test_financial_pruning_retains_uncertain_scope_and_every_revision(store, mon
              dict(symbols=['AAPL'], limit=1, offset=100), dict(symbols=[]),
              dict(symbols=['UNKNOWN']), dict(symbols=['MSFT'], batch_id=unrelated['batch_id'])]
     for options in cases:
-        actual = store.query('financial_statements', **options)
+        actual = store.query(dataset, **options)
         with monkeypatch.context() as context:
             context.setattr(store, '_paths', lambda *args, **kwargs: original_paths(*args))
-            assert actual == store.query('financial_statements', **options)
+            assert actual == store.query(dataset, **options)
 
 
-def test_financial_collector_enforces_recorded_single_company_scope(store):
+@pytest.mark.parametrize('dataset', ['financial_statements', 'financial_facts'])
+def test_financial_collector_enforces_recorded_single_company_scope(store, dataset):
     class Client:
         def get_json(self, endpoint, params):
             payload = [dict(symbol=symbol, date='2026-06-30', fiscalYear=2026, period='Q2',
@@ -81,13 +83,13 @@ def test_financial_collector_enforces_recorded_single_company_scope(store):
                                    body=json.dumps(payload).encode(), received_at=stamp(3))
     Collector(store.settings, store=store, client=Client()).financials(date(2026, 9, 1), date(2026, 9, 3), ['AAPL'])
     with store.engine.connect() as conn:
-        captures = conn.execute(select(batches).where(batches.c.dataset == 'financial_statements')).mappings().all()
+        captures = conn.execute(select(batches).where(batches.c.dataset == dataset)).mappings().all()
     assert len(captures) == 6
     assert {row['details']['endpoint'] for row in captures} == {
         'income-statement', 'balance-sheet-statement', 'cash-flow-statement'}
     assert all(row['source'] == 'fmp' and row['details']['parameters']['symbol'] == 'AAPL' for row in captures)
-    assert {row['symbol'] for row in store.query('financial_statements', versions=True)['rows']} == {'AAPL'}
-    assert store.query('financial_statements', symbols=['MSFT'])['rows'] == []
+    assert {row['symbol'] for row in store.query(dataset, versions=True)['rows']} == {'AAPL'}
+    assert store.query(dataset, symbols=['MSFT'])['rows'] == []
 
 
 def snapshot_row(dataset, symbol, day, value):

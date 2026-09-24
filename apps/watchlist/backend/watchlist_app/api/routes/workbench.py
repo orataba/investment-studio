@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
@@ -82,6 +82,8 @@ class ResearchReferenceInput(BaseModel):
 
     @model_validator(mode="after")
     def distinct_current_risk_reference(self):
+        if bool(self.pm_note_id) != bool(self.pm_note_revision):
+            raise ValueError("投资经理观点引用须同时包含观点标识和原始版本")
         if bool(self.risk_case_id) != bool(self.risk_case_updated_at):
             raise ValueError("风险事项引用须同时包含事项标识和页面读取的更新时间，请刷新后重试")
         if self.risk_case_id and any((self.research_update_id, self.event_case_id, self.event_version_id,
@@ -114,15 +116,13 @@ class MessageInput(BaseModel):
 
 
 class ResearchToolInput(BaseModel):
-    tool: Literal["instruments", "comparison", "portfolio", "market", "search", "source", "dossier", "risk_review"]
+    model_config = ConfigDict(extra="forbid")
+    tool: Literal["instruments", "comparison", "portfolio", "market", "dossier", "risk_review"]
     instrument_ids: list[str] = Field(default_factory=list, max_length=30)
     start_date: date | None = None
     end_date: date | None = None
     target_id: str | None = None
     benchmark_id: str | None = None
-    query: str | None = Field(default=None, min_length=1, max_length=2000)
-    url: str | None = Field(default=None, min_length=1, max_length=8000)
-    public_result: dict | None = None
     source_id: str | None = None
 
 
@@ -413,7 +413,7 @@ def start_analysis(topic_id: str, request: MessageInput, background: BackgroundT
     try:
         context = conversation_context(session, topic, request.question, request.watchlist_id,
                                        request.page_context.model_dump(mode="json", exclude_none=True) if request.page_context else None)
-    except ValueError as error:
+    except (ValueError, LookupError) as error:
         raise HTTPException(422, str(error)) from error
     record = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, team_id=topic.team_id, kind="analysis", title=request.question, body="", source="DeepSeek Harness", status="queued", created_at=now(), context_json=context)
     session.add(record)
@@ -621,23 +621,13 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
                 result = portfolio_page_evidence(context["portfolio_id"], context.get("page_context"))
             except (OSError, ValueError):
                 result = {"available": False, "reason": "未取得组合持仓，不能推断权重或实际持仓。"}
-    elif request.tool in {"search", "source"}:
-        if request.tool == "search" and not (request.query or "").strip():
-            raise HTTPException(422, "请提供公开信息检索问题")
-        if request.tool == "source" and not request.url:
-            raise HTTPException(422, "请提供原文链接")
-        if request.public_result is None:
-            raise HTTPException(422, "请提供本轮工具取得的公开来源结果")
-        # Acquisition runs in the existing credential-bearing MCP process, as for
-        # sector evidence. Retained source text is not an independently verified alert.
-        result = request.public_result
     else:
         try:
             result = {"regime": external_json("regime", "/latest"), "limitations": ["仅代表已配置市场，须核对数据日期；不等于完整宏观或全市场资料。"]}
         except (OSError, ValueError):
             result = {"available": False, "reason": "尚未取得市场状态，本次没有实时宏观证据。"}
     source_id = f"{request.tool}:{uuid4().hex[:12]}"
-    evidence = serialize_payload({"source_id": source_id, "tool": request.tool, "request": request.model_dump(exclude={"public_result"}), "retrieved_at": now(), "result": result})
+    evidence = serialize_payload({"source_id": source_id, "tool": request.tool, "request": request.model_dump(), "retrieved_at": now(), "result": result})
     # Originals already have canonical run-bound storage. A tool receipt proves
     # which source was delivered, without recursively copying complete dossiers
     # or asset snapshots into every subsequent run/context/reviewer request.
@@ -740,8 +730,10 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
 
 @router.put("/risk/rules/{instrument_id}")
 def set_rule(instrument_id: str, request: RuleInput, session: Session = Depends(get_db_session)):
-    require(session, InstrumentDetail, instrument_id)
-    rule = session.get(RiskReviewRule, instrument_id)
+    instrument = session.get(InstrumentDetail, instrument_id, with_for_update=True, populate_existing=True)
+    if instrument is None:
+        raise HTTPException(404, "Record not found")
+    rule = session.get(RiskReviewRule, instrument_id, populate_existing=True)
     if rule is None:
         rule = RiskReviewRule(instrument_id=instrument_id)
         session.add(rule)
@@ -775,7 +767,9 @@ def add_risk(request: RiskInput, session: Session = Depends(get_db_session)):
 
 @router.put("/risk/cases/{case_id}")
 def follow_up(case_id: str, request: RiskFollowUp, session: Session = Depends(get_db_session)):
-    case = require(session, RiskCase, case_id)
+    case = session.get(RiskCase, case_id, with_for_update=True, populate_existing=True)
+    if case is None:
+        raise HTTPException(404, "Record not found")
     case.status = request.status
     case.follow_up_date = request.follow_up_date
     if request.clear_manual_trigger:

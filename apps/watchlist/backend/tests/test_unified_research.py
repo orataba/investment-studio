@@ -104,6 +104,7 @@ def test_computed_volatility_can_support_risk_without_an_external_news_story(ins
         apply(session, run, themes=[{'theme_key': 'gold-volatility', 'kind': 'quantitative', 'title': '黄金波动风险',
             'question': '当前波动变化是否持续影响风险承受水平？', 'priority_reason': '实际波动变化会改变风险敞口，需继续观察持续性。'}],
             events=[{'event_key': 'volatility', 'action': 'new', 'direction': 'risk',
+            'importance_score': 3, 'importance_reason': '同口径波动变化影响风险承受水平。',
             'title': '波动风险上升', 'body': '已计算的波动观察需要重新评估风险承受水平，不代表未来必然下跌。',
             'next_watch': '观察波动持续性', 'confidence': 'confirmed', 'information_type': 'fact',
             'recording_type': 'new', 'theme_ids': ['gold-volatility'], 'source_ids': ['computed:risk']}])
@@ -113,7 +114,8 @@ def test_computed_volatility_can_support_risk_without_an_external_news_story(ins
 def test_repeated_metric_read_is_quiet_but_changed_measurement_updates_same_risk(instrument):
     from watchlist_app.db.models.workbench import RiskCase
     from sqlalchemy import select
-    event = {'event_key': 'volatility', 'action': 'new', 'direction': 'risk', 'title': '波动风险上升',
+    event = {'event_key': 'volatility', 'action': 'new', 'direction': 'risk',
+            'importance_score': 3, 'importance_reason': '同口径波动变化影响风险承受水平。', 'title': '波动风险上升',
         'body': '波动风险仍需跟踪。', 'next_watch': '观察持续性', 'confidence': 'confirmed',
         'information_type': 'fact', 'recording_type': 'new', 'theme_ids': ['gold-volatility'], 'source_ids': ['computed:risk']}
     with get_session_factory()() as session:

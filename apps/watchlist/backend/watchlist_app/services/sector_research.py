@@ -1,7 +1,7 @@
 """Source-bound event reviews and daily sector checks in the existing workbench."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import logging
 import json
 import re
@@ -9,7 +9,7 @@ from threading import Event, Thread
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
 from sqlalchemy import Boolean, JSON, String, case, func, or_, select, true
 from investment_studio_instrument_core.db_models import Instrument
@@ -224,6 +224,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     # Manual and scheduled research share the same instrument's publication lock.
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
+    initialize_event_follow_up_terms(session, ids, now=datetime.now(UTC))
     with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis",
         ResearchEntry.status.in_(["queued", "running"]), instrument_run_scope(session, ids))
         .execution_options(yield_per=1))) as active_runs:
@@ -292,6 +293,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
                         return prior, False
                     break
     from watchlist_app.services.research_themes import theme_index
+    from watchlist_app.services.research_triggers import numeric_monitor_inputs
     attempted_baselines = {theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
                           for theme in theme_index(session, ids[0])}
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=title,
@@ -303,11 +305,35 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
         "research_actor": research_identity(),
         **({"question": question} if question is not None else {}),
         "incremental_trigger": incremental_trigger, "attempted_theme_baselines": attempted_baselines,
+        "numeric_monitor_inputs": {iid: numeric_monitor_inputs(session, iid) for iid in ids},
         "web_evidence": [], "reviews": {}})
     session.add(run)
     if commit:
         session.commit()
     return run, True
+
+
+def initialize_event_follow_up_terms(session, ids, *, now):
+    """Idempotent legacy adoption on an authorized write path, never a page read."""
+    session.flush()
+    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%"))
+            .order_by(RiskCase.case_id).with_for_update().execution_options(populate_existing=True)):
+        previous = dict(case.evidence_json or {})
+        if _event_follow_up({"status": case.status, "trigger_active": case.trigger_active, **previous}) != "watch" or previous.get("follow_up_until"):
+            continue
+        market = _research_market(session, case.instrument_id)
+        today = now.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]) if market else UTC).date()
+        history = event_history_with_current_snapshot(case)
+        snapshot = {**previous, "title": case.title, "body": case.body, "follow_up": "watch",
+            "follow_up_until": (today + timedelta(days=30)).isoformat(), "follow_up_started_at": now.isoformat(),
+            "follow_up_reason": previous.get("follow_up_reason") or "启用期限管理，保留原研究与风险判断。",
+            "recorded_at": now.isoformat(),
+            "material_progress_at": previous.get("material_progress_at") or previous.get("progress_at") or previous.get("recorded_at")
+                or (case.created_at.isoformat() if case.created_at else None), "material_change": False,
+            "event_version_id": event_version_id(case.case_id, len(history) + 1)}
+        case.evidence_json = snapshot
+        case.history_json = [*history, {"at": now.isoformat(), "action": "follow_up_initialized",
+            "detail": "为已有跟进设置30个自然日复核期限；不改变事实日期、研究判断或风险状态。", "snapshot": snapshot}]
 
 
 def bind_research_instruments(session, run, ids):
@@ -395,7 +421,23 @@ def prepare_run(run_id):
         session.commit()
 
 
+class PublicMarketView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    publisher: str = Field(min_length=1, max_length=200)
+    published_at: str | None = None
+    view: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(min_length=1)
+
+
+class EventMarketReaction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["available", "partial", "unavailable", "pending"]
+    figure_source_ids: list[str] = Field(default_factory=list)
+    explanation: str = Field(default="", max_length=2000)
+
+
 class SectorEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     event_key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     action: Literal["new", "updated", "resolved"]
     direction: Literal["risk", "opportunity", "uncertain"]
@@ -403,6 +445,13 @@ class SectorEvent(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
     next_watch: str = Field(default="", max_length=1500)
     follow_up: Literal["none", "watch", "resolved"] = "watch"
+    follow_up_until: date | None = None
+    follow_up_reason: str = Field(default="", max_length=2000)
+    next_observation_on: date | None = None
+    importance_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    importance_reason: str = Field(default="", max_length=1500)
+    market_views: list[PublicMarketView] = Field(default_factory=list)
+    market_reaction: EventMarketReaction | None = None
     analysis_depth: Literal["brief", "analysis"] = "analysis"
     theme_ids: list[str] = Field(default_factory=list)
     confidence: Literal["confirmed", "reported", "unverified"]
@@ -415,6 +464,7 @@ class SectorEvent(BaseModel):
     action_condition: str = Field(default="", max_length=2000)
     information_type: Literal["fact", "opinion", "rumor"]
     recording_type: Literal["new", "update", "backfill"]
+    progress_kind: Literal["material", "editorial"] = "material"
     published_at: str | None = None
     occurred_at: str | None = None
     source_ids: list[str] = Field(min_length=1)
@@ -435,7 +485,7 @@ class SectorEvent(BaseModel):
 class ResearchReflection(BaseModel):
     status: Literal["reviewed", "insufficient_evidence"]
     summary: str = Field(default="", max_length=2000)
-    reviewed_update_ids: list[str] = Field(default_factory=list)
+    reviewed_update_ids: list[str] = Field(default_factory=list, description="已实际复核的此前具体判断或事件 update_id；从 review_agenda/原版本读取，不填写 theme:<id>:<revision>。主题复核放 reviews[].themes；没有具体判断可用空数组。")
     source_ids: list[str] = Field(default_factory=list)
 
 
@@ -515,6 +565,17 @@ def event_version_id(case_id: str, revision: int) -> str:
     return f"{case_id}:{revision}"
 
 
+def event_history_with_current_snapshot(case):
+    history = list(case.history_json or [])
+    if not any(row.get("snapshot") for row in history):
+        current = event_record(case)
+        history.append({"at": current["recorded_at"], "action": "retained", "snapshot": {
+            **(case.evidence_json or {}), "title": case.title, "body": case.body, "status": case.status,
+            "trigger_active": case.trigger_active, "event_version_id": current["event_version_id"],
+            "recorded_at": current["recorded_at"]}})
+    return history
+
+
 def _event_follow_up(value):
     return value.get("follow_up") or ("resolved" if value.get("status") == "resolved" or value.get("action") == "resolved"
                                       else "watch" if value.get("trigger_active", True) else "none")
@@ -538,6 +599,9 @@ def event_record(case):
         "direction": evidence.get("direction", "uncertain"), "information_type": evidence.get("information_type"),
         "confidence": evidence.get("confidence"), "next_watch": evidence.get("next_watch", ""),
         **{key: evidence.get(key) for key in ("impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition")},
+        **{key: evidence.get(key) for key in ("importance_score", "importance_reason", "market_reaction",
+            "follow_up_until", "follow_up_reason", "follow_up_started_at", "next_observation_on", "checked_at", "material_progress_at", "development_at", "risk_assessment")},
+        "market_views": evidence.get("market_views") or [], "follow_up_pinned": bool(evidence.get("follow_up_pinned")),
         "status": case.status, "trigger_active": case.trigger_active,
         "follow_up": _event_follow_up({"status": case.status, "trigger_active": case.trigger_active, **evidence}),
         "analysis_depth": evidence.get("analysis_depth", "analysis"), "theme_ids": evidence.get("theme_ids") or [],
@@ -554,16 +618,20 @@ def event_record(case):
         "history": history}
 
 
-def events_for_instruments(session, ids):
-    cases = session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%"))
-                           .order_by(RiskCase.updated_at.desc()))
+def events_for_instruments(session, ids, *, event_key=None):
+    query = select(RiskCase).where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%"))
+    if event_key:
+        query = query.where(RiskCase.signal == f"sector:{event_key}")
+    cases = session.scalars(query.order_by(RiskCase.updated_at.desc()))
     return [event_record(case) for case in cases]
 
 
-def _same_progress(case, item, sources):
+def _same_progress(case, item, sources, *, material_only=False):
     evidence = case.evidence_json or {}
-    fields = ("direction", "information_type", "confidence", "published_at", "occurred_at", "next_watch",
+    fields = ("direction", "information_type", "confidence", "occurred_at",
               "impact_level", "urgency", "impact_analysis", "action_condition")
+    if not material_only:
+        fields += ("published_at", "next_watch", "follow_up_until", "follow_up_reason", "next_observation_on", "importance_score", "importance_reason")
     # Fetch IDs and collection times change every run; the cited publication does not.
     def identities(rows):
         publications = {(row.get("document_id") or row.get("url"), row.get("version_id") or row.get("published_at"))
@@ -586,24 +654,47 @@ def _same_progress(case, item, sources):
     # Compare the current assessment. Returning to a prior view is a new revision,
     # even when its wording and admissible sources match a historical snapshot.
     previous = [{"status": case.status, "trigger_active": case.trigger_active, **evidence, "body": case.body}]
-    return any(" ".join(row["body"].split()) == " ".join(item.body.split())
-               and all(row.get(key, SectorEvent.model_fields[key].get_default(call_default_factory=True)) == getattr(item, key) for key in fields)
+    serialized = item.model_dump(mode="json")
+    def publication_date_correction(row):
+        if row.get("published_at") == item.published_at:
+            return False
+        def originals_at(rows, published_at):
+            return {source.get("document_id") or source.get("url") for source in rows
+                    if (source.get("document_id") or source.get("url")) and (published_at is None or
+                        SectorEvent.retain_time_precision(source.get("published_at")) == published_at)}
+        # Correcting the date of the same original is a factual revision. A new
+        # syndicated URL with a later publication date is only added provenance;
+        # its contents or public views must change to count as new progress.
+        return bool(originals_at(row.get("sources", []), row.get("published_at")) & originals_at(sources, item.published_at))
+    def market_content(row):
+        # Re-fetch IDs are provenance, not a new public view or price reaction.
+        return [{key: value for key, value in view.items() if key != "source_ids"}
+                for view in row.get("market_views") or []], {
+                key: value for key, value in (row.get("market_reaction") or {}).items() if key != "figure_source_ids"}
+    return any((material_only and item.progress_kind == "editorial" or " ".join(row["body"].split()) == " ".join(item.body.split()))
+               and all(row.get(key, SectorEvent.model_fields[key].get_default(call_default_factory=True)) == serialized[key] for key in fields)
+               and (not material_only or not publication_date_correction(row))
                and set(row.get("risk_channels") or []) == set(item.risk_channels)
-               and _event_follow_up(row) == item.follow_up
-               and row.get("analysis_depth", "analysis") == item.analysis_depth
-               and set(row.get("theme_ids") or []) == set(item.theme_ids)
-               and identities(row.get("sources", [])) == identities(sources) for row in previous)
+               and (material_only or _event_follow_up(row) == item.follow_up)
+               and (material_only or row.get("analysis_depth", "analysis") == item.analysis_depth)
+               and (material_only or set(row.get("theme_ids") or []) == set(item.theme_ids))
+               and market_content(row) == market_content(serialized)
+               and ({value for value in identities(row.get("sources", [])) if value[0] in {"computed", "estimate"}}
+                    == {value for value in identities(sources) if value[0] in {"computed", "estimate"}} if material_only
+                    else identities(row.get("sources", [])) == identities(sources)) for row in previous)
 
 
-def _effective_event(item, case):
+def _effective_event(item, case, *, checked_at=None):
     values = item.model_dump(mode="json")
     if case is not None:
         previous = event_record(case)
         for field in ("follow_up", "analysis_depth", "theme_ids", "next_watch", "impact_level", "urgency",
-                      "risk_channels", "impact_analysis", "action_condition"):
+                      "risk_channels", "impact_analysis", "action_condition", "follow_up_until", "follow_up_reason",
+                      "next_observation_on", "importance_score", "importance_reason", "market_views", "market_reaction",
+                      "published_at", "occurred_at"):
             if field not in item.model_fields_set:
                 values[field] = previous.get(field)
-                if values[field] is None and field in {"risk_channels", "impact_analysis", "action_condition"}:
+                if values[field] is None and field in {"risk_channels", "impact_analysis", "action_condition", "follow_up_reason", "importance_reason"}:
                     values[field] = SectorEvent.model_fields[field].get_default(call_default_factory=True)
     if item.action == "resolved":
         if "follow_up" in item.model_fields_set and item.follow_up != "resolved":
@@ -611,11 +702,55 @@ def _effective_event(item, case):
         values["follow_up"] = "resolved"
     if values["follow_up"] == "watch" and not values["next_watch"].strip():
         raise ValueError("持续跟进的事件需要明确下一步观察；无需跟进时使用follow_up=none")
+    if case is None and (values["importance_score"] is None or not values["importance_reason"].strip()):
+        raise ValueError("新重要事件必须给出1–5级重要性与具体评分理由")
+    if values["importance_score"] is not None and not values["importance_reason"].strip():
+        raise ValueError("重要性评分需要具体理由")
+    if case is not None:
+        previous = event_record(case)
+        if previous["follow_up"] != values["follow_up"] and ("follow_up_reason" not in item.model_fields_set or not values["follow_up_reason"].strip()):
+            raise ValueError("变更主动跟进安排需要说明原因；停止跟进不代表风险解除")
+        if previous.get("follow_up_until") and values["follow_up"] == "watch" and "follow_up_until" in item.model_fields_set and values["follow_up_until"] is None:
+            raise ValueError("持续跟进的期限不能清空或借清空自动续期")
+        if previous["follow_up"] == "watch" and values["follow_up"] != "watch" and previous["follow_up_pinned"]:
+            raise ValueError("投资经理固定的事件不能由研究员停止跟进")
+        checked = checked_at or datetime.now(UTC)
+        if previous["follow_up"] == "watch" and values["follow_up"] == "none":
+            future_observation = values.get("next_observation_on") or previous.get("next_observation_on")
+            if future_observation and date.fromisoformat(str(future_observation)) > checked.date():
+                raise ValueError("明确尚未到来的观察节点不能因到期停止跟进")
+            if (previous.get("follow_up_until") and previous["follow_up_until"] <= checked.date().isoformat()
+                    and case.trigger_active and previous.get("impact_level") == "major"):
+                raise ValueError("风险模块仍要求关注的重大事项不能按普通到期规则结束")
+        if previous.get("follow_up_until") and values["follow_up_until"] and str(values["follow_up_until"]) > previous["follow_up_until"]:
+            if "follow_up_reason" not in item.model_fields_set or not values["follow_up_reason"].strip():
+                raise ValueError("延期需要明确说明下一观察节点或条件，不能自动续期")
+    if values["follow_up"] == "watch" and (case is None or _event_follow_up(case.evidence_json or {}) != "watch" or not values["follow_up_until"]):
+        # The server owns the initial 30-calendar-day term. Explicit extensions
+        # on subsequent checks require their own reason above.
+        checked = checked_at or datetime.now(UTC)
+        values["follow_up_until"] = (checked.date() + timedelta(days=30)).isoformat()
     if values["urgency"] == "immediate" and not values["action_condition"].strip():
         raise ValueError("需要立即复核的风险须说明具体决策条件，不能仅凭严重措辞升级")
     if values["impact_level"] in {"material", "major"} and not values["impact_analysis"].strip():
         raise ValueError("重大投资影响须解释具体传导机制和影响范围")
     return SectorEvent.model_validate(values)
+
+
+def _event_check_time(session, instrument_id, cutoff):
+    market = _research_market(session, instrument_id)
+    return cutoff.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market]) if market else UTC)
+
+
+def _previously_recorded_progress(case, item, sources):
+    from types import SimpleNamespace
+    for entry in case.history_json or []:
+        snapshot = entry.get("snapshot")
+        if snapshot and _same_progress(SimpleNamespace(evidence_json=snapshot, body=snapshot.get("body", ""),
+                status=snapshot.get("status", "recorded"), trigger_active=snapshot.get("trigger_active", False)),
+                item, sources, material_only=True):
+            return True
+    return False
 
 
 def _theme_scope(session, run, review):
@@ -651,13 +786,16 @@ def _theme_scope(session, run, review):
     return themes
 
 
-def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False):
+def _validate_update_reference(session, run, instrument_id, update_id, *, judgment=False, field="related_research_update_id"):
     from watchlist_app.services.research_activity import resolve_research_update
     value = resolve_research_update(session, instrument_id, update_id)
     if not value:
         raise ValueError("找不到当前标的此前已发布的研究判断记录")
     if judgment and value.get("kind") == "theme":
-        raise ValueError("主题建立或状态记录不是事前判断，请关联主题内具体研究判断或事件版本")
+        raise ValueError(f"{field} 中的 {update_id[:180]} 是主题建立或状态记录，不是事前判断。"
+            "主题复核应在 reviews[].themes 提交 theme_id/theme_key；请从该判断引用中移除主题版本，"
+            "仅使用 review_agenda 中实际读过的具体判断或事件 update_id。"
+            "若 reflection 没有具体判断可复核，reviewed_update_ids 可为空数组并说明证据限制；不要删除 themes 回执。")
     recorded_at = value.get("recorded_at")
     original_cutoff = run.context_json.get("input_snapshot_cutoff", run.context_json["cutoff"])
     if (not recorded_at or datetime.fromisoformat(recorded_at.replace("Z", "+00:00")) > datetime.fromisoformat(original_cutoff)
@@ -682,6 +820,16 @@ def _validate_research_links(session, run, review, themes):
             raise ValueError("已暂停或结束的关注主题不再自动更新")
 
     if review.research is not None:
+        view = review.research.investment_view
+        if view is not None:
+            for item in [*(getattr(view, "opportunities", None) or []), *(getattr(view, "risks", None) or [])]:
+                for theme_id in item.theme_ids:
+                    check_theme(theme_id, retained_event_link=True)
+                if not set(item.event_keys).issubset(event_keys):
+                    raise ValueError("机会或风险引用的事件不属于当前标的")
+                bound_events = {row["event_key"] for row in context.get("prior_events", []) if row["instrument_id"] == review.instrument_id}
+                if not set(item.event_keys).issubset(bound_events | {row.event_key for row in review.events}):
+                    raise ValueError("机会或风险引用了本轮未读取的事件，请先绑定当前事件版本")
         forecast_versions = _forecast_versions(dossier.get("notebook") or {})
         for field in ("questions", "forecasts", "forecast_reviews", "lessons", "catalysts"):
             previous = {item["key"]: item for item in (dossier.get("notebook") or {}).get(field, [])}
@@ -718,9 +866,7 @@ def _validate_research_links(session, run, review, themes):
     for item in review.events:
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
                                                      RiskCase.signal == f"sector:{item.event_key}"))
-        effective = _effective_event(item, case)
-        if effective.follow_up == "watch" and not effective.theme_ids:
-            raise ValueError("需要持续跟踪的事件必须归入重点主题；无需跟踪的重要事件使用follow_up=none。")
+        effective = _effective_event(item, case, checked_at=_event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])))
         if len(effective.theme_ids) != len(set(effective.theme_ids)):
             raise ValueError("同一事件的关注主题引用重复")
         prior_theme_ids = set(event_record(case)["theme_ids"]) if case else set()
@@ -731,7 +877,8 @@ def _validate_research_links(session, run, review, themes):
             check_theme(theme_id, retained_event_link=canonical in prior_theme_ids)
     if review.reflection is not None:
         for update_id in review.reflection.reviewed_update_ids:
-            original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True)
+            original = _validate_update_reference(session, run, review.instrument_id, update_id, judgment=True,
+                                                  field="reviews[].reflection.reviewed_update_ids")
             check_theme(original["reference"].get("theme_id"))
 
 
@@ -740,10 +887,40 @@ def _resolve_theme_aliases(review, aliases):
         if "theme_ids" in event.model_fields_set:
             event.theme_ids = list(dict.fromkeys(aliases.get(value, value) for value in event.theme_ids))
     if review.research:
+        view = review.research.investment_view
+        if view is not None:
+            for item in [*(getattr(view, "opportunities", None) or []), *(getattr(view, "risks", None) or [])]:
+                item.theme_ids = list(dict.fromkeys(aliases.get(value, value) for value in item.theme_ids))
         for field in ("questions", "forecasts", "forecast_reviews", "lessons", "catalysts"):
             for item in getattr(review.research, field):
                 if item.theme_id:
                     item.theme_id = aliases.get(item.theme_id, item.theme_id)
+
+
+def _bind_attention_evidence(session, review, sources):
+    """Freeze explicit summary links to this publication's actual evidence.
+
+    Omitted summary arrays remain untouched by retain_notebook; quiet checks
+    cannot rebind a past judgment to newer event or theme sources.
+    """
+    view = review.research.investment_view if review.research is not None else None
+    if view is None:
+        return
+    from watchlist_app.services.research_themes import theme_index
+    themes = {row["theme_id"]: row for row in theme_index(session, review.instrument_id)}
+    events = {case.signal.removeprefix("sector:"): case for case in session.scalars(select(RiskCase).where(
+        RiskCase.instrument_id == review.instrument_id, RiskCase.signal.like("sector:%")))}
+    events.update({case.signal.removeprefix("sector:"): case for case in session.new
+                   if isinstance(case, RiskCase) and case.instrument_id == review.instrument_id and case.signal.startswith("sector:")})
+    for field in ("opportunities", "risks"):
+        if field not in view.model_fields_set:
+            continue
+        for item in getattr(view, field) or []:
+            linked = [source for key in item.event_keys for source in (events[key].evidence_json or {}).get("sources", [])]
+            linked.extend(source for key in item.theme_ids for source in themes[key].get("sources", []))
+            for source in linked:
+                sources.setdefault(source["source_id"], source)
+            item.source_ids = list(dict.fromkeys([*item.source_ids, *(source["source_id"] for source in linked)]))
 
 
 def _review_research_plan(session, context, review):
@@ -760,13 +937,10 @@ def _review_research_plan(session, context, review):
 def validate_result(session, run, parsed: ReviewResult):
     """Check the full draft against retained evidence without publishing research or events."""
     context = run.context_json
-    from studio_identity import current_principal
-    principal = current_principal()
     topic = session.get(ResearchTopic, run.topic_id)
-    from watchlist_app.services.research_access import require_team_publication_scope
+    from watchlist_app.services.research_access import require_team_publication_scope, require_team_write
     require_team_publication_scope(session, run)
-    if not principal.local_unrestricted and principal.kind == "user" and principal.team_role == "reader":
-        raise ValueError("只读成员可以个人讨论，不能发布团队研究")
+    require_team_write()
     requested = [r.instrument_id for r in parsed.reviews]
     if topic and topic.visibility == "private" and not set(requested).issubset(context.get("team_publication_instructions", {})):
         raise ValueError("个人对话不会自动发布团队研究；请先取得当前用户明确的保存指令")
@@ -812,6 +986,16 @@ def validate_result(session, run, parsed: ReviewResult):
             if key in seen:
                 raise ValueError("同一事件在本轮重复出现")
             seen.add(key)
+            existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
+                RiskCase.signal == f"sector:{item.event_key}"))
+            effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))
+            for view in item.market_views:
+                if any(s not in sources or not usable_original(sources[s], cutoff) for s in view.source_ids):
+                    raise ValueError("公开观点需要实际读取的原文，搜索摘要或来源目录不足以支持观点")
+                if view.published_at is not None and SectorEvent.retain_time_precision(view.published_at) not in {
+                    SectorEvent.retain_time_precision(sources[s].get("published_at")) for s in view.source_ids
+                }:
+                    raise ValueError("公开观点日期必须来自引用原文")
             if any(s not in sources for s in item.source_ids):
                 raise ValueError("事件引用了未取得的来源")
             originals = [sources[s] for s in item.source_ids if usable_original(sources[s], cutoff)]
@@ -825,6 +1009,53 @@ def validate_result(session, run, parsed: ReviewResult):
                 raise ValueError("事件发布时间必须来自已引用原文，不得以收录时间代替")
             if not originals and item.occurred_at is not None:
                 raise ValueError("数值快照不能确定外部事件发生时间，发生时间必须留空")
+            existing = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
+                RiskCase.signal == f"sector:{item.event_key}"))
+            effective = _effective_event(item, existing, checked_at=_event_check_time(session, review.instrument_id, cutoff))
+            item_source_ids = list(dict.fromkeys([*effective.source_ids,
+                *(sid for view in effective.market_views for sid in view.source_ids),
+                *(effective.market_reaction.figure_source_ids if effective.market_reaction else [])]))
+            retained = {**notebook_evidence, **sources}
+            # Sparse edits keep the already verified nested references.
+            retained.update({source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
+                             if source.get("source_id") and source["source_id"] not in retained} if existing else {})
+            if any(sid not in retained for sid in item_source_ids):
+                raise ValueError("事件引用了未取得的来源")
+            item_sources = [retained[sid] for sid in item_source_ids]
+            if effective.market_reaction is not None:
+                reaction = effective.market_reaction
+                if reaction.status in {"available", "partial"} and not reaction.figure_source_ids:
+                    raise ValueError("市场反应必须引用留存的事件窗口计算")
+                for sid in reaction.figure_source_ids:
+                    previous_sources = {source["source_id"]: source for source in (existing.evidence_json or {}).get("sources", [])
+                                        if source.get("source_id")} if existing else {}
+                    source = notebook_evidence.get(sid) or previous_sources.get(sid) or {}
+                    data = source.get("data") or {}
+                    if (source.get("source_type") != "computed_metric" or source.get("instrument_id") != review.instrument_id
+                            or data.get("analysis_kind") != "event_market_reaction"):
+                        raise ValueError("市场反应必须引用当前标的留存的事件窗口计算")
+                    if data.get("status") != reaction.status:
+                        raise ValueError("市场反应可用状态必须与留存计算一致")
+                    factual_time = effective.occurred_at or effective.published_at
+                    if existing:
+                        previous = existing.evidence_json or {}
+                        if _same_progress(existing, effective, item_sources, material_only=True):
+                            factual_time = previous.get("development_at") or previous.get("occurred_at") or previous.get("published_at")
+                        elif (effective.recording_type == "update" and effective.occurred_at == previous.get("occurred_at")
+                                and effective.published_at != previous.get("published_at")):
+                            factual_time = effective.published_at or effective.occurred_at
+                    fact_date = (factual_time if factual_time and len(factual_time) == 10 else
+                        _event_check_time(session, review.instrument_id, datetime.fromisoformat(factual_time)).date().isoformat() if factual_time else "")
+                    if data.get("event_date") and fact_date and str(data["event_date"]) != fact_date:
+                        raise ValueError("市场反应窗口与事件日期不一致")
+            if existing is not None and _event_follow_up(existing.evidence_json or {}) != "watch" and effective.follow_up == "watch":
+                if _same_progress(existing, effective, item_sources, material_only=True) or _previously_recorded_progress(existing, effective, item_sources):
+                    raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
+            if existing is None:
+                for other in session.scalars(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id,
+                        RiskCase.signal.like("sector:%"))):
+                    if _same_progress(other, effective, item_sources, material_only=True):
+                        raise ValueError(f"同一事项已留存，请沿用事件标识 {other.signal.removeprefix('sector:')}")
             if item.action != "new" and session.scalar(select(RiskCase).where(
                 RiskCase.instrument_id == review.instrument_id, RiskCase.signal == f"sector:{item.event_key}"
             )) is None:
@@ -872,6 +1103,12 @@ def apply_result(session, run, reply):
     ids = [review.instrument_id for review in parsed.reviews]
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
+    # PM follow-up controls and independent risk reviews can change this JSON
+    # while a model is running. Re-read under row locks before checking versions
+    # or preserving the risk authority; validation's identity-map copy may be old.
+    session.flush()
+    list(session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%"))
+        .order_by(RiskCase.case_id).with_for_update().execution_options(populate_existing=True)))
     for review in parsed.reviews:
         if review.research is None and not review.events and not review.themes and review.change_kind != "investment":
             continue
@@ -893,8 +1130,12 @@ def apply_result(session, run, reply):
         if "prior_events" in context:
             prior_events = {item["event_key"]: item for item in context["prior_events"] if item["instrument_id"] == review.instrument_id}
             current_events = {item["event_key"]: item for item in events_for_instruments(session, [review.instrument_id])}
-            for event in review.events:
-                before, after = prior_events.get(event.event_key), current_events.get(event.event_key)
+            referenced_keys = {event.event_key for event in review.events}
+            view = review.research.investment_view if review.research else None
+            if view is not None:
+                referenced_keys.update(key for item in [*(view.opportunities or []), *(view.risks or [])] for key in item.event_keys)
+            for key in referenced_keys:
+                before, after = prior_events.get(key), current_events.get(key)
                 before_id = before.get("event_version_id") or event_version_id(before["case_id"], max(1, len(before.get("history", [])))) if before else None
                 if before_id != (after or {}).get("event_version_id"):
                     raise ResearchVersionConflict("事件判断在本轮分析期间已有更新，本轮草稿已保留；请基于最新事件版本继续研究。")
@@ -927,36 +1168,74 @@ def apply_result(session, run, reply):
         for item in review.events:
             signal = f"sector:{item.event_key}"
             case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == review.instrument_id, RiskCase.signal == signal).order_by(RiskCase.created_at.desc()))
-            item = _effective_event(item, case)
-            item_sources = [sources[s] for s in item.source_ids]
-            if case is not None and _same_progress(case, item, item_sources) and (item.action != "resolved" or not case.trigger_active):
+            item = _effective_event(item, case, checked_at=_event_check_time(session, review.instrument_id, datetime.fromisoformat(context["cutoff"])))
+            source_ids = list(dict.fromkeys([*item.source_ids,
+                *(sid for view in item.market_views for sid in view.source_ids),
+                *(item.market_reaction.figure_source_ids if item.market_reaction else [])]))
+            retained = {**notebook_evidence, **sources}
+            if case is not None:
+                retained = {**{source["source_id"]: source for source in (case.evidence_json or {}).get("sources", [])
+                               if source.get("source_id")}, **retained}
+            item_sources = [retained[s] for s in source_ids]
+            material_change = case is None or not _same_progress(case, item, item_sources, material_only=True)
+            if case is not None and _same_progress(case, item, item_sources):
+                case.evidence_json = {**case.evidence_json, "checked_at": context["cutoff"]}
                 continue
+            if case is not None and _event_follow_up(case.evidence_json or {}) != "watch" and item.follow_up == "watch" and not material_change:
+                raise ValueError("重新开始主动跟进需要新实质进展，重复旧材料不能重新激活")
             discovered_at = datetime.now(UTC).isoformat()
             action = "new" if case is None else "resolved" if item.follow_up == "resolved" else "updated"
             case_id = case.case_id if case else uuid4().hex
-            revision = len(case.history_json or []) + 1 if case else 1
+            event_history = event_history_with_current_snapshot(case) if case else []
+            revision = len(event_history) + 1
             from watchlist_app.services.market_evidence import source_reference
             snapshot = {**item.model_dump(mode="json"), "action": action, "sources": [source_reference(source) for source in item_sources],
+                "source_views": _source_views(item_sources),
                 "coverage": coverage, "discovered_at": discovered_at, "run_id": run.entry_id,
                 "checked_at": context["cutoff"], "recorded_at": discovered_at,
                 "event_version_id": event_version_id(case_id, revision)}
             first_discovered = ((case.evidence_json or {}).get("discovered_at") or
                                 (case.created_at.isoformat() if case.created_at else None)) if case else None
+            previous = dict(case.evidence_json or {}) if case else {}
             if case is None:
-                case = RiskCase(case_id=case_id, instrument_id=review.instrument_id, signal=signal, status="open", history_json=[], trigger_active=False)
+                case = RiskCase(case_id=case_id, instrument_id=review.instrument_id, signal=signal, status="recorded", history_json=[], trigger_active=False)
                 session.add(case)
+            risk_assessment = previous.get("risk_assessment") or {"status": "active" if case.trigger_active else "not_submitted"}
+            if material_change and (item.direction == "risk" or (item.direction == "uncertain" and
+                    (item.importance_score or 0) >= 4 and item.impact_level in {"material", "major"})):
+                risk_assessment = {**risk_assessment, "status": "pending", "issue_key": f"{review.instrument_id}:{item.event_key}",
+                    "event_version_id": snapshot["event_version_id"], "source_ids": source_ids,
+                    "impact_explanation": item.impact_analysis or item.body, "observation_condition": item.next_watch,
+                    "submitted_at": discovered_at}
+            started = previous.get("follow_up_started_at")
+            if item.follow_up == "watch" and (not started or _event_follow_up(previous) != "watch"):
+                started = context["cutoff"]
+            development_at = previous.get("development_at") or previous.get("occurred_at") or previous.get("published_at")
+            if material_change:
+                # The event's original occurrence can remain unchanged while a
+                # later, dated original publishes a substantive development.
+                # Backfilled old facts keep their actual occurrence, never the
+                # collection clock, even if recorded during this run.
+                development_at = item.occurred_at or item.published_at
+                if previous and item.recording_type == "update":
+                    if item.occurred_at == previous.get("occurred_at") and item.published_at != previous.get("published_at"):
+                        development_at = item.published_at or item.occurred_at
+            snapshot.update(follow_up_started_at=started, follow_up_pinned=bool(previous.get("follow_up_pinned")),
+                material_change=material_change, development_at=development_at,
+                material_progress_at=discovered_at if material_change else previous.get("material_progress_at") or previous.get("progress_at"),
+                risk_assessment=risk_assessment)
             case.title, case.body, case.severity = item.title, item.body, "attention"
             case.evidence_json = {**snapshot, "importance": {"limited": "low", "material": "medium", "major": "high"}.get(item.impact_level), "discovered_at": first_discovered or discovered_at,
-                                  "progress_at": discovered_at}
+                                  "progress_at": snapshot["material_progress_at"]}
             factual_date = item.occurred_at or item.published_at
             case.observed_on = date.fromisoformat(factual_date[:10]) if factual_date else None
-            case.trigger_active = item.follow_up == "watch" and item.direction in {"risk", "uncertain"}
-            case.resolved_at = datetime.now(UTC) if item.follow_up == "resolved" else None
-            case.status = "resolved" if item.follow_up == "resolved" else "open" if item.follow_up == "watch" else "recorded"
-            case.history_json = [*(case.history_json or []), {"at": discovered_at, "action": action,
+            # Existing risk state belongs to risk review. Ending, resolving or
+            # transferring research follow-up never clears a live risk case.
+            case.history_json = [*event_history, {"at": discovered_at, "action": action,
                 "detail": item.body, "snapshot": {**snapshot, "status": case.status, "trigger_active": case.trigger_active}}]
-            changed_events = True
+            changed_events = changed_events or material_change
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
+        _bind_attention_evidence(session, review, notebook_evidence)
         notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"],
             research_plan=_review_research_plan(session, context, review)) if review.research is not None else None
         if notebook:
@@ -1057,8 +1336,21 @@ def daily_review_groups(session, *, now=None):
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
     now = now or datetime.now(UTC)
+    # Follow-up terms are calendar days, including non-trading days. Eligibility
+    # still comes exclusively from the existing authorized research universe.
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    relation, values = research_context_projection(session, {"follow_up": String, "follow_up_until": String}, json_column=RiskCase.evidence_json)
+    due_query = select(RiskCase.instrument_id, *(value.label(key) for key, value in values.items())).select_from(RiskCase)
+    if relation is not None:
+        due_query = due_query.join(relation, true())
+    overdue = set()
+    for row in research_projection_rows(session, due_query.where(RiskCase.instrument_id.in_(ids), RiskCase.signal.like("sector:%")),
+            {key: (key,) for key in values}, json_column=RiskCase.evidence_json):
+        market = _research_market(session, row.instrument_id)
+        if market and row.follow_up == "watch" and row.follow_up_until and row.follow_up_until <= now.astimezone(ZoneInfo(RESEARCH_TIMEZONES[market])).date().isoformat():
+            overdue.add(row.instrument_id)
     groups = [[iid] for iid in ids if (market := _research_market(session, iid)) is not None
-              and (iid in pending or _research_due(market, now))]
+              and (iid in pending or iid in overdue or _research_due(market, now))]
     reviews = latest_reviews(session, instrument_ids=[iid for group in groups for iid in group])
     # Resume the least recently attempted work first, including after a restart or date change.
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))

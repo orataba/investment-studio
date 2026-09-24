@@ -22,7 +22,10 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
     query = select(InstrumentDetail).where(InstrumentDetail.is_active.is_(True))
     if instrument_ids is not None:
         query = query.where(InstrumentDetail.instrument_id.in_(instrument_ids))
-    for instrument in session.scalars(query):
+    # Notes, manual thresholds and recalculation can refresh the same instrument.
+    # Serialize first creation as well as updates; case locks retain PM history.
+    for instrument in session.scalars(query.order_by(InstrumentDetail.instrument_id).with_for_update()
+            .execution_options(populate_existing=True)):
         iid = instrument.instrument_id
         risk = session.get(InstrumentRiskReadModel, iid)
         summary = session.get(InstrumentSummaryReadModel, iid)
@@ -71,8 +74,10 @@ def refresh_risk_cases(session: Session, instrument_ids: list[str] | None = None
                 signals["period_loss"] = dict(title="区间跌幅达到复核线", body=description + "。", severity="attention", observed_on=date.fromisoformat(breached[0]["end_date"]), evidence={"periods": breached, "return_kind": (series.get("metadata") or {}).get("return_kind")})
         for note in session.scalars(select(InstrumentResearchNote).where(InstrumentResearchNote.instrument_id == iid, InstrumentResearchNote.note_type == "risk", InstrumentResearchNote.deleted_at.is_(None))):
             signals[f"note:{note.note_id}"] = dict(title=note.title, body=note.body or note.summary, severity="observation" if note.importance == "low" else "attention", observed_on=note.note_date, evidence={"note_id": note.note_id, "source": note.source_refs, "importance": note.importance, "recorded_on": note.note_date.isoformat()})
-        existing = list(session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid, RiskCase.trigger_active.is_(True))))
-        active = {case.signal: case for case in existing if case.signal != "manual" and not case.signal.startswith("sector:")}
+        existing = list(session.scalars(select(RiskCase).where(RiskCase.instrument_id == iid, RiskCase.trigger_active.is_(True),
+            RiskCase.signal != "manual", ~RiskCase.signal.like("sector:%"))
+            .order_by(RiskCase.case_id).with_for_update().execution_options(populate_existing=True)))
+        active = {case.signal: case for case in existing}
         for signal, reading in signals.items():
             reading_date = reading.get("observed_on", observed_on)
             case = active.pop(signal, None)

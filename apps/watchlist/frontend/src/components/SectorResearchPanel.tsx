@@ -65,7 +65,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     setPollingPaused(false)
     async function load() {
       try {
-        const response = await fetchJson<ResearchResponse>(`/api/sector-research?${query}`, { signal: controller.signal })
+        const response = await fetchJson<ResearchResponse>(`/api/sector-research?${query}&include_events=false`, { signal: controller.signal })
         if (controller.signal.aborted) return
         setSnapshot({ query, data: response })
         const submittedReviews = response.sectors.filter((sector) => sector.latest_review?.run_id === submittedRun)
@@ -102,7 +102,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
     : sectors.some(sector => sector.latest_review?.status === 'failed') ? '最新更新未完成'
       : sectors.some(sector => sector.latest_review?.status === 'limited') ? '已更新，覆盖受限'
         : !sectors.length || sectors.some(sector => !completedReview(sector)) ? '尚未完成研究'
-          : sectors.every(sector => sector.latest_review?.change_kind === 'none') ? '已检查，无新增投资变化'
+          : sectors.every(sector => sector.latest_review?.change_kind === 'none') ? '本轮未发现新增重要变化'
             : sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '研究资料已更新' : '研究已更新'
   const coverage = [...new Set(sectors.flatMap(sector => sector.latest_review?.coverage || []))]
   const review = sectors[0]?.latest_review
@@ -118,7 +118,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
         </>}
       </div>
     </header>
-    {variant !== 'status' && <div className="research-report-status" aria-label="研究更新状态">{completed?.checked_at && <span>最近有效检查 <time dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}{data && <span>{statusSummary}</span>}</div>}
+    {variant !== 'status' && <div className="research-report-status" aria-label="研究更新状态">{completed?.checked_at && <span>最近有效检查 <time dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}{completed?.view_updated_at && <span>判断更新 <time dateTime={completed.view_updated_at}>{time(completed.view_updated_at)}</time></span>}{data && <span>{statusSummary}</span>}</div>}
     {data && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
     {error && <p role="alert">研究更新状态暂时无法读取：{error}</p>}
     {pollingPaused && <p role="status">研究仍在更新，已暂停自动刷新，可手动刷新查看进展。</p>}

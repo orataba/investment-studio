@@ -864,7 +864,8 @@ def _sum_period_transaction_buckets(
                 withdrawals += converted
 
         if transaction_type in EARNINGS_TRANSACTION_TYPES:
-            converted = convert_component(gross_amount, field="earnings", trade_date=effective_date, currency=currency)
+            income_amount = gross_amount + (fee_amount if transaction_type == "dividend_reinvestment" else 0.0)
+            converted = convert_component(income_amount, field="earnings", trade_date=effective_date, currency=currency)
             if converted is not None:
                 earnings += converted
 
@@ -7232,7 +7233,7 @@ def _build_contribution_daily_events(
                 group_key=group_key,
                 group_label=group_label,
                 field_name="income_cash_amount",
-                amount=gross_amount,
+                amount=gross_amount + (fee_amount if transaction_type == "dividend_reinvestment" else 0.0),
                 trade_date=as_of_date,
                 currency=currency,
             )
@@ -10481,7 +10482,7 @@ def build_contribution_entries_report(
                         bucket=bucket,
                         transaction=transaction,
                         component_kind="gross_amount",
-                        local_amount=gross_amount,
+                        local_amount=gross_amount + (fee_amount if transaction_type == "dividend_reinvestment" else 0.0),
                         base_currency=base_currency,
                         direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
@@ -11016,7 +11017,7 @@ def build_period_calculation_entries_report(
                     bucket=bucket,
                     transaction=transaction,
                     component_kind="gross_amount",
-                    local_amount=gross_amount,
+                    local_amount=gross_amount + (fee_amount if transaction_type == "dividend_reinvestment" else 0.0),
                     base_currency=base_currency,
                     direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,

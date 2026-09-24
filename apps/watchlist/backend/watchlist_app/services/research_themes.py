@@ -141,6 +141,42 @@ def theme_index(session, instrument_id, *, actor=None, active_only=False):
             and (not active_only or entry.context_json.get("theme_status") == "active")]
 
 
+def theme_summaries(session, instrument_id, *, actor=None):
+    """Read current cards without fetching notebook timelines or theme archives."""
+    from types import SimpleNamespace
+    from sqlalchemy import JSON, String, true
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    actor = actor or research_identity()
+    fields = {key: JSON for key in (
+        "instrument_id", "background", "author", "revision_number", "origin", "managed_by", "theme_key",
+        "close_reason", "source_ids", "updated_by", "updated_by_user_id", "updated_by_role", "recorded_via",
+        "source_run_id", "publication", "kind", "priority", "priority_reason", "pinned", "synthesis",
+        "latest_development", "next_check", "figure_source_ids", "reference", "last_reviewed_at",
+        "baseline_status", "baseline_requested_at", "sources", "migration_origin")}
+    fields.update(role=String, theme_status=String)
+    relation, payload = research_context_projection(session, fields)
+    columns = ("entry_id", "title", "body", "author_user_id", "responsible_user_id", "team_id", "created_at", "updated_at")
+    query = select(*(getattr(ResearchEntry, key) for key in columns),
+                   *(value.label(key) for key, value in payload.items())).select_from(ResearchEntry)
+    if relation is not None:
+        query = query.join(relation, true())
+    query = query.where(ResearchEntry.topic_id == f"dossier:{instrument_id}", payload["role"] == "research_theme",
+                       True if current_principal().local_unrestricted else ResearchEntry.team_id == actor["team_id"])
+    records = research_projection_rows(session, query, {key: (key,) for key in fields})
+    summaries = []
+    for row in records:
+        context = {key: getattr(row, key) for key in fields if getattr(row, key) is not None}
+        entry = SimpleNamespace(**{key: getattr(row, key) for key in columns}, context_json=context)
+        theme = theme_record(entry)
+        theme.pop("versions", None)
+        theme["sources"] = [{key: value for key, value in source.items()
+                             if key not in {"text", "body", "snapshot", "company", "data"}}
+                            for source in theme.get("sources", [])]
+        summaries.append(theme)
+    summaries.sort(key=lambda row: (row["status"] != "active", row["priority"] != "core", row["title"], row["theme_id"]))
+    return {"identity": actor, "themes": summaries, "active_limit": ACTIVE_THEME_LIMIT, "target_count": 5}
+
+
 def _validate_capacity(session, instrument_id, value, *, theme_id=None, actor=None):
     if value.status == "active" and sum(row["status"] == "active" and row["theme_id"] != theme_id
             for row in theme_index(session, instrument_id, actor=actor)) >= ACTIVE_THEME_LIMIT:
@@ -258,13 +294,13 @@ def _attach_event(session, instrument_id, theme_id, value, *, actor, timestamp):
         history.append({"at": current["recorded_at"], "action": "retained", "snapshot": {
             **case.evidence_json, "title": case.title, "body": case.body, "status": case.status,
             "trigger_active": case.trigger_active, "event_version_id": current["event_version_id"], "recorded_at": current["recorded_at"]}})
-    snapshot = {**case.evidence_json, "theme_ids": [*current["theme_ids"], theme_id], "follow_up": "watch",
+    snapshot = {**case.evidence_json, "theme_ids": [*current["theme_ids"], theme_id],
+        "follow_up": current["follow_up"] if current.get("follow_up_pinned") else "none",
+        "follow_up_reason": "由主题继续跟踪", "material_change": False,
         "next_watch": value.next_check or current["next_watch"] or "建立主题研究基线，明确下一次观察条件。",
         "event_version_id": event_version_id(case.case_id, len(history) + 1), "recorded_at": timestamp.isoformat(),
         "recorded_by": actor["display_name"], "recorded_by_role": "user"}
-    case.status = "open"
-    case.resolved_at = None
-    case.trigger_active = current["direction"] in {"risk", "uncertain"}
+    # Organizing research never creates, reopens or resolves a risk finding.
     case.evidence_json = snapshot
     case.history_json = [*history, {"at": timestamp.isoformat(), "action": "organized", "detail": "投资经理将该事项纳入重点主题，原事实与判断保留。",
         "snapshot": {**snapshot, "title": case.title, "body": case.body, "status": case.status, "trigger_active": case.trigger_active}}]
@@ -460,12 +496,13 @@ def research_progress(session, instrument_id, *, theme_id=None, note_id=None, ac
     return progress
 
 
-def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None):
+def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None, theme_id=None):
     from watchlist_app.api.routes.research import _serialize_note
     from watchlist_app.repositories.sqlalchemy.research import SQLAlchemyInstrumentResearchRepository
     actor = actor or research_identity()
     notes = notes if notes is not None else SQLAlchemyInstrumentResearchRepository().list_notes(session, instrument_id)
-    themes = theme_index(session, instrument_id, actor=actor)
+    themes = ([theme_record(get_theme(session, instrument_id, theme_id, actor=actor))] if theme_id
+              else theme_index(session, instrument_id, actor=actor))
     from watchlist_app.services.research_activity import research_activity, review_receipts, judgment_changed_at, judgment_review_receipt
     activity = activity if activity is not None else research_activity(session, instrument_id, actor=actor, include_theme_progress=True)
     updates = activity["updates"]

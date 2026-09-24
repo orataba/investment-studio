@@ -33,13 +33,13 @@ function settings(): ConcentrationSettingsRecord {
 }
 function renderPanel(canEdit = true) {
   const access: PortfolioAccess = { portfolio_id: '3', team_id: 'team', role: canEdit ? 'editor' : 'viewer', can_read: true, can_edit: canEdit, can_manage: false }
-  return renderPortfolioPage(<PortfolioAccessContext.Provider value={access}><ConcentrationPanel portfolioId="3" asOfDate="2026-09-08" /></PortfolioAccessContext.Provider>, '/portfolios/3/holdings', '/portfolios/:portfolioId/holdings')
+  return renderPortfolioPage(<PortfolioAccessContext.Provider value={access}><ConcentrationPanel portfolioId="3" asOfDate="2026-09-08" /></PortfolioAccessContext.Provider>, '/portfolios/3/risk', '/portfolios/:portfolioId/risk')
 }
 function renderAlerts() {
   return renderPortfolioPage(<ConcentrationAlerts portfolioId="3" asOfDate="2026-09-08" />, '/portfolios/3/overview', '/portfolios/:portfolioId/overview')
 }
 
-describe('Holdings concentration and Overview alerts', () => {
+describe('Risk concentration and Overview alerts', () => {
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear()
     mocks.getConcentration.mockResolvedValue(projection())
@@ -164,7 +164,7 @@ describe('Holdings concentration and Overview alerts', () => {
     expect(summary).toHaveTextContent('Technology')
     expect(summary).not.toHaveTextContent('Within FCN')
     expect(summary).toHaveTextContent('1 configured limits cannot be assessed')
-    expect(screen.getByRole('link', { name: 'View holding exposures' })).toHaveAttribute('href', '/portfolios/3/holdings?view=concentration&as_of_date=2026-09-08')
+    expect(screen.getByRole('link', { name: 'View concentration' })).toHaveAttribute('href', '/portfolios/3/risk?concentration_date=2026-09-08#concentration')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 

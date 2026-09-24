@@ -217,3 +217,23 @@ it('keeps attention selected when a located instrument only has an opportunity o
   expect(screen.queryByText('a 风险事项')).toBeNull()
   expect(screen.queryByText('已处理事项')).toBeNull()
 })
+
+it('keeps the authoritative unresolved risk visible after research stops following and changes direction', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [
+    { ...caseFor('a'), signal: 'sector:stable', evidence_json: { direction: 'opportunity', follow_up: 'none', risk_assessment: { status: 'active' } } },
+  ] })
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  expect(await screen.findByRole('button', { name: '重点关注 1' })).toBeTruthy()
+  expect(screen.getByText('a 风险事项')).toBeTruthy()
+})
+
+it('separates pending risk assessment from confirmed risk when the officer has not completed its review', async () => {
+  request.mockResolvedValue({ instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [
+    { ...caseFor('a'), signal: 'sector:stable', trigger_active: false, evidence_json: { direction: 'risk', risk_assessment: { status: 'pending' } } },
+  ] })
+  render(<WatchlistRiskDrawer watchlistId="3" watchlistName="当前列表" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  expect(await screen.findByRole('button', { name: '重点关注 0' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '待风控复核 1' }))
+  expect(screen.getByText('a 风险事项')).toBeTruthy()
+  expect(screen.getByText('已提交／待复核')).toBeTruthy()
+})

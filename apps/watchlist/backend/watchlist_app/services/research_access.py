@@ -39,39 +39,40 @@ def topic_portfolio_ids(session, topic):
 _JSON_NUL_ESCAPE = JSON_NUL_ESCAPE
 
 
-def _postgres_projection_context():
+def _postgres_projection_context(json_column=None):
     from sqlalchemy import JSON, Text, case, cast, func
-    text_value = cast(ResearchEntry.context_json, Text)
+    json_column = ResearchEntry.context_json if json_column is None else json_column
+    text_value = cast(json_column, Text)
     affected = case((func.strpos(text_value, r"\u0000") > 0, text_value.op("~")(_JSON_NUL_ESCAPE)), else_=False)
     # PostgreSQL json accepts a retained NUL escape but its extraction functions
     # reject it, even in an unrelated field. Normalize only the SQL working copy;
     # research_projection_rows restores selected values from the untouched JSON.
     safe = case((affected, cast(func.regexp_replace(text_value, _JSON_NUL_ESCAPE, "\\1\ufffd", "g"), JSON)),
-                else_=ResearchEntry.context_json)
+                else_=json_column)
     return affected, safe
 
 
-def research_context_projection(session, fields):
+def research_context_projection(session, fields, *, json_column=None):
     """Parse large PostgreSQL JSON once per row, returning only requested fields."""
     from sqlalchemy import Boolean, JSON, column, func
     if session.get_bind().dialect.name == "postgresql":
-        _, safe = _postgres_projection_context()
+        _, safe = _postgres_projection_context(json_column)
         relation = func.json_to_record(safe).table_valued(
             *(column(name, kind) for name, kind in fields.items())
         ).render_derived(with_types=True).lateral("run_context")
         return relation, {name: relation.c[name] for name in fields}
     values = {}
     for name, kind in fields.items():
-        value = ResearchEntry.context_json[name]
+        value = (ResearchEntry.context_json if json_column is None else json_column)[name]
         values[name] = value if kind is JSON else value.as_boolean() if kind is Boolean else value.as_string()
     return None, values
 
 
-def research_projection_rows(session, query, fields):
-    return list(iter_research_projection_rows(session, query, fields))
+def research_projection_rows(session, query, fields, *, json_column=None):
+    return list(iter_research_projection_rows(session, query, fields, json_column=json_column))
 
 
-def iter_research_projection_rows(session, query, fields):
+def iter_research_projection_rows(session, query, fields, *, json_column=None):
     """Stream one retained context at a time, including PostgreSQL's wire buffer.
 
     fields maps selected labels to their paths in that original JSON. This keeps
@@ -83,7 +84,7 @@ def iter_research_projection_rows(session, query, fields):
     from sqlalchemy import Text, and_, case, cast, false, func, or_
     postgres = session.get_bind().dialect.name == "postgresql"
     if postgres:
-        affected, _ = _postgres_projection_context()
+        affected, _ = _postgres_projection_context(json_column)
         # The SQL working copy replaces each actual NUL with a literal U+FFFD.
         # An unaffected selected field is already exact even when an unrelated
         # retained source contains NUL. Restore the original only if a selected
@@ -92,7 +93,7 @@ def iter_research_projection_rows(session, query, fields):
         selected = query.selected_columns
         needs_original = or_(*(func.strpos(cast(selected[name], Text), "\ufffd") > 0
                                for name in fields)) if fields else false()
-        query = query.add_columns(case((and_(affected, needs_original), ResearchEntry.context_json))
+        query = query.add_columns(case((and_(affected, needs_original), ResearchEntry.context_json if json_column is None else json_column))
                                   .label("_original_context"))
     result = session.execute(query.execution_options(yield_per=1))
     try:

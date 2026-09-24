@@ -549,8 +549,13 @@ remaining current members through the same authorization and publication checks.
 It can recover a failed draft without recollecting its original evidence.
 Underlying data gaps remain visible and must not be mistaken for execution
 failure or complete research coverage. A completed run alone is insufficient:
-check the accepted review, current judgment and suggestion, source dates, figures,
-tracked developments and actual reading experience.
+check the accepted review, current opportunity/risk judgment, source dates,
+applicable figures, tracked developments and actual reading experience. V1
+readiness requires a nonempty current judgment whose baseline is established;
+an explicitly limited assessment is valid. Decision briefs and deep modules
+are optional, and an older optional brief does not force another paid run.
+This check establishes a readable publication, not investment quality or full
+data coverage.
 
 After the batch and report checks, restore the original worker setting, restart
 only Watchlist API, and verify the automatic worker is running. Retain the
@@ -586,7 +591,7 @@ limits, retaining original JSON audit evidence and all dates/actors. Future-date
 revisions must not be skipped. Verify displayed-date settings and the latest
 optimistic revision separately. Concentration switches and limits do not trigger
 Research staleness; combined target/limit saves must either commit both or neither.
-The current Research method is `global_leaf_scalar_targets_v5`; target snapshot
+The current Research method is `global_leaf_scalar_targets_v6`; target snapshot
 schema 3 and planning fingerprint 7 keep earlier saved results visibly stale.
 New runs freeze the actual inception EOD starting book and solution tree;
 risk warm-up postpones rebalancing without replacing initial holdings with cash.

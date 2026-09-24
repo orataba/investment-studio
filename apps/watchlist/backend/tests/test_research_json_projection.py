@@ -1,4 +1,4 @@
-"""Read-only PostgreSQL literals: no application tables, schema or records written."""
+"""Read-only PostgreSQL literal queries; scoped receipts use an isolated migrated DB."""
 import json
 import os
 from datetime import UTC, datetime
@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, JSON, String, cast, create_engine, event, liter
 from sqlalchemy.orm import Session
 
 from watchlist_app.services import research_access as access
+from .test_postgres_instrument_registry_constraints import postgres_watchlist_env
 
 
 @pytest.mark.postgresql_integration
@@ -88,17 +89,15 @@ def test_projection_preserves_nul_originals_and_literal_escapes_with_one_select(
 
 
 @pytest.mark.postgresql_integration
-def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypatch):
+def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypatch, postgres_watchlist_env):
     from watchlist_app.db.models import workbench
     from watchlist_app.services import research_activity as activity
 
-    url = os.environ.get("INVESTMENT_STUDIO_TEST_POSTGRES_URL")
-    if not url:
-        pytest.skip("INVESTMENT_STUDIO_TEST_POSTGRES_URL is not explicitly configured")
+    url = postgres_watchlist_env["database_url"]
     cutoff = "2026-09-03T00:00:00+00:00"
     reflection = {"status": "reviewed", "summary": "retained\x00receipt; literal " + r"\u0000",
                   "reviewed_update_ids": ["research:original"]}
-    context = {"cutoff": cutoff, "reviews": {"xlk": {"status": "limited", "reflection": reflection}},
+    context = {"instrument_ids": ["xlk"], "cutoff": cutoff, "reviews": {"xlk": {"status": "limited", "reflection": reflection}},
                "unselected_source": "retained\x00source"}
     fixtures = [
         ("published", "team-a", "completed", None, context),
@@ -107,8 +106,10 @@ def test_review_receipts_preserve_nul_text_clocks_and_publication_scope(monkeypa
         ("failed", "team-a", "failed", datetime(2026, 9, 6, tzinfo=UTC), context),
         ("rejected-review", "team-a", "completed", datetime(2026, 9, 7, tzinfo=UTC),
          {**context, "reviews": {"xlk": {"status": "failed", "reflection": reflection}}}),
+        ("outside-run-scope", "team-a", "completed", datetime(2026, 9, 8, tzinfo=UTC),
+         {**context, "instrument_ids": ["other-instrument"]}),
         ("literal-only", "team-a", "completed", datetime(2026, 9, 2, tzinfo=UTC),
-         {"reviews": {"xlk": {"status": "completed", "reflection": {"status": "reviewed",
+         {"instrument_ids": ["xlk"], "reviews": {"xlk": {"status": "completed", "reflection": {"status": "reviewed",
              "summary": r"literal \u0000", "reviewed_update_ids": ["research:literal"]}}}}),
     ]
     selects = [select(literal(topic).label("entry_id"), literal(topic).label("topic_id"), literal(team).label("team_id"),

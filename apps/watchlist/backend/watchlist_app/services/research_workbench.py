@@ -179,6 +179,9 @@ def conversation_context(session: Session, topic: ResearchTopic, question: str, 
         linked_update = resolve_event_reference(session, reference["instrument_id"], reference["event_case_id"], reference.get("event_version_id"))
     referenced_versions = []
     from watchlist_app.services.research_dossier import read_dossier_version
+    if reference.get("pm_note_id"):
+        version_id = f"pm:{reference['pm_note_id']}:{reference['pm_note_revision']}"
+        referenced_versions.append(read_dossier_version(session, reference["instrument_id"], version_id))
     for key in ("notebook_version_id", "investment_view_version_id", "forecast_version_id", "theme_version_id"):
         if reference.get(key):
             version = read_dossier_version(session, reference["instrument_id"], reference[key])

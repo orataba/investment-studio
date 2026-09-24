@@ -145,8 +145,11 @@ def submit_review_receipts(receipts: dict) -> dict:
         _Checks.model_validate(result)
     except jsonschema.ValidationError as error:
         # The rejected value may contain private original text; expose only the
-        # schema location and rule so the reviewer can repair its own submission.
-        raise ValueError(f"Invalid receipt at {list(error.absolute_path)}: {error.validator}") from error
+        # schema location/rule and missing schema field names, never its values.
+        detail = error.validator
+        if error.validator == "required" and isinstance(error.instance, dict):
+            detail += "; missing fields: " + ", ".join(key for key in error.validator_value if key not in error.instance)
+        raise ValueError(f"Invalid receipt at {list(error.absolute_path)}: {detail}") from error
     reads_path = Path(os.environ["INVESTMENT_STUDIO_REVIEW_READS"])
     reads = [json.loads(line) for line in reads_path.read_text().splitlines()] if reads_path.exists() else []
     for section, value in (("draft_reviews", state["packet"]["draft_reviews"]), ("response_schema", state["response_schema"])):

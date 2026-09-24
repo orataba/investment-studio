@@ -82,6 +82,26 @@ class ResearchFact(BaseModel):
     source_ids: list[str] = Field(min_length=1)
 
 
+class ResearchAttentionItem(BaseModel):
+    """A sourced opportunity or risk within the single current analyst view."""
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    title: str = Field(min_length=1, max_length=300)
+    explanation: str = Field(min_length=1, max_length=3000)
+    next_watch: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(default_factory=list)
+    event_keys: list[str] = Field(default_factory=list)
+    theme_ids: list[str] = Field(default_factory=list)
+    figure_source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def traceable(self):
+        if not any((self.source_ids, self.event_keys, self.theme_ids, self.figure_source_ids)):
+            raise ValueError("机会与风险条目须引用对应事件、主题或已取得的依据")
+        return self
+
+
 class InvestmentView(BaseModel):
     """The analyst's current judgment, separate from the portfolio manager's views."""
     direction: str = Field(default="", max_length=3000)
@@ -93,6 +113,21 @@ class InvestmentView(BaseModel):
     invalidation: str = Field(default="", max_length=3000, description="哪些可观察的证据会要求改变或撤回当前判断；不是任意价格止损。")
     next_check: str = Field(default="", max_length=2000, description="下一次需要验证的关键事实或条件；可关联持续研究问题，不要求每日产生新结论。")
     source_ids: list[str] = Field(default_factory=list)
+    opportunities: list[ResearchAttentionItem] | None = Field(default=None,
+        description="Current sourced opportunities. Omit to preserve; [] explicitly clears. Not an exclusive rating.")
+    risks: list[ResearchAttentionItem] | None = Field(default=None,
+        description="Current unresolved risks. No news, event expiry or theme closure does not remove a risk.")
+    coverage_status: Literal["assessed", "limited", "not_established"] | None = None
+    coverage_note: str = Field(default="", max_length=3000,
+        description="Actual checked scope and limitations, separate from investment direction and run success.")
+
+    @model_validator(mode="after")
+    def unique_attention(self):
+        for items in (self.opportunities, self.risks):
+            keys = [item.key for item in items or []]
+            if len(set(keys)) != len(keys):
+                raise ValueError("同一机会或风险条目在当前判断中重复出现")
+        return self
 
 
 class DecisionBrief(BaseModel):
@@ -215,6 +250,12 @@ def notebook_current_view(notebook: dict | None) -> dict | None:
     if notebook is None:
         return None
     result = deepcopy(notebook)
+    if isinstance(result.get("investment_view"), dict):
+        # None means a historical assessment never supplied structured lists;
+        # it must not be rendered as an assessed absence of risk.
+        for field in ("opportunities", "risks", "coverage_status"):
+            result["investment_view"].setdefault(field, None)
+        result["investment_view"].setdefault("coverage_note", "")
     if result.get("decision_brief"):
         result["decision_brief"]["needs_review"] = (
             result["decision_brief"].get("basis_view_version_id") != (result.get("investment_view") or {}).get("version_id"))
@@ -554,6 +595,11 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
         for sid in module.figure_source_ids:
             if sources[sid].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
                 raise ValueError("研究图表必须引用已留存的数值计算、持仓或预期证据")
+    if notebook.investment_view is not None:
+        for item in [*(notebook.investment_view.opportunities or []), *(notebook.investment_view.risks or [])]:
+            for sid in item.figure_source_ids:
+                if sources[sid].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
+                    raise ValueError("机会与风险的数值依据必须引用已留存的数值计算、持仓或预期证据")
     for change in notebook.changes:
         if cutoff is not None and change.baseline_as_of and change.baseline_as_of > cutoff.date():
             raise ValueError("变化的对照基准日期不能晚于本轮研究截止")

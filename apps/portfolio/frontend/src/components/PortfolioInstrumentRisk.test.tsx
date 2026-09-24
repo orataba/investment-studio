@@ -19,6 +19,29 @@ vi.mock('../lib/api', () => ({ requestInstrumentRisk: request, getHoldingsWorksp
 vi.mock('../../../../../packages/ui/src/RiskOfficerPanel', () => ({ default: ({ scopeQuery, canRun }: { scopeQuery: string; canRun: boolean }) => <span data-testid="officer-scope" data-can-run={canRun}>{scopeQuery}</span> }))
 beforeEach(() => { request.mockReset(); getHoldingsWorkspace.mockReset(); Object.assign(permissions, { can_write_team_research: true, can_read: true }) })
 
+it('retains independently assessed risk after research follow-up stops and separates pending leads', async () => {
+  const holding = holdingFixture()
+  const id = holding.instrument_core!.instrument_id
+  const base = { instrument_id: id, signal: 'sector:funding', severity: 'attention', status: 'open',
+    created_at: '2026-09-25', updated_at: '2026-09-25', history_json: [] }
+  request.mockResolvedValue({ instruments: [{ instrument_id: id, name: '当前持仓' }], cases: [
+    { ...base, case_id: 'active', title: '原风险仍未解除', body: '跟进停止不改变风险评估', trigger_active: true,
+      evidence_json: { direction: 'opportunity', follow_up: 'none', risk_assessment: { status: 'active' } } },
+    { ...base, case_id: 'active-pending', title: '既有风险有新进展待评估', body: '原风险继续有效', trigger_active: true,
+      evidence_json: { direction: 'risk', follow_up: 'none', risk_assessment: { status: 'pending' } } },
+    { ...base, case_id: 'pending', title: '新线索等待核查', body: '不能冒充已确认风险', trigger_active: false,
+      evidence_json: { direction: 'uncertain', follow_up: 'watch', risk_assessment: { status: 'pending' } } },
+  ] })
+  render(<MemoryRouter><PortfolioInstrumentRisk portfolioId="3" workspace={holdingsWorkspaceFixture({ rows: [holding] })} onAskAssistant={vi.fn()} /></MemoryRouter>)
+  await screen.findByText('原风险仍未解除')
+  expect(screen.getByText('既有风险有新进展待评估')).toBeInTheDocument()
+  expect(screen.getByText('风险仍有效 · 新进展待复核')).toBeInTheDocument()
+  expect(screen.queryByText('新线索等待核查')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /待风控复核/ }))
+  expect(screen.getByText('新线索等待核查')).toBeInTheDocument()
+  expect(screen.getByText('已提交／待复核')).toBeInTheDocument()
+})
+
 it('keeps team-reader risk records readable without shared write controls and allows portfolio analysis', async () => {
   permissions.can_write_team_research = false
   const holding = holdingFixture()

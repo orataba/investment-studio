@@ -530,6 +530,33 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
     from watchlist_app.services.research_notebook import notebook_source_ids
     from watchlist_app.services.market_evidence import hydrate_source
     require_instrument(session, instrument_id)
+    # Event versions use their stable case ID plus revision. Their evidence is
+    # retained with the event, and may never have appeared in a notebook.
+    from watchlist_app.db.models.workbench import RiskCase
+    event_identifier = version_id.removeprefix("event:")
+    event_parts = event_identifier.split(":")
+    if len(event_parts) == 2 and event_parts[0] and event_parts[1].isdigit():
+        case_id, _ = event_identifier.rsplit(":", 1)
+        case = session.get(RiskCase, case_id)
+        if case is not None and (case.instrument_id != instrument_id or not case.signal.startswith("sector:")):
+            raise LookupError("当前标的没有这个已保存的事件版本")
+        if case is not None and case.instrument_id == instrument_id and case.signal.startswith("sector:"):
+            from watchlist_app.services.sector_research import event_record
+            current = event_record(case)
+            snapshots = [(row.get("snapshot"), row.get("at")) for row in current["history"] if row.get("snapshot")]
+            if current["event_version_id"] == event_identifier and not snapshots:
+                snapshots.append(({**case.evidence_json, "event_version_id": event_identifier}, current["recorded_at"]))
+            value = next((row for row, _ in snapshots if row.get("event_version_id") == event_identifier), None)
+            if value is None:
+                raise LookupError("当前事件没有这个已保存的版本")
+            cutoff = value.get("checked_at") or value.get("recorded_at")
+            raw = next((row["snapshot"] for index, row in enumerate(case.history_json or [], 1)
+                        if row.get("snapshot") and (row["snapshot"].get("event_version_id") or f"{case.case_id}:{index}") == event_identifier), None) or case.evidence_json
+            sources = [hydrate_source(source, cutoff=datetime.fromisoformat(cutoff) if cutoff else None)
+                       for source in raw.get("sources", [])]
+            return serialize_payload({"instrument_id": instrument_id, "version_id": version_id, "kind": "event",
+                "value": value, "sources": sources, "information_cutoff": cutoff, "recorded_at": value.get("recorded_at"),
+                "usage_note": "该事件版本实际留存的原文与数值依据，不使用后续同名来源替换。"})
     if version_id.startswith("theme:"):
         from watchlist_app.services.research_themes import get_theme, theme_record
         try:
@@ -607,7 +634,7 @@ def _review_cases(instrument_id: str, notebook: dict | None) -> list[dict]:
     return records
 
 
-def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None) -> dict:
+def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None, current_only=False) -> dict:
     """Read materials, methods and completed notebooks without creating records."""
     from watchlist_app.services.research_notebook import retained_public_sources
     from watchlist_app.services.research_themes import themes_view
@@ -619,6 +646,18 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
     instrument = require_instrument(session, instrument_id)
     mandate = read_mandate(session, instrument_id)
     research_plan = plan_for_mandate(mandate["registration"], mandate)
+    if current_only:
+        # The four-zone page gets event/theme summaries separately. Its initial
+        # notebook read must not hydrate the historical activity/source corpus.
+        notebook, _ = _notebooks(session, instrument_id, False)
+        return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
+            "instrument_type": instrument.instrument_type, "research_plan": research_plan,
+            "frameworks": method_library()["frameworks"], "mandate": mandate,
+            "available_modules": [{key: item[key] for key in ("id", "title", "version")}
+                                  for item in method_library()["frameworks"]],
+            "notebook": notebook, "notebook_history": [], "themes": [], "pm_views": [],
+            "materials": [], "historical_cases": [], "historical_case_limitations": [],
+            "prior_sources": [], "review_agenda": {}, "current_only": True})
     versions = research_repository.list_note_revisions(session, instrument_id)
     notes = research_repository.list_notes(session, instrument_id)
     from watchlist_app.services.research_views import note_sources, read_current_stance

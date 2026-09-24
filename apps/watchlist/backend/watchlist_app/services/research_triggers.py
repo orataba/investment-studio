@@ -203,6 +203,26 @@ def _risk_changes(session, instrument_id, since, now):
     return changes
 
 
+def numeric_monitor_inputs(session, instrument_id):
+    """Compare retained business inputs, never collection IDs or refresh clocks."""
+    from watchlist_app.db.models import InstrumentChartReadModel, InstrumentExposureHoldingsReadModel
+    chart_payload = session.scalar(select(InstrumentChartReadModel.payload_json).where(
+        InstrumentChartReadModel.instrument_id == instrument_id)) or {}
+    chart = chart_payload.get("research_returns") or {}
+    holdings = session.scalar(select(InstrumentExposureHoldingsReadModel.payload_json).where(
+        InstrumentExposureHoldingsReadModel.instrument_id == instrument_id)) or {}
+    metadata = chart.get("metadata") or {}
+    return {"series": {"points": [{key: point.get(key) for key in ("date", "value", "status")}
+                for point in (chart.get("points") or [])[-51:]],
+            "currency": chart.get("currency"), "frequency": chart_payload.get("frequency"),
+            "status": chart_payload.get("return_series_status"),
+            "metadata": {key: metadata.get(key) for key in ("currency", "return_kind", "frequency", "calculation_version", "quote_basis")}},
+        "holdings": {"rows": sorted([{key: row.get(key) for key in (
+                "holding_name", "holding_type", "portfolio_weight", "currency")}
+                for row in holdings.get("rows") or []], key=lambda row: (str(row["holding_name"]), str(row["holding_type"]))),
+            "as_of_date": (holdings.get("snapshot_metadata") or {}).get("as_of_date")}}
+
+
 def _due_items(session, instrument_id, context, since, now):
     from watchlist_app.services.sector_research import _research_market, RESEARCH_TIMEZONES
     market = _research_market(session, instrument_id)
@@ -212,6 +232,23 @@ def _due_items(session, instrument_id, context, since, now):
     notebook = review.get("research") or dossier.get("notebook") or {}
     inactive_themes = {theme["theme_id"] for theme in dossier.get("themes", []) if theme.get("status") != "active"}
     due = []
+    from watchlist_app.services.sector_research import event_record
+    attempted = _previous_trigger(context, instrument_id).get("coverage_cursor", {}).get("due_event_versions", {})
+    attempted_at = _attempted_at(_previous_trigger(context, instrument_id).get("coverage_cursor", {}))
+    attempted_today = bool(attempted_at and _instant(attempted_at).astimezone(zone or UTC).date() == now.astimezone(zone or UTC).date())
+    today = now.astimezone(zone or UTC).date().isoformat()
+    for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id == instrument_id, RiskCase.signal.like("sector:%"))):
+        if not case.signal.startswith("sector:"):
+            continue
+        event = event_record(case)
+        if (event["follow_up"] != "watch" or not event.get("follow_up_until")
+                or event["follow_up_until"] > today or (attempted_today and attempted.get(case.case_id) == event["event_version_id"])):
+            continue
+        due.append({"kind": "event_follow_up_due", "key": event["event_key"], "case_id": case.case_id,
+            "event_version_id": event["event_version_id"], "due_at": event["follow_up_until"], "title": event["title"],
+            "pinned": event["follow_up_pinned"], "next_observation_on": event["next_observation_on"],
+            "risk_still_active": case.trigger_active,
+            "note": "到期待复核；完成收尾或明确延期，资料不可用时保留跟进，不能自动解除风险。"})
     for kind, items, field, status in (
         ("forecast_review", notebook.get("forecasts", []), "review_on", "active"),
         ("scheduled_event_check", notebook.get("catalysts", []), "scheduled_at", "scheduled"),
@@ -264,6 +301,8 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         revisions = _revised_originals(text_store(), originals, dependency_cursor, now)
         documents = list({row["source_id"]: row for row in [*documents, *revisions]}.values())
     risk_changes = _risk_changes(session, instrument_id, since, now)
+    prior_numerical = prior_context.get("numeric_monitor_inputs", {}).get(instrument_id)
+    numerical_changed = prior_numerical is not None and prior_numerical != numeric_monitor_inputs(session, instrument_id)
     due = _due_items(session, instrument_id, prior_context, since, now)
     attempted = prior_context.get("attempted_theme_baselines", {})
     dossier = next((row for row in prior_context.get("research_dossiers", []) if row["instrument_id"] == instrument_id), {})
@@ -277,6 +316,8 @@ def research_trigger(session, instrument_id, prior_context, *, now):
         reasons.append({"kind": "new_research_sources", "reason": "已研究范围出现新的、实质修订或撤回的来源资料。", "sources": documents})
     if risk_changes:
         reasons.append({"kind": "quantitative_risk_change", "reason": "已有复核规则出现新触发或实质变化。", "cases": risk_changes})
+    if numerical_changed:
+        reasons.append({"kind": "quantitative_inputs_changed", "reason": "留存价格或实际披露持仓发生变化，需要更新适用量化观察。"})
     if due:
         reasons.append({"kind": "research_check_due", "reason": "已绑定的研究观察到达检查时间。", "items": due})
     if not reasons:
@@ -284,4 +325,5 @@ def research_trigger(session, instrument_id, prior_context, *, now):
     return {"instrument_id": instrument_id, "reasons": reasons, "coverage_cursor": {
         "attempted_at": now.isoformat(), "last_successful_review_cutoff": prior_context.get("last_successful_review_cutoff"),
         "previous_cutoff": since.isoformat(), "market_queries": queries,
+        "due_event_versions": {row["case_id"]: row["event_version_id"] for row in due if row.get("case_id")},
     }}

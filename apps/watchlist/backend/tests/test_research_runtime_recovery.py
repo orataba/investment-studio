@@ -150,19 +150,120 @@ def test_generation_recovery_reuses_saved_computations_and_keeps_original_clock(
         assert run.context_json["input_snapshot_cutoff"] == context["input_snapshot_cutoff"]
 
 
-def test_native_output_limit_marker_is_recorded_as_generation_failure(client, monkeypatch):
+@pytest.mark.parametrize('reason,error_type', [('max-tokens', 'OutputLimitExceeded'),
+                                              ('content-filter', 'ProviderContentFilter')])
+def test_native_output_limit_marker_is_recorded_as_generation_failure(client, monkeypatch, reason, error_type):
     from studio_identity import current_principal
     save_run({"sector_run": True}, status="queued")
     monkeypatch.setattr(sector_research, "prepare_run", lambda *args: None)
     monkeypatch.setattr(runner, "resolve_token", lambda *args: current_principal())
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(
-        communicate=lambda **kw: ("", 'private provider text\nRESEARCH_HARNESS_END {"reason":"max-tokens"}\n'), returncode=1))
+        communicate=lambda **kw: ("", 'private provider text\nRESEARCH_HARNESS_END {"reason":"' + reason + '"}\n'), returncode=1))
     runner._run_analysis("recovery")
     with get_session_factory()() as session:
         run = session.get(ResearchEntry, "recovery")
         assert run.status == "failed"
-        assert run.context_json["runtime_error"]["type"] == "OutputLimitExceeded"
+        assert run.context_json["runtime_error"]["type"] == error_type
         assert run.context_json["runtime_error"]["stage"] == "generation"
         assert run.context_json["runtime_error"]["retryable"] is False
         assert "事实核证" not in run.body and "private provider" not in str(run.context_json)
     assert runner._provider_failure('model text mentions max-tokens') is None
+
+
+@pytest.mark.parametrize('has_draft', [False, True])
+def test_first_attempt_timeout_recovers_only_a_persisted_bound_review(client, monkeypatch, has_draft):
+    from studio_identity import current_principal
+    cutoff = '2026-09-23T00:00:00Z'
+    save_run({'sector_run': True}, status='queued')
+    monkeypatch.setattr(sector_research, 'prepare_run', lambda *args: None)
+    monkeypatch.setattr(runner, 'resolve_token', lambda *args: current_principal())
+    monkeypatch.setattr(runner.os, 'killpg', lambda *args: None)
+    def communicate(**kwargs):
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, 'recovery')
+            run.context_json = {**run.context_json, 'input_snapshot_cutoff': cutoff, 'cutoff': cutoff,
+                **({'submitted_draft': {'reviews': [{'instrument_id': 'stock'}]}} if has_draft else {})}
+            session.commit()
+        raise runner.subprocess.TimeoutExpired('research', kwargs['timeout'])
+    monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: SimpleNamespace(
+        communicate=communicate, returncode=-15, pid=123, wait=lambda **kw: None))
+    runner._run_analysis('recovery')
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, 'recovery')
+        assert run.status == 'failed'
+        assert run.context_json['runtime_error']['stage'] == ('review' if has_draft else 'generation')
+        assert run.context_json['runtime_error']['retryable'] is has_draft
+        assert runner.queue_retry(session, run, now=run.completed_at.replace(tzinfo=UTC) + timedelta(seconds=60)) is has_draft
+        if has_draft:
+            assert run.context_json['submitted_draft']['reviews'] == [{'instrument_id': 'stock'}]
+            assert run.context_json['cutoff'] == cutoff
+            assert run.context_json['execution']['attempt'] == 1
+
+
+@pytest.mark.parametrize('run_kind', ['sector_run', 'risk_run'])
+@pytest.mark.parametrize('subject', ['reader', 'revoked_service'])
+def test_retry_rechecks_current_shared_write_authority(client, run_kind, subject):
+    from fastapi import HTTPException
+    from studio_identity import Principal, principal_context
+    actor = (Principal('operator', 'Operator', 'default', team_role='reader') if subject == 'reader' else
+             Principal(None, 'Research service', 'default', kind='service', service_id='watchlist', scopes=[]))
+    save_run({run_kind: True, 'research_actor': actor.to_dict(),
+              'runtime_error': {'type': 'ProviderRateLimit', 'retryable': True}},
+             completed=datetime.now(UTC) - timedelta(minutes=2))
+    with get_session_factory()() as session:
+        session.get(ResearchTopic, 'recovery').visibility = 'team'
+        session.commit()
+        with principal_context(actor), pytest.raises(HTTPException) as denied:
+            runner.queue_retry(session, session.get(ResearchEntry, 'recovery'))
+        assert denied.value.status_code == 403
+        assert session.get(ResearchEntry, 'recovery').status == 'failed'
+
+
+def test_risk_retry_keeps_bound_inputs_and_shares_the_existing_attempt_budget(client, monkeypatch):
+    from studio_identity import current_principal
+    from watchlist_app.services import risk_officer
+    stamp = datetime.now(UTC) - timedelta(minutes=2)
+    cutoff = '2026-09-23T00:00:00Z'
+    snapshot = {'scope': {'kind': 'instrument', 'id': 'stock'}, 'scope_available': True, 'retained_value': 7}
+    context = {'risk_run': True, 'risk_scope': {'instrument_id': 'stock'}, 'cutoff': cutoff,
+        'input_snapshot_cutoff': cutoff, 'risk_inputs': snapshot, 'submitted_risk_review': {'summary': 'saved draft'},
+        'runtime_error': {'type': 'ProviderRateLimit', 'retryable': True}, 'execution': {'attempt': 1}}
+    save_run(context, completed=stamp)
+    with get_session_factory()() as session:
+        assert runner.queue_retry(session, session.get(ResearchEntry, 'recovery'))
+        session.commit()
+    monkeypatch.setattr(risk_officer, 'prepare_run', lambda *args: pytest.fail('A risk retry must keep its original snapshot'))
+    monkeypatch.setattr(runner, 'resolve_token', lambda *args: current_principal())
+    monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: SimpleNamespace(
+        communicate=lambda **kw: ('', ''), returncode=0))
+    def publish(session, run, payload):
+        assert run.context_json['risk_inputs'] == snapshot
+        assert run.context_json['cutoff'] == cutoff
+        assert payload == context['submitted_risk_review']
+        run.status = 'completed'
+    monkeypatch.setattr(risk_officer, 'apply_result', publish)
+    runner._run_analysis('recovery')
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, 'recovery')
+        assert run.status == 'completed' and run.context_json['execution']['attempt'] == 2
+        run.status, run.completed_at = 'failed', stamp
+        run.context_json = {**run.context_json, 'runtime_error': context['runtime_error'],
+                           'execution': {**run.context_json['execution'], 'attempt': 3}}
+        session.commit()
+        assert not runner.queue_retry(session, run)
+
+
+@pytest.mark.parametrize('subject', ['reader', 'revoked_service'])
+def test_research_publication_rechecks_current_shared_write_authority(client, subject):
+    from fastapi import HTTPException
+    from studio_identity import Principal, principal_context
+    actor = (Principal('operator', 'Operator', 'default', team_role='reader') if subject == 'reader' else
+             Principal(None, 'Research service', 'default', kind='service', service_id='watchlist', scopes=[]))
+    save_run({'sector_run': True, 'instrument_ids': [], 'research_actor': actor.to_dict()}, status='running')
+    with get_session_factory()() as session:
+        session.get(ResearchTopic, 'recovery').visibility = 'team'
+        session.commit()
+        with principal_context(actor), pytest.raises(HTTPException) as denied:
+            sector_research.apply_result(session, session.get(ResearchEntry, 'recovery'), '{"reviews": []}')
+        assert denied.value.status_code == 403
+        assert 'reviews' not in session.get(ResearchEntry, 'recovery').context_json

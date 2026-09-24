@@ -1,5 +1,5 @@
 .concentration-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.concentration-toolbar-actions > label { display: flex; align-items: center; gap: 8px; }
+.concentration-toolbar-actions > label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .concentration-toolbar-actions select, .concentration-field select { min-width: 0; }
 .concentration-field input { height: 30px; font: inherit; font-weight: 400; color: var(--portfolio-ink); border: 1px solid var(--portfolio-line-strong); border-radius: 0; padding: 0 8px; background: transparent; min-width: 0; }
 .concentration-table-wrap { overflow-x: auto; }
@@ -34,9 +34,6 @@
 .concentration-allocation-settings { border-top: 1px solid #e2e8ec; margin-top: 24px; padding-top: 16px; }
 .concentration-allocation-contract { padding: 10px 0; }
 .concentration-allocation-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
-.concentration-view-tabs { display: flex; gap: 4px; }
-.concentration-view-tabs button { font: inherit; background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; }
-.concentration-view-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: #4d8790; }
 .concentration-alerts { margin-bottom: 16px; }
 .concentration-alerts p, .concentration-alerts ul { margin: 6px 0 0; }
 @media(max-width: 650px) {

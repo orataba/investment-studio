@@ -1,3 +1,4 @@
+.instrument-detail-page > .instrument-detail-shell { min-width: 0; }
 .fund-detail-hero .instrument-detail-headline { width: 100%; max-width: none; }
 .fund-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .fund-detail-title-row > h1 { min-width: 0; overflow-wrap: anywhere; }

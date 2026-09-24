@@ -233,7 +233,7 @@ Event-valued asset 和 derivative liability 不进入 covariance matrix，行级
 
 ## 集中度视图
 
-Holdings 的“敞口与集中度”独立于账面持仓表：直接证券按账户绝对市值求和，FCN 按剩余名义本金并在每套分类中分配一次；期权、现金和待结算不进入分子，组合账面 NAV 仍为分母。不得使用已跨账户净额合并的 `allocation` 替代 gross 敞口。期权未具备可靠 delta，不能将权利金、账面负债或执行价名义额作为 delta 敞口。
+Risk 的“集中度”独立于 Holdings 账面持仓表：直接证券按账户绝对市值求和，FCN 按剩余名义本金并在每套分类中分配一次；期权、现金和待结算不进入分子，组合账面 NAV 仍为分母。不得使用已跨账户净额合并的 `allocation` 替代 gross 敞口。期权未具备可靠 delta，不能将权利金、账面负债或执行价名义额作为 delta 敞口。
 
 投影行包括 `exposure_base`、`known_exposure_base`、`weight`、`lower_bound_weight`、`limit_weight`、`headroom_weight`、`status`、来源和覆盖说明。缺数据时完整金额/权重为空，保留已知下界；下界已超过上限仍可标超限，否则不能宣称限额内。`scope.enabled` 只控制对应 taxonomy 节点提醒，关闭时保留上限。单证券/FCN 上限全组合唯一，空白不限制，0 禁止正敞口，等于上限不算超限。
 

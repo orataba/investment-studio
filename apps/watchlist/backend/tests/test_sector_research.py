@@ -19,7 +19,8 @@ def seed_sector(client, monkeypatch):
 
 
 def result(iid="xlk", sources=None, theme=None, themes=None, **changes):
-    events=[] if sources is None else [{"event_key":"new-policy", "action":"new", "direction":"opportunity", "title":"政策变化", "body":"新政策可能改善现金流，但市场预期仍需核实。", "next_watch":"观察公司原文披露。", "confidence":"reported", "information_type":"fact", "recording_type":"backfill", "published_at":None, "occurred_at":None, "source_ids":sources, **changes}]
+    events=[] if sources is None else [{"event_key":"new-policy", "action":"new", "direction":"opportunity", "title":"政策变化", "body":"新政策可能改善现金流，但市场预期仍需核实。", "next_watch":"观察公司原文披露。", "confidence":"reported", "information_type":"fact", "recording_type":"backfill", "published_at":None, "occurred_at":None, "source_ids":sources,
+        "importance_score": 3, "importance_reason": "政策可能通过公司披露影响现金流，需要跟踪。", "follow_up_reason": "根据本轮原文复核安排后续研究。", **changes}]
     if theme:
         for event in events:
             event.setdefault("theme_ids", [theme["theme_id"]])
@@ -123,12 +124,12 @@ def test_old_and_unknown_originals_keep_full_progress_without_duplicate_or_autom
         service.apply_result(session,run,result(theme=theme, sources=["follow-up"],action="resolved",recording_type="update",
             body="原文澄清此前传闻，相关不确定性已经解除。"))
         service.apply_result(session,run,result(theme=theme, ))
-        assert not case.trigger_active and case.status == "resolved"
+        assert not case.trigger_active and case.evidence_json["follow_up"] == "resolved"
         session.commit()
     response = client.get("/api/sector-research?instrument_id=xlk").json()
     stored = response["events"][0]
     assert len(stored["history"]) == 4 and stored["history"][0]["snapshot"]["occurred_at"] == "2020-05-30"
-    assert not stored["trigger_active"] and stored["status"] == "resolved"
+    assert not stored["trigger_active"] and stored["follow_up"] == "resolved"
 
 
 def test_event_times_preserve_precision_and_cannot_invent_publication(client, monkeypatch):
@@ -181,13 +182,14 @@ def test_brief_follow_up_and_risk_trigger_are_independent_with_stable_versions(c
         assert brief["recorded_at"] == brief["history"][0]["at"]
         assert brief["event_version_id"] == brief["history"][0]["snapshot"]["event_version_id"]
         service.apply_result(session, run, result(theme=theme, sources=["web-one"], action="updated", follow_up="watch",
-            next_watch="等待后续正式指引", analysis_depth="analysis"))
+            next_watch="等待后续正式指引", analysis_depth="analysis", body="进一步核对原文，发现正式指引将明确新的现金流条件。"))
         opportunity = service.event_record(case)
         assert opportunity["follow_up"] == "watch" and not opportunity["trigger_active"]
         assert opportunity["event_version_id"] == f"{case.case_id}:2"
         service.apply_result(session, run, result(theme=theme, sources=["web-one"], action="updated", direction="risk"))
         risk = service.event_record(case)
-        assert risk["follow_up"] == "watch" and risk["trigger_active"]
+        assert risk["follow_up"] == "watch" and not risk["trigger_active"]
+        assert risk["risk_assessment"]["status"] == "pending"
         assert risk["event_version_id"] == f"{case.case_id}:3"
         assert risk["history"][0]["snapshot"] == brief["history"][0]["snapshot"]
 

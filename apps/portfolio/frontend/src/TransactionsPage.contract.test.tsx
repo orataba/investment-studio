@@ -2568,6 +2568,55 @@ describe('Transactions rendered page contract', () => {
     expect(amountInput).toHaveValue(null)
   })
 
+  it.each([0, 19466.46])('records dividend reinvestment with %s withheld performance fee and no cash debit', async (fee) => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({ portfolio_id: '3', accounts: [fundSecuritiesAccount, fundCashAccount] })
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [fundInstrument] })
+    apiMocks.createPortfolioTransaction.mockResolvedValue(selectedTransaction)
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions', '/portfolios/:portfolioId/transactions')
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.type(within(dialog).getByRole('searchbox', { name: 'Security' }), 'FUND1')
+    await user.click(await within(dialog).findByRole('button', { name: /FUND1.*Confirmed Allocation Fund.*CNY/ }))
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'dividend_reinvestment')
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Shares/ }), { target: { value: '60444.48' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Net Reinvested Amount' }), { target: { value: '65963.06' } })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Withheld performance fee' }), { target: { value: String(fee) } })
+    const review = within(dialog).getByRole('complementary', { name: 'Transaction review' })
+    expect(within(review).getByText('Gross dividend income').parentElement).toHaveTextContent(fee ? '85,429.52' : '65,963.06')
+    expect(within(review).getByText('Net reinvested amount / cost').parentElement).toHaveTextContent('65,963.06')
+    expect(within(review).getByText('Net Cash Effect').parentElement).toHaveTextContent('0.00')
+    expect(within(dialog).queryByRole('spinbutton', { name: 'Tax' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('combobox', { name: 'Settlement Cash Account' })).not.toBeInTheDocument()
+    if (fee) expect(within(dialog).getByRole('combobox', { name: 'Fee category' })).toHaveValue('performance_fee')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() => expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith('3', expect.objectContaining({
+      transaction_type: 'dividend_reinvestment', quantity: 60444.48, gross_amount: 65963.06,
+      fees: fee, fee_category: fee ? 'performance_fee' : 'unknown', taxes: 0, settlement_cash_account_id: null,
+    }), expect.any(String)))
+  })
+
+  it('shows the gross dividend and preserves the withheld fee when correcting a reinvestment', async () => {
+    const transaction = { ...selectedTransaction, transaction_type: 'dividend_reinvestment', quantity: 60444.48,
+      gross_amount: 65963.06, fees: 19466.46, fee_category: 'performance_fee' as const, net_cash_effect: 0, settlement_cash_account: null }
+    const workspace = await apiMocks.getPortfolioTransactionsWorkspace()
+    apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({ ...workspace, transactions: [transaction], selected_transaction: transaction })
+    apiMocks.updatePortfolioTransaction.mockResolvedValue(transaction)
+    const user = userEvent.setup()
+    renderPortfolioPage(<TransactionsPage />, '/portfolios/3/transactions?transaction_id=txn-1', '/portfolios/:portfolioId/transactions')
+    const inspector = await screen.findByRole('complementary', { name: 'Selected transaction details' })
+    expect(within(inspector).getByText('Gross dividend income').parentElement).toHaveTextContent('85,429.52')
+    expect(within(inspector).getByText('Net reinvested amount / cost').parentElement).toHaveTextContent('65,963.06')
+    await user.click(within(inspector).getByRole('button', { name: 'Edit' }))
+    const dialog = screen.getByRole('dialog', { name: 'Correct transaction' })
+    expect(within(dialog).getByRole('spinbutton', { name: 'Withheld performance fee' })).toHaveValue(19466.46)
+    expect(within(dialog).getByRole('spinbutton', { name: 'Net Reinvested Amount' })).toHaveValue(65963.06)
+    await user.click(within(dialog).getByRole('button', { name: 'Save Correction' }))
+    await waitFor(() => expect(apiMocks.updatePortfolioTransaction).toHaveBeenCalledWith('3', 'txn-1', expect.objectContaining({
+      gross_amount: 65963.06, fees: 19466.46, fee_category: 'performance_fee', settlement_cash_account_id: null,
+    })))
+  })
+
   it('keeps confirmed fund amount and shares authoritative and derives the unit price', async () => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',

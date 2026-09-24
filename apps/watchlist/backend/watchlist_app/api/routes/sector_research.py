@@ -1,11 +1,11 @@
 from datetime import date, datetime, UTC
 from typing import Literal
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from watchlist_app.db.session import get_db_session
-from watchlist_app.db.models.workbench import ResearchEntry
+from watchlist_app.db.models.workbench import ResearchEntry, RiskCase
 from watchlist_app.services import sector_research as service
 from watchlist_app.services.research_runner import harness_available, run_analysis
 from watchlist_app.services.sector_estimates import read_estimate_evidence
@@ -60,7 +60,7 @@ def sector_estimates(instrument_id: str, session: Session = Depends(get_db_sessi
 
 
 @router.get("/sector-research")
-def sector_research(instrument_id: str | None = None, watchlist_id: str | None = None, session: Session = Depends(get_db_session)):
+def sector_research(instrument_id: str | None = None, watchlist_id: str | None = None, include_events: bool = True, session: Session = Depends(get_db_session)):
     ids = service.scoped_ids(session, instrument_id, watchlist_id)
     states = service.review_states(session, instrument_ids=ids)
     reviews, completed = states["latest"], states["last_completed"]
@@ -70,11 +70,63 @@ def sector_research(instrument_id: str | None = None, watchlist_id: str | None =
     available = bool(ids)
     message = None if available else "当前范围没有可分析的已登记标的。"
     return {"available": available, "research_enabled": available, "sectors": sectors,
-            "events": service.events_for_instruments(session, ids), "message": message}
+            "events": service.events_for_instruments(session, ids) if include_events else [], "message": message}
 
 
 class RunInput(BaseModel):
     instrument_ids: list[str] = Field(min_length=1, max_length=1)
+
+
+@router.get("/research/instruments/{instrument_id}/events")
+def research_events(instrument_id: str, scope: Literal["recent", "watch", "history"] = "recent",
+        display_timezone: str = "UTC", offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100),
+        event_key: str | None = None, include_history: bool = False, session: Session = Depends(get_db_session)):
+    from zoneinfo import ZoneInfoNotFoundError
+    from watchlist_app.services.research_activity import event_page
+    if not service.scoped_ids(session, instrument_id=instrument_id):
+        raise HTTPException(404, "标的不存在或未启用")
+    try:
+        return event_page(session, instrument_id, scope=scope, display_timezone=display_timezone,
+                          offset=offset, limit=limit, event_key=event_key, include_history=include_history)
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+class EventFollowUpPatch(BaseModel):
+    follow_up_pinned: bool
+    event_version_id: str
+
+
+@router.patch("/sector-research/events/{case_id}/follow-up")
+def pin_event(case_id: str, request: EventFollowUpPatch, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_access import require_team_write
+    from watchlist_app.services.research_identity import research_identity
+    principal = require_team_write()
+    if principal.kind != "user" and not principal.local_unrestricted:
+        raise HTTPException(403, "固定跟进仅允许投资经理明确操作")
+    from watchlist_app.db.models import InstrumentDetail
+    instrument_id = session.scalar(select(RiskCase.instrument_id).where(RiskCase.case_id == case_id))
+    if instrument_id:
+        session.scalar(select(InstrumentDetail).where(InstrumentDetail.instrument_id == instrument_id).with_for_update())
+    case = session.get(RiskCase, case_id, with_for_update=True, populate_existing=True)
+    if case is None or not case.signal.startswith("sector:"):
+        raise HTTPException(404, "研究事件不存在")
+    current = service.event_record(case)
+    if current["event_version_id"] != request.event_version_id:
+        raise HTTPException(409, "事件已有更新，请刷新后操作")
+    if current["follow_up_pinned"] != request.follow_up_pinned:
+        timestamp = datetime.now(UTC).isoformat()
+        actor = research_identity()
+        history = service.event_history_with_current_snapshot(case)
+        snapshot = {**case.evidence_json, "follow_up_pinned": request.follow_up_pinned, "material_change": False,
+            "recorded_at": timestamp, "recorded_by": actor["display_name"], "recorded_by_role": "user",
+            "event_version_id": service.event_version_id(case_id, len(history) + 1)}
+        case.evidence_json = snapshot
+        case.history_json = [*history, {"at": timestamp, "action": "follow_up_pinned",
+            "detail": "投资经理固定跟进" if request.follow_up_pinned else "投资经理取消固定", "snapshot": {
+                **snapshot, "title": case.title, "body": case.body, "status": case.status, "trigger_active": case.trigger_active}}]
+        session.commit()
+    return service.event_record(case)
 
 
 @router.post("/sector-research/runs", status_code=202)
@@ -202,13 +254,16 @@ def read_market_document(run_id: str, document_id: str, version_id: str | None =
 
 
 class NumericResearchInput(BaseModel):
-    action: Literal["catalogue", "series", "compare", "price_risk"] = "catalogue"
+    action: Literal["catalogue", "series", "compare", "price_risk", "observations", "event_reaction"] = "catalogue"
     instrument_id: str | None = None
     dataset: str | None = None
     series_ids: list[str] = Field(default_factory=list, max_length=6)
     field: str | None = None
     start: date | None = None
     end: date | None = None
+    benchmark_id: str | None = None
+    event_date: date | None = None
+    event_timing: Literal["date_only", "before_open", "after_close"] = "date_only"
 
 
 class FinancialResearchInput(BaseModel):
@@ -250,12 +305,27 @@ def numeric_research(run_id: str, request: NumericResearchInput, session: Sessio
     from watchlist_app.services.research_metrics import research_numeric_data, instrument_price_risk
     run = market_run(session, run_id)
     try:
-        if request.action == "price_risk":
+        if request.action in {"price_risk", "observations", "event_reaction"}:
             from watchlist_app.services.sector_research import bind_research_instruments
             if not request.instrument_id:
                 raise ValueError("请选择需要观察风险的标的")
             bind_research_instruments(session, run, [request.instrument_id])
-            result = instrument_price_risk(session, request.instrument_id, as_of=run.context_json["cutoff"])
+            context = run.context_json
+            asset = next((row for row in context.get("instrument_inputs", [])
+                          if row["instrument_id"] == request.instrument_id), {})
+            cutoff = asset.get("snapshot_cutoff") or context.get("input_snapshot_cutoff") or context["cutoff"]
+            if request.action == "price_risk":
+                result = instrument_price_risk(session, request.instrument_id, as_of=cutoff)
+            else:
+                from watchlist_app.services.research_observations import instrument_observations, instrument_event_reaction
+                if request.action == "observations":
+                    result = instrument_observations(session, request.instrument_id, as_of=cutoff,
+                                                     benchmark_id=request.benchmark_id)
+                else:
+                    if request.event_date is None:
+                        raise ValueError("事件反应需要可核实的事件日期；日期未知时保留不可用")
+                    result = instrument_event_reaction(session, request.instrument_id, as_of=cutoff,
+                        event_date=request.event_date, timing=request.event_timing, benchmark_id=request.benchmark_id)
         else:
             result = research_numeric_data(action=request.action, as_of=run.context_json["cutoff"],
                 dataset=request.dataset, series_ids=request.series_ids, field=request.field,

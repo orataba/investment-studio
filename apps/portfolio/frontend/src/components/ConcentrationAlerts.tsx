@@ -28,9 +28,9 @@ export default function ConcentrationAlerts({ portfolioId, asOfDate }: { portfol
   const breaches = monitored.filter((row) => row.status === 'breached')
   const unavailable = monitored.filter((row) => row.status === 'unavailable')
   if (!error && !breaches.length && !unavailable.length) return null
-  const href = `/portfolios/${encodeURIComponent(portfolioId)}/holdings?view=concentration&as_of_date=${encodeURIComponent(asOfDate)}`
+  const href = `/portfolios/${encodeURIComponent(portfolioId)}/risk?concentration_date=${encodeURIComponent(asOfDate)}#concentration`
   return <aside className="inline-notice inline-notice-warning concentration-alerts" aria-label={zh ? '集中度提醒' : 'Concentration alerts'}>
-    <div><strong>{zh ? '集中度提醒' : 'Concentration alerts'}</strong> · <a href={href}>{zh ? '查看持仓敞口' : 'View holding exposures'}</a></div>
+    <div><strong>{zh ? '集中度提醒' : 'Concentration alerts'}</strong> · <a href={href}>{zh ? '查看集中度' : 'View concentration'}</a></div>
     {error ? <p>{zh ? '集中度暂不可用：' : 'Concentration unavailable: '}{concentrationMessage(error, zh)}</p> : null}
     {breaches.length ? <ul>{breaches.slice(0, 3).map((row) => <li key={`${row.scope.scope}:${row.scope.taxonomy_id}:${row.entity_id}`}>
       {row.name}{row.scope.scope === 'taxonomy' ? ` · ${row.scope.name}` : ''}：{row.weight == null ? '≥ ' : ''}{formatPercent(row.weight ?? row.lower_bound_weight)} / {zh ? '上限' : 'limit'} {formatPercent(row.limit_weight)}

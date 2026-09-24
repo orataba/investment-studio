@@ -42,6 +42,13 @@
       fabricate prices, holdings, events, causes, risk contributions or numeric severity levels.
       research contains retained important risk/uncertainty reports; quantitative contains
       actual rule triggers; coverage contains monitoring limitations. Keep these distinct.
+      research may include risk_assessment.status=pending: these are submitted leads, not
+      confirmed active risks. In non-portfolio team scopes, return optional case_assessments
+      with case_id, the bound evidence_json.event_version_id, status active/resolved/dismissed/pending,
+      and a concrete reason. Only explicit evidence supports resolution; research follow_up=none,
+      follow-up expiry or a closed theme never resolves risk. Preserve pending when evidence is
+      unavailable. Do not change any shared case from a portfolio scope: keep private exposure
+      and judgment in that portfolio's priorities. Reuse the original case_id for the same issue.
       A zero quantitative-trigger count is not a clean bill of health. Independently review
       every scoped instrument's performance_evidence and current drawdown, and actual holdings'
       unrealized losses and market_value_nav_pct. Identify sustained losses, drawdown and meaningful

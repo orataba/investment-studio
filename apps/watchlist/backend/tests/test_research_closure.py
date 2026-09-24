@@ -97,9 +97,12 @@ def test_theme_creation_or_status_change_is_not_a_checked_judgment(activity_clie
         save_theme(session, "xlk", ThemeInput(title="融资效果", question="资金是否改善经营？"))
         session.commit()
         theme_update = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "theme")
-        with pytest.raises(ValueError, match="不是事前判断"):
+        with pytest.raises(ValueError, match="不是事前判断") as rejected:
             publish(session, reflection={"status": "reviewed", "summary": "主题已复核",
                 "reviewed_update_ids": [theme_update["update_id"]]})
+        assert "reflection.reviewed_update_ids" in str(rejected.value)
+        assert theme_update["update_id"] in str(rejected.value)
+        assert "reviews[].themes" in str(rejected.value)
 
 
 @pytest.mark.parametrize("instrument_ids", [None, ["fund-us-agg"]])

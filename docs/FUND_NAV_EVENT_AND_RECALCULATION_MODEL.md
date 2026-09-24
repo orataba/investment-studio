@@ -64,13 +64,22 @@ Projection status is:
 - `unavailable`: no total-return row is provable.
 
 Factor records use deterministic logical keys inside a run. The Registry owns
-physical factor IDs and validates every referenced chain. A cash-distribution
+physical factor IDs and validates every referenced chain. An event-derived cash-distribution
 factor requires the current action revision and current reinvestment evidence;
 a split factor requires the current split revision. Same-day actions require
 an explicit unique sequence. An unexplained cash discontinuity, missing
 reinvestment evidence, or ambiguous order breaks only the affected segment.
 A later provider-explicit total may re-anchor the curve without rewriting
 history.
+
+The existing v7 `provider_implied / provider_cash_cumulative` path is separate:
+it infers an endpoint adjustment from sufficiently distinguishable cash-cumulative
+provider disclosures and the first complete unit-NAV observation after the cash
+change. Its factor records the inferred cash amount, endpoint NAV and source
+observations. This is not a confirmed action or proof of the investor's actual
+reinvestment date. It never creates Portfolio cash or units. A verified notice
+and exact reinvestment evidence take precedence; investor-specific performance
+fees belong only to Portfolio and do not reduce the instrument's gross return.
 
 ## Recalculation and concurrency
 

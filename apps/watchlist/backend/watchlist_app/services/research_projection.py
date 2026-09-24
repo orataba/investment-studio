@@ -38,7 +38,8 @@ def build_risk_watchlist_attribute_overrides(
         for instrument_id in normalized_ids
     }
     for case in session.scalars(select(RiskCase).where(RiskCase.instrument_id.in_(normalized_ids), RiskCase.trigger_active.is_(True))):
-        if case.status == "handled" or (case.evidence_json or {}).get("direction") == "opportunity":
+        if case.status in {"handled", "resolved"} or ((case.evidence_json or {}).get("direction") == "opportunity"
+                and not (case.evidence_json or {}).get("risk_assessment")):
             continue
         values = overrides[case.instrument_id]
         if case.severity == "attention":

@@ -66,7 +66,7 @@ was observed and available by that cutoff in the same database snapshot. Other
 cutoffs retain the historical query; this optimization preserves source IDs,
 total counts and the requested information clock without scanning full price history.
 
-Symbol-scoped financial-statement history uses the existing batch request metadata
+Symbol-scoped financial-statement and line-item history use the existing batch request metadata
 to exclude unrelated files only for FMP's three single-company statement endpoints.
 Those collectors normalize every row against the singleton requested symbol and
 have a fixed statement schema. Bulk captures, imported archives, other sources and

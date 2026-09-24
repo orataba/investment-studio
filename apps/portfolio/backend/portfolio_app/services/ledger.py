@@ -3904,7 +3904,7 @@ def build_position_lots(
                     target_account_id=account_key,
                     target_position_reference_id=resolved_position_reference_id,
                     entitlement_date=entitlement_date,
-                    amount=gross_amount,
+                    amount=gross_amount + fees,
                     field_name="income_cash_amount",
                     weight_field="remaining_quantity",
                     transaction_id=transaction_id,
@@ -3912,6 +3912,20 @@ def build_position_lots(
                         "Dividend reinvestment requires entitled position lots as of entitlement_date."
                     ),
                 )
+                if fees > 0:
+                    allocate_snapshot_cash_flow(
+                        transaction_index=transaction_index,
+                        target_account_id=account_key,
+                        target_position_reference_id=resolved_position_reference_id,
+                        entitlement_date=entitlement_date,
+                        amount=fees,
+                        field_name="expense_cash_amount",
+                        weight_field="remaining_quantity",
+                        transaction_id=transaction_id,
+                        error_message=(
+                            "Dividend reinvestment requires entitled position lots as of entitlement_date."
+                        ),
+                    )
                 if transaction_performance_effective_date(transaction) != position_effective_date:
                     continue
             append_position_lot(
@@ -4754,9 +4768,8 @@ def build_current_position_cycle_costs(
                 (_safe_float(quantities.get(account_id)) or 0.0) + quantity
             )
             state["quantity"] = current_quantity + quantity
-            state["net_invested"] = (
-                (_safe_float(state.get("net_invested")) or 0.0) + fees + taxes
-            )
+            # A withheld performance fee reduces the reinvested distribution;
+            # it is not additional external capital invested in this position.
             continue
 
         if transaction_type in {"sell", "maturity_redemption"} and quantity > 0:

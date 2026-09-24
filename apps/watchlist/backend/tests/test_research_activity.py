@@ -64,6 +64,7 @@ def publish(session, *, events=None, research=None, themes=None, reflection=None
 
 def event(**values):
     return {"event_key": "financing", "action": "new", "direction": "uncertain", "title": "融资安排",
+        "importance_score": 3, "importance_reason": "融资条款影响经营与股东回报，需要核实后续兑现。",
         "body": "已披露融资条款，后续经营影响尚待验证。", "next_watch": "核实资金使用效果。",
         "confidence": "reported", "information_type": "fact", "recording_type": "backfill",
         "published_at": "2025-01-01T00:00:00+00:00", "occurred_at": "2024-12-31",
@@ -234,7 +235,7 @@ def test_theme_groups_event_questions_and_hides_finished_work(activity_client):
         current = themes_view(session, "xlk")["themes"][0]
         assert len(current["current_questions"]) == 1
         assert {row["kind"] for row in current["updates"]} == {"theme", "event", "question"}
-        publish(session, events=[event(action="resolved", follow_up="resolved")], research={"questions": [
+        publish(session, events=[event(action="resolved", follow_up="resolved", follow_up_reason="资金用途已核实，研究观察条件完成。")], research={"questions": [
             {"key": "terms", "event_key": "financing", "question": "资金如何使用", "assessment": "用途已核实",
              "status": "supported", "next_check": "", "tracking_status": "closed", "tracking_reason": "用途已核实，不再影响投资判断"}]})
         assert themes_view(session, "xlk")["themes"][0]["current_questions"] == []
@@ -291,6 +292,20 @@ def test_theme_keeps_each_active_question_and_its_own_exact_review_clock(activit
         after = {row["update_id"]: row for row in themes_view(session, "xlk")["themes"][0]["current_questions"]}
         assert after[questions[0]["update_id"]]["last_reviewed_at"] == run.completed_at.isoformat()
         assert after[questions[1]["update_id"]]["last_reviewed_at"] is None
+
+
+def test_review_receipt_must_belong_to_the_runs_bound_instrument(activity_client):
+    with get_session_factory()() as session:
+        publish(session, research={"investment_view": {"direction": "等待经营兑现", "source_ids": ["original"]}})
+        judgment = next(row for row in research_activity(session, "xlk")["updates"] if row["kind"] == "judgment")
+        run = publish(session, reflection={"status": "reviewed", "summary": "本轮核查",
+            "reviewed_update_ids": [judgment["update_id"]]})
+        assert judgment["update_id"] in review_receipts(session, "xlk")
+        # An inconsistent archived payload cannot attest to an asset outside
+        # the run's immutable scope merely by naming it in reviews.
+        run.context_json = {**run.context_json, "instrument_ids": ["other-instrument"]}
+        session.commit()
+        assert judgment["update_id"] not in review_receipts(session, "xlk")
 
 
 def test_agenda_includes_current_judgment_and_schedule_without_implying_release(activity_client):

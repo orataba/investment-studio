@@ -723,7 +723,7 @@ function grossAmountLabel(transactionType: string, lifecycleEventType?: string |
   }
 
   if (transactionType === 'dividend_reinvestment') {
-    return 'Reinvested Amount'
+    return 'Net Reinvested Amount'
   }
 
   if (transactionType === 'return_of_capital') {
@@ -755,6 +755,7 @@ function showsFeeField(transactionType: string, lifecycleEventType?: string | nu
     transactionType === 'option_write' ||
     transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
+    transactionType === 'dividend_reinvestment' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
     (transactionType === 'maturity_redemption' &&
@@ -2691,13 +2692,17 @@ export default function TransactionsPage() {
   }, [form.fees, shouldShowFees])
 
   useEffect(() => {
+    if (form.transaction_type === 'dividend_reinvestment' && shouldShowFeeCategory && form.fee_category !== 'performance_fee') {
+      setForm((current) => ({ ...current, fee_category: 'performance_fee' }))
+      return
+    }
     if (!shouldShowFeeCategory && form.fee_category !== 'unknown') {
       setForm((current) => ({
         ...current,
         fee_category: 'unknown',
       }))
     }
-  }, [form.fee_category, shouldShowFeeCategory])
+  }, [form.fee_category, form.transaction_type, shouldShowFeeCategory])
 
   useEffect(() => {
     if (!shouldShowTaxes && form.taxes !== '0') {
@@ -4150,6 +4155,7 @@ export default function TransactionsPage() {
           Enter the confirmed cash amount; unit price is derived from amount and shares.
         </span>
       ) : null}
+      {form.transaction_type === 'dividend_reinvestment' && <span className="transaction-ticket-hint">{fcnLabel('Amount actually reinvested after the withheld performance fee; it becomes the new units’ cost.', '代扣业绩报酬后的实际再投金额，也是新份额成本。')}</span>}
     </label>
   )
 
@@ -4742,7 +4748,7 @@ export default function TransactionsPage() {
                       ) : null}
                       {selectedCashImpactTransaction ? (
                         <div className="transaction-fact-highlight">
-                          <span>Gross amount</span>
+                          <span>{selectedCashImpactTransaction.transaction_type === 'dividend_reinvestment' ? fcnLabel('Net reinvested amount', '净再投金额') : 'Gross amount'}</span>
                           <strong>{formatCurrency(
                             selectedCashImpactTransaction.gross_amount,
                             selectedCashImpactTransaction.currency,
@@ -4871,12 +4877,16 @@ export default function TransactionsPage() {
                           <dd>{formatQuantity(selectedTransaction.quantity)}<br /><span>{formatUnitPrice(selectedTransaction.price, selectedTransaction.currency)}</span></dd>
                         </div>
                         <div>
-                          <dt>Fees / taxes</dt>
+                          <dt>{selectedTransaction.transaction_type === 'dividend_reinvestment' ? fcnLabel('Withheld performance fee', '代扣业绩报酬') : 'Fees / taxes'}</dt>
                           <dd>
-                            {formatCurrency(selectedTransaction.fees, selectedTransaction.currency)} / {formatCurrency(selectedTransaction.taxes, selectedTransaction.currency)}
+                            {formatCurrency(selectedTransaction.fees, selectedTransaction.currency)}{selectedTransaction.transaction_type !== 'dividend_reinvestment' && <> / {formatCurrency(selectedTransaction.taxes, selectedTransaction.currency)}</>}
                             <br /><span>{formatLabel(selectedTransaction.fee_category)}</span>
                           </dd>
                         </div>
+                        {selectedTransaction.transaction_type === 'dividend_reinvestment' && <>
+                          <div><dt>{fcnLabel('Gross dividend income', '毛分红收入')}</dt><dd>{formatCurrency(selectedTransaction.gross_amount + selectedTransaction.fees, selectedTransaction.currency)}</dd></div>
+                          <div><dt>{fcnLabel('Net reinvested amount / cost', '净再投金额／新份额成本')}</dt><dd>{formatCurrency(selectedTransaction.gross_amount, selectedTransaction.currency)}</dd></div>
+                        </>}
                         {selectedTransaction.lifecycle_event_type ? (
                           <div>
                             <dt>Derivative outcome</dt>
@@ -6255,8 +6265,8 @@ export default function TransactionsPage() {
                                             {[
                                               ['quantity', 'Quantity'],
                                               ['price', 'Price'],
-                                              ['gross_amount', 'Gross amount'],
-                                              ['fees', 'Fees'],
+                                              ['gross_amount', record.transaction_action === 'dividend_reinvestment' ? 'Net reinvested amount' : 'Gross amount'],
+                                              ['fees', record.transaction_action === 'dividend_reinvestment' ? 'Withheld performance fee' : 'Fees'],
                                               ['taxes', 'Taxes'],
                                             ].map(([fieldName, fieldLabel]) => (
                                               <label key={fieldName}>
@@ -7505,7 +7515,7 @@ export default function TransactionsPage() {
 
                 {shouldShowFees ? (
                   <label className="transaction-ticket-field">
-                    <span>Fee</span>
+                    <span>{form.transaction_type === 'dividend_reinvestment' ? fcnLabel('Withheld performance fee', '代扣业绩报酬') : 'Fee'}</span>
                     <input
                       type="number"
                       min="0"
@@ -7535,7 +7545,7 @@ export default function TransactionsPage() {
                         }))
                       }
                     >
-                      {FEE_CATEGORIES.map((option) => (
+                      {FEE_CATEGORIES.filter(option => form.transaction_type !== 'dividend_reinvestment' || option.value === 'performance_fee').map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -7721,6 +7731,14 @@ export default function TransactionsPage() {
                           : '—'}
                       </strong>
                     </div>
+                  </>
+                ) : form.transaction_type === 'dividend_reinvestment' ? (
+                  <>
+                    <div className="transaction-ticket-summary-row"><span>{fcnLabel('Gross dividend income', '毛分红收入')}</span><strong>{ticketGrossAmount == null || !resolvedTransactionCurrency ? '—' : formatCurrency(ticketGrossAmount + ticketFeeAmount, resolvedTransactionCurrency)}</strong></div>
+                    <div className="transaction-ticket-summary-row"><span>{fcnLabel('Withheld performance fee', '代扣业绩报酬')}</span><strong>{resolvedTransactionCurrency ? formatCurrency(ticketFeeAmount, resolvedTransactionCurrency) : '—'}</strong></div>
+                    <div className="transaction-ticket-summary-row"><span>{fcnLabel('Net reinvested amount / cost', '净再投金额／新份额成本')}</span><strong>{ticketGrossAmount == null || !resolvedTransactionCurrency ? '—' : formatCurrency(ticketGrossAmount, resolvedTransactionCurrency)}</strong></div>
+                    <div className="transaction-ticket-summary-row transaction-ticket-summary-total"><span>Net Cash Effect</span><strong>{resolvedTransactionCurrency ? formatSignedCurrency(0, resolvedTransactionCurrency) : '—'}</strong></div>
+                    <p>{fcnLabel('The fee is withheld from the dividend. No cash posting is created; only the net amount becomes new units’ cost.', '费用从分红中代扣，不产生现金收支；仅净再投金额计入新份额成本。')}</p>
                   </>
                 ) : (
                   <>

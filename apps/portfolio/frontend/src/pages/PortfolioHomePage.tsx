@@ -21,7 +21,6 @@ import HoldingsSectionTables, {
 import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
 import HoldingsOperationalStatus from '../components/HoldingsOperationalStatus'
 import InfoHint from '../components/InfoHint'
-import ConcentrationPanel from '../components/ConcentrationPanel'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import { OPTION_OUTCOME_RECORDED_EVENT } from '../components/OptionOutcomePrompt'
@@ -2568,7 +2567,6 @@ export default function PortfolioHomePage() {
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const concentrationView = searchParams.get('view') === 'concentration'
   const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const loadedHoldingsInputRef = useRef<{ key: string; full: boolean } | null>(null)
   const [taxonomyCatalogResponse, setTaxonomyCatalog] =
@@ -3803,10 +3801,6 @@ export default function PortfolioHomePage() {
       <section className="portfolio-detail-surface holdings-surface">
         <div className="holdings-filter-bar">
           <div className="holdings-filter-group">
-            <div className="concentration-view-tabs" role="tablist" aria-label={zh ? '持仓视图' : 'Holdings view'}>
-              <button type="button" role="tab" aria-selected={!concentrationView} onClick={() => updateSearchParam('view', null)}>{zh ? '持仓' : 'Holdings'}</button>
-              <button type="button" role="tab" aria-selected={concentrationView} onClick={() => updateSearchParam('view', 'concentration')}>{zh ? '敞口与集中度' : 'Exposure and concentration'}</button>
-            </div>
             <label>
               <input
                 className="holdings-filter-input"
@@ -3817,7 +3811,7 @@ export default function PortfolioHomePage() {
               />
             </label>
           </div>
-          {!concentrationView ? <div className="holdings-filter-actions">
+          <div className="holdings-filter-actions">
             <InfoHint label={zh ? '账面金额与当前权重口径' : 'Carrying amount and current weight basis'} detail={zh
               ? ['当前权重=带方向的账面金额/组合 NAV，不是按绝对敞口计算的集中度比例。', '证券账面金额为当前市值；FCN与期权按现有估值基础计账面金额，期权负债保留负号，不表示其风险敞口。现金与待结算保留原方向。', `报告币种金额使用 ${workspace?.base_currency ?? '—'}；本币金额使用标的或合约币种。`]
               : ['Current weight is signed carrying amount / portfolio NAV, not a concentration ratio based on absolute exposure.', 'Securities use current market value. FCNs and options use their recorded valuation basis; option liabilities remain negative and do not describe option exposure. Cash and settlements retain their sign.', `Reporting-currency amounts use ${workspace?.base_currency ?? '—'}; local amounts use the security or contract currency.`]} />
@@ -3830,7 +3824,7 @@ export default function PortfolioHomePage() {
               disabled={!workspace || !workspace.rows.length}
               onSelect={handleDownload}
             />
-          </div> : null}
+          </div>
         </div>
         {loading || waitingForTaxonomy ? <CalculationStatus /> : null}
         {loading && workspace ? (
@@ -3858,8 +3852,7 @@ export default function PortfolioHomePage() {
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {concentrationView && !error && workspace ? <ConcentrationPanel key={portfolioId} portfolioId={portfolioId} asOfDate={workspace.as_of_date} /> : null}
-        {!concentrationView && !waitingForTaxonomy && !error && workspace && columnContext ? (
+        {!waitingForTaxonomy && !error && workspace && columnContext ? (
           <>
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">

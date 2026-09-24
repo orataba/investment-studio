@@ -33,6 +33,7 @@ def seed_instruments(client, monkeypatch):
 
 def reply(iid, *, summary="存在需跟进的重要变化。", sources=None, themes=None, **changes):
     events = [] if sources is None else [{"event_key": "index-rule-change", "action": "new", "direction": "risk",
+        "importance_score": 3, "importance_reason": "规则调整可能改变持有产品的实际敞口。",
         "title": "跟踪指数规则变更", "body": "编制机构公告确认指数规则调整，需核对实际跟踪敞口的变化。",
         "next_watch": "核对后续持仓披露和指数编制说明。", "confidence": "confirmed", "information_type": "fact",
         "recording_type": "backfill", "published_at": "2026-06-01", "occurred_at": None,
@@ -124,7 +125,8 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
         session.commit()
         assert run.status == "completed" and asset["name"] in run.body
         case = session.scalar(select(RiskCase).where(RiskCase.instrument_id == "fund-us-agg"))
-        assert case.trigger_active and case.evidence_json["published_at"] == "2026-06-01"
+        assert not case.trigger_active and case.evidence_json["published_at"] == "2026-06-01"
+        assert case.evidence_json["risk_assessment"]["status"] == "pending"
         assert case.history_json[0]["snapshot"]["sources"][0]["text"] == source["text"]
         newer, created = service.begin_run(session, ["fund-us-agg"])
         assert created
@@ -136,7 +138,8 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
             themes=[{"theme_id": item["theme_id"], "theme_key": item["theme_key"]} for item in bound["themes"]]))
         newer.created_at = newer.completed_at = datetime.now(UTC) - timedelta(minutes=1)
         session.commit()
-        assert case.trigger_active and len(case.history_json) == 1
+        assert not case.trigger_active and len(case.history_json) == 1
+        assert case.evidence_json["follow_up"] == "watch"
         newest_id = newer.entry_id
         failed, created = service.begin_run(session, ["fund-us-agg"])
         assert created
@@ -148,10 +151,11 @@ def test_prepare_preserves_bond_etf_evidence_and_original_event_survives_latest_
     assert result["sectors"][0]["latest_review"]["run_id"] == failed_id
     assert result["sectors"][0]["latest_review"]["status"] == "failed"
     assert result["sectors"][0]["last_completed_review"]["run_id"] == newest_id
-    # The event remains active, but its report prose is not an instrument-wide judgment.
+    # Research follow-up remains active while risk assessment is pending; event prose is not the overall judgment.
     assert result["sectors"][0]["last_completed_review"]["summary"] == ""
     assert result["sectors"][0]["last_completed_review"]["change_kind"] == "none"
-    assert len(result["events"]) == 1 and result["events"][0]["trigger_active"]
+    assert len(result["events"]) == 1 and not result["events"][0]["trigger_active"]
+    assert result["events"][0]["risk_assessment"]["status"] == "pending"
 
 
 def test_chat_publishes_explicitly_authorized_research_without_pm_adoption_or_invented_fund_opportunity(client, monkeypatch):

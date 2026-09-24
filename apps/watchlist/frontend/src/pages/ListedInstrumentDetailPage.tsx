@@ -545,6 +545,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [research, setResearch] = useState<InstrumentResearchResponse>(() => emptyInstrumentResearchResponse())
   const [researchError, setResearchError] = useState<string | null>(null)
   const [pending, setPending] = useState(INITIAL_PENDING)
+  const [statisticsInstrumentId, setStatisticsInstrumentId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [failedSections, setFailedSections] = useState<DataSection[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -613,8 +614,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     load('chart', getInstrumentChart(instrumentId), setChart, reason => {
       if (usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load the canonical price series.')
     })
-    load('performance', getInstrumentPerformance(instrumentId), setPerformance)
-    load('risk', getInstrumentRisk(instrumentId), setRisk)
     load('attributes', getInstrumentAttributes(instrumentId), setAttributeValues)
     loadResearch()
     const updated = (event: Event) => {
@@ -623,6 +622,26 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     window.addEventListener(RESEARCH_UPDATED, updated)
     return () => { cancelled = true; window.removeEventListener(RESEARCH_UPDATED, updated) }
   }, [instrument.instrument_type, instrumentId])
+
+  // Research and PM views do not consume the full performance/risk calculation.
+  // Start it once when a reading surface actually needs it; tab changes then
+  // keep the same in-flight result without repeatedly refreshing the statistics.
+  useEffect(() => {
+    if (tab === 'overview' || tab === 'performance') setStatisticsInstrumentId(instrumentId)
+  }, [instrumentId, tab])
+
+  useEffect(() => {
+    if (statisticsInstrumentId !== instrumentId) return
+    let cancelled = false
+    function load<T>(section: 'performance' | 'risk', promise: Promise<T>, apply: (value: T) => void) {
+      void promise.then(value => { if (!cancelled) apply(value) })
+        .catch(() => { if (!cancelled) setFailedSections(previous => [...previous, section]) })
+        .finally(() => { if (!cancelled) setPending(previous => ({ ...previous, [section]: false })) })
+    }
+    load('performance', getInstrumentPerformance(instrumentId), setPerformance)
+    load('risk', getInstrumentRisk(instrumentId), setRisk)
+    return () => { cancelled = true }
+  }, [instrumentId, statisticsInstrumentId])
 
   useEffect(() => {
     if (!settingsOpen) return

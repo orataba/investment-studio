@@ -38,7 +38,7 @@ def require_instrument(session, instrument_id):
 
 @router.get("/research/instruments/{instrument_id}/dossier")
 def dossier(instrument_id: str, include_history: bool = False, source_id: str | None = None,
-            version_id: str | None = None,
+            version_id: str | None = None, current_only: bool = False,
             session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
     try:
@@ -50,7 +50,8 @@ def dossier(instrument_id: str, include_history: bool = False, source_id: str | 
                     raise ValueError("该研究版本没有引用这份原始依据")
                 return source
             return saved
-        result = service.read_dossier(session, instrument_id, include_history=include_history)
+        result = service.read_dossier(session, instrument_id, include_history=include_history,
+                                      current_only=current_only and not source_id and not include_history)
         if source_id:
             from watchlist_app.services.research_notebook import dossier_source
             return dossier_source(result, source_id)
@@ -89,13 +90,22 @@ async def upload_material(instrument_id: str, file: UploadFile = File(...), titl
     return service.material_record(entry, instrument_id)
 
 
-from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme, themes_view
+from watchlist_app.services.research_themes import ThemeInput, ThemePatch, save_theme, themes_view, theme_summaries
 
 
 @router.get("/research/instruments/{instrument_id}/themes")
-def themes(instrument_id: str, session: Session = Depends(get_db_session)):
+def themes(instrument_id: str, include_history: bool = True, session: Session = Depends(get_db_session)):
     require_instrument(session, instrument_id)
-    return themes_view(session, instrument_id)
+    return themes_view(session, instrument_id) if include_history else theme_summaries(session, instrument_id)
+
+
+@router.get("/research/instruments/{instrument_id}/themes/{theme_id}")
+def theme_detail(instrument_id: str, theme_id: str, session: Session = Depends(get_db_session)):
+    require_instrument(session, instrument_id)
+    try:
+        return themes_view(session, instrument_id, theme_id=theme_id)["themes"][0]
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
 
 
 @router.get("/research/instruments/{instrument_id}/activity")

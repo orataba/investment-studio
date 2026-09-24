@@ -7,5 +7,9 @@ export function apply(ctx) {
     if (event.type === 'turn/end' && event.data.reason.kind === 'max-tokens') {
       process.stderr.write('RESEARCH_HARNESS_END {"reason":"max-tokens"}\n');
     }
+    if (event.type === 'turn/end' && event.data.reason.kind === 'error' &&
+        event.data.reason.error?.message === 'Provider finish_reason: content_filter') {
+      process.stderr.write('RESEARCH_HARNESS_END {"reason":"content-filter"}\n');
+    }
   });
 }

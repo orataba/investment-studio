@@ -301,7 +301,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 固定使用�
 - 组合计算频率只有 `daily`，不是用户设置项。Registry `source_settings.expected_frequency` 只保留 `daily` 与 `event_driven`，不能把组合降级成周频或月频。
 - 对齐规则：在所有成员有效观测日期的并集上，未发布新值的成员沿用最近有效 mark；来源更新日一次性确认自上次发布以来的变化。所有来源均无新观测的日期不进入风险样本。
 - 节假日规则：共同非交易日不生成样本；预期应更新却缺失的数据必须由 `risk_basis` 标记 incomplete，不能用 carry-forward 掩盖数据缺口。
-- Missing-return policy：默认 `strict`。`strict` 下共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解；显式 `complete_case_drop` 可以从第一条完整共同收益开始，但只有这一段连续前缀属于 warm-up boundary，之后的缺口仍受比例限制。两种 policy 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、全部 missing rows、前置非完整行数、起点后缺失比例、latest complete date 与 trailing staleness。
+- Missing-return policy：默认 `strict`。`strict` 下共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解；显式 `complete_case_drop` 可以从第一条完整共同收益开始，但只有这一段连续前缀属于 warm-up boundary，之后的缺口仍受比例限制。两种 policy 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、全部 missing rows、前置非完整行数、起点后缺失比例、latest complete date 与 trailing staleness。Research 仅在所有 active 成员的已知日频市场日历均证明 latest complete row 之后直到请求日全为休市时，以该完整行日期检验新鲜度；实际自然日差仍保留，并另披露 `return_freshness_as_of_date`。不改变请求日或回看窗口，不补休市零收益；未知日历、任一市场开市或真实缺源均不享受此例外。披露 lag 是来源可用时钟，不能从研究的观察日期 EOD 窗口再扣一次。
 - 日频 instrument 配置 `market_calendar` 时，以该日历校验 holiday vs missing：共同非交易日不生成样本；任何日历交易日缺价都进入 coverage / missing 诊断。未配置或日历无法解析时使用保守的日历日 gap threshold，不隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖摘要，不是一个风险指标。`resolved_frequency` 恒为 `daily`，`window_start_date / window_end_date` 明示摘要检查的区间（当前回看 366 日）。历史摘要的 `partial` 不得阻断区间外的 Rolling Risk、Correlation 或 Production Forward RC；每项计算只检查其实际成员与所选窗口，窗口内缺源、非法期间或预期更新缺口仍须明确 unavailable。逐标的 `instrument_return_series_all.observation_coverage` 随同实际选定收益序列返回完整、未截断的 `gap_dates`、检测起止范围及 `gap_detection_basis`，供最长 24 个月与各滚动终点逐窗检查，不能用摘要中最多 20 个日期样本代替完整检查。交易日历 basis 的 gap 是确切缺失 session；未知日历的 `calendar_day_threshold` 日期标记超阈值间隔的右端，`event_driven` 不凭间隔推断应披露而未披露。
 - 风险来源覆盖与组合估值覆盖独立：买入之前的行情缺口不阻断实际持仓期 NAV；已有明确授权的估值输入可支持当天账本估值，但不能自动替代缺失的证券总回报 NAV。实际组合风险读取核算发布的 market-risk return 与对应期间覆盖；当前持仓历史模拟继续检验所选证券收益序列，不得用组合 NAV 完整推断证券历史完整。
@@ -783,6 +783,7 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。显式区间的期初已有持仓按 `start_date` EOD market value 重置为期间成本，只重放 `(start_date, end_date]` 内交易；期末未卖出的持仓用 `end_date` EOD market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 可影响已实现与未实现的期间拆分，但不改变二者之和或组合收益。FIFO 使用原始取得顺序，内部转仓保留该顺序；已发布的期初批次与区间内交易采用相同规则。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
+- 红利再投资允许确认函明确的代扣业绩报酬：`gross_amount` 为净再投，`fees` 为代扣且 `fee_category=performance_fee`，毛收入计 `gross_amount + fees`、费用计 `fees`。两项按权益日归原持仓，净应收在份额生效日转成相同金额的成本；不改变现金、外部流量或持仓周期投入金额。taxes 与其他附加费仍不支持。Registry 基金总回报使用每份毛分红，不包含投资者专属报酬。
 - Performance 中的区间风险贡献是 realized market-risk attribution，不另设 Risk tab。每个 daily slice 独立保存 `market_risk_excluded_pnl`、`market_risk_total_pnl`、`market_risk_daily_return`、`market_risk_daily_contribution` 及其 coverage/eligibility；分组、taxonomy 和 calculation detail 聚合都必须消费这些字段，不能复用 operational `daily_return` / `daily_contribution`，也不能靠分类过滤猜测风险范围。纯衍生品与本币现金 slice 没有 eligible observation；非本币现金的 FX return/contribution 正常进入矩阵。对每个 eligible group，`Vol / Sharpe` 使用 group 自身 market-risk daily return；`Corr to Portfolio` 使用 group return 与 portfolio `market_risk_daily_return`；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(MarketRiskContribution_g, R_p) / Var(R_p)`。行级 `Obs` 表示该组自身有效收益 observation count。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
 - Calculation 默认展示 `Linked Return Contribution`（收益贡献（复利链接）），使用组合此前的累计 TWR 增长倍数逐日链接贡献；顶层行合计等于期间 TWR，子行合计等于父组。`Arithmetic Return Contribution` 保留为可选列，只有展示算术列时才显示对应的 `TWR Linking Difference`；链接差不是额外投资损益。CSV/XLSX 沿用可见列、表格数值与口径解释，并附实际期间、本位币、收益 basis、起点边界、估值时区/截止规则、已记录费用、风险方法及百分比小数单位说明。
 - 分组风险直接复用已发布 NAV 区间的 market-risk return / contribution slices 与 coverage/eligibility，不再单独查询 Registry 总回报净值或执行 366 天历史完整性检查。Vol / Sharpe 使用各组区间内有效样本，Corr / Beta 使用该组与组合的日期交集；RC 使用同一组共同日期上的已知贡献，任一活动组贡献未知的日期整体排除，未持有组和已知零贡献可取零。`Obs` 为该组自身有效收益样本数，相关性和 RC 的共同样本数可能更少。申购确认价可以支持账簿估值，但不因此生成基金当日总回报净值。
@@ -1182,7 +1183,7 @@ $$
 
 ### 8.2 Concentration
 
-Holdings 集中度固定使用 `portfolio_nav`；与 Holdings 的账面持仓权重及生产协方差风险贡献分开。
+Risk 集中度固定使用 `portfolio_nav`；与 Holdings 的账面持仓权重及生产协方差风险贡献分开。
 
 | 限额范围 | 分子 |
 |---|---|
@@ -1200,7 +1201,7 @@ taxonomy 父节点包含全部后代；父子节点及不同 taxonomy 是不同�
 
 限额、taxonomy 监控集合与 FCN 分配共同保存为组合拥有的不可变 revision，使用明确 `effective_from`。树表统一保存采用当前展示估值日，生效日由集中度列头提示说明；历史读取选择该日已生效配置，同一日期取最高 revision。编辑读取返回实际生效 `revision` 和全局最新 `latest_revision`，提交 `expected_revision=latest_revision` 防止覆盖并发写入；不能把未来已保存的内容当成当前日草稿。历史分组仍使用当前 taxonomy 名称、状态、层级和归属。
 
-Taxonomies 树表逐项编辑上限，可与依据和目标同事务保存。任一校验或 revision 冲突使整次操作回滚；纯集中度保存不增加 taxonomy_configuration_version、不重算核算数据、不使 Research 失效。Holdings 的“敞口与集中度”显示完整金额、余量与来源，在单 FCN 视图内编辑本金分配。Overview 仅列超限摘要，并披露已配置但缺数据的项目；DSH 使用同一投影，浏览分组不控制其覆盖范围。
+Taxonomies 树表逐项编辑上限，可与依据和目标同事务保存。任一校验或 revision 冲突使整次操作回滚；纯集中度保存不增加 taxonomy_configuration_version、不重算核算数据、不使 Research 失效。Risk 的“集中度”显示完整金额、余量与来源，并按独立截至日期读取投影和限额，在单 FCN 视图内编辑本金分配。Overview 仅列超限摘要，并披露已配置但缺数据的项目；DSH 使用同一投影，浏览分组不控制其覆盖范围。
 
 迁移 0068 将所有旧 revision（含未来生效）按现有及历史成员身份展开为逐项值，旧输入保留在 migration_audit.original_settings，原日期、revision、作者与时间不变。运行时只解释新格式；新对象默认没有上限，不继承旧通用值。关闭旧 taxonomy 范围转换为分类开关关闭且保留其逐项限额；已停用的单证券/FCN 范围不在迁移中重新开启。
 
@@ -1451,9 +1452,13 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v5` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
+固定日期（pinned）只将行情、持仓及相关交易的时效性固定在数据截止日，不因该日以后的交易就自动失效；最新可用模式与最新组合日期比较。两种模式都将已保存目标快照与当前完整配置比较，当前目标、分类、资格或设置变化均使旧结果 stale。`RESEARCH_TARGET_SOLVER_VERSION=global_leaf_scalar_targets_v6` 同时进入 request、结果方法披露和 planning-state fingerprint；算法变化使工作台缓存与保存结果一起失效。缺少该方法版本或使用旧输入身份版本的 run 可继续阅读存档，但明确 stale，须重新运行才能作为当前结果，不迁移或重写旧解。当前页展示旧模拟时将未标记锚点的成立前经济历史裁出比较范围，原存档仍可审计。
 
 每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
+
+共同收益覆盖不足导致优化失败时，错误须列出实际缺样本成员、缺失期间、研究收益口径与截至请求时点的最新观察。
+基金同时显示单位净值最新日期，区分估值已更新与 `total_return_nav` 历史完整；分红证据或复权投影待核对时不得回退到单位净值、填零或放宽完整样本限制。
+历史模拟遇到真实收益尾部过旧时，沿用数据不足的处理：跳过该次决策并披露原因，原有模拟持仓继续保留；不把技术错误或配置错误归为数据缺口。
 
 ## 11. Scenario P&L 口径
 

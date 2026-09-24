@@ -13,6 +13,7 @@ import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
   getHoldingsWorkspace: vi.fn(),
+  getConcentration: vi.fn(),
   requestInstrumentRisk: vi.fn().mockResolvedValue({ instruments: [], cases: [] }),
   getPortfolioAccountsWorkspace: vi.fn(),
   getPortfolioPerformance: vi.fn(),
@@ -25,7 +26,7 @@ vi.mock('./lib/api', () => apiMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
-vi.mock('./components/ConcentrationPanel', () => ({ default: () => <div>Concentration test panel</div> }))
+vi.mock('./lib/concentrationApi', async (importOriginal) => ({ ...await importOriginal<typeof import('./lib/concentrationApi')>(), getConcentration: apiMocks.getConcentration }))
 vi.mock('./components/PortfolioTailRiskPanel', () => ({ default: () => <div>Tail risk test panel</div> }))
 
 function isoDateDaysBefore(daysBefore: number) {
@@ -290,10 +291,10 @@ function taxonomyCatalogWithFullUniverse() {
   }
 }
 
-function renderRiskPage() {
+function renderRiskPage(route = '/portfolios/3/risk') {
   return renderPortfolioPage(
     <RiskPage />,
-    '/portfolios/3/risk',
+    route,
     '/portfolios/:portfolioId/risk',
   )
 }
@@ -301,6 +302,8 @@ function renderRiskPage() {
 describe('Risk rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.removeItem('investment_studio.portfolio.concentration.view.3')
+    apiMocks.getConcentration.mockImplementation(async (_portfolioId: string, date: string) => ({ portfolio_id: '3', as_of_date: date, base_currency: 'USD', nav: 1000, scopes: [], coverage: [], fcn_contracts: [], status: 'complete' }))
     localStorage.removeItem('investment_studio.portfolio.risk.target-taxonomy.3')
     localStorage.removeItem('investment_studio.portfolio.risk.settings.v1')
     apiMocks.getPortfolioPerformance.mockResolvedValue({ portfolio_id: '3', base_currency: 'USD',
@@ -344,6 +347,27 @@ describe('Risk rendered page contract', () => {
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+  })
+
+  it('shows the existing concentration projection at the linked date without changing the current risk workspace', async () => {
+    apiMocks.getConcentration.mockImplementation(async (_portfolioId: string, date: string) => ({ portfolio_id: '3', as_of_date: date, base_currency: 'USD', nav: 1000, status: 'partial', coverage: ['Option exposure is not modeled.'], fcn_contracts: [],
+      scopes: [{ scope: 'security', taxonomy_id: null, name: 'Securities', enabled: true, status: 'partial', coverage: [], rows: [{ entity_id: 'gross-a', name: 'Gross exposure A', weight: .9, security_exposure_base: 900, fcn_exposure_base: 0, exposure_base: 900, limit_weight: .8, headroom_weight: -.1, status: 'breached', coverage: [], sources: [] }] }] }))
+    const scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+    renderRiskPage('/portfolios/3/risk?concentration_date=2026-07-10#concentration')
+    const concentration = await screen.findByRole('region', { name: 'Concentration' })
+    expect(await within(concentration).findByRole('table')).toHaveTextContent('90.00%')
+    expect(within(concentration).getByRole('table')).toHaveTextContent('Over limit')
+    expect(within(concentration).getByText('Options not modeled · no stock delivery scenario')).toBeInTheDocument()
+    expect(within(concentration).getByLabelText('Concentration as of date')).toHaveValue('2026-07-10')
+    expect(apiMocks.getConcentration).toHaveBeenCalledExactlyOnceWith('3', '2026-07-10')
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledExactlyOnceWith('3', { include_details: true }, expect.any(AbortSignal))
+    expect(scroll).toHaveBeenCalledOnce()
+    expect(within(screen.getByRole('region', { name: 'Risk health' })).getByLabelText(/Modeled concentration basis:/)).toHaveAttribute('aria-label', expect.stringContaining('not divided by portfolio NAV'))
+    fireEvent.change(within(concentration).getByLabelText('Concentration as of date'), { target: { value: '2026-07-09' } })
+    await waitFor(() => expect(apiMocks.getConcentration).toHaveBeenLastCalledWith('3', '2026-07-09'))
+    expect(apiMocks.getConcentration).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledTimes(1)
   })
 
   it('preserves a historical cutoff selected before the initial date effect runs', async () => {

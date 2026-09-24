@@ -651,3 +651,60 @@ def test_missing_research_and_normal_nav_disclosure_lag_remain_coverage_context(
         assert "正常净值披露滞后不等于研究失败" in tracking["note"]
         assert any("研究覆盖尚未确认" in message for message in snapshot["limitations"])
         assert {case["case_id"] for case in snapshot["research"]} == {"research"}
+
+
+def test_scheduled_transient_risk_failure_requeues_same_authorized_run(client):
+    from datetime import timedelta
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id='risk-a', scheduled_dates={'risk-a': '2026-09-25'})
+        original_id = run.entry_id
+        run.status, run.completed_at = 'failed', datetime.now(UTC) - timedelta(minutes=2)
+        run.context_json = {**run.context_json, 'runtime_error': {'type': 'ProviderRateLimit', 'retryable': True},
+                           'execution': {'attempt': 1}}
+        session.commit()
+        recovered, created = service.begin_run(session, instrument_id='risk-a', scheduled_dates={'risk-a': '2026-09-25'})
+        assert created and recovered.entry_id == original_id and recovered.status == 'queued'
+        assert recovered.context_json['execution']['resume']
+        assert len(recovered.context_json['execution']['failures']) == 1
+
+
+@pytest.mark.parametrize('subject', ['user', 'service'])
+def test_live_role_or_service_scope_revocation_prevents_risk_publication(client, monkeypatch, subject):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from studio_identity import Principal, principal_context
+    from watchlist_app.services import research_runner as runner
+    seed(client)
+    original = (Principal('operator', 'Operator', 'default', credential='task-token') if subject == 'user' else
+                Principal(None, 'Research service', 'default', kind='service', service_id='watchlist',
+                          scopes=['watchlist:research'], credential='task-token'))
+    with principal_context(original), get_session_factory()() as session:
+        case = session.get(RiskCase, 'research')
+        case.evidence_json = {**case.evidence_json, 'event_version_id': 'research:1', 'risk_assessment': {'status': 'pending'}}
+        session.commit()
+        run, _ = service.begin_run(session, instrument_id='risk-a')
+        run_id = run.entry_id
+    delegated = replace(original, resource_scope={'kind': 'run', 'id': run_id})
+    revoked = replace(delegated, team_role='reader') if subject == 'user' else replace(delegated, scopes=[])
+    finished = []
+    monkeypatch.setattr(runner, 'resolve_token', lambda *args: revoked if finished else delegated)
+    monkeypatch.setattr(runner, 'revoke_delegation', lambda *args: None)
+    def launch(*args, **kwargs):
+        with get_session_factory()() as session:
+            run = session.get(ResearchEntry, run_id)
+            run.context_json = {**run.context_json, 'submitted_risk_review': {**reply(), 'case_assessments': [{
+                'case_id': 'research', 'event_version_id': 'research:1', 'status': 'resolved', 'reason': '草稿拟结束风险'}]}}
+            session.commit()
+        finished.append(True)
+        return SimpleNamespace(communicate=lambda **kwargs: ('', ''), returncode=0)
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    runner.run_analysis(run_id, token='task-token')
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        case = session.get(RiskCase, 'research')
+        assert run.status == 'failed' and run.context_json['runtime_error']['type'] == 'AuthorizationUnavailable'
+        assert run.context_json['runtime_error']['status_code'] == 403
+        assert case.trigger_active and case.status == 'open'
+        assert case.evidence_json['risk_assessment'] == {'status': 'pending'}
+        assert 'result' not in run.context_json

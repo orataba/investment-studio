@@ -344,10 +344,12 @@ def read_market_state() -> dict:
 
 
 @compact_read_tool
-def read_research_numbers(action: Literal["catalogue", "series", "compare", "price_risk"] = "catalogue",
+def read_research_numbers(action: Literal["catalogue", "series", "compare", "price_risk", "observations", "event_reaction"] = "catalogue",
                           instrument_id: str | None = None, dataset: str | None = None,
                           series_ids: list[str] | None = None, field: str | None = None,
                           start: str | None = None, end: str | None = None,
+                          benchmark_id: str | None = None, event_date: str | None = None,
+                          event_timing: Literal["date_only", "before_open", "after_close"] = "date_only",
                           source_id: str | None = None, section: Literal["overview", "data", "sources", "evidence"] = "overview",
                           offset: int = 0, limit: int = 100, path: list[str | int] | None = None) -> dict:
     """Read source-versioned macro/market series or calculated instrument risk from either entrance.
@@ -359,16 +361,21 @@ def read_research_numbers(action: Literal["catalogue", "series", "compare", "pri
     arguments; follow next_offset AND every deferred.path with the same source_id/section.
     Continuations never recalculate, shorten the window or write another source. A volatility
     observation is not a sell signal. Cite the computed source_id. This is not a backtest.
+    observations returns a few asset-appropriate fixed measures, with actual holdings/sample and
+    coverage. event_reaction requires a verified event_date; timing defaults to date_only (never
+    guess before_open/after_close). Unfinished windows stay pending. Both may use benchmark_id
+    only for comparable observed returns, never causal attribution; retain the returned figure source.
     """
     if source_id:
-        if instrument_id or dataset or series_ids or field or start or end:
+        if instrument_id or dataset or series_ids or field or start or end or benchmark_id or event_date or event_timing != "date_only":
             raise ValueError("续读只传source_id和分区分页参数，不重新指定计算范围。")
         evidence = _computed_source(source_id)
     else:
         if section != "overview" or offset or path:
             raise ValueError("请先计算并取得source_id，再分页读取同一次计算。")
         evidence = request("numeric", {"action": action, "instrument_id": instrument_id, "dataset": dataset,
-            "series_ids": series_ids or [], "field": field, "start": start, "end": end})
+            "series_ids": series_ids or [], "field": field, "start": start, "end": end,
+            "benchmark_id": benchmark_id, "event_date": event_date, "event_timing": event_timing})
     if "input_series" in evidence:
         raise ValueError("该来源是标的比较，请用compare_instruments及同一source_id续读。")
     metadata = {key: evidence.get(key) for key in ("source_id", "as_of")}
@@ -644,7 +651,7 @@ def authorize_team_research(instrument_id: str, source_quote: str) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
 def submit_research_review(result: ReviewResult) -> dict:
-    """Submit a research delta from either entrance. Automatic checks cover all requested instruments; conversations may update just studied instruments. change_kind=none needs no summary/notebook; knowledge updates only changed fields; investment publishes material forward changes. Preserve stable keys; omit unchanged fields. Validates scope, original source references and dates; fix reported errors and resubmit. This only retains a draft for independent fact review, and does not publish conclusions or risk events. After success, do not serialize the draft again in prose."""
+    """Submit a research delta from either entrance. Automatic checks cover all requested instruments; conversations may update just studied instruments. reviews[] owns summary, themes, reflection, events and research as sibling fields; never put themes/summary/reflection under research. Theme check receipts belong in themes (theme_id/theme_key); reflection.reviewed_update_ids accepts specific prior judgment/event update_ids, never theme version IDs. change_kind=none needs no summary/notebook; knowledge updates only changed fields; investment publishes material forward changes. Preserve stable keys; omit unchanged fields. Validates scope, original source references and dates; fix reported errors and resubmit. This only retains a draft for independent fact review, and does not publish conclusions or risk events. After success, do not serialize the draft again in prose."""
     return request("sector-draft", draft_payload(result))
 
 

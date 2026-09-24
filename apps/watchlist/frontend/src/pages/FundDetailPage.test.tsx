@@ -63,17 +63,91 @@ function LocationProbe() {
   return <output data-testid="fund-detail-location">{location.search}</output>
 }
 
+const savedOpinion = (body: string) => ({ note_id: body, note_date: '2026-09-23', note_type: 'thesis_update', title: '基金观察', body, summary: '', importance: 'normal', tags: [], source_refs: '', people: '', author: 'Shaw', follow_up_date: null, completed_at: null, created_at: '2026-09-23T09:00:00Z', updated_at: '2026-09-23T09:00:00Z', updated_by: 'terminal_ui', revision_number: 1 })
+
+it('opens investment research from summary without requesting unrelated NAV, opinions, library or provider data', async () => {
+  for (const request of [api.library, api.nav, api.research, api.reference]) request.mockImplementation(() => new Promise(() => {}))
+  show('/instruments/fund-1?tab=investment-research&currency=HKD&benchmark=benchmark-1')
+  expect(await screen.findByTestId('fund-research-tracking')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '测试基金 TEST' })).toBeTruthy()
+  for (const request of [api.library, api.nav, api.research, api.reference, api.resolve]) expect(request).not.toHaveBeenCalled()
+  expect(new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '').get('currency')).toBe('HKD')
+})
+
+it('loads NAV independently while pending opinions remain explicitly pending and are not fetched twice across tabs', async () => {
+  let finishOpinions!: (value: unknown) => void
+  api.research.mockImplementation(() => new Promise(resolve => { finishOpinions = resolve }))
+  show()
+  const overview = await screen.findByRole('region', { name: '基金总览' })
+  expect((await within(overview).findAllByText('1.0400')).length).toBeGreaterThan(0)
+  expect(within(overview).queryByText('尚未记录投资观点。')).toBeNull()
+  expect(api.nav).toHaveBeenCalledOnce()
+  expect(api.library).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: '投资观点' }))
+  expect(screen.queryByRole('region', { name: '投资观点时间线' })).toBeNull()
+  expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy()
+  expect(api.research).toHaveBeenCalledOnce()
+  await act(async () => finishOpinions({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('已经保存的独立观点。')] }))
+  expect(await screen.findByText('已经保存的独立观点。')).toBeTruthy()
+})
+
+it('shows an opinion read failure without presenting an empty record and retries only the failed resource', async () => {
+  api.research.mockRejectedValueOnce(new Error('观点服务暂不可用'))
+  show('/instruments/fund-1?tab=views')
+  const failure = await screen.findByRole('alert')
+  expect(failure.textContent).toContain('观点服务暂不可用')
+  expect(screen.queryByRole('region', { name: '投资观点时间线' })).toBeNull()
+  api.research.mockResolvedValue({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('恢复后可读的观点。')] })
+  fireEvent.click(within(failure).getByRole('button', { name: '重试' }))
+  expect(await screen.findByText('恢复后可读的观点。')).toBeTruthy()
+  expect(api.summary).toHaveBeenCalledOnce()
+  expect(api.research).toHaveBeenCalledTimes(2)
+  expect(api.nav).not.toHaveBeenCalled()
+})
+
+it('rejects late opinions from the previous fund while retaining the new fund record', async () => {
+  const summary = await api.summary()
+  api.summary.mockImplementation(async (id: string) => ({ ...summary, instrument_id: id, instrument_name: id }))
+  let finishOld!: (value: unknown) => void
+  api.research.mockImplementation((id: string) => id === 'fund-1' ? new Promise(resolve => { finishOld = resolve }) : Promise.resolve({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('第二只基金的观点。')] }))
+  const page = (id: string) => <LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=views']}><FundDetailPage fundId={id} fundType="private_fund" /></MemoryRouter></LanguageProvider>
+  const { rerender } = render(page('fund-1'))
+  await waitFor(() => expect(api.research).toHaveBeenCalledWith('fund-1'))
+  rerender(page('fund-2'))
+  expect(await screen.findByText('第二只基金的观点。')).toBeTruthy()
+  await act(async () => finishOld({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('迟到的旧基金观点。')] }))
+  expect(screen.queryByText('迟到的旧基金观点。')).toBeNull()
+  expect(screen.getByText('第二只基金的观点。')).toBeTruthy()
+})
+
+it('rejects an in-flight opinion response superseded by a research publication', async () => {
+  const pending: Array<(value: unknown) => void> = []
+  api.research.mockImplementation(() => new Promise(resolve => { pending.push(resolve) }))
+  show('/instruments/fund-1?tab=views')
+  await waitFor(() => expect(api.research).toHaveBeenCalledOnce())
+  await act(async () => announceResearchPublication(['fund-1']))
+  expect(api.research).toHaveBeenCalledTimes(2)
+  await act(async () => pending[1]({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('本轮发布后的观点。')] }))
+  expect(await screen.findByText('本轮发布后的观点。')).toBeTruthy()
+  await act(async () => pending[0]({ ...emptyInstrumentResearchResponse(), notes: [savedOpinion('发布前仍在读取的旧观点。')] }))
+  expect(screen.queryByText('发布前仍在读取的旧观点。')).toBeNull()
+  expect(screen.getByText('本轮发布后的观点。')).toBeTruthy()
+})
+
 it('refreshes published fund opinions across research and investment-view tabs', async () => {
-  show('/instruments/fund-1?tab=investment-research')
+  show('/instruments/fund-1?tab=views')
+  await screen.findByRole('region', { name: '投资观点时间线' })
+  fireEvent.click(screen.getByRole('button', { name: '投资研究' }))
   await screen.findByTestId('fund-research-tracking')
   const note = { note_id: 'new-view', note_date: '2026-09-23', note_type: 'thesis_update', title: '基金观察', body: '新增主题观点应立即出现在基金观点页。', summary: '', importance: 'normal', tags: [], source_refs: '', people: '', author: 'Shaw', follow_up_date: null, completed_at: null, created_at: '2026-09-23T09:00:00Z', updated_at: '2026-09-23T09:00:00Z', updated_by: 'terminal_ui', revision_number: 1 }
   api.research.mockResolvedValue({ ...emptyInstrumentResearchResponse(), notes: [note] })
   await act(async () => announceResearchPublication(['other']))
   expect(api.research).toHaveBeenCalledTimes(1)
   await act(async () => announceResearchPublication(['fund-1']))
-  expect(api.research).toHaveBeenCalledTimes(2)
+  expect(api.research).toHaveBeenCalledTimes(1)
   fireEvent.click(screen.getByRole('button', { name: '投资观点' }))
   expect(await screen.findByText(note.body)).toBeTruthy()
+  expect(api.research).toHaveBeenCalledTimes(2)
   expect(api.summary).toHaveBeenCalledTimes(1)
 })
 
@@ -155,7 +229,7 @@ it('keeps the overview free of duplicate charts and separates personal opinions 
   const { container } = show()
   await screen.findByRole('region', { name: '基金总览' })
   const navigation = container.querySelector('.instrument-detail-tabs')!
-  expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '业绩与风险', '基金档案'])
+  await waitFor(() => expect(within(navigation as HTMLElement).getAllByRole('button').map((button) => button.textContent)).toEqual(['总览', '投资研究', '投资观点', '业绩与风险', '基金档案']))
   expect(container.querySelector('.instrument-chart-stage')).toBeNull()
   fireEvent.click(within(navigation as HTMLElement).getByRole('button', { name: '投资观点' }))
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()

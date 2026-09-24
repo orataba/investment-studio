@@ -358,7 +358,7 @@ def test_risk_submission_retry_requires_complete_result_and_never_saves_partial(
     complete = {"summary": "核对当前风险与证据限制。", "priorities": [], "limitations": []}
     accepted = asyncio.run(mcp.mcp.call_tool("submit_risk_review", {"result": complete}))
     assert json.loads(accepted.content[0].text) == {"status": "accepted"}
-    assert calls == [("risk-draft", complete)]
+    assert calls == [("risk-draft", {**complete, "case_assessments": []})]
 
 
 def test_risk_submission_advertises_the_same_strict_result_schema():

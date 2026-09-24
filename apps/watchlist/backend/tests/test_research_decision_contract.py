@@ -73,6 +73,7 @@ def test_ai_cannot_replace_user_methods_or_reading_preferences():
 
 def event(**changes):
     return SectorEvent.model_validate({"event_key": "credit", "action": "new", "direction": "risk", "title": "融资变化",
+        "importance_score": 4, "importance_reason": "融资约束可能影响偿付能力。",
         "body": "融资渠道收窄", "follow_up": "none", "confidence": "reported", "information_type": "fact",
         "recording_type": "new", "source_ids": ["source"], **changes})
 

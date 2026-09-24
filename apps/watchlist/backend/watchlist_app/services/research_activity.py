@@ -33,10 +33,10 @@ def _base(iid, identifier, kind, title, body, recorded_at, **values):
             "reference": {"instrument_id": iid, "research_update_id": identifier}, **values}
 
 
-def _event_updates(session, iid):
+def _event_updates(session, iid, *, event_key=None):
     from watchlist_app.services.sector_research import events_for_instruments
     updates = []
-    for event in events_for_instruments(session, [iid]):
+    for event in events_for_instruments(session, [iid], event_key=event_key):
         snapshots = [(index, row["snapshot"], row.get("at"), row.get("action"))
                      for index, row in enumerate(event.get("history", []), 1) if row.get("snapshot")]
         if not snapshots:
@@ -57,6 +57,10 @@ def _event_updates(session, iid):
                 impact_level=row.get("impact_level"), urgency=row.get("urgency"),
                 risk_channels=row.get("risk_channels") or [], impact_analysis=row.get("impact_analysis", ""),
                 action_condition=row.get("action_condition", ""),
+                **{key: row.get(key) for key in ("importance_score", "importance_reason", "market_views", "market_reaction",
+                    "follow_up_until", "follow_up_reason", "follow_up_started_at", "next_observation_on", "checked_at",
+                    "material_progress_at", "development_at", "risk_assessment")},
+                follow_up_pinned=bool(event.get("follow_up_pinned")), material_change=row.get("material_change", change != "organized"),
                 run_id=row.get("run_id"), withdrawn=event.get("withdrawn", False),
                 withdrawal_reason=event.get("withdrawal_reason"), withdrawn_at=event.get("withdrawn_at"),
                 superseded=revision != snapshots[-1][0],
@@ -64,6 +68,102 @@ def _event_updates(session, iid):
             update["reference"].update(event_case_id=event["case_id"], event_version_id=version_id)
             updates.append(update)
     return updates
+
+
+def event_page(session, instrument_id, *, scope="recent", display_timezone="UTC", offset=0, limit=20, event_key=None, include_history=False, now=None):
+    """A small event-only read; never load notebook history or invoke calculations.
+
+    Current reads omit event history and original source text at the SQL boundary.
+    Historical versions are read only when requested and returned as a bounded page.
+    """
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+    from sqlalchemy import select
+    from watchlist_app.db.models.workbench import RiskCase
+    from watchlist_app.services.sector_research import event_record, SectorEvent
+    zone = ZoneInfo(display_timezone)
+    today = (now or datetime.now(UTC)).astimezone(zone).date()
+    start = today - timedelta(days=6)
+    if include_history:
+        if not event_key:
+            raise ValueError("请选择单个事件再读取其历史")
+        history = sorted(_event_updates(session, instrument_id, event_key=event_key),
+                         key=lambda row: (row["recorded_at"], row["update_id"]), reverse=True)
+        total, end = len(history), min(len(history), offset + limit)
+        return serialize_payload({"instrument_id": instrument_id, "events": history[offset:end],
+            "late_arrivals": [], "late_arrival_count": 0, "total": total,
+            "has_more": end < total, "next_offset": end if end < total else None})
+    from sqlalchemy import JSON, func, true
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    # Select the JSON contract fields individually, excluding original bodies and
+    # full event histories. Historical *events* use database pagination; their
+    # exact saved revisions remain accessible through the existing version reader.
+    fields = {*SectorEvent.model_fields, "discovered_at", "recorded_at", "event_version_id", "checked_at",
+        "material_progress_at", "progress_at", "development_at", "follow_up_started_at", "follow_up_pinned", "risk_assessment",
+        "coverage", "withdrawn", "withdrawal_reason", "withdrawn_at", "source_views"} - {"source_ids", "title", "body"}
+    relation, projected = research_context_projection(session, {key: JSON for key in sorted(fields)}, json_column=RiskCase.evidence_json)
+    query = select(RiskCase.case_id, RiskCase.instrument_id, RiskCase.signal, RiskCase.title, RiskCase.body,
+        RiskCase.status, RiskCase.trigger_active, RiskCase.created_at, RiskCase.updated_at,
+        *(projected[key].label(key) for key in sorted(fields))).select_from(RiskCase)
+    if relation is not None:
+        query = query.join(relation, true())
+    filters = [RiskCase.instrument_id == instrument_id, RiskCase.signal.like("sector:%")]
+    if event_key:
+        filters.append(RiskCase.signal == f"sector:{event_key}")
+    query = query.where(*filters)
+    history_total = None
+    if scope == "history" and not event_key:
+        history_total = session.scalar(select(func.count()).select_from(RiskCase).where(*filters))
+        query = query.order_by(RiskCase.observed_on.desc().nullslast(), RiskCase.created_at.desc(), RiskCase.case_id).offset(offset).limit(limit)
+    rows = []
+    for row in research_projection_rows(session, query, {key: (key,) for key in fields}, json_column=RiskCase.evidence_json):
+        values = dict(row._mapping)
+        evidence = {key: values.pop(key) for key in sorted(fields)}
+        if evidence.get("source_views") is None or not evidence.get("event_version_id"):
+            # Only a selected legacy event needs its older unprojected references.
+            original = session.execute(select(RiskCase.evidence_json, func.json_array_length(RiskCase.history_json))
+                .where(RiskCase.case_id == values["case_id"])).one()
+            from watchlist_app.services.sector_research import _source_views, event_version_id
+            evidence["source_views"] = _source_views((original[0] or {}).get("sources", []))
+            evidence["event_version_id"] = evidence.get("event_version_id") or event_version_id(values["case_id"], max(1, original[1] or 0))
+        evidence["sources"] = evidence.pop("source_views")
+        event = event_record(SimpleNamespace(**values, evidence_json=evidence, history_json=[]))
+        identifier = f"event:{event['event_version_id']}"
+        rows.append(_base(instrument_id, identifier, "event", event["title"], event["body"], event["recorded_at"],
+            **{key: value for key, value in event.items() if key not in {"instrument_id", "title", "body", "recorded_at", "history"}},
+            next_check=event["next_watch"], reference={"instrument_id": instrument_id,
+                "research_update_id": identifier, "event_case_id": event["case_id"], "event_version_id": event["event_version_id"]}))
+    def local_date(value):
+        if not value:
+            return None
+        return date.fromisoformat(value) if len(value) == 10 else datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(zone).date()
+    selected, late = [], []
+    for row in rows:
+        factual_day = local_date(row.get("development_at") or row.get("occurred_at") or row.get("published_at"))
+        recorded_day = local_date(row.get("material_progress_at") or row.get("discovered_at") or row.get("recorded_at"))
+        row["timeline_date"] = factual_day.isoformat() if factual_day else None
+        row["late_arrival"] = bool(factual_day and factual_day < start and recorded_day and start <= recorded_day <= today)
+        row["follow_up_review_status"] = ("ended" if row.get("follow_up") != "watch" else "due"
+            if row.get("follow_up_until") and row["follow_up_until"] <= today.isoformat() else "active")
+        if event_key or scope == "history":
+            selected.append(row)
+        elif scope == "watch":
+            if row.get("follow_up") == "watch" and not row.get("withdrawn"):
+                selected.append(row)
+        elif not row.get("withdrawn") and (row.get("importance_score") is None or row["importance_score"] >= 3):
+            if factual_day and start <= factual_day <= today:
+                selected.append(row)
+            elif row["late_arrival"] or factual_day is None:
+                late.append(row)
+    ordering = lambda row: (row.get("timeline_date") or "", row.get("recorded_at") or "", row["update_id"])
+    selected.sort(key=ordering, reverse=True)
+    late.sort(key=ordering, reverse=True)
+    total = history_total if history_total is not None else len(selected)
+    end = min(total, offset + limit)
+    return serialize_payload({"instrument_id": instrument_id, "events": selected if history_total is not None else selected[offset:end],
+        "late_arrivals": late[:limit] if offset == 0 else [], "late_arrival_count": len(late),
+        "total": total, "has_more": end < total, "next_offset": end if end < total else None})
 
 
 def question_progress_value(question):
@@ -265,7 +365,7 @@ def review_receipts(session, instrument_id):
     """Only a published receipt for an exact judgment proves that it was checked."""
     from sqlalchemy import JSON, String, func, select, true
     from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-    from watchlist_app.services.research_access import research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
+    from watchlist_app.services.research_access import instrument_run_scope, research_context_projection, research_projection_rows, topic_portfolio_ids_by_topic
     principal = current_principal()
     relation, context = research_context_projection(session, {"cutoff": String, "reviews": JSON})
     review = context["reviews"][instrument_id]
@@ -275,6 +375,7 @@ def review_receipts(session, instrument_id):
         query = query.join(relation, true())
     rows = research_projection_rows(session, query.where(
             ResearchEntry.kind == "analysis", ResearchEntry.status.in_(["completed", "draft"]),
+            instrument_run_scope(session, instrument_id),
             review["status"].as_string().in_(["completed", "limited"]),
             True if principal.local_unrestricted else ResearchEntry.team_id == principal.team_id,
         ).order_by(func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(),
@@ -344,7 +445,7 @@ def review_agenda(session, instrument_id, notebook, pm_views, *, actor=None, the
         "pending_events": [{"update_id": row["update_id"], "title": row["title"],
                 "next_check": row.get("next_check"), "reference": row["reference"]}
             for row in current if row["kind"] == "event" and row.get("follow_up") == "watch"
-            and any(identifier not in inactive_themes for identifier in row.get("theme_ids", []))],
+            and (not row.get("theme_ids") or any(identifier not in inactive_themes for identifier in row["theme_ids"]))],
         "active_forecasts": [{"update_id": row["update_id"], **{key: forecast.get(key)
                 for key in ("key", "version_id", "claim", "horizon", "observation_condition", "review_on", "invalidation")}}
             for row in current if row["kind"] == "forecast" and (forecast := forecasts.get(row["update_id"], {})).get("status") == "active"],

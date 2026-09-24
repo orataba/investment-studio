@@ -17,7 +17,7 @@
 
 迁移 `20260920_0060` 为 PostgreSQL `research_entry` 增加基于留存 `context_json.instrument_ids` 的 GIN 表达式索引。读取先按该次运行的原始标的范围筛选，再解析命中记录的研究字段；不能用后来可变的 `research_topic.instrument_ids` 替代历史范围。索引通过同一不可变数据库函数提取文本数组，由 PostgreSQL 随每次写入维护；它不是第二份研究事实或跨请求缓存。原始 context、来源正文、作者及权限判断保持原样。SQL 工作副本仅为处理 PostgreSQL JSON 中保留的 NUL 转义而转换，选中的原始字段仍精确还原。改变提取函数语义必须通过迁移重建依赖索引；SQLite 使用等价的既有逐行范围谓词。
 
-浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，完整正文、快照、公司资料和计算输入由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
+浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后使用完整读取，精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，完整正文、快照、公司资料和计算输入由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
 
 - `/api/research/catalogue`、`/connections` 提供登记标的与外部证据连接状态。
 - `/api/research/topics` 管理持续专题；专题下的 `/entries`、`/files`、`/analysis` 保存材料或发起助手运行。
@@ -198,6 +198,34 @@ canonical recalc 在同一事务内写入两个 payload。`sparklines` 固定保
 
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
 Instrument Data 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
+
+### 4.7 Watchlist 投资研究 V1
+
+V1 复用既有 `research_entry`、主题、来源与 `risk_case` JSON；不新增研究平台、事件表或平行总结。页面按机会与风险、重要事件、重点主题、量化观察阅读；基础档案、研究指导、PM 观点及历史保留在辅助入口。
+
+- 当前投资判断的同一版本增加 `opportunities`、`risks` 数组，每项包含稳定 `key`、标题、解释、下一观察，以及 `source_ids` / `event_keys` / `theme_ids` 引用；数值依据用 `figure_source_ids`。发布时绑定实际留存证据，历史按原版本读取。数组缺省继续保留旧判断，明确空数组才表示本轮已评估且暂无对应事项。旧记录没有数组时显示覆盖未建立，不推断“没有风险”。`coverage_status` 为 `assessed` / `limited` / `not_established`；`coverage_note` 说明限制。
+- 新重要事件须有整数 `importance_score`（1–5）和具体 `importance_reason`；旧值允许未知。评分不等于确定性、方向或风险严重度。`market_views` 保存有发布者、日期和来源的公开观点；没有样本时不生成共识。`market_reaction` 仅解释绑定的确定性计算及其限制，不写自由浮点行情。
+- `follow_up=watch|none|resolved` 只管理研究跟进。`watch` 可以不关联主题，必须有下一观察；默认期限为 30 个自然日。`follow_up_until`、`follow_up_reason`、`next_observation_on` 保留复核期限和原因。只有有写权限的 PM 能修改 `follow_up_pinned`；模型无法提交该字段。固定、明确未来节点、重大未结风险不会被普通到期流程关闭。检查、措辞、评分及固定操作不刷新事件事实时钟。服务器按本次进展的已核实发布日期保留 `development_at`：旧事件可凭新进展进入近期流，同时保留原发生日；补录不冒充当日新闻。显式 `progress_kind=editorial` 不算实质进展。
+- 风险判断独立保存在 `risk_case.evidence_json.risk_assessment`。新风险线索先待复核；团队风控通过绑定事件版本的 `case_assessments` 写入 `pending` / `active` / `resolved` / `dismissed` 及原因。仅停止跟进、主题接管或调整研究方向不能清除既有有效风险；组合私有复核不得修改团队风险状态。Watchlist 和 Portfolio 读取同一风险事项。
+- 研究与团队风控在发布时重新校验当前团队角色／服务研究权限，组合风控重新校验组合访问。PM 跟进与自动风险刷新在行锁下读取最新事项并追加历史；批量风险评估按事项标识排序加锁。首次自动风险创建和阈值更新按标的串行，避免并发创建重复事项或丢失 PM 记录。
+- 风控的暂时失败沿既有 `queue_retry` 恢复同一运行与原发起人，最多三次总尝试；绑定快照、信息截止和已读取页不在恢复中替换。已失去发布权限的发起人不能重排共享研究或风险任务。
+- 公开来源统一由 `/research/runs/{run_id}/sector-evidence` 留存；旧 `/tools` 的 `search` / `source` 与任意 `public_result` 写入口已删除。历史 `tool_evidence` 仍可读取，搜索目录不能当作原文证据。PM 讨论引用同时携带 `pm_note_id` 和 `pm_note_revision`，服务器按原版本绑定，失效引用在入队前返回 422。
+
+新增或扩展的读取／工具合同：
+
+| 入口 | 行为 |
+| --- | --- |
+| `GET /api/research/instruments/{instrument_id}/events` | `scope=recent|watch|history` 分别读取近 7 个自然日、仍在跟进或全部历史事件；接受 `display_timezone`、`offset`、`limit`；返回分页信息和单列的旧材料晚到提示。默认只读当前事件，`event_key` 精确定位；`include_history=true` 按需读取该事件的历史研究及 PM 操作审计（独立 PM 观点沿用投资观点与完整历史入口）。 |
+| `PATCH /api/sector-research/events/{case_id}/follow-up` | PM 固定／取消固定；须携带 `follow_up_pinned` 和当前 `event_version_id`，拒绝过期版本和只读身份。 |
+| `GET /api/research/instruments/{instrument_id}/themes` | `include_history=false` 返回主题概要投影，不读取完整历史和原文；单个 `themes/{theme_id}` 在展开时读取完整详情。 |
+| 既有 dossier 版本／来源入口 | 保留标的与版本权限；支持精确事件版本，不把当前原文代替历史证据。 |
+| `POST /api/research/runs/{run_id}/numeric` | 新增 `action=observations|event_reaction`，沿用绑定运行与 `computed_metrics` 留存。可传 `benchmark_id`；事件反应须有 `event_date`，`event_timing=date_only|before_open|after_close`，默认日期粒度。计算口径见 [Return Series Contract](./RETURN_SERIES_CONTRACT.md)。 |
+
+#### 启用与回滚边界
+
+本改动不增加数据库 schema 迁移。已有 watch 事件首次进入有权限的研究写路径时，幂等初始化自启用日开始的 30 天期限并追加管理审计；不按古老创建日立即关闭，不改变原事实日期、PM 观点和风险判断。只读页面不写初始化数据；新字段缺失统一兼容读取。
+
+正式发布仍需按 [数据库工作流](../../../docs/DATABASE_WORKFLOW.md) 停写、备份并执行仓库发布检查；本次编码不执行生产启用。回滚前停止研究／风险调度与写入并备份新增历史。页面可回退，但后端须保留 V1 的风险独立状态、未知字段兼容读取及来源版本保护，或采用修复后前滚；不能直接让旧版“跟进结束即风险结束”的写路径重新处理 V1 数据。不得删除新历史、批量清空数组、恢复过期判断或将本地研究覆盖到云端。
 
 ## 5. 产品框架如何落地
 

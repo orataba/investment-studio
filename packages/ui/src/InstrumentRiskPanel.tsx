@@ -22,7 +22,11 @@ const due = (c: RiskCase) =>
   Boolean(c.follow_up_date && c.follow_up_date <= today())
 const attention = (c: RiskCase) =>
   c.trigger_active && c.severity === 'attention' && c.status !== 'handled'
-  && c.evidence_json.direction !== 'opportunity'
+  && (Boolean(c.evidence_json.risk_assessment) || c.evidence_json.direction !== 'opportunity')
+const pendingReview = (c: RiskCase) => {
+  const assessment = c.evidence_json.risk_assessment
+  return Boolean(assessment && typeof assessment === 'object' && 'status' in assessment && assessment.status === 'pending')
+}
 const coverage = (c: RiskCase) => c.trigger_active && c.severity === 'coverage'
 const priority = (c: RiskCase) =>
   (attention(c) && c.evidence_json.importance === 'high' ? 4 : 0) +
@@ -132,8 +136,8 @@ function CaseRow({
               : ''
           }
         >
-          {sectorEvent && direction
-            ? direction
+          {pendingReview(record) ? (record.trigger_active ? '风险仍有效 · 新进展待复核' : '风险线索待复核') : sectorEvent && direction
+            ? evidence.risk_assessment && record.trigger_active ? '风险' : direction
             : record.severity === 'coverage'
               ? '监测受限'
               : record.severity === 'observation'
@@ -143,7 +147,7 @@ function CaseRow({
                   : '需要复核'}
         </span>
         <span>
-          {record.trigger_active ? statusLabels[record.status] : '当前未触发'}
+          {pendingReview(record) && !record.trigger_active ? '已提交／待复核' : record.trigger_active ? statusLabels[record.status] : '当前未触发'}
         </span>
       </div>
       <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
@@ -631,6 +635,8 @@ export default function InstrumentRiskPanel({
         filter === 'all' ||
         (filter === 'attention'
           ? attention(c)
+          : filter === 'pending'
+            ? pendingReview(c)
           : filter === 'coverage'
             ? coverage(c)
             : due(c)),
@@ -662,6 +668,7 @@ export default function InstrumentRiskPanel({
       label: attentionLabel,
       count: cases.filter(attention).length,
     },
+    ...(cases.some(pendingReview) ? [{ key: 'pending', label: '待风控复核', count: cases.filter(pendingReview).length }] : []),
     { key: 'due', label: '到期待跟进', count: cases.filter(due).length },
     {
       key: 'coverage',

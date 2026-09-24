@@ -26,6 +26,8 @@ def _provider_failure(errors):
     text = (errors or "").replace('\\"', '"')
     if 'RESEARCH_HARNESS_END {"reason":"max-tokens"}' in text.splitlines():
         return {"type": "OutputLimitExceeded", "summary": "本次研究达到模型单次输出上限，尚未完成提交；已取得的证据和计算保留，可从原进度恢复。", "retryable": False}
+    if 'RESEARCH_HARNESS_END {"reason":"content-filter"}' in text.splitlines():
+        return {"type": "ProviderContentFilter", "summary": "模型服务中止了本次输出，研究尚未完成；已取得的证据和草稿已保留。", "retryable": False}
     codes = set(re.findall(r'"code"\s*:\s*"([a-z_]+)"', text))
     if codes.intersection({"insufficient_user_quota", "insufficient_quota"}) or any(
         line.strip() == "dsh: QUOTA: Insufficient Balance" for line in text.splitlines()
@@ -55,18 +57,18 @@ def review_checkpoint(context):
 
 
 def queue_retry(session, run, *, now=None, manual=False):
-    """Requeue an authorized failed instrument run without rebinding its evidence.
+    """Requeue an authorized failed research/risk run without rebinding its evidence.
 
     Automatic recovery is bounded to two retries of an identified transient fault.
     Manual recovery is useful after an operator repairs a deterministic defect;
     publication still verifies the studied dossier versions and current access.
-    The caller holds the same instrument lock used by begin_run.
+    The caller holds the same instrument/topic lock used by begin_run.
     """
     session.refresh(run, with_for_update=True)
     context = dict(run.context_json or {})
-    if run.status != "failed" or not context.get("sector_run"):
+    if run.status != "failed" or not (context.get("sector_run") or context.get("risk_run")):
         return False
-    from watchlist_app.services.research_access import require_entry_access
+    from watchlist_app.services.research_access import require_entry_access, require_portfolio, require_team_write
     require_entry_access(session, run)
     actor = context.get("research_actor") or {}
     principal = current_principal()
@@ -76,6 +78,11 @@ def queue_retry(session, run, *, now=None, manual=False):
         (principal.kind == "user" and actor.get("user_id") != principal.user_id)
     ):
         return False  # Recovery never adopts another person's original task.
+    portfolio_id = (context.get("risk_scope") or {}).get("portfolio_id")
+    if context.get("risk_run") and portfolio_id:
+        require_portfolio(portfolio_id)
+    else:
+        require_team_write()
     execution = dict(context.get("execution") or {})
     attempt = execution.get("attempt", 1)
     error = context.get("runtime_error") or {}
@@ -215,7 +222,7 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         if not risk_run and not prepared:
             from watchlist_app.services.sector_research import prepare_run
             prepare_run(run_id)
-        elif risk_run:
+        elif risk_run and not prepared:
             from watchlist_app.services.risk_officer import prepare_run
             prepare_run(run_id)
         if execution_authorization is not None:
@@ -254,9 +261,9 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             provider_error = _provider_failure(errors)
             if provider_error is not None:
                 runtime_error = {**provider_error, "exit_code": process.returncode}
-                if provider_error["type"] == "OutputLimitExceeded":
+                if provider_error["type"] in {"OutputLimitExceeded", "ProviderContentFilter"}:
                     runtime_error["stage"] = "review" if resume_review else "generation"
-            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded"} else "") + runtime_error["summary"]
+            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded", "ProviderContentFilter"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
         elif reply.strip() or risk_run:
@@ -284,10 +291,17 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         logging.getLogger(__name__).exception("Research input preparation failed")
         outcome = "研究资料读取失败，本次没有完成检查。"
     with principal_context(resolve_token(current_principal().credential, "watchlist")), get_session_factory()() as session:
-        run = session.get(ResearchEntry, run_id)
+        run = session.get(ResearchEntry, run_id, with_for_update=True, populate_existing=True)
         if run and run.status == "running":
             require_entry_access(session, run)
             if runtime_error:
+                # Generation and independent review share one process deadline.
+                # A first attempt can already have saved its bound draft before
+                # the deadline; recover that review, not a second investigation.
+                if runtime_error["type"] == "TimeoutExpired" and sector_run:
+                    review_ready = bool(run.context_json.get("submitted_draft") and
+                                        run.context_json.get("input_snapshot_cutoff"))
+                    runtime_error.update(retryable=review_ready, stage="review" if review_ready else "generation")
                 run.context_json = {**run.context_json, "runtime_error": runtime_error}
             if rejected_reply:
                 run.context_json = {**run.context_json, "rejected_reply": rejected_reply}

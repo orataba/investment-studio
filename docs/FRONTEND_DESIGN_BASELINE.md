@@ -63,6 +63,7 @@
 - Taxonomies 编辑操作自然右对齐：查看时仅“编辑”贴右，编辑时“取消”位于“保存”左侧，“保存”贴右；不为未显示的按钮保留空位。切换编辑状态保持工具栏高度及表格列宽、行高稳定。
 - Holdings 与 Performance 的 `Group By` 菜单直接列出当前可用分类，不在通用“分类”项之后再加第二个分类选择器。Holdings 每套分类保留“分类名 · 一级 / 末级”两种平铺分组；视图同时保存分组方式及具体分类 ID。未选择、已删除或停用的分类不得静默切到首项；失效分组回到 `None`。未选分类时身份列显示 `—`，选中分类但标的无归属时才显示 `Unassigned`。
 - Overview 承载全组合 `Asset Mix`：固定汇总 `Securities / FCN / Options / Cash & Settlement`，并以单行 `Portfolio Total` 收尾。金额和权重按资产负债表符号展示，所有分类继续使用 canonical NAV 与同一全组合 Forward RC 分母；该高层汇总不在 Holdings 重复；
+- Risk 承载完整集中度明细，复用单一敞口 / NAV 投影；集中度日期独立可选，其他风险区块保持当前持仓日期。Overview 只展示实际超限和不可判断的摘要，链接保留该集中度日期；Holdings 不再保留集中度子视图。模型内 Top-3 / HHI 的归一口径与 NAV 敞口上限明确区分。
 - Holdings 不再展示或导出第二套 `Portfolio Total`；页面顶部 portfolio headline 和 Overview `Asset Mix` 已分别承担总览与分类对账职责。Securities group/subtotal 的 base-currency 总未实现收益使用组内 historical-FX open cost 分母；
 - Holdings group / subtotal 只计算有稳定业务含义的字段：绝对量加总、比例重算、当前权重 return、共同路径 risk 和同一全组合分母下的 Forward RC。Quantity、Book Avg Cost、Quote、Holding Since、Chart、Coverage、Held Max DD 等单标的字段留空；完整映射见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)；
 - Holdings Securities 的列目录固定按 `Identity / Quote / Instrument Trend / Position / Cost / P&L / Risk` 编排。整行不绑定详情跳转，只有 instrument / contract 名称可导航；普通数据单元格支持鼠标左右拖动横向浏览；

@@ -50,18 +50,19 @@ def run_state(run_id, instrument_id):
                  "reviews": row.context_json.get("reviews") or {}, "error": row.context_json.get("runtime_error")}
         if row.status == "completed":
             from watchlist_app.services.research_dossier import read_dossier
-            state["current_notebook"] = read_dossier(session, instrument_id).get("notebook")
+            state["current_notebook"] = read_dossier(session, instrument_id, current_only=True).get("notebook")
         return state
 
 
 def report_ready(notebook):
-    """A readable conditional judgment is valid even with honest data limitations."""
-    notebook = notebook or {}
-    brief = notebook.get("decision_brief") or {}
-    return bool(notebook.get("investment_view") and brief.get("recommendation")
-        and not brief.get("needs_review") and any(
-            (module.get("analysis") or module.get("summary") or "").strip()
-            for module in notebook.get("modules") or []))
+    """V1 needs a current judgment; recommendations and deep modules are optional.
+
+    Publication/independent review is checked separately by result_record. This
+    readiness check does not certify investment quality or complete data coverage.
+    """
+    view = (notebook or {}).get("investment_view") or {}
+    return bool((view.get("direction") or "").strip()
+                and view.get("coverage_status") != "not_established")
 
 
 def result_record(instrument_id, run_id, state):
@@ -103,7 +104,7 @@ def refresh_one(instrument_id, resume_run_id=None, on_dispatch=None):
                             session.commit()
             if run is None:
                 run, created = sector_research.begin_run(session, [instrument_id], scheduled=False,
-                    question="完成当前标的的投资经理研究报告：维护完整当前判断、重要变化及其投资含义、行动建议及条件、主要风险、重点主题和适用领域分析。首次缺失的分析建立有依据的基线；已建立的分析按实际新证据更新。核对PM观点与旧假设，保留资料缺口和各自时点；没有新事实不虚构变化。")
+                    question="建立或更新当前标的的投资研究V1：先取得必要证据，维护重要事件、少量持续主题和适用量化观察，最后形成简明的当前机会与风险判断、依据及下一观察。缺少基础档案时建立有依据的一次性背景；已建立内容按新证据更新。核对PM观点与旧假设，保留资料缺口和各自时点，没有新事实不虚构变化。行动建议和深度模块按实际需要提供，不强制生成；不扩展估值模型或预期差评分。")
             run_id, status = run.entry_id, run.status
         if on_dispatch:
             on_dispatch(instrument_id, run_id, status)

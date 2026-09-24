@@ -12,7 +12,7 @@ import { formatCurrency, formatPercent } from '../lib/format'
 import './concentration.css'
 import { concentrationMessage } from '../lib/concentrationText'
 
-export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfolioId: string; asOfDate?: string }) {
+export default function ConcentrationPanel({ portfolioId, asOfDate, onAsOfDateChange }: { portfolioId: string; asOfDate?: string; onAsOfDateChange?: (date: string) => void }) {
   const { language } = useLanguage()
   const zh = language === 'zh-Hans'
   const text = (en: string, cn: string) => zh ? cn : en
@@ -64,7 +64,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
     within: text('Within limit', '限额内'), breached: text('Over limit', '超限'),
     unconfigured: text('No limit', '未设上限'), unavailable: text('Unavailable', '不可用'),
   }
-  return <section className="portfolio-section-block concentration-panel" aria-label={text('Concentration', '集中度')}>
+  return <section id="concentration" className="portfolio-section-block concentration-panel" aria-label={text('Concentration', '集中度')}>
     <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
       <div>
         <div className="panel-title portfolio-title-with-hint"><span>{text('Concentration', '集中度')}</span>
@@ -73,6 +73,7 @@ export default function ConcentrationPanel({ portfolioId, asOfDate }: { portfoli
         <div className="portfolio-detail-meta">{data ? `${data.as_of_date} · NAV ${formatCurrency(data.nav, data.base_currency)}${data.settings_effective_from ? ` · ${text('Limits effective', '限额生效')} ${data.settings_effective_from}` : ''}` : text('Principal allocation / portfolio NAV', '本金分配 / 组合 NAV')}</div>
       </div>
       <div className="concentration-toolbar-actions">
+        {onAsOfDateChange ? <label><span>{text('As of', '截至日期')}</span><input type="date" className="holdings-filter-input" aria-label={text('Concentration as of date', '集中度截至日期')} value={asOfDate || data?.as_of_date || ''} onChange={event => onAsOfDateChange(event.target.value)} /></label> : null}
         <label><span>{text('Group by', '分组')}</span><select aria-label={text('Concentration taxonomy', '集中度分类')} value={scope ? concentrationScopeKey(scope) : selectedScope}
           onChange={(event) => { setSelectedScope(event.target.value); setExpanded(new Set()); setDetail(null); try { localStorage.setItem(storageKey, event.target.value) } catch { /* Browsing still works without storage. */ } }}>
           {(data?.scopes ?? []).map((item) => <option key={concentrationScopeKey(item)} value={concentrationScopeKey(item)}>{item.scope === 'security' ? text('Direct securities', '直接证券') : item.scope === 'fcn' ? text('Single FCN', '单 FCN') : item.name}</option>)}

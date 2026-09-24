@@ -51,7 +51,7 @@ def ready_notebook():
             "modules": [{"key": "rates-credit", "coverage": "partial", "analysis": "已获取利差扩大，缺少持仓明细；先验证信用暴露再决策。"}]}
 
 
-@pytest.mark.parametrize("missing", ["investment_view", "decision_brief", "modules"])
+@pytest.mark.parametrize("missing", ["investment_view"])
 def test_published_fragments_do_not_count_as_a_readable_report(client, missing):
     batch = batch_module()
     notebook = ready_notebook()
@@ -59,19 +59,20 @@ def test_published_fragments_do_not_count_as_a_readable_report(client, missing):
     assert not batch.report_ready(notebook)
 
 
-def test_limited_report_is_ready_but_empty_or_stale_judgments_are_not(client):
+def test_v1_readiness_accepts_limited_judgments_without_optional_briefs_or_modules(client):
     batch = batch_module()
     notebook = ready_notebook()
     assert batch.report_ready(notebook)
-    stale = deepcopy(notebook)
-    stale["decision_brief"]["needs_review"] = True
-    assert not batch.report_ready(stale)
-    empty = deepcopy(notebook)
-    empty["modules"][0]["analysis"] = "  \n "
-    assert not batch.report_ready(empty)
-    empty["modules"][0]["analysis"] = ""
-    empty["modules"][0]["summary"] = "已知信用利差扩大，待核实暴露"
-    assert batch.report_ready(empty)
+    notebook.pop("decision_brief")
+    notebook.pop("modules")
+    notebook["investment_view"]["coverage_status"] = "limited"
+    assert batch.report_ready(notebook)
+    notebook["decision_brief"] = {"needs_review": True}
+    assert batch.report_ready(notebook)
+    notebook["investment_view"]["coverage_status"] = "not_established"
+    assert not batch.report_ready(notebook)
+    notebook["investment_view"] = {"direction": " \n ", "coverage_status": "assessed"}
+    assert not batch.report_ready(notebook)
 
 
 def test_no_change_publication_uses_retained_report_and_stale_current_overrides_old_run(client):
@@ -82,7 +83,7 @@ def test_no_change_publication_uses_retained_report_and_stale_current_overrides_
     result = batch.result_record("selected", "run", state)
     assert result["published"] and result["report_ready"]
     state["reviews"]["selected"]["research"] = ready_notebook()
-    state["current_notebook"]["decision_brief"]["needs_review"] = True
+    state["current_notebook"]["investment_view"] = None
     assert not batch.result_record("selected", "run", state)["report_ready"]
 
 
@@ -105,7 +106,7 @@ def test_resume_keeps_saved_current_scope_and_rebuilds_published_but_stale_repor
     states = {iid: {"status": "completed", "completed_at": "2026-09-24T00:00:00+00:00", "error": None,
                     "reviews": {iid: {"status": "completed"}}, "current_notebook": ready_notebook()}
               for iid in ("ready", "stale")}
-    states["stale"]["current_notebook"]["decision_brief"]["needs_review"] = True
+    states["stale"]["current_notebook"]["investment_view"]["coverage_status"] = "not_established"
     path = configure_resume(batch, monkeypatch, tmp_path, selected=["ready", "stale", "removed"], states=states)
     dispatched = []
     def refresh(iid, run_id, on_dispatch):

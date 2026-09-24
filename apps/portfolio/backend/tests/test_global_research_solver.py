@@ -266,6 +266,69 @@ def test_shared_global_window_keeps_missing_trailing_returns(monkeypatch):
         solve(tree())
 
 
+def test_missing_total_return_error_identifies_fund_despite_current_unit_nav(monkeypatch):
+    _, navs = market(monkeypatch)
+    navs["x"] = navs["x"].loc[:date(2026, 6, 24)]
+    state = tree()
+    state.instrument_detail_cache["x"] = {
+        "instrument_id": "x", "instrument_name": "Fund X", "instrument_type": "private_fund", "currency": "CNY",
+        "quote_selection_policy": {"total_return": ["total_return_nav"]},
+        "market_data": [
+            {"metric_family": "nav", "quote_basis": basis, "as_of_date": day,
+             "value": "1.1", "currency": "CNY", "price_unit": "per_unit", "price_scale": 1, "status": "complete"}
+            for basis, day in [("total_return_nav", "2026-06-24"), ("official_nav", "2026-06-30"), ("official_nav", "2026-07-01")]
+        ],
+    }
+    with pytest.raises(ValueError) as failure:
+        solve(state, missing_return_policy="complete_case_drop")
+    message = str(failure.value)
+    assert "Fund X [x]" in message
+    assert "total_return_nav latest 2026-06-24" in message
+    assert "unit NAV latest 2026-06-30" in message
+    assert "2026-07-01" not in message
+    assert "dividend/reinvestment evidence" in message
+    assert "[y]" not in message
+    assert "exceeding the 10.00% limit" in message
+
+
+@pytest.mark.parametrize("model_id", ["sample_covariance", "ewma_vol_shrinkage_corr_covariance"])
+def test_spring_festival_closure_does_not_age_risk_sample_or_move_window(monkeypatch, model_id):
+    state = replace(tree(), as_of_date=date(2025, 2, 4))
+    sessions = solver.market_calendar_sessions("XSHG", date(2024, 12, 1), state.as_of_date)
+    assert sessions[-1] == date(2025, 1, 27)
+    navs = {key: pd.Series(np.cumprod(1 + .002 * np.sin(np.arange(len(sessions)) + index)), index=sessions)
+            for index, key in enumerate(("x", "y", "z"))}
+    monkeypatch.setattr(solver, "_build_instrument_nav_series", lambda state, *, instrument_id, **kwargs: (navs[instrument_id], []))
+    for detail in state.instrument_detail_cache.values():
+        detail["source_settings"] = {"expected_frequency": "daily", "market_calendar": "XSHG", "release_lag_days": 1}
+    model = {"covariance_model_id": model_id, "parameters": {"min_observations": 2, "max_period_staleness_days": 5}}
+    result = solve(state, missing_return_policy="complete_case_drop", risk_model_config=model)
+    event = result.solve_event
+    assert event["return_freshness_as_of_date"] == "2025-01-27"
+    assert event["trailing_complete_return_staleness_days"] == 8
+    # The actual lookback remains (Jan 4, Feb 4], not (Dec 27, Jan 27].
+    assert min(result.return_series.index) == date(2025, 1, 4)
+    assert event["execution_ready"] is True
+
+
+@pytest.mark.parametrize("calendar", [None, "XNYS", "invalid_calendar"])
+def test_closure_freshness_requires_all_member_calendars_to_be_closed(calendar):
+    state = tree()
+    for detail in state.instrument_detail_cache.values():
+        detail["source_settings"] = {"market_calendar": "XSHG"}
+    state.instrument_detail_cache["x"]["source_settings"]["market_calendar"] = calendar
+    frame = pd.DataFrame({f"instrument::{key}": [.01, -.01] for key in ("x", "y", "z")},
+                         index=[date(2025, 1, 24), date(2025, 1, 27)])
+    members = [solver.ScopeMemberRecord("instrument", key, key) for key in ("x", "y", "z")]
+    assert solver._return_freshness_date(state, members=members, return_window=frame, as_of_date=date(2025, 2, 4)) == date(2025, 2, 4)
+
+
+def test_true_trailing_return_gap_is_skippable_without_relaxing_solver():
+    error = ValueError("Top Level global leaf risk model unavailable: Global leaf covariance complete-case drop latest complete return observation is 2025-01-27 (8 days before 2025-02-04); maximum allowed for daily is 5 days.")
+    assert solver._is_rebalance_data_gap_error(error)
+    assert not solver._is_rebalance_data_gap_error(ValueError("Global covariance is not positive-semidefinite"))
+
+
 def test_non_psd_covariance_is_rejected_by_current_model_boundary():
     with pytest.raises(ValueError, match="positive-semidefinite"):
         solver._finalize_covariance(pd.DataFrame([[0.01, 0.02], [0.02, 0.01]], index=["x", "y"], columns=["x", "y"]))
