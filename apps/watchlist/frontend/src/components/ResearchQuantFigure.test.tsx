@@ -60,3 +60,14 @@ it('retains small nonzero results in the table, metrics, tooltips and chart scal
   expect([...container.querySelectorAll('svg text')].map(tick => tick.textContent)).toEqual(expect.arrayContaining(['-1.00e-6', '1.00e-6', '2.00e-6']))
   expect(container.querySelector('svg text')?.textContent).toContain('e-')
 })
+
+it('draws an all-zero bar series on a finite axis without inventing nonzero observations', () => {
+  const saved = source(); saved.data!.charts![0].kind = 'bar'
+  saved.data!.tables![0].rows = [{ date: '2026-01-01', return: 0 }, { date: '2026-01-02', return: 0 }]
+  const { container } = render(<ResearchQuantFigure source={saved} />)
+  expect(container.querySelector('svg')?.outerHTML).not.toMatch(/NaN|Infinity/)
+  const bars = [...container.querySelectorAll('rect')]
+  expect(bars).toHaveLength(2)
+  expect(bars.every(bar => Number(bar.getAttribute('height')) === 0)).toBe(true)
+  expect(bars[0].textContent).toContain('累计收益: 0')
+})

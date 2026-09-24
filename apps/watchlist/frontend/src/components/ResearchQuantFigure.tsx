@@ -23,7 +23,7 @@ function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: 
   const dataMin = Math.min(...values, ...(chart.kind === 'bar' ? [0] : [])); const dataMax = Math.max(...values, ...(chart.kind === 'bar' ? [0] : []))
   const padding = (dataMax - dataMin || Math.abs(dataMax) || 1) * 0.08
   const lower = chart.kind === 'bar' && dataMin === 0 ? 0 : dataMin - padding
-  const upper = chart.kind === 'bar' && dataMax === 0 ? 0 : dataMax + padding
+  const upper = chart.kind === 'bar' && dataMax === 0 && dataMin < 0 ? 0 : dataMax + padding
   const roughStep = (upper - lower) / 4
   const magnitude = 10 ** Math.floor(Math.log10(roughStep))
   const step = ([1, 2, 2.5, 5, 10].find(value => value >= roughStep / magnitude) || 10) * magnitude
