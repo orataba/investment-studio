@@ -263,15 +263,13 @@ it('preserves old document links and upload access inside the archive', async ()
 })
 
 
-it.each(['public_fund', 'private_fund'] as const)('opens the same %s research in report mode and preserves legacy PM links', async type => {
+it.each(['public_fund', 'private_fund'] as const)('opens legacy report links in the unified %s research and preserves PM links', async type => {
   const { unmount } = show('/instruments/fund-1?tab=investment-research&mode=report&currency=CNY', type)
-  expect((await screen.findByTestId('fund-research-tracking')).getAttribute('data-reading')).toBe('true')
-  fireEvent.click(screen.getByRole('button', { name: '研究概览' }))
-  expect(screen.getByTestId('fund-research-tracking').getAttribute('data-reading')).toBe('false')
+  expect(await screen.findByTestId('fund-research-tracking')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '研究概览' })).toBeNull()
   const params = new URLSearchParams(screen.getByTestId('fund-detail-location').textContent || '')
   expect(params.get('tab')).toBe('investment-research')
   expect(params.get('currency')).toBe('CNY')
-  expect(params.has('mode')).toBe(false)
   unmount()
   show('/instruments/fund-1?tab=research', type)
   expect(await screen.findByRole('region', { name: '投资观点时间线' })).toBeTruthy()

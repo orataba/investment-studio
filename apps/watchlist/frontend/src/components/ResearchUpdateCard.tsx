@@ -30,14 +30,15 @@ export function updateStatusLabel(update: ResearchUpdate) {
   return labels[update.kind]?.[update.status] || ''
 }
 
-export default function ResearchUpdateCard({ update, onAskAssistant, themeNames = {}, inTheme = false }: {
-  update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>; inTheme?: boolean
+export default function ResearchUpdateCard({ update, onAskAssistant, themeNames = {}, inTheme = false, compact = false }: {
+  update: ResearchUpdate; onAskAssistant?: AskResearchAssistant; themeNames?: Record<string, string>; inTheme?: boolean; compact?: boolean
 }) {
   const canWrite = useStudioAccount()?.team_role !== 'reader'
   const [expandedBody, setExpandedBody] = useState(false)
   const [writing, setWriting] = useState(false)
   const [creatingTheme, setCreatingTheme] = useState(false)
   const [notice, setNotice] = useState('')
+  const [entryOpen, setEntryOpen] = useState(false)
   const historical = Boolean(update.superseded || update.withdrawn)
   const citationCorrected = update.change === 'citation_corrected'
   const correction = citationCorrected ? update.citation_correction : undefined
@@ -46,8 +47,8 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
   const reference = { ...update.reference, research_update_id: update.update_id }
   const sourceVersion = reference.pm_note_id && reference.pm_note_revision ? `pm:${reference.pm_note_id}:${reference.pm_note_revision}` : reference.theme_version_id || reference.notebook_version_id || reference.investment_view_version_id
   const body = <>
-    {update.body && <p className={`research-update-body${!expandedBody && update.body.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{update.body}</p>}
-    {update.body.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
+    {update.body && <p className={`research-update-body${!compact && !expandedBody && update.body.length > 220 ? ' research-update-excerpt' : ''}`} translate="no">{update.body}</p>}
+    {!compact && update.body.length > 220 && <button className="sector-event-ask research-update-expand" type="button" aria-expanded={expandedBody} onClick={() => setExpandedBody(value => !value)}>{expandedBody ? '收起分析' : '展开分析'}</button>}
     {update.next_check && <p className="research-update-next"><strong>{citationCorrected ? '原下一步观察' : '下一步观察'}</strong> <span translate="no">{update.next_check}</span></p>}
     {update.kind === 'question' && update.tracking_status && <p className="sector-research-note"><strong>当时跟踪安排</strong> <span>{questionTrackingLabels[update.tracking_status]}</span>{update.tracking_reason && <> · <span translate="no">{update.tracking_reason}</span></>}</p>}
     {update.kind === 'lesson' && update.status === 'withdrawn' && update.withdrawal_reason && <p className="sector-research-note" translate="no">{update.withdrawal_reason}</p>}
@@ -99,6 +100,6 @@ export default function ResearchUpdateCard({ update, onAskAssistant, themeNames 
       let ancestor = document.getElementById(`research-theme-${encodeURIComponent(id)}`)?.parentElement
       while (ancestor) { if (ancestor instanceof HTMLDetailsElement) ancestor.open = true; ancestor = ancestor.parentElement }
     }} translate={themeNames[id] ? 'no' : undefined}>{themeNames[id] || '关联主题'}</a>)}</div>}
-    {historical ? <details className="research-update-old"><summary>查看当时记录</summary>{body}</details> : body}
+    {historical || compact ? <details className="research-update-old" onToggle={event => setEntryOpen(event.currentTarget.open)}><summary>{historical ? '查看当时记录' : '阅读这条记录'}</summary>{(!compact || entryOpen) && body}</details> : body}
   </article>
 }

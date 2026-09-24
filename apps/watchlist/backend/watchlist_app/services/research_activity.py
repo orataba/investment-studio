@@ -80,7 +80,7 @@ def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None):
         "catalysts": ("schedule", "title", "relevance"),
         "investment_view": ("judgment", "direction", "direction"),
     }
-    metadata = {"version_id", "versions", "created_at", "updated_at", "source_run_id"}
+    metadata = {"version_id", "versions", "created_at", "updated_at", "source_run_id", "publication"}
     progress_last = {}
     for run, notebook in _research_records(session, iid, oldest_first=True):
         if theme_progress is not None and (current_principal().local_unrestricted or run.team_id == actor["team_id"]):
@@ -125,6 +125,7 @@ def _notebook_updates(session, iid, events, *, theme_progress=None, actor=None):
                 if kind in {"review", "lesson", "forecast", "judgment"}:
                     title = {"review": "研究复盘", "lesson": "研究经验", "forecast": "可验证的判断", "judgment": "投资研究判断更新"}[kind]
                 update = _base(iid, identifier, kind, title, row.get(body_key, ""), recorded_at,
+                    author=(row.get("publication") or {}).get("display_name", "研究员"),
                     theme_ids=[row["theme_id"]] if row.get("theme_id") else [],
                     sources=_source_views([sources[sid] for sid in row.get("source_ids", []) if sid in sources]),
                     next_check=row.get("next_check") or (row.get("observation_condition") or row.get("horizon", "") if kind == "forecast" else ""), run_id=run.entry_id,
@@ -188,7 +189,8 @@ def _theme_updates(session, iid, actor):
             origin = row.get("updated_by_role") or row.get("managed_by") or row.get("origin", "user")
             update = _base(iid, identifier, "theme", row.get("title", theme["title"]), row.get("question", ""),
                 row.get("updated_at") or row.get("created_at") or theme["created_at"], theme_ids=[theme["theme_id"]],
-                author="研究员" if origin == "researcher" else row.get("updated_by") or row.get("author") or theme.get("author") or "未标注作者",
+                author=((row.get("publication") or {}).get("display_name", "研究员") if origin == "researcher"
+                        else row.get("updated_by") or row.get("author") or theme.get("author") or "未标注作者"),
                 author_role=origin if origin in {"researcher", "system"} else "user", change="new" if index == 1 else row.get("status"),
                 details=_details(**{"主题背景": row.get("background"), "当前认识": row.get("synthesis"),
                     "最新进展": row.get("latest_development"), "下一检查": row.get("next_check"),

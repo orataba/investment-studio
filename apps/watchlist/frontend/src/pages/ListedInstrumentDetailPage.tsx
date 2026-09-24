@@ -521,7 +521,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const usesCanonicalPriceSeries = isIndex || isCrypto
   const tabs = listedDetailTabs(listedInstrumentType)
   const [searchParams, setSearchParams] = useSearchParams()
-  const readingMode = searchParams.get('mode') === 'report'
   const [estimateHistoryOpen, setEstimateHistoryOpen] = useState(false)
   const requestedTab = searchParams.get('tab')
   const tab: ListedDetailTab = requestedTab === 'risk' ? 'performance'
@@ -1007,7 +1006,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   )
 
   return (
-    <div className="instrument-detail-page listed-detail-page">
+    <div className={`instrument-detail-page listed-detail-page${tab === 'investment-research' ? ' research-document-page' : ''}`}>
       {assistant?.instrumentId === instrumentId && <InstrumentAssistantDrawer instrumentId={instrumentId} watchlistId={watchlistContext?.watchlistId} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
       {riskInstrumentId === instrumentId && <InstrumentRiskDrawer instrumentId={instrumentId} instrumentName={instrument.instrument_name} watchlistId={watchlistContext?.watchlistId} onClose={() => setRiskInstrumentId(null)} onAskAssistant={openAssistant} />}
       <div className="instrument-detail-topbar">
@@ -1179,8 +1178,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
           <section className="panel listed-overview-brief">
             <div className="listed-overview-brief-row">
-              <div><h3>{zh ? '最新投资观点' : 'Latest Investment View'}</h3>
-                {researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '还没有投资观点。新的判断会按时间保留。' : 'No investment view yet. New judgments are kept in a timeline.'}</p>}
+              <div><h3>{zh ? '当前总体观点' : 'Current Overall View'}</h3>
+                {researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
               </div>
               <button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button>
             </div>
@@ -1315,8 +1314,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       ) : null}
 
       {tab === 'investment-research' ? <div className="listed-tab-stack">
-        <div className="research-reading-toolbar"><button type="button" onClick={() => { const next = new URLSearchParams(searchParams); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); setSearchParams(next, { replace: true }) }}>{readingMode ? (zh ? '研究概览' : 'Research overview') : (zh ? '深度研究报告' : 'In-depth report')}</button></div>
-        <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} readingMode={readingMode} />
+        <SectorResearchPanel instrumentId={instrumentId} onAskAssistant={openAssistant} />
       </div> : null}
     </div>
   )

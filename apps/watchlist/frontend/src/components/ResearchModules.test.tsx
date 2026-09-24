@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import ResearchModules, { EvidenceFigure } from './ResearchModules'
+import ResearchModules, { EvidenceFigure, fundamentalSectionTitle } from './ResearchModules'
 import ResearchMandateRecord from './ResearchMandateRecord'
 import type { ResearchMandate, ResearchModule, ResearchPlan, SavedResearchNotebook } from '../lib/researchDossierApi'
 const request = vi.hoisted(() => vi.fn())
@@ -14,12 +14,23 @@ const plan: ResearchPlan = { scope: '登记ETF及已披露成份', basis: [], ga
 ] }
 const notebook: SavedResearchNotebook = { version_id: 'notebook-original', run_id: 'run', checked_at: '2026-09-20T08:00:00Z', modules: [module], key_drivers: [], questions: [], important_changes: [], next_research: [], source_ids: ['computed:compare'], sources: [{ source_id: 'computed:compare', source_type: 'computed_metric', title: '共同样本结果' }] }
 
+it('names the fundamental chapter by selected exposure methods and preserves unrecognized saved analysis', () => {
+  const withMethod = (id: string) => ({ ...plan, modules: [{ ...plan.modules[0], id }] })
+  expect(fundamentalSectionTitle(withMethod('commodity-supply-demand'))).toBe('供需与定价')
+  expect(fundamentalSectionTitle(withMethod('fund-strategy'))).toBe('策略与回报来源')
+  expect(fundamentalSectionTitle(withMethod('equity-aggregation'))).toBe('成份与定价')
+  const saved = { ...notebook, modules: [{ ...module, key: 'custom-existing-method', figure_source_ids: [] }, { ...module, figure_source_ids: [] }] }
+  render(<ResearchModules instrumentId="fund" notebook={saved} section="fundamentals" />)
+  expect(screen.getByRole('heading', { name: 'custom-existing-method' })).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: '市场与量化' })).toBeNull()
+})
+
 it('uses method order, exposes evidence gaps and never claims an old result follows an updated method', async () => {
   request.mockResolvedValue({ data: { rows: [] } })
   const ask = vi.fn()
   const { container } = render(<ResearchModules instrumentId="fund" plan={plan} notebook={notebook} onAskAssistant={ask} />)
-  expect([...container.querySelectorAll('.research-domain-module h3')].map(node => node.textContent)).toEqual(['定价与风险补偿', '市场与量化'])
-  expect(screen.getByText('适用范围待核实')).toBeTruthy()
+  expect([...container.querySelectorAll('.research-domain-module h3')].map(node => node.textContent)).toEqual(['市场与量化'])
+  expect(screen.queryByText('适用范围待核实')).toBeNull()
   expect(screen.getByText('部分覆盖')).toBeTruthy()
   expect(screen.getByText('方法已更新，待复核；以下保留原方法下的研究判断。')).toBeTruthy()
   expect(screen.getByText(module.analysis, { normalizer: text => text }).closest('details')).toBeNull()

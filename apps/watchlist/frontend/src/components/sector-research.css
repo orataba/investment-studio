@@ -4,10 +4,7 @@
 .sector-research-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .sector-research-title span { color: var(--muted); font-size: 12px; }
 .watchlist-risk-body .sector-research-panel { margin: 18px 24px 0; }
-.sector-research-panel h2, .sector-research-panel h3, .sector-research-panel h4, .sector-research-panel p { margin: 0; }
-.sector-research-panel h2 { font-size: 16px; }
-.sector-research-panel h3 { font-size: 14px; }
-.sector-research-panel h4 { font-size: 13px; margin: 6px 0; }
+.sector-research-heading h2 { font-size: 18px; font-weight: 500; margin: 0; }
 .sector-research-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .sector-research-panel .sector-research-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .sector-research-limitation { color: var(--warning); }

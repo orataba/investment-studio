@@ -19,7 +19,7 @@ it('uses sector responses only for status while reading the canonical dossier', 
   render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
   expect(screen.getByTestId('canonical-dossier').textContent).toContain('xlk-us')
-  expect(screen.getByRole('heading', { name: '研究概览' })).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '投资研究' })).toBeTruthy()
   expect(screen.queryByText(review('completed').summary)).toBeNull()
   expect(screen.queryByText(event().title)).toBeNull()
   expect(request.mock.calls.some(([path]) => path.includes('/context'))).toBe(false)
@@ -44,10 +44,10 @@ it('does not hide saved research when the status service is unavailable or has n
   rerender(<SectorResearchPanel instrumentId="another-fund" />)
   await load()
   expect(screen.getByTestId('canonical-dossier').textContent).toContain('another-fund')
-  expect(screen.getByText('尚未完成研究')).toBeTruthy()
+  expect(screen.getByTestId('canonical-dossier')).toBeTruthy()
 })
 
-it('uses the same dossier in summary and report modes and keeps report mode read only', async () => {
+it('uses the same dossier in the overview summary and the complete research report', async () => {
   request.mockResolvedValue(payload())
   const open = vi.fn()
   const { rerender } = render(<SectorResearchPanel instrumentId="xlk-us" variant="summary" onOpenEvents={open} />)
@@ -55,9 +55,9 @@ it('uses the same dossier in summary and report modes and keeps report mode read
   expect(screen.getByTestId('canonical-dossier').getAttribute('data-variant')).toBe('summary')
   fireEvent.click(screen.getByRole('button', { name: '阅读完整研究' }))
   expect(open).toHaveBeenCalledOnce()
-  rerender(<SectorResearchPanel instrumentId="xlk-us" readingMode />)
-  expect(screen.getByTestId('canonical-dossier').getAttribute('data-reading')).toBe('true')
-  expect(screen.queryByRole('button', { name: '更新研究' })).toBeNull()
+  rerender(<SectorResearchPanel instrumentId="xlk-us" />)
+  expect(screen.getByTestId('canonical-dossier').getAttribute('data-variant')).toBe('full')
+  expect(screen.getByRole('button', { name: '更新研究' })).toBeTruthy()
   rerender(<SectorResearchPanel instrumentId="xlk-us" variant="status" />)
   expect(screen.queryByTestId('canonical-dossier')).toBeNull()
 })
@@ -93,7 +93,7 @@ it('shows reflection only for a completed check, without making it a conclusion'
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: { ...review('completed'), reflection: { status: 'insufficient_evidence', summary: '本轮未能核实费用变化', reviewed_update_ids: [] } } }] })
   const { rerender } = render(<SectorResearchPanel instrumentId="xlk-us" />)
   await load()
-  const coverage = screen.getByText(/^检查记录与覆盖/).closest('details')!
+  const coverage = screen.getByText(/^研究运行记录/).closest('details')!
   expect(coverage.open).toBe(false)
   expect(within(coverage).getByText(/复核证据不足/)).toBeTruthy()
   request.mockResolvedValue({ ...data, sectors: [{ ...data.sectors[0], latest_review: { ...review('failed'), reflection: { status: 'reviewed', summary: '未发布的复核', reviewed_update_ids: [] } } }] })

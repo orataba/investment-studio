@@ -34,6 +34,21 @@ it('does not draw data when a chart references a missing retained column', () =>
   expect(screen.getByText('图表引用的列不在留存数据中。')).toBeTruthy()
 })
 
+it('labels every financial category and preserves negative bars on the same zero axis', () => {
+  const saved = source()
+  saved.data!.tables![0].rows = [{ date: '经营现金流', return: 22.945 }, { date: '资本开支', return: 67.678 }, { date: '自由现金流', return: -44.670 }]
+  saved.data!.charts![0].kind = 'bar'
+  const { container } = render(<ResearchQuantFigure source={saved} />)
+  const labels = [...container.querySelectorAll('svg text')].map(node => node.textContent)
+  expect(labels).toEqual(expect.arrayContaining(['经营现金流', '资本开支', '自由现金流']))
+  const bars = [...container.querySelectorAll('rect')]
+  expect(bars).toHaveLength(3)
+  expect(bars[2].textContent).toContain('-44.67')
+  const zeroAxis = container.querySelector('line[stroke="#97a6b5"]')!
+  expect(Number(bars[2].getAttribute('y'))).toBe(Number(zeroAxis.getAttribute('y1')))
+  expect(Number(bars[2].getAttribute('height'))).toBeGreaterThan(0)
+})
+
 it('retains small nonzero results in the table, metrics, tooltips and chart scale', () => {
   const saved = source()
   saved.data!.metrics = { variance: 0.00000125 }
@@ -42,6 +57,6 @@ it('retains small nonzero results in the table, metrics, tooltips and chart scal
   expect(container.querySelector('.research-quant-metrics dd')?.textContent).toBe('0.00000125')
   expect(container.querySelector('tbody')?.textContent).toContain('-0.0000005')
   expect(container.querySelector('circle title')?.textContent).toContain('0.00000125')
-  expect([...container.querySelectorAll('svg text')].slice(0, 5).map(tick => tick.textContent)).not.toContain('0')
+  expect([...container.querySelectorAll('svg text')].map(tick => tick.textContent)).toEqual(expect.arrayContaining(['-1.00e-6', '1.00e-6', '2.00e-6']))
   expect(container.querySelector('svg text')?.textContent).toContain('e-')
 })

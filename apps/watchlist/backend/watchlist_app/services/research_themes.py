@@ -113,6 +113,7 @@ def theme_record(entry):
         "updated_by_role": context.get("updated_by_role", "user"),
         "recorded_via": context.get("recorded_via"), "source_run_id": context.get("source_run_id"),
         "source_quote": context.get("source_quote", ""),
+        "publication": context.get("publication"),
         **{key: context.get(key, default) for key, default in (
             ("kind", "fundamental"), ("priority", "important"), ("priority_reason", ""),
             ("pinned", False), ("synthesis", ""), ("latest_development", ""), ("next_check", ""),
@@ -407,11 +408,13 @@ def save_analyst_theme(session, instrument_id, update, *, actor=None, provenance
         context = deepcopy(entry.context_json)
         context["versions"] = [*context.get("versions", []), {key: value for key, value in previous.items() if key != "versions"}]
         context["revision_number"] = context.get("revision_number", 1) + 1
+        context.pop("publication", None)
     else:
         entry = ResearchEntry(entry_id=uuid4().hex, topic_id=topic.topic_id, kind="note", status="recorded", created_at=timestamp,
                               team_id=actor["team_id"], author_user_id=None, responsible_user_id=None)
         session.add(entry)
-        context = {"role": "research_theme", "instrument_id": instrument_id, "author": "研究员",
+        context = {"role": "research_theme", "instrument_id": instrument_id,
+                   "author": (provenance or {}).get("publication", {}).get("display_name", "研究员"),
                    "origin": "researcher", "managed_by": "researcher", "theme_key": update.theme_key,
                    "revision_number": 1, "versions": []}
     entry.title, entry.body = values.pop("title").strip(), values.pop("question").strip()
@@ -476,8 +479,11 @@ def themes_view(session, instrument_id, *, actor=None, activity=None, notes=None
                         and row["reference"].get("theme_id") == theme["theme_id"]
                         and not row.get("superseded") and not row.get("withdrawn")
                         and (row.get("tracking_status") or "active") == "active" and theme["status"] == "active"]
-        progress = [row for row in theme["updates"] if row["kind"] != "theme"
-                    and not row.get("superseded") and not row.get("withdrawn")]
+        # The theme's own revised synthesis is a substantive update too. Quiet
+        # receipts preserve updated_at, so including this version does not turn
+        # a routine review into new research progress.
+        progress = [row for row in theme["updates"]
+                    if not row.get("superseded") and not row.get("withdrawn")]
         theme["last_changed_at"] = max((judgment_changed_at(row) for row in progress), default=None)
         theme["current_questions"] = [{**row, "tracking_status": "active", "last_changed_at": judgment_changed_at(row),
             "last_reviewed_at": None, **judgment_review_receipt(row, receipts)} for row in current]

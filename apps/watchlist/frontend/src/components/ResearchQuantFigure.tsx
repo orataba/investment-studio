@@ -6,7 +6,7 @@ const number = (value: number) => value.toLocaleString('zh-CN', { maximumSignifi
 const axisNumber = (value: number) => value !== 0 && (Math.abs(value) < 0.0001 || Math.abs(value) >= 1e9)
   ? value.toExponential(2) : number(value)
 
-function Chart({ chart, table }: { chart: ResearchQuantChart; table: ResearchQuantTable }) {
+function Chart({ chart, table, showTitle }: { chart: ResearchQuantChart; table: ResearchQuantTable; showTitle: boolean }) {
   const columns = new Set(table.columns.map(column => column.key))
   if (!columns.has(chart.x_key) || !chart.series.length || chart.series.some(series => !columns.has(series.key))) return <p className="sector-research-note">图表引用的列不在留存数据中。</p>
   const rows = table.rows.filter(row => row[chart.x_key] !== null && row[chart.x_key] !== undefined)
@@ -22,18 +22,24 @@ function Chart({ chart, table }: { chart: ResearchQuantChart; table: ResearchQua
   const x = (index: number) => left + (xMax === xMin ? 0.5 : (xValues[index] - xMin) / (xMax - xMin)) * plotWidth
   const dataMin = Math.min(...values, ...(chart.kind === 'bar' ? [0] : [])); const dataMax = Math.max(...values, ...(chart.kind === 'bar' ? [0] : []))
   const padding = (dataMax - dataMin || Math.abs(dataMax) || 1) * 0.08
-  const yMin = dataMin - padding; const yMax = dataMax + padding
+  const lower = chart.kind === 'bar' && dataMin === 0 ? 0 : dataMin - padding
+  const upper = chart.kind === 'bar' && dataMax === 0 ? 0 : dataMax + padding
+  const roughStep = (upper - lower) / 4
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep))
+  const step = ([1, 2, 2.5, 5, 10].find(value => value >= roughStep / magnitude) || 10) * magnitude
+  const yMin = Math.floor(lower / step) * step; const yMax = Math.ceil(upper / step) * step
+  const yTicks = Array.from({ length: Math.round((yMax - yMin) / step) + 1 }, (_, index) => Number((yMin + index * step).toPrecision(12)))
   const y = (value: number) => top + (yMax - value) / (yMax - yMin) * plotHeight
   const sorted = rows.map((_, index) => index).sort((a, b) => xValues[a] - xValues[b])
   // A middle observation can sit next to an endpoint on an irregular date axis.
-  const xTicks = [...new Set([sorted[0], sorted[rows.length - 1]])]
+  const xTicks = continuousX ? [...new Set([sorted[0], sorted[rows.length - 1]])] : sorted
   const barX = (index: number) => continuousX ? x(index) : left + (index + 0.5) / rows.length * plotWidth
   const barWidth = Math.min(26, plotWidth / Math.max(1, rows.length) / (chart.series.length + 1))
   return <div className="research-quant-chart">
-    <h4>{chart.title}</h4>
+    {showTitle && <h4>{chart.title}</h4>}
     <div className="research-quant-plot" role="region" aria-label={chart.title} tabIndex={0}><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={chart.title}>
       <title>{chart.title}</title>
-      {[0, 1, 2, 3, 4].map(tick => { const value = yMin + (yMax - yMin) * tick / 4; return <g key={tick}><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke="#e3e8ef" /><text x={left - 9} y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g> })}
+      {yTicks.map(value => <g key={value}><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke="#e3e8ef" /><text x={left - 9} y={y(value) + 4} textAnchor="end">{axisNumber(value)}</text></g>)}
       {chart.kind === 'bar' && <line x1={left} x2={width - right} y1={y(0)} y2={y(0)} stroke="#97a6b5" />}
       {chart.series.map((series, seriesIndex) => {
         const color = colors[seriesIndex % colors.length]
@@ -49,13 +55,13 @@ function Chart({ chart, table }: { chart: ResearchQuantChart; table: ResearchQua
   </div>
 }
 
-export default function ResearchQuantFigure({ source }: { source: SavedResearchSource }) {
+export default function ResearchQuantFigure({ source, captioned = false }: { source: SavedResearchSource; captioned?: boolean }) {
   const data = source.data
   const tables = data?.tables || []
   return <div className="research-quant-result">
     {data?.summary && <p translate="no">{data.summary}</p>}
     {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => <div key={key}><dt translate="no">{key}</dt><dd translate="no">{value === null ? '—' : numeric(value) ? number(value) : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>}
-    {data?.charts?.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
+    {data?.charts?.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
     {tables.map(table => <details className="research-quant-table" key={table.key}><summary>{table.title} · {table.rows.length} 条观测</summary><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></details>)}
   </div>
 }

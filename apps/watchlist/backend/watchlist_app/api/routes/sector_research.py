@@ -12,8 +12,33 @@ from watchlist_app.services.sector_estimates import read_estimate_evidence
 from watchlist_app.services.research_user_commands import UserCommand
 from watchlist_app.services.research_quant import QuantAnalysisInput
 from watchlist_app.api.research_presentation import review_status_view
+from watchlist_app.services.research_imports import ResearchImport, ImportPublication
 
 router = APIRouter()
+
+
+@router.post("/research/imports/preview")
+def preview_research_import(request: ResearchImport, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_imports import preview_import
+    try:
+        return preview_import(session, request)
+    except (ValueError, LookupError) as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/research/imports/publish")
+def publish_research_import(request: ImportPublication, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_imports import publish_import
+    try:
+        result = publish_import(session, request)
+        session.commit()
+        return result
+    except (service.ResearchVersionConflict, service.ReviewInProgress) as error:
+        session.rollback()
+        raise HTTPException(409, str(error)) from error
+    except (ValueError, LookupError) as error:
+        session.rollback()
+        raise HTTPException(422, str(error)) from error
 
 
 @router.post("/research/runs/{run_id}/user-command")

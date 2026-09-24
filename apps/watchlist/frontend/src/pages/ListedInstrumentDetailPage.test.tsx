@@ -439,9 +439,8 @@ describe('ListedInstrumentDetailPage index view', () => {
   it('opens the Briefing report deep link without replacing the saved PM destination', async () => {
     const instrument = { requested_instrument_id: 'xlk', canonical_instrument_id: 'xlk', instrument_name: 'Technology ETF', instrument_type: 'etf' as const, primary_identifier: 'XLK', detail_view_type: 'etf', detail_subject_id: 'xlk', detail_supported: true, support_reason: '', corporate_actions: [] }
     const { unmount } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=investment-research&mode=report']}><ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} /><LocationProbe /></MemoryRouter></LanguageProvider>)
-    expect((await screen.findByTestId('sector-panel')).getAttribute('data-reading')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Research overview' }))
-    expect(screen.getByTestId('sector-panel').getAttribute('data-reading')).toBe('false')
+    expect(await screen.findByTestId('sector-panel')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Research overview' })).toBeNull()
     expect(new URLSearchParams(screen.getByTestId('listed-detail-location').textContent || '').get('tab')).toBe('investment-research')
     unmount()
     render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/instruments/xlk?tab=research']}><ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} /></MemoryRouter></LanguageProvider>)

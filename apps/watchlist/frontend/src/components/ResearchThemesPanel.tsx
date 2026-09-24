@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { announceResearchPublication, RESEARCH_UPDATED } from '../lib/researchUpdates'
 import { createResearchTheme, getResearchThemes, updateResearchTheme, type AskResearchAssistant, type ResearchTheme, type ResearchThemeInput, type ResearchThemeKind, type ResearchThemesResponse } from '../lib/researchDossierApi'
 import ResearchUpdateCard from './ResearchUpdateCard'
@@ -16,49 +18,71 @@ type ThemeRecordProps = {
   theme: ResearchTheme; instrumentId: string; canWrite: boolean; saving: boolean
   onAskAssistant?: AskResearchAssistant; onEdit: () => void; onStatus: (status: ResearchTheme['status'], reason?: string) => void
 }
+type ReadingTab = 'analysis' | 'timeline' | 'evidence'
+const readingTabs: Array<[ReadingTab, string]> = [['analysis', '当前分析'], ['timeline', '演变'], ['evidence', '证据']]
+const themeHash = (themeId: string) => `#research-theme-${encodeURIComponent(themeId)}`
+function themeFromHash() {
+  const prefix = '#research-theme-'
+  try { return window.location.hash.startsWith(prefix) ? decodeURIComponent(window.location.hash.slice(prefix.length)) : null } catch { return null }
+}
+
 function ThemeRecord({ theme, instrumentId, canWrite, saving, onAskAssistant, onEdit, onStatus }: ThemeRecordProps) {
   const [closing, setClosing] = useState(false)
   const [closeReason, setCloseReason] = useState('')
   const [writing, setWriting] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const [notice, setNotice] = useState('')
+  const [tab, setTab] = useState<ReadingTab>('analysis')
+  const [showAdministration, setShowAdministration] = useState(false)
+  const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
+  const tabId = useId()
   const updates = [...(theme.updates || [])].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
+  const administrative = (update: typeof updates[number]) => update.author_role === 'system' || update.change === 'organized' || update.change === 'citation_corrected'
+    || Boolean(theme.migration_origin && update.reference.theme_version_id === `theme:${theme.theme_id}:1`)
+  const administrationCount = updates.filter(administrative).length
+  const visibleUpdates = showAdministration ? updates : updates.filter(update => !administrative(update))
   const evidence = theme.sources || []
   const figures = evidence.filter(source => theme.figure_source_ids?.includes(source.source_id))
   const versionId = theme.source_version_id
+  const development = theme.baseline_status === 'pending' && theme.migration_origin ? '' : theme.latest_development
   const reference = { instrument_id: instrumentId, theme_id: theme.theme_id, theme_version_id: versionId, source_ids: evidence.map(source => source.source_id) }
-  const background = `${theme.title}\n核心问题：${theme.question}\n当前认识：${theme.synthesis || '尚未形成'}\n最近进展：${theme.latest_development || ''}\n记录时间：${theme.last_changed_at || theme.updated_at}`
+  const background = `${theme.title}\n核心问题：${theme.question}\n当前认识：${theme.synthesis || '尚未形成'}\n最近进展：${development || ''}\n记录时间：${theme.last_changed_at || theme.updated_at}`
   return <article id={`research-theme-${encodeURIComponent(theme.theme_id)}`} className="research-theme-record">
-    <header className="research-theme-heading"><div><span className="research-theme-kind">{themeKindLabels[theme.kind || 'other']}</span><h3 translate="no">{theme.title}</h3><span className={theme.priority === 'core' ? 'research-theme-priority' : 'sector-research-note'}>{theme.status !== 'active' ? statusLabel[theme.status] : theme.priority === 'core' ? '核心' : '重要'}</span>{theme.pinned && <span className="research-theme-kind">已固定</span>}</div><div className="research-theme-actions">
+    <header className="research-theme-heading">
+      <div className="research-theme-byline"><span>{themeKindLabels[theme.kind || 'other']}</span><span className="research-theme-priority">{theme.status !== 'active' ? statusLabel[theme.status] : theme.priority === 'core' ? '核心' : '重要'}</span>{theme.pinned && <span>已固定</span>}</div>
+      <h3 translate="no">{theme.title}</h3>
+      <div className="research-theme-clock"><span>最近记录 {dateLabel(theme.last_changed_at || theme.updated_at)}</span>{theme.last_reviewed_at && <span>最近检查 {dateLabel(theme.last_reviewed_at)}</span>}</div>
+    </header>
+    <div className="research-theme-tabs" role="tablist" aria-label="主题阅读方式">{readingTabs.map(([value, label], index) => <button key={value} id={`${tabId}-${value}`} type="button" role="tab" aria-selected={tab === value} aria-controls={`${tabId}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={event => {
+      const next = event.key === 'ArrowRight' ? (index + 1) % readingTabs.length : event.key === 'ArrowLeft' ? (index + readingTabs.length - 1) % readingTabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? readingTabs.length - 1 : null
+      if (next !== null) { event.preventDefault(); setTab(readingTabs[next][0]); document.getElementById(`${tabId}-${readingTabs[next][0]}`)?.focus() }
+    }}>{label}</button>)}</div>
+    <section id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`} className={`research-theme-reading research-theme-reading-${tab}`}>
+      {tab === 'analysis' && <>
+        {theme.synthesis ? <div className="research-theme-prose research-theme-synthesis" translate="no"><ReactMarkdown remarkPlugins={[remarkGfm]}>{theme.synthesis}</ReactMarkdown></div> : <p className="sector-research-note">{theme.research_status === 'running' ? '研究员正在建立主题基线。' : theme.research_status === 'queued' ? '已排队，等待研究员建立基线。' : theme.baseline_status === 'pending' ? '待补充研究基线。' : '尚未形成主题认识。'}</p>}
+        {development && development !== theme.synthesis && <section className="research-theme-development"><h4>最近变化</h4><p translate="no">{development}</p></section>}
+        {figures.map(source => <SavedFigure key={`${source.source_id}:${versionId}`} {...{ instrumentId, source, onAskAssistant }} themeVersionId={versionId} themeId={theme.theme_id} />)}
+        {theme.next_check && <section className="research-theme-next"><h4>下一观察</h4><p translate="no">{theme.next_check}</p></section>}
+        {theme.priority_reason && <p className="research-theme-reason"><span>为什么重要</span> · <span translate="no">{theme.priority_reason}</span></p>}
+      </>}
+      {tab === 'timeline' && <>
+        {administrationCount > 0 && <label className="research-theme-history-filter"><input type="checkbox" checked={showAdministration} onChange={event => setShowAdministration(event.target.checked)} />包括整理与资料修订</label>}
+        {visibleUpdates.length ? <ol className="research-timeline" aria-label="主题时间线">{visibleUpdates.map(update => <li key={update.update_id}><ResearchUpdateCard update={update} onAskAssistant={onAskAssistant} inTheme compact /></li>)}</ol> : <p className="sector-research-note">尚无主题更新。</p>}
+      </>}
+      {tab === 'evidence' && <>
+        {theme.question && theme.question !== theme.title && <section className="research-theme-context"><h4>研究问题</h4><p translate="no">{theme.question}</p></section>}
+        {theme.background && <section className="research-theme-context"><h4>研究背景</h4><div className="research-theme-prose" translate="no"><ReactMarkdown remarkPlugins={[remarkGfm]}>{theme.background}</ReactMarkdown></div></section>}
+        {evidence.length ? <SourceList instrumentId={instrumentId} versionId={versionId} sources={evidence} /> : <p className="sector-research-note">尚无关联来源。</p>}
+      </>}
+    </section>
+    <div className="research-theme-actions research-theme-reader-actions">
       {onAskAssistant && <button type="button" onClick={() => onAskAssistant(`请继续研究主题“${theme.title}”。\n${background}\n先读取关联原始证据和主题历史，检查反证、定价含义与下一观察；区分研究员和投资经理的判断。`, reference)}>讨论主题</button>}
       {canWrite && <button type="button" onClick={() => setWriting(value => !value)}>写投资观点</button>}
-    </div></header>
-    {theme.synthesis ? <p className="research-theme-synthesis research-theme-excerpt" translate="no">{theme.synthesis}</p> : <p className="sector-research-note">{theme.research_status === 'running' ? '研究员正在建立主题基线。' : theme.research_status === 'queued' ? '已排队，等待研究员建立基线。' : theme.baseline_status === 'pending' ? '待补充研究基线。' : '尚未形成主题认识。'}</p>}
-    <div className="research-theme-observations">{theme.latest_development && <p className="research-theme-development research-theme-excerpt"><strong>最近变化</strong><span translate="no">{theme.latest_development}</span></p>}
-    {theme.next_check && <p className="research-theme-next research-theme-excerpt"><strong>下一观察</strong><span translate="no">{theme.next_check}</span></p>}
     </div>
-    <details className="research-theme-expanded" onToggle={event => setExpanded(event.currentTarget.open)}><summary>分析与时间线 <span>· {updates.length}</span></summary>
-    {expanded && <>
-    {theme.priority_reason && <p className="research-theme-reason"><strong>为什么重要</strong> <span translate="no">{theme.priority_reason}</span></p>}
-    <div className="research-theme-clock"><span>最近记录 {dateLabel(theme.last_changed_at || theme.updated_at)}</span>{theme.last_reviewed_at && <span>最近检查 {dateLabel(theme.last_reviewed_at)}</span>}</div>
-    <section className="research-theme-analysis" aria-label="完整主题分析">
-      {theme.question && <p><strong>核心问题</strong> <span translate="no">{theme.question}</span></p>}
-      {theme.synthesis && <p translate="no">{theme.synthesis}</p>}
-      {theme.background && <p className="sector-research-note" translate="no">{theme.background}</p>}
-      {figures.map(source => <SavedFigure key={`${source.source_id}:${versionId}`} {...{ instrumentId, source, onAskAssistant }} themeVersionId={versionId} themeId={theme.theme_id} />)}
-      {Boolean(theme.sources?.length) && <SourceList instrumentId={instrumentId} versionId={versionId} sources={theme.sources!} />}
-    </section>
-    <section className="research-theme-thread" aria-label="主题时间线"><h4>{`主题时间线 · ${updates.length}`}</h4>
-      {updates.length ? <ol className="research-timeline">{updates.map(update => <li key={update.update_id}><ResearchUpdateCard update={update} onAskAssistant={onAskAssistant} inTheme /></li>)}</ol> : <p className="sector-research-note">尚无主题更新。</p>}
-    </section>
-    {canWrite && <details className="research-theme-settings"><summary>管理主题</summary><p className="sector-research-note">{theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <span translate="no">{theme.author || '未标注作者'}</span>{theme.close_reason && ` · ${theme.close_reason}`}</p>
+    {writing && <ResearchOpinionComposer instrumentId={instrumentId} title={`关于${theme.title}的观点`} context={{ theme_id: theme.theme_id, theme_version_id: versionId, background, source_ids: evidence.map(source => source.source_id) }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice({ id: Date.now(), message: '投资观点已保存。', tone: 'success' }) }} />}
+    <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
+    {canWrite && <details className="research-theme-settings"><summary>管理主题</summary><p className="sector-research-note">{theme.origin === 'researcher' ? '研究员提出' : '人工建立'} · <span translate="no">{theme.author || '未标注作者'}</span>{theme.close_reason && <span translate="no"> · {theme.close_reason}</span>}</p>
       <div className="research-theme-actions"><button type="button" disabled={saving} onClick={onEdit}>编辑主题</button><button type="button" disabled={saving} onClick={() => onStatus(theme.status === 'active' ? 'paused' : 'active')}>{theme.status === 'active' ? '暂停关注' : '恢复关注'}</button>{theme.status !== 'closed' && <button type="button" disabled={saving} onClick={() => setClosing(true)}>结束主题</button>}</div>
-      {closing && <form className="research-theme-editor" onSubmit={event => { event.preventDefault(); if (closeReason.trim()) onStatus('closed', closeReason.trim()) }}><label>结束原因<textarea required value={closeReason} onChange={event => setCloseReason(event.target.value)} /></label><div className="research-theme-actions"><button type="submit" disabled={saving || !closeReason.trim()}>保存并结束</button><button type="button" disabled={saving} onClick={() => setClosing(false)}>取消</button></div></form>}
+      {closing && theme.status !== 'closed' && <form className="research-theme-editor" onSubmit={event => { event.preventDefault(); if (closeReason.trim()) onStatus('closed', closeReason.trim()) }}><label>结束原因<textarea required value={closeReason} onChange={event => setCloseReason(event.target.value)} /></label><div className="research-theme-actions"><button type="submit" disabled={saving || !closeReason.trim()}>保存并结束</button><button type="button" disabled={saving} onClick={() => setClosing(false)}>取消</button></div></form>}
     </details>}
-    </>}
-    </details>
-    {writing && <ResearchOpinionComposer instrumentId={instrumentId} title={`关于${theme.title}的观点`} context={{ theme_id: theme.theme_id, theme_version_id: versionId, background, source_ids: evidence.map(source => source.source_id) }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
-    {notice && <p role="status">{notice}</p>}
   </article>
 }
 
@@ -71,13 +95,20 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   const [error, setError] = useState('')
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
   const [refresh, setRefresh] = useState(0)
+  const [selectedId, setSelectedId] = useState<string | null>(themeFromHash)
   const mutationScope = useRef<object | null>(null)
   const canWrite = Boolean(data && data.identity.team_role !== 'reader' && !readOnly)
   useEffect(() => {
     mutationScope.current = {}
-    setData(null); setDraft(null); setNotice(null); setSaving(false)
+    setData(null); setDraft(null); setNotice(null); setSaving(false); setSelectedId(themeFromHash())
     return () => { mutationScope.current = null }
   }, [instrumentId])
+  useEffect(() => {
+    const selectLinkedTheme = () => { const id = themeFromHash(); if (id) setSelectedId(id) }
+    window.addEventListener('hashchange', selectLinkedTheme)
+    window.addEventListener('popstate', selectLinkedTheme)
+    return () => { window.removeEventListener('hashchange', selectLinkedTheme); window.removeEventListener('popstate', selectLinkedTheme) }
+  }, [])
   useEffect(() => {
     const updated = (event: Event) => { if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) setRefresh(value => value + 1) }
     window.addEventListener(RESEARCH_UPDATED, updated)
@@ -102,6 +133,7 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       if (scope !== mutationScope.current) return
       setNotice({ id: Date.now(), message: result.research_message || (draft.theme_id ? '主题已保存。' : '主题已建立。'), tone: 'success' })
       setDraft(null)
+      setSelectedId(result.theme_id)
     } catch (reason) { if (scope === mutationScope.current) setError(reason instanceof Error ? reason.message : '主题保存失败') }
     finally { if (scope === mutationScope.current) setSaving(false) }
   }
@@ -118,8 +150,17 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
   }
   const active = data?.themes.filter(theme => theme.status === 'active') || []
   const inactive = data?.themes.filter(theme => theme.status !== 'active') || []
+  const selected = data?.themes.find(theme => theme.theme_id === selectedId) || active[0] || inactive[0]
+  useEffect(() => {
+    if (selected && window.location.hash === themeHash(selected.theme_id)) document.getElementById(`research-theme-${encodeURIComponent(selected.theme_id)}`)?.scrollIntoView?.({ block: 'start' })
+  }, [selected?.theme_id])
+  const chooseTheme = (id: string) => {
+    setSelectedId(id)
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${themeHash(id)}`)
+  }
+  const directoryItem = (theme: ResearchTheme, index: number) => <button key={theme.theme_id} type="button" aria-current={selected?.theme_id === theme.theme_id ? 'true' : undefined} onClick={() => chooseTheme(theme.theme_id)}><span className="research-theme-directory-number">{String(index + 1).padStart(2, '0')}</span><span><span className="research-theme-directory-label"><span>{theme.status !== 'active' ? statusLabel[theme.status] : theme.priority === 'core' ? '核心' : '重要'}</span>{theme.pinned && <span> · 已固定</span>}</span><span className="research-theme-directory-title" translate="no">{theme.title}</span></span></button>
   const record = (theme: ResearchTheme) => <ThemeRecord key={theme.theme_id} {...{ theme, instrumentId, canWrite, saving, onAskAssistant }} onEdit={() => setDraft({ ...theme })} onStatus={(status, reason) => void changeStatus(theme, status, reason)} />
-  return <section className="research-themes" aria-label="重点主题">
+  return <section className="research-themes" aria-label="重点主题" aria-busy={!data && !error}>
     <div className="research-dossier-section-heading"><div><h2>重点主题{active.length > 0 && <span> · {active.length}</span>}</h2><span className="sector-research-note">{`按投资重要性持续研究 · 最多 ${data?.active_limit || 10} 个`}</span></div>{!readOnly && <button type="button" disabled={!canWrite || saving || Boolean(draft) || active.length >= (data?.active_limit || 10)} onClick={() => { setDraft({ title: '', kind: 'other', priority: 'important', responsible_user_id: data?.identity.user_id }); setError('') }}>建立主题</button>}</div>
     {error && <p role="alert">{error}</p>}<NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
     {!data && !error && <p role="status" className="sector-research-note">Loading</p>}
@@ -131,8 +172,17 @@ export default function ResearchThemesPanel({ instrumentId, reviewRunId, reviewS
       <label className="research-theme-pin"><input type="checkbox" checked={draft.pinned || false} disabled={saving} onChange={event => setDraft({ ...draft, pinned: event.target.checked })} />固定此主题</label>
       <div className="research-theme-actions"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : draft.theme_id ? '保存主题' : '创建并开始研究'}</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消</button></div>
     </form>}
-    <div className="research-theme-list">{active.map(record)}</div>
-    {data && !active.length && <p className="sector-research-note">尚无重点主题。建立主题后，研究员将补充分析并持续更新。</p>}
-    {inactive.length > 0 && <details className="research-theme-archive"><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(record)}</details>}
+    {selected && <div className="research-theme-workspace">
+      <nav className="research-theme-directory" aria-label="主题目录">
+        {active.map(directoryItem)}
+        {inactive.length > 0 && <details className="research-theme-archive" open={selected.status !== 'active' || undefined}><summary>暂停或结束的主题 · {inactive.length}</summary>{inactive.map(directoryItem)}</details>}
+      </nav>
+      <div className="research-theme-mobile-switch"><label>选择主题<select value={selected.theme_id} onChange={event => chooseTheme(event.target.value)}>
+        {active.length > 0 && <optgroup label="持续关注">{active.map(theme => <option key={theme.theme_id} value={theme.theme_id} translate="no">{theme.title}</option>)}</optgroup>}
+        {inactive.length > 0 && <optgroup label="暂停或结束的主题">{inactive.map(theme => <option key={theme.theme_id} value={theme.theme_id} translate="no">{theme.title}</option>)}</optgroup>}
+      </select></label></div>
+      {record(selected)}
+    </div>}
+    {data && !data.themes.length && <p className="sector-research-note">尚无重点主题。建立主题后，研究员将补充分析并持续更新。</p>}
   </section>
 }

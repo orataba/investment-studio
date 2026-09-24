@@ -16,6 +16,17 @@ const moduleTitles: Record<string, string> = {
   'pricing-compensation': '定价与风险补偿', 'product-implementation': '产品费用与实施',
 }
 
+type ReportSection = 'fundamentals' | 'quantitative' | 'events'
+const reportSection = (key: string): ReportSection => key === 'market-quantitative' ? 'quantitative' : key === 'events-expectations' ? 'events' : 'fundamentals'
+// Exposure-specific methods, rather than the wrapper's instrument_type, name the chapter.
+export function fundamentalSectionTitle(plan?: ResearchPlan) {
+  const selected = new Set(plan?.modules.map(module => module.id))
+  return ([['commodity-supply-demand', '供需与定价'], ['rates-credit', '利率与信用'],
+    ['fund-strategy', '策略与回报来源'], ['crypto-network', '网络经济与定价'],
+    ['business-fundamentals', '经营与定价'], ['equity-aggregation', '成份与定价']] as const)
+    .find(([key]) => selected.has(key))?.[1] || '基本面与定价'
+}
+
 // Only saved numeric results choose the figure; prose cannot supply chart values or markup.
 export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   const snapshot = source.snapshot
@@ -27,7 +38,7 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
   const maximum = Math.max(1, ...rows.map(row => Math.abs(row.return_pct!)))
   return <figure className="research-evidence-figure">
     <figcaption>{source.title || '留存数值依据'}</figcaption>
-    {source.data?.analysis_kind === 'python_quant' && <ResearchQuantFigure source={source} />}
+    {source.data?.analysis_kind === 'python_quant' && <ResearchQuantFigure source={source} captioned />}
     {rows.length > 0 && <div className="research-return-chart" role="img" aria-label="共同样本区间收益对比">
       {rows.map(row => <div className="research-return-row" key={row.instrument_id}>
         <span translate="no">{row.name || row.instrument_id}</span>
@@ -78,17 +89,17 @@ export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, s
   </div> : <p className="sector-research-note" role="status">Loading</p>
 }
 
-export default function ResearchModules({ instrumentId, notebook, plan, onAskAssistant }: {
-  instrumentId: string; notebook?: SavedResearchNotebook | null; plan?: ResearchPlan; onAskAssistant?: AskResearchAssistant
+export default function ResearchModules({ instrumentId, notebook, plan, onAskAssistant, section }: {
+  instrumentId: string; notebook?: SavedResearchNotebook | null; plan?: ResearchPlan; onAskAssistant?: AskResearchAssistant; section?: ReportSection
 }) {
-  const modules = notebook?.modules || []
-  // Display the applicable method order, retaining saved modules outside a changed plan.
+  const modules = (notebook?.modules || []).filter(module => !section || reportSection(module.key) === section)
+  // Chapters contain published analysis. Unanswered method questions belong to settings,
+  // not empty report chapters; saved chapters survive a later change in methods.
   const anchor = (key: string) => `research-module-${notebook?.version_id || 'pending'}-${key}`
-  const keys = [...new Set([...(plan?.modules.map(module => module.id) || []), ...modules.map(module => module.key)])]
-  if (!keys.length) return null
+  const keys = [...new Set([...(plan?.modules.map(module => module.id).filter(key => modules.some(module => module.key === key)) || []), ...modules.map(module => module.key)])]
+  if (!keys.length) return section === 'events' ? null : <p className="research-report-empty">{section === 'quantitative' ? '尚未形成可供判断的量化分析，不能据此推断风险较低。' : '尚未形成完整分析。已保存的结论、跟踪主题和原始材料仍可查阅。'}</p>
   return <section className="research-domain-modules" aria-label="分领域研究">
-    <div className="research-dossier-section-heading"><h3>分领域研究</h3><span className="sector-research-note">{keys.length} 个领域</span></div>
-    <div className="research-module-layout"><nav className="research-module-index" aria-label="研究领域目录">{keys.map(key => <a key={key} href={`#${anchor(key)}`}>{plan?.modules.find(module => module.id === key)?.title || moduleTitles[key] || key}</a>)}</nav><div className="research-module-articles">
+    <div className={`research-module-layout${keys.length === 1 ? ' research-module-layout-single' : ''}`}>{keys.length > 1 && <nav className="research-module-index" aria-label="研究领域目录">{keys.map((key, index) => <a key={key} href={`#${anchor(key)}`}><span>{String(index + 1).padStart(2, '0')}</span>{plan?.modules.find(module => module.id === key)?.title || moduleTitles[key] || key}</a>)}</nav>}<div className="research-module-articles">
     {keys.map(key => {
       const method = plan?.modules.find(module => module.id === key)
       const result: ResearchModule | undefined = modules.find(module => module.key === key)

@@ -23,6 +23,26 @@ const dossier = (): ResearchDossier => ({
   materials: [material], historical_case_limitations: ['旧样本不代表完整事件分布。'], historical_cases: [{ case_id: 'dotcom', source_id: 'historical:dotcom', role: 'historical_research', case_title: '互联网泡沫中的融资反馈', event: { information_window: { start: '2000-03-10', end: '2000-04-14' }, verified_new_information: '原档记录融资窗口收缩。', session_mapping: '数周信息累积后重估。' }, analysis: { causal_chain: ['估值压缩影响融资。'], market_interpretation: '需要区分单日冲击与持续重估。' }, current_use: { lesson: '核实现金流和融资约束。', similarity_requirements: ['融资依赖上升。'], important_differences: ['当前龙头有现金流。'] }, sources: [{ title: '历史原始来源', url: 'https://example.com/history', supports: '原档用于核对事件日期。' }], limitations: ['未重核历史成分。'] }],
 })
 beforeEach(() => { request.mockResolvedValue(dossier()) })
+
+it('opens one complete report with analysis and themes, fetching historical versions only on demand', async () => {
+  const module = { key: 'business-fundamentals', summary: '增长开始兑现，现金回报仍需验证。', analysis: '收入增长不能替代资本回报，需要把新增投入与回款匹配。', coverage: 'partial' as const, gaps: [], next_check: '', source_ids: [], figure_source_ids: [], evidence_as_of: '2026-09-05' }
+  const quant = { ...module, key: 'market-quantitative', analysis: '量化对照使用实际共同样本。' }
+  const events = { ...module, key: 'events-expectations', analysis: '事件预期与实际结果需要比较。' }
+  request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, modules: [module, quant, events] } })
+  const { container } = render(<ResearchDossierPanel instrumentId="fund-1" />)
+  expect(await screen.findByText(module.analysis)).toBeTruthy()
+  expect(container.querySelector('#research-analysis-fund-1')?.textContent).toContain(module.analysis)
+  expect(container.querySelector('#research-analysis-fund-1')?.textContent).not.toContain(quant.analysis)
+  expect(container.querySelector('#research-quant-fund-1')?.textContent).toContain(quant.analysis)
+  expect(container.querySelector('#research-tracking-fund-1')?.textContent).toContain(events.analysis)
+  expect(container.querySelector('#research-tracking-fund-1 [data-testid="recent-events"]')).toBeTruthy()
+  expect(screen.getByTestId('themes-panel')).toBeTruthy()
+  expect(screen.getByRole('navigation', { name: '研究报告目录' })).toBeTruthy()
+  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/research/instruments/fund-1/dossier?include_history=false'])
+  expect(screen.queryByText(material.body)).toBeNull()
+  await expandArchive()
+  expect(request).toHaveBeenCalledWith('/api/research/instruments/fund-1/dossier?include_history=true', expect.anything())
+})
 async function expandArchive() {
   await act(async () => { const summary = screen.getByText('研究档案', { selector: 'summary' }); if (!summary.closest('details')?.open) fireEvent.click(summary) })
   await screen.findByRole('region', { name: '研究材料' })
@@ -59,7 +79,7 @@ it('refreshes the same instrument dossier after a shared research publication', 
   render(<ResearchDossierPanel instrumentId="fund-1" />)
   await expandArchive()
   await act(async () => announceResearchPublication(['other']))
-  expect(request).toHaveBeenCalledTimes(1)
+  expect(request.mock.calls.filter(([path]) => path.includes('include_history=false'))).toHaveLength(1)
   request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, questions: [{ ...question, assessment: '新证据已修订当前判断。' }] } })
   await act(async () => announceResearchPublication(['fund-1']))
   expect(await screen.findByText('新证据已修订当前判断。')).toBeTruthy()
@@ -73,7 +93,7 @@ it('reloads a completed notebook when the same research run finishes', async () 
   rerender(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="run-1" reviewStatus="completed" />)
   await expandArchive()
   expect(screen.getByRole('region', { name: '当时研究问题与判断' })).toBeTruthy()
-  expect(request).toHaveBeenCalledTimes(2)
+  expect(request.mock.calls.filter(([path]) => path.includes('include_history=false'))).toHaveLength(2)
 })
 
 it('opens the retained source version on demand instead of treating the public URL as an immutable original', async () => {
@@ -132,7 +152,7 @@ it('shows saved research questions and important changes while leaving long mate
   await expandArchive()
   const questions = screen.getByRole('region', { name: '当时研究问题与判断' })
   expect(within(questions).getByText(question.assessment)).toBeTruthy()
-  expect(screen.getByText(notebook.important_changes[0])).toBeTruthy()
+  expect(screen.getAllByText(notebook.important_changes[0]).length).toBeGreaterThan(0)
   expect(screen.getByText(material.body).closest('details')?.open).toBe(false)
   expect(screen.getByText('互联网泡沫中的融资反馈').closest('details')?.open).toBe(false)
   expect(screen.getByText('研究方法正文不在首屏展开。').closest('details')?.open).toBe(false)
@@ -277,7 +297,7 @@ it('does not invent questions before a completed notebook exists and refreshes a
   rerender(<ResearchDossierPanel instrumentId="fund-1" reviewRunId="completed-1" />)
   await expandArchive()
   expect(screen.getByRole('region', { name: '当时研究问题与判断' })).toBeTruthy()
-  expect(request).toHaveBeenCalledTimes(2)
+  expect(request.mock.calls.filter(([path]) => path.includes('include_history=false'))).toHaveLength(2)
 })
 
 it('keeps the overview summary short and retains the saved notebook when the latest review failed', async () => {
@@ -400,7 +420,7 @@ it('keeps decoded prior analysis folded and binds its evidence to the original n
   const priorSource = { source_id: 'old-source', title: '旧底稿的原始来源', document_id: 'old-document', version_id: 'old-source-version' }
   const prior = { ...notebook.prior_analysis!, source_ids: ['old-source'], sources: [priorSource], version_id: 'old-notebook-version' }
   request.mockImplementation(async (path: string) => path.includes('?source_id=') ? { text: '当时留存的证据正文' } : { ...dossier(), notebook: { ...notebook, version_id: 'new-notebook-version', prior_analysis: prior } })
-  render(<ResearchDossierPanel instrumentId="fund-1" readingMode />)
+  render(<ResearchDossierPanel instrumentId="fund-1" />)
   const label = await screen.findByText(/^既有综合分析/)
   expect(label.closest('details')?.open).toBe(false)
   fireEvent.click(label)
@@ -420,13 +440,13 @@ it('does not present a quiet recheck of the same revision as a historical change
   expect(screen.queryByText(/^以往底稿变化/)).toBeNull()
 })
 
-it.each([false, true])('keeps saved reviews and lessons readable in the current dossier, readingMode=%s', async readingMode => {
+it('keeps saved reviews and lessons readable in the report archive', async () => {
   const review = { key: 'financing-review', forecast_key: 'financing', forecast_version_id: 'forecast-original',
     outcome: '回款变化尚不能确定', mechanism_assessment: '融资完成不证明经营改善', alternative_explanations: [], source_ids: ['original-1'] }
   const lesson = { key: 'financing-lesson', lesson: '区分资金取得与使用效果', applicability: '类似融资情景', limitations: '单次结果不证明因果',
     forecast_key: 'financing', forecast_version_id: 'forecast-original', source_ids: ['original-1'], version_id: 'lesson-original' }
   request.mockResolvedValue({ ...dossier(), notebook: { ...notebook, forecast_reviews: [review], lessons: [lesson] } })
-  render(<ResearchDossierPanel instrumentId="fund-1" readingMode={readingMode} onAskAssistant={vi.fn()} />)
+  render(<ResearchDossierPanel instrumentId="fund-1" onAskAssistant={vi.fn()} />)
   await expandArchive()
   fireEvent.click(screen.getByText('预测复盘与研究经验', { selector: 'summary' }))
   expect(screen.getByText(review.outcome)).toBeTruthy()

@@ -293,7 +293,7 @@ def retained_public_sources(session, instrument_id: str) -> list[dict]:
             for row in [*review.get("events", []), *review.get("themes", [])]:
                 references.update(row.get("source_ids", []))
         for capture in reversed(record.web_evidence or []):
-            if capture.get("operation") != "fetch":
+            if capture.get("operation") not in {"fetch", "author_import"}:
                 continue
             for source in capture.get("sources", []):
                 if len(scope) != 1 and source.get("source_id") not in references:
@@ -458,7 +458,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
             sources[source["source_id"]] = source
     sources.update(retained_estimate_sources(context))
     for capture in context.get("web_evidence", []):
-        if capture.get("operation") == "fetch":
+        if capture.get("operation") in {"fetch", "author_import"}:
             for source in capture.get("sources", []):
                 source = hydrate_source(source, cutoff=cutoff)
                 original = {**source, "source_run_id": run_id, "source_type": "public_source"}

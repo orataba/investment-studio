@@ -107,7 +107,10 @@ export type NotebookSource = {
   metadata?: { published_at?: string | null; effective_date?: string | null }
   pm_binding_note?: string
 }
-export type SavedResearchNotebook = ResearchNotebook & ResearchRevision & { run_id: string; checked_at: string | null; sources?: NotebookSource[] }
+export type SavedResearchNotebook = ResearchNotebook & ResearchRevision & {
+  run_id: string; checked_at: string | null; sources?: NotebookSource[]
+  publication?: { origin: string; display_name: string; baseline: boolean; research_as_of: string; verification_note: string; review_method: string; independent_model_review: boolean; model_execution: boolean }
+}
 export type ResearchMaterial = {
   source_id: string
   entry_id: string | null
@@ -127,6 +130,7 @@ export type HistoricalResearchCase = {
   limitations: string[]
 }
 export type ResearchDossier = {
+  themes?: ResearchTheme[]
   available_modules?: Array<Pick<ResearchPlanModule, 'id' | 'title' | 'version'>>
   research_plan?: ResearchPlan
   mandate?: ResearchMandate
@@ -159,6 +163,7 @@ export type ResearchTheme = ResearchThemeInput & {
   synthesis?: string; latest_development?: string; next_check?: string; last_reviewed_at?: string | null
   baseline_status?: 'pending' | 'ready'; research_run_id?: string | null; research_status?: string | null; research_message?: string
   figure_source_ids?: string[]; sources?: NotebookSource[]; source_version_id: string
+  migration_origin?: { revision: string; original_key: string; recorded_at: string } | null
   current_questions?: Array<ResearchUpdate & {
     last_reviewed_at?: string | null; last_changed_at?: string | null
     last_review_status?: 'reviewed' | 'insufficient_evidence' | null
@@ -202,6 +207,7 @@ export type ResearchQuantChart = { key: string; title: string; kind: 'line' | 'b
 
 export type SavedResearchSource = NotebookSource & EventSource & {
   text?: string; body?: string
+  provenance?: { raw_capture_kind?: string; body_kind?: string; locator?: string }
   snapshot?: Record<string, unknown>; company?: Record<string, unknown>
   data?: SavedComparison & Record<string, unknown> & {
     analysis_kind?: string; summary?: string; metrics?: Record<string, unknown>; tables?: ResearchQuantTable[]; charts?: ResearchQuantChart[]

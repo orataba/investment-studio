@@ -2799,7 +2799,6 @@ export default function FundDetailPage({
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
   const [detailSearchParams, setDetailSearchParams] = useSearchParams()
-  const readingMode = detailSearchParams.get('mode') === 'report'
   const fundId = propFundId || routeFundId
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
   const [activeTab, setActiveTabState] = useState<DetailTab>(() => {
@@ -5703,7 +5702,7 @@ export default function FundDetailPage({
   )
 
   return (
-    <div className="terminal-page instrument-detail-page">
+    <div className={`terminal-page instrument-detail-page${activeTab === 'investment-research' ? ' research-document-page' : ''}`}>
       {assistant?.instrumentId === fundId && <InstrumentAssistantDrawer instrumentId={fundId} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} question={assistant.question} researchReference={assistant.researchReference} onClose={() => setAssistant(null)} />}
       {riskOpen === fundId && <InstrumentRiskDrawer instrumentId={fundId} instrumentName={summary.instrument_name} watchlistId={watchlistContext?.watchlistId || detailSearchParams.get('watchlist') || undefined} onClose={() => setRiskOpen(null)} onAskAssistant={openAssistant} />}
       <NoticeToast notice={quoteActionNotice} onDismiss={() => setQuoteActionNotice(null)} />
@@ -5980,7 +5979,7 @@ export default function FundDetailPage({
           {summary.freshness.staleness_reason && <p className="fund-overview-date-note" role="status">{summary.freshness.staleness_reason}</p>}
           <SectorResearchPanel instrumentId={fundId} variant="summary" onOpenEvents={() => setActiveTab('investment-research')} />
           <div className="fund-overview-section">
-            <header><h2>{language === 'zh-Hans' ? '最新投资观点' : 'Latest investment view'}</h2><button type="button" onClick={() => setActiveTab('views')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
+            <header><h2>{language === 'zh-Hans' ? '当前总体观点' : 'Current overall view'}</h2><button type="button" onClick={() => setActiveTab('views')}>{language === 'zh-Hans' ? '查看与记录观点' : 'View / record opinions'}</button></header>
             {currentOpinion ? <><time>{currentOpinion.noteDate}</time><h3>{currentOpinion.title}</h3><p>{currentOpinion.body}</p></>
               : <p className="muted">{language === 'zh-Hans' ? '尚未记录投资观点。' : 'No investment view recorded yet.'}</p>}
           </div>
@@ -7771,8 +7770,7 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'investment-research' ? <>
-        <div className="research-reading-toolbar"><button type="button" onClick={() => setDetailSearchParams(params => { const next = new URLSearchParams(params); if (readingMode) next.delete('mode'); else next.set('mode', 'report'); return next }, { replace: true })}>{readingMode ? (language === 'zh-Hans' ? '研究概览' : 'Research overview') : (language === 'zh-Hans' ? '深度研究报告' : 'In-depth report')}</button></div>
-        <SectorResearchPanel instrumentId={fundId} onAskAssistant={openAssistant} readingMode={readingMode} />
+        <SectorResearchPanel instrumentId={fundId} onAskAssistant={openAssistant} />
       </> : null}
 
     </div>

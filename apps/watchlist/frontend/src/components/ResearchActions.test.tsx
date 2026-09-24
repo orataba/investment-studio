@@ -23,6 +23,19 @@ it('shows only current one-off events rather than duplicating the research activ
   expect(screen.queryByRole('region', { name: '研究动态' })).toBeNull()
 })
 
+it('keeps important linked events discoverable but excludes organization receipts', async () => {
+  api.activity.mockResolvedValue({ instrument_id: 'fund', recent_events: [], updates: [
+    { ...event, theme_ids: ['capital'], title: '融资完成后的现金用途' },
+    { ...event, update_id: 'organization', title: '历史记录已整理', change: 'organized' },
+  ] })
+  render(<ResearchRecentEvents instrumentId="fund" />)
+  expect(await screen.findByRole('heading', { name: '融资完成后的现金用途' })).toBeTruthy()
+  expect(screen.queryByText('历史记录已整理')).toBeNull()
+  expect(screen.queryByText(event.body)).toBeNull()
+  fireEvent.click(screen.getByText('阅读这条记录'))
+  expect(await screen.findByText(event.body)).toBeTruthy()
+})
+
 it('saves a PM opinion directly with the selected event version and editable background', async () => {
   api.note.mockResolvedValue({ profile: {}, notes: [] })
   const ask = vi.fn()

@@ -380,3 +380,25 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - 产品分类先落 taxonomy，再考虑 research/monitoring labels
 - watchlist 前台优先消费 read models，而不是直接扫 facts
 - 只在没有更好归属时，才把内容继续放进公募/私募详情共享的 manual profiles
+
+
+### 研究员编制与版本化发布
+
+`POST /api/research/imports/preview` 是只读校验；`POST /api/research/imports/publish` 仅接受明确标的、同一内容包及预览返回的 `expected_versions`。使用者须有团队研究写权限。发布与正常研究共用标的锁、结构和来源校验、主题数量/固定规则及版本保存；期间研究或主题已变化时拒绝旧预览。内容包和预览文件保存在仓库外。
+
+已有 `watchlist:research` 服务身份可调用这两个精确入口，按真实服务身份留痕；模型运行凭证不能自行调用。编制入口不接受研究设置修改，完整编制须明确提供 `key_drivers` 与 `next_research`（允许空数组），避免无意继承不一致的旧摘要。常规 DeepSeek 仍使用原有稀疏更新合同。
+
+编制包提供逐项来源原文或精确摘录及定位，并将量化图表绑定至实际留存的数值表和计算说明。材料进入独立的作者提供原文命名空间，不冒充系统联网抓取；预览和结构校验本身不等于事实核证。`notebook.publication` 显示作者、研究截至日期、是否首次基线与核查方法，明确记录 `model_execution=false` 和 `independent_model_review=false`。作者依据真实复核结果填写说明，系统不能把声明升级为独立核证。
+
+本入口用于编制当前报告和持续主题，不接受事件历史改写。关闭或替换旧主题必须显式给出原因，既有用户固定主题和 PM 投资观点仍按原合同保护；旧报告、主题版本与原始证据继续保留。DeepSeek 后续研究沿用现有持续研究与独立核证路径，不因人工编制而绕过原有要求。
+
+```bash
+python apps/watchlist/backend/scripts/import_research.py \
+  --api-base http://127.0.0.1:8000 --instrument-id TARGET \
+  --input /external/research-package.json --preview-output /external/research-preview.json
+python apps/watchlist/backend/scripts/import_research.py \
+  --api-base http://127.0.0.1:8000 --instrument-id TARGET \
+  --input /external/research-package.json --publish --preview /external/research-preview.json
+```
+
+远程调用使用现有授权的 `WATCHLIST_IMPORT_TOKEN` 或 `WATCHLIST_IMPORT_COOKIE` 进程环境，不在命令参数或仓库保存凭据。CLI 默认以 API 地址的 Origin 遵循既有请求来源校验；不同前台域名可显式传 `--origin`。本地与云端分别预览、发布并保留各自历史，禁止整库复制研究记录。

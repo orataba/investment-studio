@@ -67,7 +67,6 @@ function LessonBody({ lesson, sources }: { lesson: ResearchLesson; sources: Sour
 
 export default function InvestmentResearchState({ instrumentId, notebook, sources, onAskAssistant, historical = false, mode = 'full', compact = false }: { instrumentId: string; notebook: SavedResearchNotebook; sources: Sources; onAskAssistant?: AskResearchAssistant; historical?: boolean; mode?: 'full' | 'view' | 'records'; compact?: boolean }) {
   const [writing, setWriting] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [notice, setNotice] = useState('')
   const canWrite = useStudioAccount()?.team_role !== 'reader'
   const view = notebook.investment_view
@@ -79,9 +78,12 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
     {view && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : '当前投资判断'}>
-      <h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>
+      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>{!historical && <span>研究员判断</span>}</div>
       <p className="sector-research-note">观点更新于 <time dateTime={view.updated_at || undefined}>{dateLabel(view.updated_at)}</time></p>
-      {compact ? <>{!expanded && <><p className="research-current-direction" translate="no">{view.direction}</p><div className="research-current-summary">{view.horizon && <p><strong>期限</strong><span translate="no">{view.horizon}</span></p>}{view.attractiveness && <p><strong>吸引力</strong><span translate="no">{view.attractiveness}</span></p>}{view.risk && <p><strong>主要风险</strong><span translate="no">{view.risk}</span></p>}</div></>}<details onToggle={event => setExpanded(event.currentTarget.open)}><summary>完整判断与改判条件</summary>{expanded && <ViewBody view={view} />}</details></> : <ViewBody view={view} />}
+      {notebook.publication && <div className="research-publication-byline"><span translate="no">{notebook.publication.display_name}</span> 编制 · 研究截至 <time dateTime={notebook.publication.research_as_of}>{notebook.publication.research_as_of}</time>{notebook.publication.baseline && ' · 首次研究基线'}<details><summary>编制说明</summary><p translate="no">{notebook.publication.verification_note}</p>{!notebook.publication.independent_model_review && <p>作者核对来源；未经独立模型核证。</p>}</details></div>}
+      {compact ? <><p className="research-current-direction" translate="no">{view.direction}</p><div className="research-current-summary">{view.attractiveness && <p><strong>当前投资吸引力</strong><span translate="no">{view.attractiveness}</span></p>}{view.risk && <p><strong>主要风险与反证</strong><span translate="no">{view.risk}</span></p>}</div>
+        {(view.horizon || view.conviction || view.invalidation || view.next_check) && <details><summary>期限、把握程度与改判条件</summary><dl className="research-investment-dimensions">{([['horizon', '适用期限'], ['conviction', '判断把握程度'], ['invalidation', '改判条件'], ['next_check', '下一步验证']] as const).map(([key, label]) => view[key] && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}</dl></details>}
+      </> : <ViewBody view={view} />}
       {(view.assumptions.length > 0 || view.source_ids.length > 0) && <details><summary>关键假设与依据</summary><ul className="research-dossier-list">{view.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources(view.source_ids)}</details>}
       {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(historical ? '请复核这份历史底稿中的投资判断。先按当时已知信息审视判断，再区分后来出现的变化与遗漏。' : '请复核当前投资判断。结合新的信息与当前定价，说明后续方向、吸引力或风险是否需要调整；没有实质变化时直接说明。', reference)}>{historical ? '追问当时的观点' : '追问当前观点'}</button>}
       {!historical && canWrite && <button className="sector-event-ask" type="button" onClick={() => setWriting(value => !value)}>记录投资观点</button>}

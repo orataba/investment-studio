@@ -129,6 +129,7 @@ function SavedEvidence({ source, instrumentId, versionId }: { source: NotebookSo
   const financialPage = saved?.company && ['statements', 'facts'].includes(String(saved.company.page_kind))
   return <details onToggle={event => setExpanded(event.currentTarget.open)}><summary>{computed ? '查看已保存的计算依据' : '查看已保存的原文'}</summary>
     <p className="sector-research-note">{computed ? '对应此项判断当时引用的计算结果，未用后来数据重新计算。' : '对应此项研究所引用的原文版本；外部链接可能已发生修改。'}</p>
+    {saved?.provenance?.raw_capture_kind === 'author_provided_text' && <p className="sector-research-note">{saved.provenance.body_kind === 'original_excerpt' ? '作者留存的原文摘录，非全文。' : '作者留存的原文。'}{saved.provenance.locator && <span translate="no"> {saved.provenance.locator}</span>}</p>}
     {error ? <p role="alert">{error}</p> : saved === null ? <p role="status">正在读取依据…</p> : computed ? <ComputedEvidence source={saved} /> : financialPage ? <FinancialEvidence company={saved.company!} /> : body ? <p className="research-dossier-text" translate="no">{body}</p> : snapshot ? <pre className="research-dossier-text" translate="no">{JSON.stringify(snapshot, null, 2)}</pre> : <p className="sector-research-note">此来源没有可读正文。</p>}
   </details>
 }

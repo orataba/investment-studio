@@ -107,6 +107,32 @@ def test_analyst_theme_stable_key_closure_and_user_takeover(research_client):
     assert resumed.json()["origin"] == "researcher" and resumed.json()["close_reason"] == ""
 
 
+def test_theme_synthesis_changes_advance_progress_but_quiet_receipts_do_not(research_client, monkeypatch):
+    from watchlist_app.services import research_themes as service
+    from watchlist_app.db.session import get_session_factory
+    class Clock(datetime):
+        value = datetime(2026, 9, 1, tzinfo=UTC)
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value
+    monkeypatch.setattr(service, "datetime", Clock)
+    with get_session_factory()() as session:
+        original = service.save_analyst_theme(session, "fund-us-agg", service.AnalystThemeUpdate(
+            theme_key="cash-return", title="现金回报", question="增长能否覆盖投入？", priority_reason="决定资本回报",
+            synthesis="等待披露"))
+        Clock.value = datetime(2026, 9, 2, tzinfo=UTC)
+        changed = service.save_analyst_theme(session, "fund-us-agg", service.AnalystThemeUpdate(
+            theme_key="cash-return", title="增长尚未带来现金回报", synthesis="收入增长但现金投入更快，需要继续检验回收。"))
+        projected = service.themes_view(session, "fund-us-agg")["themes"][0]
+        assert datetime.fromisoformat(projected["last_changed_at"]) == datetime.fromisoformat(changed["updated_at"]) == Clock.value
+        Clock.value = datetime(2026, 9, 3, tzinfo=UTC)
+        service.save_analyst_theme(session, "fund-us-agg", service.AnalystThemeUpdate(theme_key="cash-return"))
+        quiet = service.themes_view(session, "fund-us-agg")["themes"][0]
+        assert datetime.fromisoformat(quiet["last_changed_at"]) == datetime.fromisoformat(changed["updated_at"])
+        assert quiet["last_reviewed_at"] == Clock.value.isoformat()
+        assert quiet["revision_number"] == 2 and quiet["versions"][0]["updated_at"] == original["updated_at"]
+
+
 def test_analyst_cannot_rewrite_user_theme_or_use_foreign_instrument_key(research_client):
     from watchlist_app.db.session import get_session_factory
     from watchlist_app.services.research_themes import AnalystThemeUpdate, save_analyst_theme

@@ -255,7 +255,10 @@ def enforce_request(request, session):
             return
         if "watchlist:research" not in principal.scopes:
             raise HTTPException(403, "此服务没有访问当前研究功能的权限")
-        if request.method not in {"GET", "HEAD"} and path not in {"/api/sector-research/runs", "/api/risk/review/runs"}:
+        compiled_publication = request.method == "POST" and path in {
+            "/api/research/imports/preview", "/api/research/imports/publish"}
+        if (request.method not in {"GET", "HEAD"} and path not in {"/api/sector-research/runs", "/api/risk/review/runs"}
+                and not compiled_publication):
             raise HTTPException(403, "研究服务不能代替投资经理维护正式观点或团队资料")
     if path == "/api/risk/review/runs" and request.method == "POST":
         # The risk service distinguishes portfolio-read analysis from shared team writes.

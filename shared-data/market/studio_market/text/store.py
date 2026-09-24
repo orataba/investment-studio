@@ -128,8 +128,11 @@ class TextStore:
             })
         return {"bundle_id": manifest["bundle_id"], "imported": imported, "duplicate": False, "received_at": received_at.isoformat()}
 
-    def capture_public_source(self, source: dict, *, received_at: datetime | None = None) -> dict:
-        """Persist Studio's own fetched public article using the same version store."""
+    def capture_public_source(self, source: dict, *, received_at: datetime | None = None,
+                              origin: str = "fetched") -> dict:
+        """Retain public text; author-provided text never impersonates a fetch."""
+        if origin not in {"fetched", "author_provided"}:
+            raise ValueError("Unknown public-source capture origin")
         url = str(source["url"]).strip()
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -145,10 +148,14 @@ class TextStore:
         provenance = {
             "collector": "investment-studio", "original_source_id": source.get("source_id"),
             "discovered_at": source.get("discovered_at"), "date_evidence": source.get("date_evidence"),
-            "coverage": source.get("coverage"), "raw_capture_kind": "fetched_text",
+            "coverage": source.get("coverage"),
+            "raw_capture_kind": "fetched_text" if origin == "fetched" else "author_provided_text",
+            **({"locator": source.get("locator"), "body_kind": source.get("body_kind"),
+                "verification": "author_attested; not fetched or text-matched by importer"}
+               if origin == "author_provided" else {}),
         }
         document = {
-            "document_id": "studio-url-" + identity,
+            "document_id": ("studio-url-" if origin == "fetched" else "studio-author-url-") + identity,
             "channel_id": parsed.hostname.lower(), "source_name": parsed.hostname.lower(),
             "title": str(source.get("title") or url), "url": url,
             "information_type": "public_article", "status": "active",
@@ -163,7 +170,7 @@ class TextStore:
         version_material = {key: document[key] for key in ("document_id", "title", "body_sha256", "published_at", "occurred_at", "content_completeness")}
         # The same latest source state is reusable across research runs. A later
         # correction reverting to old wording is a new observation, not the old version.
-        document["version_id"] = "studio-web-" + digest(canonical_json({**version_material, "observed_at": observed.isoformat()}))
+        document["version_id"] = ("studio-web-" if origin == "fetched" else "studio-author-") + digest(canonical_json({**version_material, "observed_at": observed.isoformat()}))
         validate_document(document)
         self._save_raw(body_digest, raw)
         with self.engine.begin() as connection:

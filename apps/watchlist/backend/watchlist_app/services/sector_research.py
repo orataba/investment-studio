@@ -215,7 +215,7 @@ def sector_snapshot(iid, session, *, as_of=None):
     return view, evidence, companies
 
 
-def begin_run(session, ids, *, scheduled=False, question: str | None = None):
+def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False):
     from watchlist_app.services.research_access import instrument_run_scope
     from watchlist_app.services.research_identity import research_identity
     if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
@@ -233,11 +233,14 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
                 if ids == context["instrument_ids"]:
                     return active, False
                 raise ReviewInProgress("当前标的的研究追踪正在运行，请完成后再更新")
-    topic_id = f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}"
+    identity = research_identity()
+    topic_id = (f"{INSTRUMENT_TOPIC_PREFIX}compiled:{identity['team_id']}:{ids[0]}" if compiled
+                else f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}")
     title = f"{instrument_label(session, ids[0])} · 研究追踪"
     topic = session.get(ResearchTopic, topic_id)
     if topic is None:
-        topic = ResearchTopic(topic_id=topic_id, title=title, question="风险、机会与重要不确定性", instrument_ids=ids, status="active", conclusion="", visibility="team")
+        topic = ResearchTopic(topic_id=topic_id, title=title, question="风险、机会与重要不确定性", instrument_ids=ids, status="active", conclusion="", visibility="team",
+                              **({"team_id": identity["team_id"]} if compiled else {}))
         session.add(topic)
         session.flush()
     session.refresh(topic, with_for_update=True)
@@ -275,6 +278,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
     attempted_baselines = {theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
                           for theme in theme_index(session, ids[0])}
     run = ResearchEntry(entry_id=uuid4().hex, topic_id=topic_id, kind="analysis", title=title,
+        **({"team_id": identity["team_id"]} if compiled else {}),
         body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
         status="queued", context_json={"sector_run": True, "event_scope": "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
@@ -283,7 +287,8 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None):
         "incremental_trigger": incremental_trigger, "attempted_theme_baselines": attempted_baselines,
         "web_evidence": [], "reviews": {}})
     session.add(run)
-    session.commit()
+    if commit:
+        session.commit()
     return run, True
 
 
@@ -876,7 +881,9 @@ def apply_result(session, run, reply):
         for update in sorted(review.themes, key=lambda item: item.status not in {"paused", "closed"}):
             previous = theme_scope[update.theme_key]
             saved = save_analyst_theme(session, review.instrument_id, update,
-                provenance={"source_run_id": run.entry_id}, sources=notebook_evidence)
+                provenance={"source_run_id": run.entry_id,
+                    **({"publication": context["publication"], "updated_by": context["publication"]["display_name"]}
+                       if context.get("publication") else {})}, sources=notebook_evidence)
             aliases[update.theme_key] = saved["theme_id"]
             published_themes.append({key: saved[key] for key in ("theme_id", "theme_key", "source_ids")})
             changed_themes = changed_themes or saved["theme_id"] != previous["theme_id"] or saved["revision_number"] != previous.get("revision_number")
@@ -917,6 +924,14 @@ def apply_result(session, run, reply):
         dossier = next((d for d in context.get("research_dossiers", []) if d["instrument_id"] == review.instrument_id), {})
         notebook = retain_notebook(review.research, dossier.get("notebook"), notebook_evidence, run.entry_id, context["cutoff"],
             research_plan=_review_research_plan(session, context, review)) if review.research is not None else None
+        if notebook:
+            notebook.pop("publication", None)
+            if context.get("publication"):
+                notebook["publication"] = context["publication"]
+            if (notebook.get("investment_view") or {}).get("source_run_id") == run.entry_id:
+                notebook["investment_view"].pop("publication", None)
+                if context.get("publication"):
+                    notebook["investment_view"]["publication"] = context["publication"]
         if notebook and review.research.mandate_update is not None:
             from watchlist_app.services.research_dossier import save_mandate
             save_mandate(session, review.instrument_id, review.research.mandate_update, commit=False, origin="research")
