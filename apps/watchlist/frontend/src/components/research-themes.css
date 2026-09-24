@@ -1,7 +1,7 @@
 .research-themes { padding: 8px 0 20px; }
-.research-theme-workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); column-gap: 34px; margin-top: 26px; align-items: start; }
+.research-theme-workspace { display: grid; grid-template-columns: 190px minmax(0, 1fr); column-gap: 32px; margin-top: 26px; align-items: start; }
 .research-theme-directory { position: sticky; top: 78px; border-right: 1px solid var(--line, #e2e8f0); padding-right: 20px; }
-.research-theme-directory > button, .research-theme-archive > button { display: grid; grid-template-columns: 23px minmax(0, 1fr); gap: 10px; width: 100%; text-align: left; padding: 14px 12px; margin: 0; border: 0; border-left: 2px solid transparent; background: transparent; font: inherit; cursor: pointer; }
+.research-theme-directory > button, .research-theme-archive > button { display: grid; grid-template-columns: 23px minmax(0, 1fr); gap: 10px; width: 100%; text-align: left; padding: 12px 7px; margin: 0; border: 0; border-left: 2px solid transparent; background: transparent; font: inherit; cursor: pointer; }
 .research-theme-directory button[aria-current="true"] { border-left-color: var(--accent); color: var(--accent); }
 .research-theme-directory button:hover { background: var(--band, #f6f7f8); }
 .research-theme-directory-number { font-size: 11px; color: var(--muted); padding-top: 2px; }
@@ -52,7 +52,7 @@
 .research-timeline .research-update-card h4 { margin-top: 10px; }
 .research-recent-events { margin: 22px 0; padding-top: 20px; border-top: 1px solid var(--line); }
 .research-more-events { margin-top: 16px; background: transparent; border: 0; color: var(--accent); font-size: 12px; }
-@media (max-width: 1000px) { .research-theme-workspace { grid-template-columns: 205px minmax(0, 1fr); column-gap: 24px; } .research-theme-directory { padding-right: 12px; } }
+@media (max-width: 1000px) { .research-theme-workspace { grid-template-columns: 190px minmax(0, 1fr); column-gap: 24px; } .research-theme-directory { padding-right: 12px; } }
 @media (max-width: 720px) {
   .research-theme-workspace { display: block; margin-top: 16px; }
   .research-theme-directory { display: none; }
@@ -63,3 +63,8 @@
   .research-theme-form-row { grid-template-columns: 1fr; }
   .research-theme-prose p { font-size: 14px; }
 }
+
+.research-themes > .research-dossier-section-heading h2 { font-size: 26px; }
+.research-theme-evolution > h4 { font-size: 15px; }
+.research-theme-clock { gap: 5px 14px; }
+@media(max-width:720px) { .research-themes > .research-dossier-section-heading h2 { font-size: 23px; } }

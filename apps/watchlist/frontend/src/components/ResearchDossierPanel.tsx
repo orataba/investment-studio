@@ -208,7 +208,7 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
   </div>
   return <div className={`research-dossier-panel research-dossier-${variant}`}>
     {variant === 'full' && <nav className="research-reading-nav" aria-label="研究报告目录">
-      <a href={`#research-summary-${instrumentId}`}>投资判断</a><a href={`#research-changes-${instrumentId}`}>变化与影响</a><a href={`#research-tracking-${instrumentId}`}>重点跟踪</a><a href={`#research-analysis-${instrumentId}`}>深入分析</a>
+      <a href={`#research-summary-${instrumentId}`}><span>01</span> 投资判断</a><a href={`#research-changes-${instrumentId}`}><span>02</span> 变化与影响</a><a href={`#research-analysis-${instrumentId}`}><span>03</span> 深入分析</a><a href={`#research-tracking-${instrumentId}`}><span>04</span> 重点跟踪</a>
     </nav>}
     {error && <p role="alert">研究档案暂时无法读取：{error}</p>}
     <div id={`research-summary-${instrumentId}`} className="research-report-summary">{notebook?.investment_view || notebook?.decision_brief ? <InvestmentResearchState mode="view" compact instrumentId={instrumentId} notebook={notebook} sources={ids => <SourceList instrumentId={instrumentId} versionId={notebook.version_id} sources={selectedSources(ids)} />} onAskAssistant={ask} /> : <p className="research-empty-judgment">尚未形成当前投资判断。已保存资料与既有研究可在下方查阅。</p>}</div>
@@ -217,15 +217,16 @@ export default function ResearchDossierPanel({ instrumentId, reviewRunId, review
         <ResearchOverview instrumentId={instrumentId} dossier={dossier} onAskAssistant={ask} />
         <ResearchRecentEvents instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} />
       </div>
-      <section id={`research-tracking-${instrumentId}`} className="research-report-tracking">
-        <ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} />
-      </section>
       <div id={`research-analysis-${instrumentId}`} className="research-report-body">
-        <header className="research-report-intro"><h2>{fundamentalTitle}</h2></header>
+        <header className="research-report-intro"><span className="research-chapter-number">03</span><h2>{fundamentalTitle}</h2></header>
         {dossier?.research_plan?.scope && <p className="research-scope"><strong>研究范围</strong> <span translate="no">{dossier.research_plan.scope}</span></p>}
         <ResearchModules instrumentId={instrumentId} notebook={notebook} plan={dossier.research_plan} preferences={dossier.mandate?.report_preferences} onAskAssistant={ask} />
         {Boolean(dossier?.research_plan?.gaps.length) && <section className="research-plan-gaps"><h3>资料缺口与结论边界</h3><TextList items={dossier!.research_plan!.gaps} /></section>}
       </div>
+      {Boolean(notebook?.next_research.length) && <section className="research-next-agenda" aria-label="下一步验证"><h3>接下来需要验证</h3><ol>{notebook!.next_research.map((text, index) => <li key={index} translate="no">{text}</li>)}</ol></section>}
+      <section id={`research-tracking-${instrumentId}`} className="research-report-tracking">
+        <ResearchThemesPanel instrumentId={instrumentId} reviewRunId={reviewRunId} reviewStatus={reviewStatus} onAskAssistant={ask} />
+      </section>
       <footer className="research-report-library" aria-label="研究资料与设置"><h3>研究资料</h3><p>查阅原始依据与历史判断，补充材料或调整研究要求。</p><div className="research-library-links">
       <ResearchReadingAside label="研究设置与范围" title="研究设置与范围">
       <div className="research-method-plan">

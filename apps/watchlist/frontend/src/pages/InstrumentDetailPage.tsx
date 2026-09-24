@@ -10,7 +10,6 @@ import {
   getWatchlistDetail,
   resolveInstrumentDetail,
   type InstrumentResolveResponse,
-  type WatchlistDetail,
 } from '../lib/api'
 import { buildWatchlistPath, HOME_URL } from '../lib/navigation'
 
@@ -37,23 +36,9 @@ export default function InstrumentDetailPage() {
       setError(null)
 
       try {
-        const [response, watchlist] = await Promise.all([
-          resolveInstrumentDetail(instrumentId),
-          watchlistId
-            ? getWatchlistDetail(watchlistId).catch(() => null as WatchlistDetail | null)
-            : Promise.resolve(null),
-        ])
+        const response = await resolveInstrumentDetail(instrumentId)
         if (!cancelled) {
           setInstrument(response)
-          setWatchlistContext(
-            watchlistId
-              ? {
-                  watchlistId,
-                  watchlistName: watchlist?.name || watchlistId,
-                  isSystem: watchlist?.owner_type === 'system',
-                }
-              : null,
-          )
         }
       } catch (resolveError) {
         if (!cancelled) {
@@ -74,7 +59,19 @@ export default function InstrumentDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [instrumentId, watchlistId])
+  }, [instrumentId])
+
+  useEffect(() => {
+    let cancelled = false
+    setWatchlistContext(watchlistId ? { watchlistId, watchlistName: watchlistId } : null)
+    if (watchlistId) {
+      void getWatchlistDetail(watchlistId).then(watchlist => {
+        if (!cancelled) setWatchlistContext({ watchlistId, watchlistName: watchlist.name || watchlistId,
+          isSystem: watchlist.owner_type === 'system' })
+      }).catch(() => { /* The stable watchlist ID remains a usable breadcrumb. */ })
+    }
+    return () => { cancelled = true }
+  }, [watchlistId])
 
   if (loading) {
     return <LoadingOverlay />
@@ -95,6 +92,7 @@ export default function InstrumentDetailPage() {
   ) {
     return (
       <ListedInstrumentDetailPage
+        key={instrument.detail_subject_id}
         instrument={instrument}
         watchlistContext={watchlistContext}
       />

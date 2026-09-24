@@ -31,12 +31,17 @@ it('uses method order, exposes evidence gaps and never claims an old result foll
   const { container } = render(<ResearchModules instrumentId="fund" plan={plan} notebook={notebook} onAskAssistant={ask} />)
   expect([...container.querySelectorAll('.research-domain-module h3')].map(node => node.textContent)).toEqual(['市场与量化'])
   expect(screen.queryByText('适用范围待核实')).toBeNull()
+  expect(screen.queryByText('部分覆盖')).toBeNull()
+  expect(screen.getByText('尚缺长期样本')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '依据与原文 · 1' }))
   expect(screen.getByText('部分覆盖')).toBeTruthy()
+  expect(screen.getByText(/方法版本 1/)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '关闭市场与量化 · 研究依据' }))
   expect(screen.getByText('方法已更新，待复核；以下保留原方法下的研究判断。')).toBeTruthy()
   expect(screen.getByText(module.analysis, { normalizer: text => text }).closest('details')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '追问这一领域' }))
   expect(ask.mock.calls[0][1]).toEqual({ instrument_id: 'fund', notebook_version_id: 'notebook-original' })
-  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  await waitFor(() => expect(request).toHaveBeenCalledWith('/api/research/instruments/fund/dossier?source_id=computed%3Acompare&version_id=notebook-original', expect.anything()))
 })
 
 it('renders figures referenced only through figure_source_ids from the exact saved notebook, including negative returns', async () => {

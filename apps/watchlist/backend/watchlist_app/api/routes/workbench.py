@@ -475,7 +475,10 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
             dossiers.append({**dossier, "prior_sources": [hydrate_source(source, cutoff=cutoff)
                 for source in dossier.get("prior_sources", [])],
                 "notebook": {**notebook, "sources": [hydrate_source(source, cutoff=cutoff)
-                    for source in notebook.get("sources", [])]} if notebook else None})
+                    for source in notebook.get("sources", [])]} if notebook else None,
+                **{field: [{**item, "sources": [hydrate_source(source, cutoff=cutoff)
+                    for source in item["sources"]]} if "sources" in item else item for item in dossier[field]]
+                   for field in ("themes", "pm_views") if field in dossier}})
         context["research_dossiers"] = dossiers
     elif context.get("research_dossiers"):
         context["research_dossiers"] = [dossier_outline(d) for d in context["research_dossiers"]]

@@ -1,5 +1,9 @@
 """Display reads retain provenance while originals remain version-addressable."""
 from copy import deepcopy
+import json
+
+from watchlist_app.api.research_presentation import dossier_view
+from watchlist_app.services.research_read_projection import dossier_sections
 
 from .test_research_activity import activity_client, publish
 from watchlist_app.db.models.workbench import ResearchEntry
@@ -96,3 +100,25 @@ def test_saved_reviews_keep_notebook_shape_in_browser_and_agent_case_catalogue(a
         assert shown["notebook"][field][0]["source_ids"] == ["original"]
     with get_session_factory()() as session:
         assert read_dossier(session, "xlk", include_history=True) == original
+
+
+def test_browser_dossier_omits_duplicate_agent_context_without_mutating_originals():
+    source = {"source_id": "original", "version_id": "version-1", "title": "Original",
+              "text": "Exact original body", "data": {"value": 3}}
+    dossier = {"instrument_id": "asset", "themes": [{"theme_id": "theme", "synthesis": "完整主题" * 10000}],
+        "review_agenda": {"focus_themes": [{"theme_id": "theme", "synthesis": "完整主题" * 10000}]},
+        "notebook": {"version_id": "notebook-1", "decision_brief": {"recommendation": "有条件持有"},
+                     "sources": [source]},
+        "prior_sources": [source], "notebook_history": [{"version_id": "notebook-0", "notebook": {"sources": [source]}}]}
+    original = deepcopy(dossier)
+    agent_before = deepcopy(dossier_sections(dossier))
+    browser = dossier_view(dossier)
+    assert "themes" not in browser and "review_agenda" not in browser
+    assert browser["notebook"]["decision_brief"] == dossier["notebook"]["decision_brief"]
+    assert browser["notebook"]["sources"] == [{"source_id": "original", "version_id": "version-1", "title": "Original"}]
+    assert browser["notebook_history"][0]["version_id"] == "notebook-0"
+    assert len(json.dumps(browser)) < len(json.dumps(dossier)) / 10
+    assert dossier == original
+    assert dossier_sections(dossier) == agent_before
+    assert agent_before["themes"] == original["themes"]
+    assert agent_before["review_agenda"] == original["review_agenda"]

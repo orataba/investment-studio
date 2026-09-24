@@ -81,9 +81,7 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
   const reference: ResearchReference = { instrument_id: instrumentId, notebook_version_id: notebook.version_id }
   return <>
     {(view || brief) && mode !== 'records' && <section className={`research-notebook-current${compact ? ' research-current-brief' : ''}`} aria-label={historical ? '当时投资判断' : '当前投资判断'}>
-      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : '当前投资判断'}</h3>{!historical && <span>研究员判断</span>}</div>
-      <p className="sector-research-note">观点更新于 <time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></p>
-      {notebook.publication && <div className="research-publication-byline"><span translate="no">{notebook.publication.display_name}</span> 编制 · 研究截至 <time dateTime={notebook.publication.research_as_of}>{notebook.publication.research_as_of}</time>{notebook.publication.baseline && ' · 首次研究基线'}<ResearchReadingAside label="编制说明"><p translate="no">{notebook.publication.verification_note}</p>{!notebook.publication.independent_model_review && <p>作者核对来源；未经独立模型核证。</p>}</ResearchReadingAside></div>}
+      <div className="research-judgment-heading"><h3>{historical ? '当时投资判断' : '当前投资判断'}</h3><time dateTime={view?.updated_at || brief?.updated_at || undefined}>{dateLabel(view?.updated_at || brief?.updated_at)}</time></div>
       {brief && <div className="research-decision-brief" aria-label="投资建议">
         <p className="research-current-direction" translate="no">{brief.recommendation}</p>
         {brief.rationale && <p className="research-decision-rationale" translate="no">{brief.rationale}</p>}
@@ -93,13 +91,26 @@ export default function InvestmentResearchState({ instrumentId, notebook, source
       </div>}
       {view && (compact ? <>
         <p className={brief ? 'research-current-thesis' : 'research-current-direction'} translate="no">{view.direction}</p>
-        <div className="research-current-summary">{view.attractiveness && <p><strong>当前投资吸引力</strong><span translate="no">{view.attractiveness}</span></p>}{view.risk && <p><strong>主要风险与反证</strong><span translate="no">{view.risk}</span></p>}</div>
-        <dl className="research-investment-dimensions research-view-conditions">{([['horizon', '适用期限'], ['conviction', '判断把握程度'], ['invalidation', '改判条件'], ['next_check', '下一步验证']] as const).map(([key, label]) => view[key] && <div key={key}><dt>{label}</dt><dd translate="no">{view[key]}</dd></div>)}</dl>
+        {notebook.key_drivers.length > 0 && <section className="research-lead-reasons" aria-label="判断的主要理由"><h4>主要理由</h4><ol>{notebook.key_drivers.map((text, index) => <li key={index} translate="no">{text}</li>)}</ol></section>}
+        <dl className="research-decision-boundaries">
+          {view.risk && <div className="research-lead-risk"><dt>核心风险</dt><dd translate="no">{view.risk}</dd></div>}
+          {view.attractiveness && <div><dt>投资吸引力</dt><dd translate="no">{view.attractiveness}</dd></div>}
+          {view.invalidation && <div><dt>改判条件</dt><dd translate="no">{view.invalidation}</dd></div>}
+          {view.next_check && <div><dt>下一验证</dt><dd translate="no">{view.next_check}</dd></div>}
+        </dl>
       </> : <ViewBody view={view} />)}
-      {((view?.assumptions.length || 0) > 0 || (view?.source_ids.length || 0) > 0 || (brief?.source_ids.length || 0) > 0) && (compact ? <ResearchReadingAside label="关键假设与依据"><ul className="research-dossier-list">{view?.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources([...new Set([...(view?.source_ids || []), ...(brief?.source_ids || [])])])}</ResearchReadingAside> : <details><summary>关键假设与依据</summary><ul className="research-dossier-list">{view?.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>{sources(view?.source_ids || [])}</details>)}
+      <div className="research-judgment-tools">
+      <ResearchReadingAside label="判断依据与适用范围">
+        {view?.horizon && <p><strong>适用期限</strong> <span translate="no">{view.horizon}</span></p>}
+        {view?.conviction && <p><strong>判断把握程度</strong> <span translate="no">{view.conviction}</span></p>}
+        {notebook.publication && <section className="research-publication-byline"><h4>编制说明</h4><p><span translate="no">{notebook.publication.display_name}</span> 编制 · 研究截至 <time dateTime={notebook.publication.research_as_of}>{notebook.publication.research_as_of}</time>{notebook.publication.baseline && ' · 首次研究基线'}</p><p translate="no">{notebook.publication.verification_note}</p>{!notebook.publication.independent_model_review && <p>作者核对来源；未经独立模型核证。</p>}</section>}
+        {(view?.assumptions.length || 0) > 0 && <><h4>关键假设</h4><ul className="research-dossier-list">{view?.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}
+        {sources([...new Set([...(view?.source_ids || []), ...(brief?.source_ids || [])])])}
+      </ResearchReadingAside>
       {priorBrief && <p className="research-prior-decision"><span>投资判断已变化，原建议待复核。</span> <ResearchReadingAside label="查看原建议"><p className="sector-research-note">原建议更新于 {dateLabel(priorBrief.updated_at)}</p><p translate="no">{priorBrief.recommendation}</p><p translate="no">{priorBrief.rationale}</p>{sources(priorBrief.source_ids)}</ResearchReadingAside></p>}
       {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(historical ? '请复核这份历史底稿中的投资判断。先按当时已知信息审视判断，再区分后来出现的变化与遗漏。' : '请复核当前投资判断。结合新的信息与当前定价，说明后续方向、吸引力或风险是否需要调整；没有实质变化时直接说明。', reference)}>{historical ? '追问当时的观点' : '追问当前观点'}</button>}
       {!historical && view && canWrite && <button className="sector-event-ask" type="button" onClick={() => setWriting(value => !value)}>记录投资观点</button>}
+      </div>
       {writing && view && <ResearchOpinionComposer instrumentId={instrumentId} title="对当前研究判断的观点" context={{ notebook_version_id: notebook.version_id, investment_view_version_id: view.version_id, source_ids: view.source_ids, background: `研究判断：${view.direction}\n期限：${view.horizon}\n投资吸引力：${view.attractiveness}\n风险：${view.risk}\n判断更新：${view.updated_at || notebook.updated_at || notebook.checked_at}` }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
       {notice && <p role="status">{notice}</p>}
       {!compact && Boolean(view?.versions?.length) && <details className="research-dossier-record"><summary>观点修订历史 · {view!.versions!.length} 次</summary>{view!.versions!.map(version => <article key={version.version_id}><h4>{dateLabel(version.updated_at)}</h4><ViewBody view={version} />{version.assumptions.length > 0 && <><h4>当时的关键假设</h4><ul className="research-dossier-list">{version.assumptions.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul></>}{sources(version.source_ids)}{onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant('请复核这个历史观点。先按当时已知信息审视原判断，再区分后来出现的变化与遗漏；不要把后来的结果当作当时已知。', { ...reference, investment_view_version_id: version.version_id })}>追问当时的观点</button>}</article>)}</details>}

@@ -21,7 +21,7 @@ def test_compiled_research_and_exact_evidence_reach_next_automatic_round(client,
     first = publish(client, baseline, preview(client, baseline))
     assert first.status_code == 200, first.text
     first_dossier = client.get(f"/api/research/instruments/{iid}/dossier").json()
-    original_theme = first_dossier["themes"][0]
+    original_theme = client.get(f"/api/research/instruments/{iid}/themes").json()["themes"][0]
 
     # A later compiled revision establishes real retained history, not a fake
     # earlier prediction or an in-memory substitute for the publication path.
@@ -31,7 +31,7 @@ def test_compiled_research_and_exact_evidence_reach_next_automatic_round(client,
     second = publish(client, revision, preview(client, revision))
     assert second.status_code == 200, second.text
     published = client.get(f"/api/research/instruments/{iid}/dossier").json()
-    theme = published["themes"][0]
+    theme = client.get(f"/api/research/instruments/{iid}/themes").json()["themes"][0]
     assert any(version["synthesis"] == original_theme["synthesis"] for version in theme["versions"])
 
     with get_session_factory()() as session:

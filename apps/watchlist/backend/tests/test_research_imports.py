@@ -71,7 +71,7 @@ def test_preview_is_read_only_and_publication_retains_originals_and_honest_autho
     dossier = client.get("/api/research/instruments/fund-us-agg/dossier").json()
     assert dossier["notebook"]["investment_view"]["direction"] == draft["review"]["research"]["investment_view"]["direction"]
     assert dossier["notebook"]["publication"]["display_name"] == "Codex"
-    theme = dossier["themes"][0]
+    theme = client.get("/api/research/instruments/fund-us-agg/themes").json()["themes"][0]
     assert theme["author"] == theme["updated_by"] == "Codex"
     assert theme["publication"]["independent_model_review"] is False
     assert dossier["pm_views"] == []
@@ -126,7 +126,7 @@ def test_optional_figures_and_second_team_publication_are_isolated(accounts):
         assert run.team_id == session.get(ResearchTopic, run.topic_id).team_id == "other"
     as_user(client, "alice")
     dossier = client.get(dossier_path).json()
-    assert not dossier.get("notebook") and dossier["themes"] == []
+    assert not dossier.get("notebook") and client.get("/api/research/instruments/fund-us-agg/themes").json()["themes"] == []
 
 
 def test_preview_conflict_and_active_run_do_not_publish_or_capture_sources(client):
@@ -152,7 +152,7 @@ def test_compiled_replacement_requires_explicit_transition_and_keeps_history(cli
     first = package()
     assert publish(client, first, preview(client, first)).status_code == 200
     dossier = client.get("/api/research/instruments/fund-us-agg/dossier").json()
-    old = dossier["themes"][0]
+    old = client.get("/api/research/instruments/fund-us-agg/themes").json()["themes"][0]
     second = package()
     second["review"]["themes"][0].update(theme_key="returns", title="投资回报能否持续？", question="投入何时回收？")
     second["review"]["themes"].append({"theme_key": old["theme_key"], "theme_id": old["theme_id"],
@@ -161,7 +161,7 @@ def test_compiled_replacement_requires_explicit_transition_and_keeps_history(cli
     assert publish(client, second, preview(client, second)).status_code == 200
     after = client.get("/api/research/instruments/fund-us-agg/dossier?include_history=true").json()
     assert len(after["notebook_history"]) == 2
-    closed = next(row for row in after["themes"] if row["theme_id"] == old["theme_id"])
+    closed = next(row for row in client.get("/api/research/instruments/fund-us-agg/themes").json()["themes"] if row["theme_id"] == old["theme_id"])
     assert closed["status"] == "closed" and closed["versions"][0]["status"] == "active"
     assert after["pm_views"] == []
 
@@ -211,15 +211,16 @@ def test_later_research_does_not_inherit_codex_authorship_and_can_withdraw(activ
     draft = package("xlk")
     assert publish(client, draft, preview(client, draft)).status_code == 200
     path = "/api/research/instruments/xlk/dossier"
-    theme = client.get(path).json()["themes"][0]
+    theme = client.get("/api/research/instruments/xlk/themes").json()["themes"][0]
     with get_session_factory()() as session:
         publish_automatic(session, research={"investment_view": {"direction": "后续研究修订现金回报判断"}},
             themes=[{"theme_id": theme["theme_id"], "theme_key": theme["theme_key"], "synthesis": "后续研究修订主题认识"}])
     dossier = client.get(path).json()
     assert "publication" not in dossier["notebook"]
     assert "publication" not in dossier["notebook"]["investment_view"]
-    assert not dossier["themes"][0]["publication"]
-    assert dossier["themes"][0]["versions"][-1]["publication"]["display_name"] == "Codex"
+    saved_theme = client.get("/api/research/instruments/xlk/themes").json()["themes"][0]
+    assert not saved_theme["publication"]
+    assert saved_theme["versions"][-1]["publication"]["display_name"] == "Codex"
     with get_session_factory()() as session:
         publish_automatic(session, research={"investment_view": None})
     assert client.get(path).json()["notebook"]["investment_view"] is None

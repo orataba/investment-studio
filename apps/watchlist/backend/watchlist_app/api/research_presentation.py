@@ -27,7 +27,9 @@ def _notebook_view(notebook: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def dossier_view(dossier: dict[str, Any]) -> dict[str, Any]:
     return {
-        **dossier,
+        # Themes have their own browser endpoint. The review agenda is agent
+        # working context; neither is consumed by the dossier panel.
+        **{key: value for key, value in dossier.items() if key not in {"themes", "review_agenda"}},
         "prior_sources": [_source_view(source) for source in dossier.get("prior_sources", [])],
         "notebook": _notebook_view(dossier.get("notebook")),
         # Reviews and lessons are already shown from the notebook. Their agent

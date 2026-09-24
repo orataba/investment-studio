@@ -83,10 +83,10 @@ export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, s
   const reference = { instrument_id: instrumentId, ...versionReference, theme_id: themeId, source_ids: [source.source_id] }
   const background = `图表：${source.title || '研究图表'}\n资料截至：${source.as_of || saved?.as_of || '未标注'}${saved?.data?.summary ? `\n${saved.data.summary}` : ''}`
   return error ? <p role="alert">数值依据暂时无法读取：{error}</p> : saved ? <div className="research-saved-figure"><EvidenceFigure source={saved} />
-    <div className="research-theme-actions">
+    {(onAskAssistant || canWrite) && <details className="research-figure-tools"><summary>讨论与记录</summary><div className="research-theme-actions">
       {onAskAssistant && <button type="button" onClick={() => onAskAssistant(`请分析这份已留存的数值证据。\n${background}\n读取精确来源与计算口径，检查数据、假设、反例及对当前判断的意义；不要用当前新数据替换当时的图表。`, reference)}>讨论这张图表</button>}
       {canWrite && <><button type="button" onClick={() => setWriting(value => !value)}>基于图表记录观点</button>{!themeId && <button type="button" onClick={() => setCreatingTheme(value => !value)}>基于数据建立主题</button>}</>}
-    </div>
+    </div></details>}
     {writing && <ResearchOpinionComposer instrumentId={instrumentId} title={`关于${source.title || '研究图表'}的观点`} context={{ theme_id: themeId, ...versionReference, source_ids: [source.source_id], background }} onCancel={() => setWriting(false)} onSaved={() => { setWriting(false); setNotice('投资观点已保存。') }} />}
     {creatingTheme && <ResearchThemeComposer instrumentId={instrumentId} title={source.title || '量化研究'} kind="quantitative" background={background} reference={{ ...versionReference, source_ids: [source.source_id] }} onCancel={() => setCreatingTheme(false)} onSaved={(action, message) => { setCreatingTheme(false); setNotice(message || (action === 'linked' ? '已关联主题。' : '主题已建立。')) }} />}
     {notice && <p role="status">{notice}</p>}
@@ -113,16 +113,15 @@ export default function ResearchModules({ instrumentId, notebook, plan, onAskAss
       const sources = (notebook?.sources || []).filter(source => (result?.source_ids.includes(source.source_id) || result?.figure_source_ids.includes(source.source_id)))
       const figures = sources.filter(source => result?.figure_source_ids.includes(source.source_id))
       return <article key={key} id={anchor(key)} className="research-domain-module">
-        <header><h3>{title}</h3><span className={`research-coverage-badge ${result?.coverage || 'pending'}`}>{result ? coverageLabels[result.coverage] : method?.applicability === 'unconfirmed' ? '适用范围待核实' : '待建立研究'}</span></header>
+        <header><h3>{title}</h3></header>
         {result ? <>
           {method && result.method_version !== method.version && <p className="sector-research-limitation">方法已更新，待复核；以下保留原方法下的研究判断。</p>}
           {result.summary && <p className="research-module-summary" translate="no">{result.summary}</p>}
           {result.analysis && <div className="research-module-analysis" translate="no"><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.analysis}</ReactMarkdown></div>}
-          <p className="sector-research-note">分析更新 {dateLabel(result.updated_at)} · 证据截至 {dateLabel(result.evidence_as_of)}{result.method_version && ` · 方法版本 ${result.method_version}`}</p>
           {figures.map(source => <SavedFigure key={`${source.source_id}:${notebook?.version_id || ''}`} instrumentId={instrumentId} notebookVersionId={notebook?.version_id} source={source} onAskAssistant={onAskAssistant} />)}
           {result.gaps.length > 0 && <div className="research-module-gaps"><strong>尚待核实</strong><ul>{result.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></div>}
           {result.next_check && <p className="research-notebook-next"><strong>下一步核实</strong> <span translate="no">{result.next_check}</span></p>}
-          {sources.length > 0 && <ResearchReadingAside label={`依据与原文 · ${sources.length}`} title={`${title} · 研究依据`}><SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={sources} /></ResearchReadingAside>}
+          <ResearchReadingAside label={`依据与原文 · ${sources.length}`} title={`${title} · 研究依据`}><p className="sector-research-note">分析更新 {dateLabel(result.updated_at)} · 证据截至 {dateLabel(result.evidence_as_of)}{result.method_version && ` · 方法版本 ${result.method_version}`}</p><p className="sector-research-note">{coverageLabels[result.coverage]}</p><SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={sources} /></ResearchReadingAside>
           {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核“${title}”模块（${key}）的判断：${result.summary}\n${result.analysis}\n请核实证据、反例和下一步检查，保留其他领域的已有研究。`, { instrument_id: instrumentId, notebook_version_id: notebook?.version_id })}>追问这一领域</button>}
         </> : <p className="sector-research-note" translate="no">{method?.reason || '尚未保存这一领域的研究判断。'}</p>}
       </article>

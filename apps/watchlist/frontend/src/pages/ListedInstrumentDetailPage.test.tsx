@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LanguageProvider } from '../../../../../packages/ui/src/i18n'
 import ListedInstrumentDetailPage from './ListedInstrumentDetailPage'
-import { emptyInstrumentResearchResponse } from '../lib/api'
+import { emptyInstrumentResearchResponse, type InstrumentResolveResponse } from '../lib/api'
 import { announceResearchPublication } from '../lib/researchUpdates'
 
 const apiMocks = vi.hoisted(() => ({
@@ -150,6 +150,108 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+const loadingInstrument = {
+  requested_instrument_id: 'xlk', canonical_instrument_id: 'xlk', instrument_name: 'Technology ETF',
+  instrument_type: 'etf' as const, primary_identifier: 'XLK', detail_view_type: 'etf',
+  detail_subject_id: 'xlk', detail_supported: true, support_reason: '', corporate_actions: [],
+}
+
+describe('independent detail loading', () => {
+  it('opens research while every market and supporting request is still pending', async () => {
+    for (const name of ['getInstrumentPriceBars', 'getInstrumentSummary', 'getInstrumentChart', 'getInstrumentPerformance',
+      'getInstrumentRisk', 'getInstrumentResearch', 'getInstrumentAttributes'] as const) {
+      apiMocks[name].mockReturnValue(new Promise(() => {}))
+    }
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter initialEntries={['/?tab=investment-research']}>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(screen.getByTestId('sector-panel').getAttribute('data-variant')).toBe('timeline')
+    fireEvent.click(screen.getByRole('button', { name: 'Investment Views' }))
+    expect(screen.getByRole('status').textContent).toContain('Investment views')
+    expect(screen.queryByText(/No overall view selected/)).toBeNull()
+    expect(screen.queryByText(/No source data is available/)).toBeNull()
+  })
+
+  it('shows price and summary before statistics, then updates each ready section', async () => {
+    const performanceValue = await apiMocks.getInstrumentPerformance()
+    const riskValue = await apiMocks.getInstrumentRisk()
+    const performance = deferred<typeof performanceValue>()
+    const risk = deferred<typeof riskValue>()
+    apiMocks.getInstrumentPerformance.mockReturnValue(performance.promise)
+    apiMocks.getInstrumentRisk.mockReturnValue(risk.promise)
+    apiMocks.getInstrumentResearch.mockReturnValue(new Promise(() => {}))
+    apiMocks.getInstrumentAttributes.mockReturnValue(new Promise(() => {}))
+    apiMocks.getInstrumentPriceBars.mockResolvedValue({ instrument_id: 'xlk', currency: 'USD', count: 2, bars: [
+      { date: '2026-09-22', open: '100', high: '102', low: '99', close: '100', volume: '100' },
+      { date: '2026-09-23', open: '100', high: '104', low: '100', close: '103.5', volume: '200' },
+    ].map(bar => ({ ...bar, previous_close: null, adjustment_factor: null, turnover: null, currency: 'USD',
+      volume_unit: 'shares', turnover_unit: null, provider: 'test', status: 'complete' })) })
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    expect(await screen.findByRole('img', { name: 'Candlestick price and volume chart' })).toBeTruthy()
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('103.50')
+    expect(screen.getByText('Fixed Income / Broad Bond')).toBeTruthy()
+    expect(screen.getByText('YTD').nextElementSibling?.textContent).toBe('Loading…')
+    expect(screen.queryByText('Risk statistics unavailable')).toBeNull()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Performance & Risk' })[0])
+    expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Risk statistics'))).toBe(true)
+    await act(async () => performance.resolve({ ...performanceValue, trailing_returns: [{ window: '1Y', investment_nav: 17 }] }))
+    expect(await screen.findByText('17.000%')).toBeTruthy()
+    expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Risk statistics'))).toBe(true)
+    await act(async () => risk.resolve({ ...riskValue, current_drawdown: -2 }))
+    expect(screen.getByText('-2.00%')).toBeTruthy()
+  })
+
+  it('never displays a canonical return series as an ETF quote while OHLCV is pending or empty', async () => {
+    const bars = deferred<unknown>()
+    apiMocks.getInstrumentPriceBars.mockReturnValue(bars.promise)
+    const { container } = render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await waitFor(() => expect(screen.getByText('Fixed Income / Broad Bond')).toBeTruthy())
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('Loading…')
+    expect(container.querySelector('.listed-hero-quote em')?.textContent).toBe('Loading…')
+    fireEvent.click(screen.getByRole('button', { name: 'Cumulative Return' }))
+    expect(screen.getByRole('img', { name: 'Cumulative return chart' })).toBeTruthy()
+    await act(async () => bars.resolve({ instrument_id: 'xlk', currency: 'USD', count: 0, bars: [] }))
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('—')
+    expect(container.querySelector('.listed-hero-quote em')?.textContent).toBe('—')
+  })
+
+  it('keeps a return chart loading when its price fallback is still pending', async () => {
+    apiMocks.getInstrumentPriceBars.mockReturnValue(new Promise(() => {}))
+    apiMocks.getInstrumentChart.mockResolvedValue({ instrument_id: 'xlk', currency: 'USD', series: [] })
+    render(<LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={loadingInstrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>)
+    await waitFor(() => expect(screen.getByText('Fixed Income / Broad Bond')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Cumulative Return' }))
+    expect(screen.getAllByRole('status').some(node => node.textContent?.includes('Price history'))).toBe(true)
+    expect(screen.queryByText(/No source data is available/)).toBeNull()
+  })
+
+  it('ignores a previous instrument response after navigation', async () => {
+    const oldChart = deferred<unknown>()
+    apiMocks.getInstrumentChart.mockReturnValueOnce(oldChart.promise)
+    const view = (instrument: InstrumentResolveResponse = loadingInstrument) => <LanguageProvider enableDomTranslation={false}><MemoryRouter>
+      <ListedInstrumentDetailPage instrument={instrument} watchlistContext={null} />
+    </MemoryRouter></LanguageProvider>
+    const { rerender, container } = render(view())
+    const next = { ...loadingInstrument, instrument_type: 'index' as const, requested_instrument_id: 'spy', canonical_instrument_id: 'spy', detail_subject_id: 'spy', instrument_name: 'New instrument' }
+    rerender(view(next))
+    await waitFor(() => expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00'))
+    await act(async () => oldChart.resolve({ instrument_id: 'xlk', series: [{ points: [{ date: '2026-09-23', value: 999 }] }] }))
+    expect(container.querySelector('.listed-hero-quote strong')?.textContent).toBe('108.00')
+  })
 })
 
 describe('ListedInstrumentDetailPage index view', () => {

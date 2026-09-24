@@ -234,7 +234,7 @@ def test_pm_review_links_original_version_and_is_shared_with_theme_and_dossier(r
     projected = client.get(_themes()).json()["themes"][0]
     assert {n["note_id"] for n in projected["notes"]} == {original["note_id"], review["note_id"]}
     dossier = client.get("/api/research/instruments/fund-us-agg/dossier").json()
-    assert dossier["themes"][0]["theme_id"] == theme["theme_id"]
+    assert "themes" not in dossier and projected["theme_id"] == theme["theme_id"]
     views = {n["note_id"]: n for n in dossier["pm_views"]}
     assert len(views[original["note_id"]]["versions"]) == 2
     assert views[review["note_id"]]["research_context"]["related_revision"] == 1

@@ -1,5 +1,5 @@
 .research-dossier-panel { --research-accent: #245f9b; color: var(--ink, #17212e); }
-.research-dossier-full { max-width: 1040px; margin: 0 auto; }
+.research-dossier-full { max-width: 920px; margin: 0 auto; }
 .research-dossier-panel p, .research-dossier-panel li { overflow-wrap: anywhere; }
 .research-dossier-panel h2 { font-size: 18px; font-weight: 500; margin: 0; }
 .research-dossier-panel .research-investment-dimensions { gap: 16px 28px; }
@@ -7,7 +7,7 @@
 .research-dossier-panel .research-investment-dimensions > div:first-child dd { font-size: 16px; line-height: 1.8; }
 .research-dossier-panel .research-investment-dimensions dt { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .research-current-brief { border-bottom: 1px solid var(--line); padding-bottom: 24px; }
-.research-current-direction { font-size: 22px; line-height: 1.7; font-weight: 500; white-space: pre-line; margin: 22px 0; max-width: 940px; }
+.research-current-direction { font-size: 23px; line-height: 1.85; font-weight: 500; white-space: pre-line; margin: 24px 0 30px; letter-spacing: -.015em; }
 .research-current-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 42px; margin-bottom: 24px; }
 .research-current-summary > p { margin: 0; font-size: 14px; line-height: 1.85; }
 
@@ -24,14 +24,14 @@
 .research-module-gaps ul { margin: 5px 0 0; padding-left: 18px; }
 .research-domain-modules { margin: 24px 0; }
 .research-domain-modules h3 { font-size: 20px; line-height: 1.6; margin: 0; font-weight: 500; }
-.research-module-layout { display: block; max-width: 840px; margin: 28px auto 0; }
+.research-module-layout { display: block; max-width: none; margin: 28px 0 0; }
 .research-module-articles { min-width: 0; }
-.research-domain-module { margin: 0 0 44px; padding: 0 0 36px; border-bottom: 1px solid var(--line); scroll-margin-top: 80px; }
-.research-domain-module > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.research-domain-module { margin: 0 0 42px; padding: 0 0 30px; border-bottom: 1px solid var(--line); scroll-margin-top: 80px; }
+.research-domain-module > header { display: flex; align-items: baseline; gap: 16px; }
 .research-coverage-badge { display: inline-block; flex-shrink: 0; font-size: 11px; color: #56716c; }
 .research-coverage-badge.partial, .research-coverage-badge.insufficient, .research-coverage-badge.pending { color: #866234; }
-.research-module-summary { font-size: 16px; font-weight: 500; line-height: 1.85; white-space: pre-line; margin: 18px 0 12px; }
-.research-module-analysis { font-size: 15px; line-height: 1.9; margin: 0 0 18px; }
+.research-module-summary { font-size: 19px; font-weight: 500; line-height: 1.8; white-space: pre-line; margin: 18px 0 16px; }
+.research-module-analysis { font-size: 16px; line-height: 2; margin: 0 0 18px; }
 .research-module-analysis p { margin: 14px 0; white-space: pre-line; }
 .research-module-analysis h1, .research-module-analysis h2, .research-module-analysis h3, .research-module-analysis h4 { font-size: 15px; font-weight: 500; margin: 20px 0 8px; }
 .research-module-analysis li { margin: 6px 0; }
@@ -57,7 +57,7 @@
 .research-method-plan > summary span { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 12px; }
 .research-method-plan > section { margin-top: 22px; }
 .research-empty-judgment { padding: 18px 0; line-height: 1.8; color: var(--muted); }
-.investment-research-reading { width: 100%; max-width: 1040px; margin: 16px auto 64px; }
+.investment-research-reading { width: 100%; max-width: 920px; margin: 16px auto 64px; }
 .investment-research-reading .sector-research-heading { border: 0; padding: 0 0 16px; }
 .research-holding-track { height: 14px; background: #eef1f4; position: relative; }
 .research-holding-track i { position: absolute; display: block; height: 100%; background: #286da5; }
@@ -88,13 +88,13 @@
 @media (max-width: 700px) { .research-dossier-panel .research-investment-dimensions, .research-current-summary { grid-template-columns: 1fr; } .research-domain-module > header { align-items: flex-start; gap: 8px; } .research-domain-module h3 { font-size: 16px; } .research-module-summary { font-size: 15px; } .research-return-row { grid-template-columns: 74px 1fr 58px; gap: 6px; } .research-method-plan > summary span { display: block; margin: 8px 0 0; } .research-module-focus-row { grid-template-columns: 1fr; } }
 @media print { .research-reading-nav, .sector-research-actions, .sector-event-ask, .research-theme-actions { display: none; } .research-module-layout { display: block; } .research-domain-module { break-inside: avoid; } }
 
-.research-reading-nav { display: flex; gap: 34px; position: sticky; top: 0; z-index: 5; background: #fff; padding: 16px 0; border-top: 1px solid var(--ink, #17212e); border-bottom: 1px solid var(--line); }
+.research-reading-nav { display: flex; justify-content: space-between; gap: 24px; position: sticky; top: 0; z-index: 5; background: #fff; padding: 16px 0; border-top: 1px solid var(--ink, #17212e); border-bottom: 1px solid var(--line); }
 .research-reading-nav a { color: var(--muted); font-size: 12px; text-decoration: none; white-space: nowrap; }
 .research-reading-nav a:hover, .research-reading-nav a:focus-visible { color: var(--accent); text-decoration: underline; text-underline-offset: 5px; }
 .research-report-summary, .research-report-body, .research-report-changes, .research-report-tracking, .research-dossier-archive { scroll-margin-top: 78px; }
 .research-judgment-heading { display: flex; gap: 16px; align-items: baseline; }
-.research-judgment-heading h3 { margin: 0; font-size: 14px; font-weight: 500; }
-.research-judgment-heading > span { font-size: 11px; color: var(--muted); }
+.research-judgment-heading h3 { margin: 0; font-size: 13px; font-weight: 500; letter-spacing: .08em; color: var(--accent); }
+.research-judgment-heading time { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .research-report-summary .research-notebook-current { margin: 28px 0 0; }
 .research-overview-thesis { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; padding: 24px 0; }
 .research-overview-thesis h3, .research-overview-changes h3 { font-size: 14px; font-weight: 500; margin: 0 0 12px; }
@@ -106,7 +106,7 @@
 .research-report-intro .sector-research-note { margin-left: auto; }
 .research-report-empty { font-size: 14px; line-height: 1.85; color: var(--muted); padding: 20px 0; }
 .research-document-page .instrument-detail-tabs-row { position: static; }
-.sector-check-coverage { max-width: 1040px; margin: 0 auto; padding: 18px 0; border-top: 1px solid var(--line); }
+.sector-check-coverage { max-width: 920px; margin: 0 auto; padding: 18px 0; border-top: 1px solid var(--line); }
 .sector-check-coverage summary span { margin-left: 14px; color: var(--muted); font-size: 11px; }
 @media (max-width: 720px) {
   .research-quant-chart svg { min-width: 0; }
@@ -208,10 +208,46 @@ body:has(.research-aside-backdrop) { overflow: hidden; }
   .research-report-status { gap: 5px 16px; }
 }
 @media print {
-  .research-support-link, .research-report-library, .sector-check-coverage, body:has(.research-aside-backdrop) { overflow: hidden; }
-.research-aside-backdrop { display: none !important; }
+  .research-support-link, .research-report-library, .sector-check-coverage, .research-aside-backdrop { display: none !important; }
   .research-current-direction { font-size: 18px; }
   .research-update-readable { break-inside: avoid; }
 }
 
 .research-figure-limitations { margin: 8px 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+/* Editorial reading hierarchy: the conclusion, reasons and decision boundaries form one memo. */
+.research-reading-nav a span { margin-right: 8px; color: #98a2ae; font-size: 10px; font-variant-numeric: tabular-nums; }
+.research-lead-reasons { margin: 30px 0 28px; }
+.research-lead-reasons h4 { color: var(--muted); font-size: 12px; font-weight: 500; margin: 0 0 14px; }
+.research-lead-reasons ol { padding: 0; margin: 0; list-style: none; counter-reset: reason; }
+.research-lead-reasons li { display: grid; grid-template-columns: 24px 1fr; gap: 13px; counter-increment: reason; font-size: 15px; line-height: 1.85; padding: 8px 0; }
+.research-lead-reasons li::before { content: counter(reason, decimal-leading-zero); color: var(--muted); font-size: 11px; padding-top: 3px; }
+.research-decision-boundaries { border-top: 1px solid var(--line); margin: 24px 0 18px; padding: 12px 0 0; }
+.research-decision-boundaries > div { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 18px; padding: 9px 0; }
+.research-decision-boundaries dt { color: var(--muted); font-size: 12px; line-height: 1.9; padding-top: 1px; }
+.research-decision-boundaries dd { font-size: 14px; line-height: 1.9; margin: 0; white-space: pre-line; }
+.research-decision-boundaries .research-lead-risk dt { color: #954f37; }
+.research-judgment-tools { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 24px; margin-top: 20px; }
+.research-judgment-tools .sector-event-ask, .research-judgment-tools .research-support-link { margin: 0; }
+.research-judgment-tools .research-prior-decision { flex-basis: 100%; }
+.research-chapter-number { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.research-report-intro h2 { font-size: 26px; }
+.research-next-agenda { padding: 4px 0 24px; }
+.research-next-agenda h3 { font-size: 17px; font-weight: 500; margin-bottom: 12px; }
+.research-next-agenda ol { padding-left: 22px; font-size: 14px; line-height: 1.9; }
+.research-next-agenda li { padding: 5px 0 5px 7px; }
+.research-figure-tools { font-size: 12px; margin: 12px 0; color: var(--muted); }
+.research-figure-tools > summary { cursor: pointer; }
+.investment-research-reading .sector-research-title h2 { font-size: 26px; font-weight: 500; letter-spacing: -.03em; }
+.investment-research-reading .sector-research-actions > button { background: transparent; color: var(--muted); border-color: var(--line); }
+.research-report-status { font-size: 11px; margin-bottom: 14px; }
+@media (max-width: 720px) {
+  .research-reading-nav a span { display: none; }
+  .research-current-direction { font-size: 19px; line-height: 1.9; letter-spacing: 0; }
+  .research-lead-reasons { margin: 23px 0; }
+  .research-lead-reasons li { font-size: 14px; gap: 8px; grid-template-columns: 21px 1fr; }
+  .research-decision-boundaries > div { grid-template-columns: 1fr; gap: 3px; padding: 9px 0; }
+  .research-module-summary { font-size: 17px; }
+  .research-module-analysis { font-size: 15px; line-height: 1.95; }
+  .research-report-intro h2, .investment-research-reading .sector-research-title h2 { font-size: 23px; }
+}

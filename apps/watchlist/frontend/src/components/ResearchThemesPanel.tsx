@@ -47,7 +47,7 @@ function ThemeRecord({ theme, instrumentId, canWrite, saving, onAskAssistant, on
     <header className="research-theme-heading">
       <div className="research-theme-byline"><span>{themeKindLabels[theme.kind || 'other']}</span><span className="research-theme-priority">{theme.status !== 'active' ? statusLabel[theme.status] : theme.priority === 'core' ? '核心' : '重要'}</span>{theme.pinned && <span>已固定</span>}</div>
       <h3 translate="no">{theme.title}</h3>
-      <div className="research-theme-clock"><span>最近记录 {dateLabel(theme.last_changed_at || theme.updated_at)}</span>{theme.last_reviewed_at && <span>最近检查 {dateLabel(theme.last_reviewed_at)}</span>}</div>
+      <div className="research-theme-clock"><span>最近记录 {dateLabel(theme.last_changed_at || theme.updated_at)}</span>{theme.last_reviewed_at && theme.last_reviewed_at !== (theme.last_changed_at || theme.updated_at) && <span>最近检查 {dateLabel(theme.last_reviewed_at)}</span>}</div>
     </header>
     <section className="research-theme-reading" aria-label="主题分析与演变">
         {theme.synthesis ? <div className="research-theme-prose research-theme-synthesis" translate="no"><ReactMarkdown remarkPlugins={[remarkGfm]}>{theme.synthesis}</ReactMarkdown></div> : <p className="sector-research-note">{theme.research_status === 'running' ? '研究员正在建立主题基线。' : theme.research_status === 'queued' ? '已排队，等待研究员建立基线。' : theme.baseline_status === 'pending' ? '待补充研究基线。' : '尚未形成主题认识。'}</p>}

@@ -4,7 +4,6 @@ import { useCanWriteTeam } from '../components/AccountBoundary'
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
-import LoadingOverlay from '../components/LoadingOverlay'
 import InfoHint from '../../../../../packages/ui/src/InfoHint'
 import InvestmentOpinionTimeline, { currentInvestmentOpinion } from '../components/InvestmentOpinionTimeline'
 import SectorResearchPanel from '../components/SectorResearchPanel'
@@ -71,6 +70,9 @@ type Props = {
   instrument: InstrumentResolveResponse
   watchlistContext: WatchlistBreadcrumbContext | null
 }
+
+const INITIAL_PENDING = { bars: true, summary: true, chart: true, performance: true, risk: true, research: true, attributes: true }
+type DataSection = keyof typeof INITIAL_PENDING
 
 const RANGE_OPTIONS: PriceRange[] = ['1M', '3M', '6M', '1Y', 'ALL']
 const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -542,9 +544,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [risk, setRisk] = useState<InstrumentRiskResponse | null>(null)
   const [research, setResearch] = useState<InstrumentResearchResponse>(() => emptyInstrumentResearchResponse())
   const [researchError, setResearchError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [pending, setPending] = useState(INITIAL_PENDING)
   const [error, setError] = useState<string | null>(null)
-  const [standardizedError, setStandardizedError] = useState<string | null>(null)
+  const [failedSections, setFailedSections] = useState<DataSection[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsLoading, setSettingsLoading] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
@@ -561,86 +563,65 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const settingsDialogRef = useModalDialog(settingsOpen, closeSettings)
 
   useEffect(() => {
-    let request = 0
-    const updated = (event: Event) => {
-      if (!(event as CustomEvent<string[]>).detail.includes(instrumentId)) return
-      const currentRequest = ++request
+    let cancelled = false
+    let researchRequest = 0
+    setRiskInstrumentId(null)
+    setAssistant(null)
+    setPending(INITIAL_PENDING)
+    setError(null)
+    setFailedSections([])
+    setResearchError(null)
+    setBarsResponse(null)
+    setSummary(null)
+    setChart(null)
+    setPerformance(null)
+    setRisk(null)
+    setResearch(emptyInstrumentResearchResponse())
+    setAttributeValues(null)
+
+    // Each section publishes independently; research never waits for market data.
+    function load<T>(section: DataSection, promise: Promise<T>, apply: (value: T) => void, onError?: (reason: unknown) => void) {
+      void promise.then(value => {
+        if (!cancelled) apply(value)
+      }).catch(reason => {
+        if (cancelled) return
+        setFailedSections(previous => [...previous, section])
+        onError?.(reason)
+      }).finally(() => {
+        if (!cancelled) setPending(previous => ({ ...previous, [section]: false }))
+      })
+    }
+    function loadResearch() {
+      const request = ++researchRequest
       void getInstrumentResearch(instrumentId).then(value => {
-        if (currentRequest !== request) return
+        if (cancelled || request !== researchRequest) return
         setResearch(value)
         setResearchError(null)
       }).catch(reason => {
-        if (currentRequest === request) setResearchError(reason instanceof Error ? reason.message : 'Investment views could not be refreshed.')
+        if (!cancelled && request === researchRequest) setResearchError(reason instanceof Error ? reason.message : 'Investment research is unavailable.')
+      }).finally(() => {
+        if (!cancelled && request === researchRequest) setPending(previous => ({ ...previous, research: false }))
       })
     }
-    window.addEventListener(RESEARCH_UPDATED, updated)
-    return () => { request += 1; window.removeEventListener(RESEARCH_UPDATED, updated) }
-  }, [instrumentId])
-
-  useEffect(() => {
-    let cancelled = false
-    setRiskInstrumentId(null)
-    setAssistant(null)
-    async function load() {
-      setLoading(true)
-      setError(null)
-      setStandardizedError(null)
-      setResearchError(null)
-      const [barsResult, summaryResult, chartResult, performanceResult, riskResult, researchResult, attributesResult] = await Promise.allSettled([
-        getInstrumentPriceBars(instrumentId, { limit: 1250 }),
-        getInstrumentSummary(instrumentId),
-        getInstrumentChart(instrumentId),
-        getInstrumentPerformance(instrumentId),
-        getInstrumentRisk(instrumentId),
-        getInstrumentResearch(instrumentId),
-        getInstrumentAttributes(instrumentId),
-      ])
-      if (cancelled) return
-      if (barsResult.status === 'rejected') {
-        setBarsResponse(null)
-        if (!usesCanonicalPriceSeries) {
-          setError(barsResult.reason instanceof Error ? barsResult.reason.message : 'Failed to load OHLCV history.')
-        }
-      } else {
-        setBarsResponse(barsResult.value)
-        const qfqReady =
-          !usesCanonicalPriceSeries &&
-          hasCompleteAdjustmentFactors(barsResult.value.bars)
-        setMode(qfqReady ? 'qfq' : 'raw')
-      }
-      setSummary(summaryResult.status === 'fulfilled' ? summaryResult.value : null)
-      setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
-      if (usesCanonicalPriceSeries && chartResult.status === 'rejected') {
-        setError(chartResult.reason instanceof Error ? chartResult.reason.message : 'Failed to load the canonical price series.')
-      }
-      setPerformance(performanceResult.status === 'fulfilled' ? performanceResult.value : null)
-      setRisk(riskResult.status === 'fulfilled' ? riskResult.value : null)
-      setResearch(
-        researchResult.status === 'fulfilled'
-          ? researchResult.value
-          : emptyInstrumentResearchResponse(),
-      )
-      setResearchError(
-        researchResult.status === 'rejected'
-          ? researchResult.reason instanceof Error
-            ? researchResult.reason.message
-            : 'Investment research is unavailable.'
-          : null,
-      )
-      setAttributeValues(attributesResult.status === 'fulfilled' ? attributesResult.value : null)
-      const failedStandardizedSurfaces = [
-        performanceResult.status === 'rejected' ? 'performance' : null,
-        riskResult.status === 'rejected' ? 'risk' : null,
-      ].filter((value): value is string => Boolean(value))
-      if (failedStandardizedSurfaces.length) {
-        setStandardizedError(
-          `Standardized ${failedStandardizedSurfaces.join(' and ')} data is unavailable; affected metrics are withheld.`,
-        )
-      }
-      setLoading(false)
+    load('bars', getInstrumentPriceBars(instrumentId, { limit: 1250 }), value => {
+      setBarsResponse(value)
+      setMode(!usesCanonicalPriceSeries && hasCompleteAdjustmentFactors(value.bars) ? 'qfq' : 'raw')
+    }, reason => {
+      if (!usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load OHLCV history.')
+    })
+    load('summary', getInstrumentSummary(instrumentId), setSummary)
+    load('chart', getInstrumentChart(instrumentId), setChart, reason => {
+      if (usesCanonicalPriceSeries) setError(reason instanceof Error ? reason.message : 'Failed to load the canonical price series.')
+    })
+    load('performance', getInstrumentPerformance(instrumentId), setPerformance)
+    load('risk', getInstrumentRisk(instrumentId), setRisk)
+    load('attributes', getInstrumentAttributes(instrumentId), setAttributeValues)
+    loadResearch()
+    const updated = (event: Event) => {
+      if ((event as CustomEvent<string[]>).detail.includes(instrumentId)) loadResearch()
     }
-    void load()
-    return () => { cancelled = true }
+    window.addEventListener(RESEARCH_UPDATED, updated)
+    return () => { cancelled = true; window.removeEventListener(RESEARCH_UPDATED, updated) }
   }, [instrument.instrument_type, instrumentId])
 
   useEffect(() => {
@@ -798,7 +779,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   )
   const displayReturns = useMemo(() => ({
     ...returns,
-    dailyChange: usesCanonicalPriceSeries ? returns.dailyChange : quoteReturns.dailyChange ?? returns.dailyChange,
+    dailyChange: usesCanonicalPriceSeries ? returns.dailyChange : quoteReturns.dailyChange,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
       : null,
@@ -840,7 +821,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   }), [risk, riskStats, standardizedRisk])
   const latest = usesCanonicalPriceSeries
     ? analysisBars[analysisBars.length - 1]
-    : allBars[allBars.length - 1] || analysisBars[analysisBars.length - 1]
+    : allBars[allBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
   const sourceRefreshFailed = ['failed', 'blocked'].includes(barsResponse?.source_refresh_status || '')
   const analysisBasisLabel = usesCanonicalPriceSeries || canonicalCloseAnalysisBars.length
@@ -939,7 +920,16 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const latestOpinion = currentInvestmentOpinion(research)
   const zh = language === 'zh-Hans'
 
-  if (loading) return <LoadingOverlay />
+  const loadingLabel = zh ? '加载中…' : 'Loading…'
+  const sectionLoading = (label: string) => <div className="instrument-placeholder" role="status" aria-busy="true">{label} · {loadingLabel}</div>
+  const quotePending = usesCanonicalPriceSeries ? pending.chart : pending.bars
+  const analysisPending = pending.chart || (!usesCanonicalPriceSeries && !canonicalCloseAnalysisBars.length && pending.bars)
+  const returnsPending = usesCanonicalPriceSeries ? pending.chart : pending.performance
+  const overviewYtd = usesCanonicalPriceSeries ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd
+  const overviewOneYear = usesCanonicalPriceSeries ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear
+  const failedStandardized = failedSections.filter(section => section === 'performance' || section === 'risk')
+  const standardizedError = failedStandardized.length
+    ? `Standardized ${failedStandardized.join(' and ')} data is unavailable; affected metrics are withheld.` : null
 
   const chartPanel = (
     <section className="panel listed-chart-panel">
@@ -947,7 +937,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div>
           <div className="panel-title">{chartView === 'return' ? (zh ? '累计收益' : 'Cumulative Return') : (zh ? '价格与成交量' : 'Price & Volume')}</div>
           <div className="listed-chart-caption">
-            {chartView === 'return' ? analysisBasisLabel : mode === 'qfq' ? (zh ? '前复权价格' : 'Forward-adjusted (QFQ)') : (zh ? '交易所原始价格' : 'Raw exchange price')} · {chartView === 'return' ? visibleAnalysisBars.length : visibleBars.length} {zh ? '个观测值' : 'observations'}
+            {chartView === 'return' ? analysisBasisLabel : mode === 'qfq' ? (zh ? '前复权价格' : 'Forward-adjusted (QFQ)') : (zh ? '交易所原始价格' : 'Raw exchange price')} · {(chartView === 'return' ? analysisPending : pending.bars) ? loadingLabel : `${chartView === 'return' ? visibleAnalysisBars.length : visibleBars.length} ${zh ? '个观测值' : 'observations'}`}
           </div>
         </div>
         <div className="listed-chart-controls">
@@ -967,7 +957,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </div>
         </div>
       </div>
-      {chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : error ? <div className="error-state">{error}</div> : <CandlestickChart bars={visibleBars} />}
+      {(chartView === 'return' ? analysisPending : pending.bars) ? sectionLoading(zh ? '行情' : 'Price history') : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : error ? <div className="error-state">{error}</div> : <CandlestickChart bars={visibleBars} />}
       {chartView === 'price' && !qfqAvailable && Boolean(barsResponse?.count) ? <div className="listed-source-alert">{zh ? '复权因子不完整，当前仅提供原始价格。' : 'Adjustment factors are incomplete; raw price only.'}</div> : null}
       {sourceRefreshFailed ? (
         <div className="listed-source-alert">
@@ -983,7 +973,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div>
           <div className="panel-title">{chartView === 'return' ? (zh ? '累计收益' : 'Cumulative Return') : isCrypto ? (zh ? '现货价格' : 'Spot Price') : 'Index Level'}</div>
           <div className="listed-chart-caption">
-            {analysisBasisLabel} · {visibleAnalysisBars.length} observations
+            {analysisBasisLabel} · {pending.chart ? loadingLabel : `${visibleAnalysisBars.length} observations`}
           </div>
         </div>
         <div className="listed-chart-controls">
@@ -1000,7 +990,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
       </div>
       <div className="listed-chart-shell">
-        {error ? <div className="error-state">{error}</div> : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} crypto={isCrypto} />}
+        {pending.chart ? sectionLoading(zh ? '行情' : 'Price history') : error ? <div className="error-state">{error}</div> : chartView === 'return' ? <GrowthChart bars={visibleAnalysisBars} /> : <IndexLevelChart bars={visibleAnalysisBars} crypto={isCrypto} />}
       </div>
     </section>
   )
@@ -1032,7 +1022,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <h1 className="instrument-detail-title" translate="no">{instrument.instrument_name}</h1>
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
-            <span className="context-chip">{(usesCanonicalPriceSeries ? chart?.currency : barsResponse?.currency) || latest?.currency || '—'}</span>
+            <span className="context-chip">{(usesCanonicalPriceSeries ? chart?.currency : barsResponse?.currency) || latest?.currency || (quotePending ? loadingLabel : '—')}</span>
             {usesCanonicalPriceSeries ? <span className="context-chip">{indexSemanticsLabel}</span> : null}
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
             {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
@@ -1046,14 +1036,14 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         </div>
         <div className="listed-hero-side">
           <WorkspaceTools
-            settings={{ label: zh ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam, onClick: () => setSettingsOpen(true) }}
+            settings={{ label: zh ? '标的设置' : 'Instrument settings', disabled: !canWriteTeam || pending.attributes || pending.summary, onClick: () => setSettingsOpen(true) }}
             risk={{ onClick: openRisk }}
             assistant={{ onClick: () => openAssistant() }}
           />
           <div className="listed-hero-quote">
-          <span>{formatDate(latest?.date)}</span>
-          <strong>{latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : '—'}</strong>
-          <em className={signedValueClass(displayReturns.dailyChange)}>{percentValue(displayReturns.dailyChange)}</em>
+          <span>{quotePending ? loadingLabel : formatDate(latest?.date)}</span>
+          <strong>{latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : quotePending ? loadingLabel : '—'}</strong>
+          <em className={signedValueClass(displayReturns.dailyChange)}>{quotePending ? loadingLabel : percentValue(displayReturns.dailyChange)}</em>
           </div>
         </div>
       </section>
@@ -1122,7 +1112,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                     <div className="instrument-settings-title">Classification Path</div>
                     <div className="instrument-settings-current-path">
                       <span>Current path</span>
-                      <strong>{currentTaxonomyPath}</strong>
+                      <strong>{settingsLoading ? loadingLabel : currentTaxonomyPath}</strong>
                     </div>
                   </div>
                 </div>
@@ -1171,20 +1161,20 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div className="listed-tab-stack">
           {listedInstrumentType === 'etf' && <><EtfProfilePanel key={instrumentId} instrumentId={instrumentId} language={language} /><details className="panel research-estimate-history" onToggle={event => setEstimateHistoryOpen(event.currentTarget.open)}><summary>{zh ? '历史盈利预期快照' : 'Historical earnings estimates'}</summary>{estimateHistoryOpen && <EstimateHistoryPanel instrumentId={instrumentId} language={language} />}</details></>}
           <section className="listed-metric-grid listed-overview-quote">
-            <MetricCard label="YTD" value={percentValue(usesCanonicalPriceSeries ? indexYtdSnapshot?.periodReturn ?? null : displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
-            <MetricCard label="1 Year" value={percentValue(usesCanonicalPriceSeries ? indexOneYearSnapshot?.periodReturn ?? null : displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
-            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : 'Volume'} value={usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
+            <MetricCard label="YTD" value={returnsPending ? loadingLabel : percentValue(overviewYtd)} tone={signedValueClass(overviewYtd)} />
+            <MetricCard label="1 Year" value={returnsPending ? loadingLabel : percentValue(overviewOneYear)} tone={signedValueClass(overviewOneYear)} />
+            <MetricCard label={usesCanonicalPriceSeries ? '1 Month' : 'Volume'} value={(usesCanonicalPriceSeries ? pending.performance : pending.bars) ? loadingLabel : usesCanonicalPriceSeries ? percentValue(displayReturns.oneMonth) : compactValue(latestPriceBar?.volume ?? null, 2)} />
           </section>
           {usesCanonicalPriceSeries ? indexChartPanel : chartPanel}
           <section className="panel listed-overview-brief">
             <div className="listed-overview-brief-row">
               <div><h3>{zh ? '当前总体观点' : 'Current Overall View'}</h3>
-                {researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
+                {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : researchError ? <p role="alert">{researchError}</p> : latestOpinion ? <><time>{formatDate(latestOpinion.noteDate)}</time><p>{latestOpinion.body || latestOpinion.title}</p></> : <p>{zh ? '尚未选定总体观点。可在投资观点中记录判断并设为当前观点。' : 'No overall view selected. Record and select one in Investment Views.'}</p>}
               </div>
               <button type="button" onClick={() => setTab('views')}>{zh ? '查看观点' : 'View opinions'} →</button>
             </div>
             <div className="listed-overview-brief-row">
-              <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{riskAsOfNote}</span></p></div>
+              <div><h3>{zh ? '当前回撤' : 'Current Drawdown'}</h3><p>{pending.risk ? loadingLabel : percentValue(displayRiskStats.currentDrawdown)} <span className="listed-chart-caption">{pending.risk ? '' : riskAsOfNote}</span></p></div>
               <button type="button" onClick={() => setTab('performance')}>{zh ? '业绩与风险' : 'Performance & Risk'} →</button>
             </div>
           </section>
@@ -1199,13 +1189,13 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               Investment research unavailable: {researchError}
             </div>
           ) : null}
-          <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />
+          {pending.research ? sectionLoading(zh ? '投资观点' : 'Investment views') : !researchError && <InvestmentOpinionTimeline onAskAssistant={openAssistant} instrumentId={instrumentId} research={research} language={language} onChange={setResearch} />}
         </div>
       ) : null}
 
       {tab === 'performance' ? (
         <div className="listed-tab-stack">
-          <div className="listed-chart-caption">{zh ? '历史统计区间' : 'Historical statistics'} · {formatDate(risk?.calculation_frequency_profile?.start_date)} — {formatDate(risk?.calculation_frequency_profile?.end_date)}</div>
+          {pending.risk ? sectionLoading(zh ? '风险统计' : 'Risk statistics') : <><div className="listed-chart-caption">{zh ? '历史统计区间' : 'Historical statistics'} · {formatDate(risk?.calculation_frequency_profile?.start_date)} — {formatDate(risk?.calculation_frequency_profile?.end_date)}</div>
           <section className="listed-metric-grid listed-risk-metrics">
             <MetricCard label={zh ? '年化收益' : 'Annualized Return'} value={percentValue(standardizedRiskMetric(risk, 'annualized_return').value)} />
             <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note={riskAsOfNote} />
@@ -1214,9 +1204,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <MetricCard label="Sharpe Ratio" value={formatNumber(standardizedRiskMetric(risk, 'sharpe_ratio').value, 2)} />
             <MetricCard label="Calmar Ratio" value={formatNumber(standardizedRiskMetric(risk, 'calmar_ratio').value, 2)} />
           </section>
+          </>}
           <section className="panel instrument-performance-shell listed-index-performance-shell">
             <div className="instrument-price-topline" />
-            {usesCanonicalPriceSeries ? <section className="instrument-performance-section instrument-performance-section-metrics">
+            {(usesCanonicalPriceSeries ? pending.chart || pending.risk : pending.performance) ? sectionLoading(zh ? '区间收益' : 'Period returns') : usesCanonicalPriceSeries ? <section className="instrument-performance-section instrument-performance-section-metrics">
               <div className="instrument-performance-section-header">
                 <div className="instrument-performance-title-group">
                   <div className="panel-title">Performance</div>
@@ -1260,7 +1251,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                 </div>
               </div>
               <div className="instrument-performance-section-body">
-                {monthlyReturnMatrixRows.length ? (
+                {pending.chart ? sectionLoading(zh ? '月度收益' : 'Monthly returns') : monthlyReturnMatrixRows.length ? (
                   <HorizontalTableScroll className="table-shell instrument-performance-table-shell">
                     <table className="terminal-table terminal-table-compact instrument-heatmap-table">
                       <thead>
@@ -1307,7 +1298,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <section className="panel listed-chart-panel">
             <div className="listed-chart-toolbar"><div><div className="panel-title">{zh ? '历史回撤' : 'Historical Drawdown'}</div><div className="listed-chart-caption">{analysisBasisLabel} · {zh ? '相对历史高点' : 'Below the prior peak'}</div></div></div>
             {risk?.data_quality?.gap_count ? <div className="listed-source-alert">{zh ? '历史行情存在缺口，曲线仅反映已取得的观测值。' : 'History has gaps; the curve reflects available observations only.'}</div> : null}
-            <GrowthChart bars={canonicalCloseAnalysisBars} kind="drawdown" />
+            {pending.chart ? sectionLoading(zh ? '历史回撤' : 'Historical drawdown') : <GrowthChart bars={canonicalCloseAnalysisBars} kind="drawdown" />}
           </section>
           <InstrumentRiskPanel instrumentId={instrumentId} mode="price" onAskAssistant={(_id, question, reference) => openAssistant(question, reference)} />
         </div>
