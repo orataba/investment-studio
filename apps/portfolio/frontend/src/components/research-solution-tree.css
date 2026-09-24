@@ -16,4 +16,3 @@
 .research-solution-constraint { font-size: 11px; font-weight: 400; color: var(--portfolio-muted); }
 .research-solution-constraint { overflow: hidden; text-overflow: ellipsis; }
 .research-result-panel > .inline-notice { padding: 10px 0; margin: 0; }
-.research-result-panel .panel-title + .portfolio-detail-meta { margin-top: 6px; }

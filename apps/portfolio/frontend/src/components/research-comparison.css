@@ -1,3 +1,4 @@
+.research-performance-panel, .research-performance-main > *, .research-monthly-section { min-width: 0; }
 .research-comparison-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .research-comparison-heading .panel-title { margin: 0; }
 .research-performance-panel > .inline-notice { margin-bottom: 12px; }

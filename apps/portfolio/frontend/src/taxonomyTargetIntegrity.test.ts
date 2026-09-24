@@ -39,7 +39,7 @@ describe('taxonomy target-set integrity presentation', () => {
     const notice = formatTargetSetIntegrityNotice([issues[0]])
     expect(notice).toContain('SAA · Absolute Return')
     expect(notice).toContain('Edit Targets')
-    expect(notice).toContain('before running Research')
+    expect(notice).toContain('before running optimization')
     expect(formatTargetSetIntegrityNotice([])).toBeNull()
   })
 })

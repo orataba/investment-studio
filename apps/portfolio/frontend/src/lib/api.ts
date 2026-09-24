@@ -1344,8 +1344,6 @@ export type PortfolioResearchSettingsRecord = {
   backtest_tax_bps: number
   backtest_slippage_bps: number
   backtest_implementation_delay_days: number
-  backtest_walk_forward_training_months: number
-  backtest_walk_forward_test_months: number
   notes?: string | null
   updated_at?: string | null
 }
@@ -1373,8 +1371,6 @@ export type PortfolioResearchSettingsUpdatePayload = {
   backtest_tax_bps?: number
   backtest_slippage_bps?: number
   backtest_implementation_delay_days?: number
-  backtest_walk_forward_training_months?: number
-  backtest_walk_forward_test_months?: number
   notes?: string | null
 }
 
@@ -1777,6 +1773,7 @@ export type PortfolioResearchBacktestRobustnessResultRecord = {
   warnings: string[]
 }
 
+// Retained saved-result fields; new runs do not generate walk-forward windows.
 export type PortfolioResearchBacktestWalkForwardWindowRecord = {
   training_start_date: string
   training_end_date: string

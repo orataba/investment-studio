@@ -323,8 +323,6 @@ def _ensure_research_settings_record(
         backtest_tax_bps=10.0,
         backtest_slippage_bps=5.0,
         backtest_implementation_delay_days=1,
-        backtest_walk_forward_training_months=24,
-        backtest_walk_forward_test_months=6,
         notes=None,
         updated_at=_utc_now_iso(),
     )
@@ -521,12 +519,6 @@ def _serialize_settings_row(
         "backtest_slippage_bps": float(row.backtest_slippage_bps),
         "backtest_implementation_delay_days": int(
             row.backtest_implementation_delay_days
-        ),
-        "backtest_walk_forward_training_months": int(
-            row.backtest_walk_forward_training_months
-        ),
-        "backtest_walk_forward_test_months": int(
-            row.backtest_walk_forward_test_months
         ),
         "notes": row.notes,
         "updated_at": row.updated_at,
@@ -726,12 +718,6 @@ def _research_run_reliability(
             "backtest_slippage_bps": settings_payload.get("backtest_slippage_bps"),
             "backtest_implementation_delay_days": settings_payload.get(
                 "backtest_implementation_delay_days"
-            ),
-            "backtest_walk_forward_training_months": settings_payload.get(
-                "backtest_walk_forward_training_months"
-            ),
-            "backtest_walk_forward_test_months": settings_payload.get(
-                "backtest_walk_forward_test_months"
             ),
         }
         material_keys = list(expected_payload)
@@ -1940,8 +1926,6 @@ def update_research_settings(
     backtest_tax_bps: object = RESEARCH_SETTINGS_UNSET,
     backtest_slippage_bps: object = RESEARCH_SETTINGS_UNSET,
     backtest_implementation_delay_days: object = RESEARCH_SETTINGS_UNSET,
-    backtest_walk_forward_training_months: object = RESEARCH_SETTINGS_UNSET,
-    backtest_walk_forward_test_months: object = RESEARCH_SETTINGS_UNSET,
     notes: str | None = None,
 ) -> dict[str, object] | None:
     portfolio = get_portfolio(portfolio_id)
@@ -2048,16 +2032,6 @@ def update_research_settings(
             if backtest_implementation_delay_days is RESEARCH_SETTINGS_UNSET
             else backtest_implementation_delay_days
         )
-        resolved_training_months = (
-            row.backtest_walk_forward_training_months
-            if backtest_walk_forward_training_months is RESEARCH_SETTINGS_UNSET
-            else backtest_walk_forward_training_months
-        )
-        resolved_test_months = (
-            row.backtest_walk_forward_test_months
-            if backtest_walk_forward_test_months is RESEARCH_SETTINGS_UNSET
-            else backtest_walk_forward_test_months
-        )
         if not -1.0 <= float(resolved_cash_yield) <= 1.0:
             raise ValueError("Backtest cash yield must be between -100% and 100%.")
         friction_values = (
@@ -2069,10 +2043,6 @@ def update_research_settings(
             raise ValueError("Backtest friction inputs must be between 0 and 1,000 bps.")
         if not 0 <= int(resolved_delay_days) <= 30:
             raise ValueError("Backtest implementation delay must be between 0 and 30 days.")
-        if not 1 <= int(resolved_training_months) <= 120:
-            raise ValueError("Walk-forward training window must be between 1 and 120 months.")
-        if not 1 <= int(resolved_test_months) <= 60:
-            raise ValueError("Walk-forward test window must be between 1 and 60 months.")
         row.backtest_rebalance_frequency = normalized_rebalance_frequency
         if backtest_benchmark_instrument_id is not RESEARCH_SETTINGS_UNSET:
             row.backtest_benchmark_instrument_id = (
@@ -2083,8 +2053,6 @@ def update_research_settings(
         row.backtest_tax_bps = float(resolved_tax_bps)
         row.backtest_slippage_bps = float(resolved_slippage_bps)
         row.backtest_implementation_delay_days = int(resolved_delay_days)
-        row.backtest_walk_forward_training_months = int(resolved_training_months)
-        row.backtest_walk_forward_test_months = int(resolved_test_months)
         row.notes = notes
         row.updated_at = _utc_now_iso()
         portfolio_row = session.get(PortfolioRecordModel, portfolio_id)
@@ -2231,12 +2199,6 @@ def run_portfolio_research(
                 "backtest_implementation_delay_days": int(
                     settings_row.backtest_implementation_delay_days
                 ),
-                "backtest_walk_forward_training_months": int(
-                    settings_row.backtest_walk_forward_training_months
-                ),
-                "backtest_walk_forward_test_months": int(
-                    settings_row.backtest_walk_forward_test_months
-                ),
                 "notes": settings_row.notes,
             },
             error_message=None,
@@ -2310,12 +2272,6 @@ def run_portfolio_research(
                     slippage_bps=float(settings_row.backtest_slippage_bps),
                     implementation_delay_days=int(
                         settings_row.backtest_implementation_delay_days
-                    ),
-                    walk_forward_training_months=int(
-                        settings_row.backtest_walk_forward_training_months
-                    ),
-                    walk_forward_test_months=int(
-                        settings_row.backtest_walk_forward_test_months
                     ),
                     _instrument_detail_cache=instrument_detail_cache,
                     _state=state,

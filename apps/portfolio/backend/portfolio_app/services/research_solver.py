@@ -4473,185 +4473,6 @@ def _replay_backtest_decisions(
     }
 
 
-def _normalized_window_points(
-    points: list[dict[str, object]],
-    *,
-    start_date: date,
-    end_date: date,
-) -> list[dict[str, object]]:
-    normalized = _normalized_backtest_points(points)
-    anchor_candidates = [
-        item
-        for item in normalized
-        if (_parse_iso_date(item.get("date")) or date.max) < start_date
-    ]
-    if not anchor_candidates:
-        return []
-    anchor = anchor_candidates[-1]
-    anchor_value = _safe_float(anchor.get("value"))
-    if anchor_value is None or anchor_value <= 0.0:
-        return []
-    selected = [anchor]
-    selected.extend(
-        item
-        for item in normalized
-        if start_date <= (_parse_iso_date(item.get("date")) or date.min) <= end_date
-    )
-    return [
-        {"date": item["date"], "value": float(item["value"]) / anchor_value}
-        for item in selected
-    ]
-
-
-def _rolling_holdout_metadata() -> dict[str, object]:
-    return {
-        "validation_method": "rolling_temporal_holdout",
-        "parameter_selection": "fixed_current_targets",
-        "parameter_optimization": False,
-        "methodology_note": (
-            "Training and test dates are temporal diagnostics over the already replayed "
-            "fixed current-target series. No parameters are fitted on the training window and "
-            "frozen for a separate test rerun; this is not walk-forward optimization."
-        ),
-    }
-
-
-def _build_walk_forward_validation(
-    points: list[dict[str, object]],
-    decisions: list[dict[str, object]],
-    *,
-    training_months: int,
-    test_months: int,
-) -> dict[str, object]:
-    """Build rolling temporal holdout diagnostics for a fixed policy.
-
-    The public key remains ``walk_forward`` for API compatibility, but the
-    payload explicitly identifies that this function does not optimize or
-    refit parameters inside each training window.
-    """
-    if training_months <= 0 or test_months <= 0:
-        raise ValueError("Walk-forward training and test windows must be positive.")
-    normalized = _normalized_backtest_points(points)
-    if len(normalized) < 2:
-        return {
-            **_rolling_holdout_metadata(),
-            "available": False,
-            "unavailable_reason": "Rolling temporal holdout requires a non-empty backtest history.",
-            "training_months": training_months,
-            "test_months": test_months,
-            "windows": [],
-            "oos_points": [],
-            "oos_metrics": _build_backtest_metrics([], {}),
-        }
-    first_date = _parse_iso_date(normalized[0].get("date"))
-    last_date = _parse_iso_date(normalized[-1].get("date"))
-    if first_date is None or last_date is None:
-        raise ValueError("Backtest points contain invalid dates.")
-    test_start = (
-        pd.Timestamp(first_date) + pd.DateOffset(months=training_months)
-    ).date()
-    if test_start >= last_date:
-        return {
-            **_rolling_holdout_metadata(),
-            "available": False,
-            "unavailable_reason": (
-                f"History is shorter than the configured {training_months}-month training window "
-                "plus an out-of-sample observation."
-            ),
-            "training_months": training_months,
-            "test_months": test_months,
-            "windows": [],
-            "oos_points": [],
-            "oos_metrics": _build_backtest_metrics([], {}),
-        }
-
-    windows: list[dict[str, object]] = []
-    aggregate_oos_returns: dict[str, float] = {}
-    while test_start < last_date:
-        test_end = min(
-            (
-                pd.Timestamp(test_start) + pd.DateOffset(months=test_months)
-            ).date()
-            - timedelta(days=1),
-            last_date,
-        )
-        training_start = (
-            pd.Timestamp(test_start) - pd.DateOffset(months=training_months)
-        ).date()
-        training_end = test_start - timedelta(days=1)
-        window_points = _normalized_window_points(
-            normalized,
-            start_date=test_start,
-            end_date=test_end,
-        )
-        window_returns = _backtest_return_map_from_points(window_points)
-        aggregate_oos_returns.update(window_returns)
-        versions = sorted(
-            {
-                int(item["taxonomy_configuration_version"])
-                for item in decisions
-                if item.get("taxonomy_configuration_version") is not None
-                and test_start
-                <= (_parse_iso_date(item.get("decision_date")) or date.min)
-                <= test_end
-            }
-        )
-        windows.append(
-            {
-                "training_start_date": training_start.isoformat(),
-                "training_end_date": training_end.isoformat(),
-                "test_start_date": test_start.isoformat(),
-                "test_end_date": test_end.isoformat(),
-                "configuration_versions_used": versions,
-                "points": window_points,
-                "metrics": _build_backtest_metrics(window_points, window_returns),
-                "available": len(window_points) >= 2,
-                "unavailable_reason": (
-                    None
-                    if len(window_points) >= 2
-                    else "No complete out-of-sample return observation exists in this test window."
-                ),
-            }
-        )
-        test_start = (
-            pd.Timestamp(test_start) + pd.DateOffset(months=test_months)
-        ).date()
-
-    oos_points: list[dict[str, object]] = []
-    oos_nav = 1.0
-    if aggregate_oos_returns:
-        first_oos_date = min(date.fromisoformat(item) for item in aggregate_oos_returns)
-        oos_anchor = max(
-            date.fromisoformat(str(item["date"]))
-            for item in normalized
-            if date.fromisoformat(str(item["date"])) < first_oos_date
-        )
-        oos_points.append(
-            {
-                "date": oos_anchor.isoformat(),
-                "value": oos_nav,
-            }
-        )
-        for date_key in sorted(aggregate_oos_returns):
-            oos_nav *= 1.0 + aggregate_oos_returns[date_key]
-            oos_points.append({"date": date_key, "value": oos_nav})
-    available_windows = [item for item in windows if bool(item.get("available"))]
-    return {
-        **_rolling_holdout_metadata(),
-        "available": bool(available_windows),
-        "unavailable_reason": (
-            None
-            if available_windows
-            else "No configured rolling holdout test window contains a complete out-of-sample return."
-        ),
-        "training_months": training_months,
-        "test_months": test_months,
-        "windows": windows,
-        "oos_points": oos_points,
-        "oos_metrics": _build_backtest_metrics(oos_points, aggregate_oos_returns),
-    }
-
-
 def _empty_point_in_time_backtest(
     *,
     rebalance_frequency: str,
@@ -4690,16 +4511,6 @@ def _empty_point_in_time_backtest(
             "skipped_rebalances": [],
             "unavailable_reason": unavailable_reason,
         },
-        "walk_forward": {
-            **_rolling_holdout_metadata(),
-            "available": False,
-            "unavailable_reason": unavailable_reason,
-            "training_months": 0,
-            "test_months": 0,
-            "windows": [],
-            "oos_points": [],
-            "oos_metrics": _build_backtest_metrics([], {}),
-        },
         "warnings": list(dict.fromkeys([*warnings, unavailable_reason])),
     }
 
@@ -4728,8 +4539,6 @@ def build_current_target_backtest(
     tax_bps: float = 10.0,
     slippage_bps: float = 5.0,
     implementation_delay_days: int = 1,
-    walk_forward_training_months: int = 24,
-    walk_forward_test_months: int = 6,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
     _state: TaxonomyResearchState | None = None,
@@ -5188,13 +4997,6 @@ def build_current_target_backtest(
 
     base_metrics = _build_backtest_metrics(points, portfolio_returns)
 
-    walk_forward = _build_walk_forward_validation(
-        points,
-        decisions,
-        training_months=walk_forward_training_months,
-        test_months=walk_forward_test_months,
-    )
-
     comparison_payload = _build_backtest_benchmark_comparison_from_state(
         final_state,
         benchmark_instrument_id=benchmark_instrument_id,
@@ -5250,7 +5052,6 @@ def build_current_target_backtest(
                 None if len(points) >= 2 else "No complete post-inception holding return observation is available."
             ),
         },
-        "walk_forward": walk_forward,
         "warnings": list(dict.fromkeys(warnings)),
     }
     return {

@@ -132,12 +132,6 @@ def update_portfolio_research_settings(
             backtest_implementation_delay_days=optional_setting(
                 "backtest_implementation_delay_days"
             ),
-            backtest_walk_forward_training_months=optional_setting(
-                "backtest_walk_forward_training_months"
-            ),
-            backtest_walk_forward_test_months=optional_setting(
-                "backtest_walk_forward_test_months"
-            ),
             notes=payload.notes,
         )
     except ValueError as error:

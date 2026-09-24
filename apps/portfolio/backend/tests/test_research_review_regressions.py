@@ -657,7 +657,7 @@ def test_current_policy_uses_market_history_without_target_creation_cutoff(monke
     assert (state.node_by_id, state.direct_assignments_by_node, state.target_lines_by_set_id) == graph_before
     assert all(configuration is snapshot for configuration in builds)
     assert result['methodology']['target_configuration'] == 'current_snapshot'
-    assert result['walk_forward']['parameter_selection'] == 'fixed_current_targets'
+    assert "walk_forward" not in result
 
 
 def test_derivative_backtest_reuses_simulation_capital_with_costs_and_lifecycle_funding(monkeypatch):
@@ -699,16 +699,6 @@ def test_derivative_backtest_reuses_simulation_capital_with_costs_and_lifecycle_
         assert row["derivative_leg_turnover"] == 0.0
     assert result["total_cost"] > 0.0
     assert max(abs(row["residual"]) for row in result["contribution_reconciliation_points"]) < 1e-10
-
-
-def test_rolling_holdout_does_not_drop_first_return_of_each_test_window():
-    days = pd.date_range("2026-01-01", "2026-04-30", freq="D")
-    points = [{"date": day.date().isoformat(), "value": 1.001 ** i} for i, day in enumerate(days)]
-    result = solver._build_walk_forward_validation(points, [], training_months=1, test_months=1)
-    assert [r["date"] for r in result["oos_points"][1:]] == [
-        day.date().isoformat() for day in days if day.date() >= date(2026, 2, 1)
-    ]
-    assert result["oos_points"][-1]["value"] == pytest.approx(1.001 ** 89)
 
 
 def test_risk_window_uses_pre_weekend_close_and_does_not_fill_stale_tail():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from shutil import copyfile
 from uuid import uuid4
 from copy import deepcopy
 from datetime import date, timedelta
@@ -335,8 +336,13 @@ def _get_registry_instrument_details(instrument_ids):
     }
 
 
+@pytest.fixture(scope="session")
+def migrated_portfolio_schema(tmp_path_factory):
+    return tmp_path_factory.mktemp("portfolio-schema") / "head.db"
+
+
 @pytest.fixture(autouse=True)
-def isolated_portfolio_store(request, tmp_path, monkeypatch):
+def isolated_portfolio_store(request, tmp_path, monkeypatch, migrated_portfolio_schema):
     if request.node.get_closest_marker("postgresql_integration") is not None:
         yield
         return
@@ -368,7 +374,15 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
         if len(migration_base.args) != 1 or not isinstance(migration_base.args[0], str):
             raise ValueError("migration_base_revision requires exactly one revision string.")
         initial_revision = migration_base.args[0]
-    _run_alembic_upgrade(database_url, initial_revision)
+    if migration_base is None and migrated_portfolio_schema.exists():
+        copyfile(migrated_portfolio_schema, database_path)
+    else:
+        _run_alembic_upgrade(database_url, initial_revision)
+        if migration_base is None:
+            # Alembic's NullPool connection is closed before copying.  Reuse
+            # only the migrated schema, never a test's seeded or mutated data.
+            # Historical migration tests always execute their own full chain.
+            copyfile(database_path, migrated_portfolio_schema)
     InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
 
     # Migration tests intentionally pin the database below head while the
@@ -449,9 +463,6 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 "backtest_tax_bps": "FLOAT NOT NULL DEFAULT 0",
                 "backtest_slippage_bps": "FLOAT NOT NULL DEFAULT 0",
                 "backtest_implementation_delay_days": "INTEGER NOT NULL DEFAULT 1",
-                "backtest_robustness_scenarios_json": "JSON",
-                "backtest_walk_forward_training_months": "INTEGER NOT NULL DEFAULT 24",
-                "backtest_walk_forward_test_months": "INTEGER NOT NULL DEFAULT 6",
             }
             for column_name, column_type in additive_research_settings_columns.items():
                 if column_name in research_settings_columns:

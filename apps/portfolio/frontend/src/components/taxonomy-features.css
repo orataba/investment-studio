@@ -107,13 +107,13 @@
   align-items: flex-end;
   flex-wrap: wrap;
   gap: 8px 16px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .research-taxonomy-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 320px;
+  width: 100%;
   max-width: 100%;
 }
 .research-taxonomy-field > span { display: flex; align-items: center; gap: 4px; }

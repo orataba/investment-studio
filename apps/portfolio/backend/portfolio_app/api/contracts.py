@@ -1869,8 +1869,6 @@ class ResearchSettingsRecord(BaseModel):
     backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
     backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
     backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
-    backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
-    backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
     updated_at: str | None = None
 
@@ -1903,8 +1901,6 @@ class ResearchSettingsUpdateRequest(BaseModel):
     backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
     backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
     backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
-    backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
-    backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
 
     @field_validator("lookback_days")
@@ -2457,6 +2453,7 @@ class ResearchBacktestRecord(BaseModel):
     robustness_results: list[ResearchBacktestRobustnessResultRecord] = Field(
         default_factory=list
     )
+    # Saved historical diagnostics only; current simulations do not generate windows.
     walk_forward: ResearchBacktestWalkForwardRecord | None = None
     warnings: list[str] = Field(default_factory=list)
 

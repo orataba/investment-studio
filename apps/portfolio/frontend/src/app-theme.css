@@ -297,10 +297,8 @@
 /* Primary work surfaces use horizontal rules rather than card containers. */
 .portfolio-section-block,
 .transaction-workbench-grid,
-.research-chart-panel,
 .research-metrics-panel,
 .research-validation-grid,
-.research-settings-bar,
 .account-directory-panel,
 .account-detail-panel {
   border: 0;
@@ -609,8 +607,6 @@
   border-radius: 0;
 }
 
-.research-settings-bar,
-.research-chart-panel,
 .research-metrics-panel {
   padding: 13px 0;
 }
@@ -662,8 +658,6 @@
 .portfolio-nav-drawdown-plot,
 .price-chart-shell,
 .instrument-price-chart,
-.research-chart,
-.research-chart-panel,
 .rolling-risk-chart,
 .rolling-risk-chart-plot,
 .portfolio-security-chart-panel,
@@ -674,7 +668,6 @@
 
 .portfolio-nav-chart-svg,
 .price-chart-svg,
-.research-chart-svg,
 .rolling-risk-chart-svg,
 .option-payoff-chart {
   display: block;
@@ -688,8 +681,7 @@
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-grid-line-stub,
 .instrument-price-chart-instrument .price-chart-grid-line,
 .price-chart-grid-line,
-.rolling-risk-guide,
-.research-chart-axis {
+.rolling-risk-guide {
   stroke: var(--studio-chart-grid);
   stroke-width: 0.75;
   stroke-dasharray: 0;
@@ -699,8 +691,7 @@
 .price-chart-axis-label,
 .rolling-risk-axis-label,
 .rolling-risk-x-label,
-.research-chart-axis-label,
-.research-chart-panel-label {
+.research-chart-axis-label {
   fill: var(--studio-chart-axis);
 }
 
@@ -708,7 +699,6 @@
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-area,
 .instrument-price-chart-instrument .price-chart-area,
 .price-chart-area,
-.research-chart-area,
 .rolling-risk-area {
   fill: var(--studio-chart-area);
 }
@@ -722,22 +712,19 @@
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-line,
 .instrument-price-chart-instrument .price-chart-line,
 .price-chart-line,
-.research-chart-line,
 .rolling-risk-line {
   stroke: var(--studio-chart-primary);
   stroke-width: 1.7;
 }
 
 .portfolio-workspace-page .portfolio-nav-line-benchmark,
-.research-chart-line-muted,
 .rolling-risk-line-benchmark {
   stroke: var(--studio-chart-secondary);
   stroke-width: 1.4;
 }
 
 .portfolio-workspace-page .portfolio-nav-drawdown-line,
-.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-line,
-.research-chart-line-drawdown {
+.portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-line {
   stroke: var(--studio-chart-negative);
   stroke-width: 1.45;
 }

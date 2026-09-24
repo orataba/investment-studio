@@ -1400,7 +1400,7 @@ Taxonomy、assignment 和 TargetSet 统一为当前状态，无全局默认规�
 
 Taxonomy 页面的一次目标保存使用 `PUT /api/portfolios/{portfolio_id}/taxonomies/{taxonomy_id}/target-configuration`，提交编辑开始时读取的 `expected_configuration_version`，以及可选 `root_allocation_basis`、`node_allocation_bases`、修改过的 SAA/TAA scope 及可选 `concentration`。省略依据表示保持原值；没有目标改动时也可仅提交集中度。后端在组合行锁内先核对配置版本；其他编辑者已改变分类或目标时返回 409，整次保存回滚，不能用新版本覆盖旧草稿。校验和写入只在全部成功且有目标配置变化后发布一份 configuration revision 并标记一次 daily snapshot generation 失效；纯浓度变更只写浓度 revision，失败全部回滚。所有事实失效通知在最外层事务提交后立即唤醒后台 worker，同一事务多次标记仅唤醒一次；savepoint 提交不提前通知，其回滚不撤销外层已登记的有效失效通知。目标变更使旧 Research 结果变为 stale，Research 运算仍由用户显式启动。独立的分类/节点/assignment 写入也在读取状态前取得同一组合锁，避免并发写入产生缺少其他已提交修改的 revision。分类配置的版本统一由 `portfolio_taxonomy_state` 持有，所有修改遵循先组合、再 revision 和版本行的锁序。
 
-Research 的 `as_of_date` 只限定市场与持仓数据；Dynamic 和 Pinned 均使用当前目标。每次 run 在一致性边界内冻结当前树、assignment、目标和研究成员，保存 `request_payload_json.target_configuration_snapshot`；捕获时间不进入内容指纹。上下文、scope options、当前解算、历史模拟及滚动窗口使用同一快照。Risk、Performance 和 Concentration 的 taxonomy 分组也使用同一当前配置，数据截止日只限定各自行情、持仓或绩效窗口。
+Research 的 `as_of_date` 只限定市场与持仓数据；Dynamic 和 Pinned 均使用当前目标。每次 run 在一致性边界内冻结当前树、assignment、目标和研究成员，保存 `request_payload_json.target_configuration_snapshot`；捕获时间不进入内容指纹。上下文、scope options、当前解算及历史模拟使用同一快照。Risk、Performance 和 Concentration 的 taxonomy 分组也使用同一当前配置，数据截止日只限定各自行情、持仓或绩效窗口。
 
 全局求解合同：
 
@@ -1446,7 +1446,7 @@ Research 历史模拟合同为 `Current-target historical simulation`：用本�
 - Derivatives 在本模型中是独立的零收益、no-trade 固定资本代理，不是计息现金；不进入证券协方差、RC 或风险预算。当前求解冻结 as-of 实际 signed carrying capital；回测按真实 FCN/Option position-changing lifecycle date 将 carrying capital 以起始 NAV 归一化，只在该类账本事件发生时从 Cash 转入或转回，并同步执行前述 funding solve，普通计划再平衡的 derivative turnover 恒为 `0`。回测不重放 FCN 票息、敲入敲出、违约、Option payoff/行权/保证金或该代理的外汇波动。真实账务仍按实际合同和现金流处理；零建模波动不代表这些资产无经济风险，也不能把 carrying/liability 净额视为所需抵押资金。包含衍生品的执行清单必须提示人工复核条款、担保与流动性。
 - 模拟 `requested_start_date` 固定为组合成立日。`initial_state` 保存该日真实 EOD 证券持仓、现金与待结算余额、signed derivative capital、组合及所选 scope 的同日 canonical NAV，以该收盘账簿为 `is_start_anchor` 单位起点；不声称包含成立日 BOD 收益，也不重复收取初始买入费用。成立时已持有而当前目标未纳入的证券同样保留至首个可执行目标调仓；子分类仅使用其真实初始证券资本，无持仓时不可用，不能借用全组合现金。成立前真实行情只预热风险窗口，风险样本不足只延后调仓，不能删除已有初始持仓收益。零延迟也只能在成立收盘之后首个可执行观察日进行第一次调仓，后续零延迟按原决策日 EOD 执行。初始估值缺失或陈旧、同一 analytical series 缺少成立日可靠锚点时明确 unavailable，不用现金、后来的持仓或另一 raw/adjusted 报价基准替代。已知预期交易日或 FX 估值缺口终止可靠前缀，后续恢复不自动重启；纯现金等待期按日发布已知模型现金收益，证券/NAV 稀疏观察不补成日度价格。后续普通实际交易及外部现金流不注入模拟，只有已披露的衍生品固定资本生命周期代理按真实账本日期变化。之后周度按 7 天、月度按月初、`3m` 按首个完整月月初起每三个月生成决策（不是固定自然季度）。延长回测截止日不得使初始账簿消失。
 - top-sleeve contribution 使用 starting-NAV unit 的累计 arithmetic linking，cash 和 execution costs 是显式 component；每个点返回 `linked_contribution`、`nav_change` 与 reconciliation residual。它不是把 sleeve 百分比收益几何相加；
-- 滚动历史窗口使用连续 training/test calendar-month，以 test window 前最近的 EOD 为归一锚点，输出逐窗口与聚合指标。目标在全部窗口固定为当前快照，`parameter_selection=fixed_current_targets`；不在 training window 重新拟合或选择参数，不声称当前目标获得了独立样本外验证。历史不足时明确 unavailable。既有 `oos_*` 字段表示测试窗口的序列与指标，页面按历史测试窗口展示；
+- 风险估计由 `lookback_days` 和生产风险模型控制，历史决策只使用截至决策日的市场数据；主模拟不另设仅用于切分结果的训练／测试月数，也不保存或执行替代成本情景设置。旧运行已保存的 `walk_forward` 窗口、`oos_*` 数据及 `robustness_results` 仅作为原始存档读取，不参与当前设置、当前性比较或新模拟计算；主模拟实际使用的现金收益、费用和执行延迟参数不变。
 - 当前 execution model 假设目标在首个共同 observation 完整成交，尚未模拟 order rejection、partial fills、成交量/流动性约束或 market impact。文档、UI 和报告不得声称这些摩擦已经覆盖。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。

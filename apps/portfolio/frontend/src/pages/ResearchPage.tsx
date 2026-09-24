@@ -8,6 +8,7 @@ import CalculationStatus from '../components/CalculationStatus'
 import InfoHint from '../components/InfoHint'
 import ResearchComparisonPanel from '../components/ResearchComparisonPanel'
 import ResearchSolutionTree from '../components/ResearchSolutionTree'
+import ResearchSleeveCharts from '../components/ResearchSleeveCharts'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -16,7 +17,7 @@ import {
   invalidateRequests,
   isRequestCurrent,
 } from '../../../../../packages/ui/src/requestIdentity'
-import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   createPortfolioResearchRun,
   getPortfolioResearchBacktestBenchmarkComparison,
@@ -28,7 +29,6 @@ import {
   updatePortfolioResearchSettings,
   type PortfolioResearchBacktestBenchmarkComparisonResponse,
   type PortfolioResearchBacktestRebalanceFrequency,
-  type PortfolioResearchBacktestSleevePointRecord,
   type PortfolioResearchAsOfMode,
   type PortfolioResearchCapitalMode,
   type PortfolioResearchPlanningScopeOption,
@@ -79,8 +79,6 @@ type ResearchRunSetupDraft = {
   taxBps: string
   slippageBps: string
   implementationDelayDays: string
-  walkForwardTrainingMonths: string
-  walkForwardTestMonths: string
 }
 
 type ResearchTopSleeveBoundDraft = {
@@ -88,14 +86,6 @@ type ResearchTopSleeveBoundDraft = {
   minWeightPct: string
   maxWeightPct: string
 }
-
-type ChartSeries = {
-  key: string
-  label: string
-  color: string
-}
-
-const CHART_COLORS = ['#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#ea580c', '#0891b2', '#4b5563', '#be123c']
 
 function TableStatusRow({
   colSpan,
@@ -223,207 +213,6 @@ function buildPlanningScopeOptions(
   return options
 }
 
-function chartCoordinate(
-  point: { date: string; value?: number | null },
-  args: {
-    minTime: number
-    maxTime: number
-    minValue: number
-    maxValue: number
-    width: number
-    height: number
-    padding: number
-    left?: number
-    right?: number
-    top?: number
-    bottom?: number
-  },
-) {
-  const time = new Date(point.date).getTime()
-  const value = point.value ?? 0
-  const xRange = Math.max(args.maxTime - args.minTime, 1)
-  const yRange = Math.max(args.maxValue - args.minValue, 0.000001)
-  const left = args.left ?? args.padding
-  const right = args.right ?? args.width - args.padding
-  const top = args.top ?? args.padding
-  const bottom = args.bottom ?? args.height - args.padding
-  return {
-    x: left + ((time - args.minTime) / xRange) * (right - left),
-    y: bottom - ((value - args.minValue) / yRange) * (bottom - top),
-  }
-}
-
-type ChartCoordinateArgs = Parameters<typeof chartCoordinate>[1]
-
-function buildPath(points: Array<{ date: string; value?: number | null }>, args: Parameters<typeof chartCoordinate>[1]) {
-  const coordinates = points
-    .filter((point) => point.value != null)
-    .map((point) => chartCoordinate(point, args))
-  if (!coordinates.length) {
-    return ''
-  }
-  return coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ')
-}
-
-function dateTicks(minTime: number, maxTime: number, count = 4) {
-  if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
-    return []
-  }
-  if (Math.abs(maxTime - minTime) < 1) {
-    return [minTime]
-  }
-  return Array.from({ length: count }, (_item, index) => minTime + ((maxTime - minTime) * index) / (count - 1))
-}
-
-function formatDateTick(time: number) {
-  const tickDate = new Date(time)
-  const month = String(tickDate.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(tickDate.getUTCDate()).padStart(2, '0')
-  return `${month}/${day}`
-}
-
-function renderTimeAxis(args: ChartCoordinateArgs) {
-  const left = args.left ?? args.padding
-  const right = args.right ?? args.width - args.padding
-  const bottom = args.bottom ?? args.height - args.padding
-  return (
-    <g className="research-chart-time-axis">
-      <line x1={left} x2={right} y1={bottom} y2={bottom} className="research-chart-axis" />
-      {dateTicks(args.minTime, args.maxTime).map((time) => {
-        const point = chartCoordinate({ date: new Date(time).toISOString(), value: args.minValue }, args)
-        return (
-          <g key={time}>
-            <line x1={point.x} x2={point.x} y1={bottom} y2={bottom + 4} className="research-chart-axis" />
-            <text x={point.x} y={bottom + 18} textAnchor="middle" className="research-chart-axis-label">
-              {formatDateTick(time)}
-            </text>
-          </g>
-        )
-      })}
-    </g>
-  )
-}
-
-function sleeveSeries(points: PortfolioResearchBacktestSleevePointRecord[]) {
-  const labels = new Map<string, ChartSeries>()
-  points.forEach((point) => {
-    point.sleeves.forEach((sleeve) => {
-      const key = sleeve.top_sleeve_id ?? sleeve.top_sleeve_label
-      if (!labels.has(key)) {
-        labels.set(key, {
-          key,
-          label: sleeve.top_sleeve_label,
-          color: CHART_COLORS[labels.size % CHART_COLORS.length],
-        })
-      }
-    })
-  })
-  return [...labels.values()]
-}
-
-function ResearchSleeveLineChart({
-  points,
-  ariaLabel,
-}: {
-  points: PortfolioResearchBacktestSleevePointRecord[]
-  ariaLabel: string
-}) {
-  const series = sleeveSeries(points)
-  if (points.length < 2 || !series.length) {
-    return <div className="empty-state">No chart data.</div>
-  }
-  const width = 720
-  const height = 250
-  const padding = 36
-  const pointByDate = points.map((point) => {
-    const valueByKey = new Map(point.sleeves.map((sleeve) => [sleeve.top_sleeve_id ?? sleeve.top_sleeve_label, sleeve.value ?? 0]))
-    return { date: point.date, valueByKey }
-  })
-  const allValues = pointByDate.flatMap((point) => series.map((item) => point.valueByKey.get(item.key) ?? 0))
-  const times = points.map((point) => new Date(point.date).getTime())
-  const minTime = Math.min(...times)
-  const maxTime = Math.max(...times)
-  const minValue = Math.min(...allValues, 0)
-  const maxValue = Math.max(...allValues, 0.01)
-  const yPad = Math.max((maxValue - minValue) * 0.08, 0.01)
-  const args = { minTime, maxTime, minValue: minValue - yPad, maxValue: maxValue + yPad, width, height, padding }
-  return (
-    <div className="research-chart">
-      <div className="research-chart-legend">
-        {series.slice(0, 6).map((item) => (
-          <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>
-        ))}
-      </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label={ariaLabel}>
-        {renderTimeAxis(args)}
-        {series.map((item) => {
-          const linePoints = pointByDate.map((point) => ({
-            date: point.date,
-            value: point.valueByKey.get(item.key) ?? 0,
-          }))
-          return <path key={item.key} d={buildPath(linePoints, args)} className="research-chart-line" style={{ stroke: item.color }} />
-        })}
-      </svg>
-    </div>
-  )
-}
-
-function ResearchSleeveStackedAreaChart({
-  points,
-}: {
-  points: PortfolioResearchBacktestSleevePointRecord[]
-}) {
-  const series = sleeveSeries(points)
-  if (points.length < 2 || !series.length) {
-    return <div className="empty-state">No chart data.</div>
-  }
-  const width = 720
-  const height = 250
-  const padding = 36
-  const times = points.map((point) => new Date(point.date).getTime())
-  const minTime = Math.min(...times)
-  const maxTime = Math.max(...times)
-  const totals = points.map((point) => point.sleeves.reduce((total, sleeve) => total + Math.max(sleeve.value ?? 0, 0), 0))
-  const maxValue = Math.max(...totals, 1)
-  const args = { minTime, maxTime, minValue: 0, maxValue, width, height, padding }
-
-  const valueByDate = points.map((point) => {
-    const valueByKey = new Map(point.sleeves.map((sleeve) => [sleeve.top_sleeve_id ?? sleeve.top_sleeve_label, Math.max(sleeve.value ?? 0, 0)]))
-    return { date: point.date, valueByKey }
-  })
-
-  return (
-    <div className="research-chart">
-      <div className="research-chart-legend">
-        {series.slice(0, 6).map((item) => (
-          <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>
-        ))}
-      </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Top sleeve weights">
-        {renderTimeAxis(args)}
-        {series.map((item, seriesIndex) => {
-          const upper = valueByDate.map((point) => ({
-            date: point.date,
-            value: series.slice(0, seriesIndex + 1).reduce((total, current) => total + (point.valueByKey.get(current.key) ?? 0), 0),
-          }))
-          const lower = valueByDate.map((point) => ({
-            date: point.date,
-            value: series.slice(0, seriesIndex).reduce((total, current) => total + (point.valueByKey.get(current.key) ?? 0), 0),
-          }))
-          const upperCoordinates = upper.map((point) => chartCoordinate(point, args))
-          const lowerCoordinates = lower.map((point) => chartCoordinate(point, args)).reverse()
-          const path = [
-            ...upperCoordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
-            ...lowerCoordinates.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
-            'Z',
-          ].join(' ')
-          return <path key={item.key} d={path} className="research-chart-area" style={{ fill: item.color }} />
-        })}
-      </svg>
-    </div>
-  )
-}
-
 export default function ResearchPage() {
   const zh = useLanguage().language === 'zh-Hans'
   const canEditPortfolio = Boolean(usePortfolioAccess()?.can_edit)
@@ -435,7 +224,7 @@ export default function ResearchPage() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<NoticeToastMessage | null>(null)
-  const [actionPending, setActionPending] = useState<'run' | null>(null)
+  const [actionPending, setActionPending] = useState<'run' | 'save' | null>(null)
   const [frozenMenuOpen, setFrozenMenuOpen] = useState(false)
   const [boundsMenuOpen, setBoundsMenuOpen] = useState(false)
   const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
@@ -449,12 +238,13 @@ export default function ResearchPage() {
   const [benchmarkComparisonError, setBenchmarkComparisonError] = useState<string | null>(null)
   const frozenMenuRef = useRef<HTMLDivElement | null>(null)
   const boundsMenuRef = useRef<HTMLDivElement | null>(null)
-  const autoSaveTimeoutRef = useRef<number | null>(null)
-  const autoSaveQueueRef = useRef(new SerialTaskQueue())
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpenRef = useRef(false)
+  const settingsRequestSequenceRef = useRef(0)
+  const settingsDialogRef = useModalDialog(settingsOpen, closeSettings)
   const workbenchRequestSequenceRef = useRef(0)
   const runRequestSequenceRef = useRef(0)
   const currentPortfolioIdRef = useRef(portfolioId)
-  const draftPortfolioIdRef = useRef('')
   const runSetupDraftRef = useRef<ResearchRunSetupDraft>({
     planningTaxonomyId: '',
     asOfMode: 'dynamic',
@@ -473,12 +263,11 @@ export default function ResearchPage() {
     taxBps: '10',
     slippageBps: '5',
     implementationDelayDays: '1',
-    walkForwardTrainingMonths: '24',
-    walkForwardTestMonths: '6',
   })
 
+  const savedRunSetupDraftRef = useRef<ResearchRunSetupDraft>(runSetupDraftRef.current)
+
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
-  const taxonomyChoiceRef = useRef<{ portfolioId: string; taxonomyId: string } | null>(null)
   const availableTaxonomyIdsRef = useRef(new Set<string>())
   const [asOfMode, setAsOfMode] = useState<PortfolioResearchAsOfMode>('dynamic')
   const [asOfDate, setAsOfDate] = useState('')
@@ -495,13 +284,49 @@ export default function ResearchPage() {
   const [taxBps, setTaxBps] = useState('10')
   const [slippageBps, setSlippageBps] = useState('5')
   const [implementationDelayDays, setImplementationDelayDays] = useState('1')
-  const [walkForwardTrainingMonths, setWalkForwardTrainingMonths] = useState('24')
-  const [walkForwardTestMonths, setWalkForwardTestMonths] = useState('6')
 
+  settingsOpenRef.current = settingsOpen
   currentPortfolioIdRef.current = portfolioId
   availableTaxonomyIdsRef.current = new Set(
     workbench?.portfolio_id === portfolioId ? workbench.planning_taxonomy_options.map((item) => item.taxonomy_id) : [],
   )
+
+  function applyRunSetupDraft(nextDraft: ResearchRunSetupDraft) {
+    setPlanningTaxonomyId(nextDraft.planningTaxonomyId)
+    setAsOfMode(nextDraft.asOfMode)
+    setAsOfDate(nextDraft.asOfDate)
+    setCapitalMode(nextDraft.capitalMode)
+    setGrossExposure(nextDraft.grossExposure)
+    setTargetVolatilityPct(nextDraft.targetVolatilityPct)
+    setMaxGrossExposure(nextDraft.maxGrossExposure)
+    setFrozenNodeIds(nextDraft.frozenNodeIds)
+    setTopSleeveBounds(nextDraft.topSleeveBounds)
+    setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
+    setBenchmarkInstrumentId(nextDraft.benchmarkInstrumentId)
+    const benchmark = benchmarkInstruments.find((instrument) => instrument.instrument_id === nextDraft.benchmarkInstrumentId)
+    setBenchmarkSearch(benchmark ? benchmarkInstrumentLabel(benchmark) : '')
+    setCashYieldPct(nextDraft.cashYieldPct)
+    setCommissionBps(nextDraft.commissionBps)
+    setTaxBps(nextDraft.taxBps)
+    setSlippageBps(nextDraft.slippageBps)
+    setImplementationDelayDays(nextDraft.implementationDelayDays)
+    runSetupDraftRef.current = nextDraft
+  }
+
+  function closeSettings() {
+    if (actionPending === 'save') return
+    applyRunSetupDraft(savedRunSetupDraftRef.current)
+    setSettingsOpen(false)
+    setFrozenMenuOpen(false)
+    setBoundsMenuOpen(false)
+    setActionError(null)
+  }
+
+  function openSettings() {
+    applyRunSetupDraft(savedRunSetupDraftRef.current)
+    setActionError(null)
+    setSettingsOpen(true)
+  }
 
   async function reloadWorkbench(targetPortfolioId = portfolioId) {
     if (targetPortfolioId && currentPortfolioIdRef.current !== targetPortfolioId) {
@@ -543,14 +368,11 @@ export default function ResearchPage() {
   }
 
   useEffect(() => {
-    if (autoSaveTimeoutRef.current != null) {
-      window.clearTimeout(autoSaveTimeoutRef.current)
-      autoSaveTimeoutRef.current = null
-    }
     invalidateRequests(workbenchRequestSequenceRef)
     invalidateRequests(runRequestSequenceRef)
-    draftPortfolioIdRef.current = ''
-    taxonomyChoiceRef.current = null
+    invalidateRequests(settingsRequestSequenceRef)
+    setSettingsOpen(false)
+    settingsOpenRef.current = false
     setWorkbench(null)
     setRunDetailLoading(false)
     setRunDetailError(null)
@@ -564,10 +386,7 @@ export default function ResearchPage() {
     return () => {
       invalidateRequests(workbenchRequestSequenceRef)
       invalidateRequests(runRequestSequenceRef)
-      if (autoSaveTimeoutRef.current != null) {
-        window.clearTimeout(autoSaveTimeoutRef.current)
-        autoSaveTimeoutRef.current = null
-      }
+      invalidateRequests(settingsRequestSequenceRef)
     }
   }, [portfolioId])
 
@@ -622,22 +441,10 @@ export default function ResearchPage() {
     if (!workbench || workbench.portfolio_id !== portfolioId) {
       return
     }
-    draftPortfolioIdRef.current = portfolioId
-    const localTaxonomyChoice = taxonomyChoiceRef.current?.portfolioId === portfolioId ? taxonomyChoiceRef.current : null
-    const requestedTaxonomyId = localTaxonomyChoice?.taxonomyId ?? workbench.settings.planning_taxonomy_id ?? ''
-    const choiceUnavailable = Boolean(requestedTaxonomyId && !availableTaxonomyIdsRef.current.has(requestedTaxonomyId))
-    const nextPlanningTaxonomyId = choiceUnavailable
-      ? ''
-      : requestedTaxonomyId || (!localTaxonomyChoice && workbench.planning_taxonomy_options.length === 1
-        ? workbench.planning_taxonomy_options[0].taxonomy_id : '')
-    if (choiceUnavailable) {
-      // A removed scheme never turns into another allocation plan implicitly.
-      taxonomyChoiceRef.current = { portfolioId, taxonomyId: '' }
-      if (autoSaveTimeoutRef.current != null) {
-        window.clearTimeout(autoSaveTimeoutRef.current)
-        autoSaveTimeoutRef.current = null
-      }
-    }
+    const requestedTaxonomyId = workbench.settings.planning_taxonomy_id ?? ''
+    const nextPlanningTaxonomyId = requestedTaxonomyId
+      ? (availableTaxonomyIdsRef.current.has(requestedTaxonomyId) ? requestedTaxonomyId : '')
+      : workbench.planning_taxonomy_options.length === 1 ? workbench.planning_taxonomy_options[0].taxonomy_id : ''
     const nextAsOf = resolveResearchAsOfDraft(workbench.settings, workbench.as_of_date)
     const nextBenchmarkInstrumentId = workbench.settings.backtest_benchmark_instrument_id ?? ''
     const nextCapitalMode = workbench.settings.capital_mode
@@ -669,28 +476,13 @@ export default function ResearchPage() {
       taxBps: String(workbench.settings.backtest_tax_bps),
       slippageBps: String(workbench.settings.backtest_slippage_bps),
       implementationDelayDays: String(workbench.settings.backtest_implementation_delay_days),
-      walkForwardTrainingMonths: String(workbench.settings.backtest_walk_forward_training_months),
-      walkForwardTestMonths: String(workbench.settings.backtest_walk_forward_test_months),
     }
-    setPlanningTaxonomyId(nextDraft.planningTaxonomyId)
-    setAsOfMode(nextAsOf.asOfMode)
-    setAsOfDate(nextAsOf.asOfDate)
-    setCapitalMode(nextDraft.capitalMode)
-    setGrossExposure(nextDraft.grossExposure)
-    setTargetVolatilityPct(nextDraft.targetVolatilityPct)
-    setMaxGrossExposure(nextDraft.maxGrossExposure)
-    setFrozenNodeIds(nextDraft.frozenNodeIds)
-    setTopSleeveBounds(nextTopSleeveBounds)
-    setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
-    setBenchmarkInstrumentId(nextBenchmarkInstrumentId)
-    setCashYieldPct(nextDraft.cashYieldPct)
-    setCommissionBps(nextDraft.commissionBps)
-    setTaxBps(nextDraft.taxBps)
-    setSlippageBps(nextDraft.slippageBps)
-    setImplementationDelayDays(nextDraft.implementationDelayDays)
-    setWalkForwardTrainingMonths(nextDraft.walkForwardTrainingMonths)
-    setWalkForwardTestMonths(nextDraft.walkForwardTestMonths)
-    runSetupDraftRef.current = nextDraft
+    savedRunSetupDraftRef.current = nextDraft
+    if (!settingsOpenRef.current) {
+      applyRunSetupDraft(nextDraft)
+    } else if (runSetupDraftRef.current.planningTaxonomyId && !availableTaxonomyIdsRef.current.has(runSetupDraftRef.current.planningTaxonomyId)) {
+      applyRunSetupDraft({ ...runSetupDraftRef.current, planningTaxonomyId: '', frozenNodeIds: [], topSleeveBounds: [] })
+    }
   }, [workbench])
 
   useEffect(() => {
@@ -701,21 +493,6 @@ export default function ResearchPage() {
       setBenchmarkSearch('')
     }
   }, [benchmarkInstrumentId, benchmarkInstruments])
-
-  useEffect(() => {
-    if (!workbench) {
-      return
-    }
-    if (planningTaxonomyId !== (workbench.settings.planning_taxonomy_id ?? '')) {
-        runSetupDraftRef.current = {
-          ...runSetupDraftRef.current,
-          frozenNodeIds: [],
-          topSleeveBounds: [],
-        }
-        setFrozenNodeIds([])
-        setTopSleeveBounds([])
-      }
-    }, [planningTaxonomyId, workbench])
 
   useEffect(() => {
     const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
@@ -821,7 +598,7 @@ export default function ResearchPage() {
 
   useEffect(() => {
     const researchRunId = latestRun?.research_run_id ?? ''
-    const selectedBenchmarkId = benchmarkInstrumentId.trim()
+    const selectedBenchmarkId = workbench?.settings.backtest_benchmark_instrument_id?.trim() ?? ''
     const storedBenchmarkId = latestRun?.detail?.backtest_benchmark?.instrument_id ?? ''
     if (
       !portfolioId
@@ -867,7 +644,7 @@ export default function ResearchPage() {
       cancelled = true
     }
   }, [
-    benchmarkInstrumentId,
+    workbench?.settings.backtest_benchmark_instrument_id,
     latestRun?.detail?.backtest_benchmark,
     latestRun?.research_run_id,
     latestRun?.status,
@@ -884,6 +661,9 @@ export default function ResearchPage() {
     return dynamicScopeOptions ?? []
   }, [dynamicScopeOptions, planningTaxonomyId, workbench])
   const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
+  const effectiveSavedTaxonomyId = savedPlanningTaxonomyId
+    ? (availableTaxonomyIdsRef.current.has(savedPlanningTaxonomyId) ? savedPlanningTaxonomyId : '')
+    : workbench?.planning_taxonomy_options.length === 1 ? workbench.planning_taxonomy_options[0].taxonomy_id : ''
   const scopeOptionsPending = Boolean(
     planningTaxonomyId && planningTaxonomyId !== savedPlanningTaxonomyId && !dynamicScopeOptions && !scopeOptionsError,
   )
@@ -910,47 +690,13 @@ export default function ResearchPage() {
       [topSleeveBounds],
     )
 
-  function scheduleAutoSave(nextDraft: ResearchRunSetupDraft) {
-    const targetPortfolioId = draftPortfolioIdRef.current
-    if (!targetPortfolioId || targetPortfolioId !== portfolioId) {
-      return
-    }
-    runSetupDraftRef.current = nextDraft
-    if (autoSaveTimeoutRef.current != null) {
-      window.clearTimeout(autoSaveTimeoutRef.current)
-    }
-    autoSaveTimeoutRef.current = window.setTimeout(() => {
-      autoSaveTimeoutRef.current = null
-      if (
-        currentPortfolioIdRef.current !== targetPortfolioId ||
-        draftPortfolioIdRef.current !== targetPortfolioId
-      ) {
-        return
-      }
-      void autoSaveQueueRef.current
-        .enqueue(() => {
-          if (
-            currentPortfolioIdRef.current !== targetPortfolioId ||
-            draftPortfolioIdRef.current !== targetPortfolioId
-          ) {
-            return null
-          }
-          return persistSettings({
-            draft: nextDraft,
-            targetPortfolioId,
-          })
-        })
-        .catch(() => undefined)
-    }, 450)
-  }
-
   function updateRunSetupDraft(updates: Partial<ResearchRunSetupDraft>) {
     const nextDraft = {
       ...runSetupDraftRef.current,
       ...updates,
     }
     setActionError(null)
-    scheduleAutoSave(nextDraft)
+    runSetupDraftRef.current = nextDraft
     return nextDraft
   }
 
@@ -1021,15 +767,13 @@ export default function ResearchPage() {
     const parsedTaxBps = Number(draft.taxBps)
     const parsedSlippageBps = Number(draft.slippageBps)
     const parsedImplementationDelayDays = Number(draft.implementationDelayDays)
-    const parsedWalkForwardTrainingMonths = Number(draft.walkForwardTrainingMonths)
-    const parsedWalkForwardTestMonths = Number(draft.walkForwardTestMonths)
     const volatilityMode = isVolatilityCapitalMode(draft.capitalMode)
     const riskPolicy = await getPortfolioRiskPolicy(targetPortfolioId)
     if (currentPortfolioIdRef.current !== targetPortfolioId) {
       return null
     }
     if (draft.planningTaxonomyId && !availableTaxonomyIdsRef.current.has(draft.planningTaxonomyId)) {
-      throw new Error('Selected research taxonomy is unavailable. Choose a current taxonomy.')
+      throw new Error('Selected optimization taxonomy is unavailable. Choose a current taxonomy.')
     }
     const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
     const frozenTaxonomyNodeIds = draft.frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
@@ -1063,43 +807,53 @@ export default function ResearchPage() {
       backtest_tax_bps: parsedTaxBps,
       backtest_slippage_bps: parsedSlippageBps,
       backtest_implementation_delay_days: parsedImplementationDelayDays,
-      backtest_walk_forward_training_months: parsedWalkForwardTrainingMonths,
-      backtest_walk_forward_test_months: parsedWalkForwardTestMonths,
       notes: draft.notes,
     })
   }
 
+  async function handleSaveSettings() {
+    const targetPortfolioId = portfolioId
+    if (!canEditPortfolio || actionPending || scopeActionBlocked || !targetPortfolioId) return
+    const request = beginRequest(settingsRequestSequenceRef, targetPortfolioId)
+    setActionPending('save')
+    setActionError(null)
+    try {
+      const saved = await persistSettings({ targetPortfolioId })
+      if (!saved || !isRequestCurrent(settingsRequestSequenceRef, request, currentPortfolioIdRef.current)) return
+      setWorkbench((current) => current?.portfolio_id === targetPortfolioId ? { ...current, settings: saved } : current)
+      await reloadWorkbench(targetPortfolioId)
+      if (!isRequestCurrent(settingsRequestSequenceRef, request, currentPortfolioIdRef.current)) return
+      settingsOpenRef.current = false
+      setSettingsOpen(false)
+      setFrozenMenuOpen(false)
+      setBoundsMenuOpen(false)
+    } catch (error) {
+      if (isRequestCurrent(settingsRequestSequenceRef, request, currentPortfolioIdRef.current)) setActionError(extractErrorMessage(error))
+    } finally {
+      if (isRequestCurrent(settingsRequestSequenceRef, request, currentPortfolioIdRef.current)) setActionPending(null)
+    }
+  }
+
   async function handleRunResearch() {
     const targetPortfolioId = portfolioId
-    if (!targetPortfolioId || !canEditPortfolio || !availableTaxonomyIdsRef.current.has(runSetupDraftRef.current.planningTaxonomyId)) {
+    if (!targetPortfolioId || !canEditPortfolio || actionPending || settingsOpen || !availableTaxonomyIdsRef.current.has(savedRunSetupDraftRef.current.planningTaxonomyId)) {
       return
     }
     const runRequest = beginRequest(runRequestSequenceRef, targetPortfolioId)
-    const runDraft = runSetupDraftRef.current
-    if (autoSaveTimeoutRef.current != null) {
-      window.clearTimeout(autoSaveTimeoutRef.current)
-      autoSaveTimeoutRef.current = null
-    }
+    const runDraft = savedRunSetupDraftRef.current
     setActionPending('run')
     setActionError(null)
     setNotice(null)
     setFrozenMenuOpen(false)
     setBoundsMenuOpen(false)
     try {
-      await autoSaveQueueRef.current.enqueue(async () => {
-        await persistSettings({
-          draft: runDraft,
-          targetPortfolioId,
-        })
-        if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
-          return
-        }
-        await createPortfolioResearchRun(targetPortfolioId, { requested_by: 'workspace-ui' })
-      })
+      await persistSettings({ draft: runDraft, targetPortfolioId })
+      if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) return
+      await createPortfolioResearchRun(targetPortfolioId, { requested_by: 'workspace-ui' })
       if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
         return
       }
-      setNotice({ id: Date.now(), message: 'Research run completed.', tone: 'success' })
+      setNotice({ id: Date.now(), message: 'Optimization run completed.', tone: 'success' })
       await reloadWorkbench(targetPortfolioId)
     } catch (error) {
       if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
@@ -1125,12 +879,11 @@ export default function ResearchPage() {
   const pendingRebalances = pointInTimeCoverage?.pending_rebalances ?? []
   const configurationVersionsUsed = pointInTimeCoverage?.configuration_versions_used ?? []
   const executionRecords = backtest?.execution_records ?? []
-  const walkForward = backtest?.walk_forward ?? null
   const contributionReconciliation = backtest?.contribution_reconciliation_points ?? []
   const latestContributionReconciliation = contributionReconciliation.length
     ? contributionReconciliation[contributionReconciliation.length - 1]
     : null
-  const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== planningTaxonomyId)
+  const changedTaxonomy = Boolean(latestRun && latestRun.planning_taxonomy_id !== effectiveSavedTaxonomyId)
   const staleRun = latestRun?.status === 'completed' && (latestRun.reliability_state === 'stale' || changedTaxonomy)
   const globalSolverRun = ['global_leaf_covariance_v1', 'global_leaf_scalar_targets_v2', 'global_leaf_scalar_targets_v3', 'global_leaf_scalar_targets_v4', 'global_leaf_scalar_targets_v5'].includes(latestRun?.detail?.solver_version ?? '')
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
@@ -1139,20 +892,21 @@ export default function ResearchPage() {
       ? [latestRun.detail.solve_event]
       : []
   const nonExecutionReadySolveEvents = solveEvents.filter((event) => event.execution_ready === false)
-  const rebalanceGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
-    (row) => Math.abs(row.gap ?? 0) > 0.0001 || row.execution_status === 'manual_review_required',
-  )
-  const portfolioSolveEvent = latestRun?.detail?.solve_event
-    ?? [...solveEvents].reverse().find((event) => event.scope_node_id == null)
-    ?? null
   const planningTaxonomyName = workbench?.planning_taxonomy_options.find(
-    (option) => option.taxonomy_id === planningTaxonomyId,
-  )?.name ?? (zh ? '未选择研究分类' : 'No research taxonomy selected')
-  const capitalModeLabel = CAPITAL_MODE_OPTIONS.find((option) => option.value === capitalMode)?.label ?? formatLabel(capitalMode)
-  const rebalanceLabel = REBALANCE_OPTIONS.find((option) => option.value === backtestRebalanceFrequency)?.label
-    ?? backtestRebalanceFrequency.toUpperCase()
+    (option) => option.taxonomy_id === effectiveSavedTaxonomyId,
+  )?.name ?? (zh ? '未选择优化分类' : 'No optimization taxonomy selected')
+  const savedCapitalMode = workbench?.settings.capital_mode ?? 'unit_notional'
+  const savedVolatility = workbench?.settings.target_volatility
+  const capitalModeLabel = CAPITAL_MODE_OPTIONS.find((option) => option.value === savedCapitalMode)?.label ?? formatLabel(savedCapitalMode)
+  const capitalSummary = isVolatilityCapitalMode(savedCapitalMode)
+    ? `${zh ? (savedCapitalMode === 'volatility_cap' ? '波动率上限' : '目标波动率') : (savedCapitalMode === 'volatility_cap' ? 'Volatility cap' : 'Target volatility')} ${formatMaybePercent(savedVolatility)}`
+    : savedCapitalMode === 'fixed_gross'
+      ? `${zh ? '固定总仓位' : 'Fixed gross'} ${formatMaybePercent(workbench?.settings.gross_exposure)}`
+      : (zh ? '单位仓位' : capitalModeLabel)
+  const rebalanceFrequency = workbench?.settings.backtest_rebalance_frequency ?? '1m'
+  const rebalanceLabel = zh ? ({ '1w': '每周调仓', '1m': '每月调仓', '3m': '每季度调仓' }[rebalanceFrequency]) : `${rebalanceFrequency.toUpperCase()} rebalance`
   const staleRunDetail = [
-    'Run Research again before using these weights for allocation or orders.',
+    'Run Optimization again before using these weights for allocation or orders.',
     ...(latestRun?.reliability_reasons ?? []),
   ].join(' ')
   const constrainedSolveDetail = nonExecutionReadySolveEvents
@@ -1167,7 +921,7 @@ export default function ResearchPage() {
     .map((item) => `${item.date}: ${item.reason}`)
     .join(' ')
   const storedBenchmark = latestRun?.detail?.backtest_benchmark ?? null
-  const selectedBenchmarkId = benchmarkInstrumentId.trim()
+  const selectedBenchmarkId = workbench?.settings.backtest_benchmark_instrument_id?.trim() ?? ''
   const displayBenchmark = selectedBenchmarkId
     ? benchmarkComparison?.backtest_benchmark ??
       (selectedBenchmarkId === (storedBenchmark?.instrument_id ?? '') ? storedBenchmark : null)
@@ -1175,12 +929,12 @@ export default function ResearchPage() {
 
   return (
     <PortfolioWorkspaceLayout
-      activeSection="Research"
+      activeSection="Portfolio Optimization"
       busy={loading || runDetailLoading}
     >
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} />
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-      {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
+      {actionError && !settingsOpen ? <div className="inline-notice inline-notice-error" role="alert">{actionError}</div> : null}
       {loading && !workbench ? <CalculationStatus /> : null}
 
       {!loading && !workbench && !workspaceError ? <div className="empty-state">No data.</div> : null}
@@ -1190,55 +944,61 @@ export default function ResearchPage() {
           <section className="panel research-command-panel">
             <div className="research-command-bar">
               <div className="research-command-copy">
-                <div className="panel-title">Research Configuration</div>
+                <div className="panel-title">Optimization Configuration</div>
                 <div className="research-command-meta">
                   <QualityWarningsNotice warnings={workbench.current_context.quality_warnings} />
                   <span translate="no">{planningTaxonomyName}</span>
-                  <span>{zh ? '数据截至' : 'Data cutoff'} · {asOfMode === 'dynamic' ? workbench.as_of_date : asOfDate || '-'}</span>
+                  <span>{zh ? '数据截至' : 'Data cutoff'} · {workbench.settings.as_of_mode === 'dynamic' ? workbench.as_of_date : workbench.settings.as_of_date || '-'}</span>
                   <span>{zh ? '当前目标' : 'Current targets'}</span>
-                  <span>{capitalModeLabel}</span>
-                  <span>{rebalanceLabel} rebalance</span>
+                  <span>{capitalSummary}</span>
+                  <span>{rebalanceLabel}</span>
                 </div>
               </div>
+              <div className="research-command-actions">
+              <button type="button" className="toolbar-link" onClick={openSettings} disabled={Boolean(actionPending)}>{zh ? '优化参数' : 'Optimization Parameters'}</button>
               <button
                 type="button"
                 className="toolbar-link button-primary research-run-button"
                 onClick={() => void handleRunResearch()}
-                disabled={!canEditPortfolio || !planningTaxonomyId || actionPending === 'run' || scopeActionBlocked}
+                disabled={!canEditPortfolio || !effectiveSavedTaxonomyId || Boolean(actionPending) || settingsOpen}
               >
-                {actionPending === 'run' ? 'Running...' : 'Run Research'}
+                {actionPending === 'run' ? 'Running...' : 'Run Optimization'}
               </button>
+              </div>
             </div>
-            <details className="research-settings-disclosure">
-              <summary>
-                <span>Research Settings</span>
-              </summary>
+          </section>
+          {settingsOpen ? <div className="taxonomy-modal-overlay" role="presentation" onClick={closeSettings}>
+            <div ref={settingsDialogRef} className="taxonomy-modal research-parameters-modal" role="dialog" aria-modal="true" aria-label={zh ? '优化参数' : 'Optimization Parameters'} tabIndex={-1} onClick={(event) => event.stopPropagation()}>
+              <div className="taxonomy-modal-header"><div className="panel-title">{zh ? '优化参数' : 'Optimization Parameters'}</div>
+                <button type="button" className="table-inline-button" onClick={closeSettings} disabled={actionPending === 'save'}>{zh ? '关闭' : 'Close'}</button>
+              </div>
               <form
                 className="transaction-form taxonomy-form-compact research-run-form"
-                aria-busy={actionPending === 'run'}
-                onSubmit={(event) => event.preventDefault()}
+                aria-busy={actionPending === 'save'}
+                onSubmit={(event) => { event.preventDefault(); void handleSaveSettings() }}
               >
-                <fieldset className="research-settings-fieldset" disabled={!canEditPortfolio || actionPending === 'run'}>
-                  <div className="research-settings-bar">
+                <div className="research-parameters-body">
+                {actionError ? <div className="inline-notice inline-notice-error" role="alert">{actionError}</div> : null}
+                <fieldset className="research-settings-fieldset" disabled={!canEditPortfolio || actionPending === 'save'}>
+                <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
+                  <div className="research-parameter-group-title">{zh ? '范围与数据' : 'Scope & Data'}</div>
                 <div className="research-taxonomy-choice">
                   <div className="research-taxonomy-field">
-                    <span><label htmlFor="research-taxonomy">{zh ? '研究分类' : 'Research taxonomy'}</label><InfoHint label={zh ? '研究分类' : 'Research taxonomy'} detail={zh ? '研究与回测统一使用本次运行保存的当前目标。日期设置只限定行情和持仓数据。' : 'Research and backtests use the current targets saved with each run. Date settings only limit market and holdings data.'} /></span>
-                    <select id="research-taxonomy" aria-label={zh ? '研究分类' : 'Research taxonomy'} value={planningTaxonomyId} onChange={(event) => {
-                      taxonomyChoiceRef.current = { portfolioId, taxonomyId: event.target.value }
+                    <span><label htmlFor="research-taxonomy">{zh ? '优化分类' : 'Optimization taxonomy'}</label><InfoHint label={zh ? '优化分类' : 'Optimization taxonomy'} detail={zh ? '优化与回测统一使用本次运行保存的当前目标。日期设置只限定行情和持仓数据。' : 'Optimization and backtests use the current targets saved with each run. Date settings only limit market and holdings data.'} /></span>
+                    <select id="research-taxonomy" aria-label={zh ? '优化分类' : 'Optimization taxonomy'} value={planningTaxonomyId} onChange={(event) => {
                       setPlanningTaxonomyId(event.target.value)
                       setFrozenNodeIds([])
                       setTopSleeveBounds([])
                       updateRunSetupDraft({ planningTaxonomyId: event.target.value, frozenNodeIds: [], topSleeveBounds: [] })
                     }}>
-                      {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value="">{zh ? '请选择研究分类' : 'Select a research taxonomy'}</option>}
+                      {!workbench.planning_taxonomy_options.some((item) => item.taxonomy_id === planningTaxonomyId) && <option value="">{zh ? '请选择优化分类' : 'Select an optimization taxonomy'}</option>}
                       {workbench.planning_taxonomy_options.map((taxonomy) => <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id} translate="no">{taxonomy.name}{taxonomy.targets_available === false ? (zh ? ' · 未配置目标' : ' · No targets') : ''}</option>)}
                     </select>
                   </div>
                   {workbench.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.targets_available === false && (
-                    <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行研究前配置目标' : 'Configure targets before running Research'}</Link>
+                    <Link to={`/portfolios/${portfolioId}/taxonomies`}>{zh ? '运行优化前配置目标' : 'Configure targets before running optimization'}</Link>
                   )}
                 </div>
-                <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
                     <span>{zh ? '数据截止方式' : 'Data Cutoff Mode'}</span>
                     <select
@@ -1270,6 +1030,7 @@ export default function ResearchPage() {
                       }}
                     />
                   </label>
+                  <div className="research-parameter-group-title">{zh ? '组合求解' : 'Portfolio Solve'}</div>
                   <label>
                     <span>Capital Mode</span>
                     <select
@@ -1424,6 +1185,28 @@ export default function ResearchPage() {
                         </div>
                       ) : null}
                     </div>
+                  <div className="research-parameter-group-title">{zh ? '回测执行' : 'Backtest Execution'}</div>
+                  <div className="research-benchmark-field">
+                    <span>Benchmark</span>
+                    <BenchmarkSearchBox
+                      className="research-benchmark-search"
+                      instruments={benchmarkInstruments}
+                      selectedInstrumentId={benchmarkInstrumentId}
+                      searchValue={benchmarkSearch}
+                      onSearchChange={setBenchmarkSearch}
+                      onSelectInstrument={(instrument) => {
+                        setBenchmarkInstrumentId(instrument.instrument_id)
+                        setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                        updateRunSetupDraft({ benchmarkInstrumentId: instrument.instrument_id })
+                      }}
+                      onClear={() => {
+                        setBenchmarkInstrumentId('')
+                        setBenchmarkSearch('')
+                        updateRunSetupDraft({ benchmarkInstrumentId: '' })
+                      }}
+                      placeholder="Benchmark..."
+                    />
+                  </div>
                     <label>
                       <span>Rebalance</span>
                     <select
@@ -1506,62 +1289,18 @@ export default function ResearchPage() {
                       }}
                     />
                   </label>
-                  <label>
-                    <span>WF Train (months)</span>
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      max="120"
-                      value={walkForwardTrainingMonths}
-                      onChange={(event) => {
-                        setWalkForwardTrainingMonths(event.target.value)
-                        updateRunSetupDraft({ walkForwardTrainingMonths: event.target.value })
-                      }}
-                    />
-                  </label>
-                  <label>
-                    <span>WF Test (months)</span>
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      max="60"
-                      value={walkForwardTestMonths}
-                      onChange={(event) => {
-                        setWalkForwardTestMonths(event.target.value)
-                        updateRunSetupDraft({ walkForwardTestMonths: event.target.value })
-                      }}
-                    />
-                  </label>
-                  <div className="research-benchmark-field">
-                    <span>Benchmark</span>
-                    <BenchmarkSearchBox
-                      className="research-benchmark-search"
-                      instruments={benchmarkInstruments}
-                      selectedInstrumentId={benchmarkInstrumentId}
-                      searchValue={benchmarkSearch}
-                      onSearchChange={setBenchmarkSearch}
-                      onSelectInstrument={(instrument) => {
-                        setBenchmarkInstrumentId(instrument.instrument_id)
-                        setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
-                        updateRunSetupDraft({ benchmarkInstrumentId: instrument.instrument_id })
-                      }}
-                      onClear={() => {
-                        setBenchmarkInstrumentId('')
-                        setBenchmarkSearch('')
-                        updateRunSetupDraft({ benchmarkInstrumentId: '' })
-                      }}
-                      placeholder="Benchmark..."
-                    />
-                  </div>
-                </div>
+
                 </div>
                 {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               </fieldset>
+              </div>
+              <div className="research-parameters-actions">
+                <button type="button" className="toolbar-link" disabled={actionPending === 'save'} onClick={closeSettings}>{canEditPortfolio ? (zh ? '取消' : 'Cancel') : (zh ? '关闭' : 'Close')}</button>
+                {canEditPortfolio ? <button type="submit" className="toolbar-link button-primary" disabled={Boolean(actionPending) || scopeActionBlocked}>{actionPending === 'save' ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}</button> : null}
+              </div>
             </form>
-            </details>
-          </section>
+            </div>
+          </div> : null}
 
           {!latestRun ? (
             <section className="panel">
@@ -1571,29 +1310,17 @@ export default function ResearchPage() {
             <section className="panel" aria-busy={runDetailLoading}>
               {runDetailLoading ? <CalculationStatus /> : (
                 <div className="inline-notice inline-notice-error">
-                  {runDetailError ?? 'Research run detail is unavailable.'}
+                  {runDetailError ?? 'Optimization result is unavailable.'}
                 </div>
               )}
             </section>
           ) : latestRun.status === 'failed' ? (
             <section className="panel">
-              <div className="inline-notice inline-notice-error">{latestRun.error_message ?? 'Research run failed.'}</div>
+              <div className="inline-notice inline-notice-error">{latestRun.error_message ?? 'Optimization failed.'}</div>
             </section>
           ) : (
             <>
-              <section className="panel research-result-panel">
-                <div className="panel-header">
-                  <div>
-                    <div className="panel-title">{staleRun ? 'Historical Solved Result' : 'Solved Result'}</div>
-                    <div className="portfolio-detail-meta" data-testid="research-result-taxonomy">
-                      {zh ? '结果分类：' : 'Result taxonomy: '}{latestRun.planning_taxonomy_name ?? latestRun.planning_taxonomy_id}
-                      {changedTaxonomy ? (zh ? ' · 当前研究分类已改变，请重新运行。' : ' · The selected research taxonomy changed. Run Research again.') : ''}
-                    </div>
-                  </div>
-                  <div className="portfolio-detail-meta">
-                    {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
-                  </div>
-                </div>
+              <section className="panel research-result-panel" aria-label="Solved result">
               {staleRun ? (
                   <div
                     className="inline-notice inline-notice-warning"
@@ -1616,24 +1343,6 @@ export default function ResearchPage() {
                     <strong>Constrained solve — not execution-ready.</strong>
                   </div>
               ) : null}
-                <div className="research-result-summary" aria-label="Solved result summary">
-                  <div>
-                    <span>Solved Volatility</span>
-                    <strong>{formatMaybePercent(portfolioSolveEvent?.estimated_risk_sleeve_volatility)}</strong>
-                  </div>
-                  <div>
-                    <span>Risk Budget Gap</span>
-                    <strong>{formatMaybePercent(portfolioSolveEvent?.max_risk_share_gap, 4)}</strong>
-                  </div>
-                  <div>
-                    <span>Rebalance Turnover</span>
-                    <strong>{formatMaybePercent(portfolioSolveEvent?.gap_turnover)}</strong>
-                  </div>
-                  <div>
-                    <span>Material Gaps</span>
-                    <strong>{rebalanceGaps.length}</strong>
-                  </div>
-                </div>
                 <ResearchSolutionTree run={staleRun ? { ...latestRun, reliability_state: 'stale', is_current: false } : latestRun} />
               </section>
 
@@ -1652,17 +1361,31 @@ export default function ResearchPage() {
                   : null}
               />
 
+              <ResearchSleeveCharts weightPoints={backtest?.top_sleeve_weight_points ?? []} contributionPoints={backtest?.top_sleeve_contribution_points ?? []} />
+
               <details className="panel research-evidence-disclosure">
                 <summary>
-                  <span>Model & Backtest Evidence</span>
+                  <span>{zh ? '运行审计' : 'Run Audit'}</span>
                 </summary>
                 <div className="research-evidence-body">
+                <div className="panel-header">
+                  <div>
+                    <div className="portfolio-detail-meta" data-testid="research-result-taxonomy">
+                      {zh ? '结果分类：' : 'Result taxonomy: '}{latestRun.planning_taxonomy_name ?? latestRun.planning_taxonomy_id}
+                      {changedTaxonomy ? (zh ? ' · 当前优化分类已改变，请重新运行。' : ' · The selected optimization taxonomy changed. Run Optimization again.') : ''}
+                    </div>
+                  </div>
+                  <div className="portfolio-detail-meta">
+                    {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
+                  </div>
+                </div>
+
                   <section className="portfolio-section-block">
                     <div className="panel-header panel-header-inline">
                       <div><div className="panel-title">Solver Diagnostics</div>
                         {globalSolverRun ? <div className="panel-subtitle">
                           {latestRun.detail?.risk_attribution_scope === 'selected_research_scope'
-                            ? (zh ? '所选研究范围内统一求解；风险贡献相对于该范围。' : 'One global solve within the selected research scope; risk contributions are relative to that scope.')
+                            ? (zh ? '所选优化范围内统一求解；风险贡献相对于该范围。' : 'One global solve within the selected research scope; risk contributions are relative to that scope.')
                             : (zh ? '全组合统一求解；各层沿用自身的权重或风险预算依据。' : 'One portfolio-wide solve with each level retaining its weight or risk-budget basis.')}
                         </div> : null}
                       </div>
@@ -1710,7 +1433,7 @@ export default function ResearchPage() {
                   <p className="section-caption">
                     {usesCurrentTargets
                       ? 'The current taxonomy, targets and research eligibility are frozen for this run and used throughout its historical simulation. Market observations retain their decision-date cutoff. Delayed NAV publication and fund dealing restrictions are not simulated.'
-                      : 'This archive retains the target rules recorded with the original run. Run Research again to use the current targets throughout the historical simulation.'}
+                      : 'This archive retains the target rules recorded with the original run. Run Optimization again to use the current targets throughout the historical simulation.'}
                   </p>
                   <HorizontalTableScroll className="table-shell">
                     <table className="transactions-table research-validation-summary-table">
@@ -1822,76 +1545,7 @@ export default function ResearchPage() {
                 </div>
               </section>
 
-              <section>
-                <div className="portfolio-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div
-                        className="panel-title"
-                        title={walkForward?.methodology_note ?? undefined}
-                        tabIndex={walkForward?.methodology_note ? 0 : undefined}
-                      >
-                        {usesCurrentTargets ? 'Rolling Historical Windows' : 'Archived Rolling Holdout'}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="research-oos-summary">
-                    <span>Test-window Return <strong>{formatMaybePercent(walkForward?.oos_metrics?.period_return)}</strong></span>
-                    <span>Test-window Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
-                    <span>Test-window Max DD <strong>{formatMaybePercent(walkForward?.oos_metrics?.max_drawdown)}</strong></span>
-                  </div>
-                  <HorizontalTableScroll className="table-shell">
-                    <table className="transactions-table research-walk-forward-table">
-                      <thead>
-                        <tr>
-                          <th>Training (diagnostic)</th>
-                          <th>Test</th>
-                          <th>{usesCurrentTargets ? 'Target Snapshot' : 'Archived Configs'}</th>
-                          <th>Test-window Return</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!walkForward?.windows?.length ? (
-                          <TableStatusRow
-                            colSpan={5}
-                            label={walkForward?.unavailable_reason ? 'Unavailable' : 'N/A'}
-                            detail={walkForward?.unavailable_reason}
-                          />
-                        ) : walkForward.windows.map((window) => (
-                          <tr key={`${window.training_start_date}:${window.test_start_date}`}>
-                            <td>{window.training_start_date} to {window.training_end_date}</td>
-                            <td>{window.test_start_date} to {window.test_end_date}</td>
-                            <td>{(window.configuration_versions_used ?? []).length
-                              ? (window.configuration_versions_used ?? []).join(', ')
-                              : 'N/A'}</td>
-                            <td>{formatMaybePercent(window.metrics?.period_return)}</td>
-                            <td>{window.available ? 'Available' : window.unavailable_reason ?? 'Unavailable'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </HorizontalTableScroll>
-                </div>
-              </section>
 
-              <section className="performance-block-grid research-sleeve-grid">
-                <div className="portfolio-section-block research-chart-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">{zh ? '一级分类权重' : 'Top-Level Sleeve Weights'}</div></div>
-                  </div>
-                  <ResearchSleeveStackedAreaChart points={backtest?.top_sleeve_weight_points ?? []} />
-                </div>
-                <div className="portfolio-section-block research-chart-panel">
-                  <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">{zh ? '一级分类收益贡献' : 'Top-Level Sleeve Return Contribution'}</div></div>
-                  </div>
-                  <ResearchSleeveLineChart
-                    points={backtest?.top_sleeve_contribution_points ?? []}
-                    ariaLabel="Top-level sleeve return contribution"
-                  />
-                </div>
-              </section>
                 </div>
               </details>
             </>

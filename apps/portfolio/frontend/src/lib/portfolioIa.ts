@@ -6,5 +6,5 @@ export const workspacePrimaryNavigation = [
   { label: 'Transactions', href: '/transactions' },
   { label: 'Accounts', href: '/accounts' },
   { label: 'Taxonomies', href: '/taxonomies' },
-  { label: 'Research', href: '/research' },
+  { label: 'Portfolio Optimization', href: '/research' },
 ] as const

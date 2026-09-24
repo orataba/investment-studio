@@ -1317,11 +1317,6 @@ class ResearchSettingsRecordModel(Base):
             "backtest_slippage_bps >= 0 AND backtest_implementation_delay_days >= 0",
             name="research_backtest_execution_costs",
         ),
-        CheckConstraint(
-            "backtest_walk_forward_training_months > 0 AND "
-            "backtest_walk_forward_test_months > 0",
-            name="research_backtest_walk_forward_windows",
-        ),
     )
 
     portfolio_id: Mapped[str] = mapped_column(
@@ -1367,17 +1362,6 @@ class ResearchSettingsRecordModel(Base):
         Integer,
         nullable=False,
         server_default="1",
-    )
-    backtest_robustness_scenarios_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
-    backtest_walk_forward_training_months: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        server_default="24",
-    )
-    backtest_walk_forward_test_months: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        server_default="6",
     )
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)

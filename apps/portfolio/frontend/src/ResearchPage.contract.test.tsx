@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ResearchPage from './pages/ResearchPage'
@@ -14,8 +15,10 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioResearchWorkbench: vi.fn(),
   updatePortfolioResearchSettings: vi.fn(),
 }))
+const accessMock = vi.hoisted(() => ({ can_edit: true }))
 
 vi.mock('./lib/api', () => apiMocks)
+vi.mock('./components/PortfolioAccessProvider', () => ({ usePortfolioAccess: () => accessMock }))
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
@@ -234,8 +237,6 @@ const workbenchFixture = {
     backtest_tax_bps: 10,
     backtest_slippage_bps: 5,
     backtest_implementation_delay_days: 1,
-    backtest_walk_forward_training_months: 24,
-    backtest_walk_forward_test_months: 6,
     notes: 'Keep this research note.',
   },
   current_context: {
@@ -335,9 +336,22 @@ const workbenchFixture = {
   selected_run: compactCompletedRun,
 }
 
+async function openParameters() {
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Optimization Parameters' }))
+  return screen.findByRole('dialog', { name: 'Optimization Parameters' })
+}
+
+async function saveParameters() {
+  const save = screen.getByRole('button', { name: 'Save' })
+  await waitFor(() => expect(save).toBeEnabled())
+  await userEvent.click(save)
+}
+
 describe('Research rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    accessMock.can_edit = true
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue(workbenchFixture)
     apiMocks.getPortfolioResearchRun.mockResolvedValue(completedRun)
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
@@ -348,7 +362,13 @@ describe('Research rendered page contract', () => {
       covariance_model_id: 'sample_covariance',
       contribution_mode: 'signed',
     })
-    apiMocks.updatePortfolioResearchSettings.mockResolvedValue(workbenchFixture.settings)
+    apiMocks.updatePortfolioResearchSettings.mockImplementation(async (_portfolioId, settings) => {
+      const reads = apiMocks.getPortfolioResearchWorkbench.mock.results
+      const current = reads.length ? await reads[reads.length - 1].value : workbenchFixture
+      const saved = { ...current.settings, ...settings }
+      apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...current, settings: saved })
+      return saved
+    })
   })
 
   it('keeps governance controls off the research page and renders short-history metrics honestly', async () => {
@@ -362,7 +382,12 @@ describe('Research rendered page contract', () => {
       '/portfolios/:portfolioId/research',
     )
 
-    await screen.findByText('Solved Result')
+    await screen.findByTestId('research-result-taxonomy')
+    expect(screen.queryByText('Research Settings')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Cash Yield (%)')).not.toBeInTheDocument()
+    const audit = screen.getByText('Run Audit').closest('details')!
+    expect(audit).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('Run Audit'))
     expect(screen.getByRole('button', { name: /Data quality warning: Quote coverage needs review/ }).closest('.research-command-meta')).not.toBeNull()
     expect(screen.queryByText('Research Eligibility')).not.toBeInTheDocument()
     expect(screen.queryByText('PM Approval')).not.toBeInTheDocument()
@@ -370,9 +395,6 @@ describe('Research rendered page contract', () => {
     expect(screen.getByText(/FCN and options are no-trade, zero-return capital/)).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^Derivative Weight/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Target Cash Weight' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Cash Yield (%)')).toHaveValue(2)
-    expect(screen.getByLabelText('Commission (bps)')).toHaveValue(2)
-    expect(screen.getByLabelText('Slippage (bps)')).toHaveValue(5)
     expect(screen.queryByText('Robustness Scenarios')).not.toBeInTheDocument()
     expect(screen.queryByText('Robustness')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add robustness scenario' })).not.toBeInTheDocument()
@@ -389,6 +411,13 @@ describe('Research rendered page contract', () => {
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
     expect(apiMocks.getPortfolioResearchWorkbench).toHaveBeenCalledWith('3')
     expect(apiMocks.getPortfolioResearchRun).toHaveBeenCalledWith('3', 'research-1')
+    const dialog = await openParameters()
+    expect(within(dialog).getByLabelText('Cash Yield (%)')).toHaveValue(2)
+    expect(within(dialog).getByLabelText('Commission (bps)')).toHaveValue(2)
+    expect(within(dialog).getByLabelText('Slippage (bps)')).toHaveValue(5)
+    expect(within(dialog).queryByText('WF Train (months)')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('WF Test (months)')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Run Optimization' })).not.toBeInTheDocument()
   })
 
   it('keeps the saved research taxonomy and marks results from another taxonomy as historical', async () => {
@@ -398,9 +427,10 @@ describe('Research rendered page contract', () => {
     })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     await screen.findByTestId('research-result-taxonomy')
-    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
+    await openParameters()
+    expect(screen.getByLabelText('Optimization taxonomy')).toHaveValue('industry')
     expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Policy Allocation')
-    expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Run Research again')
+    expect(screen.getByTestId('research-result-taxonomy')).toHaveTextContent('Run Optimization again')
     expect(screen.getByText('Historical result — not current or execution-ready.')).toBeInTheDocument()
   })
 
@@ -410,8 +440,9 @@ describe('Research rendered page contract', () => {
       planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }],
     })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    expect(await screen.findByLabelText('Research taxonomy')).toHaveValue('')
-    expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled()
+    await openParameters()
+    expect(await screen.findByLabelText('Optimization taxonomy')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Run Optimization' })).toBeDisabled()
     expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
@@ -421,10 +452,11 @@ describe('Research rendered page contract', () => {
       settings: { ...workbenchFixture.settings, planning_taxonomy_id: 'deleted', planning_taxonomy_name: 'Deleted Plan' },
     })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    expect(await screen.findByLabelText('Research taxonomy')).toHaveValue('')
-    expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled()
+    await openParameters()
+    expect(await screen.findByLabelText('Optimization taxonomy')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Run Optimization' })).toBeDisabled()
     expect(screen.queryByText('Deleted Plan')).not.toBeInTheDocument()
-    expect(screen.getByText('No research taxonomy selected')).toBeVisible()
+    expect(screen.getByText('No optimization taxonomy selected')).toBeVisible()
     expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
@@ -439,20 +471,25 @@ describe('Research rendered page contract', () => {
       ...industry, root_allocation_basis: 'weight', status: 'active',
     }], taxonomy_nodes: [] })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    await screen.findByText('Solved Result')
-    fireEvent.change(screen.getByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await openParameters()
+    fireEvent.change(screen.getByLabelText('Optimization taxonomy'), { target: { value: 'industry' } })
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    await saveParameters()
     await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalled())
     expect(apiMocks.updatePortfolioResearchSettings.mock.calls[0][1]).not.toHaveProperty('backtest_robustness_scenarios')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await openParameters()
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
+      settings: { ...workbenchFixture.settings, planning_taxonomy_id: 'industry', planning_taxonomy_name: 'Industry' },
       planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry, region],
     })
     fireEvent(window, new CustomEvent('portfolio-risk-policy-updated', { detail: { portfolioId: '3' } }))
-    await waitFor(() => expect(screen.getByLabelText('Research taxonomy').querySelector('option[value="region"]')).toHaveTextContent('Region'))
-    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
+    await waitFor(() => expect(screen.getByLabelText('Optimization taxonomy').querySelector('option[value="region"]')).toHaveTextContent('Region'))
+    expect(screen.getByLabelText('Optimization taxonomy')).toHaveValue('industry')
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
 
-  it('clears a removed local research choice and prevents its queued settings write after refresh', async () => {
+  it('clears a removed local research choice and prevents an in-flight save from writing it after refresh', async () => {
     const industry = { taxonomy_id: 'industry', name: 'Industry', taxonomy_type: 'custom' }
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       planning_taxonomy_options: [...workbenchFixture.planning_taxonomy_options, industry],
@@ -463,40 +500,53 @@ describe('Research rendered page contract', () => {
     let resolveRiskPolicy: ((value: object) => void) | undefined
     apiMocks.getPortfolioRiskPolicy.mockReturnValueOnce(new Promise((resolve) => { resolveRiskPolicy = resolve }))
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    await screen.findByText('Solved Result')
-    fireEvent.change(screen.getByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await openParameters()
+    fireEvent.change(screen.getByLabelText('Optimization taxonomy'), { target: { value: 'industry' } })
+    await saveParameters()
     await waitFor(() => expect(apiMocks.getPortfolioRiskPolicy).toHaveBeenCalled())
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({ ...workbenchFixture,
       settings: { ...workbenchFixture.settings, planning_taxonomy_id: null, planning_taxonomy_name: null },
     })
     fireEvent(window, new CustomEvent('portfolio-risk-policy-updated', { detail: { portfolioId: '3' } }))
-    await waitFor(() => expect(screen.getByLabelText('Research taxonomy')).toHaveValue(''))
+    await waitFor(() => expect(screen.getByLabelText('Optimization taxonomy')).toHaveValue(''))
     await act(async () => {
       resolveRiskPolicy?.({ lookback_days: 365, calculation_frequency: 'daily', missing_return_policy: 'strict',
         covariance_model_id: 'sample_covariance', contribution_mode: 'signed' })
     })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Run Research' })).toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run Optimization' })).toBeDisabled())
     expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Research taxonomy').querySelector('option[value="industry"]')).toBeNull()
+    expect(screen.getByLabelText('Optimization taxonomy').querySelector('option[value="industry"]')).toBeNull()
   })
 
-  it('preserves existing research notes when run settings auto-save', async () => {
+  it('saves changed parameters explicitly while preserving notes and keeping Run separate', async () => {
     renderPortfolioPage(
       <ResearchPage />,
       '/portfolios/3/research',
       '/portfolios/:portfolioId/research',
     )
 
-    const capitalMode = await screen.findByLabelText('Capital Mode')
+    const dialog = await openParameters()
+    const capitalMode = within(dialog).getByLabelText('Capital Mode')
     fireEvent.change(capitalMode, { target: { value: 'fixed_gross' } })
+    fireEvent.change(within(dialog).getByLabelText('Gross Exposure'), { target: { value: '1.2' } })
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    await saveParameters()
 
     await waitFor(() => {
       expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith(
         '3',
-        expect.objectContaining({ notes: 'Keep this research note.' }),
+        expect.objectContaining({ notes: 'Keep this research note.', capital_mode: 'fixed_gross', gross_exposure: 1.2 }),
       )
-    }, { timeout: 2_000 })
+    })
+    expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledTimes(1)
+    expect(apiMocks.updatePortfolioResearchSettings.mock.calls[0][1]).not.toHaveProperty('backtest_walk_forward_training_months')
+    expect(apiMocks.updatePortfolioResearchSettings.mock.calls[0][1]).not.toHaveProperty('backtest_walk_forward_test_months')
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const reopened = await openParameters()
+    expect(within(reopened).getByLabelText('Capital Mode')).toHaveValue('fixed_gross')
+    expect(within(reopened).getByLabelText('Gross Exposure')).toHaveValue(1.2)
   })
 
   it('saves a selected custom taxonomy and clears constraints from the previous taxonomy', async () => {
@@ -506,12 +556,133 @@ describe('Research rendered page contract', () => {
     })
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({ taxonomies: [{ taxonomy_id: 'industry', name: 'Industry', root_allocation_basis: 'weight', status: 'active' }], taxonomy_nodes: [] })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
-    fireEvent.change(await screen.findByLabelText('Research taxonomy'), { target: { value: 'industry' } })
+    await openParameters()
+    fireEvent.change(await screen.findByLabelText('Optimization taxonomy'), { target: { value: 'industry' } })
+    expect(screen.getByText('Configure targets before running optimization')).toHaveAttribute('href', '/portfolios/3/taxonomies')
+    expect(screen.getByTestId('research-result-taxonomy')).not.toHaveTextContent('Run Optimization again')
+    expect(screen.queryByText('Historical result — not current or execution-ready.')).not.toBeInTheDocument()
+    await saveParameters()
     await waitFor(() => expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith('3',
       expect.objectContaining({ planning_taxonomy_id: 'industry', frozen_taxonomy_node_ids: [], top_sleeve_weight_bounds: [] }),
     ), { timeout: 2_000 })
-    expect(screen.getByLabelText('Research taxonomy')).toHaveValue('industry')
-    expect(screen.getByText('Configure targets before running Research')).toHaveAttribute('href', '/portfolios/3/taxonomies')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await openParameters()
+    expect(screen.getByLabelText('Optimization taxonomy')).toHaveValue('industry')
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it.each(['Cancel', 'Escape', 'Close', 'backdrop'])('discards parameter drafts on %s and restores focus to Parameters', async (method) => {
+    const user = userEvent.setup()
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Commission (bps)'), { target: { value: '9' } })
+    if (method === 'Escape') await user.keyboard('{Escape}')
+    else if (method === 'backdrop') fireEvent.click(dialog.parentElement!)
+    else await user.click(within(dialog).getByRole('button', { name: method }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Optimization Parameters' })).toHaveFocus())
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+    const reopened = await openParameters()
+    expect(within(reopened).getByLabelText('Commission (bps)')).toHaveValue(2)
+  })
+
+  it('keeps parameter edits local instead of auto-saving after a pause', async () => {
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    vi.useFakeTimers()
+    try {
+      fireEvent.change(within(dialog).getByLabelText('Commission (bps)'), { target: { value: '9' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(apiMocks.getPortfolioRiskPolicy).not.toHaveBeenCalled()
+      expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+      expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets read-only members inspect parameters without editing, saving, or running', async () => {
+    accessMock.can_edit = false
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    expect(within(dialog).getByLabelText('Capital Mode')).toBeDisabled()
+    expect(within(dialog).getByLabelText('Commission (bps)')).toBeDisabled()
+    expect(within(dialog).getByLabelText('Optimization taxonomy')).toBeDisabled()
+    expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run Optimization' })).toBeDisabled()
+    await userEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0])
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it('does not change the saved comparison while a benchmark selection is only a draft', async () => {
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [{
+      instrument_id: 'benchmark-1', instrument_name: 'Market Benchmark', instrument_type: 'index', currency: 'USD',
+      identifiers: [{ identifier_type: 'ticker', identifier_value: 'MKT', is_primary: true }], latest_market_data: [],
+    }] })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Show benchmark choices' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: /Market Benchmark/ }))
+    expect(within(dialog).getByRole('searchbox', { name: 'Compare benchmark' })).toHaveValue('MKT · Market Benchmark')
+    expect(apiMocks.getPortfolioResearchBacktestBenchmarkComparison).not.toHaveBeenCalled()
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    const reopened = await openParameters()
+    expect(within(reopened).getByRole('searchbox', { name: 'Compare benchmark' })).toHaveValue('')
+    await userEvent.type(within(reopened).getByRole('searchbox', { name: 'Compare benchmark' }), 'Unselected search')
+    await userEvent.click(within(reopened).getByRole('button', { name: 'Cancel' }))
+    const reopenedAgain = await openParameters()
+    expect(within(reopenedAgain).getByRole('searchbox', { name: 'Compare benchmark' })).toHaveValue('')
+    expect(apiMocks.getPortfolioResearchBacktestBenchmarkComparison).not.toHaveBeenCalled()
+  })
+
+  it('does not replace a dirty parameter draft when the saved run detail finishes loading', async () => {
+    let resolveDetail: ((value: typeof completedRun) => void) | undefined
+    apiMocks.getPortfolioResearchRun.mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve }))
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Commission (bps)'), { target: { value: '9' } })
+    await act(async () => { resolveDetail?.(completedRun) })
+    await screen.findByTestId('research-result-taxonomy')
+    expect(within(dialog).getByLabelText('Commission (bps)')).toHaveValue(9)
+    expect(apiMocks.updatePortfolioResearchSettings).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    const reopened = await openParameters()
+    expect(within(reopened).getByLabelText('Commission (bps)')).toHaveValue(2)
+  })
+
+  it('keeps failed parameter saves visible with the draft available for correction', async () => {
+    apiMocks.updatePortfolioResearchSettings.mockRejectedValueOnce(new Error('Parameter save unavailable.'))
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Commission (bps)'), { target: { value: '9' } })
+    await saveParameters()
+    expect(await within(dialog).findByText('Parameter save unavailable.')).toBeVisible()
+    expect(within(dialog).getByLabelText('Commission (bps)')).toHaveValue(9)
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
+  })
+
+  it('restores the Parameters entry focus after a successful save with a slow refresh', async () => {
+    const saved = { ...workbenchFixture.settings, backtest_commission_bps: 9 }
+    let resolveRefresh: ((value: typeof workbenchFixture) => void) | undefined
+    apiMocks.updatePortfolioResearchSettings.mockImplementationOnce(async () => {
+      apiMocks.getPortfolioResearchWorkbench.mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve }))
+      return saved
+    })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const dialog = await openParameters()
+    fireEvent.change(within(dialog).getByLabelText('Commission (bps)'), { target: { value: '9' } })
+    await saveParameters()
+    await waitFor(() => expect(apiMocks.getPortfolioResearchWorkbench).toHaveBeenCalledTimes(2))
+    await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())) })
+    await act(async () => { resolveRefresh?.({ ...workbenchFixture, settings: saved }) })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Optimization Parameters' })).toHaveFocus())
+    expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledTimes(1)
     expect(apiMocks.createPortfolioResearchRun).not.toHaveBeenCalled()
   })
 
@@ -583,12 +754,12 @@ describe('Research rendered page contract', () => {
       expect.stringContaining('Planning taxonomy changed after this run.'),
     )
     expect(screen.queryByText('Planning taxonomy changed after this run.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Historical Solved Result')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Solved result' })).toContainElement(warning)
   })
 
   it('moves validation diagnostics to their related status fields', async () => {
     const unavailableReason = 'Backtest revision history is shorter than selected risk lookback window.'
-    const methodologyNote =
-      'Training and test dates are temporal diagnostics, not walk-forward optimization.'
     apiMocks.getPortfolioResearchRun.mockResolvedValue({
       ...completedRun,
       detail: {
@@ -610,12 +781,6 @@ describe('Research rendered page contract', () => {
             last_decision_date: null,
             unavailable_reason: unavailableReason,
           },
-          walk_forward: {
-            methodology_note: methodologyNote,
-            unavailable_reason: unavailableReason,
-            windows: [],
-            oos_metrics: null,
-          },
         },
       },
     })
@@ -626,7 +791,10 @@ describe('Research rendered page contract', () => {
       '/portfolios/:portfolioId/research',
     )
 
-    const coverageSection = (await screen.findByText('Historical Data Coverage')).closest('.portfolio-section-block')
+    const auditSummary = await screen.findByText('Run Audit')
+    expect(auditSummary.closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(auditSummary)
+    const coverageSection = screen.getByText('Historical Data Coverage').closest('.portfolio-section-block')
     expect(coverageSection).not.toBeNull()
     const coverageStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Status Unavailable/ })
     expect(within(coverageStatus).getByText('Unavailable')).toHaveAttribute('title', unavailableReason)
@@ -639,12 +807,7 @@ describe('Research rendered page contract', () => {
     const pendingStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Pending Decisions 1/ })
     expect(within(pendingStatus).getByText('1')).toHaveAttribute('title', 'Scheduled execution is after the cutoff.')
 
-    const oosHeading = screen.getByText('Archived Rolling Holdout')
-    expect(oosHeading).toHaveAttribute('title', methodologyNote)
-    const oosSection = oosHeading.closest('.portfolio-section-block')
-    expect(oosSection).not.toBeNull()
-    expect(oosSection?.querySelector('.empty-state-cell')).toHaveAttribute('title', unavailableReason)
-    expect(within(oosSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
+    expect(screen.queryByText('Archived Rolling Holdout')).not.toBeInTheDocument()
   })
 
   it('distinguishes current-target simulation from archived target rules', async () => {
@@ -669,12 +832,13 @@ describe('Research rendered page contract', () => {
     expect(await screen.findByText('Actual vs Backtest')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Return basis:.*saved current targets/ })).toBeInTheDocument()
     expect(screen.getByText('Current targets')).toBeInTheDocument()
-    expect(screen.getByText('Data Cutoff Mode')).toBeInTheDocument()
-    expect(screen.getByText('Data Cutoff Date')).toBeInTheDocument()
     expect(screen.getByText('Target Snapshot Version')).toBeInTheDocument()
-    expect(screen.getByText('Rolling Historical Windows')).toBeInTheDocument()
+    expect(screen.queryByText('Rolling Historical Windows')).not.toBeInTheDocument()
     expect(screen.queryByText('Archived Historical Backtest')).not.toBeInTheDocument()
     expect(screen.queryByText(/Historical taxonomy and targets are effective-dated/)).not.toBeInTheDocument()
+    const dialog = await openParameters()
+    expect(within(dialog).getByText('Data Cutoff Mode')).toBeInTheDocument()
+    expect(within(dialog).getByText('Data Cutoff Date')).toBeInTheDocument()
   })
 
   it('renders one hierarchical solution with signed trade amounts and an Excel download', async () => {
@@ -709,6 +873,35 @@ describe('Research rendered page contract', () => {
     expect(within(periodReturnRow).getByText('0.60%')).toBeInTheDocument()
   })
 
+  it('shows sleeve charts below the monthly matrix while keeping run audit collapsed', async () => {
+    const points = ['2026-07-01', '2026-07-15'].map((date, index) => ({
+      date, sleeves: [{ top_sleeve_id: 'risk-assets', top_sleeve_label: 'Risk Assets', value: .8 + .1 * index }],
+    }))
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({ ...completedRun, detail: {
+      ...completedRun.detail, backtest: { ...completedRun.detail.backtest,
+        top_sleeve_weight_points: points,
+        top_sleeve_contribution_points: points.map((point, index) => ({ ...point,
+          sleeves: point.sleeves.map((sleeve) => ({ ...sleeve, value: index * .018 })),
+        })),
+      },
+    } })
+    renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
+    const matrix = await screen.findByRole('table', { name: 'Monthly return matrix' })
+    for (const name of ['Top-Level Weights · Backtest', 'Top-Level Return Contributions · Backtest']) {
+      const chart = screen.getByRole('img', { name })
+      expect(chart).toBeVisible()
+      expect(chart.closest('details')).toBeNull()
+      expect(matrix.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    }
+    expect(screen.getByText('Run Audit').closest('details')).not.toHaveAttribute('open')
+    expect(screen.queryByText('Historical Solved Result')).not.toBeInTheDocument()
+    const result = screen.getByRole('region', { name: 'Solved result' })
+    expect(within(result).queryByText('Solved Volatility')).not.toBeInTheDocument()
+    expect(within(result).queryByText('Risk Budget Gap')).not.toBeInTheDocument()
+    expect(within(result).queryByText('Rebalance Turnover')).not.toBeInTheDocument()
+    expect(within(result).queryByText('Material Gaps')).not.toBeInTheDocument()
+  })
+
   it.each([
     ['portfolio', 'One portfolio-wide solve with each level retaining its weight or risk-budget basis.'],
     ['selected_research_scope', 'One global solve within the selected research scope; risk contributions are relative to that scope.'],
@@ -718,6 +911,7 @@ describe('Research rendered page contract', () => {
     } })
     renderPortfolioPage(<ResearchPage />, '/portfolios/3/research', '/portfolios/:portfolioId/research')
     expect(await screen.findByText(note)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Run Audit'))
     expect(screen.getByRole('button', { name: /Risk contribution basis:/ })).toBeInTheDocument()
   })
 

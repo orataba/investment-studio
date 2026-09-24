@@ -53,7 +53,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "identity": "20260919_0002",
         "instrument_data": "20260920_0036",
         "data_ingestion": "20260904_0009",
-        "portfolio": "20260923_0068",
+        "portfolio": "20260924_0069",
         "watchlist": "20260923_0063",
         "market_data": "studio_market_0002",
         "briefing": "20260908_0003",

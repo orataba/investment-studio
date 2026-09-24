@@ -482,8 +482,6 @@ def setup() -> str:
             "backtest_tax_bps": 0,
             "backtest_slippage_bps": 2,
             "backtest_implementation_delay_days": 1,
-            "backtest_walk_forward_training_months": 36,
-            "backtest_walk_forward_test_months": 12,
             "notes": "Synthetic global all-weather QA. Derivatives reserve capital but have zero modeled Research returns; ledger cashflows remain real facts.",
         },
         "PUT",

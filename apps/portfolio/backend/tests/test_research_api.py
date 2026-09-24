@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from portfolio_app.db.models import ResearchRunRecordModel, ResearchSettingsRecordModel
+from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
 from tests.research_backtest_fixtures import initial_book, stub_inception_statement
 from portfolio_app.services import research as research_service
@@ -54,7 +54,6 @@ from portfolio_app.services.research_solver import (
     _replay_backtest_decisions,
     _solve_current_scope,
     _top_sleeve_for_member,
-    _build_walk_forward_validation,
     build_current_target_backtest,
     research_window_start_date,
 )
@@ -1322,37 +1321,6 @@ def test_backtest_structures_skipped_execution_when_target_observations_never_al
     assert "lack a common post-delay observation" in replay["warnings"][0]
 
 
-def test_walk_forward_only_publishes_points_after_each_test_window_starts() -> None:
-    point_dates = [item.date() for item in pd.date_range("2024-01-31", "2026-01-31", freq="ME")]
-    points = [
-        {"date": point_date.isoformat(), "value": 1.0 + index * 0.01}
-        for index, point_date in enumerate(point_dates)
-    ]
-    validation = _build_walk_forward_validation(
-        points,
-        [
-            {
-                "decision_date": point_date.isoformat(),
-                "taxonomy_configuration_version": 1,
-            }
-            for point_date in point_dates
-        ],
-        training_months=12,
-        test_months=3,
-    )
-
-    assert validation["available"] is True
-    assert validation["windows"]
-    for window in validation["windows"]:
-        test_start = date.fromisoformat(window["test_start_date"])
-        published_return_dates = [
-            date.fromisoformat(item)
-            for item in _backtest_return_map_from_points(window["points"])
-        ]
-        assert all(item >= test_start for item in published_return_dates)
-    assert validation["oos_metrics"]["period_return"] is not None
-
-
 def test_research_assumptions_do_not_truncate_volatility_cap_or_backtest_caveats() -> None:
     assumptions = research_service._build_target_assumptions(
         settings_payload={
@@ -1866,8 +1834,6 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
             "backtest_tax_bps": 18,
             "backtest_slippage_bps": 9,
             "backtest_implementation_delay_days": 4,
-            "backtest_walk_forward_training_months": 18,
-            "backtest_walk_forward_test_months": 3,
         },
     )
     assert initial.status_code == 200, initial.text
@@ -1892,8 +1858,6 @@ def test_research_settings_omitted_backtest_controls_preserve_existing_configura
     assert payload["backtest_slippage_bps"] == pytest.approx(9)
     assert payload["backtest_implementation_delay_days"] == 4
     assert "backtest_robustness_scenarios" not in payload
-    assert payload["backtest_walk_forward_training_months"] == 18
-    assert payload["backtest_walk_forward_test_months"] == 3
 
 
 def test_research_settings_accepts_volatility_cap_mode(client):
@@ -2753,17 +2717,6 @@ def test_research_run_creates_current_target_weight_outputs(client, monkeypatch)
     assert settings_payload["planning_taxonomy_id"] == taxonomy_id
     assert settings_payload["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
     assert "target_dimension" not in settings_payload
-    # A configuration saved before scenario retirement must not make a new run
-    # replay alternative costs or carry those controls into its input identity.
-    with get_session_factory()() as session:
-        settings = session.get(ResearchSettingsRecordModel, "investment-studio")
-        settings.backtest_robustness_scenarios_json = [{
-            "scenario_id": "legacy-stress", "label": "Saved cost scenario",
-            "cash_yield_annual": 0.0, "commission_bps": 900.0, "tax_bps": 900.0,
-            "slippage_bps": 900.0, "implementation_delay_days": 30,
-        }]
-        session.commit()
-
     workbench_response = client.get("/api/portfolios/investment-studio/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
@@ -2814,7 +2767,7 @@ def test_research_run_creates_current_target_weight_outputs(client, monkeypatch)
     assert backtest["execution_records"]
     assert backtest["total_cost"] > 0
     assert backtest["robustness_results"] == []
-    assert backtest["walk_forward"]["available"] is False
+    assert backtest["walk_forward"] is None
     assert all(
         abs(item["residual"]) < 1e-10
         for item in backtest["contribution_reconciliation_points"]

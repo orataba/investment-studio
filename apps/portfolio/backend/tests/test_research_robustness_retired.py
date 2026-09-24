@@ -1,7 +1,7 @@
 from copy import deepcopy
 from datetime import date
 
-from portfolio_app.db.models import ResearchRunRecordModel, ResearchSettingsRecordModel
+from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
 
 
@@ -13,16 +13,10 @@ LEGACY_SCENARIOS = [{
 }]
 
 
-def test_current_settings_ignore_retired_scenarios_and_preserve_base_execution_costs(client):
+def test_current_settings_omit_retired_scenarios_and_preserve_base_execution_costs(client):
     initial = client.get(f"/api/portfolios/{PORTFOLIO_ID}/research/workbench")
     assert initial.status_code == 200
     assert "backtest_robustness_scenarios" not in initial.json()["settings"]
-    with get_session_factory()() as session:
-        record = session.get(ResearchSettingsRecordModel, PORTFOLIO_ID)
-        assert record.backtest_robustness_scenarios_json is None
-        record.backtest_robustness_scenarios_json = deepcopy(LEGACY_SCENARIOS)
-        session.commit()
-
     saved = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
         "as_of_mode": "dynamic", "lookback_days": 30,
         "backtest_cash_yield_annual": 0.03, "backtest_commission_bps": 3,
@@ -37,8 +31,6 @@ def test_current_settings_ignore_retired_scenarios_and_preserve_base_execution_c
     assert payload["backtest_tax_bps"] == 12
     assert payload["backtest_slippage_bps"] == 7
     assert payload["backtest_implementation_delay_days"] == 2
-    with get_session_factory()() as session:
-        assert session.get(ResearchSettingsRecordModel, PORTFOLIO_ID).backtest_robustness_scenarios_json == LEGACY_SCENARIOS
 
 
 def test_saved_robustness_results_remain_readable_without_rewriting_archive(client):

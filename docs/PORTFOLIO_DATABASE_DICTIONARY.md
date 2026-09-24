@@ -300,7 +300,9 @@ Edited taxonomy/node and FCN references are validated; unchanged archived refere
 
 | Columns |
 |---|
-| **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `planning_taxonomy_id VARCHAR?`; `comparator_taxonomy_node_id VARCHAR?`; `as_of_mode VARCHAR`; `as_of_date DATE?`; `lookback_days INTEGER`; `calculation_frequency VARCHAR (= daily)`; `missing_return_policy VARCHAR`; `capital_mode VARCHAR`; `gross_exposure FLOAT?`; `target_volatility FLOAT?`; `max_gross_exposure FLOAT?`; `frozen_taxonomy_node_ids_json JSON?`; `top_sleeve_weight_bounds_json JSON?`; `backtest_rebalance_frequency VARCHAR`; `backtest_benchmark_instrument_id VARCHAR?`; `backtest_cash_yield_annual FLOAT`; `backtest_commission_bps FLOAT`; `backtest_tax_bps FLOAT`; `backtest_slippage_bps FLOAT`; `backtest_implementation_delay_days INTEGER`; `backtest_robustness_scenarios_json JSON?`（保留旧值，当前设置与新运行不读取）; `backtest_walk_forward_training_months INTEGER`; `backtest_walk_forward_test_months INTEGER`; `notes VARCHAR?`; `updated_at VARCHAR?` |
+| **PK/FK** `portfolio_id → portfolio_record.portfolio_id`; `planning_taxonomy_id VARCHAR?`; `comparator_taxonomy_node_id VARCHAR?`; `as_of_mode VARCHAR`; `as_of_date DATE?`; `lookback_days INTEGER`; `calculation_frequency VARCHAR (= daily)`; `missing_return_policy VARCHAR`; `capital_mode VARCHAR`; `gross_exposure FLOAT?`; `target_volatility FLOAT?`; `max_gross_exposure FLOAT?`; `frozen_taxonomy_node_ids_json JSON?`; `top_sleeve_weight_bounds_json JSON?`; `backtest_rebalance_frequency VARCHAR`; `backtest_benchmark_instrument_id VARCHAR?`; `backtest_cash_yield_annual FLOAT`; `backtest_commission_bps FLOAT`; `backtest_tax_bps FLOAT`; `backtest_slippage_bps FLOAT`; `backtest_implementation_delay_days INTEGER`; `notes VARCHAR?`; `updated_at VARCHAR?` |
+
+当前设置不再保存仅用于结果切片的训练／测试月数或已停用的成本稳健性情景；风险估计仍由 `lookback_days` 控制，主模拟的现金收益、费用与执行延迟设置仍保留。已保存研究的 request/result JSON 保留原始窗口、情景参数与结果，迁移不重写历史证据。降级只恢复训练／测试默认值及空情景设置，不恢复已删除的当前偏好。
 
 ### `portfolio.research_run_record`
 

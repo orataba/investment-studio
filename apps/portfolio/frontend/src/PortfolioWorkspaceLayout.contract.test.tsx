@@ -106,9 +106,9 @@ describe('Portfolio workspace loading contract', () => {
     const navigation = within(screen.getByRole('navigation', { name: 'Portfolio sections' }))
     expect(navigation.getByRole('link', { name: 'Overview' })).toBeInTheDocument()
     if (enabled) {
-      expect(navigation.getByRole('link', { name: 'Research' })).toHaveAttribute('href', '/portfolios/3/research')
+      expect(navigation.getByRole('link', { name: 'Portfolio Optimization' })).toHaveAttribute('href', '/portfolios/3/research')
     } else {
-      expect(navigation.queryByRole('link', { name: 'Research' })).not.toBeInTheDocument()
+      expect(navigation.queryByRole('link', { name: 'Portfolio Optimization' })).not.toBeInTheDocument()
     }
   })
 
