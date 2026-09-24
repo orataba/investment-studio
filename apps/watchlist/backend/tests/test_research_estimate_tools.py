@@ -1,3 +1,4 @@
+from .research_projection_fixture import server_projection
 from copy import deepcopy
 import asyncio
 import json
@@ -44,7 +45,8 @@ def test_large_overview_and_company_drilldown_preserve_all_rows_below_harness_li
     original = deepcopy(evidence)
     original_estimate = original["result"]["assets"][0]["analyst_estimate_history"]
     assert _bytes(original_estimate["source_ids"]) > 50_000
-    monkeypatch.setattr(mcp, "request", lambda *args: evidence)
+    context = {"run_id": "run", "cutoff": "2026-09-08T05:00:00Z", "catalogue": [{"instrument_id": "xlk"}], "instrument_inputs": evidence["result"]["assets"], "research_dossiers": [{"instrument_id": "xlk"}]}
+    monkeypatch.setattr(mcp, "request", server_projection(lambda *args: context))
     overview = mcp.read_instrument_research(["xlk"])
     estimate = overview["result"]["assets"][0]["analyst_estimate_history"]
     assert "source_ids" not in estimate and estimate["source_id"] == original_estimate["source_id"]
@@ -88,7 +90,7 @@ def test_context_keeps_all_catalogue_identities_and_indexes_retained_evidence(mo
         "tool_evidence": [evidence], "question": "检查标的",
         "referenced_risk_case": {"case_id": "current-case", "instrument_id": "i0",
                                  "updated_at": "2026-09-12T00:00:00Z", "body": "入口所选风险"}}
-    monkeypatch.setattr(mcp, "request", lambda *args: context)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda *args: context))
     result = mcp.read_research_context()
     assert result["sections"]["catalogue"]["count"] == 225
     catalogue, offset = [], 0
@@ -123,7 +125,7 @@ def test_sector_overview_and_company_use_bound_evidence_and_full_holdings_remain
             return context
         assert suffix == "sector-company/xlk/C094"
         return {"source_id": "fmp:daily:xlk:C094", "company": {"symbol": "C094", "annual_estimates": [{"revenue_avg": 100}]}}
-    monkeypatch.setattr(mcp, "request", request)
+    monkeypatch.setattr(mcp, "request", server_projection(request))
     overview = mcp.read_research_instrument("xlk")
     assert _bytes(overview) < 50_000
     assert overview["sector_estimate_evidence"][0]["row_counts"]["changes"] == 5700
@@ -177,7 +179,7 @@ def test_reference_tables_and_lineage_are_complete_paginated_and_shared_between_
                "instrument_inputs": [asset], "research_dossiers": [{"instrument_id": instrument_id, "mandate": {"focus": ["自己的研究重点"]}}]}
     original = deepcopy(context)
     evidence = {"source_id": "instruments:run", "result": {"assets": [asset]}}
-    monkeypatch.setattr(mcp, "request", lambda suffix, payload=None: context if suffix == "context" else evidence)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda suffix, payload=None: context if suffix == "context" else evidence))
     overview = mcp.read_instrument_research([instrument_id])
     single = mcp.read_research_instrument(instrument_id)
     assert overview["result"]["assets"][0] | {"dossier_read": None} == single["instrument_inputs"][0] | {"dossier_read": None}

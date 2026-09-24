@@ -520,6 +520,42 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 
 ## Release preflight and analytics readiness
 
+### Controlled Watchlist research refresh
+
+Research publication is a separate acceptance step after service deployment.
+Use each environment's own service identity, database and retained materials;
+never transfer local research records into production. The current scope is the
+active instruments whose latest coverage status is `Proposed` or `Invested`.
+
+For a controlled batch, temporarily set
+`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_ENABLED=false` in the external
+Watchlist runtime configuration before starting the upgraded API. This pauses
+automatic dispatch while keeping authenticated research tools available. Do not
+restart the API during an executing batch: startup marks interrupted work as
+failed and leaves its inputs for recovery.
+
+With the target runtime configuration loaded as the service user:
+
+```bash
+.venv/bin/python apps/watchlist/backend/scripts/refresh_active_research.py
+.venv/bin/python apps/watchlist/backend/scripts/refresh_active_research.py \
+  --execute --workers 4 --output /private/operator-path/research-refresh.json
+```
+
+The first command previews the scope without model calls. `--instrument-id`
+limits local acceptance to representative examples. The private manifest stores
+each dispatched run and accepted publication; `--resume` continues that batch's
+remaining current members through the same authorization and publication checks.
+It can recover a failed draft without recollecting its original evidence.
+Underlying data gaps remain visible and must not be mistaken for execution
+failure or complete research coverage. A completed run alone is insufficient:
+check the accepted review, current judgment and suggestion, source dates, figures,
+tracked developments and actual reading experience.
+
+After the batch and report checks, restore the original worker setting, restart
+only Watchlist API, and verify the automatic worker is running. Retain the
+manifest and acceptance evidence outside the source tree.
+
 After migration and before declaring Risk/Risk Budget production-ready, run the
 read-only data audit against the exact canonical local database target:
 

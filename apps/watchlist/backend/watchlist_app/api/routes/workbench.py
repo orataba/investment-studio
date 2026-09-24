@@ -126,6 +126,94 @@ class ResearchToolInput(BaseModel):
     source_id: str | None = None
 
 
+class ResearchReadInput(BaseModel):
+    resource: Literal["context", "instrument", "dossier", "estimates"]
+    instrument_id: str | None = None
+    section: str = "overview"
+    source_id: str | None = None
+    version_id: str | None = None
+    update_id: str | None = None
+    symbol: str | None = None
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1)
+    path: list[str | int] | None = None
+    statement_type: Literal["income", "balance_sheet", "cash_flow"] | None = None
+    fiscal_period: Literal["FY", "Q1", "Q2", "Q3", "Q4"] | None = None
+    period_end: str | None = None
+    financial_view: Literal["statements", "facts"] = "statements"
+
+
+@router.post("/research/runs/{run_id}/read")
+def read_run_page(run_id: str, request: ResearchReadInput, session: Session = Depends(get_db_session)):
+    """Project before HTTP/MCP transport; never ship a complete run to page it."""
+    from urllib.parse import parse_qs, urlsplit
+    from watchlist_app.services.research_run_context import load_run_fields
+    from watchlist_app.services import research_tool_projection as projection
+    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids"}
+    fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
+        "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
+        "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage",
+        "catalogue", "tool_evidence", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
+        "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
+        if request.resource == "context" else
+        {"catalogue", "instrument_inputs", "research_dossiers", "sector_inputs", "sector_estimate_evidence", "prior_events",
+         "market_coverage", "data_gaps"} if request.resource == "instrument" else
+        {"research_dossiers", "catalogue"} if request.resource == "dossier" else {"sector_estimate_evidence", "instrument_inputs", "catalogue"})
+    record = load_run_fields(session, run_id, fields)
+    context = record.context_json
+
+    def local_read(suffix, payload=None):
+        nonlocal context
+        if suffix == "context":
+            return context
+        if suffix == "tools":
+            # Bind a newly selected peer once; reads of an already bound object
+            # never append another copy of its original to tool_evidence.
+            bound = session.get(ResearchEntry, run_id, with_for_update=True)
+            require_entry_access(session, bound, tool_write=True)
+            if bound.status not in {"queued", "running"}:
+                raise HTTPException(409, "本轮研究已结束，不能增加研究范围")
+            from watchlist_app.services.sector_research import bind_research_instruments
+            bind_research_instruments(session, bound, payload["instrument_ids"])
+            session.commit()
+            context = load_run_fields(session, run_id, fields).context_json
+            return {}
+        if suffix == "financials":
+            from watchlist_app.api.routes.sector_research import financial_research, FinancialResearchInput
+            return financial_research(run_id, FinancialResearchInput(**payload), session)
+        parsed = urlsplit(suffix)
+        if parsed.path.startswith("dossier/"):
+            from urllib.parse import unquote
+            params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+            return run_dossier(run_id, unquote(parsed.path.removeprefix("dossier/")), session=session, **params)
+        raise ValueError("不支持的研究读取")
+
+    page = {key: getattr(request, key) for key in ("section", "offset", "limit", "path")}
+    try:
+        if request.resource == "context":
+            result = projection.read_research_context(local_read, **page)
+        elif not request.instrument_id:
+            raise ValueError("读取标的资料需要instrument_id")
+        elif request.resource == "instrument":
+            result = projection.read_research_instrument(local_read, request.instrument_id, **page,
+                **{key: getattr(request, key) for key in ("statement_type", "fiscal_period", "period_end", "financial_view")})
+        elif request.resource == "dossier":
+            result = projection.read_research_dossier(local_read, request.instrument_id, **page,
+                **{key: getattr(request, key) for key in ("source_id", "version_id", "update_id")})
+        else:
+            from watchlist_app.services.research_estimate_tools import estimate_company
+            if context.get("risk_run") or request.instrument_id not in {row["instrument_id"] for row in context.get("catalogue", [])}:
+                raise ValueError("只能读取本轮目录内标的的已绑定预期")
+            estimates = next((row for row in context.get("sector_estimate_evidence", []) if row["instrument_id"] == request.instrument_id), None)
+            if estimates is None:
+                estimates = next((row.get("analyst_estimate_history") for row in context.get("instrument_inputs", []) if row["instrument_id"] == request.instrument_id), None)
+            result = {"analyst_estimate_history": estimate_company(estimates, request.symbol)} if estimates else {}
+        from watchlist_app.services.research_read_projection import checked_overview
+        return checked_overview(result)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 @router.get("/research/catalogue")
 def get_catalogue(session: Session = Depends(get_db_session)):
     return {"instruments": catalogue(session)}
@@ -547,7 +635,17 @@ def research_tool(run_id: str, request: ResearchToolInput, session: Session = De
             result = {"available": False, "reason": "尚未取得市场状态，本次没有实时宏观证据。"}
     source_id = f"{request.tool}:{uuid4().hex[:12]}"
     evidence = serialize_payload({"source_id": source_id, "tool": request.tool, "request": request.model_dump(exclude={"public_result"}), "retrieved_at": now(), "result": result})
-    context = {**context, "tool_evidence": [*context.get("tool_evidence", []), evidence]}
+    # Originals already have canonical run-bound storage. A tool receipt proves
+    # which source was delivered, without recursively copying complete dossiers
+    # or asset snapshots into every subsequent run/context/reviewer request.
+    retained = evidence
+    if request.tool in {"instruments", "dossier", "comparison"}:
+        refs = ([f"instrument:{run_id}:{iid}" for iid in ids] if request.tool == "instruments" else
+                [source_id] if request.tool == "comparison" else [request.source_id] if request.source_id else [])
+        retained = {key: value for key, value in evidence.items() if key != "result"} | {
+            "source_ids": refs, "result_storage": "computed_metrics" if request.tool == "comparison" else
+            "instrument_inputs" if request.tool == "instruments" else "research_dossiers"}
+    context = {**context, "tool_evidence": [*context.get("tool_evidence", []), retained]}
     if request.tool == "comparison":
         metric = {"source_id": source_id, "source_type": "computed_metric", "scope": "public_market",
             "title": "已登记标的共同观察区间比较", "as_of": context["cutoff"], "data": result,

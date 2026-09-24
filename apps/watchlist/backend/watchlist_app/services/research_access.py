@@ -244,7 +244,8 @@ def enforce_request(request, session):
     if match:
         source_directory = (request.method == "GET" and path.endswith("/context")
                             and request.query_params.get("section") == "sources")
-        entry = (_entry_access_projection(session, match[1]) if source_directory
+        projected_read = path.endswith("/read")
+        entry = (_entry_access_projection(session, match[1]) if source_directory or projected_read
                  else session.get(ResearchEntry, match[1]))
         require_entry_access(session, entry, tool_write=request.method not in {"GET", "HEAD"})
         return

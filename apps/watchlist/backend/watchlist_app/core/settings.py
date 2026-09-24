@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     recalc_worker_enabled: bool = True
+    research_worker_enabled: bool = True
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0

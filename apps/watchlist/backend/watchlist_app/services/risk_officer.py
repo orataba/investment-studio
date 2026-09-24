@@ -247,7 +247,10 @@ def read_snapshot(session, **scope):
     cases = sorted((case for case in workspace["cases"] if case["trigger_active"]
                     and case["status"] not in {"handled", "resolved"}
                     and (case.get("evidence_json") or {}).get("direction") != "opportunity"
-                    and case["severity"] in {"attention", "coverage"}), key=lambda item: item["case_id"])
+                    and case["severity"] in {"attention", "coverage"}), key=lambda item: (
+                        {"immediate": 0, "review_soon": 1, "monitor": 2}.get((item.get("evidence_json") or {}).get("urgency"), 3),
+                        {"major": 0, "material": 1, "limited": 2}.get((item.get("evidence_json") or {}).get("impact_level"), 3),
+                        item["case_id"]))
     research = [case for case in cases if case["severity"] == "attention" and case["signal"] not in QUANTITATIVE_SIGNALS]
     quantitative = [case for case in cases if case["severity"] == "attention" and case["signal"] in QUANTITATIVE_SIGNALS]
     coverage = [case for case in cases if case["severity"] == "coverage"]

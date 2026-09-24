@@ -8,6 +8,7 @@ import json
 def _risk_case_brief(case):
     evidence = case.get("evidence_json") or {}
     return {**{key: value for key, value in case.items() if key not in {"history_json", "evidence_json"}},
+        **{key: evidence.get(key) for key in ("impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition", "confidence")},
         "evidence_json": {key: value for key, value in evidence.items() if key not in {"body", "title", "sources"}},
         "sources": [{key: value for key, value in source.items() if key != "text"}
                     for source in evidence.get("sources", [])]}

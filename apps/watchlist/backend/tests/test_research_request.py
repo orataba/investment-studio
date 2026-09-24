@@ -1,3 +1,4 @@
+from .research_projection_fixture import server_projection
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -86,7 +87,7 @@ def test_preparation_and_context_reader_preserve_the_explicit_request(registered
     service.prepare_run(run_id)
     with get_session_factory()() as session:
         context = session.get(ResearchEntry, run_id).context_json
-    monkeypatch.setattr(research_mcp, "request", lambda suffix: deepcopy(context))
+    monkeypatch.setattr(research_mcp, "request", server_projection(lambda suffix: deepcopy(context)))
     assert research_mcp.read_research_context()["question"] == question
     assert context["research_actor"] and context["sector_run"] is True
 

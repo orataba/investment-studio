@@ -5,6 +5,14 @@
     provider: studio-deepseek
     model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4.1-flash'
 
+# Keep the pinned Harness agent loop's native automatic compaction enabled.
+# Its model-aware pressure/retention defaults and streamed summarizer are shared
+# by the research agent and the restricted independent reviewer.
+- id: compaction-basic
+  disabled: false
+  config:
+    auto: true
+
 - id: system-prompt
   config:
     persona: |-
@@ -151,6 +159,11 @@
       After acceptance, acknowledge briefly without
       printing JSON in prose or Markdown. The application uses only the structured submission.
       This assessment is an AI risk synthesis. Do not alter cases or the manager's investment views.
+      When checkpointing or continuing after context compaction, preserve the scope, information
+      cutoff, source IDs and dates, exact units/denominators, verified and unresolved findings,
+      contradictions, remaining required pages and submission validation errors. A compacted
+      summary is working memory, never a new source. Re-read the retained original pages before
+      relying on details omitted by compaction or a tool-result pruning marker.
 
 - id: session-title-llm
   disabled: true

@@ -40,9 +40,8 @@ it('keeps important linked events discoverable but excludes organization receipt
   render(<ResearchRecentEvents instrumentId="fund" />)
   expect(await screen.findByRole('heading', { name: '融资完成后的现金用途' })).toBeTruthy()
   expect(screen.queryByText('历史记录已整理')).toBeNull()
-  expect(screen.queryByText(event.body)).toBeNull()
-  fireEvent.click(screen.getByText('阅读这条记录'))
-  expect(await screen.findByText(event.body)).toBeTruthy()
+  expect(screen.getByText(event.body).closest('details')).toBeNull()
+  expect(screen.queryByText('阅读这条记录')).toBeNull()
 })
 
 it('saves a PM opinion directly with the selected event version and editable background', async () => {
@@ -122,4 +121,16 @@ it('preserves the draft on a failed direct save and does not offer theme creatio
   fireEvent.click(screen.getByRole('button', { name: '保存投资观点' }))
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', '来源版本不可用')
   expect(screen.getByLabelText('我的投资观点')).toHaveProperty('value', '等待核实。')
+})
+
+it('prioritizes an urgent material risk over a newer routine event without hiding its impact or conditions', async () => {
+  api.activity.mockResolvedValue({ instrument_id: 'fund', recent_events: [], updates: [
+    { ...event, title: '较新的常规变化', recorded_at: '2026-09-24T08:00:00Z' },
+    { ...event, update_id: 'urgent', title: '流动性约束触发', direction: 'risk', impact_level: 'major', urgency: 'immediate', impact_analysis: '赎回期延长改变资金可用性。', action_condition: '下次申赎窗口前核实管理人安排。', recorded_at: '2026-09-22T08:00:00Z' },
+  ] })
+  render(<ResearchRecentEvents instrumentId="fund" />)
+  await screen.findByText('流动性约束触发')
+  expect(screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent)).toEqual(['流动性约束触发', '较新的常规变化'])
+  expect(screen.getByText('赎回期延长改变资金可用性。').closest('details')).toBeNull()
+  expect(screen.getByText('下次申赎窗口前核实管理人安排。').closest('details')).toBeNull()
 })

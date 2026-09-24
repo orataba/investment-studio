@@ -6,7 +6,7 @@ in sector_fact_review's canonical checks and the existing publication boundary.
 from copy import deepcopy
 
 
-_RESEARCH_ITEMS = ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
+_RESEARCH_ITEMS = ("changes", "modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
 _REFERENCES = ("theme_id", "event_key", "pm_note_id", "pm_note_revision", "forecast_key",
                "forecast_version_id", "related_research_update_id", "module_key")
 
@@ -93,12 +93,12 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
 
     def research_fields(original, properties):
         fields = _patch_fields(original, properties, citations=True)
-        for field in ("investment_view", "mandate_update"):
+        for field in ("investment_view", "decision_brief", "mandate_update"):
             if field not in original:
                 continue
             value = original[field]
             fields[field] = object_receipt(value, _patch_fields(value or {},
-                _typed(properties[field], "object")["properties"], citations=field == "investment_view"),
+                _typed(properties[field], "object")["properties"], citations=field in {"investment_view", "decision_brief"}),
                 reject="reject", omissions=True, required=_typed(properties[field], "object").get("required", ()))
         for field in ("facts", *_RESEARCH_ITEMS):
             if field not in original:
@@ -206,11 +206,11 @@ def expand_review_receipts(reviewed, result):
 
     def research_patch(original, patch):
         result, rejected = deepcopy(patch), []
-        for field in ("investment_view", "mandate_update"):
+        for field in ("investment_view", "decision_brief", "mandate_update"):
             if field not in patch:
                 continue
             value = expand(original[field], patch[field], reject="reject", omissions=True,
-                           citations=field == "investment_view")
+                           citations=field in {"investment_view", "decision_brief"})
             if value is None and original[field] is not None:
                 result.pop(field)
                 rejected.append(field)

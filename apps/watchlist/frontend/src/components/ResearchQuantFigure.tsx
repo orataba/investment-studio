@@ -1,4 +1,5 @@
 import type { ResearchQuantChart, ResearchQuantTable, SavedResearchSource } from '../lib/researchDossierApi'
+import ResearchReadingAside from './ResearchReadingAside'
 
 const colors = ['#2563a6', '#17776b', '#8a5b9f', '#8b6870']
 const numeric = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
@@ -62,6 +63,6 @@ export default function ResearchQuantFigure({ source, captioned = false }: { sou
     {data?.summary && <p translate="no">{data.summary}</p>}
     {data?.metrics && Object.keys(data.metrics).length > 0 && <dl className="research-quant-metrics">{Object.entries(data.metrics).map(([key, value]) => <div key={key}><dt translate="no">{key}</dt><dd translate="no">{value === null ? '—' : numeric(value) ? number(value) : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>}
     {data?.charts?.map(chart => { const table = tables.find(item => item.key === chart.table_key); return table ? <Chart key={chart.key} chart={chart} table={table} showTitle={!captioned || chart.title !== source.title} /> : <p key={chart.key} className="sector-research-note">图表所引用的留存表格不可用。</p> })}
-    {tables.map(table => <details className="research-quant-table" key={table.key}><summary>{table.title} · {table.rows.length} 条观测</summary><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></details>)}
+    {tables.map(table => <div className="research-quant-table" key={table.key}><ResearchReadingAside label={`${table.title} · ${table.rows.length} 条观测`} title={`${table.title} · 留存数据`}><div className="research-table-scroll"><table><thead><tr>{table.columns.map(column => <th key={column.key}>{column.label}{column.unit && `（${column.unit}）`}</th>)}</tr></thead><tbody>{table.rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td key={column.key}>{row[column.key] === null || row[column.key] === undefined ? '—' : numeric(row[column.key]) ? number(row[column.key] as number) : String(row[column.key])}</td>)}</tr>)}</tbody></table></div></ResearchReadingAside></div>)}
   </div>
 }

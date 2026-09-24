@@ -8,7 +8,7 @@ import re
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,36 @@ class ResearchModuleFocus(BaseModel):
         return value.strip()
 
 
+class ReportPreferences(BaseModel):
+    """Reader preferences; they cannot hide the decision, changes, themes or risks."""
+    model_config = ConfigDict(extra="forbid")
+    priority_modules: list[str] = Field(default_factory=list, max_length=20)
+    hidden_modules: list[str] = Field(default_factory=list, max_length=20,
+        description="Keep these analytical modules collapsed in secondary reading; never suppress their material risks or decision implications.")
+    summary_focus: list[str] = Field(default_factory=list, max_length=12)
+    detail_level: Literal["concise", "standard", "detailed"] = "standard"
+
+    @field_validator("priority_modules", "hidden_modules")
+    @classmethod
+    def known_unique_modules(cls, values):
+        if len(set(values)) != len(values) or set(values) - module_ids():
+            raise ValueError("报告章节须使用不重复的公共方法模块")
+        return values
+
+    @field_validator("summary_focus")
+    @classmethod
+    def concise_focus(cls, values):
+        if any(not item.strip() or len(item) > 1000 for item in values):
+            raise ValueError("摘要重点不能为空，且每项最多1000字")
+        return [item.strip() for item in values]
+
+    @model_validator(mode="after")
+    def distinct_modules(self):
+        if set(self.priority_modules) & set(self.hidden_modules):
+            raise ValueError("同一报告章节不能同时优先展开和收起")
+        return self
+
+
 class ResearchMandateInput(BaseModel):
     """A specific research assignment, never an independent factual source."""
     model_config = ConfigDict(extra="forbid")
@@ -60,6 +90,9 @@ class ResearchMandateInput(BaseModel):
     gaps: list[str] = Field(default_factory=list, max_length=30)
     user_constraints: list[str] = Field(default_factory=list, max_length=30,
         description="用户明确的范围、比较基准与方法限制；研究员更新不可覆盖。")
+    user_methods: list[str] = Field(default_factory=list, max_length=30,
+        description="人工指定的分析方法、假设检查或比较口径；是研究要求而非事实，研究员不得覆盖。")
+    report_preferences: ReportPreferences = Field(default_factory=ReportPreferences)
     module_focus: list[ResearchModuleFocus] = Field(default_factory=list, max_length=20,
         description="本标的需要补充的适用方法；说明原因并引用原始依据，不改写公共方法。")
 
@@ -70,7 +103,7 @@ class ResearchMandateInput(BaseModel):
             raise ValueError("请输入研究底稿标题和背景")
         return value.strip()
 
-    @field_validator("mechanisms", "research_approach", "focus", "source_plan", "gaps", "user_constraints")
+    @field_validator("mechanisms", "research_approach", "focus", "source_plan", "gaps", "user_constraints", "user_methods")
     @classmethod
     def concise_items(cls, values):
         if any(not value.strip() or len(value) > 2000 for value in values):
@@ -164,8 +197,10 @@ def effective_mandate(payload: ResearchMandateInput, previous: dict | None, *, o
     """Resolve writer-owned method choices before both validation and publication."""
     value = payload.model_dump(mode="json")
     previous = ResearchMandateInput.model_validate(previous).model_dump(mode="json") if previous else None
-    if origin == "research" or "user_constraints" not in payload.model_fields_set:
-        value["user_constraints"] = deepcopy((previous or {}).get("user_constraints", []))
+    for key, default in (("user_constraints", []), ("user_methods", []),
+                         ("report_preferences", ReportPreferences().model_dump(mode="json"))):
+        if origin == "research" or key not in payload.model_fields_set:
+            value[key] = deepcopy((previous or {}).get(key, default))
     prior_modules = {item["module_id"]: item for item in (previous or {}).get("module_focus", [])}
     if "module_focus" not in payload.model_fields_set and previous:
         value["module_focus"] = deepcopy(previous["module_focus"])
@@ -529,10 +564,11 @@ def read_dossier_version(session: Session, instrument_id: str, version_id: str, 
     with closing(_research_records(session, instrument_id, oldest_first=True)) as records:
         for record, research in records:
             candidates = [("notebook", {**research, "version_id": research.get("version_id", record.entry_id)})]
-            view = research.get("investment_view")
-            if view:
-                candidates += [("investment_view", item) for item in [*view.get("versions", []), view]]
-            for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+            for field in ("investment_view", "decision_brief"):
+                view = research.get(field)
+                if view:
+                    candidates += [(field, item) for item in [*view.get("versions", []), view]]
+            for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons", "changes"):
                 for item in research.get(field, []):
                     candidates += [(field, version) for version in [*item.get("versions", []), item]]
             for kind, value in candidates:

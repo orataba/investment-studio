@@ -1,3 +1,4 @@
+from .research_projection_fixture import server_projection
 import copy
 import json
 import asyncio
@@ -16,7 +17,7 @@ def bind_context(monkeypatch, context, requests=None):
             return project_risk_read(context, **payload)
         assert suffix == "context"
         return context
-    monkeypatch.setattr(mcp, "request", request)
+    monkeypatch.setattr(mcp, "request", server_projection(request))
 
 
 def test_risk_tools_keep_all_instruments_and_shared_reports_without_spilling(monkeypatch):
@@ -115,7 +116,7 @@ def test_batch_risk_overviews_preserve_every_individual_packet_and_authorize_eac
 
     def revoked(_, payload=None):
         raise PermissionError("revoked")
-    monkeypatch.setattr(mcp, "request", revoked)
+    monkeypatch.setattr(mcp, "request", server_projection(revoked))
     with pytest.raises(PermissionError, match="revoked"):
         mcp.read_risk_instruments(offset=offset)
 
@@ -326,7 +327,7 @@ def test_portfolio_tools_partition_modules_and_bound_contracts(monkeypatch):
 def test_risk_submission_uses_structured_tool_arguments(monkeypatch):
     result = mcp.RiskReview(summary='需要核对 "策略意图"。', priorities=[], limitations=[])
     calls = []
-    monkeypatch.setattr(mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"})
+    monkeypatch.setattr(mcp, "request", server_projection(lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"}))
     assert mcp.submit_risk_review(result) == {"status": "accepted"}
     assert calls == [("risk-draft", result.model_dump(mode="json"))]
 
@@ -335,7 +336,7 @@ def test_risk_submission_retry_requires_complete_result_and_never_saves_partial(
     from mcp.server.mcpserver.exceptions import ToolError
 
     calls = []
-    monkeypatch.setattr(mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"})
+    monkeypatch.setattr(mcp, "request", server_projection(lambda suffix, payload: calls.append((suffix, payload)) or {"status": "accepted"}))
     drafts = [
         ({"summary": "PRIVATE_SUMMARY_DO_NOT_ECHO", "priorities": []}, {("result", "limitations")}),
         ({"limitations": []}, {("result", "summary"), ("result", "priorities")}),

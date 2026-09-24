@@ -98,3 +98,33 @@ it('scales disclosed signed or leveraged weights without clipping their values',
   expect(screen.getByText('-10.00%')).toBeTruthy()
   expect(screen.getByText(/权重标尺 -10% 至 120%/)).toBeTruthy()
 })
+
+it('applies reading order and supplementary preferences without hiding risk or event analysis', () => {
+  const saved = { ...notebook, modules: [
+    { ...module, figure_source_ids: [] },
+    { ...module, key: 'business-fundamentals', figure_source_ids: [] },
+    { ...module, key: 'pricing-compensation', figure_source_ids: [] },
+    { ...module, key: 'events-expectations', figure_source_ids: [] },
+  ] }
+  const preferences = { priority_modules: ['pricing-compensation'], hidden_modules: ['business-fundamentals', 'market-quantitative', 'events-expectations'], summary_focus: [], detail_level: 'standard' as const }
+  const { container, rerender } = render(<ResearchModules instrumentId="fund" notebook={saved} preferences={preferences} />)
+  expect([...container.querySelectorAll('.research-domain-module h3')].map(node => node.textContent)).toEqual(['定价与风险补偿', '市场与量化', '事件、预期与争议'])
+  rerender(<ResearchModules instrumentId="fund" notebook={saved} preferences={preferences} supplementary />)
+  expect([...container.querySelectorAll('.research-domain-module h3')].map(node => node.textContent)).toEqual(['经营与现金流'])
+})
+
+it('saves human research methods and report preferences without replacing existing source references', async () => {
+  const mandate: ResearchMandate = { instrument_id: 'fund', entry_id: null, role: 'research_method', updated_at: null, title: '研究方法', background: '', mechanisms: [], research_approach: [], focus: [], user_focus: ['现金回报'], source_plan: ['管理人披露'], gaps: [], user_methods: ['复核盈利与现金转化'], report_preferences: { priority_modules: ['market-quantitative'], hidden_modules: [], summary_focus: ['盈利兑现'], detail_level: 'standard' } }
+  request.mockImplementation(async (_path: string, init?: RequestInit) => ({ ...mandate, ...JSON.parse(String(init?.body)) }))
+  render(<ResearchMandateRecord instrumentId="fund" mandate={mandate} availableModules={plan.modules} onSaved={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: '编辑研究框架' }))
+  fireEvent.change(screen.getByLabelText('人工指定的研究方法（每行一项）'), { target: { value: ' 对照现金流与资本开支\n\n检验债务偿付来源 ' } })
+  fireEvent.change(screen.getByLabelText('摘要重点（每行一项）'), { target: { value: ' 风险变化\n\n回报兑现 ' } })
+  fireEvent.change(screen.getByLabelText('研究篇幅'), { target: { value: 'detailed' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存研究框架' }))
+  await waitFor(() => expect(request).toHaveBeenCalledOnce())
+  const input = JSON.parse(request.mock.calls[0][1].body)
+  expect(input.user_methods).toEqual(['对照现金流与资本开支', '检验债务偿付来源'])
+  expect(input.report_preferences).toEqual({ priority_modules: ['market-quantitative'], hidden_modules: [], summary_focus: ['风险变化', '回报兑现'], detail_level: 'detailed' })
+  expect(input.source_plan).toEqual(['管理人披露'])
+})

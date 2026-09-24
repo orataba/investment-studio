@@ -3,6 +3,17 @@ import type { LanguageMessages, LanguagePatternMessages } from '../../../../pack
 export const researchMessages: LanguageMessages = { 'zh-Hans': {
   'Configured search endpoint did not execute native web search': '本轮公开网页搜索未能完成，相关信息覆盖受限。',
 }, en: {
+  '投资判断': 'Investment assessment', '变化与影响': 'Changes and implications', '重点跟踪': 'Research priorities', '深入分析': 'Detailed analysis',
+  '投资建议': 'Investment recommendation', '建议修订于': 'Recommendation revised', '建议期限': 'Recommendation horizon', '下一决策节点': 'Next decision point', '建议成立的条件': 'Conditions for the recommendation',
+  '投资判断已变化，原建议待复核。': 'The assessment has changed; the earlier recommendation needs review.', '查看原建议': 'View earlier recommendation', '原建议更新于': 'Earlier recommendation updated',
+  '变化与投资影响': 'Changes and investment implications', '研究修订于': 'Research revised', '此前认识': 'Previous assessment', '现在的变化': 'What has changed', '投资含义': 'Investment implications', '继续观察': 'What to watch', '查看变化依据': 'View supporting evidence',
+  '最近有效检查': 'Last completed review', '研究更新状态': 'Research update status', '判断如何演变': 'How the assessment evolved', '主题分析与演变': 'Theme analysis and evolution',
+  '主题背景与证据': 'Theme background and evidence', '仅看最近演变': 'Show recent developments', '影响渠道：': 'Risk channels:', '影响分析': 'Impact analysis', '应对条件': 'Response conditions', '需立即复核': 'Review immediately', '近期复核': 'Review soon', '重大影响': 'Major impact',
+  '研究资料与设置': 'Research materials and settings', '研究资料': 'Research materials', '查阅原始依据与历史判断，补充材料或调整研究要求。': 'Inspect sources and earlier assessments, add materials or update research requirements.',
+  '当前判断与修订历史': 'Current assessment and revision history', '补充分析': 'Supplementary analysis', '计算口径与输入依据': 'Calculation methods and inputs',
+  '人工指定的研究方法': 'User-specified research methods', '人工指定的研究方法（每行一项）': 'User-specified methods (one per line)', '报告阅读偏好': 'Report preferences', '摘要重点（每行一项）': 'Summary priorities (one per line)',
+  '研究篇幅': 'Research depth', '简明': 'Concise', '标准': 'Standard', '深入': 'Detailed', '优先阅读的领域': 'Priority sections', '放入补充分析的领域': 'Supplementary sections',
+  '默认全文展示；移入补充分析后仍可从研究档案阅读。变化、风险和重点主题始终保留。': 'Sections are shown in full by default. Supplementary sections remain in the research archive. Changes, risks and priorities always remain visible.',
   '编制说明': 'Compilation notes', '作者核对来源；未经独立模型核证。': 'Sources checked by the author; no independent model verification.',
   '作者留存的原文摘录，非全文。': 'Original excerpt retained by the author; not the full text.', '作者留存的原文。': 'Original text retained by the author.',
   '研究报告目录': 'Research report contents', '01 投资结论': '01 Investment conclusion', '03 量化与风险': '03 Quantitative analysis and risk', '04 主题与事件': '04 Themes and events',
@@ -179,6 +190,9 @@ export const researchMessages: LanguageMessages = { 'zh-Hans': {
   '关键假设': 'Key assumptions', '主题背景': 'Theme background', '资料限制': 'Coverage limitations', '撤回原因': 'Reason for withdrawal', '复核条件': 'Review conditions', '复盘结果': 'Review outcome', '经验': 'Lesson',
 } }
 export const researchPatterns: LanguagePatternMessages = { en: [
+  { match: /^查看全部演变 · (\d+)$/, replace: 'All developments · $1' },
+  { match: /^关闭研究档案$/, replace: 'Close research archive' },
+  { match: /^关闭研究设置与范围$/, replace: 'Close research settings and scope' },
   { match: /^主题时间线 · (\d+)$/, replace: 'Theme timeline · $1' },
   { match: /^查看较早事项 · (\d+)$/, replace: 'Earlier events · $1' },
   { match: /^暂停或结束的主题 · (\d+)$/, replace: 'Paused or closed themes · $1' },

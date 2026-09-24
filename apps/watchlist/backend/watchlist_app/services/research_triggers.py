@@ -22,6 +22,12 @@ def _previous_trigger(context, instrument_id):
     return trigger if trigger.get("instrument_id") == instrument_id else trigger.get(instrument_id, {})
 
 
+def _attempted_at(cursor):
+    # Old cursors called this checked_at, although they were saved before the
+    # model ran. Preserve their deduplication semantics, never claim success.
+    return cursor.get("attempted_at") or cursor.get("checked_at")
+
+
 def _queries(context, instrument_id):
     previous = _previous_trigger(context, instrument_id).get("coverage_cursor", {})
     queries = [*previous.get("market_queries", []), *context.get("market_queries", [])]
@@ -230,18 +236,19 @@ def research_trigger(session, instrument_id, prior_context, *, now):
     """Return a reason and consumed information cursor, without writing or launching work.
 
     Save the result as context.incremental_trigger (or map it by instrument_id for a batch).
-    An attempted supplementary run consumes this cursor even if the model later fails;
-    only subsequently arriving information can trigger another same-day attempt.
+    This is an attempt cursor, not a successful coverage receipt. A failed run is
+    recovered separately with a bounded retry; it must not create another fresh
+    job for the same information on every scheduler pass.
     """
     now = _instant(now)
     previous = _previous_trigger(prior_context, instrument_id).get("coverage_cursor", {})
-    since = max(_instant(prior_context["cutoff"]), _instant(previous.get("checked_at") or prior_context["cutoff"]))
+    since = max(_instant(prior_context["cutoff"]), _instant(_attempted_at(previous) or prior_context["cutoff"]))
     if since >= now:
         return None
     monitoring = _monitoring_context(session, instrument_id, prior_context)
     queries = _queries(monitoring, instrument_id)
-    consumed = [cursor for cursor in (previous.get("checked_at"),
-        _previous_trigger(monitoring, instrument_id).get("coverage_cursor", {}).get("checked_at")) if cursor]
+    consumed = [cursor for cursor in (_attempted_at(previous),
+        _attempted_at(_previous_trigger(monitoring, instrument_id).get("coverage_cursor", {}))) if cursor]
     read_source_ids = {row["source_id"] for context in (monitoring, prior_context)
                        for row in context.get("market_text_sources", [])}
     read_source_ids.update(row["source_id"] for context in (monitoring, prior_context)
@@ -275,5 +282,6 @@ def research_trigger(session, instrument_id, prior_context, *, now):
     if not reasons:
         return None
     return {"instrument_id": instrument_id, "reasons": reasons, "coverage_cursor": {
-        "checked_at": now.isoformat(), "previous_cutoff": since.isoformat(), "market_queries": queries,
+        "attempted_at": now.isoformat(), "last_successful_review_cutoff": prior_context.get("last_successful_review_cutoff"),
+        "previous_cutoff": since.isoformat(), "market_queries": queries,
     }}

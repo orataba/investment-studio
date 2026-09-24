@@ -109,7 +109,11 @@ if [[ "${2:-}" != "risk" ]]; then
   # A failed generation has no reviewable result. Preserve its exit and reply;
   # starting the reviewer would charge again and replace the actual failure with
   # a misleading missing-draft error.
-  if copilot_reply="$("${copilot_command[@]}")"; then
+  if [[ "${INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW:-0}" == "1" && "${2:-}" == "sector" ]]; then
+    # The application retained the original bound draft and evidence. Recovery
+    # resumes its independent review, without generating another draft or charge.
+    printf '\n' | copilot_review_output
+  elif copilot_reply="$("${copilot_command[@]}")"; then
     printf '%s\n' "$copilot_reply" | copilot_review_output
   else
     copilot_generation_status=$?

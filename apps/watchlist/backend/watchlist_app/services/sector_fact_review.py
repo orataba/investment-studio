@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Literal
 from urllib.parse import quote
 from urllib.error import HTTPError
@@ -17,15 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from watchlist_app.services.sector_research import ResearchReflection, ReviewResult, SectorEvent, usable_original, usable_computed, draft_payload, shared_market_coverage_gaps
 from watchlist_app.services.sector_estimates import retained_estimate_sources, usable_estimate_change
-from watchlist_app.services.sector_web import _MAX_RESPONSE_BYTES, _request, SectorWebError
+from watchlist_app.services.sector_web import SectorWebError
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids, _original_source
 from watchlist_app.services.research_themes import AnalystThemeUpdate
 from watchlist_app.services.sector_review_protocol import review_receipt_schema, expand_review_receipts
-
-
-# Reasoning and final JSON share this budget. A complete independent review of
-# retained originals needs room for both; the generation budget is not enough.
-FACT_REVIEW_MAX_TOKENS = 65536
 
 
 _INSTRUCTIONS = """You are the independent final factual reviewer of an instrument research update.
@@ -240,7 +234,10 @@ future outcomes are known. NEVER remove a supported forward hypothesis solely be
 is uncertain or not yet observed. Do not invent a probability, target price or a universal catalyst.
 Separate directional outlook/horizon, attractiveness at today's price, risk and conviction. Higher
 volatility is a risk observation, not evidence of inevitable decline or an instruction to sell.
-Computed_metric sources contain application-calculated numbers with their inputs, versions, units,
+Computed_metric sources distinguish calculations from retained record reads by analysis_kind/operation.
+operation=read_retained_records contains original stored fields, with no imputation, calculation or unit conversion.
+Structured financial records can support conclusions within their actual scope; missing full filings alone do not invalidate them.
+Calculated sources contain application-calculated numbers with their inputs, versions, units,
 frequency, method and as_of clocks. They may establish the metric observation they actually compute;
 they do not establish its cause, future outcome or a market consensus. Preserve their scope and limits.
 Price moves do not prove a proposed cause. A forecast review must retain the original forecast key
@@ -252,7 +249,14 @@ knowledge means a useful internal research update; none is a completed check wit
 upgrade a draft's none/knowledge merely to publish. A quiet run needs no working paper or summary.
 
 This response is only a factual review; it cannot search or perform external actions.
-Return ONLY the compact receipt protocol in response_schema, not rewritten copies of accepted objects.
+Use the paged review tools to read the bound response_schema, draft and necessary original evidence.
+Submit the compact receipt protocol through submit_review_receipts, not rewritten copies of accepted objects.
+Treat automatic context summaries as working memory only; reread exact source IDs, dates, units and values.
+Every checkpoint must preserve run/cutoff and original source/version IDs, checked and unchecked claims,
+important numbers with units, counterevidence, pending tools, and the bound draft/schema and validation state.
+Review decision_brief and changes against their cited baseline and evidence; preserve sparse corrections.
+Event impact_level, urgency and risk_channels describe investment consequence, never confidence.
+Review conditional recommendations separately from evidence certainty and from PM-authored instructions.
 Every instrument needs summary, change_kind, coverage, decisions, research, themes and reflection inside
 its reviews item. Each scalar uses {"decision":"accept"} or {"decision":"correct","reason":"specific
 reason","value":corrected_value}. Accept means you checked the entire bound original, including sources;
@@ -339,177 +343,6 @@ class MissingResearchDraft(ValueError):
     """The researcher finished without submitting a structured research draft."""
 
 
-class _ReviewProtocolError(ValueError):
-    def __init__(self, message: str, raw_output: str):
-        super().__init__(message)
-        self.raw_output = raw_output
-
-
-def _review_stream_lines(response, transport: dict, started: float):
-    """SSE accepts LF, CRLF or CR, including separators split across reads."""
-    pending, skip_lf, first_line = b"", False, True
-    separator = re.compile(b"\r\n|\r|\n")
-    while block := response.read1(8192):
-        transport["bytes_received"] += len(block)
-        if "first_byte_seconds" not in transport:
-            transport["first_byte_seconds"] = round(time.monotonic() - started, 3)
-        transport["stage"] = "streaming"
-        if skip_lf:
-            block = block.removeprefix(b"\n")
-            skip_lf = False
-        pending += block
-        while boundary := separator.search(pending):
-            line, ending = pending[:boundary.start()], boundary.group()
-            pending = pending[boundary.end():]
-            skip_lf = ending == b"\r" and not pending
-            if first_line:
-                line = line.removeprefix(b"\xef\xbb\xbf")
-                first_line = False
-            yield line
-        if len(pending) > _MAX_RESPONSE_BYTES:
-            transport["protocol_error"] = "oversize_event"
-            raise SectorWebError("Review response exceeded the evidence size limit")
-
-
-def _read_review_stream(response, transport: dict, started: float) -> bytes:
-    """Consume native completion SSE; reasoning is counted, never treated as JSON."""
-    transport.update(stage="awaiting_stream_data", http_status=response.status,
-                     headers_seconds=round(time.monotonic() - started, 3))
-    if not 200 <= response.status < 300:
-        body = response.read(_MAX_RESPONSE_BYTES + 1)
-        transport["bytes_received"] = len(body)
-        if len(body) > _MAX_RESPONSE_BYTES:
-            raise SectorWebError("Review response exceeded the evidence size limit")
-        return body
-    if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
-        raise _ReviewProtocolError("核证服务未返回流式响应，未发布研究。", "")
-    document, content, data_lines = {}, [], []
-    finish_reason, output_bytes, event_chars = None, 0, 0
-
-    def invalid(code):
-        transport["protocol_error"] = code
-        raise _ReviewProtocolError("核证响应流不完整或格式无效，未发布研究。",
-                                   json.dumps({"transport": transport}, ensure_ascii=False))
-
-    for line in _review_stream_lines(response, transport, started):
-        if len(line) > _MAX_RESPONSE_BYTES:
-            invalid("oversize_event")
-        try:
-            line = line.decode("utf-8")
-        except UnicodeDecodeError as error:
-            transport.update(utf8_error_start=error.start, utf8_error_end=error.end, utf8_error_kind=error.reason)
-            invalid("invalid_utf8")
-        if line == "data" or line.startswith("data:"):
-            data_lines.append(line[5:].removeprefix(" ") if ":" in line else "")
-            event_chars += len(data_lines[-1])
-            if event_chars > _MAX_RESPONSE_BYTES:
-                invalid("oversize_event")
-            continue
-        if line or not data_lines:  # SSE comments/other fields do not contain model output.
-            continue
-        payload, data_line_count = "\n".join(data_lines), len(data_lines)
-        data_lines, event_chars = [], 0
-        if payload == "[DONE]":
-            if finish_reason is None:
-                invalid("missing_finish_reason")
-            transport.update(stage="complete", done=True, usage_missing="usage" not in document)
-            document["choices"] = [{"finish_reason": finish_reason,
-                                    "message": {"content": "".join(content)}}]
-            return json.dumps(document, ensure_ascii=False).encode()
-        transport["chunks_received"] += 1
-        try:
-            chunk = json.loads(payload)
-        except json.JSONDecodeError as error:
-            transport.update(json_error_kind=error.msg, json_error_position=error.pos,
-                             json_error_line=error.lineno, json_error_column=error.colno,
-                             event_chars=len(payload), event_data_lines=data_line_count,
-                             multiple_json_values=False)
-            # Diagnose nonstandard concatenated JSON events without accepting,
-            # skipping or repairing any part of the provider's response.
-            decoder = json.JSONDecoder()
-            try:
-                _, end = decoder.raw_decode(payload.lstrip())
-                remainder = payload.lstrip()[end:].lstrip()
-                if remainder:
-                    decoder.raw_decode(remainder)
-                    transport["multiple_json_values"] = True
-            except ValueError:
-                pass
-            invalid("invalid_chunk_json")
-        if not isinstance(chunk, dict) or chunk.get("error"):
-            invalid("provider_stream_error")
-        for key in ("id", "model"):
-            if chunk.get(key) is not None:
-                if not isinstance(chunk[key], str) or (key in document and document[key] != chunk[key]):
-                    invalid("inconsistent_response_identity")
-                document[key] = chunk[key]
-                transport[key] = chunk[key][:160]
-        if chunk.get("usage") is not None:
-            if not isinstance(chunk["usage"], dict):
-                invalid("invalid_usage")
-            document["usage"] = _usage_metadata(chunk["usage"])
-            transport["usage"] = document["usage"]
-        choices = chunk.get("choices")
-        if not isinstance(choices, list) or len(choices) > 1:
-            invalid("invalid_choices")
-        if not choices:
-            continue  # The optional usage-only final chunk has no choice.
-        choice = choices[0]
-        if not isinstance(choice, dict) or choice.get("index") != 0:
-            invalid("invalid_choice_index")
-        delta = choice.get("delta")
-        if not isinstance(delta, dict) or delta.get("tool_calls"):
-            invalid("invalid_delta")
-        for field in ("content", "reasoning_content"):
-            value = delta.get(field)
-            if value is None:
-                continue
-            if not isinstance(value, str) or (finish_reason is not None and value):
-                invalid("invalid_output_delta")
-            output_bytes += len(value.encode("utf-8"))
-            if output_bytes > _MAX_RESPONSE_BYTES:
-                invalid("oversize_output")
-            counter = "content_chars" if field == "content" else "reasoning_chars"
-            transport[counter] = transport.get(counter, 0) + len(value)
-            if value and "first_output_seconds" not in transport:
-                transport["first_output_seconds"] = round(time.monotonic() - started, 3)
-            if field == "content":
-                content.append(value)
-        if choice.get("finish_reason") is not None:
-            if finish_reason is not None or not isinstance(choice["finish_reason"], str):
-                invalid("invalid_finish_reason")
-            finish_reason = choice["finish_reason"]
-            transport["finish_reason"] = finish_reason
-    invalid("missing_done")
-
-
-def _usage_metadata(usage: dict) -> dict:
-    """Only numerical token accounting belongs in a diagnostic receipt."""
-    result = {key: value for key, value in usage.items() if key in {
-        "prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
-    } and type(value) is int and value >= 0}
-    for key in ("prompt_tokens_details", "completion_tokens_details"):
-        if isinstance(usage.get(key), dict):
-            result[key] = {name: value for name, value in usage[key].items() if name in {
-                "cached_tokens", "reasoning_tokens", "audio_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens",
-            } and type(value) is int and value >= 0}
-    return result
-
-
-def _review_metadata(packet: dict, document: dict, transport: dict):
-    if packet.get("run_id"):
-        choices = document.get("choices")
-        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
-        metadata = {key: value[:160] if isinstance(value, str) else None for key in ("id", "model")
-                    for value in [document.get(key, transport.get(key))]}
-        usage = document.get("usage", transport.get("usage"))
-        metadata["usage"] = _usage_metadata(usage) if isinstance(usage, dict) else None
-        _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
-            "response_metadata": {**metadata,
-                                  "finish_reason": choice.get("finish_reason", transport.get("finish_reason")),
-                                  "transport": transport}}})
-
-
 def _api_request(run_id: str, suffix: str, payload: dict | None = None) -> dict:
     base = os.environ.get("INVESTMENT_STUDIO_RESEARCH_API_BASE_URL", "http://127.0.0.1:8000/api")
     url = f"{base.rstrip('/')}/research/runs/{quote(run_id, safe='')}/{suffix}"
@@ -521,70 +354,13 @@ def _api_request(run_id: str, suffix: str, payload: dict | None = None) -> dict:
 
 
 def _call_reviewer(packet: dict) -> dict:
-    from watchlist_app.services.deepseek_config import deepseek_endpoint, deepseek_model
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if not key:
-        raise ValueError("DEEPSEEK_API_KEY is not configured for the sector fact review")
-    body = json.dumps({
-        "model": deepseek_model(), "max_tokens": FACT_REVIEW_MAX_TOKENS,
-        "thinking": {"type": "enabled"}, "reasoning_effort": "high",
-        "stream": True, "stream_options": {"include_usage": True},
-        "response_format": {"type": "json_object"},
-        "messages": [{"role": "system", "content": _INSTRUCTIONS},
-                     {"role": "user", "content": json.dumps({"response_schema": _review_schema(packet["draft_reviews"], packet["sources"],
-                         cutoff=datetime.fromisoformat(packet["cutoff"]) if packet.get("cutoff") else None), **packet},
-                         ensure_ascii=False, separators=(",", ":"))}],
-    }, ensure_ascii=False).encode()
-    started = time.monotonic()
-    transport = {"stage": "before_response_headers", "bytes_received": 0, "chunks_received": 0, "done": False}
-    document, metadata_attempted = {}, False
-    try:
-        status, _, payload = _request(deepseek_endpoint(), method="POST", headers={
-            "authorization": f"Bearer {key}", "content-type": "application/json",
-            "accept": "text/event-stream", "user-agent": "InvestmentStudio-SectorFactReview/1.0",
-        }, body=body, timeout=300, response_reader=lambda response: _read_review_stream(response, transport, started))
-        raw_output = payload.decode("utf-8", errors="replace")
-        if not 200 <= status < 300:
-            raise _ReviewProtocolError(f"Sector fact review failed (HTTP {status})", raw_output)
-        try:
-            document = json.loads(payload)
-        except ValueError as exc:
-            raise _ReviewProtocolError("Sector fact reviewer returned an invalid response", raw_output) from exc
-        choices = document.get("choices") if isinstance(document, dict) else None
-        if (not isinstance(choices, list) or len(choices) != 1
-                or not isinstance(choices[0], dict)):
-            raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
-        transport["elapsed_seconds"] = round(time.monotonic() - started, 3)
-        metadata_attempted = True
-        _review_metadata(packet, document, transport)
-        if choices[0].get("finish_reason") == "length":
-            raise _ReviewProtocolError("独立核证达到生成上限，未返回完整结果；草稿及证据已保留，未发布研究。", raw_output)
-        if choices[0].get("finish_reason") != "stop":
-            raise _ReviewProtocolError("独立核证未返回完整的JSON结果，未发布研究。", raw_output)
-        try:
-            receipts = json.loads(choices[0].get("message", {}).get("content", ""))
-            result = expand_review_receipts(packet["draft_reviews"], receipts)
-            _Checks.model_validate(result)
-        except (TypeError, ValueError) as error:
-            transport.update(protocol_error="invalid_review_receipt", receipt_error_type=type(error).__name__)
-            # Persist only safe failure classification; the normal raw-output
-            # receipt separately retains the final answer for diagnosis.
-            metadata_attempted = False
-            raise _ReviewProtocolError("核证结果未通过结构与草稿绑定校验，未发布研究。", raw_output) from error
+    from watchlist_app.services.research_review_agent import run_review_agent
+    schema = _review_schema(packet["draft_reviews"], packet["sources"],
+        cutoff=datetime.fromisoformat(packet["cutoff"]) if packet.get("cutoff") else None)
+    def record(receipt):
         if packet.get("run_id"):
-            _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": {
-                "protocol": "bound_draft_v1", "compact_result": receipts}})
-        return result
-    except Exception as error:
-        transport.update(elapsed_seconds=round(time.monotonic() - started, 3), error_type=type(error).__name__)
-        error.review_transport = transport
-        if not metadata_attempted:
-            # Failure receipts must not replace the original transport/protocol error.
-            try:
-                _review_metadata(packet, document if isinstance(document, dict) else {}, transport)
-            except Exception:
-                transport["receipt_saved"] = False
-        raise
+            _api_request(packet["run_id"], "sector-evidence", {"operation": "review", "review": receipt})
+    return run_review_agent(packet, schema, _INSTRUCTIONS, record)
 
 
 def _source_index(source):
@@ -612,7 +388,29 @@ def _instrument_overview(asset, *, sector_holdings=False):
 def _review_dossier_outline(dossier):
     from watchlist_app.services.research_notebook import dossier_outline
     # Old full notebooks are available through their referenced original records.
-    return {key: value for key, value in dossier_outline(dossier).items() if key != "notebook_history"}
+    def references(value):
+        if isinstance(value, list):
+            return [references(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        return {key: [_source_index(source) for source in item] if key == "sources" and isinstance(item, list)
+                else references(item) for key, item in value.items()}
+    return references({key: value for key, value in dossier_outline(dossier).items() if key != "notebook_history"})
+
+
+def _tool_receipts(context):
+    """Legacy snapshots may contain the same complete asset on every tool call.
+
+    Those originals already appear once in sources. Preserve the read identity,
+    request, clocks and source references; independently acquired market/portfolio
+    results remain intact because they have no other canonical storage here.
+    """
+    receipts = []
+    for item in context.get("tool_evidence", []):
+        if item.get("tool") in {"instruments", "dossier", "comparison"}:
+            item = {key: value for key, value in item.items() if key != "result"}
+        receipts.append(item)
+    return receipts
 
 
 def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
@@ -657,17 +455,33 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
             references.update(theme.get("source_ids", prior.get("source_ids", [])))
             references.update(theme.get("figure_source_ids", prior.get("figure_source_ids", [])))
         references_by_instrument[review["instrument_id"]] = references
-    prior_updates = []
+    prior_updates, prior_judgment_versions = [], []
     from urllib.parse import urlencode
     for review in reviewed:
         dossier = next((row for row in context.get("research_dossiers", []) if row["instrument_id"] == review["instrument_id"]), {})
         update_ids = set((review.get("reflection") or {}).get("reviewed_update_ids", []))
-        for field in ("forecast_reviews", "lessons"):
+        version_ids = set()
+        for field in ("questions", "forecast_reviews", "lessons"):
             previous = {row["key"]: row for row in (dossier.get("notebook") or {}).get(field, [])}
             for row in (review.get("research") or {}).get(field, []):
-                reference = row.get("related_research_update_id", previous.get(row["key"], {}).get("related_research_update_id"))
+                # A sparse revision inherits its saved original-judgment link.
+                # The current PM text or forecast is never a substitute for it.
+                effective = {**previous.get(row["key"], {}), **row}
+                reference = effective.get("related_research_update_id")
                 if reference:
                     update_ids.add(reference)
+                if effective.get("forecast_version_id"):
+                    version_ids.add(effective["forecast_version_id"])
+                if effective.get("pm_note_id") and effective.get("pm_note_revision"):
+                    version_ids.add(f"pm:{effective['pm_note_id']}:{effective['pm_note_revision']}")
+        for version_id in sorted(version_ids):
+            original = _api_request(run_id, f"dossier/{quote(review['instrument_id'], safe='')}?" + urlencode({"version_id": version_id}))
+            if original.get("version_id") != version_id or original.get("instrument_id") != review["instrument_id"]:
+                raise ValueError("Original judgment version did not match the bound reference")
+            # Preserve that version's own sources alongside its value. Do not
+            # replace them with a later packet source carrying the same ID or
+            # silently turn historical evidence into a new current citation.
+            prior_judgment_versions.append(original)
         for update_id in sorted(update_ids):
             value = _api_request(run_id, f"dossier/{quote(review['instrument_id'], safe='')}?" + urlencode({"update_id": update_id}))
             original = value["value"]
@@ -728,7 +542,8 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                          for row in context.get("prior_events", []) if row["instrument_id"] in ids],
         "research_dossiers": [_review_dossier_outline(d) for d in context.get("research_dossiers", []) if d["instrument_id"] in ids],
         "prior_research_updates": prior_updates,
-        "tool_evidence": context.get("tool_evidence", []),
+        "prior_judgment_versions": prior_judgment_versions,
+        "tool_evidence": _tool_receipts(context),
         "acquisition": {
             "market_queries": context.get("market_queries", []),
             "market_coverage": context.get("market_coverage"),
@@ -751,15 +566,16 @@ def _reviewed_delta(proposed: dict, corrected: ResearchNotebook) -> ResearchNote
 
     value = {key: item for key, item in corrected.model_dump(mode="json", exclude_unset=True).items()
              if key in proposed or (key == "source_ids" and item)}
-    if isinstance(value.get("investment_view"), dict):
-        if isinstance(proposed.get("investment_view"), dict):
-            value["investment_view"] = corrected_item(value["investment_view"], proposed["investment_view"])
-        else:
-            value.pop("investment_view")
-    elif value.get("investment_view") is None and proposed.get("investment_view") is not None:
-        # Rejection of a proposed revision keeps the old view; it is not a withdrawal.
-        value.pop("investment_view", None)
-    for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+    for field in ("investment_view", "decision_brief"):
+        if isinstance(value.get(field), dict):
+            if isinstance(proposed.get(field), dict):
+                value[field] = corrected_item(value[field], proposed[field])
+            else:
+                value.pop(field)
+        elif value.get(field) is None and proposed.get(field) is not None:
+            # Rejection of a proposed revision keeps the old view; it is not a withdrawal.
+            value.pop(field, None)
+    for field in ("changes", "modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
         if field not in value:
             continue
         items = {item["key"]: item for item in proposed[field]}
@@ -859,10 +675,10 @@ def _apply_checks(draft: dict, result: dict, sources: list[dict], dossiers=()) -
 def _needs_review(row):
     return bool(row["events"] or row.get("themes") or row.get("research") is not None
                 or row.get("reflection") is not None
-                or (row.get("change_kind") == "investment" and row.get("summary")))
+                or row.get("summary"))
 
 
-def review_output(output: str) -> dict:
+def review_output(output: str, *, context: dict | None = None) -> dict:
     document = json.loads(output)
     draft = draft_payload(ReviewResult.model_validate(document))
     ids = [r["instrument_id"] for r in draft["reviews"]]
@@ -876,7 +692,11 @@ def review_output(output: str) -> dict:
     if not reviewed:
         return draft
     run_id = os.environ["INVESTMENT_STUDIO_RESEARCH_RUN_ID"]
-    context = _api_request(run_id, "context?originals=true")
+    context = context if context is not None else _api_request(run_id, "context?originals=true")
+    from watchlist_app.services.research_runner import review_checkpoint
+    checkpoint = review_checkpoint(context)
+    if checkpoint is not None:
+        return draft_payload(ReviewResult.model_validate(checkpoint))
     if not (context.get("sector_run") or context.get("research_run")) or not set(ids).issubset(context["instrument_ids"]):
         raise ValueError("Draft does not match the bound instruments in this run")
     if context.get("sector_run") and set(ids) != set(context["instrument_ids"]):
@@ -918,18 +738,20 @@ def review_output(output: str) -> dict:
     reviewed = [row for row in draft["reviews"] if _needs_review(row)]
     if not reviewed:
         return draft
-    packet = _evidence_packet(context, reviewed, run_id)
     try:
-        result = _call_reviewer(packet)
-    except _ReviewProtocolError as error:
-        _api_request(run_id, "sector-evidence", {"operation": "review", "review": {"raw_output": error.raw_output}})
+        packet = _evidence_packet(context, reviewed, run_id)
+    except Exception as error:
+        error.review_stage = "evidence"
         raise
+    result = _call_reviewer(packet)
     _api_request(run_id, "sector-evidence", {"operation": "review", "review": {"result": result}})
     final = _apply_checks(draft, result, packet["sources"], packet.get("research_dossiers", []))
     excluded_ids = {row["instrument_id"] for row in exclusions}
     for row in final["reviews"]:
         if row["instrument_id"] in excluded_ids:
             row["coverage"] = list(dict.fromkeys([*row["coverage"], _EXCLUSION_NOTE]))
+    _api_request(run_id, "sector-evidence", {"operation": "review", "review": {"checkpoint": {
+        "draft": context.get("submitted_draft", document), "cutoff": context["cutoff"], "result": final}}})
     return final
 
 
@@ -937,12 +759,20 @@ def _safe_failure(error):
     transport = getattr(error, "review_transport", None)
     diagnostic = {"diagnostic": json.dumps({key: transport[key] for key in (
         "stage", "bytes_received", "chunks_received", "elapsed_seconds", "finish_reason", "protocol_error", "done",
+        "engine", "exit_code", "error_type", "read_pages",
     ) if key in transport}, ensure_ascii=False, separators=(",", ":"))} if transport else {}
+    if not transport and error.__traceback__:
+        import traceback
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        # Code locations, never exception text, input values, paths or credentials.
+        diagnostic = {"diagnostic": json.dumps({"location": f"{os.path.basename(frame.filename)}:{frame.name}:{frame.lineno}"}, separators=(",", ":"))}
+    if getattr(error, "review_stage", None):
+        diagnostic["stage"] = error.review_stage
     if isinstance(error, MissingResearchDraft):
         return {"type": "MissingResearchDraft",
                 "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。", **diagnostic}
     if isinstance(error, TimeoutError) or isinstance(error.__cause__, TimeoutError):
-        return {"type": "TimeoutError", "summary": "独立事实核证请求超时，原始草稿及证据已保留，未发布事件。", **diagnostic}
+        return {"type": "TimeoutError", "summary": "独立事实核证请求超时，原始草稿及证据已保留，未发布事件。", "retryable": True, **diagnostic}
     if isinstance(error, SectorWebError):
         summary = "独立事实核证请求未完成，原始草稿及证据已保留，未发布事件。"
     elif isinstance(error, ValidationError):
@@ -955,8 +785,9 @@ def _safe_failure(error):
                 "diagnostic": "missing: " + ", ".join(missing) if missing else ", ".join(kinds)}
     elif isinstance(error, json.JSONDecodeError):
         summary = "研究草稿不是完整有效的JSON。"
-    elif isinstance(error, _ReviewProtocolError):
+    elif getattr(error, "review_stage", None) == "review_agent":
         summary = str(error)
+        diagnostic["retryable"] = bool(getattr(error, "retryable", False))
     elif isinstance(error, HTTPError):
         summary = f"研究证据接口返回 HTTP {error.code}。"
     else:
@@ -979,7 +810,7 @@ def main():
                      {"operation": "review", "review": {"raw_draft": answer}})
         if not submitted:
             raise MissingResearchDraft()
-        result = review_output(json.dumps(submitted, ensure_ascii=False))
+        result = review_output(json.dumps(submitted, ensure_ascii=False), context=context)
     except Exception as error:
         failure = _safe_failure(error)
         if conversation:

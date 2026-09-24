@@ -13,6 +13,7 @@ from watchlist_app.services.research_user_commands import UserCommand
 from watchlist_app.services.research_quant import QuantAnalysisInput
 from watchlist_app.api.research_presentation import review_status_view
 from watchlist_app.services.research_imports import ResearchImport, ImportPublication
+from watchlist_app.services.research_data import StoredDataRequest
 
 router = APIRouter()
 
@@ -263,6 +264,23 @@ def numeric_research(run_id: str, request: NumericResearchInput, session: Sessio
         raise HTTPException(422, str(error)) from error
     run.context_json = {**run.context_json, "computed_metrics": [*run.context_json.get("computed_metrics", []), result]}
     session.commit()
+    return result
+
+
+@router.post("/research/runs/{run_id}/stored-data")
+def stored_research_data(run_id: str, request: StoredDataRequest, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.research_data import stored_market_data
+    run = market_run(session, run_id)
+    context = run.context_json
+    cutoff = context.get("input_snapshot_cutoff") or context["cutoff"]
+    try:
+        result = stored_market_data(request, as_of=cutoff)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if result.get("source_id"):
+        result["source_run_id"] = run_id
+        run.context_json = {**context, "computed_metrics": [*context.get("computed_metrics", []), result]}
+        session.commit()
     return result
 
 

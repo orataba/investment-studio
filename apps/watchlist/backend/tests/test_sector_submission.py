@@ -1,3 +1,4 @@
+from .research_projection_fixture import server_projection
 import copy
 import io
 import json
@@ -189,7 +190,7 @@ def test_daily_context_is_read_per_instrument_without_copying_other_instrument_m
         "research_dossiers": [{"instrument_id": "gold", "mandate": {"focus": ["实际利率与国内基差"]}},
                               {"instrument_id": "equity", "materials": [{"body": "无关长资料" * 20000}]}],
         "web_evidence": [{"text": "已抓原文" * 30000}]}
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda _: context))
     index = mcp.read_research_context()
     assert index["instrument_ids"] == ["gold", "equity"]
     assert "instrument_inputs" not in index and "web_evidence" not in index
@@ -213,7 +214,7 @@ def test_daily_context_is_read_per_instrument_without_copying_other_instrument_m
 
 def test_public_source_tools_retain_sector_evidence_when_used_in_daily_research(monkeypatch):
     from watchlist_app import research_mcp as mcp
-    monkeypatch.setattr(mcp, "request", lambda _: {"sector_run": True})
+    monkeypatch.setattr(mcp, "request", server_projection(lambda _: {"sector_run": True}))
     monkeypatch.setattr(mcp, "read_sector_source", lambda url: {"operation": "fetch", "url": url})
     monkeypatch.setattr(mcp, "search_sector_information", lambda query: {"operation": "search", "query": query})
     assert mcp.read_public_source("https://example.com") == {"operation": "fetch", "url": "https://example.com"}
@@ -224,8 +225,8 @@ def test_submission_tool_uses_structured_payload(monkeypatch):
     from watchlist_app import research_mcp
     parsed = service.ReviewResult(reviews=[service.SectorReview(instrument_id="xlk", summary='关于 "AI" 的判断')])
     calls = []
-    monkeypatch.setattr(research_mcp, "request", lambda suffix, payload: calls.append((suffix, payload)) or
-                        {"status": "pending_fact_review"})
+    monkeypatch.setattr(research_mcp, "request", server_projection(lambda suffix, payload: calls.append((suffix, payload)) or
+                        {"status": "pending_fact_review"}))
     assert research_mcp.submit_research_review(parsed)["status"] == "pending_fact_review"
     assert calls == [("sector-draft", {"reviews": [{
         "instrument_id": "xlk", "summary": '关于 "AI" 的判断', "change_kind": "none",

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getSavedResearchSource, type AskResearchAssistant, type NotebookSource, type ResearchModule, type ResearchPlan, type SavedResearchNotebook, type SavedResearchSource } from '../lib/researchDossierApi'
+import { getSavedResearchSource, type AskResearchAssistant, type NotebookSource, type ResearchModule, type ResearchPlan, type ResearchReportPreferences, type SavedResearchNotebook, type SavedResearchSource } from '../lib/researchDossierApi'
 import { ComputedEvidence, SourceList, dateLabel } from './ResearchEvidence'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -7,6 +7,7 @@ import ResearchQuantFigure from './ResearchQuantFigure'
 import ResearchOpinionComposer from './ResearchOpinionComposer'
 import ResearchThemeComposer from './ResearchThemeComposer'
 import { useStudioAccount } from './AccountBoundary'
+import ResearchReadingAside from './ResearchReadingAside'
 
 const coverageLabels = { supported: '依据较充分', partial: '部分覆盖', insufficient: '证据不足' }
 const moduleTitles: Record<string, string> = {
@@ -55,7 +56,10 @@ export function EvidenceFigure({ source }: { source: SavedResearchSource }) {
       <p className="sector-research-note">快照采集：{dateLabel(source.previous_snapshot?.collected_at)} → {dateLabel(source.current_snapshot?.collected_at)}。仅为采集区间内的同财期共识变化，不能确定精确调整日期。</p>
       {source.changes?.length ? <table><thead><tr><th>公司 / 预测财期</th><th>指标</th><th>前次 → 本次</th><th>变化</th></tr></thead><tbody>{source.changes.map((change, index) => <tr key={index}><td>{change.symbol}<small>{change.frequency} · {change.target_period_end}</small></td><td>{change.metric === 'revenue_avg' ? '平均营收预期' : change.metric === 'eps_avg' ? '平均每股收益预期' : change.metric}</td><td>{change.previous_value.toLocaleString()} → {change.current_value.toLocaleString()} {change.currency || '币种待核实'}{change.metric === 'eps_avg' && '/股'}{change.current_currency_status === 'inferred_from_reporting_currency' && <small>币种按财报币种推定</small>}</td><td>{change.delta_pct === null ? '未取得' : `${change.delta_pct.toFixed(2)}%`}{change.analyst_count_changed && <small>分析师样本有变化</small>}</td></tr>)}</tbody></table> : <p className="sector-research-note">本份快照未保存可比变化。</p>}
     </div>}
-    {source.data ? <ComputedEvidence source={source} /> : !holdings.length && source.source_type !== 'analyst_estimate_changes' ? <p className="sector-research-note">此记录未包含支持当前图形的数值结构，可在模块来源中查看已保存依据。</p> : null}
+    {source.data ? source.data.analysis_kind === 'python_quant' ? <>
+      {Boolean(source.data.limitations?.length) && <p className="research-figure-limitations" translate="no">{source.data.limitations!.join(' ')}</p>}
+      <ResearchReadingAside label="计算口径与输入依据"><ComputedEvidence source={source} /></ResearchReadingAside>
+    </> : <ComputedEvidence source={source} /> : !holdings.length && source.source_type !== 'analyst_estimate_changes' ? <p className="sector-research-note">此记录未包含支持当前图形的数值结构，可在模块来源中查看已保存依据。</p> : null}
   </figure>
 }
 
@@ -89,17 +93,19 @@ export function SavedFigure({ instrumentId, notebookVersionId, themeVersionId, s
   </div> : <p className="sector-research-note" role="status">Loading</p>
 }
 
-export default function ResearchModules({ instrumentId, notebook, plan, onAskAssistant, section }: {
-  instrumentId: string; notebook?: SavedResearchNotebook | null; plan?: ResearchPlan; onAskAssistant?: AskResearchAssistant; section?: ReportSection
+export default function ResearchModules({ instrumentId, notebook, plan, onAskAssistant, section, preferences, supplementary = false }: {
+  instrumentId: string; notebook?: SavedResearchNotebook | null; plan?: ResearchPlan; onAskAssistant?: AskResearchAssistant; section?: ReportSection; preferences?: ResearchReportPreferences; supplementary?: boolean
 }) {
-  const modules = (notebook?.modules || []).filter(module => !section || reportSection(module.key) === section)
+  const hidden = new Set((preferences?.hidden_modules || []).filter(key => !['market-quantitative', 'events-expectations'].includes(key)))
+  const modules = (notebook?.modules || []).filter(module => (!section || reportSection(module.key) === section) && (supplementary ? hidden.has(module.key) : !hidden.has(module.key)))
   // Chapters contain published analysis. Unanswered method questions belong to settings,
   // not empty report chapters; saved chapters survive a later change in methods.
   const anchor = (key: string) => `research-module-${notebook?.version_id || 'pending'}-${key}`
-  const keys = [...new Set([...(plan?.modules.map(module => module.id).filter(key => modules.some(module => module.key === key)) || []), ...modules.map(module => module.key)])]
-  if (!keys.length) return section === 'events' ? null : <p className="research-report-empty">{section === 'quantitative' ? '尚未形成可供判断的量化分析，不能据此推断风险较低。' : '尚未形成完整分析。已保存的结论、跟踪主题和原始材料仍可查阅。'}</p>
+  const order = [...(preferences?.priority_modules || []), ...(plan?.modules.map(module => module.id) || []), ...modules.map(module => module.key)]
+  const keys = [...new Set(order.filter(key => modules.some(module => module.key === key)))]
+  if (!keys.length) return section === 'events' || supplementary ? null : <p className="research-report-empty">{section === 'quantitative' ? '尚未形成可供判断的量化分析，不能据此推断风险较低。' : '尚未形成完整分析。已保存的结论、跟踪主题和原始材料仍可查阅。'}</p>
   return <section className="research-domain-modules" aria-label="分领域研究">
-    <div className={`research-module-layout${keys.length === 1 ? ' research-module-layout-single' : ''}`}>{keys.length > 1 && <nav className="research-module-index" aria-label="研究领域目录">{keys.map((key, index) => <a key={key} href={`#${anchor(key)}`}><span>{String(index + 1).padStart(2, '0')}</span>{plan?.modules.find(module => module.id === key)?.title || moduleTitles[key] || key}</a>)}</nav>}<div className="research-module-articles">
+    <div className="research-module-layout"><div className="research-module-articles">
     {keys.map(key => {
       const method = plan?.modules.find(module => module.id === key)
       const result: ResearchModule | undefined = modules.find(module => module.key === key)
@@ -116,7 +122,7 @@ export default function ResearchModules({ instrumentId, notebook, plan, onAskAss
           {figures.map(source => <SavedFigure key={`${source.source_id}:${notebook?.version_id || ''}`} instrumentId={instrumentId} notebookVersionId={notebook?.version_id} source={source} onAskAssistant={onAskAssistant} />)}
           {result.gaps.length > 0 && <div className="research-module-gaps"><strong>尚待核实</strong><ul>{result.gaps.map((gap, index) => <li key={index} translate="no">{gap}</li>)}</ul></div>}
           {result.next_check && <p className="research-notebook-next"><strong>下一步核实</strong> <span translate="no">{result.next_check}</span></p>}
-          {sources.length > 0 && <details className="research-module-sources"><summary>依据与原文 · {sources.length}</summary><SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={sources} /></details>}
+          {sources.length > 0 && <ResearchReadingAside label={`依据与原文 · ${sources.length}`} title={`${title} · 研究依据`}><SourceList instrumentId={instrumentId} versionId={notebook?.version_id} sources={sources} /></ResearchReadingAside>}
           {onAskAssistant && <button type="button" className="sector-event-ask" onClick={() => onAskAssistant(`请复核“${title}”模块（${key}）的判断：${result.summary}\n${result.analysis}\n请核实证据、反例和下一步检查，保留其他领域的已有研究。`, { instrument_id: instrumentId, notebook_version_id: notebook?.version_id })}>追问这一领域</button>}
         </> : <p className="sector-research-note" translate="no">{method?.reason || '尚未保存这一领域的研究判断。'}</p>}
       </article>

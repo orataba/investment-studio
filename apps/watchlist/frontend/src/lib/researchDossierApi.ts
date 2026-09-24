@@ -41,6 +41,17 @@ export type ResearchQuestion = {
 export type ResearchReference = ResearchAssistantReference
 export type AskResearchAssistant = (question: string, reference?: ResearchReference) => void
 export type ResearchRevision = { version_id?: string; created_at?: string | null; updated_at?: string | null; source_run_id?: string }
+export type ResearchDecisionBrief = ResearchRevision & {
+  recommendation: string; rationale: string; conditions: string[]; horizon: string; next_decision: string; source_ids: string[]
+  basis_view_version_id?: string; needs_review?: boolean
+}
+export type ResearchChange = ResearchRevision & {
+  key: string; title: string; before: string; after: string; baseline_as_of: string | null
+  mechanism: string; decision_implication: string; condition: string; source_ids: string[]
+}
+export type ResearchReportPreferences = {
+  priority_modules: string[]; hidden_modules: string[]; summary_focus: string[]; detail_level: 'concise' | 'standard' | 'detailed'
+}
 export type InvestmentView = ResearchRevision & {
   direction: string; horizon: string; attractiveness: string; risk: string; conviction: string
   invalidation?: string; next_check?: string
@@ -72,6 +83,8 @@ export type ResearchModule = ResearchRevision & {
   evidence_as_of: string | null; method_version?: string; checked_at?: string | null
 }
 export type ResearchNotebook = {
+  decision_brief?: ResearchDecisionBrief | null
+  changes?: ResearchChange[]
   modules?: ResearchModule[]
   method_plan?: ResearchPlan
   prior_analysis?: { fundamental_view: string; valuation_view: string; source_ids: string[]; updated_at: string | null; version_id: string | null; note: string; sources: NotebookSource[] }
@@ -88,7 +101,7 @@ export type ResearchNotebook = {
   facts?: Array<{ subject: string; metric: string; value: string; unit: string; period: string; comparison: string; uncertainty: string; source_ids: string[] }>
 }
 
-export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[]; user_constraints?: string[]; module_focus?: Array<{ module_id: string; reason: string; source_ids: string[]; selected_by: 'user' | 'research' | 'initial' | null }> }
+export type ResearchMandateInput = { title: string; background: string; mechanisms: string[]; research_approach: string[]; focus: string[]; source_plan: string[]; gaps: string[]; user_constraints?: string[]; user_methods?: string[]; report_preferences?: ResearchReportPreferences; module_focus?: Array<{ module_id: string; reason: string; source_ids: string[]; selected_by: 'user' | 'research' | 'initial' | null }> }
 export type ResearchMandate = ResearchMandateInput & ResearchRevision & {
   instrument_id: string; role: 'research_method'; entry_id: string | null; updated_at: string | null; versions?: ResearchMandate[]
   readonly user_focus?: string[]; readonly author?: { origin: 'user' | 'research' | 'initial'; display_name?: string } | null
@@ -240,6 +253,8 @@ export function uploadResearchMaterial(instrumentId: string, file: File, materia
 }
 
 export type ResearchUpdate = {
+  impact_level?: 'limited' | 'material' | 'major'; urgency?: 'monitor' | 'review_soon' | 'immediate'
+  risk_channels?: string[]; impact_analysis?: string; action_condition?: string
   update_id: string; kind: 'event' | 'question' | 'forecast' | 'review' | 'lesson' | 'theme' | 'opinion' | 'judgment' | 'schedule'
   title: string; body: string; recorded_at: string; theme_ids: string[]; author: string; author_role: 'researcher' | 'user' | 'system'
   sources: EventSource[]; reference: ResearchReference

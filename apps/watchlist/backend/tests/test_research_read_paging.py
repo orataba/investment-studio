@@ -8,6 +8,10 @@ import pytest
 from watchlist_app import research_mcp as mcp
 from watchlist_app.services.research_notebook import dossier_outline
 from watchlist_app.services.research_read_projection import coverage_detail, dossier_sections
+from watchlist_app.services import research_tool_projection as projection
+
+
+from .research_projection_fixture import server_projection
 
 
 def wire(tool, arguments):
@@ -61,7 +65,7 @@ def test_market_search_directory_and_originals_have_lossless_bound_wire_pages(mo
         assert params == {"document_id": ["doc-17"], "version_id": ["old-17"]}
         return deepcopy(article)
 
-    monkeypatch.setattr(mcp, "request", request)
+    monkeypatch.setattr(mcp, "request", server_projection(request))
     args = {"query": "baseline", "instrument_id": "xlk", "entities": ["entity"]}
     first = wire("search_market_information", args)
     assert first["as_of"] == cutoff and first["search_total"] == 41
@@ -144,7 +148,7 @@ def large_context():
 def test_large_research_entries_page_every_bound_record_within_actual_wire_limit(monkeypatch):
     context, article = large_context()
     original = deepcopy(context)
-    monkeypatch.setattr(mcp, "request", lambda suffix: context if suffix == "context" else pytest.fail(suffix))
+    monkeypatch.setattr(mcp, "request", server_projection(lambda suffix: context if suffix == "context" else pytest.fail(suffix)))
     scope = wire("read_research_context", {})
     assert scope["instrument_ids"] == ["xlk"] and scope["sections"]["catalogue"]["count"] == 249
     assert "sources" not in scope["market_coverage"] and "sources" not in scope["market_coverage"]["export_coverage"]
@@ -199,7 +203,7 @@ def test_exact_pm_version_and_large_source_can_be_read_losslessly_without_rebind
         if query == {"update_id": ["update-one"]}:
             return update
         pytest.fail(suffix)
-    monkeypatch.setattr(mcp, "request", request)
+    monkeypatch.setattr(mcp, "request", server_projection(request))
     assert complete("read_research_dossier", {"instrument_id": "xlk", "version_id": "pm:pm-0:2"}) == version
     assert all("version_id=pm" in call for call in calls)
     assert complete("read_research_dossier", {"instrument_id": "xlk", "source_id": "shared-original"}) == later
@@ -214,7 +218,7 @@ def test_conversation_focus_and_long_evidence_remain_explicit_read_sections(monk
         referenced_risk_case={"case_id": "selected", "body": "选中风险全文" * 12000},
         history=[{"question": "原问题", "answer": "旧回答" * 16000}],
         evidence=[{"source_id": "attachment", "text": "用户材料" * 14000}])
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda _: context))
     index = wire("read_research_context", {})
     assert index["question"] == context["question"]
     for section in ("page_context", "referenced_risk_case", "history", "evidence"):
@@ -235,7 +239,7 @@ def test_contract_size_question_and_current_judgment_leave_a_readable_overview(m
     context["question"] = "请" * 20000  # AnalysisInput's supported maximum length.
     view = context["research_dossiers"][0]["notebook"]["investment_view"]
     view["assumptions"] = ["完整假设及其适用条件" * 1000 for _ in range(5)]
-    monkeypatch.setattr(mcp, "request", lambda _: context)
+    monkeypatch.setattr(mcp, "request", server_projection(lambda _: context))
     scope = wire("read_research_context", {})
     assert scope["question"]["inline"] is False
     assert scope["question"]["read"] == {"tool": "read_research_context", "section": "question"}

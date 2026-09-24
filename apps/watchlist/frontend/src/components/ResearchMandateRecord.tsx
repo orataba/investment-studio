@@ -1,11 +1,13 @@
 import { useStudioAccount } from './AccountBoundary'
 import { useState, type FormEvent } from 'react'
-import { saveResearchMandate, type ResearchMandate, type ResearchMandateInput } from '../lib/researchDossierApi'
+import { saveResearchMandate, type ResearchMandate, type ResearchMandateInput, type ResearchReportPreferences } from '../lib/researchDossierApi'
 
 const fields = [
   ['mechanisms', '价格与基本面传导'], ['research_approach', '研究思路'], ['focus', '重点关注'],
   ['user_constraints', '用户指定的范围与方法约束'], ['source_plan', '资料与日程来源'], ['gaps', '尚待补齐'],
+  ['user_methods', '人工指定的研究方法'],
 ] as const
+const defaultPreferences: ResearchReportPreferences = { priority_modules: [], hidden_modules: [], summary_focus: [], detail_level: 'standard' }
 const originLabels = { user: '用户', research: '研究员', initial: '初始方法' }
 const authorLabel = (author: NonNullable<ResearchMandate['author']>) => {
   const role = originLabels[author.origin]
@@ -20,6 +22,8 @@ export default function ResearchMandateRecord({ instrumentId, mandate, onSaved, 
   const [draft, setDraft] = useState<ResearchMandateInput>(mandate)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const preferences = draft.report_preferences || defaultPreferences
+  const updatePreferences = (update: Partial<ResearchReportPreferences>) => setDraft({ ...draft, report_preferences: { ...preferences, ...update } })
   async function save(event: FormEvent) {
     event.preventDefault()
     if (!canWrite) return
@@ -29,6 +33,7 @@ export default function ResearchMandateRecord({ instrumentId, mandate, onSaved, 
       const saved = await saveResearchMandate(instrumentId, {
         title: draft.title, background: draft.background,
         ...(draft.module_focus ? { module_focus: draft.module_focus } : {}),
+        ...(draft.report_preferences ? { report_preferences: { ...draft.report_preferences, summary_focus: draft.report_preferences.summary_focus.map(row => row.trim()).filter(Boolean) } } : {}),
         ...Object.fromEntries(fields.map(([key]) => [key, (draft[key] || []).map(row => row.trim()).filter(Boolean)])),
       } as ResearchMandateInput)
       onSaved(saved)
@@ -60,12 +65,23 @@ export default function ResearchMandateRecord({ instrumentId, mandate, onSaved, 
           if (next) setDraft({ ...draft, module_focus: [...(draft.module_focus || []), { module_id: next.id, reason: '', source_ids: [], selected_by: null }] })
         }}>添加研究领域</button>
       </fieldset>
+      <fieldset className="research-material-wide research-report-preferences"><legend>报告阅读偏好</legend>
+        <label>摘要重点（每行一项）<textarea rows={3} disabled={saving} value={preferences.summary_focus.join('\n')} onChange={event => updatePreferences({ summary_focus: event.target.value.split('\n') })} /></label>
+        <label>研究篇幅<select disabled={saving} value={preferences.detail_level} onChange={event => updatePreferences({ detail_level: event.target.value as ResearchReportPreferences['detail_level'] })}><option value="concise">简明</option><option value="standard">标准</option><option value="detailed">深入</option></select></label>
+        <h5>优先阅读的领域</h5>
+        <div className="research-preference-options">{availableModules.map(module => <label key={module.id}><input type="checkbox" checked={preferences.priority_modules.includes(module.id)} disabled={saving} onChange={event => updatePreferences({ priority_modules: event.target.checked ? [...preferences.priority_modules, module.id] : preferences.priority_modules.filter(key => key !== module.id) })} />{module.title}</label>)}</div>
+        {preferences.priority_modules.length > 1 && <ol className="research-preference-order">{preferences.priority_modules.map((key, index) => <li key={key}><span>{availableModules.find(module => module.id === key)?.title || key}</span><button type="button" aria-label={`提前${availableModules.find(module => module.id === key)?.title || key}`} disabled={saving || index === 0} onClick={() => { const order = [...preferences.priority_modules]; [order[index - 1], order[index]] = [order[index], order[index - 1]]; updatePreferences({ priority_modules: order }) }}>上移</button></li>)}</ol>}
+        <h5>放入补充分析的领域</h5>
+        <p className="sector-research-note">默认全文展示；移入补充分析后仍可从研究档案阅读。变化、风险和重点主题始终保留。</p>
+        <div className="research-preference-options">{availableModules.filter(module => !['market-quantitative', 'events-expectations'].includes(module.id)).map(module => <label key={module.id}><input type="checkbox" checked={preferences.hidden_modules.includes(module.id)} disabled={saving} onChange={event => updatePreferences({ hidden_modules: event.target.checked ? [...preferences.hidden_modules, module.id] : preferences.hidden_modules.filter(key => key !== module.id) })} />{module.title}</label>)}</div>
+      </fieldset>
       {error && <p role="alert" className="research-material-wide">{error}</p>}
       <div className="sector-research-actions research-material-wide"><button type="submit" disabled={saving || !draft.title.trim()}>{saving ? '保存中…' : '保存研究框架'}</button><button type="button" disabled={saving} onClick={() => setEditing(false)}>取消</button></div>
     </form> : <>
       <p><strong translate="no">{mandate.title}</strong></p><p className="research-dossier-text" translate="no">{mandate.background}</p>
       {Boolean(mandate.module_focus?.length) && <details className="research-dossier-record"><summary>指定的研究领域</summary><ul className="research-dossier-list">{mandate.module_focus!.map(module => <li key={module.module_id}>{availableModules.find(item => item.id === module.module_id)?.title || module.module_id} · {module.reason}</li>)}</ul></details>}
       {Boolean(mandate.user_focus?.length) && <div><h4>用户指定重点</h4><ul className="research-dossier-list">{mandate.user_focus!.map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></div>}
+      {mandate.report_preferences && <section className="research-preferences-summary"><h4>报告阅读偏好</h4><p>研究篇幅：{{ concise: '简明', standard: '标准', detailed: '深入' }[mandate.report_preferences.detail_level]}</p>{mandate.report_preferences.summary_focus.length > 0 && <ul>{mandate.report_preferences.summary_focus.map((item, index) => <li key={index} translate="no">{item}</li>)}</ul>}{mandate.report_preferences.priority_modules.length > 0 && <p>优先领域：{mandate.report_preferences.priority_modules.map(key => availableModules.find(module => module.id === key)?.title || key).join('、')}</p>}</section>}
       {fields.map(([key, label]) => (mandate[key] || []).length > 0 && <details className="research-dossier-record" key={key} open={key === 'focus'}><summary>{label}</summary><ul className="research-dossier-list">{(mandate[key] || []).map((row, i) => <li key={i} translate="no">{row}</li>)}</ul></details>)}
       {Boolean(mandate.versions?.length) && <details className="research-dossier-record"><summary>研究框架修订历史 · {mandate.versions!.length} 次</summary>
         {mandate.versions!.map(version => <article key={version.version_id}><h4>{version.updated_at ? new Date(version.updated_at).toLocaleString('zh-CN') : '初始版本'} · {version.title}</h4><p className="research-dossier-text" translate="no">{version.background}</p>

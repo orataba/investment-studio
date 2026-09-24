@@ -95,6 +95,34 @@ class InvestmentView(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
 
 
+class DecisionBrief(BaseModel):
+    """PM-facing implications of the current view, not a second asset rating."""
+    model_config = ConfigDict(extra="forbid")
+    recommendation: str = Field(min_length=1, max_length=2000,
+        description="Actionable research recommendation, including maintain/wait when appropriate; not a trade instruction or invented position size.")
+    rationale: str = Field(min_length=1, max_length=3000)
+    conditions: list[str] = Field(default_factory=list, max_length=12)
+    horizon: str = Field(default="", max_length=1000)
+    next_decision: str = Field(default="", max_length=2000)
+    source_ids: list[str] = Field(default_factory=list)
+    basis_view_version_id: str | None = Field(default=None,
+        description="Server binds this to the effective investment_view version at publication; do not invent a version.")
+
+
+class ResearchChange(BaseModel):
+    """A dated change with an explicit comparison basis and investment consequence."""
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    title: str = Field(min_length=1, max_length=300)
+    before: str = Field(min_length=1, max_length=2500)
+    after: str = Field(min_length=1, max_length=2500)
+    baseline_as_of: date | None = None
+    mechanism: str = Field(min_length=1, max_length=3000)
+    decision_implication: str = Field(min_length=1, max_length=2500)
+    condition: str = Field(default="", max_length=2000)
+    source_ids: list[str] = Field(min_length=1)
+
+
 class ResearchForecast(BaseModel):
     theme_id: str | None = None
     event_key: str | None = None
@@ -187,10 +215,13 @@ def notebook_current_view(notebook: dict | None) -> dict | None:
     if notebook is None:
         return None
     result = deepcopy(notebook)
+    if result.get("decision_brief"):
+        result["decision_brief"]["needs_review"] = (
+            result["decision_brief"].get("basis_view_version_id") != (result.get("investment_view") or {}).get("version_id"))
     # Earlier papers were sparse and may predate the structured lists. Supply
     # read defaults here so every reader consumes the same current contract.
     for field in ("modules", "key_drivers", "questions", "important_changes", "next_research",
-                  "source_ids", "sources", "catalysts", "facts", "forecasts", "forecast_reviews", "lessons"):
+                  "source_ids", "sources", "catalysts", "facts", "forecasts", "forecast_reviews", "lessons", "changes"):
         result.setdefault(field, [])
     previous_analysis = result.pop("fundamental_view", "")
     previous_valuation = result.pop("valuation_view", "")
@@ -220,6 +251,8 @@ class ResearchNotebook(BaseModel):
     facts: list[ResearchFact] = Field(default_factory=list)
     mandate_update: ResearchMandateInput | None = None
     investment_view: InvestmentView | None = None
+    decision_brief: DecisionBrief | None = None
+    changes: list[ResearchChange] = Field(default_factory=list, max_length=20)
     forecasts: list[ResearchForecast] = Field(default_factory=list)
     forecast_reviews: list[ForecastReview] = Field(default_factory=list)
     lessons: list[ResearchLesson] = Field(default_factory=list)
@@ -329,9 +362,10 @@ def dossier_outline(dossier: dict) -> dict:
 
     notebook = dict(dossier["notebook"]) if dossier.get("notebook") else None
     if notebook:
-        if notebook.get("investment_view"):
-            notebook["investment_view"] = index_versions(notebook["investment_view"])
-        for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
+        for field in ("investment_view", "decision_brief"):
+            if notebook.get(field):
+                notebook[field] = index_versions(notebook[field])
+        for field in ("modules", "forecasts", "forecast_reviews", "lessons", "changes"):
             if field in notebook:
                 notebook[field] = [index_versions(item) for item in notebook[field]]
     return {**dossier,
@@ -476,7 +510,7 @@ def research_sources(context: dict, run_id: str) -> dict[str, dict]:
 
 def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, dict], *, research_plan: dict | None = None,
                       previous: dict | None = None, cutoff: datetime | None = None):
-    for field in ("modules", "forecasts", "forecast_reviews", "lessons"):
+    for field in ("modules", "forecasts", "forecast_reviews", "lessons", "changes"):
         keys = [row.key for row in getattr(notebook, field)]
         if len(set(keys)) != len(keys):
             raise ValueError("同一研究模块、预测、复盘或经验在本轮重复出现")
@@ -520,6 +554,9 @@ def validate_notebook(notebook: ResearchNotebook, iid: str, sources: dict[str, d
         for sid in module.figure_source_ids:
             if sources[sid].get("source_type") not in {"computed_metric", "sector_snapshot", "analyst_estimate_changes"}:
                 raise ValueError("研究图表必须引用已留存的数值计算、持仓或预期证据")
+    for change in notebook.changes:
+        if cutoff is not None and change.baseline_as_of and change.baseline_as_of > cutoff.date():
+            raise ValueError("变化的对照基准日期不能晚于本轮研究截止")
 
 
 def _versioned(value: dict, previous: dict | None, model: type[BaseModel], version_id: str, run_id: str, recorded_at: str) -> dict:
@@ -561,7 +598,7 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
         if field not in notebook.model_fields_set and field in previous:
             value[field] = deepcopy(previous[field])
     # A same-key update changes only supplied fields, including explicit empty values.
-    for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons"):
+    for field in ("modules", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons", "changes"):
         old = {row["key"]: row for row in previous.get(field, [])}
         value[field] = [_merge_partial(item, old.get(item.key)) for item in getattr(notebook, field)]
     updated = {q["key"] for q in value["questions"]}
@@ -576,7 +613,7 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
     if any(not (item.get("forecast_key") or item.get("related_research_update_id")) for item in value["forecast_reviews"]):
         raise ValueError("复盘需要关联此前已保存的预测版本或研究判断记录")
     method_versions = {module["id"]: module["version"] for module in (research_plan or {}).get("modules", [])}
-    for field, model in (("modules", ResearchModule), ("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson)):
+    for field, model in (("modules", ResearchModule), ("forecasts", ResearchForecast), ("forecast_reviews", ForecastReview), ("lessons", ResearchLesson), ("changes", ResearchChange)):
         old = {row["key"]: row for row in previous.get(field, [])}
         incoming = {row["key"] for row in value[field]}
         value[field] = [_versioned(row, old.get(row["key"]), model, f"{run_id}:{field}:{row['key']}", run_id, recorded_at)
@@ -597,6 +634,16 @@ def retain_notebook(notebook: ResearchNotebook, previous: dict | None, sources: 
             f"{run_id}:investment-view", run_id, recorded_at)
     elif "investment_view" not in notebook.model_fields_set:
         value["investment_view"] = deepcopy(previous.get("investment_view"))
+    if notebook.decision_brief is not None:
+        brief = _merge_partial(notebook.decision_brief, previous.get("decision_brief"))
+        brief["basis_view_version_id"] = (value.get("investment_view") or {}).get("version_id")
+        value["decision_brief"] = _versioned(brief, previous.get("decision_brief"), DecisionBrief,
+            f"{run_id}:decision-brief", run_id, recorded_at)
+    elif "decision_brief" not in notebook.model_fields_set:
+        value["decision_brief"] = deepcopy(previous.get("decision_brief"))
+    if value.get("decision_brief"):
+        value["decision_brief"]["needs_review"] = (
+            value["decision_brief"].get("basis_view_version_id") != (value.get("investment_view") or {}).get("version_id"))
     # Legacy prose is an explicitly dated archive, never an editable module or
     # an alternative current investment view. Its original source binding stays.
     if previous.get("prior_analysis"):

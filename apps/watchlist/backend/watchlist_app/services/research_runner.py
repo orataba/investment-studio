@@ -9,7 +9,7 @@ import shutil
 import signal
 import subprocess
 from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import select, update
 from studio_identity import (IdentityError, current_principal, issue_delegation, principal_context,
@@ -31,7 +31,70 @@ def _provider_failure(errors):
         return {"type": "InsufficientBalance", "summary": "DeepSeek账户余额不足，本次分析未完成。充值后可重新更新。"}
     if "model_not_found" in codes or "no available channel for model" in text.lower():
         return {"type": "ModelUnavailable", "summary": "DeepSeek服务商当前没有可用的模型通道，本次分析未完成。请检查模型和通道配置。"}
+    if codes.intersection({"context_length_exceeded", "context_window_exceeded"}) or (
+        "dsh:" in text and "Input exceeds the context limit" in text):
+        return {"type": "ContextLimitExceeded", "summary": "本轮必要资料超过模型上下文容量，未发布研究；请检查证据装配与研究范围。", "retryable": False}
+    if codes.intersection({"rate_limit_exceeded", "too_many_requests"}) or re.search(r"^dsh: (?:RATE_LIMIT|RATE):", text, re.M):
+        return {"type": "ProviderRateLimit", "summary": "模型服务暂时限流，草稿与已有证据已保留。", "retryable": True}
+    if codes.intersection({"service_unavailable", "server_error", "overloaded_error"}) or re.search(
+        r"^dsh: (?:NETWORK|SERVER):.*(?:\b50[234]\b|ECONNRESET|ETIMEDOUT|fetch failed)", text, re.M):
+        return {"type": "ProviderUnavailable", "summary": "模型服务或网络暂时不可用，草稿与已有证据已保留。", "retryable": True}
     return None
+
+
+def review_checkpoint(context):
+    """A checkpoint belongs to the exact submitted draft and information horizon."""
+    for capture in reversed(context.get("web_evidence", [])):
+        checkpoint = (capture.get("review") or {}).get("checkpoint")
+        if (checkpoint and checkpoint.get("draft") == context.get("submitted_draft")
+                and checkpoint.get("cutoff") == context.get("cutoff")):
+            return checkpoint.get("result")
+    return None
+
+
+def queue_retry(session, run, *, now=None, manual=False):
+    """Requeue an authorized failed instrument run without rebinding its evidence.
+
+    Automatic recovery is bounded to two retries of an identified transient fault.
+    Manual recovery is useful after an operator repairs a deterministic defect;
+    publication still verifies the studied dossier versions and current access.
+    The caller holds the same instrument lock used by begin_run.
+    """
+    session.refresh(run, with_for_update=True)
+    context = dict(run.context_json or {})
+    if run.status != "failed" or not context.get("sector_run"):
+        return False
+    from watchlist_app.services.research_access import require_entry_access
+    require_entry_access(session, run)
+    actor = context.get("research_actor") or {}
+    principal = current_principal()
+    if not principal.local_unrestricted and (
+        actor.get("kind") != principal.kind or
+        (principal.kind == "service" and actor.get("service_id") != principal.service_id) or
+        (principal.kind == "user" and actor.get("user_id") != principal.user_id)
+    ):
+        return False  # Recovery never adopts another person's original task.
+    execution = dict(context.get("execution") or {})
+    attempt = execution.get("attempt", 1)
+    error = context.get("runtime_error") or {}
+    interrupted = run.body == "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
+    clock = now or datetime.now(UTC)
+    ended = run.completed_at
+    if ended is not None:
+        ended = ended.replace(tzinfo=ended.tzinfo or UTC)
+    if not manual and (attempt >= 3 or not (error.get("retryable") is True or interrupted)
+        or ended is None or clock < ended + timedelta(seconds=60 if attempt == 1 else 300)):
+        return False
+    execution["failures"] = [*execution.get("failures", []), {
+        "attempt": attempt, "failed_at": ended.isoformat() if ended else None,
+        "error": error or {"type": "Interrupted"}, "manual_recovery": manual}]
+    execution.update(attempt=attempt, stage="queued", resume=True)
+    context.pop("runtime_error", None)
+    context.pop("validation_error", None)
+    run.context_json = {**context, "execution": execution}
+    run.status, run.body, run.completed_at = "queued", "", None
+    session.flush()
+    return True
 
 
 def harness_available():
@@ -130,6 +193,16 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         run.status = "running"
         sector_run = bool(run.context_json.get("sector_run"))
         risk_run = bool(run.context_json.get("risk_run"))
+        context = dict(run.context_json)
+        execution = dict(context.get("execution") or {})
+        resuming = bool(execution.get("resume"))
+        prepared = resuming and bool(context.get("input_snapshot_cutoff"))
+        resume_review = sector_run and prepared and bool(context.get("submitted_draft"))
+        checkpoint = review_checkpoint(context) if resume_review else None
+        execution.update(attempt=execution.get("attempt", 0) + 1,
+                         stage="publication" if checkpoint else "review" if resume_review else "generation" if prepared else "preparation",
+                         started_at=datetime.now(UTC).isoformat(), resume=False)
+        run.context_json = {**context, "execution": execution}
         session.commit()
     outcome = "研究助手未返回回答，请重试。"
     completed = False
@@ -137,7 +210,7 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
     runtime_error = None
     rejected_reply = None
     try:
-        if not risk_run:
+        if not risk_run and not prepared:
             from watchlist_app.services.sector_research import prepare_run
             prepare_run(run_id)
         elif risk_run:
@@ -148,10 +221,15 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         # The pinned headless CLI returns its last assistant text.
         # Research/risk drafts use structured tool submissions; conversations retain prose.
         mode = ["sector"] if sector_run else ["risk"] if risk_run else []
-        process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
-            env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential})
-        reply, errors = process.communicate(timeout=1800 if not risk_run else 900)
-        if process.returncode:
+        if checkpoint is not None:
+            reply, errors, returncode = json.dumps(checkpoint, ensure_ascii=False), "", 0
+        else:
+            process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
+                     "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
+            reply, errors = process.communicate(timeout=1800 if not risk_run else 900)
+            returncode = process.returncode
+        if returncode:
             runtime_error = {"type": "ProcessExit", "summary": "研究运行进程退出，未生成有效结果。", "exit_code": process.returncode}
             for line in (errors or "").splitlines():
                 if not line.startswith("SECTOR_REVIEW_ERROR "):
@@ -165,6 +243,10 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
                     runtime_error.update(type=marker["type"][:80], summary=marker["summary"][:500])
                     if isinstance(marker.get("diagnostic"), str):
                         runtime_error["diagnostic"] = marker["diagnostic"][:500]
+                    if type(marker.get("retryable")) is bool:
+                        runtime_error["retryable"] = marker["retryable"]
+                    if isinstance(marker.get("stage"), str):
+                        runtime_error["stage"] = marker["stage"][:40]
                     break
             provider_error = _provider_failure(errors)
             if provider_error is not None:
@@ -183,7 +265,8 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
         outcome = "研究助手本次运行超时；可以缩小问题范围后重试。"
-        runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode}
+        runtime_error = {"type": "TimeoutExpired", "summary": outcome, "exit_code": process.returncode,
+                         "retryable": resume_review, "stage": "review" if resume_review else "generation"}
     except (IdentityError, HTTPException):
         raise  # Preserve authorization status and do not start/publish a model result.
     except OSError as error:

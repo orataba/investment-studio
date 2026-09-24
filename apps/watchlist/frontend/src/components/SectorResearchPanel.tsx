@@ -106,6 +106,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
             : sectors.every(sector => sector.latest_review?.change_kind !== 'investment' && sector.latest_review?.change_kind !== undefined) ? '研究资料已更新' : '研究已更新'
   const coverage = [...new Set(sectors.flatMap(sector => sector.latest_review?.coverage || []))]
   const review = sectors[0]?.latest_review
+  const completed = sectors[0] ? completedReview(sectors[0]) : null
   const title = variant === 'summary' ? '投资研究摘要' : variant === 'status' ? '每日研究更新' : '投资研究'
   return <section className={`sector-research-panel sector-research-${variant}${variant === 'timeline' ? ' investment-research-reading' : ''}`} aria-label={title}>
     <header className="sector-research-heading">
@@ -117,6 +118,7 @@ export default function SectorResearchPanel({ instrumentId, variant = 'timeline'
         </>}
       </div>
     </header>
+    {variant !== 'status' && <div className="research-report-status" aria-label="研究更新状态">{completed?.checked_at && <span>最近有效检查 <time dateTime={completed.checked_at}>{time(completed.checked_at)}</time></span>}{data && <span>{statusSummary}</span>}</div>}
     {data && (!data.available || data.research_enabled === false) && <p className="sector-research-limitation">{data.message || '研究所需来源暂不可用，已保存的研究仍可查看。'}</p>}
     {error && <p role="alert">研究更新状态暂时无法读取：{error}</p>}
     {pollingPaused && <p role="status">研究仍在更新，已暂停自动刷新，可手动刷新查看进展。</p>}

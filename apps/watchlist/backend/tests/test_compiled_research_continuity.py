@@ -61,8 +61,8 @@ def test_compiled_research_and_exact_evidence_reach_next_automatic_round(client,
         # Replace transport only; the actual scoped run endpoints still resolve
         # every original/version against the prepared, persisted run.
         calls.append(suffix)
-        assert payload is None
-        response = client.get(f"/api/research/runs/{run_id}/{suffix}")
+        response = (client.post(f"/api/research/runs/{run_id}/{suffix}", json=payload) if payload is not None
+                    else client.get(f"/api/research/runs/{run_id}/{suffix}"))
         assert response.status_code == 200, response.text
         return response.json()
 
@@ -92,4 +92,4 @@ def test_compiled_research_and_exact_evidence_reach_next_automatic_round(client,
     assert prior["value"]["synthesis"] == original_theme["synthesis"]
     assert prior["value"]["synthesis"] != theme["synthesis"]
     assert any(source["source_type"] == "computed_metric" for source in prior["sources"])
-    assert all(suffix == "context" or suffix.startswith(f"dossier/{iid}?") for suffix in calls)
+    assert calls and all(suffix == "read" for suffix in calls)

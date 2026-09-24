@@ -18,7 +18,7 @@ def draft(events=None):
     return {"reviews": [
         {"instrument_id": "xle", "summary": "XLE出现过热风险。", "change_kind": "none", "coverage": ["XLE RSI>70，需继续关注。"],
          "events": [event()] if events is None else events, "research": None},
-        {"instrument_id": "xlk", "summary": "未发现经核实的重大新增事件。", "change_kind": "none",
+        {"instrument_id": "xlk", "summary": "", "change_kind": "none",
          "coverage": ["社媒覆盖有限"], "events": [], "research": None},
     ]}
 
@@ -95,6 +95,7 @@ def test_removes_or_corrects_each_event_and_preserves_unreviewed_sectors(monkeyp
     assert receipts == [
         {"operation": "review", "review": {"draft": original}},
         {"operation": "review", "review": {"result": result}},
+        {"operation": "review", "review": {"checkpoint": {"draft": original, "cutoff": "2026-09-06T00:00:00+00:00", "result": output}}},
     ]
 
 
@@ -138,7 +139,7 @@ def test_archived_original_is_loaded_before_event_eligibility_check(monkeypatch)
     assert not any("evidence_exclusions" in str(payload) for _, payload in calls)
 
 
-def test_ineligible_sources_remove_all_candidates_before_model_and_replace_coverage(monkeypatch, retained_run):
+def test_ineligible_sources_remove_candidates_before_reviewing_the_remaining_summary(monkeypatch, retained_run):
     api = review._api_request
 
     def with_compilation(run_id, suffix, payload=None):
@@ -153,14 +154,18 @@ def test_ineligible_sources_remove_all_candidates_before_model_and_replace_cover
         return value
 
     monkeypatch.setattr(review, "_api_request", with_compilation)
-    monkeypatch.setattr(review, "_call_reviewer", lambda _: pytest.fail("Ineligible candidates must not call the model"))
+    def accept_sanitized(packet):
+        assert all(not row["events"] for row in packet["draft_reviews"])
+        return {"reviews": [{**{key: value for key, value in row.items() if key != "events"}, "decisions": []}
+                            for row in packet["draft_reviews"]]}
+    monkeypatch.setattr(review, "_call_reviewer", accept_sanitized)
     original = draft([event(source_ids=["source-1", "fmp:test-run:xle:XOM"])])
     output = review.review_output(json.dumps(original))
     assert output["reviews"][0] == {"instrument_id": "xle", "events": [], "change_kind": "none",
-        "summary": "本轮未能核实候选所述的重大风险或机会。", "coverage": [review._EXCLUSION_NOTE], "research": None}
+        "summary": "本轮未能核实候选所述的重大风险或机会。", "coverage": [review._EXCLUSION_NOTE], "research": None, "themes": []}
     assert output["reviews"][1] == original["reviews"][1]
     assert "XLE RSI" not in json.dumps(output, ensure_ascii=False)
-    assert retained_run == [
+    assert retained_run[:3] == [
         ("context?originals=true", None),
         ("sector-evidence", {"operation": "review", "review": {"draft": original}}),
         ("sector-evidence", {"operation": "review", "review": {"evidence_exclusions": [{
@@ -192,6 +197,8 @@ def test_zero_events_skips_both_api_and_model_and_rejects_trailing_junk(monkeypa
     monkeypatch.setattr(review, "_api_request", lambda *a, **k: pytest.fail("No API call expected"))
     monkeypatch.setattr(review, "_call_reviewer", lambda *a, **k: pytest.fail("No model call expected"))
     original = draft([])
+    for row in original["reviews"]:
+        row["summary"] = ""
     assert review.review_output(json.dumps(original)) == original
     with pytest.raises(ValueError):
         review.review_output(json.dumps(original) + "\ntrailing commentary")
@@ -208,6 +215,7 @@ def test_cli_missing_structured_draft_retains_raw_output_without_entering_review
     captured = capsys.readouterr()
     assert captured.out == "" and "private-sentinel" not in captured.err
     details = json.loads(captured.err.removeprefix("SECTOR_REVIEW_ERROR "))
+    assert json.loads(details.pop("diagnostic"))["location"].startswith("sector_fact_review.py:main:")
     assert details == {"type": "MissingResearchDraft",
                        "summary": "研究员未提交结构化草稿，本轮未进入事实核证或发布研究；已有研究记录保持不变。"}
 
@@ -218,7 +226,7 @@ def test_cli_uses_accepted_structured_draft_instead_of_model_prose(monkeypatch, 
     monkeypatch.setattr(review.sys, "stdin", StringIO('已提交；不应解析这段文字中的 { 未转义引号。'))
     monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None: {"sector_run": True, "submitted_draft": submitted} if suffix == "context?originals=true" else payload)
     received = []
-    monkeypatch.setattr(review, "review_output", lambda raw: received.append(json.loads(raw)) or submitted)
+    monkeypatch.setattr(review, "review_output", lambda raw, **kwargs: received.append(json.loads(raw)) or submitted)
     review.main()
     assert received == [submitted]
     assert json.loads(capsys.readouterr().out) == submitted
@@ -231,245 +239,6 @@ def test_model_failure_is_propagated_after_preserving_original_draft(monkeypatch
     with pytest.raises(ValueError, match="No structured"):
         review.review_output(json.dumps(draft()))
     assert retained_run[-1][1] == {"operation": "review", "review": {"draft": draft()}}
-
-
-@pytest.mark.parametrize("base,endpoint", [(None, "https://gateway.hzxxf.cn/v1/chat/completions"),
-    ("https://provider.example/v1/", "https://provider.example/v1/chat/completions"),
-    ("https://provider.example", "https://provider.example/chat/completions")])
-@pytest.mark.parametrize("configured_model", [None, "test-configured-model"])
-def test_reviewer_uses_native_json_output_without_search_tools(monkeypatch, base, endpoint, configured_model):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    monkeypatch.setenv("INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME", configured_model or "")
-    if base is None:
-        monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
-    else:
-        monkeypatch.setenv("DEEPSEEK_BASE_URL", base)
-    requests, receipts = [], []
-    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload: receipts.append((rid, suffix, payload)))
-
-    def request(url, **kwargs):
-        requests.append((url, kwargs))
-        return 200, {}, json.dumps({"usage": {"completion_tokens": 800}, "choices": [
-            {"finish_reason": "stop", "message": {"content": json.dumps({"reviews": []})}},
-        ]}).encode()
-
-    monkeypatch.setattr(review, "_request", request)
-    packet = {"run_id": "test-run", "sources": [], "draft_reviews": [],
-              "prior_research_updates": [{"source_id": "retained-version", "text": "原文  中的空格和日期 2026-09-19 保留"}]}
-    assert review._call_reviewer(packet) == {"reviews": []}
-    payload = json.loads(requests[0][1]["body"])
-    assert requests[0][1]["timeout"] == 300
-    assert payload["model"] == (configured_model or "deepseek-v4.1-flash") and payload["max_tokens"] == 65536
-    assert payload["thinking"] == {"type": "enabled"} and payload["reasoning_effort"] == "high"
-    assert payload["stream"] is True and payload["stream_options"] == {"include_usage": True}
-    assert requests[0][1]["headers"]["accept"] == "text/event-stream"
-    assert requests[0][0] == endpoint
-    assert payload["response_format"] == {"type": "json_object"}
-    assert "tools" not in payload
-    transmitted = json.loads(payload["messages"][1]["content"])
-    schema = transmitted.pop("response_schema")
-    assert transmitted == packet
-    assert payload["messages"][1]["content"] == json.dumps({"response_schema": schema, **packet},
-                                                         ensure_ascii=False, separators=(",", ":"))
-    assert "$ref" not in json.dumps(schema) and "$defs" not in schema
-    assert schema["properties"]["reviews"]["items"] is False
-    assert schema["properties"]["reviews"]["maxItems"] == 0
-    assert receipts[1][2]["review"] == {"protocol": "bound_draft_v1", "compact_result": {"reviews": []}}
-    assert receipts[0][2]["review"]["response_metadata"]["finish_reason"] == "stop"
-    assert receipts[0][2]["review"]["response_metadata"]["usage"] == {"completion_tokens": 800}
-    assert "USO RSI" in payload["messages"][0]["content"] and "AI-generated rewriting" in payload["messages"][0]["content"]
-
-
-@pytest.mark.parametrize("choices", [
-    [],
-    [{"finish_reason": "length", "message": {"content": '{"reviews":['}}],
-    [{"finish_reason": "stop", "message": {"content": '{}'}}],
-    [{"finish_reason": "stop", "message": {"content": json.dumps({"reviews": []})}}] * 2,
-])
-def test_provider_must_return_one_complete_review_json(monkeypatch, choices):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    monkeypatch.setattr(review, "_request", lambda *a, **k: (200, {}, json.dumps({"choices": choices}).encode()))
-    with pytest.raises(review._ReviewProtocolError):
-        review._call_reviewer({"sources": [], "draft_reviews": []})
-
-
-def test_reasoning_budget_exhaustion_records_usage_but_never_accepts_partial_output(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    response = {"model": "deepseek-v4.1-flash", "usage": {
-        "completion_tokens": 65536, "completion_tokens_details": {"reasoning_tokens": 65536}},
-        "choices": [{"finish_reason": "length", "message": {"content": "", "reasoning_content": "private reasoning"}}]}
-    receipts = []
-    monkeypatch.setattr(review, "_request", lambda *a, **k: (200, {}, json.dumps(response).encode()))
-    monkeypatch.setattr(review, "_api_request", lambda *args: receipts.append(args))
-    with pytest.raises(review._ReviewProtocolError, match="生成上限") as error:
-        review._call_reviewer({"run_id": "limited", "sources": [], "draft_reviews": []})
-    assert "private reasoning" not in str(error.value)
-    metadata = receipts[0][2]["review"]["response_metadata"]
-    assert metadata["finish_reason"] == "length" and metadata["usage"] == response["usage"]
-
-
-def _sse_chunk(delta=None, *, finish=None, usage=None, choice=True):
-    return ('data: ' + json.dumps({"id": "review-fixture", "model": "deepseek-v4.1-flash",
-        "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish}] if choice else [],
-        "usage": usage}, ensure_ascii=False) + '\r\n\r\n').encode()
-
-
-def _stream_fixture(monkeypatch, wire, *, fail_after=None, read_size=None):
-    from io import BytesIO
-    class Response(BytesIO):
-        status = 200
-        def getheader(self, name, default=None):
-            return "text/event-stream; charset=utf-8" if name == "Content-Type" else default
-        def read1(self, limit=-1):
-            if fail_after is not None and self.tell() >= fail_after:
-                raise TimeoutError("Private provider address and credential must not escape")
-            return super().read1(min(limit, read_size) if read_size is not None else limit)
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    receipts = []
-    monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload: receipts.append(payload["review"].get("response_metadata", {})))
-    def request(url, **kwargs):
-        response = Response(wire)
-        return 200, {}, kwargs["response_reader"](response)
-    monkeypatch.setattr(review, "_request", request)
-    return receipts
-
-
-@pytest.mark.parametrize("usage_location", ["terminal_choice", "separate_chunk", "absent"])
-def test_streaming_review_keeps_reasoning_separate_and_accepts_only_complete_result(monkeypatch, usage_location):
-    answer = json.dumps({"reviews": []}, ensure_ascii=False)
-    usage = {"prompt_tokens": 100, "completion_tokens": 80, "total_tokens": 180,
-             "completion_tokens_details": {"reasoning_tokens": 60}}
-    wire = b": heartbeat\r\n\r\n" + _sse_chunk({"role": "assistant", "reasoning_content": "Private thinking 仅推理"})
-    wire += _sse_chunk({"content": answer[:31]}) + _sse_chunk({"content": answer[31:]}, finish="stop",
-                    usage=usage if usage_location == "terminal_choice" else None)
-    if usage_location == "separate_chunk":
-        wire += _sse_chunk(usage=usage, choice=False)
-    wire += b"data: [DONE]\r\n\r\n"
-    receipts = _stream_fixture(monkeypatch, wire)
-    assert review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []}) == {"reviews": []}
-    receipt = receipts[0];transport = receipt["transport"]
-    assert receipt["usage"] == (None if usage_location == "absent" else usage)
-    assert receipt["finish_reason"] == "stop" and transport["done"] is True
-    assert transport["bytes_received"] == len(wire) and transport["content_chars"] == len(answer)
-    assert transport["reasoning_chars"] == len("Private thinking 仅推理")
-    assert transport["usage_missing"] == (usage_location == "absent")
-    assert "Private thinking" not in json.dumps(receipts)
-
-
-@pytest.mark.parametrize("wire,code", [
-    (_sse_chunk({"content": '{"reviews":[]}'}, finish="stop"), "missing_done"),
-    (_sse_chunk({"reasoning_content": "Thinking"}) + b"data: [DONE]\n\n", "missing_finish_reason"),
-    (b"data: not-json\n\n", "invalid_chunk_json"),
-    (b'data: {"error":{"message":"private provider error"}}\n\n', "provider_stream_error"),
-    (_sse_chunk({"content": "{}"}, finish="stop") + _sse_chunk({"content": "more"}), "invalid_output_delta"),
-])
-def test_incomplete_or_failed_review_stream_never_publishes_and_retains_safe_diagnostics(monkeypatch, wire, code):
-    receipts = _stream_fixture(monkeypatch, wire)
-    with pytest.raises(review._ReviewProtocolError) as failure:
-        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
-    assert receipts[0]["transport"]["protocol_error"] == code
-    assert receipts[0]["transport"]["done"] is False
-    safe = review._safe_failure(failure.value)
-    assert code in safe["diagnostic"] and "private provider error" not in json.dumps(safe)
-
-
-@pytest.mark.parametrize("phase", ["headers", "first_data", "mid_stream"])
-def test_review_stream_timeout_distinguishes_wait_phase_without_losing_original_error(monkeypatch, phase):
-    wire = _sse_chunk({"reasoning_content": "Private reasoning"}) if phase == "mid_stream" else b""
-    receipts = _stream_fixture(monkeypatch, wire, fail_after=len(wire))
-    if phase == "headers":
-        def request(*args, **kwargs):
-            raise TimeoutError("Private endpoint")
-        monkeypatch.setattr(review, "_request", request)
-    with pytest.raises(TimeoutError) as failure:
-        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
-    transport = receipts[0]["transport"]
-    assert transport["stage"] == {"headers": "before_response_headers", "first_data": "awaiting_stream_data", "mid_stream": "streaming"}[phase]
-    assert transport["bytes_received"] == len(wire)
-    assert transport["chunks_received"] == int(phase == "mid_stream")
-    assert "elapsed_seconds" in transport and receipts[0]["finish_reason"] is None
-    safe = review._safe_failure(failure.value)
-    assert safe["type"] == "TimeoutError" and "Private" not in json.dumps(safe)
-
-
-def test_length_terminated_stream_retains_accounting_and_rejects_partial_review(monkeypatch):
-    wire = _sse_chunk({"reasoning_content": "private thinking", "content": '{"reviews":['}, finish="length",
-                      usage={"completion_tokens": 65536}) + b"data: [DONE]\n\n"
-    receipts = _stream_fixture(monkeypatch, wire)
-    with pytest.raises(review._ReviewProtocolError, match="生成上限"):
-        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
-    assert receipts[0]["usage"] == {"completion_tokens": 65536}
-    assert receipts[0]["finish_reason"] == "length" and receipts[0]["transport"]["done"] is True
-
-
-def test_stream_multiline_json_is_one_event_but_concatenated_json_is_diagnosed_not_repaired(monkeypatch):
-    answer = json.dumps({"reviews": []})
-    chunk = {"id": "review-fixture", "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": "stop"}]}
-    wire = b"\n".join(b"data: " + line for line in json.dumps(chunk, indent=2).encode().splitlines()) + b"\n\ndata: [DONE]\n\n"
-    _stream_fixture(monkeypatch, wire)
-    assert review._call_reviewer({"sources": [], "draft_reviews": []}) == {"reviews": []}
-    one = _sse_chunk({"reasoning_content": "private"}).rstrip(b"\r\n")
-    receipts = _stream_fixture(monkeypatch, one + b"\n" + one + b"\n\n")
-    with pytest.raises(review._ReviewProtocolError):
-        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
-    transport = receipts[0]["transport"]
-    assert transport["multiple_json_values"] is True and transport["event_data_lines"] == 2
-    assert transport["json_error_kind"] == "Extra data" and transport["json_error_line"] == 2
-    assert "private" not in json.dumps(receipts)
-
-
-@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
-@pytest.mark.parametrize("read_size", [1, 7, 8192])
-def test_sse_framing_preserves_bom_unicode_and_crlf_split_across_reads(monkeypatch, newline, read_size):
-    proposed = draft()["reviews"][:1]
-    result = {"reviews": [{"instrument_id": "xle", "summary": {"decision": "accept"},
-        "change_kind": {"decision": "accept"}, "coverage": {"decision": "correct", "reason": "时点需区分",
-        "value": ["原始证据的边界：价格与事件时点不同。"]}, "decisions": [
-            {"event_key": "oil-rsi", "decision": "remove", "reason": "原文归属错误"}],
-        "research": None, "themes": [], "reflection": None}]}
-    content = json.dumps(result, ensure_ascii=False)
-    wire = b"\xef\xbb\xbf" + _sse_chunk({"content": content}, finish="stop") + b"data: [DONE]\r\n\r\n"
-    wire = wire.replace(b"\r\n", newline)
-    receipts = _stream_fixture(monkeypatch, wire, read_size=read_size)
-    actual = review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": proposed})
-    assert actual["reviews"][0]["coverage"] == result["reviews"][0]["coverage"]["value"]
-    assert actual["reviews"][0]["decisions"][0]["event"] is None
-    # CR already completes the terminal empty line. When CRLF straddles reads,
-    # closing at DONE need not wait for the optional final LF from the network.
-    unread = len(wire) - receipts[0]["transport"]["bytes_received"]
-    assert unread == 0 or (newline == b"\r\n" and unread == 1)
-    assert receipts[0]["transport"]["content_chars"] == len(content)
-
-
-@pytest.mark.parametrize("field", [b"data", b"data:"])
-def test_empty_sse_data_is_not_silently_ignored(monkeypatch, field):
-    receipts = _stream_fixture(monkeypatch, field + b"\n\n")
-    with pytest.raises(review._ReviewProtocolError):
-        review._call_reviewer({"run_id": "stream", "sources": [], "draft_reviews": []})
-    transport = receipts[0]["transport"]
-    assert transport["protocol_error"] == "invalid_chunk_json" and transport["event_chars"] == 0
-
-
-def test_unstructured_provider_text_is_retained_without_accepting_or_printing_it(monkeypatch, retained_run, capsys):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    raw_text = "Here is the review:\n```json\n" + json.dumps(checked()) + "\n```"
-    response = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": raw_text}}]})
-    monkeypatch.setattr(review, "_request", lambda *a, **k: (200, {}, response.encode()))
-    with pytest.raises(review._ReviewProtocolError) as error:
-        review.review_output(json.dumps(draft()))
-    assert raw_text not in str(error.value)
-    assert retained_run[-1][1] == {"operation": "review", "review": {"raw_output": response}}
-    captured = capsys.readouterr()
-    assert captured.out == "" and captured.err == ""
-
-
-def test_http_protocol_error_retains_response_for_diagnosis(monkeypatch, retained_run):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
-    response = '{"error":{"message":"Unsupported tool choice"}}'
-    monkeypatch.setattr(review, "_request", lambda *a, **k: (400, {}, response.encode()))
-    with pytest.raises(review._ReviewProtocolError, match="HTTP 400"):
-        review.review_output(json.dumps(draft()))
-    assert retained_run[-1][1] == {"operation": "review", "review": {"raw_output": response}}
 
 
 def test_safe_failure_keeps_wrapped_timeout_cause_without_exception_text():
@@ -526,7 +295,7 @@ def test_chat_cli_preserves_answer_and_wraps_only_requested_shared_research(monk
     monkeypatch.setattr(review.sys, "stdin", StringIO(answer))
     monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None:
         context if suffix == "context?originals=true" else receipts.append(payload) or payload)
-    monkeypatch.setattr(review, "review_output", lambda raw: received.append(json.loads(raw)) or paper)
+    monkeypatch.setattr(review, "review_output", lambda raw, **kwargs: received.append(json.loads(raw)) or paper)
     review.main()
     captured = capsys.readouterr()
     result = json.loads(captured.out)
@@ -543,7 +312,7 @@ def test_chat_review_failure_preserves_answer_without_publishing_or_exposing_exc
     monkeypatch.setattr(review.sys, "stdin", StringIO(answer))
     monkeypatch.setattr(review, "_api_request", lambda rid, suffix, payload=None:
         {"research_run": True, "submitted_draft": {"reviews": []}} if suffix == "context?originals=true" else payload)
-    def fail(raw):
+    def fail(raw, **kwargs):
         raise ValueError("provider-private-diagnostic")
     monkeypatch.setattr(review, "review_output", fail)
     review.main()
@@ -1115,3 +884,8 @@ def test_reflection_reviewer_cannot_introduce_unavailable_or_inapplicable_eviden
         "reflection": {**receipt, "source_ids": ["receipt-source"]}}]}
     with pytest.raises(ValueError, match="研究底稿"):
         review._apply_checks(proposed, result, [source] if source else [])
+
+
+@pytest.mark.parametrize("change_kind", ["none", "knowledge", "investment"])
+def test_nonempty_summary_always_requires_review(change_kind):
+    assert review._needs_review({"events": [], "summary": "断言市场需求已改善", "change_kind": change_kind})

@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     if settings.recalc_worker_enabled:
         worker_thread, worker_stop_event = start_recalc_worker()
     sector_thread, sector_stop = None, None
-    if harness_available():
+    if settings.research_worker_enabled and harness_available():
         from watchlist_app.services.sector_research import start_sector_worker
         sector_thread, sector_stop = start_sector_worker()
     try:

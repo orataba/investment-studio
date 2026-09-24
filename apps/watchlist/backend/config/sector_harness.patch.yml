@@ -5,6 +5,14 @@
     provider: studio-deepseek
     model: !!js process.env.INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME || 'deepseek-v4.1-flash'
 
+# Keep the pinned Harness agent loop's native automatic compaction enabled.
+# Its model-aware pressure/retention defaults and streamed summarizer are shared
+# by the research agent and the restricted independent reviewer.
+- id: compaction-basic
+  disabled: false
+  config:
+    auto: true
+
 - id: system-prompt
   config:
     persona: !!js process.env.INVESTMENT_STUDIO_RESEARCH_PERSONA

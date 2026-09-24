@@ -1,0 +1,22 @@
+# Layered on the research-only sector preset. A reviewer cannot generate new
+# evidence or mutate research: its only connector reads one immutable packet.
+- id: mcp-watchlist-research
+  disabled: true
+- id: system-prompt
+  config:
+    persona: !!js process.env.INVESTMENT_STUDIO_REVIEW_INSTRUCTIONS
+- insert:
+    - id: mcp-watchlist-review
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: review
+        transport: stdio
+        command: !!js process.env.INVESTMENT_STUDIO_RESEARCH_PROJECT_ROOT + '/.venv/bin/python'
+        args: ['-m', 'watchlist_app.review_mcp']
+        cwd: !!js process.env.INVESTMENT_STUDIO_RESEARCH_PROJECT_ROOT + '/apps/watchlist/backend'
+        env:
+          INVESTMENT_STUDIO_REVIEW_PACKET: !!js process.env.INVESTMENT_STUDIO_REVIEW_PACKET
+          INVESTMENT_STUDIO_REVIEW_RESULT: !!js process.env.INVESTMENT_STUDIO_REVIEW_RESULT
+          INVESTMENT_STUDIO_REVIEW_READS: !!js process.env.INVESTMENT_STUDIO_REVIEW_READS
+        toolCallTimeoutMs: 30000
+        failOnStartupError: true

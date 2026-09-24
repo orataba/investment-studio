@@ -249,6 +249,18 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     if latest and latest.status in {"queued", "running"}:
         return latest, False
     cutoff = datetime.now(UTC)
+    # Raw retained documents can contain NUL; use the same narrow safe projection
+    # as other history reads rather than extracting from the full PostgreSQL JSON.
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    relation, values = research_context_projection(session, {"cutoff": String, "sector_run": Boolean, "recordkeeping_only": Boolean})
+    successful = select(ResearchEntry.entry_id, values["cutoff"].label("cutoff")).select_from(ResearchEntry)
+    if relation is not None:
+        successful = successful.join(relation, true())
+    successful = successful.where(ResearchEntry.topic_id == topic_id, ResearchEntry.status == "completed",
+        values["sector_run"].is_(True), values["recordkeeping_only"].is_not(True)).order_by(
+            func.coalesce(ResearchEntry.completed_at, ResearchEntry.created_at).desc(), ResearchEntry.created_at.desc()).limit(1)
+    successful_rows = research_projection_rows(session, successful, {"cutoff": ("cutoff",)})
+    last_successful_cutoff = successful_rows[0].cutoff if successful_rows else None
     incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
@@ -261,10 +273,15 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
                 if _research_dates(session, ids, checked) != research_dates:
                     continue
                 if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
+                    from watchlist_app.services.research_runner import queue_retry
+                    if prior.status == "failed" and queue_retry(session, prior, now=cutoff):
+                        if commit:
+                            session.commit()
+                        return prior, True
                     from watchlist_app.services.research_triggers import research_trigger
                     from watchlist_app.services.research_dossier import read_dossier
                     # A later conversation may have added a forecast or observation date.
-                    trigger_context = {**prior.context_json, "reviews": {},
+                    trigger_context = {**prior.context_json, "reviews": {}, "last_successful_review_cutoff": last_successful_cutoff,
                         "research_dossiers": [read_dossier(session, iid) for iid in ids],
                         "attempted_theme_baselines": prior.context_json.get("attempted_theme_baselines", {
                             theme["theme_id"]: theme.get("baseline_requested_at") or theme.get("created_at")
@@ -282,6 +299,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
         body="", source="Investment Studio 标的资料 / DeepSeek", created_at=cutoff,
         status="queued", context_json={"sector_run": True, "event_scope": "instrument",
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
+        "last_successful_review_cutoff": last_successful_cutoff,
         "research_actor": research_identity(),
         **({"question": question} if question is not None else {}),
         "incremental_trigger": incremental_trigger, "attempted_theme_baselines": attempted_baselines,
@@ -388,6 +406,13 @@ class SectorEvent(BaseModel):
     analysis_depth: Literal["brief", "analysis"] = "analysis"
     theme_ids: list[str] = Field(default_factory=list)
     confidence: Literal["confirmed", "reported", "unverified"]
+    impact_level: Literal["limited", "material", "major"] | None = Field(default=None,
+        description="Potential investment impact, separate from evidence confidence; null means not assessed.")
+    urgency: Literal["monitor", "review_soon", "immediate"] | None = Field(default=None,
+        description="When the PM should review; immediate requires a concrete time-sensitive decision or loss mechanism.")
+    risk_channels: list[Literal["earnings", "valuation", "rates", "credit", "liquidity", "policy", "operations", "strategy", "market", "other"]] = Field(default_factory=list)
+    impact_analysis: str = Field(default="", max_length=3000)
+    action_condition: str = Field(default="", max_length=2000)
     information_type: Literal["fact", "opinion", "rumor"]
     recording_type: Literal["new", "update", "backfill"]
     published_at: str | None = None
@@ -512,6 +537,7 @@ def event_record(case):
         "event_key": case.signal.removeprefix("sector:"), "title": case.title, "body": case.body,
         "direction": evidence.get("direction", "uncertain"), "information_type": evidence.get("information_type"),
         "confidence": evidence.get("confidence"), "next_watch": evidence.get("next_watch", ""),
+        **{key: evidence.get(key) for key in ("impact_level", "urgency", "risk_channels", "impact_analysis", "action_condition")},
         "status": case.status, "trigger_active": case.trigger_active,
         "follow_up": _event_follow_up({"status": case.status, "trigger_active": case.trigger_active, **evidence}),
         "analysis_depth": evidence.get("analysis_depth", "analysis"), "theme_ids": evidence.get("theme_ids") or [],
@@ -536,7 +562,8 @@ def events_for_instruments(session, ids):
 
 def _same_progress(case, item, sources):
     evidence = case.evidence_json or {}
-    fields = ("direction", "information_type", "confidence", "published_at", "occurred_at", "next_watch")
+    fields = ("direction", "information_type", "confidence", "published_at", "occurred_at", "next_watch",
+              "impact_level", "urgency", "impact_analysis", "action_condition")
     # Fetch IDs and collection times change every run; the cited publication does not.
     def identities(rows):
         publications = {(row.get("document_id") or row.get("url"), row.get("version_id") or row.get("published_at"))
@@ -560,7 +587,8 @@ def _same_progress(case, item, sources):
     # even when its wording and admissible sources match a historical snapshot.
     previous = [{"status": case.status, "trigger_active": case.trigger_active, **evidence, "body": case.body}]
     return any(" ".join(row["body"].split()) == " ".join(item.body.split())
-               and all(row.get(key) == getattr(item, key) for key in fields)
+               and all(row.get(key, SectorEvent.model_fields[key].get_default(call_default_factory=True)) == getattr(item, key) for key in fields)
+               and set(row.get("risk_channels") or []) == set(item.risk_channels)
                and _event_follow_up(row) == item.follow_up
                and row.get("analysis_depth", "analysis") == item.analysis_depth
                and set(row.get("theme_ids") or []) == set(item.theme_ids)
@@ -571,15 +599,22 @@ def _effective_event(item, case):
     values = item.model_dump(mode="json")
     if case is not None:
         previous = event_record(case)
-        for field in ("follow_up", "analysis_depth", "theme_ids", "next_watch"):
+        for field in ("follow_up", "analysis_depth", "theme_ids", "next_watch", "impact_level", "urgency",
+                      "risk_channels", "impact_analysis", "action_condition"):
             if field not in item.model_fields_set:
-                values[field] = previous[field]
+                values[field] = previous.get(field)
+                if values[field] is None and field in {"risk_channels", "impact_analysis", "action_condition"}:
+                    values[field] = SectorEvent.model_fields[field].get_default(call_default_factory=True)
     if item.action == "resolved":
         if "follow_up" in item.model_fields_set and item.follow_up != "resolved":
             raise ValueError("结束事件的action与follow_up必须一致")
         values["follow_up"] = "resolved"
     if values["follow_up"] == "watch" and not values["next_watch"].strip():
         raise ValueError("持续跟进的事件需要明确下一步观察；无需跟进时使用follow_up=none")
+    if values["urgency"] == "immediate" and not values["action_condition"].strip():
+        raise ValueError("需要立即复核的风险须说明具体决策条件，不能仅凭严重措辞升级")
+    if values["impact_level"] in {"material", "major"} and not values["impact_analysis"].strip():
+        raise ValueError("重大投资影响须解释具体传导机制和影响范围")
     return SectorEvent.model_validate(values)
 
 
@@ -911,7 +946,7 @@ def apply_result(session, run, reply):
                 case = RiskCase(case_id=case_id, instrument_id=review.instrument_id, signal=signal, status="open", history_json=[], trigger_active=False)
                 session.add(case)
             case.title, case.body, case.severity = item.title, item.body, "attention"
-            case.evidence_json = {**snapshot, "importance": "high", "discovered_at": first_discovered or discovered_at,
+            case.evidence_json = {**snapshot, "importance": {"limited": "low", "material": "medium", "major": "high"}.get(item.impact_level), "discovered_at": first_discovered or discovered_at,
                                   "progress_at": discovered_at}
             factual_date = item.occurred_at or item.published_at
             case.observed_on = date.fromisoformat(factual_date[:10]) if factual_date else None
@@ -946,7 +981,7 @@ def apply_result(session, run, reply):
                 notebook.get("version_id") != (dossier.get("notebook") or {}).get("version_id") or review.research.mandate_update) else "none",
             "coverage": coverage, "market_coverage": context.get("market_coverage"), "research": notebook,
             "themes": published_themes, "reflection": review.reflection.model_dump(mode="json") if review.reflection else None}
-    run.context_json = {**context, "reviews": reviews}
+    run.context_json = {**context, "reviews": reviews, "last_successful_review_cutoff": context["cutoff"]}
     run.body = "\n\n".join(f"{iid.upper()} · {instrument_label(session, iid)}\n{review['summary']}" for iid, review in reviews.items())
     run.status = "completed"
     run.completed_at = datetime.now(UTC)
@@ -992,7 +1027,8 @@ def _research_due(market, now):
     return bool(_market_calendar_sessions(MARKET_SCOPE_CALENDARS[market][0], day, day))
 
 
-def daily_review_groups(session, *, now=None):
+def active_research_ids(session):
+    """The exact active Proposed/Invested universe, independent of user-theme work."""
     from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
     registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
     statuses = {}
@@ -1001,6 +1037,15 @@ def daily_review_groups(session, *, now=None):
         .order_by(InstrumentAttributeValue.adopted_at.desc(), InstrumentAttributeValue.instrument_attribute_value_id.desc())):
         statuses.setdefault(value.instrument_id, value.value_json)
     selected = [iid for iid, status in statuses.items() if status in {"Proposed", "Invested"}]
+    return sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
+        InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
+        InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
+
+
+def daily_review_groups(session, *, now=None):
+    from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
+    registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
+    selected = active_research_ids(session)
     pending = set()
     for entry in session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "note")):
         context = entry.context_json or {}

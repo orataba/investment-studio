@@ -1,3 +1,4 @@
+from .research_projection_fixture import server_projection
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
@@ -174,7 +175,7 @@ def test_mcp_uses_complete_financial_reader_and_keeps_other_reference_sections(m
             return context
         calls.append((suffix, payload))
         return {"source_id": "financials:receipt", "company": {"financials": [{"line_item": "totalAssets", "value": 150}]}}
-    monkeypatch.setattr(research_mcp, "request", request)
+    monkeypatch.setattr(research_mcp, "request", server_projection(request))
     result = research_mcp.read_research_instrument("company", "financials", statement_type="balance_sheet", fiscal_period="Q2")
     assert result["source_id"] == "financials:receipt"
     assert calls == [("financials", {"instrument_id": "company", "offset": 0, "limit": 20,

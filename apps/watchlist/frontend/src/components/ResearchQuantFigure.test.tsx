@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 import ResearchQuantFigure from './ResearchQuantFigure'
 import type { SavedResearchSource } from '../lib/researchDossierApi'
@@ -55,7 +55,8 @@ it('retains small nonzero results in the table, metrics, tooltips and chart scal
   saved.data!.tables![0].rows = [{ date: '2026-01-01', return: 0.00000125 }, { date: '2026-01-02', return: -0.0000005 }]
   const { container } = render(<ResearchQuantFigure source={saved} />)
   expect(container.querySelector('.research-quant-metrics dd')?.textContent).toBe('0.00000125')
-  expect(container.querySelector('tbody')?.textContent).toContain('-0.0000005')
+  fireEvent.click(screen.getByRole('button', { name: '实际观测 · 2 条观测' }))
+  expect(screen.getByRole('dialog').querySelector('tbody')?.textContent).toContain('-0.0000005')
   expect(container.querySelector('circle title')?.textContent).toContain('0.00000125')
   expect([...container.querySelectorAll('svg text')].map(tick => tick.textContent)).toEqual(expect.arrayContaining(['-1.00e-6', '1.00e-6', '2.00e-6']))
   expect(container.querySelector('svg text')?.textContent).toContain('e-')

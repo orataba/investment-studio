@@ -112,7 +112,7 @@ def current_view(dossier):
 
 def dossier_sections(dossier):
     notebook = dossier.get("notebook") or {}
-    lists = ("modules", "facts", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons")
+    lists = ("modules", "facts", "questions", "catalysts", "forecasts", "forecast_reviews", "lessons", "changes")
     pm_views = []
     for note in dossier.get("pm_views", []):
         context = note.get("research_context") or {}
@@ -122,11 +122,12 @@ def dossier_sections(dossier):
                                                if "sources" in context else {})},
             "source_read": "本观点依据用此PM version_id读取返回的sources；不要用后来档案内同名source_id替换原版本。来源索引不表示原文已读或事实已核实。"})
     return {"investment_view": notebook.get("investment_view"),
+        "decision_brief": notebook.get("decision_brief"),
         "mandate": dossier.get("mandate"), "frameworks": dossier.get("frameworks", []),
         "research_plan": dossier.get("research_plan"),
         "available_modules": dossier.get("available_modules", []),
         "research_state": {key: value for key, value in notebook.items()
-                           if key not in {*lists, "investment_view", "sources"}},
+                           if key not in {*lists, "investment_view", "decision_brief", "sources"}},
         **{key: notebook.get(key, []) for key in lists},
         "sources": [source_index(source) for source in notebook.get("sources", [])],
         "prior_sources": [source_index(source) for source in dossier.get("prior_sources", [])],
