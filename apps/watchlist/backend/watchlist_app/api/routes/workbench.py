@@ -153,7 +153,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
         "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage",
-        "catalogue", "tool_evidence", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
+        "catalogue", "tool_evidence", "computed_metrics", "topic_id", "as_of_date", "requested_at", "selected_instrument_ids",
         "watchlist_id", "portfolio_id", "team_id", "visibility", "risk_inputs", "risk_scope", "prior_inputs"}
         if request.resource == "context" else
         {"catalogue", "instrument_inputs", "research_dossiers", "sector_inputs", "sector_estimate_evidence", "prior_events",

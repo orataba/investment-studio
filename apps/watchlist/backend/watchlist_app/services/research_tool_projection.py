@@ -26,6 +26,13 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
         sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}
                           for item in context.get("catalogue", [])],
+            "computed_metrics": [{**{key: item.get(key) for key in ("source_id", "instrument_id", "title", "as_of")},
+                "analysis_kind": (item.get("data") or {}).get("analysis_kind"),
+                "read": {"tool": "compare_instruments" if "input_series" in item else
+                    "read_quant_analysis" if (item.get("data") or {}).get("analysis_kind") == "python_quant" else "read_research_numbers",
+                    "source_id": item["source_id"],
+                    "section": "data" if (item.get("data") or {}).get("analysis_kind") == "python_quant" else "overview"}}
+                for item in context.get("computed_metrics", [])],
             "tool_evidence": [{key: item.get(key) for key in ("source_id", "tool", "request", "retrieved_at")}
                               for item in context.get("tool_evidence", [])]})
         if section != "overview":
@@ -233,6 +240,3 @@ def read_research_dossier(request, instrument_id: str, source_id: str | None = N
     if section not in sections:
         raise ValueError("该分区不在本轮研究档案目录中。")
     return read_page(sections[section], metadata, offset=offset, limit=limit, path=path)
-
-
-

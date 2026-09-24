@@ -49,6 +49,9 @@ fi
 if [[ "${2:-}" != "risk" ]]; then
   copilot_task+=" Numerical tools read_research_numbers/compare_instruments return calculated values and a source_id. Read needed full points/dates/history/input versions through their returned sections/paths with the SAME source_id, following next_offset and all deferred.path. Do not rerun calculations or shorten the sample to continue a page."
 fi
+if [[ "${2:-}" == "sector" && "${INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION:-0}" == "1" ]]; then
+  copilot_task="Resume this same unfinished run at its ORIGINAL information cutoff. First read read_research_context overview and computed_metrics. Read each relevant saved computation through its returned read selector, including existing tables/charts; read_quant_analysis(section=methodology) retains each Python calculation's method and original inputs. Reuse their exact source_ids. Existing tool_evidence indexes describe earlier acquisition. Continue the unfinished synthesis and submit the needed sparse research deltas; do not repeat completed calculations, reacquire the same evidence, or restart the investigation. Reopen selected bound originals only where necessary to finish or resolve a real uncertainty. Keep the PM report concise and cite retained figures instead of embedding their data or rewriting unaffected history. $copilot_task"
+fi
 
 # The backend process may hold database and market-data credentials that the
 # external harness runtime does not need. Start it with an explicit allowlist.
@@ -67,6 +70,7 @@ copilot_exec_env=(
   "INVESTMENT_STUDIO_RESEARCH_RUN_ID=$research_run_id"
   "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN=${INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN:?research run credential is required}"
   "INVESTMENT_STUDIO_RESEARCH_PERSONA=$copilot_research_persona"
+  "INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE=${2:-conversation}"
   "INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME=$INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME"
 )
 for copilot_optional_env in \
@@ -82,16 +86,29 @@ do
   fi
 done
 
+if [[ "${2:-}" == "sector" ]]; then
+  # Plugin names are literal loader paths, unlike evaluated plugin config.
+  # Keep this task-only observer beside its runner; never edit the pinned runtime.
+  copilot_outcome_patch="$(mktemp "${TMPDIR:-/tmp}/research-outcome.XXXXXX")"
+  trap 'rm -f "$copilot_outcome_patch"' EXIT
+  "$copilot_project_root/.venv/bin/python" -c \
+    'import json,sys; print(json.dumps([{"insert":[{"id":"research-harness-outcome","name":sys.argv[-1]}]}]))' \
+    "$copilot_script_dir/research_harness_outcome.mjs" > "$copilot_outcome_patch"
+fi
 copilot_command=(/usr/bin/env -i "${copilot_exec_env[@]}" \
   "$copilot_project_root/infra/harness/run.sh" \
   --profile headless \
   --patch "$copilot_project_root/infra/config/deepseek_harness.patch.yml" \
-  --patch "$copilot_patch" \
-  "$copilot_task")
+  --patch "$copilot_patch")
+if [[ "${2:-}" == "sector" ]]; then
+  copilot_command+=(--patch "$copilot_outcome_patch")
+fi
+copilot_command+=("$copilot_task")
 if [[ "${2:-}" != "risk" ]]; then
   # macOS /bin/bash 3.2 treats an empty array as unset under set -u.
   # Keep the complete command nonempty for automatic research too.
   copilot_review_command=(/usr/bin/env -i "${copilot_exec_env[@]}"
+    "INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE=review"
     "$copilot_project_root/.venv/bin/python" -m watchlist_app.services.sector_fact_review)
   if [[ "${2:-}" != "sector" ]]; then
     copilot_review_command+=(--conversation)

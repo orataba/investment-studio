@@ -74,7 +74,9 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         python = project / '.venv/bin/python'
         python.parent.mkdir(parents=True)
         python.write_text(
-            f'#!{sys.executable}\nimport json, sys\n'
+            f'#!{sys.executable}\nimport json, os, sys\n'
+            'if sys.argv[1] == "-c":\n    exec(sys.argv[2]); raise SystemExit(0)\n'
+            'assert os.environ["INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE"] == "review"\n'
             'print("FACT_REVIEW_ARGS " + json.dumps(sys.argv[1:]), file=sys.stderr)\n'
             + ('raise SystemExit(78)\n' if reviewer_fails else 'sys.stdout.write(sys.stdin.read())\n')
         )
@@ -140,6 +142,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         assert runtime_env[prefix + 'MODEL_NAME'] == (configured_model or 'deepseek-v4.1-flash')
     elif app == 'watchlist':
         assert runtime_env[prefix + 'RUN_ID'] == 'run-test'
+        assert runtime_env['INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE'] == (task_mode or 'conversation')
         assert runtime_env['INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME'] == (configured_model or 'deepseek-v4.1-flash')
         assert runtime_env['DEEPSEEK_SEARCH_URL'] == 'https://provider.example/v1/messages'
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')

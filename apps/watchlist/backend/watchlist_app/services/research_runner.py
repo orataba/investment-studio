@@ -24,6 +24,8 @@ SCRIPT = ROOT / "apps/watchlist/backend/scripts/run_research_harness.sh"
 def _provider_failure(errors):
     """Retain known provider failure classes, never its response or credentials."""
     text = (errors or "").replace('\\"', '"')
+    if 'RESEARCH_HARNESS_END {"reason":"max-tokens"}' in text.splitlines():
+        return {"type": "OutputLimitExceeded", "summary": "本次研究达到模型单次输出上限，尚未完成提交；已取得的证据和计算保留，可从原进度恢复。", "retryable": False}
     codes = set(re.findall(r'"code"\s*:\s*"([a-z_]+)"', text))
     if codes.intersection({"insufficient_user_quota", "insufficient_quota"}) or any(
         line.strip() == "dsh: QUOTA: Insufficient Balance" for line in text.splitlines()
@@ -226,6 +228,7 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
         else:
             process = subprocess.Popen(["/bin/bash", str(SCRIPT), run_id, *mode], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
                 env={**os.environ, "INVESTMENT_STUDIO_RESEARCH_RUN_TOKEN": current_principal().credential,
+                     "INVESTMENT_STUDIO_RESEARCH_RESUME_GENERATION": "1" if sector_run and prepared and not resume_review else "0",
                      "INVESTMENT_STUDIO_RESEARCH_RESUME_REVIEW": "1" if resume_review else "0"})
             reply, errors = process.communicate(timeout=1800 if not risk_run else 900)
             returncode = process.returncode
@@ -251,7 +254,9 @@ def _run_analysis(run_id: str, *, execution_authorization=None):
             provider_error = _provider_failure(errors)
             if provider_error is not None:
                 runtime_error = {**provider_error, "exit_code": process.returncode}
-            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft"} else "") + runtime_error["summary"]
+                if provider_error["type"] == "OutputLimitExceeded":
+                    runtime_error["stage"] = "review" if resume_review else "generation"
+            outcome = ("事实核证失败：" if runtime_error["type"] not in {"ProcessExit", "InsufficientBalance", "ModelUnavailable", "MissingResearchDraft", "OutputLimitExceeded"} else "") + runtime_error["summary"]
             if sector_run and reply.strip():
                 rejected_reply = reply.strip()
         elif reply.strip() or risk_run:
