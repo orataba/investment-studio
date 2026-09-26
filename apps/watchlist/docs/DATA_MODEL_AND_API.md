@@ -17,7 +17,7 @@
 
 迁移 `20260920_0060` 为 PostgreSQL `research_entry` 增加基于留存 `context_json.instrument_ids` 的 GIN 表达式索引。读取先按该次运行的原始标的范围筛选，再解析命中记录的研究字段；不能用后来可变的 `research_topic.instrument_ids` 替代历史范围。索引通过同一不可变数据库函数提取文本数组，由 PostgreSQL 随每次写入维护；它不是第二份研究事实或跨请求缓存。原始 context、来源正文、作者及权限判断保持原样。SQL 工作副本仅为处理 PostgreSQL JSON 中保留的 NUL 转义而转换，选中的原始字段仍精确还原。改变提取函数语义必须通过迁移重建依赖索引；SQLite 使用等价的既有逐行范围谓词。
 
-浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后使用完整读取，精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，完整正文、快照、公司资料和计算输入由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
+浏览器 HTTP 投影与完整研究输入分开：`/api/sector-research` 的运行状态使用 `include_events=false` 跳过事件与事件历史读取，只携带当前投资判断及其原始版本，不重复附带整份底稿；`/dossier?current_only=true` 只读取当前底稿、基础档案及研究指导，跳过活动历史、PM 修订、主题时间线和历史来源集合；辅助入口展开后读取材料与完整历史，但不计算页面未使用的研究员议程和主题活动；精确来源／版本请求始终走原始路径。`/dossier` 的来源列表保留身份、时钟、归属与展示用的数值／方法，完整正文、快照、公司资料和计算输入由既有 `source_id`、`version_id` 查询按需读取。指定来源或版本的查询不使用展示投影，仍受相同标的及历史版本权限约束。领域服务、风险输入与 agent 的已绑定证据保持完整；展示优化不改写存储内容、研究结论或来源时点。
 
 - `/api/research/catalogue`、`/connections` 提供登记标的与外部证据连接状态。
 - `/api/research/topics` 管理持续专题；专题下的 `/entries`、`/files`、`/analysis` 保存材料或发起助手运行。
@@ -411,6 +411,8 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 
 ### 研究员编制与版本化发布
+
+`POST /api/research/instruments/{instrument_id}/dossier/materials` 收录自行整理的事实笔记或摘要时须传 `source_kind="generated_source_summary"`；资料仍可阅读，但按既有 `derived_reference` 合同排除于原始核证依据。省略该字段保持用户提供原始材料的既有语义；来源类型不由正文中的免责声明推断。
 
 `POST /api/research/imports/preview` 是只读校验；`POST /api/research/imports/publish` 仅接受明确标的、同一内容包及预览返回的 `expected_versions`。使用者须有团队研究写权限。发布与正常研究共用标的锁、结构和来源校验、主题数量/固定规则及版本保存；期间研究或主题已变化时拒绝旧预览。内容包和预览文件保存在仓库外。
 

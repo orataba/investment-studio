@@ -370,14 +370,17 @@ def material_record(entry: ResearchEntry, instrument_id: str) -> dict:
 
 
 def add_material(session: Session, instrument_id: str, *, title: str, body: str, source: str,
-                 published_at=None, effective_date=None) -> dict:
+                 published_at=None, effective_date=None, source_kind=None) -> dict:
     from studio_identity import current_principal
+    if source_kind not in {None, "generated_source_summary"}:
+        raise ValueError("材料来源类型无效")
     principal = current_principal()
     topic = dossier_topic(session, instrument_id)
     record = ResearchEntry(author_user_id=principal.user_id, team_id=principal.team_id, entry_id=uuid4().hex, topic_id=topic.topic_id, kind="evidence",
         title=title.strip(), body=body.strip(), source=source.strip(), status="recorded",
         context_json=serialize_payload({"published_at": published_at, "effective_date": effective_date,
-                                       "extraction": "用户提供的材料正文", "extraction_status": "provided"}))
+                                       "extraction": "用户提供的材料正文", "extraction_status": "provided",
+                                       **({"source_kind": source_kind} if source_kind else {})}))
     topic.updated_at = datetime.now(UTC)
     session.add(record)
     session.commit()
@@ -634,7 +637,8 @@ def _review_cases(instrument_id: str, notebook: dict | None) -> list[dict]:
     return records
 
 
-def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None, current_only=False) -> dict:
+def read_dossier(session: Session, instrument_id: str, include_history: bool = False, *, actor=None, current_only=False,
+                 include_working_context=True) -> dict:
     """Read materials, methods and completed notebooks without creating records."""
     from watchlist_app.services.research_notebook import retained_public_sources
     from watchlist_app.services.research_themes import themes_view
@@ -682,9 +686,14 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
                   "reuse_limitations": history_limitations} for case in atlas["cases"]]
     notebook, notebook_history = _notebooks(session, instrument_id, include_history)
     cases.extend(_review_cases(instrument_id, notebook))
-    from watchlist_app.services.research_activity import research_activity, review_agenda
-    activity = research_activity(session, instrument_id, actor=actor, include_theme_progress=True)
-    current_themes = themes_view(session, instrument_id, actor=actor, activity=activity, notes=notes)["themes"]
+    # Browser archive reads do not use the analyst's agenda or theme activity.
+    # Source resolution and agent calls keep their complete working context.
+    current_themes, agenda = [], {}
+    if include_working_context:
+        from watchlist_app.services.research_activity import research_activity, review_agenda
+        activity = research_activity(session, instrument_id, actor=actor, include_theme_progress=True)
+        current_themes = themes_view(session, instrument_id, actor=actor, activity=activity, notes=notes)["themes"]
+        agenda = review_agenda(session, instrument_id, notebook, pm_views, actor=actor, themes=current_themes, activity=activity)
     return serialize_payload({"instrument_id": instrument_id, "name": instrument.instrument_name,
         "instrument_type": instrument.instrument_type, "research_plan": research_plan, "frameworks": method_library()["frameworks"],
         "available_modules": [{key: item[key] for key in ("id", "title", "version")} for item in method_library()["frameworks"]],
@@ -694,5 +703,5 @@ def read_dossier(session: Session, instrument_id: str, include_history: bool = F
         "notebook": notebook, "notebook_history": notebook_history,
         "themes": current_themes, "pm_views": pm_views,
         "current_stance": read_current_stance(session, instrument_id, actor=actor),
-        "review_agenda": review_agenda(session, instrument_id, notebook, pm_views, actor=actor, themes=current_themes, activity=activity),
+        "review_agenda": agenda,
         "pm_views_note": "投资经理原始观点，与研究员判断分开。旧记录作者为空表示归属未确认，不能推断为当前人员。复核使用pm:<note_id>:<revision_number>读取当时版本。"})

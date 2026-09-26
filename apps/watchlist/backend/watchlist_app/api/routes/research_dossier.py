@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
@@ -18,6 +19,8 @@ class MaterialInput(BaseModel):
     source: str = ""
     published_at: AwareDatetime | date | None = None
     effective_date: date | None = None
+    source_kind: Literal["generated_source_summary"] | None = Field(default=None,
+        description="自行整理的摘要须标记为派生参考；省略时保持用户提供原始材料的既有语义。")
 
     @field_validator("title", "body")
     @classmethod
@@ -51,7 +54,8 @@ def dossier(instrument_id: str, include_history: bool = False, source_id: str | 
                 return source
             return saved
         result = service.read_dossier(session, instrument_id, include_history=include_history,
-                                      current_only=current_only and not source_id and not include_history)
+                                      current_only=current_only and not source_id and not include_history,
+                                      include_working_context=bool(source_id))
         if source_id:
             from watchlist_app.services.research_notebook import dossier_source
             return dossier_source(result, source_id)

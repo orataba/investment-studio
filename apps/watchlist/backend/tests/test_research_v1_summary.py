@@ -69,6 +69,24 @@ def test_opportunities_and_risks_share_view_version_and_quiet_check_preserves_ex
     assert cleared["investment_view"]["versions"][-1]["risks"]
 
 
+def test_browser_archive_keeps_complete_history_without_building_analyst_agenda(activity_client, monkeypatch):
+    from watchlist_app.api.research_presentation import dossier_view
+    from watchlist_app.services import research_activity
+    with get_session_factory()() as session:
+        publish(session, research={"investment_view": {"direction": "保留当前判断", "risks": [risk()]}})
+        complete = read_dossier(session, "xlk", include_history=True)
+    with monkeypatch.context() as patch:
+        patch.setattr(research_activity, "research_activity", lambda *args, **kwargs:
+                      pytest.fail("Browser archives must not build unused analyst activity"))
+        response = activity_client.get("/api/research/instruments/xlk/dossier?include_history=true")
+        assert response.status_code == 200
+        assert response.json() == dossier_view(complete)
+    source = activity_client.get("/api/research/instruments/xlk/dossier", params={"source_id": "original"})
+    assert source.status_code == 200 and source.json()["text"]
+    with get_session_factory()() as session:
+        assert read_dossier(session, "xlk", include_history=True) == complete
+
+
 def test_legacy_prose_is_unknown_not_an_assessed_empty_list_and_is_not_rewritten():
     old = {"investment_view": {"direction": "原判断", "risk": "原风险", "updated_at": "2025-01-01"}}
     original = deepcopy(old)

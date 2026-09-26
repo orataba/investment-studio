@@ -178,6 +178,35 @@ def test_materials_preserve_three_clocks_and_reuse_stable_topic(dossier_client):
     assert dossier_client.get(url("xlf")).json()["materials"] == []
 
 
+def test_material_summary_is_retained_but_never_becomes_original_evidence(dossier_client):
+    from watchlist_app.services.research_notebook import research_sources
+
+    payload = {"title": "官方中报事实整理", "body": "本轮整理：C类与全基金规模口径不同；原件第7、16页。",
+        "source": "https://issuer.example/midyear.pdf", "published_at": "2026-08-31",
+        "effective_date": "2026-06-30", "source_kind": "generated_source_summary"}
+    response = dossier_client.post(url() + "/materials", json=payload)
+    assert response.status_code == 201
+    summary = response.json()
+    assert summary["role"] == "derived_reference"
+    assert summary["metadata"]["source_kind"] == "generated_source_summary"
+    original = dossier_client.post(url() + "/materials", json={
+        "title": "原始公告", "body": "发行人提供的公告正文", "source": "https://issuer.example/original"}).json()
+    assert original["role"] == "source_material"
+    assert "source_kind" not in original["metadata"]
+
+    saved = dossier_client.get(url(), params={"source_id": summary["source_id"]}).json()
+    assert saved["body"] == payload["body"] and saved["role"] == "derived_reference"
+    assert saved["metadata"]["published_at"] == payload["published_at"]
+    assert saved["metadata"]["effective_date"] == payload["effective_date"]
+    dossier = dossier_client.get(url()).json()
+    sources = research_sources({"cutoff": datetime.now(UTC).isoformat(), "research_dossiers": [dossier]}, "test-run")
+    assert summary["source_id"] not in sources
+    assert original["source_id"] in sources
+    assert {row["source_id"] for row in dossier["materials"]} == {summary["source_id"], original["source_id"]}
+    assert dossier_client.get(url("xlf"), params={"source_id": summary["source_id"]}).status_code == 422
+    assert dossier_client.post(url() + "/materials", json={**payload, "source_kind": "pretend_original"}).status_code == 422
+
+
 def test_private_conversation_evidence_is_not_automatically_shared(dossier_client):
     with get_session_factory()() as session:
         for topic_id, ids, portfolio in [("single", ["xlk"], None), ("multi", ["xlk", "xlf"], None),
