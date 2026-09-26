@@ -56,6 +56,23 @@ def review_checkpoint(context):
     return None
 
 
+def same_research_initiator(context, principal):
+    actor = context.get("research_actor") or {}
+    return principal.local_unrestricted or (actor.get("kind") == principal.kind and (
+        principal.kind == "service" and actor.get("service_id") == principal.service_id or
+        principal.kind == "user" and actor.get("user_id") == principal.user_id))
+
+
+def automatic_retry_due(context, completed_at, body, *, now=None):
+    """Shared eligibility only; queue_retry still locks and rechecks authority."""
+    attempt = (context.get("execution") or {}).get("attempt", 1)
+    error = context.get("runtime_error") or {}
+    interrupted = body == "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
+    ended = completed_at.replace(tzinfo=completed_at.tzinfo or UTC) if completed_at else None
+    return (attempt < 3 and (error.get("retryable") is True or interrupted) and ended is not None
+            and (now or datetime.now(UTC)) >= ended + timedelta(seconds=60 if attempt == 1 else 300))
+
+
 def queue_retry(session, run, *, now=None, manual=False):
     """Requeue an authorized failed research/risk run without rebinding its evidence.
 
@@ -70,13 +87,8 @@ def queue_retry(session, run, *, now=None, manual=False):
         return False
     from watchlist_app.services.research_access import require_entry_access, require_portfolio, require_team_write
     require_entry_access(session, run)
-    actor = context.get("research_actor") or {}
     principal = current_principal()
-    if not principal.local_unrestricted and (
-        actor.get("kind") != principal.kind or
-        (principal.kind == "service" and actor.get("service_id") != principal.service_id) or
-        (principal.kind == "user" and actor.get("user_id") != principal.user_id)
-    ):
+    if not same_research_initiator(context, principal):
         return False  # Recovery never adopts another person's original task.
     portfolio_id = (context.get("risk_scope") or {}).get("portfolio_id")
     if context.get("risk_run") and portfolio_id:
@@ -86,13 +98,10 @@ def queue_retry(session, run, *, now=None, manual=False):
     execution = dict(context.get("execution") or {})
     attempt = execution.get("attempt", 1)
     error = context.get("runtime_error") or {}
-    interrupted = run.body == "服务重新启动，本次分析未完成。输入快照已保留，可重新发起。"
-    clock = now or datetime.now(UTC)
     ended = run.completed_at
     if ended is not None:
         ended = ended.replace(tzinfo=ended.tzinfo or UTC)
-    if not manual and (attempt >= 3 or not (error.get("retryable") is True or interrupted)
-        or ended is None or clock < ended + timedelta(seconds=60 if attempt == 1 else 300)):
+    if not manual and not automatic_retry_due(context, ended, run.body, now=now):
         return False
     execution["failures"] = [*execution.get("failures", []), {
         "attempt": attempt, "failed_at": ended.isoformat() if ended else None,

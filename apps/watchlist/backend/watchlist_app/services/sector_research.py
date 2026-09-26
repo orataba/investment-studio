@@ -215,7 +215,8 @@ def sector_snapshot(iid, session, *, as_of=None):
     return view, evidence, companies
 
 
-def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False, initialization=False):
+def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False,
+              initialization=False, recovery_run_id: str | None = None):
     from watchlist_app.services.research_access import instrument_run_scope
     from watchlist_app.services.research_identity import research_identity
     if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
@@ -224,16 +225,31 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     # Manual and scheduled research share the same instrument's publication lock.
     list(session.scalars(select(InstrumentDetail).where(InstrumentDetail.instrument_id.in_(ids))
                         .order_by(InstrumentDetail.instrument_id).with_for_update()))
-    initialize_event_follow_up_terms(session, ids, now=datetime.now(UTC))
+    recovery = session.get(ResearchEntry, recovery_run_id, with_for_update=True, populate_existing=True) if recovery_run_id else None
     with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.kind == "analysis",
         ResearchEntry.status.in_(["queued", "running"]), instrument_run_scope(session, ids))
         .execution_options(yield_per=1))) as active_runs:
         for active in active_runs:
             context = active.context_json or {}
             if context.get("sector_run") and set(ids).intersection(context.get("instrument_ids", [])):
+                if recovery_run_id:
+                    return recovery, False
                 if ids == context["instrument_ids"]:
                     return active, False
                 raise ReviewInProgress("当前标的的研究追踪正在运行，请完成后再更新")
+    if recovery_run_id:
+        # Revalidate the exact discovery under the instrument's existing lock.
+        # A changed status, scope, owner or newer run never falls back to generation.
+        from watchlist_app.services.research_runner import queue_retry
+        now = datetime.now(UTC)
+        if (scheduled and recovery is not None
+                and automatic_recovery_runs(session, instrument_ids=ids, now=now).get(ids[0]) == recovery_run_id
+                and queue_retry(session, recovery, now=now)):
+            if commit:
+                session.commit()
+            return recovery, True
+        return recovery, False
+    initialize_event_follow_up_terms(session, ids, now=datetime.now(UTC))
     identity = research_identity()
     topic_id = (f"{INSTRUMENT_TOPIC_PREFIX}compiled:{identity['team_id']}:{ids[0]}" if compiled
                 else f"{INSTRUMENT_TOPIC_PREFIX}{ids[0]}")
@@ -265,6 +281,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
     incremental_trigger = {}
     if scheduled:
         research_dates = _research_dates(session, ids, cutoff)
+        recovery_id = automatic_recovery_runs(session, instrument_ids=ids, now=cutoff).get(ids[0])
         with closing(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id == topic_id)
             .order_by(ResearchEntry.created_at.desc()).execution_options(yield_per=1))) as priors:
             for prior in priors:
@@ -275,7 +292,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
                     continue
                 if set(ids).issubset(prior.context_json.get("instrument_ids", [])):
                     from watchlist_app.services.research_runner import queue_retry
-                    if prior.status == "failed" and queue_retry(session, prior, now=cutoff):
+                    if prior.entry_id == recovery_id and queue_retry(session, prior, now=cutoff):
                         if commit:
                             session.commit()
                         return prior, True
@@ -1337,7 +1354,8 @@ def active_research_ids(session):
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
 
 
-def daily_review_groups(session, *, now=None):
+def _daily_research_universe(session):
+    """Existing automatic membership, before calendar or retry eligibility."""
     from watchlist_app.services.shared_instrument_registry import list_shared_active_instrument_ids
     registered = set(list_shared_active_instrument_ids(instrument_types=set(EVENT_INSTRUMENT_TYPES)))
     selected = active_research_ids(session)
@@ -1351,6 +1369,11 @@ def daily_review_groups(session, *, now=None):
     ids = sorted(session.scalars(select(InstrumentDetail.instrument_id).where(
         InstrumentDetail.is_active.is_(True), InstrumentDetail.instrument_id.in_(selected),
         InstrumentDetail.instrument_type.in_(EVENT_INSTRUMENT_TYPES))))
+    return ids, pending
+
+
+def daily_review_groups(session, *, now=None):
+    ids, pending = _daily_research_universe(session)
     now = now or datetime.now(UTC)
     # Follow-up terms are calendar days, including non-trading days. Eligibility
     # still comes exclusively from the existing authorized research universe.
@@ -1372,6 +1395,48 @@ def daily_review_groups(session, *, now=None):
     return sorted(groups, key=lambda group: min((reviews.get(iid) or {}).get("checked_at") or "" for iid in group))
 
 
+def automatic_recovery_runs(session, *, instrument_ids=None, now=None):
+    """Latest own-service failures, independent of the next research calendar day."""
+    from studio_identity import current_principal
+    from watchlist_app.services.research_access import research_context_projection, research_projection_rows
+    from watchlist_app.services.research_runner import automatic_retry_due, same_research_initiator
+    principal = current_principal()
+    if principal.kind != "service":
+        return {}
+    ids = set(_daily_research_universe(session)[0])
+    if instrument_ids is not None:
+        ids.intersection_update(instrument_ids)
+    topics = {topic: iid for iid in ids for topic in (
+        f"{INSTRUMENT_TOPIC_PREFIX}{iid}", f"{INSTRUMENT_TOPIC_PREFIX}compiled:{principal.team_id}:{iid}")}
+    if not topics:
+        return {}
+    # Rank before filtering failures/owners: a newer run supersedes an old retry,
+    # even if that newer run belongs to a user or has already completed.
+    ranked = select(ResearchEntry.entry_id, func.row_number().over(partition_by=case(topics, value=ResearchEntry.topic_id),
+        order_by=(ResearchEntry.created_at.desc(), ResearchEntry.entry_id.desc())).label("position")).where(
+            ResearchEntry.kind == "analysis", ResearchEntry.topic_id.in_(topics),
+            ResearchEntry.team_id == principal.team_id).subquery()
+    relation, values = research_context_projection(session, {"instrument_ids": JSON, "sector_run": Boolean,
+        "recordkeeping_only": Boolean, "research_actor": JSON, "execution": JSON, "runtime_error": JSON})
+    query = select(ResearchEntry.entry_id, ResearchEntry.topic_id, ResearchEntry.status,
+        ResearchEntry.completed_at, ResearchEntry.body, *(value.label(key) for key, value in values.items()))
+    query = query.join(ranked, ranked.c.entry_id == ResearchEntry.entry_id).where(
+        ranked.c.position == 1, ResearchEntry.status == "failed")
+    if relation is not None:
+        query = query.join(relation, true())
+    candidates = {}
+    for row in research_projection_rows(session, query, {key: (key,) for key in values}):
+        context = row._mapping
+        iid = topics[row.topic_id]
+        if (row.topic_id == f"{INSTRUMENT_TOPIC_PREFIX}{iid}" and row.status == "failed"
+                and context["sector_run"] and not context["recordkeeping_only"]
+                and context["instrument_ids"] == [iid] and same_research_initiator(context, principal)
+                and _research_market(session, iid) is not None
+                and automatic_retry_due(context, row.completed_at, row.body, now=now)):
+            candidates[iid] = row.entry_id
+    return candidates
+
+
 def run_daily_reviews(stop):
     from studio_identity import principal_context, service_principal
     with principal_context(service_principal("watchlist")):
@@ -1379,11 +1444,14 @@ def run_daily_reviews(stop):
 
 
 def _run_daily_reviews(stop):
-    from watchlist_app.services.research_runner import run_analysis
+    from studio_identity import current_principal
+    from watchlist_app.services.research_runner import run_analysis, same_research_initiator
     from watchlist_app.services.research_workbench import portfolio_options
     from watchlist_app.services.risk_officer import begin_run as begin_risk_run, read_snapshot as read_risk_snapshot
     with get_session_factory()() as session:
+        recoveries = automatic_recovery_runs(session)
         groups = daily_review_groups(session)
+        groups = [[iid] for iid in recoveries] + [ids for ids in groups if ids[0] not in recoveries]
         if not groups:
             return
         research_dates = _research_dates(session, [iid for ids in groups for iid in ids], datetime.now(UTC))
@@ -1401,9 +1469,17 @@ def _run_daily_reviews(stop):
             return False
         try:
             with get_session_factory()() as session:
-                run, created = begin_run(session, ids, scheduled=True)
+                recovery_id = recoveries.get(ids[0])
+                run, created = begin_run(session, ids, scheduled=True, **(
+                    {"recovery_run_id": recovery_id} if recovery_id else {}))
+                if run is None or (recovery_id and not created):
+                    # Discovery became stale (possibly another active researcher).
+                    # Do not dispatch it or declare its dependent risk scope ready.
+                    return False
                 run_id, status = run.entry_id, run.status
-            if created or status == "queued":
+                if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                    return False
+            if created or (status == "queued" and not recovery_id):
                 run_analysis(run_id)
                 with get_session_factory()() as session:
                     status = session.get(ResearchEntry, run_id).status
@@ -1438,6 +1514,8 @@ def _run_daily_reviews(stop):
                 with get_session_factory()() as session:
                     run, created = begin_risk_run(session, **scope, scheduled_dates=scope_dates)
                     run_id, status = run.entry_id, run.status
+                    if not created and status == "queued" and not same_research_initiator(run.context_json, current_principal()):
+                        continue
                 if created or status == "queued":
                     run_analysis(run_id)
             except Exception:
