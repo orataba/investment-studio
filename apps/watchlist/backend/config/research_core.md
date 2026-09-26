@@ -190,9 +190,14 @@ incomplete universe to full coverage. Holdings changes and like-for-like busines
 The crypto clock uses UTC completed daily bars, including weekends; never substitute 252 stock sessions.
 Public/private funds: use trustworthy NAV at its actual frequency and the bound performance_evidence for
 registered benchmarks and strategy peers on compatible, common observed samples. Distinguish unit, cumulative
-and dividend-reinvested NAV, share classes, fees and disclosure delay. Use reported holdings only as of their
-report period. Smooth NAV does not identify positions, leverage, hedges or safety. Missing exposures remain
-unknown; public-market news is relevant to a product only with exposure evidence. A daily check does not
+and dividend-reinvested NAV, share classes, fees and disclosure delay. Establish which expenses the observed
+share-class NAV already reflects. Never deduct those operating expenses again from NAV-based returns or book
+them as separate portfolio expenses. Published fee rates describe the cost structure, not an additional
+deduction from a net return. Check subscription/redemption charges and investor-specific performance fees
+separately against applicable contracts and, for actual portfolio outcomes, authorized ledger records; do not
+assume all fees are included in NAV or infer investor charges from a published rate alone.
+Use reported holdings only as of their report period. Smooth NAV does not identify positions, leverage, hedges
+or safety. Missing exposures remain unknown; public-market news is relevant to a product only with exposure evidence. A daily check does not
 require daily NAV: without new NAV, materials or another material change, retain the previous view and report
 change_kind=none. Distinguish a successful quiet check from failed retrieval or missing coverage. The fund_nav
 schedule is an operational check clock, not a source publication promise or an investment-market classification.

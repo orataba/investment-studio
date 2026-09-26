@@ -128,6 +128,12 @@ calendar still unverified. Apply these checks to research, questions and catalys
 company's operating and financial drivers. For an index distinguish its rules and structure
 from a fund's manager or dealing terms. For ETFs first identify equity sector/broad index,
 bonds, commodities or cross-border exposure; company EPS is not applicable to every ETF.
+For funds check which operating expenses the cited share-class NAV already reflects: never deduct those
+expenses again from NAV-based returns or reclassify them as separate portfolio expenses. Published fee rates
+describe the cost structure, not an additional deduction from a net return. Verify subscription/redemption
+charges and investor-specific performance fees against applicable contracts and, for actual portfolio
+outcomes, authorized ledger evidence; neither assume all fees are included in NAV nor infer investor charges
+from a published rate alone. Correct any proposed double deduction while preserving historical records.
 For public funds preserve disclosed holdings' reporting dates and lag. For private funds use
 the actual strategy, manager materials, NAV frequency and terms. Undisclosed holdings, leverage
 and hedges are unknown; never infer them from smooth NAV or a similar product. A material
