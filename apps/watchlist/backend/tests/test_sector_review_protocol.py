@@ -6,7 +6,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from watchlist_app.services import sector_fact_review as review
-from watchlist_app.services.sector_review_protocol import expand_review_receipts
+from watchlist_app.services.sector_review_protocol import expand_review_receipts, review_receipt_contract
 
 
 SOURCE = {"source_id": "original", "source_type": "public_source", "instrument_id": "gold",
@@ -34,6 +34,31 @@ def accepted(rows):
         "themes": [{"theme_key": item["theme_key"], "decision": "accept"} for item in row.get("themes", [])],
         **{field: {"decision": "accept"} if row.get(field) is not None else None for field in ("research", "reflection")}}
         for row in rows]}
+
+
+def test_compact_contract_binds_objects_and_routes_corrections_to_exact_schema_branches():
+    rows = proposed()
+    rows[0]["research"]["facts"] = [{"statement": "A bounded fact", "source_ids": ["original"]}]
+    rows.append({"instrument_id": "other", "summary": "", "events": [], "themes": [], "coverage": [],
+                 "research": None, "reflection": None})
+    schema = review._review_schema(rows, [SOURCE])
+    before = deepcopy(schema)
+    contract = review_receipt_contract(rows, schema)
+    gold, other = contract["reviews"]
+    assert gold["event_keys"] == ["disclosure"] and gold["theme_keys"] == ["question"]
+    assert gold["research_fields"]["facts"]["identities"] == [0]
+    assert gold["research_fields"]["questions"]["identities"] == ["demand"]
+    assert other["research"] == other["reflection"] == "null"
+    for entry in contract["reviews"]:
+        for path in [*entry["schema_paths"].values(),
+                     *(field["schema_path"] for field in entry.get("research_fields", {}).values())]:
+            value = schema
+            for key in path:
+                value = value[key]
+            assert isinstance(value, dict)
+    assert schema == before
+    assert "Does demand persist?" not in json.dumps(contract)
+    assert len(json.dumps(contract)) < len(json.dumps(schema))
 
 
 def checked(rows, receipts):

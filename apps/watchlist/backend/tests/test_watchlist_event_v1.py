@@ -111,7 +111,8 @@ def test_timeline_uses_local_fact_dates_and_keeps_legacy_unknown_and_backfill(cl
         now = datetime(2026, 9, 25, 1, tzinfo=UTC)
         for key, fact, score in [("boundary", "2026-09-18T23:30:00Z", 3), ("low", "2026-09-25", 2), ("old", "2020-01-01", 4), ("unknown", None, None)]:
             session.add(RiskCase(case_id=key, instrument_id="xlk", signal=f"sector:{key}", title=key, body="保留事实",
-                status="recorded", trigger_active=False, history_json=[], evidence_json={"follow_up": "watch", "next_watch": "下一次披露",
+                status="recorded", trigger_active=False, created_at=now, updated_at=now,
+                history_json=[], evidence_json={"follow_up": "watch", "next_watch": "下一次披露",
                     "occurred_at": fact, "importance_score": score, "recorded_at": now.isoformat(), "source_views": []}))
         session.flush()
         page = event_page(session, "xlk", display_timezone="Asia/Tokyo", now=now)
@@ -155,7 +156,8 @@ def test_risk_officer_owns_activation_and_stale_or_private_assessment_cannot_pub
         add_sources(run)
         case = publish(session, run, direction="risk")
         version = service.event_record(case)["event_version_id"]
-        snapshot = {"scope": {"kind": "instrument", "id": "xlk"}, "instrument_ids": ["xlk"], "instruments": [], "limitations": [],
+        snapshot = {"scope": {"kind": "instrument", "id": "xlk"}, "input_as_of": None,
+            "instrument_ids": ["xlk"], "instruments": [], "limitations": [],
             "research": [{"case_id": case.case_id, "instrument_id": "xlk", "signal": case.signal, "evidence_json": dict(case.evidence_json)}], "quantitative": [], "coverage": []}
         officer = SimpleNamespace(entry_id="officer", context_json={"risk_inputs": snapshot})
         payload = {"summary": "复核完毕", "priorities": [], "limitations": [], "case_assessments": [

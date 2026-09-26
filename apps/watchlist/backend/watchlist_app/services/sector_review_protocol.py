@@ -136,6 +136,54 @@ def review_receipt_schema(reviewed, canonical_schema, eligible_reflection_source
         "items": candidates[0] if len(candidates) == 1 else {"oneOf": candidates} if candidates else False}})
 
 
+def review_receipt_contract(reviewed, schema):
+    """A compact navigation guide; the complete schema remains the validator.
+
+    Acceptance needs no correction-field schema. Give the reviewer the exact
+    object identities and paths needed when it does find a factual correction,
+    without requiring it to traverse every optional correction branch first.
+    """
+    reviews = []
+    for index, row in enumerate(reviewed):
+        base = ["properties", "reviews", "items", *(["oneOf", index] if len(reviewed) > 1 else [])]
+        candidate = schema
+        for key in base:
+            candidate = candidate[key]
+        fields = candidate["properties"]
+        entry = {"instrument_id": row["instrument_id"], "required_fields": candidate["required"],
+            "schema_paths": {key: [*base, "properties", key] for key in fields if key != "instrument_id"},
+            "event_keys": [item["event_key"] for item in row.get("events", [])],
+            "theme_keys": [item["theme_key"] for item in row.get("themes", [])],
+            "research": "null" if row.get("research") is None else "proposed",
+            "reflection": "null" if row.get("reflection") is None else "proposed"}
+        if row.get("research") is not None:
+            correction_index = next(i for i, variant in enumerate(fields["research"]["oneOf"])
+                                    if variant["properties"]["decision"]["const"] == "correct")
+            patch_path = [*base, "properties", "research", "oneOf", correction_index,
+                          "properties", "patch", "properties"]
+            entry["research_fields"] = {}
+            for field, value in row["research"].items():
+                item = {"schema_path": [*patch_path, field]}
+                if field in ("facts", *_RESEARCH_ITEMS):
+                    key = "index" if field == "facts" else "key"
+                    item.update(binding_key=key, identities=list(range(len(value))) if key == "index"
+                                else [record[key] for record in value])
+                elif field in ("investment_view", "decision_brief", "mandate_update"):
+                    item["proposal"] = "null" if value is None else "object"
+                entry["research_fields"][field] = item
+        reviews.append(entry)
+    return {"protocol": "bound_draft_v1", "reviews": reviews,
+        "rules": [
+            "Return {reviews: [...]} with every bound instrument and every required field. Decide each listed event_key/theme_key exactly once; an absent proposed research/reflection is null.",
+            "Accept an unchanged object with {decision: 'accept'}. Add its event_key, theme_key, key or index when it is a member of a keyed receipt list. Acceptance requires factual checks, not merely a matching format.",
+            "For summary/change_kind/coverage corrections use {decision: 'correct', reason: 'specific factual reason', value: corrected_value}.",
+            "For event/theme/reflection corrections use {decision: 'correct', reason: 'specific factual reason', patch: {...}}, plus the list binding when applicable. Event rejection is decision 'remove'; theme rejection is 'reject'; include a factual reason. Reflection has no reject verdict.",
+            "Research and its investment_view/decision_brief/mandate_update objects allow accept, reject with reason, or {decision: 'correct', reason: '...', patch: {...}, omit_fields: [...]}. A correction must change or omit something; unmentioned fields preserve the bound draft. A proposed null remains null.",
+            "Inside a research correction, investment_view/decision_brief/mandate_update are nested verdicts, not replacement objects. A changed facts/changes/modules/questions/catalysts/forecasts/forecast_reviews/lessons list requires one verdict per original index/key. Rejection cancels that proposed change, not retained history.",
+            "Read the full draft, acquisition limits and relevant original evidence. Read response_schema only at a listed schema_path when correcting a field or resolving a validation error; optional correction schemas need not all be read. Identity, source, financial and publication validation remain mandatory.",
+        ]}
+
+
 def _exact_fields(value, required):
     if not isinstance(value, dict) or set(value) != set(required):
         raise ValueError(f"Review receipt requires exactly these fields: {', '.join(sorted(required))}")

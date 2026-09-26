@@ -249,11 +249,13 @@ knowledge means a useful internal research update; none is a completed check wit
 upgrade a draft's none/knowledge merely to publish. A quiet run needs no working paper or summary.
 
 This response is only a factual review; it cannot search or perform external actions.
-Use the paged review tools to read the bound response_schema, draft and necessary original evidence.
+Use the overview's compact receipt contract and bound object index. Read the complete draft and necessary
+original evidence through paged tools. Read the listed response_schema path when correcting a specific
+field or fixing a validation error; do not traverse every optional correction branch just to accept a fact.
 Submit the compact receipt protocol through submit_review_receipts, not rewritten copies of accepted objects.
 Treat automatic context summaries as working memory only; reread exact source IDs, dates, units and values.
 Every checkpoint must preserve run/cutoff and original source/version IDs, checked and unchecked claims,
-important numbers with units, counterevidence, pending tools, and the bound draft/schema and validation state.
+important numbers with units, counterevidence, pending tools, and the bound draft/receipt contract and validation state.
 Review decision_brief only when supplied; it is optional context for the single InvestmentView. Check each
 opportunities/risks item and coverage_status/coverage_note against its linked event/theme/original/numeric
 sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's

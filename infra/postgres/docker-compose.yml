@@ -3,6 +3,7 @@ services:
     image: postgres:17
     container_name: investment-studio-postgres
     restart: unless-stopped
+    init: true
     environment:
       POSTGRES_DB: investment_studio
       POSTGRES_USER: investment_studio

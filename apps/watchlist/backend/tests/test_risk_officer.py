@@ -43,6 +43,199 @@ def seed(client):
         session.commit()
 
 
+def test_review_get_uses_versions_and_keeps_unversioned_legacy_report(client, monkeypatch):
+    from watchlist_app.services import risk_review_state
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        service.apply_result(session, run, reply())
+        session.commit()
+        monkeypatch.setattr(service, "read_snapshot", lambda *a, **k: pytest.fail("GET must not prepare model evidence"))
+        monkeypatch.setattr(service, "performance_context", lambda *a, **k: pytest.fail("GET must not recalculate comparisons"))
+        current = service.review_workspace(session, instrument_id="risk-a")
+        assert current["latest_completed"]["stale"] is False
+        assert current["counts"] == {"research": 1, "quantitative": 1, "coverage": 0}
+        run.context_json = {key: value for key, value in run.context_json.items()
+                            if key not in {"risk_input_version", "risk_review_view"}}
+        session.commit()
+        monkeypatch.setattr(risk_review_state, "input_version", lambda *a: pytest.fail("Legacy has no comparable version"))
+        legacy = service.review_workspace(session, instrument_id="risk-a")
+        assert legacy["latest_completed"]["stale"] is None
+        assert legacy["latest_completed"]["summary"] == current["latest_completed"]["summary"]
+        assert legacy["latest_completed"]["evidence_sources"] == current["latest_completed"]["evidence_sources"]
+
+
+def test_review_versions_detect_same_day_market_pm_risk_and_research_changes(client):
+    from datetime import timedelta
+    from watchlist_app.db.models.research import InstrumentResearchProfile, InstrumentResearchNote
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.risk_review_state import current_scope, input_version
+    seed(client)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(InstrumentChartReadModel(instrument_id="risk-a", payload_json={"research_returns": {}},
+            data_freshness_status="fresh", last_recalculated_at=now, source_cutoff_at=now))
+        session.add(InstrumentResearchProfile(instrument_id="risk-a", current_view="原PM判断"))
+        session.add(InstrumentResearchNote(instrument_id="risk-a", note_id="pm-risk", note_date=now.date(),
+            note_type="risk", title="PM风险观点", body="原文", created_at=now, updated_at=now))
+        session.add(ResearchTopic(topic_id="risk-source", title="研究", instrument_ids=["risk-a"], visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="risk-source-run", topic_id="risk-source", kind="analysis", title="研究",
+            status="completed", context_json={"sector_run": True, "instrument_ids": ["risk-a"]}))
+        session.commit()
+        def version():
+            return input_version(session, current_scope(session, {"instrument_id": "risk-a"}))
+        prior = version()
+        assert prior is not None and prior == version()
+        chart = session.get(InstrumentChartReadModel, "risk-a")
+        chart.payload_json = {"research_returns": {"points": [{"date": "2026-09-20", "value": 102}]}}
+        chart.last_recalculated_at = now + timedelta(minutes=1)  # Same valuation date, corrected source generation.
+        session.commit()
+        assert version() != prior
+        prior = version()
+        profile = session.get(InstrumentResearchProfile, "risk-a")
+        profile.current_view, profile.revision_number = "改变判断", profile.revision_number + 1
+        session.commit()
+        assert version() != prior
+        prior = version()
+        note = session.get(InstrumentResearchNote, ("risk-a", "pm-risk"))
+        note.completed_at = now
+        session.commit()
+        assert version() != prior
+        prior = version()
+        case = session.get(RiskCase, "research")
+        case.status = "handled"  # PM handling must not disappear behind a same-day market key.
+        session.commit()
+        assert version() != prior
+        prior = version()
+        source = session.get(ResearchEntry, "risk-source-run")
+        source.status = "failed"
+        session.commit()
+        assert version() != prior
+        chart.last_recalculated_at = None
+        session.commit()
+        assert version() is None  # Missing version is unknown, never unchanged.
+
+
+def test_review_version_keeps_current_stance_and_comparator_generations(client):
+    from datetime import timedelta
+    from watchlist_app.db.models.research import InstrumentInvestmentStance
+    from watchlist_app.services.risk_review_state import current_scope, input_version
+    seed(client)
+    now = datetime(2026, 9, 20, tzinfo=UTC)
+    with get_session_factory()() as session:
+        session.add(InstrumentManualProfile(instrument_id="risk-a", updated_at=now,
+            nav_settings_json={"default_benchmark_instrument_id": "outside"}))
+        session.add(InstrumentChartReadModel(instrument_id="outside", payload_json={}, data_freshness_status="fresh",
+            last_recalculated_at=now, source_cutoff_at=now))
+        session.commit()
+        def version():
+            return input_version(session, current_scope(session, {"instrument_id": "risk-a"}))
+        prior = version()
+        comparator = session.get(InstrumentChartReadModel, "outside")
+        comparator.last_recalculated_at = now + timedelta(minutes=1)
+        session.commit()
+        assert version() != prior
+        prior = version()
+        session.add(InstrumentInvestmentStance(selection_id="stance-cleared", instrument_id="risk-a", team_id="default",
+            selected_at=now, selected_by="test", selected_by_name="Test"))
+        session.commit()
+        assert version() != prior
+
+
+def test_snapshot_does_not_bind_version_across_concurrent_input_update(client, monkeypatch):
+    from watchlist_app.services import risk_review_state
+    seed(client)
+    original = service.read_snapshot
+    def changed(session, **scope):
+        snapshot = original(session, **scope)
+        session.get(RiskCase, "research").status = "handled"
+        session.flush()
+        return snapshot
+    monkeypatch.setattr(service, "read_snapshot", changed)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        assert run.context_json["risk_input_version"] is None
+        assert run.context_json["risk_inputs"]["research"][0]["status"] == "open"
+
+
+@pytest.mark.parametrize("assessment_status", ["active", "resolved"])
+def test_own_assessment_does_not_expire_new_report_but_later_pm_change_does(client, assessment_status):
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, run_id)
+        event = next(row for row in run.context_json["risk_inputs"]["research"] if row["case_id"] == "research")
+        service.apply_result(session, run, {**reply(), "case_assessments": [{"case_id": "research",
+            "event_version_id": event["evidence_json"]["event_version_id"], "status": assessment_status, "reason": "依据本轮证据"}]})
+        session.commit()
+        assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is False
+        session.get(RiskCase, "research").status = "handled"
+        session.commit()
+        assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is True
+
+
+def test_own_assessment_does_not_hide_pm_update_during_model_run(client):
+    from watchlist_app.db.models.research import InstrumentResearchProfile
+    seed(client)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, instrument_id="risk-a")
+        run_id = run.entry_id
+    service.prepare_run(run_id)
+    with get_session_factory()() as session:
+        session.add(InstrumentResearchProfile(instrument_id="risk-a", current_view="模型运行期间新录入的PM判断"))
+        session.commit()
+        run = session.get(ResearchEntry, run_id)
+        event = next(row for row in run.context_json["risk_inputs"]["research"] if row["case_id"] == "research")
+        service.apply_result(session, run, {**reply(), "case_assessments": [{"case_id": "research",
+            "event_version_id": event["evidence_json"]["event_version_id"], "status": "active", "reason": "依据本轮证据"}]})
+        session.commit()
+        assert service.review_workspace(session, instrument_id="risk-a")["latest_completed"]["stale"] is True
+
+
+def test_review_version_tracks_theme_lifecycle_and_market_midnight(client, monkeypatch):
+    from datetime import timedelta
+    from investment_studio_instrument_core.db_models import Instrument
+    from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services import risk_review_state
+    seed(client)
+    current = [datetime(2026, 9, 25, 15, 59, tzinfo=UTC)]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current[0].astimezone(tz) if tz else current[0]
+    monkeypatch.setattr(risk_review_state, "datetime", Clock)
+    with get_session_factory()() as session:
+        session.add(Instrument(instrument_id="risk-a", instrument_name="基金", instrument_type="public_fund", currency="CNY",
+            quote_selection_policy_json={}, source_settings_json={}, refresh_status_json={}, lifecycle_state_json={"status": "active"}))
+        session.add(ResearchTopic(topic_id="dossier:risk-a", title="底稿", instrument_ids=["risk-a"], visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="version-theme", topic_id="dossier:risk-a", kind="note", title="主题", status="active",
+            context_json={"role": "research_theme", "instrument_id": "risk-a"}))
+        session.commit()
+        def version():
+            return risk_review_state.input_version(session, risk_review_state.current_scope(session, {"instrument_id": "risk-a"}))
+        prior = version()
+        session.get(ResearchEntry, "version-theme").status = "closed"
+        session.commit()
+        assert version() != prior
+        prior = version()
+        current[0] += timedelta(minutes=2)  # Shanghai date crosses midnight; UTC date does not.
+        assert version() != prior
+        assert version()["review_days"]["risk-a"]["day"] == "2026-09-26"
+
+
 def reply(**priority):
     return {"summary": "现有证据需要进一步核查共同影响。", "priorities": [{"title": "共同风险", "analysis": "依据已留存事项复核。",
         "instrument_ids": ["risk-a"], "case_ids": ["research"], "next_watch": "等待原文披露。", **priority}], "limitations": []}
@@ -65,7 +258,7 @@ def test_scope_read_separates_inputs_without_model_or_new_run(client, monkeypatc
     payload = response.json()
     assert payload["counts"] == {"research": 2, "quantitative": 1, "coverage": 1}
     assert {row["instrument_id"] for row in payload["instruments"]} == {"risk-a", "risk-b"}
-    assert len(peer_reads) == 1
+    assert not peer_reads  # Opening an unreviewed scope does not build model inputs.
     assert payload["latest_run"] is None and payload["latest_completed"] is None
     assert "不代表实际持仓" in payload["limitations"][0]
     assert client.get("/api/risk/review").status_code == 422
@@ -164,7 +357,10 @@ def test_portfolio_modules_and_local_contracts_have_bound_sources_and_underlying
             {"source_id": "portfolio-risk:p1:metrics", "portfolio_id": "p1", "title": "分类风险贡献", "detail_path": "/portfolios/p1/risk"},
             {"source_id": "portfolio-derivative:p1:option-1", "portfolio_id": "p1", "holding_id": "option-1", "title": "认沽合约条款"}],
         "limitations": ["尚未配置允许偏离带。"]}
-    monkeypatch.setattr(service, "external_json", lambda *args: context)
+    monkeypatch.setattr(service, "external_json", lambda name, path: ({
+        "portfolio_id": "p1", "name": "含衍生品的组合", "as_of_date": "2026-09-05", "available": True,
+        "version": "retained-generation", "instrument_ids": ["risk-a"], "holdings": context["holdings"], "limitations": []}
+        if path.endswith("/version") else context))
     with get_session_factory()() as session:
         snapshot = service.read_snapshot(session, portfolio_id="p1")
         assert snapshot["instrument_ids"] == ["risk-a"]  # Actual underlying, not a fake Watchlist contract or cash asset.
@@ -615,10 +811,12 @@ def test_risk_pm_note_keeps_full_judgment_without_embedding_bound_original_corpu
 
 def test_new_limited_check_changes_risk_inputs_without_new_event_and_keeps_the_gap(client):
     from watchlist_app.db.models.workbench import ResearchTopic
+    from watchlist_app.services.risk_review_state import current_scope, input_version
     seed(client)
     with get_session_factory()() as session:
         run, _ = service.begin_run(session, instrument_id="risk-a", scheduled_dates={"risk-a": "2026-09-09"})
-        run.context_json = {**run.context_json, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a")}
+        run.context_json = {**run.context_json, "risk_inputs": service.read_snapshot(session, instrument_id="risk-a"),
+            "risk_input_version": input_version(session, current_scope(session, {"instrument_id": "risk-a"}))}
         service.apply_result(session, run, reply())
         session.add(ResearchTopic(topic_id="limited-research", title="研究", instrument_ids=["risk-a"], visibility="team"))
         session.flush()

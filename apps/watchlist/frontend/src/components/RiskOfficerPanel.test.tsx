@@ -85,7 +85,7 @@ it('keeps the last completed result after failure and honestly shows stale and u
   render(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" onCompleted={onCompleted} />)
   await load()
   expect(screen.getByText('本次研判失败：本次核证未完成。')).toBeTruthy()
-  expect(screen.getByText('已有结论已过期，输入发生变化，请更新研判。')).toBeTruthy()
+  expect(screen.getByText('输入版本已有变化，请更新研判。')).toBeTruthy()
   expect(screen.getByText('风险研判服务不可用，暂时无法更新。')).toBeTruthy()
   expect((screen.getByRole('button', { name: '更新研判' }) as HTMLButtonElement).disabled).toBe(true)
   const result = screen.getByRole('region', { name: '最近完成的研判' })
@@ -153,7 +153,7 @@ it('rereads current inputs after a case changes without creating another analysi
   request.mockResolvedValue(payload('a', { latest_completed: { ...completed('a'), stale: true } }))
   rerender(<RiskOfficerPanel request={request} scopeQuery="instrument_id=a" refreshToken={1} />)
   await load()
-  expect(screen.getByText('已有结论已过期，输入发生变化，请更新研判。')).toBeTruthy()
+  expect(screen.getByText('输入版本已有变化，请更新研判。')).toBeTruthy()
   expect(request).toHaveBeenCalledTimes(2)
   expect(request.mock.calls.every(([, init]) => !init?.method)).toBe(true)
 })
@@ -191,4 +191,14 @@ it('supports portfolio-level and local derivative priorities without inventing W
   fireEvent.click(screen.getByText('其余研判 · 1 项'))
   expect(screen.getByRole('heading', { name: '相关性联动变化' })).toBeTruthy()
   expect(screen.getAllByRole('link').every((link) => !link.getAttribute('href')?.includes('/instruments/'))).toBe(true)
+})
+
+
+it('keeps legacy conclusions readable while their current inputs remain unverified', async () => {
+  const request = vi.fn().mockResolvedValue(payload('a', { latest_completed: { ...completed('a'), stale: null } }))
+  render(<RiskOfficerPanel request={request} scopeQuery="watchlist_id=a" />)
+  await load()
+  expect(screen.getByText('a 的既有研判结论。')).toBeTruthy()
+  expect(screen.getByText('尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '更新研判' }).hasAttribute('disabled')).toBe(false)
 })

@@ -16,6 +16,51 @@ from .test_price_risk import series
 pytestmark = pytest.mark.postgresql_integration
 
 
+def test_review_status_reads_projected_report_without_failed_run_evidence(postgres_watchlist_env, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
+    from watchlist_app.services import risk_officer
+    from watchlist_app.services.risk_review_state import current_scope, input_version
+    iid = postgres_watchlist_env['instrument_id']
+    with get_session_factory()() as session:
+        session.add(InstrumentDetail(instrument_id=iid, instrument_type='public_fund', detail_view_type='public_fund',
+            instrument_name='Retained review', metadata_json={}))
+        session.add(ResearchTopic(topic_id=f'risk-officer:instrument:{iid}', title='Risk', visibility='team', instrument_ids=[iid]))
+        session.commit()
+        version = input_version(session, current_scope(session, {'instrument_id': iid}))
+        session.add(ResearchEntry(entry_id='review-completed', topic_id=f'risk-officer:instrument:{iid}',
+            kind='analysis', title='Review', status='completed', created_at=datetime.now(UTC) - timedelta(days=1),
+            completed_at=datetime.now(UTC) - timedelta(days=1), context_json={
+                'risk_run': True, 'huge_original': 'unselected' * 100000,
+                'result': {'summary': '原研判', 'priorities': [], 'limitations': []},
+                'risk_input_version': version,
+                'risk_review_view': {'input_as_of': '2026-09-25', 'evidence_sources': {'original': {'title': '原来源'}}}}))
+        session.add(ResearchEntry(entry_id='review-failed', topic_id=f'risk-officer:instrument:{iid}',
+            kind='analysis', title='Failed', status='failed', body='保留失败状态',
+            context_json={'risk_run': True, 'huge_original': 'unselected\x00' * 100000}))
+        session.commit()
+    loaded_full = []
+    def deserialize(value):
+        result = json.loads(value)
+        if isinstance(result, dict) and 'huge_original' in result:
+            loaded_full.append(result)
+        return result
+    monkeypatch.setattr(risk_officer, 'read_snapshot', lambda *a, **k: pytest.fail('GET rebuilt model input'))
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={'options': '-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on'})
+    try:
+        with Session(engine) as session:
+            review = risk_officer.review_workspace(session, instrument_id=iid)
+            assert review['latest_completed']['summary'] == '原研判'
+            assert review['latest_completed']['stale'] is False
+            assert review['latest_completed']['evidence_sources'] == {'original': {'title': '原来源'}}
+            assert review['latest_run']['status'] == 'failed'
+            assert review['latest_run']['message'] == '保留失败状态'
+            assert not loaded_full
+    finally:
+        engine.dispose()
+
+
 def test_risk_summary_projects_evidence_and_preserves_nul_and_current_authority(postgres_watchlist_env):
     iid = postgres_watchlist_env['instrument_id']
     with get_session_factory()() as session:

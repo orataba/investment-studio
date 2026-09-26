@@ -382,7 +382,7 @@ The `yunguyungu.com` deployment uses the Nginx configuration at
 ```text
 INVESTMENT_STUDIO_HOME_ENVIRONMENT=production
 INVESTMENT_STUDIO_HOME_AUTH_MODE=account
-INVESTMENT_STUDIO_HOME_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:5432/investment_studio
+INVESTMENT_STUDIO_HOME_DATABASE_URL=postgresql+psycopg://investment_studio@127.0.0.1:55433/investment_studio
 INVESTMENT_STUDIO_HOME_AUTH_COOKIE_NAME=__Secure-yungu_session
 INVESTMENT_STUDIO_HOME_AUTH_COOKIE_SECURE=true
 INVESTMENT_STUDIO_HOME_AUTH_COOKIE_DOMAIN=yunguyungu.com
@@ -446,6 +446,15 @@ secret file, and keeps data in a named volume. Set
 `INVESTMENT_STUDIO_POSTGRES_PASSWORD_FILE` to an absolute root-owned `0600` file
 before starting that Compose project. This profile is separate from the
 insecure local-development Compose defaults.
+
+Keep `init: true` in PostgreSQL containers so Docker's init process, rather
+than the postmaster, reaps orphaned health-check or maintenance processes.
+An orphan terminated by a signal can otherwise trigger database-wide crash
+recovery. The health check invokes quiet `pg_isready` directly, without a shell.
+Apply container changes only after running jobs finish, with writers and their
+schedules stopped and a verified backup available; preserve the existing named
+volume and restore the exact prior schedule set after readiness. Routine SQL
+and backups use host clients through the loopback port and private `.pgpass`.
 
 The repository default for the DataHub Tushare provider is an external HTTP URL,
 so its API key crosses a plaintext transport unless the deployment overrides it

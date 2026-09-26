@@ -107,10 +107,25 @@ def test_directory_filters_before_valuation_and_no_admin_implicit_read(secured, 
     assert client.get(f'/api/portfolios/{a}/access', headers=headers('owner')).status_code == 404
 
 
-@pytest.mark.parametrize('suffix', ['/accounts', '/transactions', '/transactions.csv', '/transactions.xlsx', '/transaction-captures', '/research/workbench', '/risk-context', '/snapshots/daily'])
+@pytest.mark.parametrize('suffix', ['/accounts', '/transactions', '/transactions.csv', '/transactions.xlsx', '/transaction-captures', '/research/workbench', '/risk-context', '/risk-context/version', '/snapshots/daily'])
 def test_hidden_portfolio_all_real_surfaces_are_denied(secured, suffix):
     client, _, _, b = secured
     assert client.get(f'/api/portfolios/{b}{suffix}', headers=headers()).status_code == 404
+
+
+def test_risk_version_requires_current_viewer_access_before_reading_inputs(secured, monkeypatch):
+    client, people, a, b = secured
+    from portfolio_app.api.routes import portfolio_risk_context
+    calls = []
+    monkeypatch.setattr(portfolio_risk_context, 'read_portfolio_risk_version',
+        lambda pid: calls.append(pid) or {'available': False, 'version': None})
+    path = f'/api/portfolios/{a}/risk-context/version'
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=headers('bob')).status_code == 200
+    assert client.get(f'/api/portfolios/{b}/risk-context/version', headers=headers()).status_code == 404
+    assert client.delete(f'/api/portfolios/{a}/members/bob', headers=headers()).status_code == 200
+    assert client.get(path, headers=headers('bob')).status_code == 404
+    assert calls == [a]
 
 
 def test_workspace_requires_explicit_accessible_portfolio(secured):

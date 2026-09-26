@@ -5,6 +5,7 @@ services:
     image: postgres:17.10-bookworm@sha256:c5a38822eb132d1f7e2cb1082d202400b07afa67a58cfe99ba3f04af2f3474e8
     container_name: investment-studio-postgres
     restart: unless-stopped
+    init: true
     shm_size: 256mb
     environment:
       POSTGRES_DB: investment_studio
@@ -17,7 +18,7 @@ services:
     secrets:
       - postgres_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U investment_studio -d investment_studio"]
+      test: ["CMD", "pg_isready", "--quiet", "-U", "investment_studio", "-d", "investment_studio"]
       interval: 10s
       timeout: 5s
       retries: 12

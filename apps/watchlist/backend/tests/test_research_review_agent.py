@@ -43,8 +43,9 @@ def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complet
     assert item_schema
     with pytest.raises(ValueError):
         review_mcp.submit_review_receipts(receipts)
+    contract = review_mcp.read_review_context()["receipt_contract"]
+    assert contract["reviews"][0]["instrument_id"] == "asset"
     _complete_read(review_mcp.read_review_context, section="draft_reviews")
-    _complete_read(review_mcp.read_review_context, section="response_schema")
     review_mcp.read_review_context(section="sources")
     with pytest.raises(ValueError, match="substantive original"):
         review_mcp.submit_review_receipts(receipts)
@@ -58,6 +59,44 @@ def test_reviewer_rejects_directory_only_acceptance_and_accepts_selected_complet
     result = json.loads((tmp_path / "result.json").read_text())
     assert result["result"]["reviews"][0]["reflection"] == proposed["reflection"]
     assert "unrelated_table" not in (tmp_path / "reads.jsonl").read_text()
+    assert "response_schema" not in (tmp_path / "reads.jsonl").read_text()
+
+
+def test_narrow_correction_uses_one_schema_path_without_skipping_acquisition_or_validation(monkeypatch, tmp_path):
+    from copy import deepcopy
+    proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [],
+        "research": {"investment_view": {"direction": "Original outlook", "risk": "Retained uncertainty"},
+                     "source_ids": ["original"]}}
+    packet = {"draft_reviews": [proposed], "acquisition": {"coverage": "Specific gap. " * 6000},
+        "sources": [{"source_id": "original", "source_type": "public_source", "text": "The relevant original."}]}
+    _bound(monkeypatch, tmp_path, packet)
+    contract = review_mcp.read_review_context()["receipt_contract"]["reviews"][0]
+    view_path = contract["research_fields"]["investment_view"]["schema_path"]
+    selected = review_mcp.read_review_context(section="response_schema", path=view_path)
+    assert not selected["deferred"] and selected["next_offset"] is None
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    review_mcp.read_review_source("original")
+    receipts = {"reviews": [{"instrument_id": "asset", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"}, "decisions": [],
+        "themes": [], "reflection": None, "research": {"decision": "correct", "reason": "Qualify the outlook",
+            "patch": {"investment_view": {"decision": "correct", "reason": "Original supports a conditional view",
+                "patch": {"direction": "Conditional outlook"}, "omit_fields": []}}, "omit_fields": []}}]}
+    with pytest.raises(ValueError, match="complete acquisition"):
+        review_mcp.submit_review_receipts(receipts)
+    review_mcp.read_review_context(section="acquisition")
+    with pytest.raises(ValueError, match="complete acquisition"):
+        review_mcp.submit_review_receipts(receipts)
+    _complete_read(review_mcp.read_review_context, section="acquisition")
+    invalid = deepcopy(receipts)
+    invalid["reviews"][0]["research"]["patch"]["investment_view"]["patch"]["attractiveness"] = "Unproposed field"
+    with pytest.raises(ValueError, match="Invalid receipt"):
+        review_mcp.submit_review_receipts(invalid)
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+    result = json.loads((tmp_path / "result.json").read_text())["result"]["reviews"][0]
+    assert result["research"]["investment_view"] == {"direction": "Conditional outlook", "risk": "Retained uncertainty"}
+    schema_reads = [row for row in map(json.loads, (tmp_path / "reads.jsonl").read_text().splitlines())
+                    if row.get("section") == "response_schema"]
+    assert len(schema_reads) == 1 and schema_reads[0]["path"] == view_path
 
 
 def test_reviewer_cannot_replace_bound_draft_ids_or_accept_unread_deferred_draft(monkeypatch, tmp_path):

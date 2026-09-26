@@ -23,7 +23,7 @@ export type RiskOfficerReview = {
     priorities: Array<{ title: string; analysis: string; instrument_ids: string[]; holding_ids?: string[]; case_ids: string[]; source_ids?: string[]; next_watch: string }>
     evidence_sources?: Record<string, { title: string; detail_path?: string | null; start_date?: string | null; end_date?: string | null; currency?: string | null; frequency?: string | null }>
     limitations: string[]
-    stale: boolean
+    stale: boolean | null
   }
   latest_run: null | (StartedRun & { created_at: string; completed_at: string | null; message: string })
 }
@@ -168,7 +168,8 @@ function ScopedRiskOfficer({ canRun = true, request, scopeQuery, refreshToken, o
         <div className="risk-officer-conclusion-heading"><h3>最近完成的研判</h3>
           <time dateTime={completed.completed_at}>{completedTime(completed.completed_at)}</time>
         </div>
-        {completed.stale && <p className="risk-officer-warning">已有结论已过期，输入发生变化，请更新研判。</p>}
+        {completed.stale && <p className="risk-officer-warning">输入版本已有变化，请更新研判。</p>}
+        {completed.stale === null && <p className="risk-officer-warning">尚未核对已有结论的当前输入，请更新研判。原结论与依据仍保留。</p>}
         <p className="risk-officer-summary" translate="no">{completed.summary}</p>
         {completed.review_note && <p className="risk-officer-muted" translate="no">{completed.review_note}</p>}
         {completed.priorities.length > 0 && <>

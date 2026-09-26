@@ -79,9 +79,10 @@ def test_derivative_holding_references_and_sources_keep_contract_scope_and_snaps
 
 def test_route_reuses_financial_read_generation_contract():
     from portfolio_app.api.financial_read import FinancialReadRoute
-    from portfolio_app.api.routes.portfolio_risk_context import router
-    assert len(router.routes) == 1
-    assert isinstance(router.routes[0], FinancialReadRoute)
+    from portfolio_app.api.routes.portfolio_risk_context import financial_router, router
+    routes = {route.path: route for route in [*router.routes, *financial_router.routes] if hasattr(route, "path")}
+    assert isinstance(routes["/{portfolio_id}/risk-context"], FinancialReadRoute)
+    assert not isinstance(routes["/{portfolio_id}/risk-context/version"], FinancialReadRoute)
 
 
 def test_historical_risk_context_uses_requested_holding_date(monkeypatch):

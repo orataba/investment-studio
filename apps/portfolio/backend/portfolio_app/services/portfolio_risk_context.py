@@ -3,7 +3,7 @@ from datetime import date
 from math import isfinite, sqrt
 from urllib.parse import quote
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from portfolio_app.db.models import PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
@@ -12,6 +12,99 @@ from portfolio_app.services.risk_model import (
     _daily_mark_to_last_return_matrix, _return_series_with_periods,
     _row_key, estimate_covariance,
 )
+
+
+def _risk_live_overlay_identity(portfolio_id: str, underlying_ids: set[str]) -> tuple:
+    """Version live overlays that the published accounting generation excludes."""
+    from investment_studio_instrument_core.db_models import Instrument
+    from portfolio_app.db.models import ConcentrationPolicyRevisionModel, PortfolioInstrumentEventTaskModel
+
+    with get_session_factory()() as session:
+        quotes = {iid: (market, calculation) for iid, market, calculation in session.execute(select(
+            Instrument.instrument_id, Instrument.market_data_updated_at, Instrument.calculation_inputs_updated_at,
+        ).where(Instrument.instrument_id.in_(underlying_ids)))} if underlying_ids else {}
+        task = PortfolioInstrumentEventTaskModel
+        tasks = tuple(tuple(row) for row in session.execute(select(
+            task.instrument_event_task_id, task.row_version,
+        ).where(task.portfolio_id == portfolio_id).order_by(task.instrument_event_task_id)))
+        concentration_revision = session.scalar(select(func.max(ConcentrationPolicyRevisionModel.revision)).where(
+            ConcentrationPolicyRevisionModel.portfolio_id == portfolio_id)) or 0
+    return tuple((iid, *quotes.get(iid, (None, None))) for iid in sorted(underlying_ids)), tasks, concentration_revision
+
+
+def read_portfolio_risk_version(portfolio_id: str):
+    """Read current input identity and held references, without risk calculations."""
+    from portfolio_app.db.models import PortfolioDailyHoldingSnapshotModel, PortfolioRecordModel
+    from portfolio_app.services.workspace_precompute import _current_projection_inputs
+    from portfolio_app.services.workspace_read_models import serialize_source_key
+
+    with get_session_factory()() as session:
+        name = session.scalar(select(PortfolioRecordModel.portfolio_name).where(
+            PortfolioRecordModel.portfolio_id == portfolio_id))
+    result = {"available": False, "status": "unavailable", "portfolio_id": portfolio_id,
+        "name": name or portfolio_id, "as_of_date": None, "version": None,
+        "instrument_ids": [], "holdings": [], "limitations": []}
+    inputs = _current_projection_inputs(portfolio_id, validate_sources=True)
+    if inputs is None:
+        result["limitations"] = ["当前组合输入尚未形成可读的持仓版本，不能确认当前持仓及风险研判是否仍适用。"]
+        return result
+    _, as_of, keys = inputs
+    model = PortfolioDailyHoldingSnapshotModel
+    # Project only retained identities/terms. Full holding_json also contains
+    # return paths and charts, which a status read must not hydrate.
+    with get_session_factory()() as session:
+        result["name"] = session.scalar(select(PortfolioRecordModel.portfolio_name).where(
+            PortfolioRecordModel.portfolio_id == portfolio_id)) or portfolio_id
+        rows = session.execute(select(
+            model.position_reference_id, model.derivative_contract_id, model.instrument_id,
+            model.holding_kind, model.quantity,
+            model.holding_json["instrument_ref"]["instrument_name"].as_string().label("name"),
+            model.holding_json["instrument_ref"]["instrument_type"].as_string().label("instrument_type"),
+            model.holding_json["derivative_contract"]["contract_name"].as_string().label("contract_name"),
+            model.holding_json["derivative_contract"]["contract_type"].as_string().label("contract_type"),
+            model.holding_json["derivative_contract"]["terms"].label("terms"),
+        ).where(model.portfolio_id == portfolio_id, model.as_of_date == as_of)
+          .order_by(model.position_reference_id, model.holding_kind, model.account_id)).mappings().all()
+    grouped = {}
+    for row in rows:
+        key = (row["position_reference_id"], row["holding_kind"])
+        item = grouped.setdefault(key, {**row, "quantity": 0.0})
+        item["quantity"] += row["quantity"]
+    holdings, instrument_ids, underlying_ids = {}, set(), set()
+    for row in grouped.values():
+        hid = row["derivative_contract_id"] or row["position_reference_id"]
+        iid = row["instrument_id"]
+        terms = row["terms"] or {}
+        derivative = (row["contract_type"] in {"fcn", "option"}
+                      and row["holding_kind"] in {"derivative_contract", "option_obligation"})
+        underlyings = []
+        if derivative:
+            underlyings = (sorted({str(item["instrument_id"]) for item in terms.get("underlyings", [])
+                                   if item.get("instrument_id")}) if row["contract_type"] == "fcn"
+                           else [str(terms["underlying_instrument_id"])] if terms.get("underlying_instrument_id") else [])
+            underlying_ids.update(underlyings)
+        elif iid and row["quantity"] != 0 and row["holding_kind"] != "settled_cash" and row["instrument_type"] != "cash":
+            instrument_ids.add(iid)
+        # Match the full risk-context directory: position rows (including a
+        # retained zero row) and supported derivative rows. Its monitored shared
+        # securities exclude net-zero/cash; derivative underlyings use the
+        # existing derivative projection's semantics, including zero rows.
+        if row["holding_kind"] != "position" and not derivative:
+            continue
+        holdings[hid] = {"holding_id": hid, "instrument_id": iid,
+            "name": (row["contract_name"] if derivative else row["name"]) or hid,
+            "detail_path": f"/portfolios/{quote(portfolio_id, safe='')}/holdings/{quote(hid, safe='')}",
+            "underlying_instrument_ids": underlyings}
+    instrument_ids.update(underlying_ids)
+    overlays = _risk_live_overlay_identity(portfolio_id, underlying_ids)
+    if (_current_projection_inputs(portfolio_id, validate_sources=True) != inputs
+            or _risk_live_overlay_identity(portfolio_id, underlying_ids) != overlays):
+        result["limitations"] = ["组合输入在读取期间已更新，当前持仓版本尚待确认。"]
+        return result
+    result.update(available=True, status="available", as_of_date=as_of.isoformat(),
+        version=serialize_source_key(("risk_context", keys["holdings_analytics"], overlays)),
+        instrument_ids=sorted(instrument_ids), holdings=list(holdings.values()))
+    return result
 
 
 def _number(value):

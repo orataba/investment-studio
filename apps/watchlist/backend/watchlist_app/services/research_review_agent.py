@@ -54,10 +54,12 @@ def run_review_agent(packet, schema, instructions, record):
             "--patch", str(root / "apps/watchlist/backend/config/sector_harness.patch.yml"),
             "--patch", str(root / "apps/watchlist/backend/config/review_harness.patch.yml"),
             "--patch", str(outcome_patch),
-            "Start with read_review_context overview. Read the draft and its bound response_schema, acquisition limits, "
+            "Start with read_review_context overview for the compact receipt contract and bound object index. "
+            "Read the complete draft, acquisition limits, "
             "applicable previous judgments and relevant complete originals through paged tools. Check all proposed "
             "objects, numerical units and information clocks, plus contradictions across objects. Work iteratively "
-            "with tools; after automatic compaction reread exact original source_id/path when needed. Submit one "
+            "with tools; read a listed response_schema path only for a specific correction or validation error, "
+            "not every optional correction branch. After automatic compaction reread exact original source_id/path when needed. Submit one "
             "complete receipt object through submit_review_receipts, repair any validation errors, then briefly acknowledge acceptance."]
         try:
             # The outer research process owns the wall-clock deadline and kills

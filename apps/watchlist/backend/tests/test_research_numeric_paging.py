@@ -14,7 +14,7 @@ from watchlist_app import research_mcp as mcp
 from watchlist_app.api.routes import sector_research, workbench
 from watchlist_app.db.models import InstrumentChartReadModel
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
-from watchlist_app.services import research_access, research_metrics
+from watchlist_app.services import research_access, research_metrics, research_run_context
 from watchlist_app.services.research_workbench import compare_series
 
 
@@ -47,6 +47,22 @@ def run_context():
         context_json={"research_run": True, "cutoff": CUTOFF.isoformat(),
             "research_actor": {"kind": "user", "user_id": "pm-one"},
             "catalogue": [{"instrument_id": value} for value in ("ONE", "TWO")]})
+
+
+@pytest.fixture(autouse=True)
+def in_memory_run_projection(monkeypatch):
+    # These wire tests use an in-memory run. SQL projection and its access
+    # boundary are exercised separately against real PostgreSQL.
+    def load_fields(session, run_id, fields):
+        run = session.get(ResearchEntry, run_id)
+        if run is None or run.kind != "analysis":
+            raise HTTPException(404, "研究运行不存在")
+        research_access.require_entry_access(session, run)
+        return SimpleNamespace(**{key: getattr(run, key) for key in (
+            "entry_id", "topic_id", "team_id", "kind", "status")},
+            context_json={key: deepcopy(run.context_json[key])
+                          for key in set(fields) | {"research_actor"} if key in run.context_json})
+    monkeypatch.setattr(research_run_context, "load_run_fields", load_fields)
 
 
 def fixture_rows(counts):
