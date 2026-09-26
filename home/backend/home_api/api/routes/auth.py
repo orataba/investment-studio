@@ -481,8 +481,9 @@ def revoke_delegation(payload: RevokeRequest, request: Request, db: Db) -> Respo
         raise HTTPException(404, "任务凭证不存在。")
     subject, _, _ = resolve_token_by_record(db, target.parent_kind, target.parent_id)
     same_subject = kind in {"session", "local"} and subject["user_id"] == principal["user_id"]
+    own_service_grant = kind == "service" and target.parent_kind == "service" and target.parent_id == caller.id
     same_service = kind == "service" and principal["team_id"] == subject["team_id"] and "identity:delegate" in principal["scopes"]
-    if not (same_subject or same_service or (kind == "delegation" and caller.id == target.id)):
+    if not (same_subject or own_service_grant or same_service or (kind == "delegation" and caller.id == target.id)):
         raise HTTPException(403, "不能撤销其他人的任务凭证。")
     target.revoked_at = now()
     audit(db, "delegation_revoked", principal["user_id"], target.id)

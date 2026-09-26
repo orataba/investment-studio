@@ -166,6 +166,55 @@ def test_service_identity_cannot_gain_user_admin_or_extra_audience(identity):
     assert client.post("/api/auth/delegations", json={"audience": "portfolio", "resource_scope": {"kind": "portfolio", "id": "secret"}}, headers={"Authorization": f"Bearer {service_token}"}).status_code == 403
 
 
+def test_service_reclaims_only_its_own_direct_grants_without_team_delegate_scope(identity):
+    _, engine, _ = identity
+    credentials = {"issuer": "briefing-backend", "other": "other-backend", "same-name": "briefing-backend"}
+    with Session(engine) as db:
+        for token, name in credentials.items():
+            db.add(ServiceCredential(service_id=name, display_name=name, team_id="default",
+                token_hash=token_hash(token), audiences=["briefing"], scopes=["briefing:publish"],
+                expires_at=now() + timedelta(hours=2)))
+        db.add(ServiceCredential(service_id="delegator", display_name="Delegator", team_id="default",
+            token_hash=token_hash("delegator"), audiences=["identity"], scopes=["identity:delegate"],
+            expires_at=now() + timedelta(hours=2)))
+        db.commit()
+    client = TestClient(app, base_url="https://testserver")
+    for stage in ("initial", "write", "review"):
+        response = client.post("/api/auth/delegations", headers={"Authorization": "Bearer issuer"},
+            json={"audience": "briefing", "resource_scope": {"kind": "report", "id": stage}, "ttl_seconds": 600})
+        assert response.status_code == 201
+        grant = response.json()["token"]
+        with Session(engine) as db:
+            original_expiry = db.scalar(select(Delegation).where(Delegation.token_hash == token_hash(grant))).expires_at
+        assert introspect(client, grant, "briefing").status_code == 200
+        for caller in ("other", "same-name"):
+            assert client.post("/api/auth/delegations/revoke", headers={"Authorization": f"Bearer {caller}"},
+                json={"token": grant}).status_code == 403
+            assert introspect(client, grant, "briefing").status_code == 200
+        assert client.post("/api/auth/delegations/revoke", headers={"Authorization": "Bearer issuer"},
+            json={"token": grant}).status_code == 204
+        assert introspect(client, grant, "briefing").status_code == 401
+        with Session(engine) as db:
+            stored = db.scalar(select(Delegation).where(Delegation.token_hash == token_hash(grant)))
+            assert stored.revoked_at is not None and stored.expires_at == original_expiry
+
+    parent = client.post("/api/auth/delegations", headers={"Authorization": "Bearer issuer"},
+        json={"audience": "briefing", "resource_scope": {"kind": "report", "id": "parent"}}).json()["token"]
+    child_response = client.post("/api/auth/delegations", headers={"Authorization": f"Bearer {parent}",
+        "X-Studio-Service-Token": "delegator"}, json={"audience": "briefing", "resource_scope": {"kind": "report", "id": "child"}})
+    assert child_response.status_code == 201
+    child = child_response.json()["token"]
+    # An original service identity alone is not ownership of an indirect grant.
+    assert client.post("/api/auth/delegations/revoke", headers={"Authorization": "Bearer issuer"},
+        json={"token": child}).status_code == 403
+    assert introspect(client, child, "briefing").status_code == 200
+    # Existing team delegation administration still works.
+    assert client.post("/api/auth/delegations/revoke", headers={"Authorization": "Bearer delegator"},
+        json={"token": child}).status_code == 204
+    assert introspect(client, child, "briefing").status_code == 401
+    assert introspect(client, parent, "briefing").status_code == 200
+
+
 def test_profile_preserves_id_and_roles_are_resolved_live(identity):
     _, _, ids = identity
     owner = client_as()

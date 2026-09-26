@@ -54,4 +54,6 @@
 
 `POST /api/auth/introspect` 接收 Bearer 凭证与 `{audience}`，返回当前身份和范围，不返回 token。`POST /api/auth/delegations` 给浏览器会话或服务身份生成短期、绑定资源的运行凭证；任务不能自行再委托。后台跨服务使用独立 `X-Studio-Service-Token`（需 `identity` audience 与 `identity:delegate` scope）代原用户进行有范围的再委托。每次解析校验原始账号和会话、上级委托是否仍有效，业务应用继续按当前组合权限作最终判断。
 
+服务凭据可通过 `POST /api/auth/delegations/revoke` 回收它直接签发的任务凭证，按实际凭据 ID 匹配，不要求额外的团队级 `identity:delegate` 权限。同名服务的另一份凭据、其他服务仍不能据此撤销该任务；既有委托管理员权限、父凭据失效规则和任务到期时间保持不变。
+
 云端保持 `AUTH_MODE=account` 和生产环境，cookie 为服务端可撤销的随机会话，使用 Secure / HttpOnly / SameSite=strict。开发 HTTP 若需要显式账号会话，须使用 `environment=local`、`auth_cookie_secure=false` 及不带 `__Secure-` 前缀的 cookie 名，并在各应用使用相同 cookie 配置。本机免登录本身不设置 cookie；浏览器写请求仍检查 Origin。`frontend_url`、`cors_origins` 与 `app_urls` 中的完整 origin 应仅列可信工作台地址。
