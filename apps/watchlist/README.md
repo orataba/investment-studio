@@ -83,6 +83,8 @@ Chat Completions 可用不代表网关执行原生搜索。检索接口必须真
 
 独立核证先取得简明判定合同及本轮标的、事件、主题和研究条目的身份索引；接受原提案无需逐页遍历全部可选纠正格式。发现事实需要修正时，通过既有分页工具按索引读取对应 `response_schema` 路径。完整草稿、必需覆盖信息、相关旧判断和所引用原件的实质读取要求不变；提交仍执行完整 JSON schema、绑定身份、来源、财务口径及正式发布校验。格式正确不等于事实成立，读取目录或压缩摘要不能替代原文。
 
+独立核证的必读 `acquisition` 保留完整覆盖摘要、实际检索和信息时钟；全量渠道细项留在同一冻结包的 `market_coverage` 分区。当前主题保留全部当前字段，仅将 `versions / updates / research_progress` 完整历史数组移至 `theme_history[instrument_id][theme_id]`，通过 `history_read` 按具体历史主张、版本或时间线读取；当前主题与该历史可完整还原原主题。议程只将完全相同的 `focus_themes` 实体改为当前主题的精确读取引用，其他议程内容保留。上述分区均由 `read_review_context` 分页读取；索引不算已读历史或原文。草稿、完整来源、精确旧判断和发布校验不变，公开档案与研究生成工具不受此核证阅读投影影响。
+
 运行环境的可用性检查与启动脚本使用相同的 `INVESTMENT_STUDIO_PORTFOLIO_COPILOT_ENV_FILE`，并读取当前发布目录内已安装的 DSH 与 PATH 中的 Node。部署时先以服务用户执行 `infra/harness/install.sh`，按冻结的依赖锁安装；每次研究直接运行 `infra/harness/run.sh`，不临时解析或下载软件包。生产环境须显式配置 Watchlist 自身的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_API_BASE_URL`，以及 Portfolio、Regime 的 `INVESTMENT_STUDIO_WATCHLIST_RESEARCH_PORTFOLIO_API_URL`、`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_REGIME_API_URL`。`data/research` 的方法、专属研究框架与历史案例，以及 [共同研究原则](backend/config/research_core.md)均为运行所需源文件。两个 DSH 入口加载同一份核心原则，任务提示只区分自动检查和交互。
 
 投资研究使用一条统一进展时间线；主题内时间线引用其中与该主题有关的同一组记录，不另写一份进展。事件、研究问题、判断、预测、日程、复盘、经验及 PM 观点各保留自己的原始记录与版本。事件可以不属于主题，也可以同时影响多个主题；当前主题判断与逐次变化分开显示。

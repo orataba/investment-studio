@@ -122,6 +122,44 @@ def test_methodology_is_not_numerical_evidence():
     assert review_mcp._evidence_read(source, reads)
 
 
+def test_review_projection_keeps_acquisition_required_and_details_readable_from_same_packet(monkeypatch, tmp_path):
+    proposed = {"instrument_id": "asset", "summary": "", "events": [], "coverage": [], "research": None,
+        "reflection": {"status": "reviewed", "summary": "Original supports this check.",
+                       "reviewed_update_ids": [], "source_ids": ["original"]}}
+    original = {"source_id": "original", "source_type": "public_source", "text": "Complete original\x00final line."}
+    theme = {"theme_id": "theme-1", "theme_key": "demand", "notes": [{"author": "PM", "body": "Wait"}],
+        "versions": [{"version_id": "theme:1", "body": "Original judgment", "source_ids": ["original"]}],
+        "updates": [], "research_progress": [{"body": "Checked", "source_ids": ["original"]}]}
+    coverage = {"latest_received_at": "2026-09-25T00:00:00+00:00",
+                "sources": [{"channel": "unrelated", "status": "partial", "error": "Missing originals"}]}
+    packet = review._evidence_packet({"cutoff": "2026-09-26T00:00:00+00:00", "market_coverage": coverage,
+        "market_text_sources": [original], "research_dossiers": [{"instrument_id": "asset", "themes": [theme],
+            "review_agenda": {"focus_themes": [theme]}}]}, [proposed], "bound")
+    _bound(monkeypatch, tmp_path, packet)
+    overview = review_mcp.read_review_context()
+    assert {"market_coverage", "theme_history"} <= set(overview["sections"])
+    _complete_read(review_mcp.read_review_context, section="draft_reviews")
+    assert review_mcp.read_review_source("original")["data"] == original
+    receipts = {"reviews": [{"instrument_id": "asset", "summary": {"decision": "accept"},
+        "change_kind": {"decision": "accept"}, "coverage": {"decision": "accept"},
+        "decisions": [], "research": None, "themes": [], "reflection": {"decision": "accept"}}]}
+    review_mcp.read_review_context(section="acquisition", path=["market_coverage"])
+    with pytest.raises(ValueError, match="complete acquisition"):
+        review_mcp.submit_review_receipts(receipts)
+    _complete_read(review_mcp.read_review_context, section="acquisition")
+    # Unrelated historical/channel details are available, not automatically mandatory.
+    assert review_mcp.submit_review_receipts(receipts)["accepted"]
+    focus = packet["research_dossiers"][0]["review_agenda"]["focus_themes"][0]["current_read"]
+    current = review_mcp.read_review_context(section=focus["section"], path=focus["path"])["data"]
+    reads = [json.loads(line) for line in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    assert not any(row.get("section") in {"market_coverage", "theme_history"} for row in reads)
+    history_read = current["history_read"]
+    history = review_mcp.read_review_context(section=history_read["section"], path=history_read["path"])["data"]
+    assert {**{key: value for key, value in current.items() if key != "history_read"}, **history} == theme
+    assert review_mcp.read_review_context(section="market_coverage")["data"] == coverage
+    assert json.loads((tmp_path / "packet.json").read_text())["packet"]["sources"] == [original]
+
+
 def test_missing_review_receipt_names_required_fields_without_echoing_values(monkeypatch, tmp_path):
     _bound(monkeypatch, tmp_path, {'draft_reviews': [{'instrument_id': 'asset', 'summary': '', 'events': [], 'coverage': []}], 'sources': []})
     with pytest.raises(ValueError, match='missing fields:') as rejected:

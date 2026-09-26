@@ -612,7 +612,12 @@ def test_reflection_only_check_is_independently_corrected_against_actual_acquisi
     monkeypatch.setattr(review, "_call_reviewer", reviewer)
     output = review.review_output(json.dumps(document))["reviews"][0]
     assert len(packets) == 1 and packets[0]["prior_research_updates"] == [prior]
-    assert packets[0]["acquisition"]["market_coverage"] == coverage
+    from watchlist_app.services.research_read_projection import coverage_summary
+    summary = packets[0]["acquisition"]["market_coverage"]
+    assert {key: value for key, value in summary.items() if key != "detail_read"} == {
+        key: value for key, value in coverage_summary(coverage).items() if key != "detail_read"}
+    assert "read_review_context(section='market_coverage')" in summary["detail_read"]
+    assert packets[0]["market_coverage"] == coverage
     assert packets[0]["acquisition"]["market_queries"] == queries
     assert packets[0]["acquisition"]["web_operations"][0]["coverage"] == ["检索未执行"]
     assert packets[0]["tool_evidence"] == tool_evidence

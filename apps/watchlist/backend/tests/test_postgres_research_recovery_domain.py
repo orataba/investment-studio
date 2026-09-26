@@ -3,9 +3,11 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import studio_identity
 from fastapi import HTTPException
+from studio_identity import principal_context
 
-from watchlist_app.db.models import InstrumentDetail
+from watchlist_app.db.models import InstrumentAttributeValue, InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry, ResearchTopic
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.services import sector_research
@@ -35,12 +37,15 @@ def test_retry_preserves_retained_inputs_and_only_published_coverage_advances_cl
     iid, now = postgres_watchlist_env["instrument_id"], Clock.current
     topic_id = sector_research.INSTRUMENT_TOPIC_PREFIX + iid
     good_cutoff = (now - timedelta(days=1)).isoformat()
+    actor = studio_identity.service_principal("watchlist")
     original = {"sector_run": True, "instrument_ids": [iid], "cutoff": (now - timedelta(minutes=5)).isoformat(),
-        "research_actor": research_identity(), "last_successful_review_cutoff": good_cutoff,
+        "research_actor": actor.to_dict(), "last_successful_review_cutoff": good_cutoff,
         "submitted_draft": {"events": [], "memo": "original draft"}, "retained_source": "untouched\x00original",
         "runtime_error": {"type": "ProviderUnavailable", "retryable": True}, "execution": {"attempt": 1}}
-    with get_session_factory()() as session:
+    with principal_context(actor), get_session_factory()() as session:
         add_instrument_detail(session, iid)
+        session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
+            value_json="Invested", adopted_at=now))
         session.add(ResearchTopic(topic_id=topic_id, title="Recovery", visibility="team"))
         session.flush()
         session.add(ResearchEntry(entry_id="published", topic_id=topic_id, kind="analysis", title="Published", status="completed",
@@ -64,6 +69,28 @@ def test_retry_preserves_retained_inputs_and_only_published_coverage_advances_cl
         assert created and new.entry_id not in {"failed", "published", "annotation"}
         assert new.context_json["last_successful_review_cutoff"] == good_cutoff
         assert session.get(ResearchEntry, "published").context_json["retained_source"] == "original\x00text"
+
+
+def test_automatic_service_cannot_adopt_user_failure_in_postgres(postgres_watchlist_env):
+    iid, now = postgres_watchlist_env["instrument_id"], datetime.now(UTC)
+    topic_id = sector_research.INSTRUMENT_TOPIC_PREFIX + iid
+    original = {"sector_run": True, "instrument_ids": [iid], "research_actor": research_identity(),
+        "cutoff": (now - timedelta(days=1)).isoformat(), "submitted_draft": {"memo": "user draft"},
+        "retained_source": "user\x00original", "runtime_error": {"retryable": True}, "execution": {"attempt": 1}}
+    with get_session_factory()() as session:
+        add_instrument_detail(session, iid)
+        session.add(InstrumentAttributeValue(instrument_id=iid, attribute_key="coverage_status",
+            value_json="Invested", adopted_at=now))
+        session.add(ResearchTopic(topic_id=topic_id, title="User research", visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="user-failed", topic_id=topic_id, kind="analysis", title="User draft",
+            status="failed", completed_at=now - timedelta(minutes=2), context_json=deepcopy(original)))
+        session.commit()
+        with principal_context(studio_identity.service_principal("watchlist")):
+            assert sector_research.automatic_recovery_runs(session) == {}
+            same, created = sector_research.begin_run(session, [iid], scheduled=True, recovery_run_id="user-failed")
+            assert not created and same.entry_id == "user-failed" and same.status == "failed"
+            assert same.context_json == original
 
 
 def test_batch_run_projection_retains_no_change_report_and_checks_original_access(postgres_watchlist_env):

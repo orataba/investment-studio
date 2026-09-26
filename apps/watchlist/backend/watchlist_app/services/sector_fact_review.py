@@ -19,6 +19,7 @@ from watchlist_app.services.sector_estimates import retained_estimate_sources, u
 from watchlist_app.services.sector_web import SectorWebError
 from watchlist_app.services.research_notebook import ResearchNotebook, research_sources, validate_notebook, notebook_source_ids, _original_source
 from watchlist_app.services.research_themes import AnalystThemeUpdate
+from watchlist_app.services.research_read_projection import coverage_summary
 from watchlist_app.services.sector_review_protocol import review_receipt_schema, expand_review_receipts
 
 
@@ -64,6 +65,11 @@ Acquisition receipts describe what was actually searched or fetched. No newly ac
 search result, or failed coverage does not establish that no material news exists.
 Compare acquisition.market_coverage's latest bundle/received dates and tool_evidence's actual observation
 dates with cutoff; a stale corpus or market snapshot cannot establish full news coverage through cutoff.
+The complete acquisition summary remains required. Full market_coverage is a separate section of this
+same immutable packet, available when its detailed channel records are relevant; its index is not evidence.
+research_dossiers contains current themes, and agenda focus_themes.current_read points to those same entities.
+Read theme.history_read for a specific historical claim, version or timeline being checked, not as a required
+traversal of every retained theme history. Current notes, PM judgments, questions, pins, clocks and citations remain intact.
 acquisition.market_channel_gaps records the application's known shared-channel coverage interval for each
 reviewed instrument. Publication retains these limits even if you omit them from coverage. They do not make
 every receipt insufficient: a specific prior judgment can still be checked against applicable retained evidence.
@@ -403,7 +409,7 @@ def _instrument_overview(asset, *, sector_holdings=False):
     return overview
 
 
-def _review_dossier_outline(dossier):
+def _review_dossier_outline(dossier, dossier_index):
     from watchlist_app.services.research_notebook import dossier_outline
     # Old full notebooks are available through their referenced original records.
     def references(value):
@@ -413,7 +419,32 @@ def _review_dossier_outline(dossier):
             return value
         return {key: [_source_index(source) for source in item] if key == "sources" and isinstance(item, list)
                 else references(item) for key, item in value.items()}
-    return references({key: value for key, value in dossier_outline(dossier).items() if key != "notebook_history"})
+    outline = references({key: value for key, value in dossier_outline(dossier).items() if key != "notebook_history"})
+    themes = outline.get("themes", [])
+    positions = {theme["theme_id"]: index for index, theme in enumerate(themes) if theme.get("theme_id")}
+    agenda = outline.get("review_agenda")
+    if isinstance(agenda, dict) and "focus_themes" in agenda:
+        # Only identical duplicate entities become references. Keep any distinct
+        # agenda snapshot intact rather than silently replacing its judgment.
+        outline["review_agenda"] = {**agenda, "focus_themes": [
+            {**{key: theme[key] for key in ("theme_id", "theme_key") if key in theme},
+             "current_read": {"tool": "read_review_context", "section": "research_dossiers",
+                              "path": [dossier_index, "themes", positions[theme["theme_id"]]]}}
+            if theme.get("theme_id") in positions and theme == themes[positions[theme["theme_id"]]] else theme
+            for theme in agenda["focus_themes"]]}
+    history = {}
+    current_themes = []
+    for theme in themes:
+        historical = {key: theme[key] for key in ("versions", "updates", "research_progress") if key in theme}
+        if theme.get("theme_id") and historical:
+            history[theme["theme_id"]] = historical
+            theme = {**{key: value for key, value in theme.items() if key not in historical},
+                "history_read": {"tool": "read_review_context", "section": "theme_history",
+                                 "path": [dossier["instrument_id"], theme["theme_id"]]}}
+        current_themes.append(theme)
+    if "themes" in outline:
+        outline["themes"] = current_themes
+    return outline, history
 
 
 def _tool_receipts(context):
@@ -565,6 +596,17 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
                 sources[sid] = {**available[sid], "snapshot": snapshot, "snapshot_scope": "overview"}
             snapshot_indexes[field].append({**_source_index(sources[sid]), "instrument_id": iid,
                 **({"analyst_focus": asset["analyst_focus"]} if asset.get("analyst_focus") else {})})
+    dossiers, theme_history = [], {}
+    for dossier in context.get("research_dossiers", []):
+        if dossier["instrument_id"] in ids:
+            outline, history = _review_dossier_outline(dossier, len(dossiers))
+            dossiers.append(outline)
+            if history:
+                theme_history[dossier["instrument_id"]] = history
+    market_coverage = coverage_summary(context.get("market_coverage"))
+    if isinstance(market_coverage, dict):
+        market_coverage = {**market_coverage, "detail_read":
+            "read_review_context(section='market_coverage')；同一冻结核证包内的完整覆盖细项按需读取。索引/采集状态不表示已覆盖全部事实，缺口不能推定无新增。"}
     return {
         "run_id": run_id,
         "cutoff": context["cutoff"],
@@ -577,14 +619,16 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         "prior_events": [{**{key: value for key, value in row.items() if key not in {"history", "evidence", "sources"}},
                           **({"sources": [_source_index(source) for source in row["sources"]]} if "sources" in row else {})}
                          for row in context.get("prior_events", []) if row["instrument_id"] in ids],
-        "research_dossiers": [_review_dossier_outline(d) for d in context.get("research_dossiers", []) if d["instrument_id"] in ids],
+        "research_dossiers": dossiers,
+        "theme_history": theme_history,
+        "market_coverage": context.get("market_coverage"),
         "prior_research_updates": prior_updates,
         "prior_judgment_versions": prior_judgment_versions,
         "tool_evidence": _tool_receipts(context),
         "acquisition": {
             "initialization": context.get("initialization"),
             "market_queries": context.get("market_queries", []),
-            "market_coverage": context.get("market_coverage"),
+            "market_coverage": market_coverage,
             "market_channel_gaps": {iid: shared_market_coverage_gaps(context, instrument_id=iid) for iid in sorted(ids)},
             "web_operations": [{key: capture.get(key) for key in ("operation", "query", "coverage", "recorded_at")} |
                 {"source_ids": [source["source_id"] for source in capture.get("sources", [])]}
