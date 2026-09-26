@@ -349,12 +349,31 @@ def test_scheduled_definitions_only_collect_on_cloud_and_do_not_embed_secrets(tm
     assert b'registered-prices --market hk' in units['investment-studio-market-registered-prices-hk.service']
     assert b'*-*-* 08:15 Asia/Shanghai' in units['investment-studio-market-crypto.timer']
     assert b'run_market_pipeline.sh" crypto' in units['investment-studio-market-crypto.service']
+    for name, content in units.items():
+        if name.endswith('.service'):
+            if name in {'investment-studio-market-sync.service', 'investment-studio-market-publish.service'}:
+                # Hourly delivery and Briefing's explicit prerequisite must not
+                # consume the low-frequency collectors' retry budget.
+                assert b'StartLimit' not in content and b'Restart' not in content
+            else:
+                assert b'Restart=no\nRestartForceExitStatus=75\nRestartSec=1h' in content
+                assert b'StartLimitIntervalSec=6h\nStartLimitBurst=4' in content
     plists=module.definitions('launchd','replica',tmp_path/'project',tmp_path/'external',tmp_path/'python',tmp_path/'logs')
     assert list(plists)==['com.orataba.investment-studio.market-sync.plist']
     item=plistlib.loads(next(iter(plists.values())))
     assert item['ProgramArguments'][-1]=='sync' and item['RunAtLoad']
     assert item['EnvironmentVariables']['INVESTMENT_STUDIO_MARKET_ROLE']=='replica'
     assert item['StartInterval']==3600 and item['StartCalendarInterval']=={'Hour':8,'Minute':20}
+
+
+@pytest.mark.parametrize('action', ['daily', 'weekly'])
+def test_bulk_collection_lock_is_temporary_deferral_not_success(tmp_path, monkeypatch, action):
+    settings = MarketSettings('sqlite://', tmp_path)
+    monkeypatch.setattr(pipeline.MarketSettings, 'from_environment', lambda: settings)
+    monkeypatch.setattr(pipeline, '_run', lambda *args, **kwargs: pytest.fail('the other collector owns the lock'))
+    with delivery.file_lock(tmp_path / 'pipeline-collection.lock'):
+        assert pipeline.main([action]) == 75
+    assert not (tmp_path / 'pipeline-status.json').exists()
 
 
 @pytest.mark.parametrize('clock, cutoff', [('2026-09-08T08:15:00+08:00', date(2026,9,7)),

@@ -97,7 +97,7 @@ it('limits risk attention to actual holdings and writes follow-up to the shared 
     /></MemoryRouter>,
   )
   await screen.findByText(record.title)
-  expect(request).toHaveBeenCalledWith(`/risk?instrument_ids=${id}`, undefined)
+  expect(request).toHaveBeenCalledWith(`/risk?instrument_ids=${id}&summary=true`, undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('portfolio_id=3')
   fireEvent.click(screen.getByText('跟进与证据'))
   fireEvent.change(screen.getByRole('textbox', { name: '处理记录' }), {
@@ -143,7 +143,7 @@ it('renders the same research risk and sources for a held instrument and removes
     },
     history_json: [],
   }
-  request.mockImplementation(async (path: string) => path === '/risk?instrument_ids='
+  request.mockImplementation(async (path: string) => path === '/risk?instrument_ids=&summary=true'
     ? { instruments: [], cases: [] }
     : {
       instruments: [{ instrument_id: 'baba', name: '阿里巴巴' }],
@@ -170,7 +170,7 @@ it('renders the same research risk and sources for a held instrument and removes
   expect(screen.getByRole('link', { name: record.title })).toHaveAttribute('href', expect.stringContaining('tab=events'))
   fireEvent.click(screen.getByRole('button', { name: '问助手' }))
   expect(ask).toHaveBeenCalledWith('baba', expect.any(String), { instrument_id: 'baba', event_case_id: record.case_id, event_version_id: 'watchlist-baba-policy:2' })
-  expect(request).toHaveBeenCalledWith('/risk?instrument_ids=baba', undefined)
+  expect(request).toHaveBeenCalledWith('/risk?instrument_ids=baba&summary=true', undefined)
   for (const title of ['未列入风险的机会', '已经解除的风险', '已经处理的事项']) {
     expect(screen.queryByText(title)).not.toBeInTheDocument()
   }
@@ -182,7 +182,7 @@ it('renders the same research risk and sources for a held instrument and removes
   await waitFor(() => expect(request).toHaveBeenCalledWith(`/risk/cases/${record.case_id}`, expect.objectContaining({ method: 'PUT', body: expect.stringContaining('组合已核对该公告') })))
 
   rerender(view(0))
-  await waitFor(() => expect(request).toHaveBeenCalledWith('/risk?instrument_ids=', undefined))
+  await waitFor(() => expect(request).toHaveBeenCalledWith('/risk?instrument_ids=&summary=true', undefined))
   await waitFor(() => expect(screen.queryByText(record.body)).not.toBeInTheDocument())
 })
 

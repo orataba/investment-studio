@@ -20,15 +20,18 @@ def definitions(scheduler, role, project_root, env_root, python_bin, log_root, l
                 'registered-prices-us':'Tue..Sat *-*-* 07:00 Asia/Shanghai','registered-prices-eu':'Tue..Sat *-*-* 07:05 Asia/Shanghai'}
             command=action
             if action.startswith('registered-prices-'):command='registered-prices --market '+action.rsplit('-',1)[1]
+            retry_lock = action in {'daily', 'weekly', 'crypto'} or action.startswith('registered-prices-')
             def quote(value):return '"'+str(value).replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
             result[name+'.service']='\n'.join([
                 '[Unit]',f'Description=Investment Studio market {action}',
                 'After=network-online.target','Wants=network-online.target','',
+                *(['StartLimitIntervalSec=6h','StartLimitBurst=4',''] if retry_lock else []),
                 '[Service]','Type=oneshot',
                 'Environment='+quote('ENV_ROOT='+str(env_root)),
                 'Environment='+quote('PYTHON_BIN='+str(python_bin)),
                 'Environment='+quote('INVESTMENT_STUDIO_MARKET_ROLE='+role),
                 'ExecStart=/bin/bash '+quote(runner)+' '+command,
+                *(['Restart=no','RestartForceExitStatus=75','RestartSec=1h'] if retry_lock else []),
                 'TimeoutStartSec=12h','StandardOutput=journal','StandardError=journal','']).encode()
             result[name+'.timer']='\n'.join([
                 '[Unit]',f'Description=Investment Studio market {action} schedule','',

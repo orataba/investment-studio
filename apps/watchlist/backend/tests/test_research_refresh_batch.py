@@ -26,6 +26,7 @@ def test_completed_process_without_accepted_instrument_review_is_not_batch_succe
     batch = batch_module()
     state = {"status": "completed", "completed_at": "2026-09-24T00:00:00+00:00", "reviews": {}, "error": None}
     assert not batch.result_record("selected", "run", state)["published"]
+    assert batch.result_record("selected", "run", state)["evidence_coverage"]["status"] == "needs_audit"
     state["reviews"] = {"other": {"status": "completed"}}
     assert not batch.result_record("selected", "run", state)["published"]
     state["reviews"]["selected"] = {"status": "limited", "research": {"modules": [{"key": "rates-credit", "coverage": "insufficient"}]}}
@@ -140,3 +141,20 @@ def test_resume_rejects_different_target_before_reading_runs(client, monkeypatch
     with pytest.raises(SystemExit) as error:
         batch.main()
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("override,expected", [(None, 1), ("3", 3)])
+def test_batch_concurrency_uses_setting_or_explicit_operator_override(client, monkeypatch, tmp_path, override, expected):
+    batch = batch_module()
+    configure_resume(batch, monkeypatch, tmp_path, selected=[], states={})
+    monkeypatch.setattr(batch.get_settings(), "research_worker_concurrency", 1)
+    if override:
+        monkeypatch.setattr(sys, "argv", [*sys.argv, "--workers", override])
+    original = batch.ThreadPoolExecutor
+    observed = []
+    def executor(*args, **kwargs):
+        observed.append(kwargs["max_workers"])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(batch, "ThreadPoolExecutor", executor)
+    assert batch.main() == 0
+    assert observed == [expected]

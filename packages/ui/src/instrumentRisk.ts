@@ -52,7 +52,9 @@ export type RiskCase = {
   updated_at: string
   follow_up_date: string | null
   evidence_json: Record<string, unknown>
-  history_json: Array<{ at: string; action: string; detail: string }>
+  history_json?: Array<{ at: string; action: string; detail: string }>
+  history_count?: number
+  detail_available?: boolean
 }
 export type RiskWorkspace = { instruments: RiskAsset[]; cases: RiskCase[] }
 

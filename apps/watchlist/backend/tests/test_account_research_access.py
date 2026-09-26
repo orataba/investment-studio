@@ -292,3 +292,21 @@ def test_team_reader_can_analyze_an_authorized_portfolio_but_cannot_refresh_shar
     grants["reader"].clear()
     assert client.get(f"/api/research/runs/{run_id}/context").status_code == 404
     assert client.post(path, json={"portfolio_id": "A"}).status_code == 404
+
+
+def test_risk_summary_and_detail_keep_team_read_and_delegation_boundaries(accounts):
+    client, principals, _ = accounts
+    from dataclasses import replace
+    as_user(client, 'alice')
+    created = client.post('/api/risk/cases', json={'instrument_id': 'fund-us-agg', 'title': '团队风险'}).json()
+    case_id = created['case_id']
+    as_user(client, 'reader')
+    assert client.get('/api/risk?instrument_id=fund-us-agg&summary=true').status_code == 200
+    assert client.get(f'/api/risk/cases/{case_id}').json() == created
+    assert client.put(f'/api/risk/cases/{case_id}', json={'status': 'handled'}).status_code == 403
+    principals['scoped'] = replace(principals['alice'], credential='scoped', resource_scope={'kind': 'run', 'id': 'limited'})
+    as_user(client, 'scoped')
+    assert client.get('/api/risk?summary=true').status_code == 403
+    assert client.get(f'/api/risk/cases/{case_id}').status_code == 403
+    as_user(client, 'revoked')
+    assert client.get(f'/api/risk/cases/{case_id}').status_code == 401

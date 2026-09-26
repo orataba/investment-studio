@@ -93,7 +93,7 @@ def _availability(row: Mapping, spec: Dataset, observed: datetime) -> tuple[date
 class NumericStore:
     def __init__(self, settings: MarketSettings, *, engine=None):
         self.settings = settings
-        self.engine = engine or create_engine(settings.database_url.replace("postgresql://","postgresql+psycopg://",1))
+        self.engine = engine or create_engine(settings.database_url.replace("postgresql://","postgresql+psycopg://",1), pool_pre_ping=True)
         if self.engine.dialect.name == "sqlite":
             self.engine = self.engine.execution_options(schema_translate_map={"market_data": None})
 

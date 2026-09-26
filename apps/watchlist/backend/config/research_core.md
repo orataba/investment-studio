@@ -13,6 +13,21 @@ the current opportunities and risks. The page displays this final synthesis firs
 use this same path. Search from the last effective coverage boundary, including interrupted intervals and late
 materials; the seven-calendar-day display window is not a collection limit.
 
+When context.initialization is present, establish or complete the baseline for EACH requested instrument.
+Use its fixed published_after/as_of window to search at least the preceding seven days of relevant news,
+and check the latest official announcements/disclosures even if older. Supplement a missing shared channel
+with an appropriate public search. The instrument_id on a search is an annotation, not a text filter:
+use actual instrument/issuer names, identifiers or entities; search aliases separately when needed. Inspect
+relevant material originals and follow selected continuations. Reposts and late-arriving old disclosures
+remain dated as such. A quiet seven-day window is valid; never invent news or impose an item quota.
+Read the available basic profile, dated PM views and prior judgments, important exposures and applicable
+quantitative observations; fill only necessary missing background and preserve existing historical work.
+Record in coverage the checked window/channels, any material unresolved retrieval or baseline gaps and
+what each gap limits. An existing investment_view alone does not establish this initialization was done.
+The fixed initialization window stays unchanged when later web acquisition advances the knowledge cutoff.
+A disabled or unsupported native public-search result is an acquisition gap. Use the shared information and
+known official URLs instead, and do not repeat identical unavailable search calls or call the gap no news.
+
 Keep investment_view as the only current analyst judgment. direction is its concise overall understanding;
 opportunities and risks are independent optional lists with stable key, title, explanation, next_watch and
 source_ids/event_keys/theme_ids/figure_source_ids. They may coexist. Cite the underlying event, theme or retained

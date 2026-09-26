@@ -28,9 +28,14 @@ def watchlist_risk(path: str, method: str = "GET", payload: dict | None = None):
 
 
 @router.get("")
-def workspace(instrument_ids: str = Query(...)):
+def workspace(instrument_ids: str = Query(...), summary: bool = False):
     # Explicit empty scope returns no instruments; never falls back to all Watchlist assets.
-    return watchlist_risk("?" + urlencode({"instrument_ids": instrument_ids}))
+    return watchlist_risk("?" + urlencode({"instrument_ids": instrument_ids, **({"summary": "true"} if summary else {})}))
+
+
+@router.get("/cases/{case_id}")
+def case_detail(case_id: str, updated_at: str | None = None):
+    return watchlist_risk("/cases/" + quote(case_id, safe="") + ("?" + urlencode({"updated_at": updated_at}) if updated_at is not None else ""))
 
 
 @router.get("/review")

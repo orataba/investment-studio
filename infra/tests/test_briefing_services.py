@@ -48,4 +48,8 @@ def test_only_publisher_installs_schedules_without_running_reports(tmp_path):
     assert "OnCalendar=*-*-* 08:30 Asia/Shanghai" in (unit_root / "investment-studio-briefing-daily.timer").read_text()
     assert "OnCalendar=Sat *-*-* 09:00 Asia/Shanghai" in (unit_root / "investment-studio-briefing-weekly.timer").read_text()
     assert "briefing_app.cli daily --scheduled" in (unit_root / "investment-studio-briefing-daily.service").read_text()
+    for period in ("daily", "weekly"):
+        service = (unit_root / f"investment-studio-briefing-{period}.service").read_text()
+        assert "Requires=investment-studio-market-sync.service" in service
+        assert "After=network-online.target investment-studio-briefing-api.service investment-studio-market-sync.service" in service
     assert all(".service" not in line for line in calls.read_text().splitlines())

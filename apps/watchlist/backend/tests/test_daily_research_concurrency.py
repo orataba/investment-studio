@@ -1,5 +1,6 @@
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
+import pytest
 
 from watchlist_app.db.models import InstrumentDetail
 from watchlist_app.db.models.workbench import ResearchEntry
@@ -20,7 +21,10 @@ def daily_scope(client, monkeypatch, *, members=6):
     return ids
 
 
-def test_four_workers_finish_scope_before_risk_then_process_remaining_selected_instruments(client, monkeypatch):
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_configured_workers_finish_scope_before_risk_then_process_remaining_selected_instruments(client, monkeypatch, concurrency):
+    from watchlist_app.core.settings import get_settings
+    monkeypatch.setattr(get_settings(), "research_worker_concurrency", concurrency)
     ids = daily_scope(client, monkeypatch)
     release, four_started, stop = Event(), Event(), Event()
     lock = Lock()
@@ -33,7 +37,7 @@ def test_four_workers_finish_scope_before_risk_then_process_remaining_selected_i
         with lock:
             started.append(iid)
             active.append(len(started) - len(finished))
-            if len(started) == 4:
+            if len(started) == concurrency:
                 four_started.set()
         assert release.wait(5)
         with get_session_factory()() as session:
@@ -55,17 +59,20 @@ def test_four_workers_finish_scope_before_risk_then_process_remaining_selected_i
     worker.start()
     try:
         assert four_started.wait(5)
-        assert len(started) == 4
+        assert len(started) == concurrency
     finally:
         release.set()
         worker.join(10)
     assert not worker.is_alive()
-    assert max(active) == 4 and sorted(started) == ids
+    assert max(active) == concurrency and sorted(started) == ids
     assert actions.index("risk") >= 6
     assert all(actions.index(iid) > actions.index("risk") for iid in ids[6:])
 
 
-def test_stop_finishes_active_work_without_starting_waiting_members_risk_or_backlog(client, monkeypatch):
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_stop_finishes_active_work_without_starting_waiting_members_risk_or_backlog(client, monkeypatch, concurrency):
+    from watchlist_app.core.settings import get_settings
+    monkeypatch.setattr(get_settings(), "research_worker_concurrency", concurrency)
     ids = daily_scope(client, monkeypatch)
     release, four_started, stop = Event(), Event(), Event()
     lock = Lock()
@@ -76,7 +83,7 @@ def test_stop_finishes_active_work_without_starting_waiting_members_risk_or_back
             iid = session.get(ResearchEntry, run_id).context_json["instrument_ids"][0]
         with lock:
             started.append(iid)
-            if len(started) == 4:
+            if len(started) == concurrency:
                 four_started.set()
         assert release.wait(5)
         with get_session_factory()() as session:
@@ -94,11 +101,11 @@ def test_stop_finishes_active_work_without_starting_waiting_members_risk_or_back
         release.set()
         worker.join(10)
     assert not worker.is_alive()
-    assert sorted(started) == ids[:4] and risk_calls == []
+    assert sorted(started) == ids[:concurrency] and risk_calls == []
     with get_session_factory()() as session:
         from sqlalchemy import select
         attempts = list(session.scalars(select(ResearchEntry).where(ResearchEntry.topic_id.startswith("instrument-events:daily-"))))
-        assert len(attempts) == 4 and all(run.status == "completed" for run in attempts)
+        assert len(attempts) == concurrency and all(run.status == "completed" for run in attempts)
 
 
 def test_already_running_member_defers_scope_risk_until_a_later_daily_pass(client, monkeypatch):

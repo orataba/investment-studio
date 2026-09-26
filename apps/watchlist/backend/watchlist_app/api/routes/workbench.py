@@ -149,7 +149,7 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
     from urllib.parse import parse_qs, urlsplit
     from watchlist_app.services.research_run_context import load_run_fields
     from watchlist_app.services import research_tool_projection as projection
-    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids"}
+    common = {"sector_run", "research_run", "risk_run", "run_id", "cutoff", "input_snapshot_cutoff", "instrument_ids", "initialization"}
     fields = common | ({"question", "page_context", "referenced_research_update", "referenced_research_versions",
         "referenced_risk_case", "history", "conversation", "evidence", "watchlists", "limitations", "data_gaps",
         "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "market_coverage",
@@ -159,6 +159,13 @@ def read_run_page(run_id: str, request: ResearchReadInput, session: Session = De
         {"catalogue", "instrument_inputs", "research_dossiers", "sector_inputs", "sector_estimate_evidence", "prior_events",
          "market_coverage", "data_gaps"} if request.resource == "instrument" else
         {"research_dossiers", "catalogue"} if request.resource == "dossier" else {"sector_estimate_evidence", "instrument_inputs", "catalogue"})
+    if request.resource == "context" and request.section != "overview":
+        # The section reader validates the name and returns the complete chosen
+        # value. Other retained conversations, figures and risk snapshots cannot
+        # contribute to this page and need not be decoded on every page request.
+        fields = common | ({request.section} if request.section in fields else set())
+    elif request.resource == "instrument" and request.section != "overview":
+        fields.discard("research_dossiers")
     record = load_run_fields(session, run_id, fields)
     context = record.context_json
 
@@ -488,7 +495,8 @@ def run_context(run_id: str, originals: bool = False, session: Session = Depends
 @router.get("/research/runs/{run_id}/computed-source")
 def run_computed_source(run_id: str, source_id: str, session: Session = Depends(get_db_session)):
     """Read one already retained calculation; never calculate or refresh its inputs."""
-    record = require(session, ResearchEntry, run_id)
+    from watchlist_app.services.research_run_context import load_run_fields
+    record = load_run_fields(session, run_id, {"risk_run", "computed_metrics", "tool_evidence"})
     if record.kind != "analysis" or record.context_json.get("risk_run"):
         raise HTTPException(404, "本轮没有可读取的普通研究计算来源")
     source = next((item for item in record.context_json.get("computed_metrics", [])
@@ -509,7 +517,8 @@ def run_computed_source(run_id: str, source_id: str, session: Session = Depends(
 def run_dossier(run_id: str, instrument_id: str, source_id: str | None = None, version_id: str | None = None, update_id: str | None = None,
                 session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_notebook import dossier_outline, dossier_source
-    record = require(session, ResearchEntry, run_id)
+    from watchlist_app.services.research_run_context import load_run_fields
+    record = load_run_fields(session, run_id, {"sector_run", "research_run", "cutoff", "research_dossiers"})
     if not (record.context_json.get("sector_run") or record.context_json.get("research_run")):
         raise HTTPException(404, "本轮研究没有该标的的档案快照")
     dossier = next((d for d in record.context_json.get("research_dossiers", []) if d["instrument_id"] == instrument_id), None)
@@ -672,8 +681,8 @@ class RiskFollowUp(BaseModel):
 
 
 @router.get("/risk")
-def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None = None, watchlist_id: str | None = None, session: Session = Depends(get_db_session)):
-    instruments = catalogue(session)
+def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None = None, watchlist_id: str | None = None, summary: bool = False, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.risk_workspace_projection import RISK_FIELDS, case_detail, case_summary_rows, return_series, risk_assets
     cases_query = select(RiskCase).order_by(RiskCase.trigger_active.desc(), RiskCase.updated_at.desc())
     ids = None
     if watchlist_id:
@@ -686,46 +695,48 @@ def risk_workspace(instrument_id: str | None = None, instrument_ids: str | None 
         ids = {instrument_id} if ids is None else ids & {instrument_id}
     if ids is not None:
         cases_query = cases_query.where(RiskCase.instrument_id.in_(ids))
-        instruments = [x for x in instruments if x["instrument_id"] in ids]
+    instruments = catalogue(session, instrument_ids=ids)
     member_ids = [item["instrument_id"] for item in instruments]
-    risks = {row.instrument_id: row for row in session.scalars(select(InstrumentRiskReadModel).where(
-        InstrumentRiskReadModel.instrument_id.in_(member_ids)))} if member_ids else {}
+    risks = (risk_assets(session, member_ids) if summary else {row.instrument_id: row for row in session.scalars(select(InstrumentRiskReadModel).where(
+        InstrumentRiskReadModel.instrument_id.in_(member_ids)))}) if member_ids else {}
     rules = {row.instrument_id: row for row in session.scalars(select(RiskReviewRule).where(
         RiskReviewRule.instrument_id.in_(member_ids)))} if member_ids else {}
-    charts = {row.instrument_id: row for row in session.scalars(select(InstrumentChartReadModel).where(
-        InstrumentChartReadModel.instrument_id.in_(member_ids)))} if member_ids else {}
+    series_by_id = return_series(session, member_ids) if member_ids else {}
     for item in instruments:
         iid = item["instrument_id"]
         risk = risks.get(iid)
         rule = rules.get(iid)
-        item["risk"] = risk.payload_json if risk else None
+        payload = ({key: getattr(risk, key) for key in RISK_FIELDS} if summary else risk.payload_json) if risk else None
+        item["risk"] = payload
         item["freshness"] = risk.data_freshness_status if risk else "missing"
         item["drawdown_limit"] = rule.drawdown_limit if rule else None
         item["drawdown_change_pp"] = None
         item["previous_observation_date"] = None
-        chart = charts.get(iid)
-        series = (chart.payload_json.get("research_returns") or {}) if chart else {}
+        series = series_by_id.get(iid, {})
         points = series.get("points") or []
         item["period_limits"] = rule.period_limits_json if rule else {}
         item["price_risk_calibration"] = rule.calibration_json if rule else {}
         item["period_readings"] = period_loss_readings(series, item["period_limits"])
         item["price_risk_note"] = series_limitation(series) or ("不足 63 个日收益，尚未生成波动初值" if len(points) < 64 else None)
         item["return_kind"] = (series.get("metadata") or {}).get("return_kind")
-        current = (risk.payload_json.get("current_drawdown") if risk else None)
-        if current is not None and len(points) >= 3 and risk.payload_json.get("data_quality", {}).get("status") == "ready":
+        current = (payload.get("current_drawdown") if payload else None)
+        if current is not None and len(points) >= 3 and (payload.get("data_quality") or {}).get("status") == "ready":
             from watchlist_app.services.canonical_recalc import _current_drawdown
             previous = _current_drawdown([{**p, "as_of_date": date.fromisoformat(p["date"])} for p in points[:-1]])
             if previous is not None:
                 item["drawdown_change_pp"] = float(current) - previous
                 item["previous_observation_date"] = points[-2]["date"]
-    cases = []
-    from watchlist_app.services.sector_research import event_record
-    for case in session.scalars(cases_query):
-        value = dump(case)
-        if case.signal.startswith("sector:"):
-            value["evidence_json"] = {**value["evidence_json"], "event_version_id": event_record(case)["event_version_id"]}
-        cases.append(value)
+    cases = case_summary_rows(session, ids) if summary else [case_detail(case) for case in session.scalars(cases_query)]
     return {"instruments": instruments, "cases": cases}
+
+
+@router.get("/risk/cases/{case_id}")
+def risk_case_detail(case_id: str, updated_at: str | None = None, session: Session = Depends(get_db_session)):
+    from watchlist_app.services.risk_workspace_projection import case_detail
+    value = case_detail(require(session, RiskCase, case_id))
+    if updated_at is not None and value["updated_at"] != updated_at:
+        raise HTTPException(409, "风险事项已更新，请刷新列表后重新查看证据。")
+    return value
 
 
 @router.put("/risk/rules/{instrument_id}")

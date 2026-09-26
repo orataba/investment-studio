@@ -38,7 +38,7 @@ args = parser.parse_args(sys.argv[2:])
 result = run(MarketSettings.from_environment(), args.action, market=args.market)
 print(json.dumps(serializable(result), ensure_ascii=False, indent=2), flush=True)
 if result['status'] == 'already_running':
-    raise SystemExit(0)
+    raise SystemExit(75 if args.action == 'daily' else 0)
 exit_code = 1 if result['status'] == 'failed' else 0
 stages = {item['stage']: item for item in result['stages']}
 if args.action == 'sync' and stages.get('numeric_catchup', {}).get('status') == 'ready':

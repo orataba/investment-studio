@@ -243,11 +243,10 @@ def enforce_request(request, session):
         if not match or principal.resource_scope != {"kind": "run", "id": match[1]}:
             raise HTTPException(403, "运行凭证仅用于对应研究任务")
     if match:
-        source_directory = (request.method == "GET" and path.endswith("/context")
-                            and request.query_params.get("section") == "sources")
-        projected_read = path.endswith("/read")
-        entry = (_entry_access_projection(session, match[1]) if source_directory or projected_read
-                 else session.get(ResearchEntry, match[1]))
+        # Authorization needs identity and the topic's retained portfolio scope,
+        # never the accumulated source bodies or numerical research tables.
+        # A writing handler obtains its own locked current record afterwards.
+        entry = _entry_access_projection(session, match[1])
         require_entry_access(session, entry, tool_write=request.method not in {"GET", "HEAD"})
         return
     if principal.local_unrestricted:

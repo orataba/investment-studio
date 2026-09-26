@@ -22,7 +22,7 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
     if not context.get("risk_run"):
         sections = {key: context[key] for key in (
             "question", "page_context", "referenced_research_update", "referenced_research_versions", "referenced_risk_case", "history", "conversation", "evidence",
-            "watchlists", "limitations", "data_gaps", "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions") if key in context}
+            "watchlists", "limitations", "data_gaps", "incremental_trigger", "analyst_focus", "user_records", "team_publication_instructions", "initialization") if key in context}
         sections.update({"market_coverage": coverage_detail(context.get("market_coverage")),
             "catalogue": [{key: item[key] for key in ("instrument_id", "name", "instrument_type", "currency", "watchlist_ids") if key in item}
                           for item in context.get("catalogue", [])],
@@ -43,7 +43,7 @@ def read_research_context(request, section: str = "overview", offset: int = 0, l
         if offset or path:
             raise ValueError("overview不使用offset/path，请读取目录内的section。")
         return checked_overview({**{key: context[key] for key in (
-            "sector_run", "research_run", "run_id", "topic_id", "question", "cutoff", "input_snapshot_cutoff", "as_of_date",
+            "sector_run", "research_run", "run_id", "topic_id", "question", "cutoff", "input_snapshot_cutoff", "as_of_date", "initialization",
             "requested_at", "instrument_ids", "selected_instrument_ids", "watchlist_id", "portfolio_id", "team_id", "visibility") if key in context},
             "market_coverage": coverage_summary(context.get("market_coverage")),
             "sections": {key: shape(value) for key, value in sections.items()},

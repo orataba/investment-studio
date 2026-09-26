@@ -66,7 +66,32 @@ function CaseRow({
   const [followUp, setFollowUp] = useState(record.follow_up_date || '')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const evidence = record.evidence_json
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detail, setDetail] = useState<RiskCase | null>(null)
+  const [detailError, setDetailError] = useState('')
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailRetry, setDetailRetry] = useState(0)
+  useEffect(() => {
+    setDetail(null)
+    setDetailError('')
+    setDetailLoading(false)
+    if (!detailsOpen || !record.detail_available) return
+    let cancelled = false
+    setDetailLoading(true)
+    const query = new URLSearchParams({ updated_at: record.updated_at })
+    request<RiskCase>(`/risk/cases/${encodeURIComponent(record.case_id)}?${query}`)
+      .then((value) => { if (!cancelled) setDetail(value) })
+      .catch((failure) => { if (!cancelled) setDetailError(failure instanceof Error ? failure.message : '证据读取失败') })
+      .finally(() => { if (!cancelled) setDetailLoading(false) })
+    return () => { cancelled = true }
+  }, [detailsOpen, record.case_id, record.updated_at, record.detail_available, request, detailRetry])
+  const evidence = (detail || record).evidence_json
+  const history = (detail || record).history_json || []
+  const detailStatus = <>
+    {detailLoading && <p>正在读取证据与跟进历史…</p>}
+    {detailError && <div role="alert">{detailError} <button type="button" onClick={() => setDetailRetry((value) => value + 1)}>重试读取</button>
+      <button type="button" onClick={() => void refresh().catch((failure) => setDetailError(failure instanceof Error ? failure.message : '刷新失败'))}>刷新列表</button></div>}
+  </>
   const sectorEvent = record.signal.startsWith('sector:')
   const reference: ResearchAssistantReference = {
     instrument_id: record.instrument_id,
@@ -113,7 +138,8 @@ function CaseRow({
     <div className="risk-case-meta"><strong>核证撤回</strong>{typeof evidence.withdrawn_at === 'string' && <span>撤回时间 {evidence.withdrawn_at}</span>}</div>
     <h3><a href={instrumentHref(record.instrument_id, record.signal)} translate="no">{record.title}</a></h3>
     <p>{String(evidence.withdrawal_reason || '原有判断未通过核证，已撤回。')}</p>
-    <details className="risk-follow-up"><summary>撤回前记录与来源</summary>
+    <details className="risk-follow-up" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}><summary>撤回前记录与来源</summary>
+      {detailStatus}
       <p className="research-muted">以下为已撤回的旧稿，不再作为当前风险判断。</p>
       <p translate="no">{record.body}</p>
       <ul className="risk-event-sources">{sources.map((source, index) => {
@@ -123,7 +149,7 @@ function CaseRow({
           <small>{source.published_at ? `发布时间 ${source.published_at}` : '发布时间待核实'}</small>
         </li>
       })}</ul>
-      <ul className="risk-history">{record.history_json.map((item, index) => <li key={index}>{item.at.slice(0, 16).replace('T', ' ')} · {item.detail}</li>)}</ul>
+      <ul className="risk-history">{history.map((item, index) => <li key={index}>{item.at.slice(0, 16).replace('T', ' ')} · {item.detail}</li>)}</ul>
     </details>
   </article>
   return (
@@ -189,8 +215,9 @@ function CaseRow({
           <a href={assistantHref(record.instrument_id, question, reference)}>问助手</a>
         ) : null}
       </div>
-      <details className="risk-follow-up">
+      <details className="risk-follow-up" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
         <summary>跟进与证据</summary>
+        {detailStatus}
         {sectorEvent && confidence && <p className="risk-source">证据状态：{confidence}</p>}
         {sources.length > 0 && <ul className="risk-event-sources">
           {sources.map((source, index) => {
@@ -210,7 +237,7 @@ function CaseRow({
             研究记录日期 {String(evidence.recorded_on)}
           </p>
         ) : null}
-        {record.signal === 'drawdown_limit' && (
+        {record.signal === 'drawdown_limit' && (!record.detail_available || detail) && (
           <p className="research-muted">
             触发读数 {percent(Number(evidence.current_drawdown))} · 回撤复核线{' '}
             {percent(Number(evidence.review_line))}
@@ -270,7 +297,7 @@ function CaseRow({
         </>}
         {error && <p role="alert">{error}</p>}
         <ul className="risk-history">
-          {record.history_json.map((item, i) => (
+          {history.map((item, i) => (
             <li key={i}>
               {item.at.slice(0, 16).replace('T', ' ')} · {item.detail}
             </li>
@@ -579,6 +606,7 @@ export default function InstrumentRiskPanel({
   const [busy, setBusy] = useState(false)
   const params = new URLSearchParams(query)
   if (instrumentId) params.set('instrument_id', instrumentId)
+  params.set('summary', 'true')
   const path = `/risk?${params}`
   const officerScope = portfolioId
     ? new URLSearchParams({ portfolio_id: portfolioId }).toString()

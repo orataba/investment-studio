@@ -74,3 +74,40 @@ def test_only_affected_selected_fields_restore_original_context(postgres_watchli
         actual = {entry.entry_id: entry.context_json for entry in session.scalars(
             select(ResearchEntry).where(ResearchEntry.topic_id == "field-projection"))}
         assert actual == contexts
+
+
+def test_selected_run_reads_and_authorization_skip_large_unrelated_json(postgres_watchlist_env):
+    from types import SimpleNamespace
+    from studio_identity import Principal, principal_context
+    from watchlist_app.api.routes.workbench import read_run_page, ResearchReadInput, run_computed_source, run_dossier
+    from watchlist_app.services.research_access import enforce_request
+    context = {"research_run": True, "run_id": "projected-runtime", "cutoff": "2026-09-24T00:00:00Z",
+        "instrument_ids": ["xlk"], "question": r"完整问题含字面\u0000",
+        "research_actor": {"user_id": "pm-one", "kind": "user"},
+        "research_dossiers": [{"instrument_id": "xlk", "notebook": None}],
+        "computed_metrics": [{"source_id": "metric", "source_type": "computed_metric", "data": {"value": 3}}],
+        "unrelated_original": "DO_NOT_HYDRATE_FULL_RUN" * 100000 + "\x00"}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="runtime-projection", title="Projection", visibility="team"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="projected-runtime", topic_id="runtime-projection", kind="analysis",
+            title="Projection", status="running", context_json=context))
+        session.commit()
+    def deserialize(value):
+        if isinstance(value, bytes):
+            value = value.decode()
+        assert "DO_NOT_HYDRATE_FULL_RUN" not in value
+        return json.loads(value)
+    engine = create_engine(get_engine().url, json_deserializer=deserialize,
+        connect_args={"options": "-c search_path=watchlist,instrument_data,public -c default_transaction_read_only=on"})
+    principal = Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "projected-runtime"})
+    try:
+        with principal_context(principal), Session(engine) as session:
+            enforce_request(SimpleNamespace(method="POST", url=SimpleNamespace(
+                path="/api/research/runs/projected-runtime/numeric")), session)
+            page = read_run_page("projected-runtime", ResearchReadInput(resource="context", section="question"), session)
+            assert page["data"] == context["question"]
+            assert run_computed_source("projected-runtime", "metric", session) == context["computed_metrics"][0]
+            assert run_dossier("projected-runtime", "xlk", session=session)["instrument_id"] == "xlk"
+    finally:
+        engine.dispose()

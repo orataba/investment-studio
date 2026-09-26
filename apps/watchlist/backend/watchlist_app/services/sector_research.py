@@ -215,7 +215,7 @@ def sector_snapshot(iid, session, *, as_of=None):
     return view, evidence, companies
 
 
-def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False):
+def begin_run(session, ids, *, scheduled=False, question: str | None = None, commit=True, compiled=False, initialization=False):
     from watchlist_app.services.research_access import instrument_run_scope
     from watchlist_app.services.research_identity import research_identity
     if len(ids) != 1 or not scoped_ids(session, instrument_id=ids[0]):
@@ -303,6 +303,7 @@ def begin_run(session, ids, *, scheduled=False, question: str | None = None, com
         "instrument_ids": ids, "cutoff": cutoff.isoformat(), "scheduled": scheduled,
         "last_successful_review_cutoff": last_successful_cutoff,
         "research_actor": research_identity(),
+        **({"initialization": {"requested": True}} if initialization else {}),
         **({"question": question} if question is not None else {}),
         "incremental_trigger": incremental_trigger, "attempted_theme_baselines": attempted_baselines,
         "numeric_monitor_inputs": {iid: numeric_monitor_inputs(session, iid) for iid in ids},
@@ -418,6 +419,21 @@ def prepare_run(run_id):
             market_coverage=text_store().get_coverage())
         run.context_json = context
         bind_research_instruments(session, run, context.get("instrument_ids", []))
+        context = dict(run.context_json)
+        needs_baseline = context.get("sector_run") and any(
+            not (view := (dossier.get("notebook") or {}).get("investment_view"))
+            or not (view.get("direction") or "").strip()
+            or view.get("coverage_status") == "not_established"
+            for dossier in context.get("research_dossiers", [])
+            if dossier["instrument_id"] in context.get("instrument_ids", []))
+        if context.get("initialization") or needs_baseline:
+            # This is an acquisition window, not the rolling UI timeline. Later
+            # web fetches may advance cutoff but cannot relabel this baseline.
+            context["initialization"] = {"requested": True,
+                "published_after": (datetime.fromisoformat(cutoff) - timedelta(days=7)).isoformat(),
+                "as_of": cutoff,
+                "scope": "逐标的检索过去七天相关新闻及最新公告；核对必要基础资料、PM观点、已有研究和适用量化。允许更早的必要背景及晚收材料；缺失如实记录。"}
+        run.context_json = context
         session.commit()
 
 
@@ -1398,7 +1414,8 @@ def _run_daily_reviews(stop):
 
     remaining = list(groups)
     pending_ids = set()
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="daily-research") as pool:
+    from watchlist_app.core.settings import get_settings
+    with ThreadPoolExecutor(max_workers=get_settings().research_worker_concurrency, thread_name_prefix="daily-research") as pool:
         for scope in risk_scopes:
             if stop.is_set():
                 return
@@ -1429,7 +1446,7 @@ def _run_daily_reviews(stop):
 
 
 def start_sector_worker():
-    """Review proposed/invested instruments with four workers and retained daily deduplication."""
+    """Review active instruments with configured concurrency and retained deduplication."""
     stop = Event()
     def work():
         while not stop.is_set():

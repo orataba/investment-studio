@@ -6,6 +6,7 @@ import json
 import logging
 import mimetypes
 import shutil
+import time
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from math import isfinite
@@ -13,7 +14,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from studio_runtime import operation
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import defer
 from investment_studio_instrument_core.db_models import Instrument
 
@@ -233,6 +235,86 @@ def _remove_pruned_research_artifacts(portfolio_id: str, run_ids: list[str]) -> 
                 shutil.rmtree(path)
             except OSError:
                 logger.exception("Could not remove retired research artifacts for %s.", run_id)
+
+
+def _research_database_recovering(error: SQLAlchemyError) -> bool:
+    if not isinstance(error, DBAPIError):
+        return False
+    code = getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)
+    if error.connection_invalidated or (code and (code.startswith("08") or code in {
+        "57P01", "57P02", "57P03",
+    })):
+        return True
+    # A connection attempt can fail before the driver receives a SQLSTATE.
+    # OperationalError also covers deterministic schema/disk errors, so its
+    # class alone is not evidence that reconnecting can succeed.
+    return code is None and isinstance(error, (OperationalError, InterfaceError)) and any(
+        reason in str(error.orig).lower() for reason in (
+            "database system is starting up", "database system is in recovery mode",
+            "database system is not yet accepting connections", "connection refused",
+            "server closed the connection unexpectedly", "connection already closed",
+            "ssl connection has been closed unexpectedly",
+        )
+    )
+
+
+def _fail_research_run(portfolio_id: str, run_id: str, error: Exception) -> str | None:
+    """Persist the terminal state independently of the failed calculation transaction.
+
+    Retry only this small conditional write while PostgreSQL recovers, never the
+    calculation. Backoff sleeps total 31 seconds, excluding connection/SQL time,
+    and cover the observed 18-second recovery.
+    A completed publication may have lost its commit acknowledgement; keep it.
+    """
+    message = ("Database access interrupted the Research calculation; retry after the service recovers."
+               if isinstance(error, SQLAlchemyError) else str(error))
+    for attempt, delay in enumerate((0, 1, 2, 4, 8, 16)):
+        if delay:
+            time.sleep(delay)
+        try:
+            with get_session_factory()() as recovery_session:
+                recovery_session.execute(update(ResearchRunRecordModel).where(
+                    ResearchRunRecordModel.research_run_id == run_id,
+                    ResearchRunRecordModel.portfolio_id == portfolio_id,
+                    ResearchRunRecordModel.status == "running",
+                ).values(status="failed", finished_at=_utc_now_iso(), error_message=message,
+                         detail_json=None, artifacts_json=[]))
+                status = recovery_session.scalar(select(ResearchRunRecordModel.status).where(
+                    ResearchRunRecordModel.research_run_id == run_id,
+                    ResearchRunRecordModel.portfolio_id == portfolio_id,
+                ))
+                recovery_session.commit()
+                return status
+        except SQLAlchemyError as persistence_error:
+            if attempt < 5 and _research_database_recovering(persistence_error):
+                continue
+            # Exception SQL/parameters can contain private research and ledger
+            # facts. Log identity/type only and retain files for recovery.
+            logger.error("Research terminal state could not be saved for %s (%s); controlled interrupted-run recovery is required.",
+                         run_id, type(persistence_error).__name__)
+            return None
+    return None
+
+
+def recover_interrupted_research_runs() -> int:
+    """Maintenance only: call after ALL Portfolio API/calculation writers stop.
+
+    Research is synchronous; these running records have no surviving request.
+    This is deliberately not a GET or a per-worker startup sweep, which could
+    misclassify a live calculation in another process as interrupted.
+    """
+    with get_session_factory()() as session:
+        rows = session.execute(update(ResearchRunRecordModel).where(
+            ResearchRunRecordModel.status == "running",
+        ).values(status="failed", finished_at=_utc_now_iso(),
+                 error_message="Research calculation was interrupted; retry with the current inputs.",
+                 detail_json=None, artifacts_json=[]).returning(
+                     ResearchRunRecordModel.portfolio_id, ResearchRunRecordModel.research_run_id,
+                 )).all()
+        session.commit()
+    for portfolio_id, run_id in rows:
+        _remove_pruned_research_artifacts(portfolio_id, [run_id])
+    return len(rows)
 
 
 def _default_as_of_date(portfolio: dict[str, object]) -> date:
@@ -2204,9 +2286,9 @@ def run_portfolio_research(
             error_message=None,
         )
         session.add(run_row)
-        session.commit()
 
         try:
+            session.commit()
             instrument_detail_cache: dict[str, dict[str, object] | None] = {}
             state = _build_taxonomy_state(
                 portfolio_id,
@@ -2308,16 +2390,14 @@ def run_portfolio_research(
             session.commit()
         except Exception as error:
             # A failed publish must not commit pending pruning or leave the
-            # session in SQLAlchemy's failed-transaction state.
-            session.rollback()
-            failed_run = session.get(ResearchRunRecordModel, run_id)
-            if failed_run is not None:
-                failed_run.status = "failed"
-                failed_run.finished_at = _utc_now_iso()
-                failed_run.error_message = str(error)
-                failed_run.artifacts_json = []
-                session.commit()
-            _remove_pruned_research_artifacts(portfolio_id, [run_id])
+            # session in SQLAlchemy's failed-transaction state. A severed DB
+            # connection must not prevent an independent terminal-state write.
+            try:
+                session.rollback()
+            except SQLAlchemyError:
+                session.invalidate()
+            if _fail_research_run(portfolio_id, run_id, error) == "failed":
+                _remove_pruned_research_artifacts(portfolio_id, [run_id])
             raise
 
         _remove_pruned_research_artifacts(portfolio_id, retired_run_ids)

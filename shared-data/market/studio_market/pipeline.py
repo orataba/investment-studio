@@ -166,6 +166,10 @@ def main(argv=None):
         path=settings.data_root/'pipeline-status.json';result=json.loads(path.read_text()) if path.exists() else {'status':'not_run'}
     else:result=run(settings,args.action,market=args.market)
     print(json.dumps(serializable(result),ensure_ascii=False,indent=2))
+    if result.get('status')=='already_running' and args.action in {'daily','weekly'}:
+        # These actions share the collection lock but perform different work.
+        # Another collector does not establish completion of this schedule.
+        return 75
     return 1 if result.get('status')=='failed' else 0
 
 

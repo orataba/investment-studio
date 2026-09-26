@@ -42,12 +42,14 @@ def target_identity():
 def run_state(run_id, instrument_id):
     """Read only status and published review, never the accumulated tool context."""
     with get_session_factory()() as session:
-        row = load_run_fields(session, run_id, ["instrument_ids", "reviews", "runtime_error"])
+        row = load_run_fields(session, run_id, ["instrument_ids", "reviews", "runtime_error", "initialization", "market_queries"])
         if row.context_json.get("instrument_ids") != [instrument_id]:
             raise ValueError("Saved run does not belong to the selected instrument")
         completed_at = session.scalar(select(ResearchEntry.completed_at).where(ResearchEntry.entry_id == run_id))
         state = {"status": row.status, "completed_at": completed_at.isoformat() if completed_at else None,
-                 "reviews": row.context_json.get("reviews") or {}, "error": row.context_json.get("runtime_error")}
+                 "reviews": row.context_json.get("reviews") or {}, "error": row.context_json.get("runtime_error"),
+                 "initialization": row.context_json.get("initialization"),
+                 "market_queries": row.context_json.get("market_queries", [])}
         if row.status == "completed":
             from watchlist_app.services.research_dossier import read_dossier
             state["current_notebook"] = read_dossier(session, instrument_id, current_only=True).get("notebook")
@@ -71,6 +73,9 @@ def result_record(instrument_id, run_id, state):
     return {"instrument_id": instrument_id, "run_id": run_id, "status": state["status"],
             "published": state["status"] == "completed" and review.get("status") in {"completed", "limited"},
             "report_ready": report_ready(notebook),
+            "evidence_coverage": {"status": "needs_audit", "initialization": state.get("initialization"),
+                "market_queries": state.get("market_queries", []), "gaps": review.get("coverage", []),
+                "note": "发布和可读观点不等于资料初始化完成。需核对本标的检索相关性、七日窗口、最新披露与必要背景；查询条数不构成覆盖证明。"},
             "coverage_status": review.get("status"), "completed_at": state["completed_at"],
             "change_kind": review.get("change_kind"), "module_count": len(notebook.get("modules") or []),
             "has_investment_view": bool(notebook.get("investment_view")),
@@ -103,8 +108,8 @@ def refresh_one(instrument_id, resume_run_id=None, on_dispatch=None):
                             run, created = previous, True
                             session.commit()
             if run is None:
-                run, created = sector_research.begin_run(session, [instrument_id], scheduled=False,
-                    question="建立或更新当前标的的投资研究V1：先取得必要证据，维护重要事件、少量持续主题和适用量化观察，最后形成简明的当前机会与风险判断、依据及下一观察。缺少基础档案时建立有依据的一次性背景；已建立内容按新证据更新。核对PM观点与旧假设，保留资料缺口和各自时点，没有新事实不虚构变化。行动建议和深度模块按实际需要提供，不强制生成；不扩展估值模型或预期差评分。")
+                run, created = sector_research.begin_run(session, [instrument_id], scheduled=False, initialization=True,
+                    question="建立或补齐当前标的的投资研究V1：按initialization固定窗口检索过去七天的相关新闻事件，核对最新官方公告（可早于七天），读取必要基础资料、PM观点、已有判断和适用量化。共享资讯不覆盖时适当补充公开检索，阅读实质相关原文；保留来源日期、查询范围与资料缺口，真实零结果不虚构新闻。维护重要事件和少量持续主题，最后形成简明的当前机会与风险判断、依据及下一观察。已有投资观点不能代替资料初始化；已建立背景只补必要缺口。行动建议和深度模块按实际需要提供，不强制生成；不扩展估值模型或预期差评分。")
             run_id, status = run.entry_id, run.status
         if on_dispatch:
             on_dispatch(instrument_id, run_id, status)
@@ -135,7 +140,8 @@ def main():
     parser.add_argument("--output", type=Path, help="Private batch manifest outside the source tree; required to execute.")
     parser.add_argument("--resume", action="store_true", help="Recheck completed runs in --output and execute remaining current members.")
     parser.add_argument("--instrument-id", action="append", dest="instrument_ids", help="Limit to named currently Proposed/Invested members.")
-    parser.add_argument("--workers", type=int, choices=range(1, 5), default=4)
+    parser.add_argument("--workers", type=int, choices=range(1, 5), default=get_settings().research_worker_concurrency,
+                        help="Concurrent research runs; defaults to the configured research worker concurrency (1).")
     args = parser.parse_args()
     if args.execute and args.output is None:
         parser.error("--execute requires --output")
@@ -202,6 +208,7 @@ def main():
         manifest["published_count"] = sum(bool(row.get("published")) for row in manifest["results"].values())
         manifest["ready_count"] = sum(bool(row.get("published") and row.get("report_ready")) for row in manifest["results"].values())
         manifest["complete"] = manifest["ready_count"] == len(ids)
+        manifest["completion_scope"] = "publication_and_readable_report; evidence_coverage_requires_instrument_audit"
         write_manifest(args.output, manifest)
         print(json.dumps({key: manifest[key] for key in ("finished_at", "published_count", "ready_count", "complete")}), flush=True)
         return 0 if manifest["complete"] else 1

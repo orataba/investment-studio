@@ -94,6 +94,7 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         (['sync'], {**sync_new,'status':'failed','stages':sync_new['stages'] + [{'stage':'mi_text_catchup','status':'failed'}]}, 0, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
         (['sync'], {'status':'failed','stages':[{'stage':'numeric_catchup','status':'failed'}]}, 0, [], []),
         (['sync'], {'status':'already_running'}, 0, [], []),
+        (['daily'], {'status':'already_running'}, 75, [], []),
         (['daily'], {'status':'ready','stages':[{'stage':'registered_reference','status':'ready'}]}, 0, ['reference'], [['us','hk']]),
         (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}, {'stage':'registered_reference','status':'ready'}]}, 0, ['market','reference'], [['btcusd'],['us','hk']]),
         (['daily'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
@@ -109,6 +110,7 @@ with Path(os.environ['TEST_EVENTS']).open('a') as output:
         (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 0, ['market'], [['btcusd']]),
         (['crypto'], {'status':'failed','stages':[{'stage':'market_series','status':'failed'}]}, 0, [], []),
         (['crypto'], {'status':'ready','stages':[{'stage':'market_series','status':'ready'}]}, 1, ['market'], [['btcusd']]),
+        (['registered-prices','--market','us'], ready_prices, 75, ['market'], [['us']]),
         (['sync'], sync_new, 9, ['market','reference'], [['us','hk','btcusd'],['us','hk']]),
     ]
     for arguments, result, projection_exit, channels, expected_ids in cases:

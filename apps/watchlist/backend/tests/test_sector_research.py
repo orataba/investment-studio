@@ -471,6 +471,20 @@ def test_prepare_context_retains_scoped_sector_inputs(client, monkeypatch):
     assert "sector_company_data" not in context
     assert context["sector_estimate_evidence"] == []
     assert context["instrument_inputs"][0]["analyst_estimate_history"]["status"] == "no_snapshot"
+    # The normal UI/automatic path initializes a missing baseline too, without
+    # depending on the operational CLI's explicit request.
+    assert context["initialization"]["as_of"] == context["input_snapshot_cutoff"]
+    assert datetime.fromisoformat(context["initialization"]["as_of"]) - datetime.fromisoformat(
+        context["initialization"]["published_after"]) == timedelta(days=7)
+    original_window = context["initialization"]
+    with get_session_factory()() as session:
+        run = session.get(ResearchEntry, rid)
+        run.context_json = {**run.context_json, "cutoff": (datetime.fromisoformat(context["cutoff"]) + timedelta(days=1)).isoformat()}
+        session.commit()
+    page = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context"}).json()
+    assert page["initialization"] == original_window
+    selected = client.post(f"/api/research/runs/{rid}/read", json={"resource": "context", "section": "initialization"}).json()
+    assert selected["data"] == original_window
 
 
 def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(client, monkeypatch):
@@ -482,6 +496,26 @@ def test_missing_owned_sector_snapshot_remains_a_gap_without_estimate_baseline(c
     context = client.get(f"/api/research/runs/{rid}/context").json()
     assert context["sector_inputs"] == [] and context["sector_estimate_evidence"] == []
     assert any("本项目留存" in gap for gap in context["data_gaps"])
+
+
+@pytest.mark.parametrize("view,explicit,expected", [
+    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, False, False),
+    ({"direction": "尚待建立判断", "coverage_status": "not_established"}, False, True),
+    ({"direction": "继续跟踪已披露的风险", "coverage_status": "limited"}, True, True),
+])
+def test_initialization_scope_distinguishes_followup_from_requested_baseline_completion(client, monkeypatch, view, explicit, expected):
+    from watchlist_app.services import research_dossier
+    seed_sector(client, monkeypatch)
+    original = research_dossier.read_dossier
+    def dossier(session, iid, **kwargs):
+        return {**original(session, iid, **kwargs), "notebook": {"investment_view": view}}
+    monkeypatch.setattr(research_dossier, "read_dossier", dossier)
+    with get_session_factory()() as session:
+        run, _ = service.begin_run(session, ["xlk"], initialization=explicit)
+        rid = run.entry_id
+    service.prepare_run(rid)
+    context = client.get(f"/api/research/runs/{rid}/context").json()
+    assert bool(context.get("initialization")) is expected
 
 
 def test_only_computed_comparable_estimate_changes_can_substantiate_an_event(client, monkeypatch):

@@ -40,8 +40,9 @@ for briefing_period in daily weekly; do
   cat > "$briefing_unit_dir/$briefing_unit.service" <<EOF
 [Unit]
 Description=Investment Studio $briefing_period briefing
-After=network-online.target $briefing_unit_prefix-briefing-api.service
+After=network-online.target $briefing_unit_prefix-briefing-api.service $briefing_unit_prefix-market-sync.service
 Wants=network-online.target $briefing_unit_prefix-briefing-api.service
+Requires=$briefing_unit_prefix-market-sync.service
 
 [Service]
 Type=oneshot

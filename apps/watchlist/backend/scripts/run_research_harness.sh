@@ -76,6 +76,7 @@ copilot_exec_env=(
 for copilot_optional_env in \
   DEEPSEEK_BASE_URL \
   DEEPSEEK_SEARCH_URL \
+  DEEPSEEK_SEARCH_ENABLED \
   HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
   http_proxy https_proxy all_proxy no_proxy \
   XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME \

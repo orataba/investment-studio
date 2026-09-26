@@ -1,5 +1,5 @@
 from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 import pytest
 
@@ -10,6 +10,172 @@ from .test_research_api import _create_planning_taxonomy, _create_target_sets
 
 
 PORTFOLIO_ID = "investment-studio"
+
+
+def _research_settings(client):
+    taxonomy_id, nodes = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, nodes)
+    response = client.put(f"/api/portfolios/{PORTFOLIO_ID}/research/settings", json={
+        "planning_taxonomy_id": taxonomy_id, "comparator_taxonomy_node_id": nodes["Risk Assets"],
+        "as_of_date": "2026-04-15", "lookback_days": 30, "capital_mode": "unit_notional",
+    })
+    assert response.status_code == 200, response.text
+
+
+def test_disconnected_calculation_saves_failure_with_new_transactions_without_rerun(client, monkeypatch):
+    _research_settings(client)
+    original_execute = Session.execute
+    calculation_error = OperationalError("private calculation", {}, Exception("connection lost"), connection_invalidated=True)
+    calls = {"solve": 0, "failure_write": 0}
+    calculation_sessions = []
+    recovery_sessions = []
+    waits = []
+    rollback_failures = []
+
+    def fail_solve(*args, **kwargs):
+        calls["solve"] += 1
+        raise calculation_error
+
+    def execute(session, statement, *args, **kwargs):
+        if getattr(statement, "is_update", False) and statement.table.name == "research_run_record":
+            recovery_sessions.append(session)
+            calls["failure_write"] += 1
+            if calls["failure_write"] <= 2:
+                raise OperationalError("terminal write", {}, Exception("recovery in progress"), connection_invalidated=True)
+        return original_execute(session, statement, *args, **kwargs)
+
+    original_commit = Session.commit
+    original_rollback = Session.rollback
+    def commit(session):
+        if any(isinstance(row, ResearchRunRecordModel) and row.status == "running" for row in session.new):
+            calculation_sessions.append(session)
+        return original_commit(session)
+
+    def rollback(session):
+        if session in calculation_sessions and not rollback_failures:
+            rollback_failures.append(session)
+            raise OperationalError("rollback", {}, Exception("connection closed"), connection_invalidated=True)
+        return original_rollback(session)
+
+    monkeypatch.setattr(research, "solve_current_target_weights", fail_solve)
+    monkeypatch.setattr(Session, "execute", execute)
+    monkeypatch.setattr(Session, "commit", commit)
+    monkeypatch.setattr(Session, "rollback", rollback)
+    monkeypatch.setattr(research.time, "sleep", waits.append)
+    with pytest.raises(OperationalError) as raised:
+        research.run_portfolio_research(PORTFOLIO_ID)
+    assert raised.value is calculation_error and calls == {"solve": 1, "failure_write": 3}
+    assert waits == [1, 2] and len(set(recovery_sessions)) == 3
+    assert rollback_failures == calculation_sessions
+    assert all(session not in calculation_sessions for session in recovery_sessions)
+    with get_session_factory()() as session:
+        row = session.scalars(select(ResearchRunRecordModel)).one()
+        assert row.status == "failed" and row.finished_at
+        assert "private calculation" not in row.error_message
+        assert row.detail_json is None and row.artifacts_json == []
+
+
+def test_lost_publish_acknowledgement_preserves_committed_result_and_files(client, monkeypatch):
+    _research_settings(client)
+    original_commit = Session.commit
+    lost_ack = OperationalError("publication", {}, Exception("ack lost"), connection_invalidated=True)
+    committed = []
+    def commit(session):
+        completed = next((row for row in session.identity_map.values()
+                          if isinstance(row, ResearchRunRecordModel) and row.status == "completed"), None)
+        result = original_commit(session)
+        if completed is not None and not committed:
+            committed.append(completed.research_run_id)
+            raise lost_ack
+        return result
+    monkeypatch.setattr(Session, "commit", commit)
+    with pytest.raises(OperationalError) as raised:
+        research.run_portfolio_research(PORTFOLIO_ID)
+    assert raised.value is lost_ack
+    with get_session_factory()() as session:
+        row = session.get(ResearchRunRecordModel, committed[0])
+        assert row.status == "completed" and row.detail_json and row.artifacts_json
+        assert row.error_message is None
+    assert (research._research_outputs_root() / PORTFOLIO_ID / committed[0] / "report.md").is_file()
+
+
+def test_terminal_failure_wait_is_bounded_and_maintenance_recovers_only_interrupted_runs(client, monkeypatch):
+    ids = {status: "recovery-" + status for status in ("running", "completed", "failed")}
+    with get_session_factory()() as session:
+        for status, run_id in ids.items():
+            session.add(ResearchRunRecordModel(research_run_id=run_id, portfolio_id=PORTFOLIO_ID,
+                job_type="target_weight_solve", status=status, requested_at="2026-09-27T00:00:00Z",
+                detail_json={"retained": True} if status == "completed" else None,
+                artifacts_json=[{"path": "kept"}] if status == "completed" else []))
+            directory = research._research_outputs_root() / PORTFOLIO_ID / run_id
+            directory.mkdir(parents=True)
+            (directory / "report.md").write_text(status)
+        session.commit()
+    original_execute = Session.execute
+    calls = []
+    waits = []
+    def unavailable(session, statement, *args, **kwargs):
+        if getattr(statement, "is_update", False) and statement.table.name == "research_run_record":
+            calls.append(session)
+            raise OperationalError("terminal", {}, Exception("DB recovering"), connection_invalidated=True)
+        return original_execute(session, statement, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "execute", unavailable)
+        patch.setattr(research.time, "sleep", waits.append)
+        assert research._fail_research_run(PORTFOLIO_ID, ids["running"], ValueError("original calculation failure")) is None
+    assert len(calls) == 6 and waits == [1, 2, 4, 8, 16]
+    assert research.recover_interrupted_research_runs() == 1
+    assert research.recover_interrupted_research_runs() == 0
+    with get_session_factory()() as session:
+        row = session.get(ResearchRunRecordModel, ids["running"])
+        assert row.status == "failed" and row.finished_at and "interrupted" in row.error_message
+        assert session.get(ResearchRunRecordModel, ids["completed"]).detail_json == {"retained": True}
+        assert session.get(ResearchRunRecordModel, ids["failed"]).finished_at is None
+    root = research._research_outputs_root() / PORTFOLIO_ID
+    assert not (root / ids["running"]).exists()
+    assert all((root / ids[status] / "report.md").is_file() for status in ("completed", "failed"))
+
+
+@pytest.mark.parametrize("database_error", [
+    IntegrityError("terminal update", {}, Exception("invalid value")),
+    OperationalError("terminal update", {}, Exception("no such table: research_run_record")),
+    OperationalError("terminal update", {}, Exception("database or disk is full")),
+])
+def test_terminal_write_does_not_retry_a_deterministic_database_error(client, monkeypatch, database_error):
+    calls = []
+    def invalid(session, statement, *args, **kwargs):
+        calls.append(session)
+        raise database_error
+    monkeypatch.setattr(Session, "execute", invalid)
+    monkeypatch.setattr(research.time, "sleep", lambda delay: pytest.fail("deterministic database errors must not retry"))
+    assert research._fail_research_run(PORTFOLIO_ID, "missing", ValueError("calculation failure")) is None
+    assert len(calls) == 1
+
+
+def test_database_recovery_before_sqlstate_is_available_is_retryable():
+    error = OperationalError(None, None, Exception("FATAL: the database system is not yet accepting connections"))
+    assert research._research_database_recovering(error)
+
+
+def test_research_recovery_only_maintenance_does_not_start_snapshot_or_research_calculation(client, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[1] / "scripts" / "refresh_release_snapshots.py"
+    spec = importlib.util.spec_from_file_location("research_recovery_maintenance", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with get_session_factory()() as session:
+        session.add(ResearchRunRecordModel(research_run_id="interrupted-maintenance", portfolio_id=PORTFOLIO_ID,
+            job_type="target_weight_solve", status="running", requested_at="2026-09-27T00:00:00Z"))
+        session.commit()
+    def forbidden(*args, **kwargs):
+        pytest.fail("Research-only recovery must not refresh snapshots or solve")
+    for name in ("_recover_interrupted_refreshes", "_run_portfolio_daily_snapshot_recalculation_synchronously", "precompute_portfolio_workspace"):
+        monkeypatch.setattr(module, name, forbidden)
+    monkeypatch.setattr(research, "solve_current_target_weights", forbidden)
+    assert module.main(recover_research_only=True) == 0
+    with get_session_factory()() as session:
+        assert session.get(ResearchRunRecordModel, "interrupted-maintenance").status == "failed"
 
 
 def test_dynamic_research_date_is_resolved_after_its_snapshot_refresh(client, monkeypatch):

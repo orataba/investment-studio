@@ -135,3 +135,20 @@ def test_reviewer_retains_native_terminal_failure_without_retry(monkeypatch, rea
     assert not failure.value.retryable
     assert captures[0]['agent_metadata']['error_type'] == error_type
     assert 'private provider' not in str(failure.value) + json.dumps(captures)
+
+
+def test_unknown_review_startup_exit_keeps_only_allowlisted_diagnostic_signals(monkeypatch):
+    stderr = 'dsh: MCP: private-key=SECRET HTTP 503 ECONNREFUSED\n{"status_code":401,"message":"private source"}'
+    monkeypatch.setattr(agent.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stderr=stderr))
+    captures = []
+    with pytest.raises(agent.ReviewAgentError) as failure:
+        agent.run_review_agent({"sources": [], "draft_reviews": []}, {}, "rules", captures.append)
+    safe = review._safe_failure(failure.value)
+    diagnostic = json.loads(safe["diagnostic"])
+    assert diagnostic["harness_codes"] == ["MCP"]
+    assert diagnostic["http_statuses"] == [401, 503]
+    assert diagnostic["system_codes"] == ["ECONNREFUSED"]
+    assert diagnostic["stderr_present"] and diagnostic["read_pages"] == 0
+    assert not failure.value.retryable
+    assert "SECRET" not in json.dumps([safe, captures])
+    assert "private source" not in json.dumps([safe, captures])

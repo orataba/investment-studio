@@ -86,15 +86,19 @@ def portfolio_page_evidence(portfolio_id: str, page_context: dict | None):
             "scope_note": "整体持仓保留组合口径；所选账户或持仓作为单独明细。持仓引用可能是组合本地合约，不等于共享标的编码。历史估值按选定日期读取，研究及解释仍是本轮形成。"}
 
 
-def catalogue(session: Session):
+def catalogue(session: Session, instrument_ids=None):
+    def scoped(query, model):
+        return query.where(model.instrument_id.in_(instrument_ids)) if instrument_ids is not None else query
     rows = {}
-    for row in session.scalars(select(WatchlistRowReadModel)):
+    for row in session.execute(scoped(select(WatchlistRowReadModel.instrument_id, WatchlistRowReadModel.attributes_json,
+            WatchlistRowReadModel.last_nav_date), WatchlistRowReadModel)):
         rows[row.instrument_id] = row
     memberships = {}
-    for item in session.scalars(select(WatchlistItem)):
+    for item in session.execute(scoped(select(WatchlistItem.instrument_id, WatchlistItem.watchlist_id), WatchlistItem)):
         memberships.setdefault(item.instrument_id, []).append(item.watchlist_id)
     output = []
-    for instrument in session.scalars(select(InstrumentDetail).where(InstrumentDetail.is_active.is_(True)).order_by(InstrumentDetail.instrument_name)):
+    for instrument in session.execute(scoped(select(InstrumentDetail.instrument_id, InstrumentDetail.instrument_name,
+            InstrumentDetail.instrument_type).where(InstrumentDetail.is_active.is_(True)), InstrumentDetail).order_by(InstrumentDetail.instrument_name)):
         row = rows.get(instrument.instrument_id)
         output.append({"instrument_id": instrument.instrument_id, "name": instrument.instrument_name, "instrument_type": instrument.instrument_type,
             "watchlist_ids": memberships.get(instrument.instrument_id, []),

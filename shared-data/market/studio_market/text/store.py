@@ -33,7 +33,7 @@ class TextStore:
             from studio_market.config import MarketSettings
             settings = MarketSettings.from_environment(database_url=database_url, data_root=data_root)
         self.data_root = Path(settings.data_root) / "text"
-        self.engine = create_engine(settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1))
+        self.engine = create_engine(settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1), pool_pre_ping=True)
         if self.engine.dialect.name == "sqlite":
             self.engine = self.engine.execution_options(schema_translate_map={"market_text": None})
 

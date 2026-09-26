@@ -136,6 +136,31 @@ def test_configured_search_endpoint_tool_call_is_not_executed_search_evidence(mo
     assert json.loads(requests[0][1]["body"])["model"] == "deepseek-v4.1-flash"
 
 
+def test_native_search_schema_rejection_is_explicit_without_leaking_gateway_error(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-secret")
+    payload = {"error": {"type": "<nil>", "message":
+        "tools[0].***.parameters must be valid JSON (line 1, column 1). private request fixture-secret"}}
+    calls = []
+    def request(url, **kwargs):
+        calls.append(json.loads(kwargs["body"]))
+        return 400, {}, json.dumps(payload).encode()
+    monkeypatch.setattr(web, "_request", request)
+    with pytest.raises(web.SectorWebError, match="rejected native web_search") as failed:
+        web.search_web("official disclosure")
+    assert "fixture-secret" not in str(failed.value) and "private request" not in str(failed.value)
+    assert len(calls) == 1
+    assert "input_schema" not in calls[0]["tools"][0]
+
+
+def test_disabled_public_search_makes_no_http_call_and_does_not_disable_known_url_fetch(monkeypatch, public_dns):
+    monkeypatch.setenv("DEEPSEEK_SEARCH_ENABLED", "false")
+    monkeypatch.setattr(web, "_request", lambda *a, **k: pytest.fail("Disabled search made an HTTP request"))
+    with pytest.raises(web.SectorWebError, match="Native public search is disabled"):
+        web.search_web("official disclosure")
+    monkeypatch.setattr(web, "_request", lambda *a, **k: (200, {"content-type": "text/html"}, b'<article>Official disclosure</article>'))
+    assert web.fetch_web("https://issuer.example/announcement", CUTOFF)["text"] == "Official disclosure"
+
+
 def test_original_publication_is_distinct_from_modification_and_http_dates(monkeypatch, public_dns):
     html = '''<html><head><title>Original article</title>
       <script type="application/ld+json">{"@type":"NewsArticle",

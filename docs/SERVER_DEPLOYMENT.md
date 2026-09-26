@@ -202,7 +202,11 @@ bundles inside the live `current` target. Complete these steps in order:
    Briefing jobs, the retired US reference job, independent Regime timers/source
    workers, and any source containers. Verify they are inactive; the Studio app
    installer does not control the independent Regime installation. Preserve public
-   objects with the database backup scope described below.
+   objects with the database backup scope described below. Stop identified writer
+   units, not every unit matching `*regime*`: the read-only web service depends on
+   `regime-dashboard-runtime-recover.service`, so stopping that dependency also
+   stops the web service even when the dependency itself is inactive. Preserve
+   both during the Studio upgrade and verify the web service through HTTP.
 4. As the Studio service user, run the new release's `install_app_services.sh`
    with its immutable `PROJECT_ROOT`, its `PYTHON_BIN`, the existing external
    `ENV_ROOT`, and the user systemd bus available. Keep `RUN_MIGRATIONS=true` and
@@ -233,6 +237,20 @@ database/unit changes. The outer release procedure must also restore any changed
 symlink, Nginx configuration, external configuration and separately generated
 schedule files from its snapshot. After new writes have been accepted, follow the
 forward-repair rule below instead of automatically restoring the old database.
+
+For an application-only follow-up to an already accepted release, verify that
+the migration files, calculation versions and persisted-data contracts are
+unchanged before using `RUN_MIGRATIONS=false`. Finish active research and
+Briefing work before replacing their APIs. This path updates the eight app
+services without pausing independent collectors or Regime; preserve their
+existing timer state and software paths. If a crashed Portfolio calculation
+left a `running` record, stop all Portfolio calculation/API writers and run
+`apps/portfolio/backend/scripts/refresh_release_snapshots.py
+--recover-interrupted-research` with the target runtime loaded before restarting.
+That maintenance operation marks interrupted runs failed; it does not recompute
+research or change targets. Regenerate changed schedule definitions, verify
+authenticated requests and actual job results, and restore the short external
+write-maintenance gate even if application acceptance fails.
 
 ## Shared public data and Briefing
 
@@ -539,7 +557,7 @@ With the target runtime configuration loaded as the service user:
 ```bash
 .venv/bin/python apps/watchlist/backend/scripts/refresh_active_research.py
 .venv/bin/python apps/watchlist/backend/scripts/refresh_active_research.py \
-  --execute --workers 4 --output /private/operator-path/research-refresh.json
+  --execute --output /private/operator-path/research-refresh.json
 ```
 
 The first command previews the scope without model calls. `--instrument-id`
@@ -547,6 +565,17 @@ limits local acceptance to representative examples. The private manifest stores
 each dispatched run and accepted publication; `--resume` continues that batch's
 remaining current members through the same authorization and publication checks.
 It can recover a failed draft without recollecting its original evidence.
+Automatic and batch research default to one concurrent instrument, controlled by
+`INVESTMENT_STUDIO_WATCHLIST_RESEARCH_WORKER_CONCURRENCY` (1–4); an explicit
+`--workers` overrides the batch setting. Increase concurrency only after measuring
+the combined API, Harness, fact-review and data-refresh memory peak on the target
+host. Restore overdue collection schedules before starting a research batch and
+let their catch-up work settle. An OOM kill can restart the API and interrupt
+otherwise valid research; inspect the kernel and service journals before retrying.
+On a memory-constrained host, a private, persistent swap file can absorb short
+peaks while those workloads are serialized. Verify free disk space, restrictive
+file permissions and activation after reboot; swap does not justify retaining
+unnecessary research JSON or raising concurrency beyond available memory.
 Underlying data gaps remain visible and must not be mistaken for execution
 failure or complete research coverage. A completed run alone is insufficient:
 check the accepted review, current opportunity/risk judgment, source dates,

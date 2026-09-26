@@ -21,6 +21,7 @@ from portfolio_app.services.daily_snapshots import (
 from portfolio_app.services.workspace_precompute import (
     precompute_portfolio_workspace, workspace_precomputation_errors,
 )
+from portfolio_app.services.research import recover_interrupted_research_runs
 
 
 def _recover_interrupted_refreshes() -> int:
@@ -44,7 +45,11 @@ def _recover_interrupted_refreshes() -> int:
         return int(result.rowcount or 0)
 
 
-def main(*, recover_interrupted: bool = False) -> int:
+def main(*, recover_interrupted: bool = False, recover_research_only: bool = False) -> int:
+    recovered_research = recover_interrupted_research_runs() if recover_interrupted or recover_research_only else 0
+    if recover_research_only:
+        print(f"Interrupted Research recovery completed: {recovered_research} failed; no calculation started.")
+        return 0
     recovered_count = (
         _recover_interrupted_refreshes() if recover_interrupted else 0
     )
@@ -107,19 +112,23 @@ def main(*, recover_interrupted: bool = False) -> int:
         "Release snapshot refresh completed: "
         f"{len(refreshed)} refreshed, {len(portfolio_ids) - len(refreshed)} already published, "
         f"{len(blocked)} valuation blocked, "
-        f"{recovered_count} interrupted recovered."
+        f"{recovered_count} interrupted snapshots recovered, {recovered_research} interrupted Research failed."
     )
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument(
         "--recover-interrupted",
         action="store_true",
-        help="Reclaim running snapshot jobs after managed database writers have stopped.",
+        help="Recover interrupted snapshots and Research after managed database writers have stopped.",
     )
+    recovery.add_argument("--recover-interrupted-research", action="store_true",
+        help="Mark interrupted Research failed after all Portfolio API/calculation writers stop; no snapshots or calculations run.")
     arguments = parser.parse_args()
     raise SystemExit(
-        main(recover_interrupted=arguments.recover_interrupted)
+        main(recover_interrupted=arguments.recover_interrupted,
+             recover_research_only=arguments.recover_interrupted_research)
     )

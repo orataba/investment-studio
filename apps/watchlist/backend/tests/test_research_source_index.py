@@ -90,3 +90,37 @@ def test_source_projection_rechecks_original_portfolio_after_topic_scope_changed
             _run_source_context(session, "historical-run")
         assert denied.value.status_code == 403
     assert checked == ["current-portfolio", "original-portfolio"]
+
+
+def test_selected_reads_do_not_load_unrelated_retained_context(client, monkeypatch):
+    """Each page keeps its saved data while avoiding the full accumulated run."""
+    context = {**sources_context(), "run_id": "paged-run", "cutoff": "2026-09-24T00:00:00Z",
+        "instrument_ids": ["xlk"], "question": "保留原问题\u0000和字面\\u0000",
+        "catalogue": [{"instrument_id": "xlk"}],
+        "research_dossiers": [{"instrument_id": "xlk", "notebook": None, "themes": [], "pm_views": []}],
+        "computed_metrics": [{"source_id": "calculation-one", "source_type": "computed_metric", "data": {"value": 3}}],
+        "unrelated_retained_data": "历史原件必须保留" * 200000}
+    with get_session_factory()() as session:
+        session.add(ResearchTopic(topic_id="paged-topic", title="研究", visibility="private", created_by_user_id="pm-one"))
+        session.flush()
+        session.add(ResearchEntry(entry_id="paged-run", topic_id="paged-topic", kind="analysis", title="研究",
+            status="running", context_json=context))
+        session.commit()
+    import watchlist_app.main as main
+    monkeypatch.setattr(main, "resolve_request", lambda *args, **kwargs:
+        Principal("pm-one", "PM", "default", resource_scope={"kind": "run", "id": "paged-run"}))
+    def reject_full_entry_load(*_):
+        pytest.fail("A selected source/page must not hydrate the complete research run")
+    event.listen(ResearchEntry, "load", reject_full_entry_load)
+    try:
+        page = client.post("/api/research/runs/paged-run/read", json={"resource": "context", "section": "question"})
+        source = client.get("/api/research/runs/paged-run/computed-source?source_id=calculation-one")
+        dossier = client.get("/api/research/runs/paged-run/dossier/xlk")
+    finally:
+        event.remove(ResearchEntry, "load", reject_full_entry_load)
+    assert page.status_code == source.status_code == dossier.status_code == 200
+    assert page.json()["data"] == context["question"]
+    assert source.json() == context["computed_metrics"][0]
+    assert dossier.json()["instrument_id"] == "xlk"
+    with get_session_factory()() as session:
+        assert session.get(ResearchEntry, "paged-run").context_json == context

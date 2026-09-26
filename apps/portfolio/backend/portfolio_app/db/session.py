@@ -54,7 +54,7 @@ def _configure_search_path(engine: Engine, schema: str | None) -> Engine:
 @lru_cache
 def get_engine() -> Engine:
     settings = get_settings()
-    engine = create_engine(settings.database_url, echo=settings.sql_echo)
+    engine = create_engine(settings.database_url, echo=settings.sql_echo, pool_pre_ping=True)
     return _configure_search_path(engine, settings.database_schema)
 
 

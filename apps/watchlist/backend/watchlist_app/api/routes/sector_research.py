@@ -414,7 +414,10 @@ def run_quant(run_id: str, request: QuantAnalysisInput, session: Session = Depen
 @router.get("/research/runs/{run_id}/sector-company/{instrument_id}/{symbol}")
 def sector_company(run_id: str, instrument_id: str, symbol: str, session: Session = Depends(get_db_session)):
     from watchlist_app.services.research_notebook import company_source
-    run = current_run(session, run_id)
+    from watchlist_app.services.research_run_context import load_run_fields
+    run = load_run_fields(session, run_id, {"sector_run", "research_run", "sector_company_data"})
+    if not (run.context_json.get("sector_run") or run.context_json.get("research_run")):
+        raise HTTPException(404, "事件检查不存在")
     company = run.context_json.get("sector_company_data", {}).get(instrument_id, {}).get(symbol.upper())
     if company is None:
         raise HTTPException(404, "本次成分快照没有该股票的公司资料")

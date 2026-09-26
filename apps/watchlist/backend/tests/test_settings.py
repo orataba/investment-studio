@@ -33,3 +33,10 @@ def test_settings_require_positive_reconciliation_interval() -> None:
             database_url="sqlite+pysqlite:///:memory:",
             recalc_worker_reconcile_interval_seconds=0,
         )
+
+
+def test_research_defaults_to_one_worker_and_rejects_unsafe_counts():
+    assert Settings(database_url="sqlite+pysqlite:///:memory:").research_worker_concurrency == 1
+    for count in (0, 5):
+        with pytest.raises(ValidationError, match="research_worker_concurrency"):
+            Settings(database_url="sqlite+pysqlite:///:memory:", research_worker_concurrency=count)

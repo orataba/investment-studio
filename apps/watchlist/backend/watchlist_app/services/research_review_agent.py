@@ -1,6 +1,7 @@
 """Run the independent factual reviewer through the pinned DeepSeek Harness."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +14,23 @@ class ReviewAgentError(RuntimeError):
         self.review_transport = diagnostic
         self.review_stage = "review_agent"
         self.retryable = retryable
+
+
+def _failure_signals(stderr):
+    """Useful process diagnostics without retaining arbitrary exception text.
+
+    Startup failures may precede the first saved Harness turn. Never persist the
+    stderr tail: it can contain credentials, private originals or model output.
+    These observed codes do not by themselves authorize an automatic retry.
+    """
+    text = stderr or ""
+    categories = {"AUTH", "CONFIG", "INTERNAL", "MCP", "NETWORK", "QUOTA", "RATE", "RATE_LIMIT", "SERVER", "TIMEOUT"}
+    system_codes = {"EACCES", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "EMFILE", "ENETUNREACH", "ENOENT", "ENOMEM", "ENOSPC", "ETIMEDOUT"}
+    return {"stderr_present": bool(text),
+        "harness_codes": sorted(categories.intersection(re.findall(r"^dsh:\s+([A-Z_]+):", text, re.M)))[:4],
+        "system_codes": sorted(system_codes.intersection(re.findall(r"\bE[A-Z]+\b", text)))[:4],
+        "http_statuses": sorted({int(code) for match in re.findall(r'\bHTTP\s+([45]\d\d)\b|"status(?:_code)?"\s*:\s*([45]\d\d)\b', text)
+                                 for code in match if code})[:4]}
 
 
 def run_review_agent(packet, schema, instructions, record):
@@ -50,6 +68,7 @@ def run_review_agent(packet, schema, instructions, record):
             metadata.update(exit_code=process.returncode, stage="agent_finished")
             if process.returncode:
                 from watchlist_app.services.research_runner import _provider_failure
+                metadata.update(_failure_signals(process.stderr))
                 classified = _provider_failure(process.stderr)
                 metadata["error_type"] = classified["type"] if classified else "HarnessProcessExit"
                 raise ReviewAgentError(classified["summary"] if classified else "独立核证代理未完成，原草稿及证据已保留。", metadata,

@@ -44,3 +44,16 @@ def test_risk_bridge_preserves_validation_and_reports_unavailable(monkeypatch):
     with pytest.raises(HTTPException) as error:
         instrument_risk.workspace('fund')
     assert error.value.status_code == 503
+
+
+def test_risk_bridge_forwards_summary_and_versioned_detail_under_same_actor(monkeypatch):
+    calls = []
+    def request(req, timeout):
+        calls.append(req)
+        return BytesIO(b'{}')
+    monkeypatch.setattr(instrument_risk, 'urlopen', request)
+    instrument_risk.workspace('fund-a', summary=True)
+    assert calls[-1].full_url.endswith('/api/risk?instrument_ids=fund-a&summary=true')
+    instrument_risk.case_detail('shared-case', updated_at='2026-09-27T08:00:00+00:00')
+    assert calls[-1].full_url.endswith('/api/risk/cases/shared-case?updated_at=2026-09-27T08%3A00%3A00%2B00%3A00')
+    assert calls[-1].get_header('Authorization') == 'Bearer test-session'

@@ -83,7 +83,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         python.chmod(0o700)
     secret = tmp_path / 'portfolio-copilot.env'
     secret.write_text('DEEPSEEK_API_KEY=test-key\nDEEPSEEK_BASE_URL=https://provider.example/v1\n'
-        'DEEPSEEK_SEARCH_URL=https://provider.example/v1/messages\n' +
+        'DEEPSEEK_SEARCH_URL=https://provider.example/v1/messages\nDEEPSEEK_SEARCH_ENABLED=false\n' +
         (f'INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME={configured_model}\n' if configured_model else ''), encoding='utf-8')
     secret.chmod(0o600)
     entry = project / HARNESS_ENTRY
@@ -145,6 +145,7 @@ def test_relocated_harness_uses_its_project_and_filters_backend_secrets(tmp_path
         assert runtime_env['INVESTMENT_STUDIO_WATCHLIST_HARNESS_MODE'] == (task_mode or 'conversation')
         assert runtime_env['INVESTMENT_STUDIO_PORTFOLIO_COPILOT_MODEL_NAME'] == (configured_model or 'deepseek-v4.1-flash')
         assert runtime_env['DEEPSEEK_SEARCH_URL'] == 'https://provider.example/v1/messages'
+        assert runtime_env['DEEPSEEK_SEARCH_ENABLED'] == 'false'
         assert runtime_env['INVESTMENT_STUDIO_RESEARCH_PERSONA'] == (ROOT / core).read_text().rstrip('\n')
         reviewer_args = [json.loads(line.removeprefix('FACT_REVIEW_ARGS ')) for line in result.stderr.splitlines()
                          if line.startswith('FACT_REVIEW_ARGS ')]

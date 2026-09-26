@@ -142,5 +142,5 @@ it('opens list risk directly without research execution controls', async () => {
   expect(screen.queryByRole('button', { name: '更新研究' })).toBeNull()
   expect(screen.getByRole('button', { name: '重点关注 0' })).toBeTruthy()
   expect(request).toHaveBeenCalledTimes(1)
-  expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=sector-list', undefined)
+  expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=sector-list&summary=true', undefined)
 })

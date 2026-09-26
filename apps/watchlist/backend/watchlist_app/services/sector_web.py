@@ -92,6 +92,8 @@ def search_web(query: str) -> dict:
     query = query.strip()
     if not query:
         raise SectorWebError("Search query is empty")
+    if os.environ.get("DEEPSEEK_SEARCH_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
+        raise SectorWebError("Native public search is disabled because no supported endpoint is currently enabled; use retained information or known public URLs and preserve this coverage gap")
     key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not key:
         raise SectorWebError("DEEPSEEK_API_KEY is not configured")
@@ -109,6 +111,17 @@ def search_web(query: str) -> dict:
     }, body=json.dumps(body).encode())
     # Never forward the credential-bearing request to a redirect destination.
     if not 200 <= status < 300:
+        # Some compatible gateways translate native server tools into ordinary
+        # client functions. Adding input_schema would hide this capability gap:
+        # a requested tool call is not a search performed by the provider.
+        try:
+            error = json.loads(payload).get("error", {})
+            message = error.get("message", "") if isinstance(error, dict) else ""
+        except (ValueError, AttributeError):
+            message = ""
+        if (status == 400 and isinstance(message, str) and "tools[0]" in message
+                and "parameters must be valid JSON" in message):
+            raise SectorWebError("Configured endpoint rejected native web_search server-tool schema (HTTP 400); no search results were acquired")
         raise SectorWebError(f"DeepSeek search failed (HTTP {status})")
     try:
         document = json.loads(payload)

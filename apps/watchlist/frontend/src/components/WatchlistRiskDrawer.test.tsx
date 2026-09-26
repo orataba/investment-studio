@@ -53,7 +53,7 @@ it('scopes instrument detail risk to the instrument even when opened from a list
   const ask = vi.fn()
   const { container } = render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" watchlistId="source-list" onClose={vi.fn()} onAskAssistant={ask} />)
   await screen.findByText('a 风险事项')
-  expect(request).toHaveBeenCalledWith('/api/risk?instrument_id=a', undefined)
+  expect(request).toHaveBeenCalledWith('/api/risk?instrument_id=a&summary=true', undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('instrument_id=a')
   expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=source-list')
   expect(container.querySelector('.risk-readings')?.hasAttribute('open')).toBe(false)
@@ -84,7 +84,7 @@ it('keeps the full originating list when locating an instrument and closes only 
   expect(screen.getByRole('dialog', { name: '风险提示' })).toBeTruthy()
   expect(screen.getByRole('link', { name: 'a 风险事项' }).getAttribute('href')).toBe('/instruments/a?tab=risk&watchlist=3')
   expect(screen.getByText('b 风险事项')).toBeTruthy()
-  expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=3', undefined)
+  expect(request).toHaveBeenCalledWith('/api/risk?watchlist_id=3&summary=true', undefined)
   expect(screen.getByTestId('officer-scope').textContent).toBe('watchlist_id=3')
   expect(screen.queryByRole('combobox', { name: '筛选标的' })).toBeNull()
   expect(screen.queryByRole('combobox', { name: '关联组合' })).toBeNull()
@@ -236,4 +236,41 @@ it('separates pending risk assessment from confirmed risk when the officer has n
   fireEvent.click(screen.getByRole('button', { name: '待风控复核 1' }))
   expect(screen.getByText('a 风险事项')).toBeTruthy()
   expect(screen.getByText('已提交／待复核')).toBeTruthy()
+})
+
+it('requests summaries first and reads complete source/history only when expanded', async () => {
+  const summary = { ...caseFor('a'), detail_available: true, history_count: 1, history_json: undefined,
+    signal: 'sector:retained-event', evidence_json: { direction: 'risk', event_version_id: 'a:1' } }
+  const detail = { ...summary, history_json: [{ at: '2026-09-04T08:00:00Z', action: 'review', detail: 'PM 历史判断保留' }],
+    evidence_json: { ...summary.evidence_json, sources: [{ title: '留存原文链接', url: 'https://example.com/retained', published_at: '2026-09-04' }] } }
+  request.mockImplementation(async (path: string) => path.includes('/risk/cases/') ? detail : { instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [summary] })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByText('a 风险事项')
+  expect(request.mock.calls.some(([path]) => path.includes('/risk/cases/'))).toBe(false)
+  fireEvent.click(screen.getByText('跟进与证据'))
+  await screen.findByText(/PM 历史判断保留/)
+  expect(request).toHaveBeenCalledWith('/api/risk/cases/a?updated_at=2026-09-04', undefined)
+  expect(screen.getByRole('link', { name: '留存原文链接' }).getAttribute('href')).toBe('https://example.com/retained')
+})
+
+it('retains the current risk when detail fails and retries without treating history as empty', async () => {
+  const summary = { ...caseFor('a'), signal: 'drawdown_limit', detail_available: true, history_json: undefined }
+  let detailAttempts = 0
+  request.mockImplementation(async (path: string) => {
+    if (!path.includes('/risk/cases/')) return { instruments: [{ instrument_id: 'a', name: '标的 A' }], cases: [summary] }
+    detailAttempts++
+    if (detailAttempts === 1) throw new Error('证据读取暂时失败')
+    return { ...summary, evidence_json: { current_drawdown: -13, review_line: -10 },
+      history_json: [{ at: '2026-09-04T08:00:00Z', action: 'review', detail: '恢复的跟进历史' }] }
+  })
+  render(<InstrumentRiskDrawer instrumentId="a" instrumentName="标的 A" onClose={vi.fn()} onAskAssistant={vi.fn()} />)
+  await screen.findByText('a 风险事项')
+  fireEvent.click(screen.getByText('跟进与证据'))
+  await screen.findByText('证据读取暂时失败')
+  expect(screen.getByText('a 风险事项')).toBeTruthy()
+  expect(screen.queryByText(/触发读数/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '重试读取' }))
+  await screen.findByText(/恢复的跟进历史/)
+  expect(screen.getByText(/触发读数 -13.00%/)).toBeTruthy()
+  expect(detailAttempts).toBe(2)
 })

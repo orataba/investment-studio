@@ -259,6 +259,11 @@ opportunities/risks item and coverage_status/coverage_note against its linked ev
 sources. No news, a closed theme or event follow-up expiry cannot erase a retained risk. Check any removal's
 explicit basis. Empty lists do not establish no risk, and partial coverage cannot become a full quiet check.
 The current synthesis is derived last from the same research, not an independent recommendation.
+For an initialization request, verify the coverage statement against the fixed initialization window and
+actual acquisition queries, relevant originals, available baseline and PM/quantitative evidence. A query's
+instrument_id annotation alone does not establish relevance, and a bound source index does not prove the
+whole original was read. Do not certify a seven-day scan solely from a nonempty investment view, source
+count or generic search. Preserve specific missing coverage; a checked quiet window needs no invented news.
 Check progress_kind=editorial is limited to wording, scoring or research arrangements, not new facts or
 material analysis; it must not refresh the factual timeline. Check importance_score (1–5) and its substantive reason separately from confidence/impact/urgency. Public
 market_views require attribution, dates and actual originals; issuer statements alone are not consensus.
@@ -575,6 +580,7 @@ def _evidence_packet(context: dict, reviewed: list[dict], run_id: str) -> dict:
         "prior_judgment_versions": prior_judgment_versions,
         "tool_evidence": _tool_receipts(context),
         "acquisition": {
+            "initialization": context.get("initialization"),
             "market_queries": context.get("market_queries", []),
             "market_coverage": context.get("market_coverage"),
             "market_channel_gaps": {iid: shared_market_coverage_gaps(context, instrument_id=iid) for iid in sorted(ids)},
@@ -801,7 +807,7 @@ def _safe_failure(error):
     transport = getattr(error, "review_transport", None)
     diagnostic = {"diagnostic": json.dumps({key: transport[key] for key in (
         "stage", "bytes_received", "chunks_received", "elapsed_seconds", "finish_reason", "protocol_error", "done",
-        "engine", "exit_code", "error_type", "read_pages",
+        "engine", "exit_code", "error_type", "read_pages", "stderr_present", "harness_codes", "system_codes", "http_statuses",
     ) if key in transport}, ensure_ascii=False, separators=(",", ":"))} if transport else {}
     if not transport and error.__traceback__:
         import traceback

@@ -114,6 +114,17 @@ bin/investment-studio market pipeline sync
 bin/investment-studio market pipeline status
 ```
 
+The daily and weekly pipelines share one collection lock. A conflicting bulk run
+returns temporary exit 75, not successful completion of the other schedule. The
+low-frequency systemd collection services retry only exit 75 after one hour,
+with at most four starts in six hours; this also covers a collected price batch
+waiting for the shared canonical projection lock. The spacing accommodates observed 24–95 minute
+projection runs and weekly collections exceeding two hours without repeatedly
+recollecting on each 15-minute lock timeout. Real provider failures retain exit
+1 and their receipts; exhausted retries remain failed for inspection. Data
+freshness and final receipts, not timer activation, establish completion. Hourly
+sync and publish services keep their normal cadence without this retry limit.
+
 The daily pipeline collects whole-market US EOD increments, corporate actions,
 analyst PIT captures, changed financial statements, macro/market series, ETF
 holdings, events, and registered assets' typed supplements. Registered raw prices

@@ -229,7 +229,7 @@ describe('WatchlistsPage loading', () => {
     fireEvent.click(within(tools).getByRole('button', { name: 'Risk alerts' }))
     expect(screen.queryByRole('group', { name: 'Watchlist settings menu' })).toBeNull()
     expect(await screen.findByRole('dialog', { name: '风险提示' })).toBeTruthy()
-    await waitFor(() => expect(apiMocks.fetchJson).toHaveBeenCalledWith('/api/risk?watchlist_id=all-private-funds', undefined))
+    await waitFor(() => expect(apiMocks.fetchJson).toHaveBeenCalledWith('/api/risk?watchlist_id=all-private-funds&summary=true', undefined))
   })
 
   it('uses a flat table until grouping is explicitly selected for mixed watchlists', async () => {
