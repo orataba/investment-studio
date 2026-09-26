@@ -107,7 +107,7 @@ def catalogue(session: Session, instrument_ids=None):
 
 
 def instrument_evidence(session: Session, ids: list[str], *, include_dossier=True, as_of: datetime | None = None):
-    from watchlist_app.services.shared_instrument_registry import get_shared_reference_data
+    from watchlist_app.services.shared_instrument_registry import get_shared_fund_actions, get_shared_reference_data
     from watchlist_app.services.sector_estimates import read_estimate_evidence
     from watchlist_app.services.sector_research import latest_reviews
     completed_research = latest_reviews(session, completed_only=True, instrument_ids=ids)
@@ -120,6 +120,8 @@ def instrument_evidence(session: Session, ids: list[str], *, include_dossier=Tru
         asset["analyst_focus"] = analyst_guidance(asset["research_plan"])
         asset["reference_data"] = get_shared_reference_data(iid, as_of=as_of)
         if asset["instrument_type"] in {"public_fund", "private_fund"}:
+            canonical_id = (asset["reference_data"] or {}).get("instrument_id", iid)
+            asset["fund_actions"] = get_shared_fund_actions(canonical_id, as_of=as_of)
             asset["performance_evidence"] = performance_evidence(session, iid, peer_scope=fund_peer_scope)
         if asset["instrument_type"] in {"equity", "etf", "public_fund"}:
             asset["analyst_estimate_history"] = read_estimate_evidence(session, iid, as_of=as_of)

@@ -79,6 +79,41 @@ def _instrument(
     }
 
 
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_incomplete_datahub_reference_preserves_snapshot_clock_and_observations(monkeypatch, has_previous):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    InstrumentRegistryBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as session:
+        session.add(Instrument(instrument_id="test", instrument_name="Fund", instrument_type="public_fund",
+                               currency="CNY", exchange_code=None, quote_selection_policy_json={}))
+        session.commit()
+    monkeypatch.setattr(instrument_reference, "get_session_factory", lambda: factory)
+    record = {
+        "instrument_id": "test", "instrument_type": "public_fund", "provider": "datahub:tushare",
+        "provider_symbol": "018654.OF", "fetched_at": "2026-09-05T08:00:00Z", "source": {},
+        "sections": {"fund_info": {"name": "Fund"}, "holdings": [{"symbol": "600519.SH"}]},
+        "section_errors": {},
+    }
+    saved = deepcopy(record)
+    monkeypatch.setattr(instrument_reference, "get_instrument_reference_data", lambda _: deepcopy(record))
+    if has_previous:
+        instrument_reference.refresh_instrument_reference_data("test")
+    record["fetched_at"] = "2026-09-27T08:00:00Z"
+    record["sections"] = {"fund_info": {"name": "New profile"}}
+    record["section_errors"] = {"holdings": "Provider row limit; complete holdings cannot be confirmed"}
+    monkeypatch.setattr(instrument_reference, "list_instruments", lambda **_: [{"instrument_id": "test", "instrument_type": "public_fund"}])
+    outcome = instrument_reference.refresh_reference_data_batch()
+    assert outcome["refreshed_count"] == 0
+    assert outcome["results"][0]["status"] == "failed"
+    assert "complete holdings cannot be confirmed" in outcome["results"][0]["message"]
+    with factory() as session:
+        snapshot = session.get(InstrumentReferenceSnapshot, "test")
+        observations = list(session.scalars(select(InstrumentReferenceObservation)))
+        assert (snapshot.value_json if snapshot else None) == (saved if has_previous else None)
+        assert [row.value_json for row in observations] == ([saved] if has_previous else [])
+
+
 def test_completed_empty_financial_coverage_is_projected_without_failed_refresh(monkeypatch):
     monkeypatch.setattr(instrument_reference, "list_instruments", lambda **kwargs: [{"instrument_id": "6082-hk", "instrument_type": "equity"}])
     monkeypatch.setattr(instrument_reference, "refresh_instrument_reference_data", lambda _: {

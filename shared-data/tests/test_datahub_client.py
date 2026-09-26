@@ -129,16 +129,125 @@ def test_index_history_partitions_date_window_and_restarts_offset() -> None:
         ("20240102", "20250101", 0), ("20240102", "20250101", 1), ("20250102", "20250102", 0)]
 
 
-def test_later_index_history_failure_never_returns_partial_history() -> None:
+@pytest.mark.parametrize("api_name", ["index_daily", "fund_portfolio"])
+def test_later_history_failure_never_returns_partial_history(api_name: str) -> None:
     from requests import HTTPError
     session = FakeSession([
         FakeResponse({"code":0, "data":{"fields":["trade_date"], "items":[["20240102"]], "has_more":False}}),
         FakeResponse({}, status_error=HTTPError("HTTP 503")),
     ])
     with pytest.raises(datahub_client.DataHubClientError, match="HTTP 503"):
-        datahub_client.fetch_tushare_rows(api_key="secret-key", api_name="index_daily",
+        datahub_client.fetch_tushare_rows(api_key="secret-key", api_name=api_name,
             params={"ts_code":"H11001.CSI", "start_date":"20240102", "end_date":"20250102"}, session=session)
     assert len(session.calls) == 2
+
+
+def test_fund_holdings_preserves_full_history_and_pages_each_window() -> None:
+    def page(period: str, symbol: str, more: bool = False) -> FakeResponse:
+        return FakeResponse({
+            "code": 0,
+            "data": {
+                "fields": ["ts_code", "end_date", "symbol"],
+                "items": [["018654.OF", period, symbol]],
+                "has_more": more,
+            },
+        })
+
+    session = FakeSession([
+        page("20240630", "000001.SZ", True),
+        page("20241231", "000002.SZ"),
+        page("20251231", "000003.SZ"),
+        page("20260630", "000004.SZ"),
+    ])
+    rows = datahub_client.fetch_tushare_rows(
+        api_key="secret-key",
+        api_name="fund_portfolio",
+        params={"ts_code": "018654.OF", "start_date": "20240410", "end_date": "20260927"},
+        session=session,
+    )
+
+    assert [row["symbol"] for row in rows] == ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]
+    assert [
+        (call["params"]["start_date"], call["params"]["end_date"],
+         call["params"]["offset"], call["params"]["limit"])
+        for call in session.calls
+    ] == [
+        ("20240410", "20250410", 0, 1000),
+        ("20240410", "20250410", 1, 1000),
+        ("20250411", "20260411", 0, 1000),
+        ("20260412", "20260927", 0, 1000),
+    ]
+
+
+def _holdings_page(day: str, count: int, prefix: str = "stock") -> FakeResponse:
+    return FakeResponse({
+        "code": 0,
+        "data": {
+            "fields": ["ann_date", "symbol"],
+            "items": [[day, f"{prefix}-{index}"] for index in range(count)],
+            "has_more": False,
+        },
+    })
+
+
+def test_saturated_holdings_window_is_split_without_retaining_parent_rows() -> None:
+    session = FakeSession([
+        _holdings_page("20260102", 1000, "discard-parent"),
+        _holdings_page("20260102", 1000, "discard-child"),
+        _holdings_page("20260101", 600, "day1"),
+        _holdings_page("20260102", 600, "day2"),
+        _holdings_page("20260104", 2, "day4"),
+    ])
+    rows = datahub_client.fetch_tushare_rows(
+        api_key="secret-key", api_name="fund_portfolio",
+        params={"ts_code": "018654.OF", "start_date": "20260101", "end_date": "20260104"},
+        session=session,
+    )
+    assert len(rows) == 1202
+    assert len({row["symbol"] for row in rows}) == 1202
+    assert not any(str(row["symbol"]).startswith("discard") for row in rows)
+    assert [(call["params"]["start_date"], call["params"]["end_date"]) for call in session.calls] == [
+        ("20260101", "20260104"), ("20260101", "20260102"),
+        ("20260101", "20260101"), ("20260102", "20260102"), ("20260103", "20260104"),
+    ]
+    assert all(call["params"]["offset"] == 0 for call in session.calls)
+
+
+@pytest.mark.parametrize("api_name", ["fund_portfolio", " fund_portfolio "])
+def test_single_disclosure_saturation_fails_instead_of_returning_earlier_complete_rows(api_name) -> None:
+    session = FakeSession([
+        _holdings_page("20260102", 1000),
+        _holdings_page("20260101", 15),
+        _holdings_page("20260102", 1000),
+    ])
+    with pytest.raises(datahub_client.DataHubClientError, match="single announcement date"):
+        datahub_client.fetch_tushare_rows(
+            api_key="secret-key", api_name=api_name,
+            params={"start_date": "20260101", "end_date": "20260102"}, session=session,
+        )
+    assert len(session.calls) == 3
+
+
+def test_saturated_response_outside_announcement_window_is_not_split() -> None:
+    session = FakeSession([_holdings_page("20251231", 1000)])
+    with pytest.raises(datahub_client.DataHubClientError, match="invalid announcement-date"):
+        datahub_client.fetch_tushare_rows(
+            api_key="secret-key", api_name="fund_portfolio",
+            params={"start_date": "20260101", "end_date": "20260102"}, session=session,
+        )
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("api_name", ["index_daily", "fund_portfolio"])
+@pytest.mark.parametrize("start,end", [("2026-01-01", "20260927"), ("20260928", "20260927")])
+def test_windowed_endpoint_rejects_invalid_dates_before_request(api_name, start, end) -> None:
+    session = FakeSession([])
+    with pytest.raises(datahub_client.DataHubClientError, match=api_name):
+        datahub_client.fetch_tushare_rows(
+            api_key="secret-key", api_name=api_name,
+            params={"start_date": start, "end_date": end}, session=session,
+        )
+    assert session.calls == []
 
 
 def test_date_window_contract_does_not_change_other_endpoints() -> None:
@@ -148,6 +257,7 @@ def test_date_window_contract_does_not_change_other_endpoints() -> None:
     assert len(session.calls) == 1
     assert session.calls[0]["params"]["start_date"] == "20000101"
     assert session.calls[0]["params"]["end_date"] == "20260913"
+    assert session.calls[0]["params"]["limit"] == 5000
 
 
 @pytest.mark.parametrize(

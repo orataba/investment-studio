@@ -247,6 +247,11 @@ def refresh_instrument_reference_data(instrument_id: str) -> dict[str, object] |
     if record is None:
         return None
     record = StudioInstrumentReferenceData.model_validate(record).model_dump(mode="json")
+    if record["provider"] == "datahub:tushare" and record["section_errors"]:
+        # These are the required profile/holdings sections, not optional FMP
+        # coverage. Return the failed attempt to the job without replacing the
+        # last complete view or advancing its observation clock.
+        return record
     with get_session_factory()() as session:
         key = record["instrument_id"]
         stored = session.get(InstrumentReferenceSnapshot, key)

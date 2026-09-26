@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 import time
@@ -15,11 +16,12 @@ DEFAULT_DATAHUB_TUSHARE_API_URL = (
     "http://datahubco.com/app-api/openapi/v1/tushare"
 )
 DATAHUB_PAGE_SIZE = 5000
+DATAHUB_ENDPOINT_PAGE_SIZES = {"fund_portfolio": 1000}
 DATAHUB_TRANSIENT_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
 DATAHUB_TRANSIENT_PROVIDER_CODES = {40203, 40204}
-# Verified index-daily request contract: a 366-day inclusive range succeeds;
-# multi-year repair requests are rejected before offset pagination can begin.
-DATAHUB_INDEX_DAILY_WINDOW_DAYS = 366
+# Verified request contracts: these endpoints accept 366 inclusive days;
+# multi-year requests are rejected before offset pagination can begin.
+DATAHUB_DATE_WINDOW_DAYS = {"index_daily": 366, "fund_portfolio": 366}
 TUSHARE_ENDPOINT_PATHS = {
     "fund_basic": "fund-basic",
     "fund_portfolio": "fund-portfolio",
@@ -98,18 +100,19 @@ def _decode_rows(payload: object) -> tuple[list[dict[str, object]], bool]:
 
 
 def _date_queries(api_name: str, query: dict[str, object]) -> list[dict[str, object]]:
-    if api_name != "index_daily" or not query.get("start_date") or not query.get("end_date"):
+    window_days = DATAHUB_DATE_WINDOW_DAYS.get(api_name)
+    if window_days is None or not query.get("start_date") or not query.get("end_date"):
         return [query]
     try:
         start = datetime.strptime(str(query["start_date"]), "%Y%m%d").date()
         end = datetime.strptime(str(query["end_date"]), "%Y%m%d").date()
     except ValueError as error:
-        raise DataHubClientError("index_daily dates must use YYYYMMDD.") from error
+        raise DataHubClientError(f"{api_name} dates must use YYYYMMDD.") from error
     if start > end:
-        raise DataHubClientError("index_daily start_date must not follow end_date.")
+        raise DataHubClientError(f"{api_name} start_date must not follow end_date.")
     queries = []
     while start <= end:
-        stop = min(start + timedelta(days=DATAHUB_INDEX_DAILY_WINDOW_DAYS - 1), end)
+        stop = min(start + timedelta(days=window_days - 1), end)
         queries.append({**query, "start_date":start.strftime("%Y%m%d"), "end_date":stop.strftime("%Y%m%d")})
         start = stop + timedelta(days=1)
     return queries
@@ -127,7 +130,8 @@ def fetch_tushare_rows(
 ) -> list[dict[str, object]]:
     """Fetch and decode every page for one supported Tushare endpoint."""
 
-    endpoint_path = TUSHARE_ENDPOINT_PATHS.get(str(api_name or "").strip())
+    api_name = str(api_name or "").strip()
+    endpoint_path = TUSHARE_ENDPOINT_PATHS.get(api_name)
     if endpoint_path is None:
         raise DataHubClientError(
             f"Unsupported DataHub Tushare endpoint: {api_name!r}."
@@ -141,7 +145,7 @@ def fetch_tushare_rows(
     }
     if fields:
         query["fields"] = fields
-    query["limit"] = DATAHUB_PAGE_SIZE
+    query["limit"] = DATAHUB_ENDPOINT_PAGE_SIZES.get(api_name, DATAHUB_PAGE_SIZE)
 
     owned_session = session is None
     active_session = session or requests.Session()
@@ -150,8 +154,11 @@ def fetch_tushare_rows(
 
     rows: list[dict[str, object]] = []
     try:
-        for date_query in _date_queries(str(api_name).strip(), query):
+        pending = deque(_date_queries(api_name, query))
+        while pending:
+            date_query = pending.popleft()
             offset = 0
+            window_rows: list[dict[str, object]] = []
             while True:
                 page_query = {**date_query, "offset": offset}
                 for attempt in range(len(DATAHUB_TRANSIENT_RETRY_DELAYS) + 1):
@@ -184,8 +191,29 @@ def fetch_tushare_rows(
                     time.sleep(DATAHUB_TRANSIENT_RETRY_DELAYS[attempt])
 
                 page_rows, has_more = _decode_rows(payload)
-                rows.extend(page_rows)
+                if api_name == "fund_portfolio" and not has_more and len(page_rows) >= int(query["limit"]):
+                    # This REST endpoint caps its upstream result before local
+                    # offset pagination, so a full final page is not complete.
+                    # Its date parameters filter ann_date, not report end_date.
+                    start_text, end_text = str(date_query.get("start_date", "")), str(date_query.get("end_date", ""))
+                    if not start_text or not end_text or start_text == end_text:
+                        raise DataHubClientError(
+                            "fund_portfolio reached the provider row limit for a single announcement date "
+                            "or an unbounded request; complete holdings cannot be confirmed."
+                        )
+                    if any(not start_text <= str(row.get("ann_date") or "") <= end_text for row in page_rows):
+                        raise DataHubClientError("fund_portfolio returned an invalid announcement-date window.")
+                    start = datetime.strptime(start_text, "%Y%m%d").date()
+                    end = datetime.strptime(end_text, "%Y%m%d").date()
+                    midpoint = start + (end - start) // 2
+                    pending.appendleft({**date_query, "start_date": (midpoint + timedelta(days=1)).strftime("%Y%m%d")})
+                    pending.appendleft({**date_query, "end_date": midpoint.strftime("%Y%m%d")})
+                    # Discard the saturated parent window, including any pages
+                    # already read. Only complete, disjoint children contribute.
+                    break
+                window_rows.extend(page_rows)
                 if not has_more:
+                    rows.extend(window_rows)
                     break
                 if not page_rows:
                     raise DataHubClientError(

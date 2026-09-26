@@ -1,12 +1,50 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from investment_studio_instrument_core import instrument_store as shared_store
 from sqlalchemy import select
 
 from watchlist_app.db.session import get_session_factory
 from investment_studio_instrument_core.db_models import InstrumentReferenceObservation, InstrumentReferenceSnapshot
+
+
+def get_shared_fund_actions(instrument_id: str, *, as_of: datetime | None = None) -> dict[str, object] | None:
+    """Read product facts for a resolved canonical ID, without price histories."""
+    cutoff = as_of or datetime.now(UTC)
+    if cutoff.tzinfo is None:
+        raise ValueError("Fund action cutoff must include a timezone.")
+    instrument = shared_store.get_instrument_event_details(get_session_factory(), [instrument_id]).get(instrument_id)
+    if instrument is None:
+        return None
+
+    def retained_heads(revisions, identity):
+        heads = {}
+        for revision in revisions:
+            recorded_at = datetime.fromisoformat(str(revision["created_at"]).replace("Z", "+00:00"))
+            if recorded_at.tzinfo is None:
+                raise ValueError("Fund action recorded time must include a timezone.")
+            if recorded_at > cutoff:
+                continue
+            key = revision[identity]
+            if key not in heads or revision["revision_number"] > heads[key]["revision_number"]:
+                heads[key] = revision
+        return [row for row in heads.values() if row["revision_kind"] != "cancellation"]
+
+    events = retained_heads(instrument.get("fund_nav_event_revisions", []), "fund_nav_action_id")
+    event_ids = {row["fund_nav_event_id"] for row in events}
+    evidence = [row for row in retained_heads(
+        instrument.get("fund_nav_reinvestment_evidence_revisions", []), "fund_nav_event_id"
+    ) if row["fund_nav_event_id"] in event_ids]
+    event_fields = ("fund_nav_event_id", "fund_nav_action_id", "revision_number", "revision_kind",
+        "event_type", "announcement_date", "record_date", "effective_date", "payable_date",
+        "sequence_order", "cash_per_unit", "unit_ratio", "evidence_kind", "created_at")
+    evidence_fields = ("fund_nav_reinvestment_evidence_id", "fund_nav_event_id", "revision_number",
+        "revision_kind", "reinvestment_nav", "evidence_kind", "created_at")
+    return {"instrument_id": instrument_id, "retained_as_of": cutoff.isoformat(),
+        "events": [{key: row.get(key) for key in event_fields} for row in events],
+        "reinvestment_evidence": [{key: row.get(key) for key in evidence_fields} for row in evidence],
+        "scope_note": "共享基金层面的已确认分红、拆分及再投资价格，按本轮资料截止时间读取当时已留存的有效修订。created_at 是系统留存时间，不是公告时间；空列表不证明未发生分红。每份分红与再投资净值不包含任何投资者的份额、费用、税款、现金到账或净收益。"}
 
 
 def get_shared_reference_data(instrument_id: str, *, as_of: datetime | None = None) -> dict[str, object] | None:
